@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>AI Test Platform</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1>AI Test Platform</h1>
+
+    <div id="templates" class="templates"></div>
+
+    <form id="runForm">
+      <label>Prompt
+        <textarea id="prompt" rows="2" placeholder="Test the login page with an invalid password"></textarea>
+      </label>
+      <label>URL
+        <input id="url" type="url" placeholder="https://example.com/login" />
+      </label>
+      <button type="submit">Run</button>
+    </form>
+
+    <ol id="stages" class="stages"></ol>
+
+    <section id="finalResult" class="hidden">
+      <h2 id="verdict"></h2>
+      <img id="screenshot" class="hidden" alt="failure screenshot" />
+      <p id="diagnosis"></p>
+      <a id="traceLink" class="hidden" download>Download trace</a>
+    </section>
+
+    <section id="history">
+      <h2>History</h2>
+      <ul id="historyList" class="history-list"></ul>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
+
