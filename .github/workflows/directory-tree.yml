@@ -1,15 +1,33 @@
-- name: Checkout Repository
-  uses: actions/checkout@v4
+name: Generate Directory Tree
 
-- name: Install Tree and Update README
-  run: |
-    sudo apt-get install -y tree
-    
-    # Generate the tree output
-    TREE_OUTPUT=$(tree -I '.git|node_modules|.github')
-    
-    # Optional: If you want to overwrite a specific file or log it
-    echo "## Project Structure" > project-structure.md
-    echo "\`\`\`text" >> project-structure.md
-    echo "$TREE_OUTPUT" >> project-structure.md
-    echo "\`\`\`" >> project-structure.md
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allows you to run it manually
+
+jobs:
+  generate-tree:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Tree and Update README
+        run: |
+          sudo apt-get install -y tree
+          
+          # Generate the tree structure
+          TREE_OUTPUT=$(tree -I '.git|node_modules|.github')
+          
+          # Write it out to a file
+          echo "## Project Structure" > project-structure.md
+          echo "\`\`\`text" >> project-structure.md
+          echo "$TREE_OUTPUT" >> project-structure.md
+          echo "\`\`\`" >> project-structure.md
+
+      - name: Upload Structure Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: directory-tree
+          path: project-structure.md
