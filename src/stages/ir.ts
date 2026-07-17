@@ -3,6 +3,8 @@ import { parseJson } from "../llm/json.js";
 import { IR } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
+import { extendAppModel } from "./liveExtend.js";
+import { credentialsFor, applyCredentials } from "./credentials.js";
 
 const ASSERTION_KEYS = [
   "text_contains", "text_equals", "url_contains",
@@ -73,12 +75,14 @@ const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
  * that catches the downstream LLM inventing a UI (e.g. a Username/Password form)
  * that discovery never actually saw. Pure text targets are intentionally exempt —
  * the IR contract allows target.text for dynamic post-action content (flash/error
- * messages) that isn't in the discovery snapshot. Returns a human-readable reason
- * for the first ungrounded target, or null if the whole IR is grounded.
+ * messages) that isn't in the discovery snapshot. Returns the index of the first
+ * ungrounded step plus a human-readable reason (so the caller can replay the
+ * grounded prefix steps[0..index] to reach the missing state), or null if grounded.
  */
-export function groundingError(ir: IR, appModel: AppModel): string | null {
+export function groundingError(ir: IR, appModel: AppModel): { index: number; message: string } | null {
   const elements = appModel.pages.flatMap(p => p.elements);
-  for (const step of ir.steps) {
+  for (let index = 0; index < ir.steps.length; index++) {
+    const step = ir.steps[index];
     const t = step.target;
     if (!t?.role || !t?.name) continue; // navigate / text-only / wait steps
     const role = norm(t.role);
@@ -89,8 +93,11 @@ export function groundingError(ir: IR, appModel: AppModel): string | null {
       return en === name || en.includes(name) || name.includes(en);
     });
     if (!hit) {
-      return `Step ${step.id} targets role="${t.role}" name="${t.name}", ` +
-        `which is not present in the application model — the page under test does not have this element.`;
+      return {
+        index,
+        message: `Step ${step.id} targets role="${t.role}" name="${t.name}", ` +
+          `which is not present in the application model — the page under test does not have this element.`,
+      };
     }
   }
   return null;
@@ -134,33 +141,70 @@ Example of the exact shape required:
   ]
 }`;
 
-  const user =
-`Application model: ${JSON.stringify(appModel)}
+  // Rebuilt each attempt because the model grows as live-extension discovers new pages.
+  const buildUser = (model: AppModel) =>
+`Application model: ${JSON.stringify(model)}
 Test case: ${JSON.stringify(testCase)}
 baseUrl (origin only): ${origin}
 entry path (where the page under test lives): ${entryPath}
 sourcePrompt: ${sourcePrompt}
 Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps":[{id,action,target,value,assertion}] }`;
 
+  // baseUrl is a fact we already know; and real credentials for known hosts are injected
+  // into login fill steps so the generated test actually authenticates instead of using
+  // the placeholder values the model invents.
+  const creds = credentialsFor(entryUrl);
+  const finalize = (ir: IR): IR => {
+    ir.meta.baseUrl = origin;
+    if (creds) applyCredentials(ir.steps, creds);
+    return ir;
+  };
+
+  let currentModel = appModel;
+  let extensions = 0;
+  const MAX_EXTENSIONS = 2;   // bound the extra browser launches + LLM calls on the failure path
+  const MAX_ATTEMPTS = 4;     // bound total groq calls so a broken app/prompt still fails fast
   let lastErr = "";
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const raw = await groq(user, { system, json: true });
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    let parsed;
     try {
-      const parsed = IR.safeParse(normalizeIR(parseJson(raw)));
-      if (parsed.success) {
-        // baseUrl is a fact we already know, not something worth trusting the model on.
-        parsed.data.meta.baseUrl = origin;
-        // Reject an IR that addresses elements the AppModel never contained; on the
-        // first attempt this falls through to a retry (the model may recover), on the
-        // last it surfaces as a clear error instead of a test doomed to time out.
-        const ungrounded = groundingError(parsed.data, appModel);
-        if (!ungrounded) return parsed.data;
-        lastErr = ungrounded;
-        continue;
-      }
-      lastErr = parsed.error.message;
+      parsed = IR.safeParse(normalizeIR(parseJson(await groq(buildUser(currentModel), { system, json: true }))));
     } catch (err: any) {
       lastErr = err?.message ?? String(err);
+      continue;
+    }
+    if (!parsed.success) { lastErr = parsed.error.message; continue; }
+
+    parsed.data.meta.baseUrl = origin;
+    const ungrounded = groundingError(parsed.data, currentModel);
+    if (!ungrounded) return finalize(parsed.data);
+
+    lastErr = ungrounded.message;
+    const prefix = parsed.data.steps.slice(0, ungrounded.index);
+
+    // Try to reach and model the missing state by replaying the grounded prefix live,
+    // then retry generation against the enriched model. Bounded; needs a prefix to replay.
+    if (extensions < MAX_EXTENSIONS && prefix.length) {
+      try {
+        const before = currentModel.pages.length;
+        currentModel = await extendAppModel(currentModel, prefix, creds);
+        extensions++;
+        // A browser launch is expensive and otherwise invisible — say when it happened.
+        console.log(`[ir] live-extend: replayed ${prefix.length} step(s) past "${ungrounded.message.split(",")[0]}" — app model ${before} -> ${currentModel.pages.length} pages (${currentModel.pages.at(-1)?.url})`);
+        continue;
+      } catch (err: any) {
+        lastErr = `could not reach the state needed for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;
+      }
+    }
+
+    // Can't extend further. Degrade to a real-but-partial test on the grounded prefix
+    // instead of failing the whole run — verifying "reached the product page" beats
+    // nothing. Only a fully ungrounded IR (empty prefix) falls through to a hard error.
+    if (prefix.length) {
+      const truncated: IR = { ...parsed.data, steps: prefix };
+      truncated.meta = { ...parsed.data.meta, truncated: true, truncationNote: lastErr };
+      return finalize(truncated);
     }
   }
   throw new Error(`IR failed schema validation after retry: ${lastErr}`);

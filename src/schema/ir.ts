@@ -37,6 +37,10 @@ export const IR = z.object({
     priority: Priority,
     sourcePrompt: z.string(),
     baseUrl: z.string(),
+    // Set by toIR when it couldn't ground the full flow and fell back to the grounded
+    // prefix — the test is real but partial. Optional so the model never has to emit them.
+    truncated: z.boolean().optional(),
+    truncationNote: z.string().optional(),
   }),
   steps: z.array(Step).min(1),
 });

@@ -93,6 +93,8 @@ function connectToRun(runId) {
   renderPhases();
   finalResult.classList.add("hidden");
   diagnosisEl.textContent = "";
+  screenshotEl.classList.add("hidden");
+  screenshotEl.removeAttribute("src");
 
   const source = new EventSource(`/api/runs/${runId}/events`);
   source.onmessage = (ev) => {
@@ -102,9 +104,22 @@ function connectToRun(runId) {
       source.close();
       finalResult.classList.remove("hidden");
       const passed = event.data?.passed;
+      const partial = event.data?.partial;
       verdictEl.textContent =
         event.stage === "error" ? `⚠️ Pipeline error: ${event.error}` :
-        passed ? "✅ Passed" : "❌ Failed";
+        passed ? (partial ? "✅ Passed (partial — verified as far as the flow could be grounded)" : "✅ Passed") :
+        "❌ Failed";
+
+      // Show the run's screenshot (Playwright captures one on pass and fail).
+      const shot = event.data?.screenshotUrl;
+      if (shot) {
+        screenshotEl.src = shot;
+        screenshotEl.alt = passed ? "result screenshot" : "failure screenshot";
+        screenshotEl.classList.remove("hidden");
+      } else {
+        screenshotEl.classList.add("hidden");
+      }
+
       const traceUrl = `/runs/${runId}/generated/`;
       traceLinkEl.href = traceUrl;
       traceLinkEl.classList.remove("hidden");

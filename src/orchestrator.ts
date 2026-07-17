@@ -6,7 +6,7 @@ import { discover } from "./stages/discovery.js";
 import { toTestCases } from "./stages/testCases.js";
 import { toIR } from "./stages/ir.js";
 import { generateSpec } from "./stages/generator.js";
-import { runSpec } from "./stages/executor.js";
+import { runSpec, findScreenshot } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
 import { store } from "./runStore.js";
 
@@ -83,7 +83,12 @@ export async function runPipeline(
       diagnosis = await step("failure_analysis", "06-diagnosis.json", () => analyzeFailure(ir, result as any));
     }
 
-    emit("done", "completed", { passed: result.passed });
+    // Playwright captures a screenshot for every test (screenshot: "on" in the config), so
+    // there's one on success too. Surface its public /runs URL to the UI. The IR may be a
+    // truncated (partial) test — tell the UI so it can label the verdict honestly.
+    const shot = findScreenshot(result.artifactsDir);
+    const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
+    emit("done", "completed", { passed: result.passed, screenshotUrl, partial: ir.meta.truncated ?? false });
     return { runId, runDir, result, diagnosis };
   } catch (err: any) {
     emit("error", "failed", undefined, err?.message ?? String(err));

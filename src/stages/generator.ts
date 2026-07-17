@@ -1,16 +1,8 @@
-import type { IR, Step, Target } from "../schema/ir.js";
+import type { IR, Step } from "../schema/ir.js";
+import { resolveCode as locator } from "./targetResolver.js";
 
 const q = (s: string) => JSON.stringify(s);
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-function locator(t: Target): string {
-  if (t.role && t.name) return `page.getByRole(${q(t.role)}, { name: ${q(t.name)} })`;
-  if (t.label)          return `page.getByLabel(${q(t.label)})`;
-  if (t.placeholder)    return `page.getByPlaceholder(${q(t.placeholder)})`;
-  if (t.text)           return `page.getByText(${q(t.text)})`;
-  if (t.testId)         return `page.getByTestId(${q(t.testId)})`;
-  throw new Error(`No semantic locator for target: ${JSON.stringify(t)}`);
-}
 
 function emitAssert(step: Step): string {
   const t = step.target!;
@@ -46,12 +38,18 @@ function emitStep(step: Step, baseUrl: string): string {
 
 export function generateSpec(ir: IR): string {
   const body = ir.steps.map(s => emitStep(s, ir.meta.baseUrl)).join("\n");
+  // The note can carry an arbitrary error message (multi-line JSON from an LLM 4xx, a stack,
+  // ...). Flatten it to one line — a raw newline here escapes the `//` and makes the emitted
+  // spec a syntax error, which silently breaks the very fallback the truncation path exists for.
+  const truncNote = ir.meta.truncated
+    ? `// PARTIAL: verified only up to the last grounded step — ${(ir.meta.truncationNote ?? "further steps could not be grounded").replace(/\s+/g, " ").slice(0, 200)}\n`
+    : "";
   return `import { test, expect } from '@playwright/test';
 
 // AUTO-GENERATED from IR — do not edit by hand.
 // Feature: ${ir.meta.feature} | Priority: ${ir.meta.priority}
 // Source: ${ir.meta.sourcePrompt}
-test(${q(ir.meta.title)}, async ({ page }) => {
+${truncNote}test(${q(ir.meta.title)}, async ({ page }) => {
 ${body}
 });
 `;

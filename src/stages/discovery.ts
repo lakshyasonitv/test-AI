@@ -30,8 +30,40 @@ export async function discover(url: string): Promise<AppModel> {
     const aria = await page.locator("body").ariaSnapshot();
     const title = await page.title();
 
-    const system = `You analyze a web page for test generation. Map raw accessibility elements to meaningful concepts (Login, Search, Cart, Checkout, Profile, ...). Output JSON only.`;
-    const user =
+    const model = await modelFromAria(url, title, aria);
+    cacheSet(url, model);
+    return model;
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
+ * Turn an accessibility snapshot of a single page into an AppModel via the LLM. Shared by
+ * discover() (fresh page load) and the live-replay extender (a page reached only after
+ * replaying a login/prefix), so both label pages with the exact same anti-hallucination
+ * prompt. Retries once on schema-validation failure, same as the original discovery loop.
+ */
+export async function modelFromAria(url: string, title: string, aria: string): Promise<AppModel> {
+  const system =
+`You analyze a web page's accessibility snapshot for test generation. Output ONLY the JSON object, no prose, no markdown fences.
+
+Rules, follow exactly:
+- Every element you output must come from the accessibility snapshot given to you. Never invent an element, role, or name that isn't literally present in the snapshot.
+- "concepts" for a page is a short list of meaningful features actually observable on that page (e.g. "Login", "Search", "Cart") — infer them only from elements that are actually there, never from what a page like this "usually" has.
+- Each element's "concept" is optional — set it only when the element clearly serves one of the page's concepts; leave it unset rather than guessing.
+- "role" must be the element's real ARIA role exactly as given in the snapshot (button, textbox, link, heading, checkbox, ...); do not normalize or invent roles.
+- "name" must be the element's actual accessible name from the snapshot, verbatim — never paraphrase or guess it.
+
+Example of the exact shape required:
+{ "baseUrl": "https://example.com",
+  "pages": [ { "url": "https://example.com/login", "title": "Login",
+    "concepts": ["Login"],
+    "elements": [
+      { "role": "textbox", "name": "Username", "concept": "Login" },
+      { "role": "button", "name": "Log in", "concept": "Login" }
+    ] } ] }`;
+  const user =
 `Base URL: ${url}
 Page title: ${title}
 Accessibility snapshot:
@@ -42,22 +74,16 @@ Return ONLY JSON:
   "pages": [ { "url": string, "title": string, "concepts": string[],
     "elements": [ { "role": string, "name": string, "concept": string } ] } ] }`;
 
-    let lastErr = "";
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const raw = await gemini(user, { systemInstruction: system, json: true, model: process.env.GEMINI_MODEL_LITE });
-      try {
-        const result = AppModel.safeParse(parseJson(raw));
-        if (result.success) {
-          cacheSet(url, result.data);
-          return result.data;
-        }
-        lastErr = result.error.message;
-      } catch (err: any) {
-        lastErr = err?.message ?? String(err);
-      }
+  let lastErr = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const raw = await gemini(user, { systemInstruction: system, json: true, model: process.env.GEMINI_MODEL_LITE });
+    try {
+      const result = AppModel.safeParse(parseJson(raw));
+      if (result.success) return result.data;
+      lastErr = result.error.message;
+    } catch (err: any) {
+      lastErr = err?.message ?? String(err);
     }
-    throw new Error(`Application model failed schema validation after retry: ${lastErr}`);
-  } finally {
-    await browser.close();
   }
+  throw new Error(`Application model failed schema validation after retry: ${lastErr}`);
 }
