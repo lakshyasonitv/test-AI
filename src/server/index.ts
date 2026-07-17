@@ -1,7 +1,7 @@
 import express from "express";
 import path from "node:path";
 import { runPipeline, makeRunId } from "../orchestrator.js";
-import { record, subscribe } from "./runRegistry.js";
+import { record, subscribe, getEvents } from "./runRegistry.js";
 import { listRuns } from "../runStore.js";
 import { Semaphore } from "./concurrency.js";
 
@@ -27,9 +27,17 @@ app.post("/api/runs", (req, res) => {
   res.status(202).json({ runId });
 });
 
-// SSE stream of progress for one run.
+// SSE stream of progress for one run. Fine locally; a Cloudflare Quick Tunnel buffers
+// text/event-stream sent over GET and only flushes when the connection closes (which
+// subscribe() never does), so the UI polls /state instead. See cloudflared#1449.
 app.get("/api/runs/:runId/events", (req, res) => {
   subscribe(req.params.runId, res);
+});
+
+// Full event log as one JSON snapshot. Polling this can't be buffered by a proxy the way
+// a stream can — the RunStore already persists every event, so this is just a read.
+app.get("/api/runs/:runId/state", (req, res) => {
+  res.json(getEvents(req.params.runId));
 });
 
 // History list: every run that has ever been executed, newest first.
