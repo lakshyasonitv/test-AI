@@ -1,0 +1,28 @@
+name: Generate Directory Tree
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Generate Directory Tree
+        uses: github-activity/directory-tree@v1
+        with:
+          # Customization options (depending on the action version)
+          exclude: '.git,node_modules,.github'
+          output: 'README.md'
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "chore: update directory tree" || echo "No changes to commit"
+          git push
