@@ -128,9 +128,11 @@ Rules, follow exactly:
 - "meta.baseUrl" must be exactly the origin, with no path: ${origin}
 - A "navigate" step's target.url is a path RELATIVE to that origin (it gets concatenated onto baseUrl) — for the page under test here, that path is exactly "${entryPath}". Do not repeat the origin inside it.
 - "role" must be a real ARIA role (button, textbox, link, heading, checkbox, ...) for an element actually present in the application model. For asserting on plain visible text that ISN'T in the application model — e.g. an error/flash message that only appears after an action, so discovery never saw it — use target: { "text": "..." } instead. Never invent a role like "text" or "message".
+- A success assertion must be FALSE before the action and TRUE only after it — otherwise it verifies nothing. Never assert on a persistent, site-wide element (a header, logo, or nav bar that appears on every page regardless of state) as proof an action succeeded; it was already visible before the action too. In the application model, a decorative/structural element like this typically has no "concept" (empty or absent) — treat that as a signal to avoid it as a success assertion.
+- The application model only covers the page you start on, so you usually can't see the page an action like login navigates to. When you can't ground a success assertion on the destination page, assert instead that something from the STARTING page disappears because of the action — e.g. the login form's own submit button going "hidden" once login succeeds. That element is already in the model (grounded, no extra discovery needed), and is a real discriminator: visible before, gone after.
 Return ONLY the JSON object, no prose, no markdown fences.
 
-Example of the exact shape required:
+Example of the exact shape required — note the login case asserts NEW dynamic content that couldn't have existed before submission, and the success case asserts the login control disappearing rather than a page it can't see yet:
 {
   "meta": { "feature": "Login", "title": "...", "priority": "high", "sourcePrompt": "...", "baseUrl": "https://example.com" },
   "steps": [
@@ -139,7 +141,9 @@ Example of the exact shape required:
     { "id": "s3", "action": "click", "target": { "role": "button", "name": "Login" } },
     { "id": "s4", "action": "assert", "target": { "text": "Invalid credentials" }, "assertion": "visible" }
   ]
-}`;
+}
+For a case that instead expects login to SUCCEED, the last step would ground on the login button itself going away, not on anything from a page discovery hasn't seen:
+{ "id": "s4", "action": "assert", "target": { "role": "button", "name": "Login" }, "assertion": "hidden" }`;
 
   // Rebuilt each attempt because the model grows as live-extension discovers new pages.
   const buildUser = (model: AppModel) =>
@@ -152,8 +156,11 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
 
   // baseUrl is a fact we already know; and real credentials for known hosts are injected
   // into login fill steps so the generated test actually authenticates instead of using
-  // the placeholder values the model invents.
-  const creds = credentialsFor(entryUrl);
+  // the placeholder values the model invents. Skipped for a fromPrompt case: those steps
+  // carry the user's own literal values on purpose (their real email/password, or a
+  // taxonomy-style deliberately-wrong one) — silently swapping in the demo account would
+  // just relocate the "system overrides what I asked for" bug to a different field.
+  const creds = testCase.fromPrompt ? undefined : credentialsFor(entryUrl);
   const finalize = (ir: IR): IR => {
     ir.meta.baseUrl = origin;
     if (creds) applyCredentials(ir.steps, creds);

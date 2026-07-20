@@ -1,5 +1,6 @@
 import express from "express";
 import path from "node:path";
+import { rmSync } from "node:fs";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
 import { listRuns } from "../runStore.js";
@@ -43,6 +44,20 @@ app.get("/api/runs/:runId/state", (req, res) => {
 // History list: every run that has ever been executed, newest first.
 app.get("/api/runs", (_req, res) => {
   res.json(listRuns());
+});
+
+// Delete one run's directory. runId comes from the URL, so validate it against the exact
+// makeRunId() shape before building a path — that regex has no "/", "." or ".." so it can't
+// escape runs/ (and won't match "_cache"). rmSync with force so an already-gone run is a no-op.
+app.delete("/api/runs/:runId", (req, res) => {
+  const { runId } = req.params;
+  if (!/^[\dT-]+Z-[0-9a-f]{8}$/.test(runId)) return res.status(400).json({ error: "invalid runId" });
+  try {
+    rmSync(path.join("runs", runId), { recursive: true, force: true });
+    res.status(204).end();
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? "delete failed" });
+  }
 });
 
 app.get("/", (_req, res) => {

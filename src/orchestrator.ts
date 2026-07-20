@@ -5,6 +5,8 @@ import { plan } from "./stages/planner.js";
 import { discover } from "./stages/discovery.js";
 import { toTestCases } from "./stages/testCases.js";
 import { toIR } from "./stages/ir.js";
+import { refreshPageModel } from "./stages/liveExtend.js";
+import { credentialsFor } from "./stages/credentials.js";
 import { generateSpec } from "./stages/generator.js";
 import { runSpec, findScreenshot } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
@@ -12,7 +14,7 @@ import { store } from "./runStore.js";
 
 export type StageName =
   | "input" | "plan" | "discovery" | "testcases" | "ir"
-  | "generate" | "execute" | "failure_analysis" | "done" | "error";
+  | "generate" | "execute" | "failure_analysis" | "heal" | "done" | "error";
 
 export interface StageEvent {
   runId: string;
@@ -65,7 +67,12 @@ export async function runPipeline(
     const appModel = await step("discovery", "02-appmodel.json", () => discover(url));
     const cases = await step("testcases", "03-cases.json", () => toTestCases(thePlan, appModel));
 
-    const primary = [...cases].sort(byPriority)[0];
+    // Prefer the case tagged as the direct translation of the user's own request over pure
+    // severity ranking — "priority" orders coverage cases for an eventual multi-case run, but
+    // at a single execution slot the highest-severity taxonomy case (e.g. SQL injection,
+    // always "critical") was silently outranking and replacing whatever the user actually
+    // asked to test. Fall back to priority if the model didn't tag one (never crash on it).
+    const primary = cases.find((c) => c.fromPrompt) ?? [...cases].sort(byPriority)[0];
     if (!primary) throw new Error("No test cases produced");
 
     const ir = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, url));
@@ -79,17 +86,69 @@ export async function runPipeline(
     });
 
     let diagnosis = null;
+    let finalResult = result;
+    let finalIr = ir;
+    let healed = false;
+
     if (!result.passed) {
       diagnosis = await step("failure_analysis", "06-diagnosis.json", () => analyzeFailure(ir, result as any));
+
+      const healable = diagnosis.category === "selector_changed" || diagnosis.category === "element_missing";
+      const failIdx = diagnosis.failingStepId ? ir.steps.findIndex((s) => s.id === diagnosis!.failingStepId) : -1;
+
+      // A step with no real prefix (first step, or an id toIR never emitted) has nothing to
+      // replay from — skip healing. Capped at exactly one attempt total, no loop: this only
+      // runs once, only on an already-failed run with a matching diagnosis category.
+      if (healable && failIdx > 0) {
+        try {
+          emit("heal", "started");
+          const prefix = ir.steps.slice(0, failIdx);
+          const freshModel = await refreshPageModel(appModel, prefix, credentialsFor(url));
+          const healedIr = await toIR(primary, freshModel, prompt, url);
+
+          // A heal that truncates isn't a heal: it means the failing step still can't be
+          // grounded even against a fresh snapshot (genuinely gone, not just renamed), and
+          // toIR silently fell back to the safe prefix. Running just that prefix would
+          // "pass" without ever exercising the thing that broke — a false positive of
+          // exactly the kind this project has hit before. Only accept a heal that still
+          // covers the full, originally-intended test case.
+          if (!healedIr.meta.truncated) {
+            const healedSpec = generateSpec(healedIr);
+            const healedDir = path.join(runDir, "healed");
+            mkdirSync(healedDir, { recursive: true });
+            const healedRun = await runSpec(healedSpec, healedDir);
+            if (healedRun.passed) {
+              writeFileSync(path.join(healedDir, "generated.spec.ts"), healedSpec);
+              writeFileSync(path.join(healedDir, "ir.json"), JSON.stringify(healedIr, null, 2));
+              finalResult = {
+                passed: true, exitCode: healedRun.exitCode,
+                artifactsDir: healedRun.artifactsDir, resultsJsonPath: healedRun.resultsJsonPath, raw: healedRun.raw,
+              };
+              finalIr = healedIr;
+              healed = true;
+            }
+          }
+          emit("heal", "completed", { healed });
+        } catch (err: any) {
+          // Original diagnosis stands unchanged — a failed heal attempt never masks the
+          // real failure with a different error, and never retries.
+          emit("heal", "failed", undefined, err?.message ?? String(err));
+        }
+      }
     }
 
     // Playwright captures a screenshot for every test (screenshot: "on" in the config), so
     // there's one on success too. Surface its public /runs URL to the UI. The IR may be a
     // truncated (partial) test — tell the UI so it can label the verdict honestly.
-    const shot = findScreenshot(result.artifactsDir);
+    const shot = findScreenshot(finalResult.artifactsDir);
     const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
-    emit("done", "completed", { passed: result.passed, screenshotUrl, partial: ir.meta.truncated ?? false });
-    return { runId, runDir, result, diagnosis };
+    emit("done", "completed", {
+      passed: finalResult.passed, screenshotUrl, partial: finalIr.meta.truncated ?? false, healed,
+      // Plain-English record of what was actually tested, for the results panel — the IR/spec
+      // are role+name/code, not something an end user should have to read to know what ran.
+      test: { title: primary.title, steps: primary.steps, expected: primary.expected },
+    });
+    return { runId, runDir, result: finalResult, diagnosis };
   } catch (err: any) {
     emit("error", "failed", undefined, err?.message ?? String(err));
     throw err;

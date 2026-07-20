@@ -63,6 +63,8 @@ export function listRuns(): RunSummary[] {
     .filter((d) => d.isDirectory() && d.name !== "_cache")
     .map((d) => d.name)
     .sort((a, b) => b.localeCompare(a)) // runId is ISO-prefixed -> lexicographic = chronological
+    .slice(0, 20)                       // only the newest 20 — keeps the history list usable and
+                                        // skips reading every run dir on disk as they accumulate
     .map((runId) => {
       const events = store.read(runId);
       const inputData = events.find((e) => e.stage === "input")?.data as

@@ -25,7 +25,15 @@
 
     <section id="finalResult" class="hidden">
       <h2 id="verdict"></h2>
-      <img id="screenshot" class="hidden" alt="failure screenshot" />
+      <div id="testSummary" class="test-summary hidden">
+        <h3 id="testTitle"></h3>
+        <ol id="testSteps"></ol>
+        <p id="testExpected"></p>
+      </div>
+      <figure id="screenshotFigure" class="hidden">
+        <img id="screenshot" alt="result screenshot" />
+        <figcaption>Final state at the end of the test</figcaption>
+      </figure>
       <p id="diagnosis"></p>
       <a id="traceLink" class="hidden" download>Download trace</a>
     </section>

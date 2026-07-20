@@ -11,7 +11,7 @@ export async function plan(prompt: string, url: string): Promise<Plan> {
 
 Rules, follow exactly:
 - Steps are high-level intentions ("Log in with valid credentials", "Verify the dashboard loads"), never code, CSS/ARIA selectors, or concrete UI element names — that translation happens in a later stage.
-- Do not invent steps for features, pages, or flows the request doesn't mention or imply. If the request is narrow (e.g. "test login"), keep the plan narrow — do not pad it with unrelated coverage just to seem thorough.
+- Stay on the feature(s) the request names — don't wander into unrelated features (a "test login" request shouldn't plan checkout). But DON'T strip the plan down to only the happy path: a later stage expands each named feature into a full coverage suite (invalid input, empty fields, security), so plan the primary flow plainly and let that stage add the variations.
 - "goal" is a one-sentence restatement of what the request is testing, not a summary of the steps.
 - Keep steps in the order a real user would perform them.
 

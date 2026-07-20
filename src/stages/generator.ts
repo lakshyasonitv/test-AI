@@ -36,6 +36,24 @@ function emitStep(step: Step, baseUrl: string): string {
   }
 }
 
+// Self-healing role+name locator, inlined into the generated spec (which stays self-contained
+// — no deps beyond @playwright/test, so this can't be a shared import). Mirrors
+// targetResolver.ts's resolveRoleWithFallback() exactly; keep both in sync if either changes.
+const LOCATE_HELPER = `
+async function locate(page, role, name) {
+  const swap = { button: "link", link: "button" };
+  const original = page.getByRole(role, { name });
+  const candidates = [original];
+  const alt = swap[role.toLowerCase()];
+  if (alt) candidates.push(page.getByRole(alt, { name }));
+  candidates.push(page.getByText(name));
+  for (const c of candidates) {
+    if (await c.count() === 1) return c;
+  }
+  return original;
+}
+`;
+
 export function generateSpec(ir: IR): string {
   const body = ir.steps.map(s => emitStep(s, ir.meta.baseUrl)).join("\n");
   // The note can carry an arbitrary error message (multi-line JSON from an LLM 4xx, a stack,
@@ -44,8 +62,9 @@ export function generateSpec(ir: IR): string {
   const truncNote = ir.meta.truncated
     ? `// PARTIAL: verified only up to the last grounded step — ${(ir.meta.truncationNote ?? "further steps could not be grounded").replace(/\s+/g, " ").slice(0, 200)}\n`
     : "";
+  const helper = body.includes("await locate(") ? LOCATE_HELPER : "";
   return `import { test, expect } from '@playwright/test';
-
+${helper}
 // AUTO-GENERATED from IR — do not edit by hand.
 // Feature: ${ir.meta.feature} | Priority: ${ir.meta.priority}
 // Source: ${ir.meta.sourcePrompt}

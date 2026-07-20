@@ -30,15 +30,31 @@ li.started .dot { background: var(--running); animation: pulse 1s infinite; }
 li.completed .dot { background: var(--done); }
 li.failed .dot { background: var(--failed); }
 .label { font-size: 0.9rem; }
+.summary-text { font-size: 0.85rem; color: var(--muted); }
 .output {
-  width: 100%; margin: 8px 0 0; padding: 10px; background: #0b0c0e; border-radius: 6px;
+  width: 100%; margin: 8px 0 0;
+}
+.output summary {
+  cursor: pointer; font-size: 0.75rem; color: var(--muted); user-select: none;
+}
+.output pre {
+  margin: 8px 0 0; padding: 10px; background: #0b0c0e; border-radius: 6px;
   font-size: 0.75rem; color: var(--muted); overflow-x: auto; max-height: 200px;
 }
 .hidden { display: none; }
 
 #finalResult { margin-top: 28px; padding: 16px; background: var(--panel); border-radius: 8px; }
 #verdict { font-size: 1.1rem; margin: 0 0 10px; }
-#screenshot { max-width: 100%; border-radius: 6px; margin-bottom: 10px; }
+
+.test-summary { margin: 0 0 16px; padding: 12px 14px; background: #0b0c0e; border-radius: 6px; }
+.test-summary h3 { font-size: 0.85rem; font-weight: 600; margin: 0 0 8px; }
+.test-summary ol { margin: 0 0 8px; padding-left: 20px; font-size: 0.85rem; color: var(--text); }
+.test-summary ol li { margin-bottom: 4px; }
+.test-summary p { margin: 0; font-size: 0.8rem; color: var(--muted); }
+
+#screenshotFigure { margin: 0 0 10px; }
+#screenshot { max-width: 100%; border-radius: 6px; display: block; }
+#screenshotFigure figcaption { font-size: 0.75rem; color: var(--muted); margin-top: 6px; }
 
 .templates { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .template-btn {
@@ -63,6 +79,11 @@ li.failed .dot { background: var(--failed); }
 .badge.incomplete { background: var(--pending); color: var(--text); }
 .history-item .hprompt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-item .hurl { color: var(--muted); font-size: 0.75rem; }
+.history-del {
+  flex-shrink: 0; border: none; background: transparent; color: var(--muted);
+  cursor: pointer; font-size: 0.9rem; line-height: 1; padding: 4px 6px; border-radius: 6px;
+}
+.history-del:hover { background: var(--failed); color: #2a0705; }
 .history-empty { color: var(--muted); font-size: 0.85rem; }
 
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }

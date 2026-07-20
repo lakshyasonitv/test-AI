@@ -2,7 +2,7 @@ const PHASES = [
   { key: "understand", label: "Understanding your request", stages: ["plan"] },
   { key: "analyze", label: "Analyzing the site", stages: ["discovery"] },
   { key: "build_run", label: "Building & running the test", stages: ["testcases", "ir", "generate", "execute"] },
-  { key: "results", label: "Results", stages: ["failure_analysis"] },
+  { key: "results", label: "Results", stages: ["failure_analysis", "heal"] },
 ];
 const STAGE_TO_PHASE = Object.fromEntries(
   PHASES.flatMap((p) => p.stages.map((s) => [s, p.key]))
@@ -24,6 +24,11 @@ const promptEl = document.getElementById("prompt");
 const urlEl = document.getElementById("url");
 const finalResult = document.getElementById("finalResult");
 const verdictEl = document.getElementById("verdict");
+const testSummaryEl = document.getElementById("testSummary");
+const testTitleEl = document.getElementById("testTitle");
+const testStepsEl = document.getElementById("testSteps");
+const testExpectedEl = document.getElementById("testExpected");
+const screenshotFigureEl = document.getElementById("screenshotFigure");
 const screenshotEl = document.getElementById("screenshot");
 const diagnosisEl = document.getElementById("diagnosis");
 const traceLinkEl = document.getElementById("traceLink");
@@ -45,9 +50,34 @@ function renderPhases() {
     <li data-phase="${p.key}" class="pending">
       <span class="dot"></span>
       <span class="label">${p.label}</span>
-      <pre class="output hidden"></pre>
+      <span class="summary-text"></span>
+      <details class="output hidden">
+        <summary>Technical details</summary>
+        <pre></pre>
+      </details>
     </li>`
   ).join("");
+}
+
+// One short, human-readable line per stage — the raw payload (role/name targets, IR JSON,
+// generated code) is still available in the collapsed <details> for anyone who wants it, but
+// an end user shouldn't have to read a JSON blob to know what's happening.
+function summarize(stage, data) {
+  try {
+    switch (stage) {
+      case "plan": return data.goal ?? "";
+      case "discovery": {
+        const concepts = [...new Set((data.pages ?? []).flatMap((p) => p.concepts ?? []))];
+        return `Found ${data.pages?.length ?? 0} page(s)${concepts.length ? " — " + concepts.join(", ") : ""}`;
+      }
+      case "testcases": return `Generated ${data.length} test case(s)`;
+      case "ir": return `Test plan: ${data.meta?.title ?? ""}`;
+      case "generate": return "Test script generated";
+      case "execute": return data.passed ? "Executed — passed" : "Executed — failed";
+      case "heal": return data.healed ? "Automatically repaired a broken step" : "Attempted a repair — it didn't resolve the failure";
+      default: return "";
+    }
+  } catch { return ""; }
 }
 
 // A phase spanning several internal stages naturally ends up showing the status/data
@@ -59,13 +89,18 @@ function setPhaseFromStage(stage, status, data) {
   if (!li) return;
   li.className = status;
   if (data !== undefined) {
-    const pre = li.querySelector(".output");
-    pre.textContent = JSON.stringify(data, null, 2);
-    pre.classList.remove("hidden");
+    li.querySelector(".summary-text").textContent = summarize(stage, data);
+    const details = li.querySelector(".output");
+    details.querySelector("pre").textContent = JSON.stringify(data, null, 2);
+    details.classList.remove("hidden");
   }
 }
 
 const STATUS_LABEL = { passed: "Passed", failed: "Failed", error: "Error", incomplete: "Incomplete" };
+
+// Test steps can legitimately contain raw markup (the security coverage cases fill fields
+// with literal <script> payloads) — never trust them into innerHTML unescaped.
+const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 async function loadHistory() {
   const res = await fetch("/api/runs");
@@ -80,9 +115,19 @@ async function loadHistory() {
       <span class="hprompt">${r.prompt || "(no prompt)"}</span>
       <span class="hurl">${r.url}</span>
       ${r.hasEvents ? "" : '<span class="hurl">(no detailed log)</span>'}
+      <button type="button" class="history-del" title="Delete this run" aria-label="Delete run">✕</button>
     </li>`).join("");
   historyListEl.querySelectorAll(".history-item:not(.no-detail)").forEach((li) => {
     li.addEventListener("click", () => connectToRun(li.dataset.runId));
+  });
+  historyListEl.querySelectorAll(".history-del").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();          // don't also open the run (the <li> has a click handler)
+      const runId = btn.closest(".history-item").dataset.runId;
+      if (!confirm("Delete this run permanently?")) return;
+      await fetch(`/api/runs/${runId}`, { method: "DELETE" });
+      loadHistory();
+    });
   });
 }
 
@@ -92,19 +137,31 @@ function applyEvent(event, runId) {
     finalResult.classList.remove("hidden");
     const passed = event.data?.passed;
     const partial = event.data?.partial;
+    const healed = event.data?.healed;
     verdictEl.textContent =
       event.stage === "error" ? `⚠️ Pipeline error: ${event.error}` :
+      passed && healed ? "✅ Passed (self-healed — a locator broke and was automatically repaired; see below)" :
       passed ? (partial ? "✅ Passed (partial — verified as far as the flow could be grounded)" : "✅ Passed") :
       "❌ Failed";
+
+    // Plain-English record of what actually ran, so the verdict isn't just a bare badge.
+    const test = event.data?.test;
+    if (test) {
+      testTitleEl.textContent = test.title ?? "";
+      testStepsEl.innerHTML = (test.steps ?? []).map((s) => `<li>${escapeHtml(s)}</li>`).join("");
+      testExpectedEl.textContent = test.expected ? `Expected: ${test.expected}` : "";
+      testSummaryEl.classList.remove("hidden");
+    } else {
+      testSummaryEl.classList.add("hidden");
+    }
 
     // Show the run's screenshot (Playwright captures one on pass and fail).
     const shot = event.data?.screenshotUrl;
     if (shot) {
       screenshotEl.src = shot;
-      screenshotEl.alt = passed ? "result screenshot" : "failure screenshot";
-      screenshotEl.classList.remove("hidden");
+      screenshotFigureEl.classList.remove("hidden");
     } else {
-      screenshotEl.classList.add("hidden");
+      screenshotFigureEl.classList.add("hidden");
     }
 
     traceLinkEl.href = `/runs/${runId}/generated/`;
@@ -135,8 +192,9 @@ async function connectToRun(runId) {
   const generation = ++pollGeneration;
   renderPhases();
   finalResult.classList.add("hidden");
+  testSummaryEl.classList.add("hidden");
   diagnosisEl.textContent = "";
-  screenshotEl.classList.add("hidden");
+  screenshotFigureEl.classList.add("hidden");
   screenshotEl.removeAttribute("src");
 
   let seen = 0;
