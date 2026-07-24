@@ -1,4 +1,5 @@
 import type { Target } from "../schema/ir.js";
+import type { TestCase } from "./testCases.js";
 
 export interface Credentials { username: string; password: string }
 
@@ -35,8 +36,31 @@ export function credentialForTarget(target: Target | undefined, creds: Credentia
   return undefined;
 }
 
+/**
+ * Returns true if credential substitution should be skipped for this case.
+ * Skips for fromPrompt cases and deliberate negative credential test categories.
+ */
+export function shouldSkipCredentialSubstitution(testCase: TestCase): boolean {
+  if (testCase.fromPrompt) return true;
+  const cat = testCase.category;
+  if (!cat) return false;
+  const negativeCategories = new Set([
+    "Invalid password",
+    "Empty password",
+    "Empty identifier",
+    "Malformed email",
+    "SQL injection in login"
+  ]);
+  return negativeCategories.has(cat);
+}
+
 /** Substitute real credentials into an IR's login fill steps, in place. */
-export function applyCredentials(steps: { action: string; target?: Target; value?: string }[], creds: Credentials): void {
+export function applyCredentials(
+  steps: { action: string; target?: Target; value?: string }[],
+  creds: Credentials,
+  testCase?: TestCase
+): void {
+  if (testCase && shouldSkipCredentialSubstitution(testCase)) return;
   for (const step of steps) {
     if (step.action !== "fill") continue;
     const cred = credentialForTarget(step.target, creds);

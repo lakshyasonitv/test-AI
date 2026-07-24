@@ -18,15 +18,17 @@ What a run produces, all persisted under `runs/<id>/`:
 | `01-plan.json` | the LLM's high-level plan |
 | `02-appmodel.json` | the discovered page(s): elements by accessibility role + name, labeled with help from a screenshot |
 | `03-cases.json` | the **full generated coverage suite** — typically 6–11 human-readable test cases (valid path, invalid input, empty fields, boundaries, security). Exactly one is tagged `fromPrompt: true` |
-| `04-ir.json` | the strict JSON test model for the **one case that actually ran** (the contract) — may be `truncated: true` |
-| `generated.spec.ts` | the literal Playwright test, generated with zero LLM involvement |
-| `05-result.json` | the real Playwright execution result |
-| `06-diagnosis.json` | only present on failure: category, explanation, suggested fix |
+| `04-ir.json` | the strict JSON test model for the **primary case** (the contract) — may be `truncated: true` |
+| `generated.spec.ts` | the literal Playwright test for the primary case, generated with zero LLM involvement |
+| `05-result.json` | the real Playwright execution result for the primary case |
+| `06-diagnosis.json` | only present on failure (primary case): category, explanation, suggested fix |
 | `healed/` | only present if a self-heal attempt succeeded: `ir.json` + `generated.spec.ts` for the repaired, re-run test |
+| `07-suite-summary.json` | suite-wide summary: total, passed, failed, truncated counts with per-case status |
+| `cases/` | per-case subdirectories (`case-0`, `case-1`, …), each containing that case's `04-ir.json`, `generated.spec.ts`, `05-result.json`, optionally `06-diagnosis.json`, and `artifacts/` |
 | `events.ndjson` | every stage-progress event, durable, replayable |
-| `artifacts/` | screenshot + trace.zip from the actual browser run |
+| `artifacts/` | screenshot + trace.zip from the primary case's actual browser run |
 
-**The single most important thing to understand about current capability:** `03-cases.json` contains a whole QA-style suite, but **only one of those cases is actually executed** per run — see § 4 for exactly which one, how it's chosen, and what that means for what you can rely on today.
+**The single most important thing to understand about current capability:** `03-cases.json` contains a whole QA-style suite, and **every case in that suite is now executed** — see § 4 for what that means for coverage, known limitations (self-heal is primary-case-only, truncated cases can still pass without assertion), and what to check before trusting a result.
 
 ## 2. Pipeline architecture
 
@@ -162,11 +164,11 @@ The "run this step for real" logic in `liveExtend.ts` and the "emit this step as
 This is the section to read if you're deciding whether to rely on a result. Two different things happen on every run, and they are **not** the same:
 
 1. `testCases.ts` generates a **full coverage suite** (`03-cases.json`) — typically 6–11 cases spanning valid input, invalid input, empty/boundary values, and security (SQL injection, XSS) for every feature discovery found. This is real, useful output.
-2. **Only one of those cases is actually run through a browser.** The rest are written to disk as documentation of what *should* be tested, and nothing more — there's no way today, from the UI or CLI, to pick a different case and run it.
+2. **Every case in that suite is now executed through a real browser.** Each case produces its own per-case artifacts under `cases/<caseId>/` — independent IR, Playwright spec, execution result, and (on failure) diagnosis. A suite-level summary is written to `07-suite-summary.json`.
 
-### Which case runs, and how reliably
+### How cases are selected and executed
 
-The executed case is whichever one is tagged `fromPrompt: true` by the LLM — the literal translation of your request — falling back to the highest-priority taxonomy case only if the model failed to tag one (rare in testing this session, but not structurally impossible; there's no hard guarantee, only a strong prompt instruction plus a safe fallback).
+The suite executor iterates the cases in the order they appear in `03-cases.json`, running each through the full per-case pipeline. The primary case (tagged `fromPrompt: true`) is also executed through the legacy single-case pipeline first — its top-level artifacts (`04-ir.json`, `05-result.json`, etc.) remain unchanged for backward compatibility, and it alone receives bounded self-heal on failure (see § 3). Non-primary cases are executed sequentially without self-heal; if they fail, they are diagnosed and recorded as failed.
 
 **Verified working, with a real executed run as evidence, this session:**
 - **Login with specific, literal credentials you provide** — verified against `the-internet.herokuapp.com` and against a real third-party site (`learnvibes.vercel.app`): the executed test used the exact email/password typed into the prompt, not a placeholder, not a security payload, and reached the intended authenticated state.
@@ -178,12 +180,9 @@ The executed case is whichever one is tagged `fromPrompt: true` by the LLM — t
 **Structurally correct, but not yet observed against a real drifted site:**
 - **Self-healing a broken/renamed locator.** The mechanism (vision, deterministic fallback, bounded LLM re-heal) is implemented and verified at the code level — targeted checks confirm the upsert-vs-throw semantics, the truncation guard, and the category gating all behave correctly — but no run in this session's history actually hit a real selector-drift failure on a live site and healed it end to end. Treat it as "should work," not "has been seen working."
 
-**Generated into the suite, but not something you can currently make the pipeline execute:**
-- Every non-`fromPrompt` case: invalid password, empty fields, malformed email, SQL injection, XSS, signup variants, etc. They're well-formed and readable in `03-cases.json`, but nothing runs them.
-
 **Known-unreliable — don't trust these without checking the artifacts yourself:**
 - **The "Invalid password" taxonomy case, specifically, on the two hardcoded demo hosts** (saucedemo.com, the-internet.herokuapp.com) — if this ever becomes the executed case, its deliberately-wrong password still gets silently overwritten with the real one (§ 3), so it can never actually test what it claims to.
-- **A truncated (partial) result can still end without a terminal assertion.** If live-extend can't reach far enough and the *assertion itself* is what needed the ungrounded page, truncation drops it along with everything after it — the test can report ✅ Passed having verified nothing beyond "some earlier steps didn't throw." Check `meta.truncated` in `04-ir.json` and read what the last step actually is before trusting a partial pass.
+- **~~A truncated (partial) result can still end without a terminal assertion.~~ (FIXED — Phase 2)** The platform now tracks `meta.hasTerminalAssertion` in the IR. If a truncated IR's surviving prefix has no assertion step, the result is forced to `"truncated_no_assertion"` regardless of Playwright's verdict. The acadtracker.vercel.app false-pass scenario is provably fixed. Check `meta.truncated` and `meta.hasTerminalAssertion` in `04-ir.json`; a `"truncated_no_assertion"` status in `05-result.json` means the test ran but verified nothing.
 - **Assertion quality generally is a prompt nudge, not a guarantee.** The rule added in § 3 covers the specific "decorative persistent element" failure mode observed; other bad-assertion shapes aren't ruled out by anything deterministic yet.
 - **Flows needing more than 2 page-hops beyond the entry page**, or a login gate this project doesn't have credentials for and you didn't type your own into the prompt, will genuinely truncate or fail — that's the honest current ceiling of live-extend, not a bug.
 
@@ -195,10 +194,10 @@ The executed case is whichever one is tagged `fromPrompt: true` by the LLM — t
 - Run history (newest 20) with a working delete action.
 
 ### Known, real gaps — found during development, not yet fixed
-1. **Only the top-priority (or `fromPrompt`) test case executes.** The rest of the generated suite is inspectable but never run. This is the single biggest gap between "what this generates" and "what this actually tests."
-2. **Truncated/partial tests can pass without asserting anything**, when the dropped tail included the assertion itself. Confirmed via a real run against `acadtracker.vercel.app`: a test truncated right after login reported ✅ Passed while the actually-requested action (marking attendance) never ran.
-3. **Live-extend can race a single-page app's own client-side auth redirect.** In the same run, a replayed `click "Sign In"` was immediately followed by a navigation with no wait for the SPA's own async redirect to settle, landing back on `/login`.
-4. **Credentials substitution still overwrites the taxonomy's own "Invalid password" case** on the two hardcoded demo hosts (narrower than it used to be — a user's own literal credentials are now protected — but this specific non-`fromPrompt` case is not).
+1. **(CLOSED — Phase 1: Suite Executor) Every case in the suite now executes.** Per-case artifacts are produced under `cases/<caseId>/` and a `07-suite-summary.json` is written. The primary case alone still receives bounded self-heal; non-primary cases are diagnosed on failure but not healed. See also: suggested next step #1 below — the UI has not been updated to display per-case results.
+2. **(CLOSED — Phase 2: Terminal Assertion) Truncated/partial tests can no longer pass without asserting anything.** A new `hasTerminalAssertion` field on the IR meta tracks whether the surviving (post-truncation) step list ends in a real assertion. If truncated and no terminal assertion survived, the result is forced to `"truncated_no_assertion"` regardless of Playwright's verdict — the acadtracker.vercel.app false-pass scenario is provably fixed.
+3. **(CLOSED — Phase 3: Settle-Wait) Live-extend can race a single-page app's own client-side auth redirect.** Resolved by adding a two-phase bounded wait (`waitForAuthSettle`) after auth-triggering actions in both `liveExtend.ts` and inlined helper in `generator.ts`'s emitted specs.
+4. **(CLOSED — Phase 4: Intent-Aware Credentials) Credentials substitution still overwrites the taxonomy's own "Invalid password" case** on the two hardcoded demo hosts. Resolved by adding a `category` metadata field to `TestCase` and implementing `shouldSkipCredentialSubstitution` in `credentials.ts` to protect deliberate negative-credential test categories.
 5. **No authentication on the server.** Anyone with a tunnel link can start runs (spends API quota) and browse every past run's artifacts under `/runs`.
 6. **Credentials only cover built-in public demo sites** beyond what a user types directly into the prompt.
 7. **Gemini model/key availability is inconsistent across the configured key pool.** Verified empirically: different keys have access to different models, and the `/v1beta/models` list endpoint doesn't reliably predict what a real `generateContent` call will accept.
@@ -282,10 +281,10 @@ runs/<id>/                   created at runtime, gitignored — see § 1 table
 
 ## 6. Suggested next steps, in priority order
 
-1. **Execute more than one test case.** The single biggest gap between what this generates and what it actually verifies — the coverage suite already exists in `03-cases.json`, nothing downstream consumes more than one entry.
-2. **Terminal-assertion requirement for truncated IRs.** Closes the remaining false-positive path in § 4 — a trust bug.
-3. **Settle-wait after auth-triggering actions** in both `liveExtend.ts` and `generator.ts`'s emitted specs — likely fixes the SPA-redirect race that surfaced this.
-4. **Give `applyCredentials` intent-awareness** so it stops overwriting the taxonomy's own deliberately-wrong "Invalid password" case on the two demo hosts.
+1. **[DONE — Phase 1] Execute more than one test case.** The suite runner now executes every case in `03-cases.json` and produces per-case artifacts under `cases/<caseId>/` plus `07-suite-summary.json`. Next: update the UI to display per-case results.
+2. **[DONE — Phase 2] Terminal-assertion requirement for truncated IRs.** The false-positive path is closed: `hasTerminalAssertion` on IR meta, result status forced to `"truncated_no_assertion"` when no terminal assertion survived. Next: the UI should display this status distinctly.
+3. **[DONE — Phase 3] Settle-wait after auth-triggering actions** in both `liveExtend.ts` and `generator.ts`'s emitted specs — fixes the SPA-redirect race that surfaced this. `authSettle.ts` provides `isAuthTriggeringStep()` (heuristic on `target.name`) and `waitForAuthSettle()` (two-phase bounded wait). The generator now correctly inlines the helper into generated specs.
+4. **[DONE — Phase 4] Give `applyCredentials` intent-awareness** so it stops overwriting the taxonomy's own deliberately-wrong "Invalid password" case on the two demo hosts.
 5. **Basic auth / access control** before sharing tunnel links beyond a trusted audience.
 6. **Real-site credential handling** beyond "typed into the prompt" — the env-var + `process.env`-reference path already sketched in `credentials.ts`.
 7. **Observe a real self-heal end to end** against a genuinely drifted live site, not just the targeted code-level checks that exist today.

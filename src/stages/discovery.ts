@@ -4,6 +4,28 @@ import { parseJson } from "../llm/json.js";
 import { AppModel } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 
+/**
+ * Discover multiple explicit pages and merge them into one AppModel.
+ * Calls discover() once per URL (reusing its cache and modelFromAria labeling),
+ * then merges using the same spread-append pattern as liveExtend.ts's extendAppModel.
+ * Deduplicates by URL — if the same URL appears twice, it's only modeled once.
+ */
+export async function discoverPages(urls: string[]): Promise<AppModel> {
+  const seen = new Set<string>();
+  let merged: AppModel = { baseUrl: urls[0], pages: [] };
+
+  for (const url of urls) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const model = await discover(url);
+    // Merge pattern from liveExtend.ts extendAppModel — append new pages to existing.
+    const newPages = model.pages.filter((p) => !merged.pages.some((mp) => mp.url === p.url));
+    merged = AppModel.parse({ ...merged, pages: [...merged.pages, ...newPages] });
+  }
+
+  return merged;
+}
+
 export async function discover(url: string): Promise<AppModel> {
   const cached = cacheGet(url);
   if (cached) return cached;
@@ -11,8 +33,7 @@ export async function discover(url: string): Promise<AppModel> {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
-    const response = await page.goto(url, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(1000);
+    const response = await page.goto(url, { waitUntil: "networkidle", timeout: 15000 });
 
     // Fail fast on a dead entry URL. Without this, a 404/500 page becomes a valid-looking
     // AppModel and the downstream LLMs hallucinate a UI on top of an error page (seen in

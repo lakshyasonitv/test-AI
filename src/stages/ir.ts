@@ -1,10 +1,16 @@
 import { groq } from "../llm/groq.js";
 import { parseJson } from "../llm/json.js";
-import { IR } from "../schema/ir.js";
+import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
-import { extendAppModel } from "./liveExtend.js";
-import { credentialsFor, applyCredentials } from "./credentials.js";
+import { extendAppModel, refreshPageModel } from "./liveExtend.js";
+import { credentialsFor, applyCredentials, shouldSkipCredentialSubstitution } from "./credentials.js";
+
+/** Return type for toIR that includes the updated AppModel after live-extension. */
+export interface IRResult {
+  ir: IR;
+  updatedAppModel: AppModel;
+}
 
 const ASSERTION_KEYS = [
   "text_contains", "text_equals", "url_contains",
@@ -38,6 +44,7 @@ function normalizeIR(raw: any): any {
     if (step == null || typeof step !== "object") continue;
 
     if (typeof step.id === "number") step.id = String(step.id);
+    if (typeof step.value === "number") step.value = String(step.value);
     if (step.target === "" || step.target === null) delete step.target;
     if (step.value === "" ) delete step.value;
 
@@ -103,9 +110,20 @@ export function groundingError(ir: IR, appModel: AppModel): { index: number; mes
   return null;
 }
 
+/**
+ * Check whether the surviving (after truncation) step list ends in a real assertion.
+ * An assertion earlier in the sequence with non-assertion steps after it does not count
+ * — only the final step's action discriminator determines whether the test actually
+ * verified anything before the ungrounded tail was cut off.
+ */
+export function hasTerminalAssertion(steps: Step[]): boolean {
+  if (steps.length === 0) return false;
+  return steps[steps.length - 1].action === "assert";
+}
+
 export async function toIR(
   testCase: TestCase, appModel: AppModel, sourcePrompt: string, entryUrl: string
-): Promise<IR> {
+): Promise<IRResult> {
   // Compute these ourselves rather than trust the model: baseUrl must be the origin
   // (generator.ts appends relative step paths to it), and entryPath is where the
   // actual page under test lives — telling the model both up front heads off the
@@ -160,10 +178,11 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // carry the user's own literal values on purpose (their real email/password, or a
   // taxonomy-style deliberately-wrong one) — silently swapping in the demo account would
   // just relocate the "system overrides what I asked for" bug to a different field.
-  const creds = testCase.fromPrompt ? undefined : credentialsFor(entryUrl);
+  const creds = (testCase.fromPrompt || shouldSkipCredentialSubstitution(testCase)) ? undefined : credentialsFor(entryUrl);
   const finalize = (ir: IR): IR => {
     ir.meta.baseUrl = origin;
-    if (creds) applyCredentials(ir.steps, creds);
+    ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
+    if (creds) applyCredentials(ir.steps, creds, testCase);
     return ir;
   };
 
@@ -185,7 +204,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
 
     parsed.data.meta.baseUrl = origin;
     const ungrounded = groundingError(parsed.data, currentModel);
-    if (!ungrounded) return finalize(parsed.data);
+    if (!ungrounded) return { ir: finalize(parsed.data), updatedAppModel: currentModel };
 
     lastErr = ungrounded.message;
     const prefix = parsed.data.steps.slice(0, ungrounded.index);
@@ -201,7 +220,21 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         console.log(`[ir] live-extend: replayed ${prefix.length} step(s) past "${ungrounded.message.split(",")[0]}" — app model ${before} -> ${currentModel.pages.length} pages (${currentModel.pages.at(-1)?.url})`);
         continue;
       } catch (err: any) {
-        lastErr = `could not reach the state needed for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;
+        // If extendAppModel fails because the URL is already known (SPA state changed),
+        // fall back to refreshPageModel to capture dynamic content on the same page.
+        if (err?.message?.includes("already in the model") && prefix.length > 0) {
+          try {
+            const before = currentModel.pages.length;
+            currentModel = await refreshPageModel(currentModel, prefix, creds);
+            extensions++;
+            console.log(`[ir] refresh-page: refreshed page model at step ${prefix.length} — app model ${before} -> ${currentModel.pages.length} pages`);
+            continue;
+          } catch (refreshErr: any) {
+            lastErr = `could not refresh state for step ${parsed.data.steps[ungrounded.index]?.id}: ${refreshErr?.message ?? refreshErr}`;
+          }
+        } else {
+          lastErr = `could not reach the state needed for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;
+        }
       }
     }
 
@@ -210,8 +243,11 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     // nothing. Only a fully ungrounded IR (empty prefix) falls through to a hard error.
     if (prefix.length) {
       const truncated: IR = { ...parsed.data, steps: prefix };
-      truncated.meta = { ...parsed.data.meta, truncated: true, truncationNote: lastErr };
-      return finalize(truncated);
+      truncated.meta = {
+        ...parsed.data.meta, truncated: true, truncationNote: lastErr,
+        hasTerminalAssertion: hasTerminalAssertion(prefix),
+      };
+      return { ir: finalize(truncated), updatedAppModel: currentModel };
     }
   }
   throw new Error(`IR failed schema validation after retry: ${lastErr}`);

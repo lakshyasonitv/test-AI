@@ -39,7 +39,7 @@ export interface RunSummary {
   runId: string;
   url: string;
   prompt: string;
-  status: "passed" | "failed" | "error" | "incomplete";
+  status: "passed" | "failed" | "error" | "incomplete" | "truncated_no_assertion";
   startedAt: number;
   /** False for runs that predate events.ndjson — nothing to replay via SSE for those. */
   hasEvents: boolean;
@@ -74,12 +74,19 @@ export function listRuns(): RunSummary[] {
       const last = events[events.length - 1];
       let status: RunSummary["status"] = "incomplete";
       if (last?.stage === "done") {
-        status = (last.data as { passed?: boolean } | undefined)?.passed ? "passed" : "failed";
+        const doneData = last.data as { passed?: boolean; status?: string } | undefined;
+        if (doneData?.status === "truncated_no_assertion") {
+          status = "truncated_no_assertion";
+        } else {
+          status = doneData?.passed ? "passed" : "failed";
+        }
       } else if (last?.stage === "error") {
         status = "error";
       } else if (!events.length) {
-        const result = readJson(runId, "05-result.json") as { passed?: boolean } | undefined;
-        if (result) status = result.passed ? "passed" : "failed";
+        const result = readJson(runId, "05-result.json") as { passed?: boolean; status?: string } | undefined;
+        if (result) {
+          status = result.status === "truncated_no_assertion" ? "truncated_no_assertion" : result.passed ? "passed" : "failed";
+        }
       }
 
       return {

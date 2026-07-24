@@ -9,44 +9,47 @@
  * small and enumerable. Add a concept here when a new feature type shows up in real prompts;
  * graduate to a learned store only if this table stops keeping up (it won't for a long time).
  */
-export interface Category { title: string; priority: "critical" | "high" | "medium" | "low"; intent: string; }
+export type TestCategory = "functional" | "security";
+export type ScopeFilter = TestCategory;
+export const ALL_SCOPES: TestCategory[] = ["functional", "security"];
+export interface Category { title: string; priority: "critical" | "high" | "medium" | "low"; intent: string; scope: TestCategory; }
 
 const STRATEGY: Record<string, Category[]> = {
   login: [
-    { title: "Valid credentials",       priority: "high",     intent: "log in with valid credentials; expect to reach the authenticated area / dashboard" },
-    { title: "Invalid password",        priority: "high",     intent: "valid identifier + wrong password; expect an error and staying logged out" },
-    { title: "Empty identifier",        priority: "medium",   intent: "submit with the email/username field blank; expect a validation error" },
-    { title: "Empty password",          priority: "medium",   intent: "submit with the password field blank; expect a validation error" },
-    { title: "Malformed email",         priority: "low",      intent: "an email without '@'; expect a format validation error" },
-    { title: "SQL injection in login",  priority: "critical", intent: "enter ' OR '1'='1 as the identifier; expect rejection, no authentication bypass" },
+    { title: "Valid credentials",       priority: "high",     intent: "log in with valid credentials; expect to reach the authenticated area / dashboard", scope: "functional" },
+    { title: "Invalid password",        priority: "high",     intent: "valid identifier + wrong password; expect an error and staying logged out", scope: "functional" },
+    { title: "Empty identifier",        priority: "medium",   intent: "submit with the email/username field blank; expect a validation error", scope: "functional" },
+    { title: "Empty password",          priority: "medium",   intent: "submit with the password field blank; expect a validation error", scope: "functional" },
+    { title: "Malformed email",         priority: "low",      intent: "an email without '@'; expect a format validation error", scope: "functional" },
+    { title: "SQL injection in login",  priority: "critical", intent: "enter ' OR '1'='1 as the identifier; expect rejection, no authentication bypass", scope: "security" },
   ],
   signup: [
-    { title: "Valid registration",      priority: "high",     intent: "register with valid, unique details; expect success/confirmation" },
-    { title: "Existing account",        priority: "high",     intent: "register with an email that already exists; expect a 'already registered' error" },
-    { title: "Password mismatch",       priority: "medium",   intent: "confirm-password differs from password; expect a mismatch error" },
-    { title: "Weak password",           priority: "medium",   intent: "a too-short/weak password; expect a strength/validation error" },
-    { title: "Empty required fields",   priority: "medium",   intent: "submit with required fields blank; expect validation errors" },
+    { title: "Valid registration",      priority: "high",     intent: "register with valid, unique details; expect success/confirmation", scope: "functional" },
+    { title: "Existing account",        priority: "high",     intent: "register with an email that already exists; expect a 'already registered' error", scope: "functional" },
+    { title: "Password mismatch",       priority: "medium",   intent: "confirm-password differs from password; expect a mismatch error", scope: "functional" },
+    { title: "Weak password",           priority: "medium",   intent: "a too-short/weak password; expect a strength/validation error", scope: "functional" },
+    { title: "Empty required fields",   priority: "medium",   intent: "submit with required fields blank; expect validation errors", scope: "functional" },
   ],
   search: [
-    { title: "Valid query",             priority: "high",     intent: "search a term expected to have results; expect relevant results shown" },
-    { title: "No-results query",        priority: "medium",   intent: "search gibberish unlikely to match; expect an empty/'no results' state, not an error" },
-    { title: "Empty query",             priority: "low",      intent: "submit search with no input; expect it handled gracefully" },
-    { title: "Special characters",      priority: "medium",   intent: "search with <script> / SQL-ish characters; expect them handled safely, no injection" },
+    { title: "Valid query",             priority: "high",     intent: "search a term expected to have results; expect relevant results shown", scope: "functional" },
+    { title: "No-results query",        priority: "medium",   intent: "search gibberish unlikely to match; expect an empty/'no results' state, not an error", scope: "functional" },
+    { title: "Empty query",             priority: "low",      intent: "submit search with no input; expect it handled gracefully", scope: "functional" },
+    { title: "Special characters",      priority: "medium",   intent: "search with <script> / SQL-ish characters; expect them handled safely, no injection", scope: "security" },
   ],
   checkout: [
-    { title: "Complete a purchase",     priority: "high",     intent: "add an item and complete checkout with valid details; expect an order confirmation" },
-    { title: "Empty cart checkout",     priority: "medium",   intent: "attempt checkout with an empty cart; expect it blocked or an empty-cart message" },
-    { title: "Missing shipping info",   priority: "medium",   intent: "submit checkout with required address fields blank; expect validation errors" },
-    { title: "Invalid card",            priority: "high",     intent: "enter an invalid/expired card number; expect a payment error, order not placed" },
+    { title: "Complete a purchase",     priority: "high",     intent: "add an item and complete checkout with valid details; expect an order confirmation", scope: "functional" },
+    { title: "Empty cart checkout",     priority: "medium",   intent: "attempt checkout with an empty cart; expect it blocked or an empty-cart message", scope: "functional" },
+    { title: "Missing shipping info",   priority: "medium",   intent: "submit checkout with required address fields blank; expect validation errors", scope: "functional" },
+    { title: "Invalid card",            priority: "high",     intent: "enter an invalid/expired card number; expect a payment error, order not placed", scope: "functional" },
   ],
   cart: [
-    { title: "Add item to cart",        priority: "high",     intent: "add an item; expect the cart count/contents to update" },
-    { title: "Remove item from cart",   priority: "medium",   intent: "remove an item from the cart; expect it to disappear and totals to update" },
+    { title: "Add item to cart",        priority: "high",     intent: "add an item; expect the cart count/contents to update", scope: "functional" },
+    { title: "Remove item from cart",   priority: "medium",   intent: "remove an item from the cart; expect it to disappear and totals to update", scope: "functional" },
   ],
   contact: [
-    { title: "Valid submission",        priority: "medium",   intent: "fill the form with valid values and submit; expect a success/thank-you state" },
-    { title: "Empty required fields",   priority: "medium",   intent: "submit with required fields blank; expect validation errors" },
-    { title: "Malformed email",         priority: "low",      intent: "an email without '@'; expect a format validation error" },
+    { title: "Valid submission",        priority: "medium",   intent: "fill the form with valid values and submit; expect a success/thank-you state", scope: "functional" },
+    { title: "Empty required fields",   priority: "medium",   intent: "submit with required fields blank; expect validation errors", scope: "functional" },
+    { title: "Malformed email",         priority: "low",      intent: "an email without '@'; expect a format validation error", scope: "functional" },
   ],
 };
 
@@ -63,7 +66,7 @@ const ALIASES: Record<string, keyof typeof STRATEGY> = {
 
 // Applies to any input/form page whatever the concept — the floor of coverage.
 const GENERIC: Category[] = [
-  { title: "Submit with all required fields empty", priority: "medium", intent: "submit the primary form with required fields blank; expect validation, not a silent success" },
+  { title: "Submit with all required fields empty", priority: "medium", intent: "submit the primary form with required fields blank; expect validation, not a silent success", scope: "functional" },
 ];
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
@@ -91,6 +94,33 @@ export function unmatchedConcepts(concepts: string[]): string[] {
   return concepts.filter(c => !ALIASES[norm(c)]);
 }
 
+/** Classify a user prompt into a test-type scope using keyword heuristics.
+ *  Returns ALL_SCOPES when no scope signal is present (full taxonomy = no filtering). */
+export function classifyScope(prompt: string): ScopeFilter[] {
+  const p = norm(prompt);
+  const wantsSecurity = /\b(security|inject|sql|xss|vulnerab|exploit|penetrat)\b/.test(p);
+  const wantsFunctional = /\b(functional|functionalit|just check|verify that|does .+ work|smoke|happy path)\b/.test(p);
+  if (wantsSecurity && !wantsFunctional) return ["security"];
+  if (wantsFunctional && !wantsSecurity) return ["functional"];
+  if (wantsSecurity && wantsFunctional) return ["functional", "security"];
+  return ALL_SCOPES;
+}
+
+/** Filter a list of test cases to only those whose category scope matches the given scope.
+ *  Cases with no category are kept (they can't be classified, so default to included).
+ *  The fromPrompt case is always kept regardless of scope. */
+export function filterByScope<T extends { category?: string; fromPrompt?: boolean }>(cases: T[], scope: ScopeFilter[]): T[] {
+  return cases.filter(c => {
+    if (c.fromPrompt) return true;
+    if (!c.category) return true;
+    const cat = ALL_CATEGORIES.find(sc => sc.title === c.category);
+    return cat ? scope.includes(cat.scope) : true;
+  });
+}
+
+/** Flat list of all defined categories with their scope, for lookup by title. */
+const ALL_CATEGORIES: Category[] = Object.values(STRATEGY).flat().concat(GENERIC);
+
 // One runnable check: node --import tsx src/kb/testStrategy.ts
 if (process.argv[1]?.replace(/\\/g, "/").endsWith("src/kb/testStrategy.ts")) {
   const login = strategyFor(["Sign In"]);
@@ -100,5 +130,27 @@ if (process.argv[1]?.replace(/\\/g, "/").endsWith("src/kb/testStrategy.ts")) {
   if (generic.length !== GENERIC.length) throw new Error("FAIL: an unknown concept should fall back to exactly the generic floor");
   const deduped = strategyFor(["Login", "Sign In"]); // same concept twice → no dupes
   if (deduped.length !== login.length) throw new Error("FAIL: duplicate concepts must not duplicate categories");
-  console.log(`OK: login suite = ${login.length} categories, generic floor = ${generic.length}, dedupe holds`);
+
+  // Scope classification tests
+  if (JSON.stringify(classifyScope("run functional tests only")) !== '["functional"]') throw new Error("FAIL: 'functional tests only' should classify as functional");
+  if (JSON.stringify(classifyScope("test for SQL injection vulnerabilities")) !== '["security"]') throw new Error("FAIL: 'SQL injection vulnerabilities' should classify as security");
+  if (JSON.stringify(classifyScope("test the login page")) !== JSON.stringify(ALL_SCOPES)) throw new Error("FAIL: neutral prompt should classify as ALL_SCOPES");
+  if (JSON.stringify(classifyScope("functional and security testing")) !== '["functional","security"]') throw new Error("FAIL: both signals should return both scopes");
+
+  // Scope filtering tests
+  const mockCases = [
+    { category: "Valid credentials", fromPrompt: false },
+    { category: "SQL injection in login", fromPrompt: false },
+    { fromPrompt: true, category: "Valid credentials" },
+    { category: undefined, fromPrompt: false },
+  ];
+  const funcOnly = filterByScope(mockCases, ["functional"]);
+  if (funcOnly.length !== 3) throw new Error(`FAIL: functional filter should keep 3 cases (func + fromPrompt + uncategorized), got ${funcOnly.length}`);
+  if (funcOnly.some(c => c.category === "SQL injection in login")) throw new Error("FAIL: security case should be filtered out by functional scope");
+  const secOnly = filterByScope(mockCases, ["security"]);
+  if (secOnly.length !== 3) throw new Error(`FAIL: security filter should keep 3 cases (security + fromPrompt + uncategorized), got ${secOnly.length}`);
+  const allCases = filterByScope(mockCases, ALL_SCOPES);
+  if (allCases.length !== 4) throw new Error(`FAIL: ALL_SCOPES filter should keep all 4 cases, got ${allCases.length}`);
+
+  console.log(`OK: login suite = ${login.length} categories, generic floor = ${generic.length}, dedupe holds, scope & filter OK`);
 }

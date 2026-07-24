@@ -4,6 +4,7 @@ import type { Step } from "../schema/ir.js";
 import { modelFromAria } from "./discovery.js";
 import { resolveLive } from "./targetResolver.js";
 import { credentialForTarget, type Credentials } from "./credentials.js";
+import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -44,6 +45,13 @@ async function replayAndSnapshot(
     const page = await browser.newPage();
     for (const step of prefix) {
       await runStepLive(page, step, model.baseUrl, creds);
+      // After an auth‑triggering step (click/press on a login‑verb button),
+      // wait for the SPA's own async redirect to settle before evaluating
+      // whether the target page was reached.  Bounded so a hung redirect
+      // doesn't stall the whole run.
+      if (isAuthTriggeringStep(step)) {
+        await waitForAuthSettle(page);
+      }
     }
     // Let navigation triggered by the last step settle before snapshotting, else we'd
     // capture the pre-navigation page. Bounded so a site with long-lived connections
