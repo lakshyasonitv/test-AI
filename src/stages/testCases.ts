@@ -3,8 +3,8 @@ import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import type { Plan } from "./planner.js";
 import type { AppModel } from "../schema/appModel.js";
-import { strategyFor, unmatchedConcepts } from "../kb/testStrategy.js";
-
+import { strategyFor, unmatchedConcepts } from "../kb/defaultStrategy.js";
+import { buildRagContext } from "../kb/rag/context.js";
 // Models sometimes ignore case ("High") or return an array where a string was asked for
 // ("expected": [...]) — normalize before validating rather than rejecting valid content.
 const Priority = z.preprocess(
@@ -37,12 +37,26 @@ export type TestCase = z.infer<typeof TestCase>;
 // hallucinated element from one on a page discovery hasn't reached yet — it just killed
 // legitimate multi-page cases before they got to the stage that can resolve them. ir.ts's
 // groundingError (exact role+name) plus extendAppModel is the single grounding authority.
-export async function toTestCases(p: Plan, appModel: AppModel): Promise<TestCase[]> {
-  // A human QA engineer doesn't stop at the happy path. Pull the standard coverage
+export async function toTestCases(p: Plan, appModel: AppModel, rawPrompt: string): Promise<TestCase[]> {  // A human QA engineer doesn't stop at the happy path. Pull the standard coverage
   // categories for whatever features discovery found, and require one case per category —
   // this is what turns "test the login" (one bare case before) into a real suite.
   const concepts = [...new Set(appModel.pages.flatMap(pg => pg.concepts))];
   const categories = strategyFor(concepts);
+
+  let ragContext = "";
+try {
+  ragContext = await buildRagContext({
+    url: appModel.baseUrl,
+    userPrompt: rawPrompt,
+    concepts,
+  });
+} catch (err: any) {
+  // RAG is an enhancement, not a hard dependency — a failed embedding call (rate limit,
+  // network blip, expired key) should degrade to "no extra context" for this run, not
+  // fail the entire test-generation stage. ragContext stays "" and the prompt template
+  // below already handles that case cleanly (no section gets inserted).
+  console.warn(`RAG context unavailable, continuing without it: ${err?.message ?? err}`);
+}
   const strategyList = categories.map(c => `- [${c.priority}] ${c.title}: ${c.intent}`).join("\n");
   const gaps = unmatchedConcepts(concepts);
 
@@ -57,6 +71,15 @@ It is a KNOWN-RELIABLE FLOOR, not the ceiling of what to test — it exists beca
 proved that asking for coverage with no guidance produces one bare happy-path case and nothing
 else. Produce at least one case per applicable checklist item, using the tag shown as that
 case's "priority".
+
+Additional retrieved testing knowledge may also be provided below the checklist (security
+patterns, accessibility requirements, edge cases, validation rules, or page-specific scenarios
+drawn from a QA knowledge base). Treat it with the same weight as the checklist: produce a
+grounded case for anything relevant to this page's concepts that isn't already covered by the
+checklist or your own first-principles reasoning. Do not just restate the retrieved text as a
+case title — translate it into a concrete, steps-based case using this application model's
+actual elements, the same way you would for a checklist item.
+
 
 The checklist does not cover every kind of feature. For EVERY concept in the application model
 — whether or not it's on the checklist — additionally reason from first principles using these
@@ -106,6 +129,7 @@ Application model: ${JSON.stringify(appModel)}
 Coverage checklist floor (produce one grounded case per applicable item):
 ${strategyList}
 ${gapsLine}
+${ragContext ? `\n${ragContext}\n` : ""}
 Return JSON array: [ { "title","priority","feature","steps":string[],"expected","fromPrompt" } ]`;
 
   let lastErr = "";

@@ -65,7 +65,7 @@ export async function runPipeline(
 
     const thePlan = await step("plan", "01-plan.json", () => plan(prompt, url));
     const appModel = await step("discovery", "02-appmodel.json", () => discover(url));
-    const cases = await step("testcases", "03-cases.json", () => toTestCases(thePlan, appModel));
+    const cases = await step("testcases", "03-cases.json", () => toTestCases(thePlan, appModel, prompt));
 
     // Prefer the case tagged as the direct translation of the user's own request over pure
     // severity ranking — "priority" orders coverage cases for an eventual multi-case run, but
