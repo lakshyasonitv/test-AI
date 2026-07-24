@@ -122,7 +122,11 @@ From `PROJECT_OVERVIEW.md` §4 — restated here because a coding agent must not
 
 1. Only the top-priority / `fromPrompt` case executes; the rest of the suite is generated but never run.
 2. A truncated IR can still "pass" if the dropped tail contained the only assertion.
+<<<<<<< HEAD
 3. Live-extend can race a SPA's own client-side auth redirect (no settle-wait after auth actions).
+=======
+3. **(CLOSED — Phase 3: Auth Settle-Wait)** Live-extend can race a SPA's own client-side auth redirect. A bounded wait for URL change → network idle is now inserted after any auth-triggering step in both `liveExtend.ts`'s replay and `generator.ts`'s emitted spec.
+>>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
 4. Credential substitution still overwrites the taxonomy's own deliberately-wrong "Invalid password" case on the two hardcoded demo hosts.
 5. No server authentication — anyone with a tunnel link can start runs and browse all run artifacts.
 6. Credentials only cover built-in demo hosts, beyond whatever the user types directly into the prompt.
@@ -189,7 +193,10 @@ User Prompt
 
 | Current concept | Target concept | Why the change |
 |---|---|---|
+<<<<<<< HEAD
 | In-process ordered plan | `Crawl Directive` | Schema contract defining the crawl entry point, same-origin scoping constraint, limits (max depth/pages), and intent hints. See [crawlDirective.ts (schema)](file:///c:/Users/Garvit%20Khandelwal/Desktop/test-automation-copy/test-automation-copy/ai-test-platform/src/schema/crawlDirective.ts) and [crawlDirective.ts (stage)](file:///c:/Users/Garvit%20Khandelwal/Desktop/test-automation-copy/test-automation-copy/ai-test-platform/src/stages/crawlDirective.ts). |
+=======
+>>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
 | Single-URL `Discovery` per run | `Deterministic Crawler` + `SiteGraph` | Today, discovery only ever knows about the entry page (plus whatever `liveExtend` reaches reactively, on demand, for one selected case). The target crawler builds a full, deterministic structural map of the application *up front*, so coverage analysis has the whole site to reason about, not just the pages one lucky IR happened to reach. |
 | Primary-case selection (run exactly one case) | `Suite Executor` (run the whole generated suite) | This directly closes known-gap #1 in §2.4 — the single biggest tracked gap today. |
 | `groundingError()` invoked reactively inside IR generation | `Grounder` as its own pipeline stage, operating against the `SiteGraph` | Separates "does this suite make sense against the whole app" from "does this one IR's targets resolve" — the same grounding discipline, applied earlier and against more complete information, catching invalid targets before IR generation instead of during it. |

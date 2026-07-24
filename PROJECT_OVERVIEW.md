@@ -179,6 +179,10 @@ The suite executor iterates the cases in the order they appear in `03-cases.json
 
 **Structurally correct, but not yet observed against a real drifted site:**
 - **Self-healing a broken/renamed locator.** The mechanism (vision, deterministic fallback, bounded LLM re-heal) is implemented and verified at the code level — targeted checks confirm the upsert-vs-throw semantics, the truncation guard, and the category gating all behave correctly — but no run in this session's history actually hit a real selector-drift failure on a live site and healed it end to end. Treat it as "should work," not "has been seen working."
+<<<<<<< HEAD
+=======
+- **Auth settle-wait for SPA redirects.** After an auth-triggering step (click/press on a button matching login/submit vocabulary), a bounded wait for URL change → network idle is now inserted in both `liveExtend.ts`'s replay and `generator.ts`'s emitted spec. The mechanism is deterministic and mirrors the same logic in both paths, but has not been observed end to end against a real SPA with the race condition. Treat it as "should fix the known race."
+>>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
 
 **Known-unreliable — don't trust these without checking the artifacts yourself:**
 - **The "Invalid password" taxonomy case, specifically, on the two hardcoded demo hosts** (saucedemo.com, the-internet.herokuapp.com) — if this ever becomes the executed case, its deliberately-wrong password still gets silently overwritten with the real one (§ 3), so it can never actually test what it claims to.
@@ -196,8 +200,13 @@ The suite executor iterates the cases in the order they appear in `03-cases.json
 ### Known, real gaps — found during development, not yet fixed
 1. **(CLOSED — Phase 1: Suite Executor) Every case in the suite now executes.** Per-case artifacts are produced under `cases/<caseId>/` and a `07-suite-summary.json` is written. The primary case alone still receives bounded self-heal; non-primary cases are diagnosed on failure but not healed. See also: suggested next step #1 below — the UI has not been updated to display per-case results.
 2. **(CLOSED — Phase 2: Terminal Assertion) Truncated/partial tests can no longer pass without asserting anything.** A new `hasTerminalAssertion` field on the IR meta tracks whether the surviving (post-truncation) step list ends in a real assertion. If truncated and no terminal assertion survived, the result is forced to `"truncated_no_assertion"` regardless of Playwright's verdict — the acadtracker.vercel.app false-pass scenario is provably fixed.
+<<<<<<< HEAD
 3. **(CLOSED — Phase 3: Settle-Wait) Live-extend can race a single-page app's own client-side auth redirect.** Resolved by adding a two-phase bounded wait (`waitForAuthSettle`) after auth-triggering actions in both `liveExtend.ts` and inlined helper in `generator.ts`'s emitted specs.
 4. **(CLOSED — Phase 4: Intent-Aware Credentials) Credentials substitution still overwrites the taxonomy's own "Invalid password" case** on the two hardcoded demo hosts. Resolved by adding a `category` metadata field to `TestCase` and implementing `shouldSkipCredentialSubstitution` in `credentials.ts` to protect deliberate negative-credential test categories.
+=======
+3. **(CLOSED — Phase 3: Auth Settle-Wait) Live-extend can race a single-page app's own client-side auth redirect.** After an auth-triggering step (click/press on a button whose accessible name matches login/submit vocabulary), a bounded wait for URL change → network idle is now inserted in both `liveExtend.ts`'s replay and `generator.ts`'s emitted spec. See `stages/authSettle.ts`.
+4. **Credentials substitution still overwrites the taxonomy's own "Invalid password" case** on the two hardcoded demo hosts (narrower than it used to be — a user's own literal credentials are now protected — but this specific non-`fromPrompt` case is not).
+>>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
 5. **No authentication on the server.** Anyone with a tunnel link can start runs (spends API quota) and browse every past run's artifacts under `/runs`.
 6. **Credentials only cover built-in public demo sites** beyond what a user types directly into the prompt.
 7. **Gemini model/key availability is inconsistent across the configured key pool.** Verified empirically: different keys have access to different models, and the `/v1beta/models` list endpoint doesn't reliably predict what a real `generateContent` call will accept.
@@ -283,8 +292,13 @@ runs/<id>/                   created at runtime, gitignored — see § 1 table
 
 1. **[DONE — Phase 1] Execute more than one test case.** The suite runner now executes every case in `03-cases.json` and produces per-case artifacts under `cases/<caseId>/` plus `07-suite-summary.json`. Next: update the UI to display per-case results.
 2. **[DONE — Phase 2] Terminal-assertion requirement for truncated IRs.** The false-positive path is closed: `hasTerminalAssertion` on IR meta, result status forced to `"truncated_no_assertion"` when no terminal assertion survived. Next: the UI should display this status distinctly.
+<<<<<<< HEAD
 3. **[DONE — Phase 3] Settle-wait after auth-triggering actions** in both `liveExtend.ts` and `generator.ts`'s emitted specs — fixes the SPA-redirect race that surfaced this. `authSettle.ts` provides `isAuthTriggeringStep()` (heuristic on `target.name`) and `waitForAuthSettle()` (two-phase bounded wait). The generator now correctly inlines the helper into generated specs.
 4. **[DONE — Phase 4] Give `applyCredentials` intent-awareness** so it stops overwriting the taxonomy's own deliberately-wrong "Invalid password" case on the two demo hosts.
+=======
+3. **[DONE — Phase 3] Settle-wait after auth-triggering actions** — inserted in both `liveExtend.ts`'s replay and `generator.ts`'s emitted specs. Closes the SPA-redirect race. Next: the UI does not yet need changes for this phase, but if per-case results now show fewer truncated logs for login flows that previously raced, that's the intended effect.
+4. **Give `applyCredentials` intent-awareness** so it stops overwriting the taxonomy's own deliberately-wrong "Invalid password" case on the two demo hosts.
+>>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
 5. **Basic auth / access control** before sharing tunnel links beyond a trusted audience.
 6. **Real-site credential handling** beyond "typed into the prompt" — the env-var + `process.env`-reference path already sketched in `credentials.ts`.
 7. **Observe a real self-heal end to end** against a genuinely drifted live site, not just the targeted code-level checks that exist today.
