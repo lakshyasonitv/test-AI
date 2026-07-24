@@ -41,6 +41,10 @@ export const IR = z.object({
     // prefix — the test is real but partial. Optional so the model never has to emit them.
     truncated: z.boolean().optional(),
     truncationNote: z.string().optional(),
+    // True when the surviving (post-truncation) step list ends in an assertion step.
+    // Only meaningful when truncated is true — a truncated IR without a terminal assertion
+    // cannot report "passed" because the dropped tail may have contained the only assertion.
+    hasTerminalAssertion: z.boolean().optional(),
   }),
   steps: z.array(Step).min(1),
 });

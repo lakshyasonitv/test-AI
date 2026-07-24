@@ -1,6 +1,6 @@
 import { groq } from "../llm/groq.js";
 import { parseJson } from "../llm/json.js";
-import { IR } from "../schema/ir.js";
+import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
 import { extendAppModel } from "./liveExtend.js";
@@ -103,6 +103,17 @@ export function groundingError(ir: IR, appModel: AppModel): { index: number; mes
   return null;
 }
 
+/**
+ * Check whether the surviving (after truncation) step list ends in a real assertion.
+ * An assertion earlier in the sequence with non-assertion steps after it does not count
+ * — only the final step's action discriminator determines whether the test actually
+ * verified anything before the ungrounded tail was cut off.
+ */
+export function hasTerminalAssertion(steps: Step[]): boolean {
+  if (steps.length === 0) return false;
+  return steps[steps.length - 1].action === "assert";
+}
+
 export async function toIR(
   testCase: TestCase, appModel: AppModel, sourcePrompt: string, entryUrl: string
 ): Promise<IR> {
@@ -163,6 +174,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   const creds = testCase.fromPrompt ? undefined : credentialsFor(entryUrl);
   const finalize = (ir: IR): IR => {
     ir.meta.baseUrl = origin;
+    ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
     if (creds) applyCredentials(ir.steps, creds);
     return ir;
   };
@@ -210,7 +222,10 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     // nothing. Only a fully ungrounded IR (empty prefix) falls through to a hard error.
     if (prefix.length) {
       const truncated: IR = { ...parsed.data, steps: prefix };
-      truncated.meta = { ...parsed.data.meta, truncated: true, truncationNote: lastErr };
+      truncated.meta = {
+        ...parsed.data.meta, truncated: true, truncationNote: lastErr,
+        hasTerminalAssertion: hasTerminalAssertion(prefix),
+      };
       return finalize(truncated);
     }
   }

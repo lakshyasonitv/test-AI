@@ -10,11 +10,13 @@ import { credentialsFor } from "./stages/credentials.js";
 import { generateSpec } from "./stages/generator.js";
 import { runSpec, findScreenshot } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
+import { runSuite } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 
 export type StageName =
   | "input" | "plan" | "discovery" | "testcases" | "ir"
-  | "generate" | "execute" | "failure_analysis" | "heal" | "done" | "error";
+  | "generate" | "execute" | "failure_analysis" | "heal"
+  | "suite" | "done" | "error";
 
 export interface StageEvent {
   runId: string;
@@ -85,6 +87,12 @@ export async function runPipeline(
       return { passed: r.passed, exitCode: r.exitCode, artifactsDir: r.artifactsDir, resultsJsonPath: r.resultsJsonPath, raw: r.raw };
     });
 
+    // A truncated IR whose surviving prefix has no terminal assertion cannot report
+    // "passed" — the dropped tail may have contained the only assertion, so Playwright's
+    // passing verdict is a false positive. This check is independent of the real-failure
+    // diagnosis path below (which only triggers on actual Playwright failures).
+    const truncatedNoAssertion = !!(ir.meta.truncated && !ir.meta.hasTerminalAssertion);
+
     let diagnosis = null;
     let finalResult = result;
     let finalIr = ir;
@@ -137,6 +145,20 @@ export async function runPipeline(
       }
     }
 
+    // If the IR was truncated without a terminal assertion, override the result to
+    // prevent a false pass. The diagnosis/heal path above is for real Playwright failures;
+    // this handles the case where Playwright itself passed but the test verified nothing.
+    if (truncatedNoAssertion && !healed) {
+      finalResult = { ...result, passed: false, status: "truncated_no_assertion" } as typeof finalResult;
+      save("05-result.json", finalResult);
+    }
+
+    // Run every case in the suite through the full per-case pipeline, persisting per-case
+    // artifacts under cases/<caseId>/. The primary case was already executed above (and may
+    // have been self-healed) — this re-runs it through the same IR/generate/execute path
+    // (without self-heal) so every case in 03-cases.json has corresponding artifacts.
+    await runSuite(cases, appModel, runDir, prompt, url, onEvent);
+
     // Playwright captures a screenshot for every test (screenshot: "on" in the config), so
     // there's one on success too. Surface its public /runs URL to the UI. The IR may be a
     // truncated (partial) test — tell the UI so it can label the verdict honestly.
@@ -144,6 +166,7 @@ export async function runPipeline(
     const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
     emit("done", "completed", {
       passed: finalResult.passed, screenshotUrl, partial: finalIr.meta.truncated ?? false, healed,
+      status: (finalResult as any).status,
       // Plain-English record of what was actually tested, for the results panel — the IR/spec
       // are role+name/code, not something an end user should have to read to know what ran.
       test: { title: primary.title, steps: primary.steps, expected: primary.expected },

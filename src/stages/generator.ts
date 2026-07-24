@@ -1,5 +1,6 @@
 import type { IR, Step } from "../schema/ir.js";
 import { resolveCode as locator } from "./targetResolver.js";
+import { isAuthTriggeringStep } from "./authSettle.js";
 
 const q = (s: string) => JSON.stringify(s);
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -18,22 +19,52 @@ function emitAssert(step: Step): string {
   }
 }
 
+// Auth-settle wait helper, inlined into the generated spec when any auth-triggering
+// step is present. Mirrors the logic in authSettle.ts's waitForAuthSettle().
+const AUTH_SETTLE_HELPER = `
+async function waitForAuthSettle(page) {
+  const startUrl = page.url();
+  // Phase 1: wait for URL to change (fast path for real redirects).
+  try {
+    await page.waitForURL((url) => url.toString() !== startUrl, { timeout: 3000 });
+    return;
+  } catch {
+    // URL didn't change within the short window; fall through to network idle.
+  }
+  // Phase 2: wait for network idle (SPA may mutate state without URL change).
+  try {
+    await page.waitForLoadState("networkidle", { timeout: 8000 });
+  } catch {
+    // Ignore timeout; the test will continue and any ungrounded steps will be
+    // handled by the existing truncation/retry logic.
+  }
+}
+`;
+
 function emitStep(step: Step, baseUrl: string): string {
+  let code: string;
   switch (step.action) {
     case "navigate": {
       const u = step.target?.url ?? "/";
       const full = u.startsWith("http") ? u : baseUrl.replace(/\/$/, "") + u;
-      return `  await page.goto(${q(full)});`;
+      code = `  await page.goto(${q(full)});`;
+      break;
     }
-    case "click":  return `  await ${locator(step.target!)}.click();`;
-    case "fill":   return `  await ${locator(step.target!)}.fill(${q(step.value ?? "")});`;
-    case "select": return `  await ${locator(step.target!)}.selectOption(${q(step.value ?? "")});`;
-    case "check":  return `  await ${locator(step.target!)}.check();`;
-    case "press":  return `  await ${locator(step.target!)}.press(${q(step.value ?? "Enter")});`;
-    case "wait":   return `  await page.waitForTimeout(${Number(step.value ?? 1000)});`;
-    case "assert": return emitAssert(step);
+    case "click":  code = `  await ${locator(step.target!)}.click();`; break;
+    case "fill":   code = `  await ${locator(step.target!)}.fill(${q(step.value ?? "")});`; break;
+    case "select": code = `  await ${locator(step.target!)}.selectOption(${q(step.value ?? "")});`; break;
+    case "check":  code = `  await ${locator(step.target!)}.check();`; break;
+    case "press":  code = `  await ${locator(step.target!)}.press(${q(step.value ?? "Enter")});`; break;
+    case "wait":   code = `  await page.waitForTimeout(${Number(step.value ?? 1000)});`; break;
+    case "assert": code = emitAssert(step); break;
     default: throw new Error(`Unknown action: ${(step as any).action}`);
   }
+
+  // Append auth-settle wait after auth-triggering click/press steps.
+  if (isAuthTriggeringStep(step)) {
+    code += `\n  await waitForAuthSettle(page);`;
+  }
+  return code;
 }
 
 // Self-healing role+name locator, inlined into the generated spec (which stays self-contained
@@ -62,9 +93,14 @@ export function generateSpec(ir: IR): string {
   const truncNote = ir.meta.truncated
     ? `// PARTIAL: verified only up to the last grounded step — ${(ir.meta.truncationNote ?? "further steps could not be grounded").replace(/\s+/g, " ").slice(0, 200)}\n`
     : "";
-  const helper = body.includes("await locate(") ? LOCATE_HELPER : "";
+  const needsLocate = body.includes("await locate(");
+  const needsAuthSettle = body.includes("await waitForAuthSettle(page);");
+  const helpers = [
+    needsLocate ? LOCATE_HELPER : "",
+    needsAuthSettle ? AUTH_SETTLE_HELPER : "",
+  ].filter(Boolean).join("\n");
   return `import { test, expect } from '@playwright/test';
-${helper}
+${helpers}
 // AUTO-GENERATED from IR — do not edit by hand.
 // Feature: ${ir.meta.feature} | Priority: ${ir.meta.priority}
 // Source: ${ir.meta.sourcePrompt}
