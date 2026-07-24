@@ -182,11 +182,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   const finalize = (ir: IR): IR => {
     ir.meta.baseUrl = origin;
     ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
-<<<<<<< HEAD
     if (creds) applyCredentials(ir.steps, creds, testCase);
-=======
-    if (creds) applyCredentials(ir.steps, creds);
->>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
     return ir;
   };
 
@@ -251,11 +247,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         ...parsed.data.meta, truncated: true, truncationNote: lastErr,
         hasTerminalAssertion: hasTerminalAssertion(prefix),
       };
-<<<<<<< HEAD
       return { ir: finalize(truncated), updatedAppModel: currentModel };
-=======
-      return finalize(truncated);
->>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
     }
   }
   throw new Error(`IR failed schema validation after retry: ${lastErr}`);

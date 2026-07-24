@@ -70,7 +70,11 @@ function summarize(stage, data) {
         const concepts = [...new Set((data.pages ?? []).flatMap((p) => p.concepts ?? []))];
         return `Found ${data.pages?.length ?? 0} page(s)${concepts.length ? " — " + concepts.join(", ") : ""}`;
       }
-      case "testcases": return `Generated ${data.length} test case(s)`;
+      case "testcases": {
+        const count = data.total ?? data.length ?? 0;
+        const extra = data.reactive ? ` (${data.reactive} reactive)` : "";
+        return `Generated ${count} test case(s)${extra}`;
+      }
       case "ir": return `Test plan: ${data.meta?.title ?? ""}`;
       case "generate": return "Test script generated";
       case "execute": return data.passed ? "Executed — passed" : "Executed — failed";

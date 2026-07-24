@@ -93,21 +93,12 @@ export function generateSpec(ir: IR): string {
   const truncNote = ir.meta.truncated
     ? `// PARTIAL: verified only up to the last grounded step — ${(ir.meta.truncationNote ?? "further steps could not be grounded").replace(/\s+/g, " ").slice(0, 200)}\n`
     : "";
-<<<<<<< HEAD
   const helpers: string[] = [];
   if (body.includes("await locate(")) helpers.push(LOCATE_HELPER);
   if (body.includes("await waitForAuthSettle(")) helpers.push(AUTH_SETTLE_HELPER);
   const helper = helpers.join("\n");
-=======
-  const needsLocate = body.includes("await locate(");
-  const needsAuthSettle = body.includes("await waitForAuthSettle(page);");
-  const helpers = [
-    needsLocate ? LOCATE_HELPER : "",
-    needsAuthSettle ? AUTH_SETTLE_HELPER : "",
-  ].filter(Boolean).join("\n");
->>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
   return `import { test, expect } from '@playwright/test';
-${helpers}
+${helper}
 // AUTO-GENERATED from IR — do not edit by hand.
 // Feature: ${ir.meta.feature} | Priority: ${ir.meta.priority}
 // Source: ${ir.meta.sourcePrompt}

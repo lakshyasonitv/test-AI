@@ -76,10 +76,15 @@ export const TestCase = z.object({
   targetUrl: z.string().optional(),
   // Distinguishes upfront generation (before execution) from reactive generation
   // (after primary-case execution discovers new pages via live-extend). Used to
-  // avoid regenerating cases for pages we already covered.
+  // avoid regenerating cases for pages we already covered. Stamped in code, never
+  // produced by the LLM — excluded from the LLM-facing schema below.
   generatedFrom: z.enum(["upfront", "reactive"]).optional().default("upfront"),
 });
 export type TestCase = z.infer<typeof TestCase>;
+
+// LLM-facing schema: same as TestCase but WITHOUT generatedFrom — the model never
+// produces this field, it's stamped in code after parsing.
+const LLMTestCase = TestCase.omit({ generatedFrom: true });
 
 // Grounding is deliberately NOT checked here. This stage only ever sees the entry-page model
 // (extension enriches the model later, inside toIR), so a fuzzy check here can't tell a
@@ -96,7 +101,7 @@ export async function toTestCases(p: Plan, appModel: AppModel): Promise<TestCase
   const gaps = unmatchedConcepts(concepts);
 
   const system =
-`You write concrete, human-readable QA test cases from a plan and an application model. Output ONLY a JSON array, no prose, no markdown fences.
+    `You write concrete, human-readable QA test cases from a plan and an application model. Output ONLY a JSON array, no prose, no markdown fences.
 
 You write a SUITE, not a single happy-path case — the way a QA engineer covers a feature:
 valid path, invalid inputs, empty fields, boundaries, and security.
@@ -154,7 +159,7 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     ? `\nConcepts with NO checklist entry — apply the 5 reasoning dimensions above to these directly, do not just emit one generic case: ${gaps.join(", ")}\n`
     : "";
   const user =
-`Plan: ${JSON.stringify(p)}
+    `Plan: ${JSON.stringify(p)}
 Application model: ${JSON.stringify(appModel)}
 
 Coverage checklist floor (produce one grounded case per applicable item):
@@ -168,10 +173,13 @@ Return JSON array: [ { "title","priority","feature","steps":string[],"expected",
     try {
       const parsed: any = parseJson(raw);
       const arr = Array.isArray(parsed) ? parsed : parsed.testCases ?? [];
-      const result = z.array(TestCase).safeParse(arr);
+      // Parse against LLM-facing schema (no generatedFrom) — the model never produces it.
+      const result = z.array(LLMTestCase).safeParse(arr);
       if (result.success) {
+        // Stamp generatedFrom in code — this is pipeline provenance, not LLM output.
+        const stamped: TestCase[] = result.data.map(c => ({ ...c, generatedFrom: "upfront" as const }));
         const scope = (p.testTypeScope ?? ALL_SCOPES) as typeof ALL_SCOPES;
-        const scopedCases = filterByScope(result.data, scope);
+        const scopedCases = filterByScope(stamped, scope);
         // Apply coverage limiting based on user's chosen level
         return limitByCoverage(scopedCases, p.coverage);
       }
@@ -199,20 +207,20 @@ export async function generateCasesForNewPages(
   // Filter to only new pages not in the original set
   const originalUrlsSet = new Set(originalPageUrls);
   const newPages = updatedAppModel.pages.filter(page => !originalUrlsSet.has(page.url));
-  
+
   if (newPages.length === 0) {
     return []; // No new pages discovered
   }
-  
+
   // Create a filtered AppModel with only new pages
   const filteredModel: AppModel = {
     baseUrl: updatedAppModel.baseUrl,
     pages: newPages,
   };
-  
+
   // Generate cases for the new pages
   const cases = await toTestCases(plan, filteredModel);
-  
+
   // Tag all as reactive
   return cases.map(c => ({ ...c, generatedFrom: "reactive" as const }));
 }

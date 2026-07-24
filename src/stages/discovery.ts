@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import { AppModel } from "../schema/appModel.js";
@@ -26,6 +26,76 @@ export async function discoverPages(urls: string[]): Promise<AppModel> {
   return merged;
 }
 
+/**
+ * Discover all interactive elements on the current page using JavaScript evaluation.
+ * This catches elements that the ARIA snapshot may miss: icon-only buttons without
+ * aria-labels, SVG icons inside clickable parents, background CSS icons, etc.
+ * Returns a string snapshot that can be appended to the ARIA snapshot.
+ */
+export async function discoverInteractiveElements(page: Page): Promise<string> {
+  const elements = await page.evaluate(() => {
+    const results: Array<{ role: string; name: string; tag: string; hasIcon: boolean }> = [];
+    const seen = new Set<string>();
+
+    // Find all interactive elements
+    const interactiveSelectors = [
+      'button', 'a[href]', 'input[type="button"]', 'input[type="submit"]',
+      'input[type="reset"]', '[role="button"]', '[role="link"]', '[role="menuitem"]',
+      '[role="tab"]', '[role="switch"]', '[role="checkbox"]', '[role="radio"]',
+      '[onclick]', '[tabindex]:not([tabindex="-1"])',
+    ];
+
+    const elements = document.querySelectorAll(interactiveSelectors.join(', '));
+
+    for (const el of elements) {
+      const htmlEl = el as HTMLElement;
+      if (htmlEl.offsetParent === null && htmlEl.getAttribute('aria-hidden') !== 'true') continue;
+
+      // Get accessible name: aria-label → innerText → title → alt
+      const ariaLabel = el.getAttribute('aria-label')?.trim();
+      const innerText = htmlEl.innerText?.trim();
+      const title = el.getAttribute('title')?.trim();
+      const alt = el.getAttribute('alt')?.trim();
+      const placeholder = (el as HTMLInputElement).placeholder?.trim();
+
+      let name = ariaLabel || innerText || title || alt || placeholder || '';
+      if (name.length > 100) name = name.substring(0, 100) + '...';
+
+      // Determine role
+      let role = el.getAttribute('role') || '';
+      if (!role) {
+        const tag = el.tagName.toLowerCase();
+        if (tag === 'button' || tag === 'input') role = 'button';
+        else if (tag === 'a') role = 'link';
+        else role = 'generic';
+      }
+
+      // Check for SVG/icon children
+      const hasIcon = el.querySelector('svg, img, [class*="icon"], [class*="Icon"]') !== null;
+
+      // Create unique key to deduplicate
+      const key = `${role}:${name}:${htmlEl.tagName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      results.push({ role, name, tag: htmlEl.tagName.toLowerCase(), hasIcon });
+    }
+
+    return results;
+  });
+
+  if (elements.length === 0) return '';
+
+  // Format as a readable list that the LLM can parse
+  const lines = elements.map(el => {
+    const iconNote = el.hasIcon ? ' [has-icon]' : '';
+    const namePart = el.name ? ` "${el.name}"` : ' [no-label]';
+    return `- ${el.role}${namePart}${iconNote}`;
+  });
+
+  return `\nInteractive elements found on page:\n${lines.join('\n')}`;
+}
+
 export async function discover(url: string): Promise<AppModel> {
   const cached = cacheGet(url);
   if (cached) return cached;
@@ -49,10 +119,14 @@ export async function discover(url: string): Promise<AppModel> {
     }
 
     const aria = await page.locator("body").ariaSnapshot();
+    const interactiveElements = await discoverInteractiveElements(page);
     const title = await page.title();
     const screenshotBase64 = (await page.screenshot()).toString("base64");
 
-    const model = await modelFromAria(url, title, aria, screenshotBase64);
+    // Combine ARIA snapshot with interactive elements for a more complete picture
+    const combinedSnapshot = aria + interactiveElements;
+
+    const model = await modelFromAria(url, title, combinedSnapshot, screenshotBase64);
     cacheSet(url, model);
     return model;
   } finally {
@@ -79,7 +153,8 @@ export async function modelFromAria(url: string, title: string, aria: string, sc
 `You analyze a web page's accessibility snapshot for test generation. Output ONLY the JSON object, no prose, no markdown fences.
 
 Rules, follow exactly:
-- Every element you output must come from the accessibility snapshot text given to you. Never invent an element, role, or name that isn't literally present in that snapshot — a screenshot, if given, is ONLY for identifying which element is which; it is never a basis for adding an element the snapshot doesn't contain.
+- Every element you output must come from the accessibility snapshot or the interactive elements list given to you. Never invent an element, role, or name that isn't literally present in those sources — a screenshot, if given, is ONLY for identifying which element is which; it is never a basis for adding an element the snapshot doesn't contain.
+- The snapshot may include an "Interactive elements found on page" section listing clickable elements detected via JavaScript. Include these elements in your output — they are real clickable elements on the page that may have been missed by the accessibility snapshot. For elements marked [has-icon], use the screenshot (if provided) to determine the icon's meaning and assign an appropriate concept. For elements marked [no-label], use the screenshot to infer what the element does and assign a descriptive name based on its visual appearance.
 - "concepts" for a page is a short list of meaningful features actually observable on that page (e.g. "Login", "Search", "Cart") — infer them only from elements that are actually there, never from what a page like this "usually" has.
 - Each element's "concept" is optional — set it only when the element clearly serves one of the page's concepts; leave it unset rather than guessing. If a screenshot is given, use its visual context (icon meaning, position, nearby text) to make this labeling more accurate — e.g. an icon-only button next to a product row is more confidently "Cart" or "Delete" once you can see it.
 - "role" must be the element's real ARIA role exactly as given in the snapshot (button, textbox, link, heading, checkbox, ...); do not normalize or invent roles.
@@ -98,7 +173,7 @@ Example of the exact shape required:
 Page title: ${title}
 Accessibility snapshot:
 ${aria}
-${screenshotBase64 ? "\nA screenshot of this exact page is attached — use it only to label the snapshot's elements more accurately, per the rules above." : ""}
+${screenshotBase64 ? "\nA screenshot of this exact page is attached — use it to label elements more accurately, especially icon-only buttons and unlabeled interactive elements, per the rules above." : ""}
 
 Return ONLY JSON:
 { "baseUrl": string,

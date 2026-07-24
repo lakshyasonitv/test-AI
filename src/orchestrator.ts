@@ -10,11 +10,7 @@ import { credentialsFor } from "./stages/credentials.js";
 import { generateSpec } from "./stages/generator.js";
 import { runSpec, findScreenshot } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
-<<<<<<< HEAD
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
-=======
-import { runSuite } from "./stages/suiteRunner.js";
->>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
 import { store } from "./runStore.js";
 import { filterByScope, ALL_SCOPES } from "./kb/testStrategy.js";
 
@@ -171,7 +167,6 @@ export async function runPipeline(
 
     // Run every case in the suite through the full per-case pipeline, persisting per-case
     // artifacts under cases/<caseId>/. The primary case was already executed above (and may
-<<<<<<< HEAD
     // have been self-healed) — pass its result so runSuite reuses it instead of re-running.
     const scope = (thePlan.testTypeScope ?? ALL_SCOPES) as typeof ALL_SCOPES;
     
@@ -200,11 +195,6 @@ export async function runPipeline(
       healed,
     };
     await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult);
-=======
-    // have been self-healed) — this re-runs it through the same IR/generate/execute path
-    // (without self-heal) so every case in 03-cases.json has corresponding artifacts.
-    await runSuite(cases, appModel, runDir, prompt, url, onEvent);
->>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
 
     // Playwright captures a screenshot for every test (screenshot: "on" in the config), so
     // there's one on success too. Surface its public /runs URL to the UI. The IR may be a

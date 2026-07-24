@@ -1,7 +1,7 @@
 import { chromium, type Page } from "playwright";
 import { AppModel } from "../schema/appModel.js";
 import type { Step } from "../schema/ir.js";
-import { modelFromAria } from "./discovery.js";
+import { modelFromAria, discoverInteractiveElements } from "./discovery.js";
 import { resolveLive } from "./targetResolver.js";
 import { credentialForTarget, type Credentials } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
@@ -61,8 +61,10 @@ async function replayAndSnapshot(
     const reachedUrl = page.url();
     const title = await page.title();
     const aria = await page.locator("body").ariaSnapshot();
+    const interactiveElements = await discoverInteractiveElements(page);
     const screenshotBase64 = (await page.screenshot()).toString("base64");
-    const fresh = await modelFromAria(reachedUrl, title, aria, screenshotBase64);
+    const combinedSnapshot = aria + interactiveElements;
+    const fresh = await modelFromAria(reachedUrl, title, combinedSnapshot, screenshotBase64);
 
     const pageModel = fresh.pages.find((p) => p.url === reachedUrl) ?? fresh.pages[0];
     if (!pageModel) throw new Error(`replay reached ${reachedUrl} but produced no page model`);
