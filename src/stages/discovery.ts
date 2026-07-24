@@ -2,7 +2,6 @@ import { chromium } from "playwright";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import { AppModel, Element, PageModel } from "../schema/appModel.js";
-import { embedText } from "../llm/embeddings.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 import crypto from "node:crypto";
 
@@ -16,11 +15,10 @@ interface RawElement {
   pageSection: string;
   path: string[];
   order: number;
-  embedding?: number[];
+  concept?: string;
 }
 
 interface EnrichedElement extends RawElement {
-  concept?: string;
   id: string;
 }
 
@@ -46,7 +44,7 @@ async function collectElementMetadata(page: any, ariaElements: any[]): Promise<R
         const visible = await handle.isVisible().catch(() => false);
         const enabled = await handle.isEnabled().catch(() => false);
 
-        const containerInfo = await handle.evaluate((node: Element) => {
+        const containerInfo = await handle.evaluate((node: any) => {
           let parent = node.parentElement;
           let containerRole: string | null = null;
           let containerName: string | null = null;
@@ -114,17 +112,6 @@ function parseAriaStructure(aria: string): any[] {
   return elements;
 }
 
-async function computeEmbeddings(elements: RawElement[]): Promise<number[][]> {
-  const embeddings: number[][] = [];
-  
-  for (const el of elements) {
-    const text = `${el.role}: ${el.name}`;
-    const embedding = await embedText(text);
-    embeddings.push(embedding);
-  }
-  
-  return embeddings;
-}
 
 async function labelConcepts(
   elements: RawElement[],
@@ -209,8 +196,6 @@ export async function discover(url: string): Promise<AppModel> {
     
     const enrichedElements = await collectElementMetadata(page, ariaElements);
     
-    const embeddings = await computeEmbeddings(enrichedElements);
-    
     const screenshotBase64 = (await page.screenshot({
       type: "jpeg",
       quality: 60
@@ -232,7 +217,6 @@ export async function discover(url: string): Promise<AppModel> {
         path: el.path,
         order: el.order,
         id: `${el.role}_${el.order}`,
-        embedding: embeddings[i],
       } as Element;
     });
 

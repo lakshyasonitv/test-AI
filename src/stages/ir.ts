@@ -1,24 +1,13 @@
-<<<<<<< Updated upstream
 import { groq } from "../llm/groq.js";
 import { parseJson } from "../llm/json.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import type { AppModel } from "../schema/appModel.js";
+import { AppModel, toLiteModel, filterByConcepts } from "../schema/appModel.js";
 import { extendAppModel } from "./liveExtend.js";
+import { resolveAgainstModel, type ModelMatch } from "./targetResolver.js";
+import { embedText, cosineSimilarity } from "../llm/embeddings.js";
 import { credentialsFor, applyCredentials } from "./credentials.js";
-=======
-import { groq } from "../llm/groq";
-import { parseJson } from "../llm/json";
-import { IR } from "../schema/ir";
-import type { TestCase } from "./testCases";
-import type { AppModel } from "../schema/appModel";
-import { toLiteModel, filterByConcepts } from "../schema/appModel";
-import { extendAppModel } from "./liveExtend";
-import { resolveAgainstModel, type ModelMatch } from "./targetResolver";
-import { embedText, cosineSimilarity } from "../llm/embeddings";
-import { credentialsFor, applyCredentials } from "./credentials";
-import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache";
->>>>>>> Stashed changes
+import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 const ASSERTION_KEYS = [
   "text_contains", "text_equals", "url_contains",
@@ -174,15 +163,9 @@ Example of the exact shape required — note the login case asserts NEW dynamic 
 For a case that instead expects login to SUCCEED, the last step would ground on the login button itself going away, not on anything from a page discovery hasn't seen:
 { "id": "s4", "action": "assert", "target": { "role": "button", "name": "Login" }, "assertion": "hidden" }`;
 
-<<<<<<< Updated upstream
-  // Rebuilt each attempt because the model grows as live-extension discovers new pages.
-  const buildUser = (model: AppModel) =>
-`Application model: ${JSON.stringify(model)}
-=======
   const buildUser = (model: AppModel) => {
     const liteFiltered = toLiteModel(filterByConcepts(model, [testCase.feature]));
     return `Application model: ${JSON.stringify(liteFiltered)}
->>>>>>> Stashed changes
 Test case: ${JSON.stringify(testCase)}
 baseUrl (origin only): ${origin}
 entry path (where the page under test lives): ${entryPath}

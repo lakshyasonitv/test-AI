@@ -6,8 +6,6 @@ export const Element = z.object({
   concept: z.string().optional(),   // e.g. "login-email", "search-box"
   testId: z.string().optional(),
   id: z.string().optional(),
-<<<<<<< Updated upstream
-=======
   visible: z.boolean().optional(),
   enabled: z.boolean().optional(),
   containerRole: z.string().optional(),
@@ -15,7 +13,6 @@ export const Element = z.object({
   pageSection: z.string().optional(), // "main", "nav", "header", "footer", "dialog"
   path: z.array(z.string()).optional(), // ["body", "main", "form", "button"]
   order: z.number().optional(),
->>>>>>> Stashed changes
 });
 export type Element = z.infer<typeof Element>;
 
@@ -32,8 +29,6 @@ export const AppModel = z.object({
   pages: z.array(PageModel),
 });
 export type AppModel = z.infer<typeof AppModel>;
-<<<<<<< Updated upstream
-=======
 
 /** Strip elements to role/name/concept only — reduces prompt size 70-90%. */
 export function toLiteModel(model: AppModel): AppModel {
@@ -59,4 +54,3 @@ export function filterByConcepts(model: AppModel, concepts: string[]): AppModel 
     })),
   };
 }
->>>>>>> Stashed changes

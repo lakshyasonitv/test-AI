@@ -9,8 +9,6 @@ import type { ExecResult } from "./executor.js";
 import { ruleAnalysis } from "./failure/ruleAnalysis.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
-const KNOWN_CATEGORIES = ["selector_changed","element_missing","timeout","assertion_failed","navigation_error","other"] as const;
-
 // Falls back to "other" for anything outside the known set (e.g. Gemini describing a
 // real Playwright error like "strict mode violation" accurately but outside our
 // vocabulary) instead of failing schema validation and losing an otherwise-good
@@ -118,28 +116,27 @@ export async function analyzeFailure(ir: IR, result: ExecResult): Promise<Diagno
   const snapshotBlock = result.accessibilitySnapshot
     ? `\nPage accessibility snapshot at the moment of failure (ARIA tree — this is ground truth for what was actually rendered/visible, more reliable than inferring from the screenshot):\n${compressSnapshot(result.accessibilitySnapshot, failingTarget)}\n`
     : "";
-  const urlBlock = result.currentUrl ? `\nPage URL at failure: ${result.currentUrl}\n` : "";
+
+  let currentUrl = result.currentUrl;
+  if (!currentUrl) {
+    const lastNavigate = ir.steps.slice().reverse().find(s => s.action === "navigate");
+    const lastPath = lastNavigate?.target?.url ?? "/";
+    currentUrl = lastPath.startsWith("http") ? lastPath : (ir.meta.baseUrl.replace(/\/$/, "") + lastPath);
+  }
+  const urlBlock = `\nPage URL at failure: ${currentUrl}\n`;
   
   const relevantSteps = ir.steps.slice(-5);
   
-  const system = `You are only used after deterministic diagnosis failed.
-Do NOT repeat Playwright's message.
-Only infer causes that cannot be determined from the raw error.
-Never invent selectors.
-Never invent missing elements.
-Prefer the accessibility snapshot over the screenshot.
-Return JSON only.
-Allowed categories: ${KNOWN_CATEGORIES.join(", ")}.`;
-  
-  const errors = extractErrors(result.raw);
-  const errorText = JSON.stringify(errors.length ? errors : result.raw ?? {}, null, 2).slice(0, 8000);
-  const shot = findScreenshot(result.artifactsDir);
   const system = `You diagnose a failed Playwright test. Identify which IR step failed and the most likely cause. Output JSON only.
-Allowed categories: ${KNOWN_CATEGORIES.join(", ")}. If the failure doesn't clearly match one of the first five, use "other".`;
-  const user =
-`IR: ${JSON.stringify(ir)}
+Allowed categories: ${KNOWN_CATEGORIES.join(", ")}. If the failure doesn't clearly match one of the first five, use "other".
+Do NOT repeat Playwright's message verbatim. Only infer causes that cannot be determined from the raw error.
+Never invent selectors or missing elements.
+Treat the accessibility snapshot as the primary source of truth (more reliable than inferring from the screenshot).`;
+  
+  const user = `IR Steps: ${JSON.stringify(relevantSteps)}
 Execution error output:
 ${errorText}
+${urlBlock}${snapshotBlock}
 Return JSON: { "failingStepId", "category", "explanation", "suggestedFix" }`;
 
   let lastErr = "";

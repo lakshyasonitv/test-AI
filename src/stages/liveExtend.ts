@@ -4,11 +4,8 @@ import type { Step } from "../schema/ir.js";
 import { modelFromAria } from "./discovery.js";
 import { resolveLive } from "./targetResolver.js";
 import { credentialForTarget, type Credentials } from "./credentials.js";
-<<<<<<< Updated upstream
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
-=======
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
->>>>>>> Stashed changes
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
