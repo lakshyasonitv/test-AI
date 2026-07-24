@@ -1,8 +1,164 @@
 import { chromium } from "playwright";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
-import { AppModel } from "../schema/appModel.js";
+import { AppModel, Element, PageModel } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
+import crypto from "node:crypto";
+
+interface RawElement {
+  role: string;
+  name: string;
+  visible: boolean;
+  enabled: boolean;
+  containerRole: string | null;
+  containerName: string | null;
+  pageSection: string;
+  path: string[];
+  order: number;
+  concept?: string;
+}
+
+interface EnrichedElement extends RawElement {
+  id: string;
+}
+
+function computeAriaHash(aria: string): string {
+  return crypto.createHash('md5').update(aria).digest('hex').slice(0, 8);
+}
+
+async function collectElementMetadata(page: any, ariaElements: any[]): Promise<RawElement[]> {
+  const enriched: RawElement[] = [];
+  let order = 0;
+
+  for (const el of ariaElements) {
+    if (!el.role || el.role === 'none' || el.role === 'presentation') continue;
+
+    try {
+      const locator = page.getByRole(el.role, { name: el.name });
+      const count = await locator.count();
+      
+      if (count === 0) continue;
+
+      for (let i = 0; i < count; i++) {
+        const handle = locator.nth(i);
+        const visible = await handle.isVisible().catch(() => false);
+        const enabled = await handle.isEnabled().catch(() => false);
+
+        const containerInfo = await handle.evaluate((node: any) => {
+          let parent = node.parentElement;
+          let containerRole: string | null = null;
+          let containerName: string | null = null;
+          const path: string[] = [];
+
+          while (parent && path.length < 10) {
+            const role = parent.getAttribute('role') || parent.tagName.toLowerCase();
+            const name = parent.getAttribute('aria-label') || 
+                        parent.getAttribute('name') || 
+                        parent.textContent?.trim().slice(0, 50) || null;
+            
+            if (['form', 'nav', 'main', 'header', 'footer', 'dialog', 'section', 'article', 'aside'].includes(role)) {
+              containerRole = containerRole || role;
+              containerName = containerName || name;
+            }
+            
+            path.unshift(role);
+            parent = parent.parentElement;
+          }
+
+          const pageSection = path.includes('main') ? 'main' :
+                             path.includes('nav') ? 'nav' :
+                             path.includes('header') ? 'header' :
+                             path.includes('footer') ? 'footer' :
+                             path.includes('dialog') ? 'dialog' : 'body';
+
+          return { containerRole, containerName, path, pageSection };
+        });
+
+        enriched.push({
+          role: el.role,
+          name: el.name || '',
+          visible,
+          enabled,
+          containerRole: containerInfo.containerRole,
+          containerName: containerInfo.containerName,
+          pageSection: containerInfo.pageSection,
+          path: containerInfo.path,
+          order: order++,
+        });
+      }
+    } catch (err) {
+      continue;
+    }
+  }
+
+  return enriched;
+}
+
+function parseAriaStructure(aria: string): any[] {
+  const elements: any[] = [];
+  const lines = aria.split('\n');
+  
+  for (const line of lines) {
+    const match = line.match(/^\s*(?:- )?(button|textbox|link|heading|checkbox|radio|combobox|listbox|option|menuitem|tab|switch|slider|spinbutton|searchbox|img|list|listitem|table|row|cell|dialog|alert|navigation|banner|main|contentinfo|form|region|group|generic|article|figure)(?:\s+"([^"]*)")?/i);
+    
+    if (match) {
+      elements.push({
+        role: match[1].toLowerCase(),
+        name: match[2] || '',
+      });
+    }
+  }
+  
+  return elements;
+}
+
+
+async function labelConcepts(
+  elements: RawElement[],
+  pageTitle: string,
+  screenshotBase64?: string
+): Promise<{ concepts: string[]; labeledElements: { index: number; concept: string }[] }> {
+  const elementsList = elements
+    .map((e, i) => `[${i}] ${e.role} "${e.name}" (visible: ${e.visible}, section: ${e.pageSection}${e.containerName ? `, container: ${e.containerRole} "${e.containerName}"` : ''})`)
+    .join('\n');
+
+  const system = `You analyze web page elements to identify concepts and label elements. Output ONLY JSON.
+Rules:
+- Identify 2-5 meaningful concepts from the elements (e.g. "Login", "Search", "Cart", "Navigation")
+- Label elements that clearly serve a concept — only when confident
+- Use visual context from screenshot if provided
+- Never invent elements or concepts not supported by the element list
+- If two elements share the same name but are in different containers, they serve different concepts`;
+
+  const user = `Page title: ${pageTitle}
+Elements:
+${elementsList}
+${screenshotBase64 ? "\nScreenshot attached for visual context." : ""}
+
+Return JSON: { "concepts": string[], "labeledElements": { "index": number, "concept": string }[] }`;
+
+  let lastErr = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const raw = await gemini(user, {
+      systemInstruction: system, 
+      json: true, 
+      model: process.env.GEMINI_MODEL_LITE,
+      imageBase64: screenshotBase64, 
+      imageMime: "image/png",
+    });
+    try {
+      const parsed = parseJson(raw);
+      if (parsed && Array.isArray(parsed.concepts) && Array.isArray(parsed.labeledElements)) {
+        return parsed;
+      }
+      lastErr = "Invalid shape";
+    } catch (err: any) {
+      lastErr = err?.message ?? String(err);
+    }
+  }
+  
+  return { concepts: [], labeledElements: [] };
+}
 
 /**
  * Discover multiple explicit pages and merge them into one AppModel.
@@ -50,11 +206,55 @@ export async function discover(url: string): Promise<AppModel> {
 
     const aria = await page.locator("body").ariaSnapshot();
     const title = await page.title();
-    const screenshotBase64 = (await page.screenshot()).toString("base64");
+    const pageUrl = page.url();
+    
+    const ariaHash = computeAriaHash(aria);
+    const cacheKey = `${url}|||${title}|||${ariaHash}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return cached;
 
-    const model = await modelFromAria(url, title, aria, screenshotBase64);
-    cacheSet(url, model);
-    return model;
+    const ariaElements = parseAriaStructure(aria);
+    
+    const enrichedElements = await collectElementMetadata(page, ariaElements);
+    
+    const screenshotBase64 = (await page.screenshot({
+      type: "jpeg",
+      quality: 60
+    })).toString("base64");
+
+    const { concepts, labeledElements } = await labelConcepts(enrichedElements, title, screenshotBase64);
+    
+    const elements: Element[] = enrichedElements.map((el, i) => {
+      const label = labeledElements.find(l => l.index === i);
+      return {
+        role: el.role,
+        name: el.name,
+        concept: label?.concept || el.concept,
+        visible: el.visible,
+        enabled: el.enabled,
+        containerRole: el.containerRole || undefined,
+        containerName: el.containerName || undefined,
+        pageSection: el.pageSection,
+        path: el.path,
+        order: el.order,
+        id: `${el.role}_${el.order}`,
+      } as Element;
+    });
+
+    const pageModel: PageModel = {
+      url: pageUrl,
+      title,
+      concepts,
+      elements,
+    };
+
+    const appModel: AppModel = {
+      baseUrl: new URL(url).origin,
+      pages: [pageModel],
+    };
+
+    cacheSet(cacheKey, appModel);
+    return appModel;
   } finally {
     await browser.close();
   }

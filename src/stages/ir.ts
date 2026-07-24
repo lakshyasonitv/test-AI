@@ -2,9 +2,12 @@ import { groq } from "../llm/groq.js";
 import { parseJson } from "../llm/json.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import type { AppModel } from "../schema/appModel.js";
+import { AppModel, toLiteModel, filterByConcepts } from "../schema/appModel.js";
 import { extendAppModel, refreshPageModel } from "./liveExtend.js";
+import { resolveAgainstModel, type ModelMatch } from "./targetResolver.js";
+import { embedText, cosineSimilarity } from "../llm/embeddings.js";
 import { credentialsFor, applyCredentials, shouldSkipCredentialSubstitution } from "./credentials.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 /** Return type for toIR that includes the updated AppModel after live-extension. */
 export interface IRResult {
@@ -131,6 +134,10 @@ export async function toIR(
   const { origin, pathname, search } = new URL(entryUrl);
   const entryPath = pathname + search || "/";
 
+  const cacheKey = makeCacheKey(JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel));
+  const cached = llmCacheGet<IR>(cacheKey);
+  if (cached) return cached;
+
   const system =
 `Convert ONE human-readable test case into a strict JSON test model (IR).
 Address elements only by accessibility role + name taken from the application model.
@@ -163,14 +170,15 @@ Example of the exact shape required — note the login case asserts NEW dynamic 
 For a case that instead expects login to SUCCEED, the last step would ground on the login button itself going away, not on anything from a page discovery hasn't seen:
 { "id": "s4", "action": "assert", "target": { "role": "button", "name": "Login" }, "assertion": "hidden" }`;
 
-  // Rebuilt each attempt because the model grows as live-extension discovers new pages.
-  const buildUser = (model: AppModel) =>
-`Application model: ${JSON.stringify(model)}
+  const buildUser = (model: AppModel) => {
+    const liteFiltered = toLiteModel(filterByConcepts(model, [testCase.feature]));
+    return `Application model: ${JSON.stringify(liteFiltered)}
 Test case: ${JSON.stringify(testCase)}
 baseUrl (origin only): ${origin}
 entry path (where the page under test lives): ${entryPath}
 sourcePrompt: ${sourcePrompt}
 Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps":[{id,action,target,value,assertion}] }`;
+  };
 
   // baseUrl is a fact we already know; and real credentials for known hosts are injected
   // into login fill steps so the generated test actually authenticates instead of using
@@ -186,6 +194,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     if (creds) applyCredentials(ir.steps, creds, testCase);
 =======
     if (creds) applyCredentials(ir.steps, creds);
+    llmCacheSet(cacheKey, ir);
 >>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
     return ir;
   };

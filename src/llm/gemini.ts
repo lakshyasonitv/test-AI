@@ -35,6 +35,7 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<str
       const text = await res.text();
       const e: any = new Error(`Gemini ${res.status}: ${text}`);
       e.status = res.status;
+      e.retryAfter = res.headers.get("retry-after");
       throw e;
     }
     const data = await res.json();

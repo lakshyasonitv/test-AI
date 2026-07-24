@@ -8,6 +8,9 @@ export interface ExecResult {
   resultsJsonPath: string;
   artifactsDir: string;
   raw: any | null;
+  screenshot?: string;
+  accessibilitySnapshot?: string;
+  currentUrl?: string;
 }
 
 export async function runSpec(specCode: string, runDir: string): Promise<ExecResult> {
@@ -51,7 +54,44 @@ export async function runSpec(specCode: string, runDir: string): Promise<ExecRes
   let raw: any = null;
   try { raw = JSON.parse(readFileSync(resultsJson, "utf8")); } catch { /* leave null */ }
 
-  return { passed: exitCode === 0, exitCode, resultsJsonPath: resultsJson, artifactsDir, raw };
+  let screenshot: string | undefined;
+  let accessibilitySnapshot: string | undefined;
+
+  if (raw) {
+    for (const suite of raw.suites ?? []) {
+      for (const spec of suite.specs ?? []) {
+        for (const testObj of spec.tests ?? []) {
+          for (const res of testObj.results ?? []) {
+            for (const attach of res.attachments ?? []) {
+              if (attach.name === "screenshot") {
+                screenshot = attach.path;
+              } else if (attach.name === "error-context") {
+                try {
+                  const content = readFileSync(attach.path, "utf8");
+                  const match = content.match(/```yaml\n([\s\S]*?)\n```/);
+                  if (match) {
+                    accessibilitySnapshot = match[1];
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    passed: exitCode === 0,
+    exitCode,
+    resultsJsonPath: resultsJson,
+    artifactsDir,
+    raw,
+    screenshot,
+    accessibilitySnapshot
+  };
 }
 
 /** Best-effort: find a screenshot in the artifacts tree (for Failure Analysis vision). */

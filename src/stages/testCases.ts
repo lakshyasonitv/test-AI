@@ -4,6 +4,8 @@ import { parseJson } from "../llm/json.js";
 import type { Plan } from "./planner.js";
 import type { Coverage } from "./planner.js";
 import type { AppModel } from "../schema/appModel.js";
+import { toLiteModel } from "../schema/appModel.js";
+import { strategyFor, unmatchedConcepts } from "../kb/testStrategy.js";
 import { strategyFor, unmatchedConcepts, filterByScope, ALL_SCOPES } from "../kb/testStrategy.js";
 
 // Models sometimes ignore case ("High") or return an array where a string was asked for
@@ -153,9 +155,10 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
   const gapsLine = gaps.length
     ? `\nConcepts with NO checklist entry — apply the 5 reasoning dimensions above to these directly, do not just emit one generic case: ${gaps.join(", ")}\n`
     : "";
+  const liteModel = toLiteModel(appModel);
   const user =
 `Plan: ${JSON.stringify(p)}
-Application model: ${JSON.stringify(appModel)}
+Application model: ${JSON.stringify(liteModel)}
 
 Coverage checklist floor (produce one grounded case per applicable item):
 ${strategyList}

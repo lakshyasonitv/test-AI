@@ -5,6 +5,7 @@ import { modelFromAria } from "./discovery.js";
 import { resolveLive } from "./targetResolver.js";
 import { credentialForTarget, type Credentials } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -40,6 +41,10 @@ async function replayAndSnapshot(
   prefix: Step[],
   creds?: Credentials
 ): Promise<{ reachedUrl: string; pageModel: AppModel["pages"][number] }> {
+  const cacheKey = makeCacheKey(model.baseUrl, JSON.stringify(prefix));
+  const cached = llmCacheGet<{ reachedUrl: string; pageModel: AppModel["pages"][number] }>(cacheKey);
+  if (cached) return cached;
+
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
@@ -66,7 +71,9 @@ async function replayAndSnapshot(
 
     const pageModel = fresh.pages.find((p) => p.url === reachedUrl) ?? fresh.pages[0];
     if (!pageModel) throw new Error(`replay reached ${reachedUrl} but produced no page model`);
-    return { reachedUrl, pageModel };
+    const result = { reachedUrl, pageModel };
+    llmCacheSet(cacheKey, result);
+    return result;
   } finally {
     await browser.close();
   }
