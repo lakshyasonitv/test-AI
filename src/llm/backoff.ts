@@ -11,6 +11,18 @@ function rateLimited(err: any): number | null {
   return null;
 }
 
+/** Parse server-suggested retry delay from header or error body. */
+function parseRetryDelay(err: any): number | null {
+  if (err?.retryAfter) {
+    const sec = Number(err.retryAfter);
+    if (!isNaN(sec) && sec > 0) return sec * 1000;
+  }
+  const msg = String(err?.message ?? "");
+  const m = msg.match(/retry\s+in\s+(\d+)s/i);
+  if (m) return parseInt(m[1], 10) * 1000;
+  return null;
+}
+
 export interface CallOpts { maxRetries?: number; baseDelayMs?: number; }
 
 /** Run `fn(apiKey)` with key rotation + exponential backoff on rate-limit errors. */
@@ -29,8 +41,9 @@ export async function callWithPool<T>(
       return await fn(key);
     } catch (err) {
       lastErr = err;
-      if (rateLimited(err) === null) throw err;          // non-transient: fail fast
-      const wait = Math.min(base * 2 ** attempt, 30_000) + Math.random() * 300;
+      if (rateLimited(err) === null) throw err;
+      const serverDelay = parseRetryDelay(err);
+      const wait = serverDelay ?? Math.min(base * 2 ** attempt, 30_000) + Math.random() * 300;
       pool.penalize(key, wait);
       await sleep(wait);
     }

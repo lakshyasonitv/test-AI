@@ -26,6 +26,7 @@ export async function groq(prompt: string, opts: GroqOpts = {}): Promise<string>
       const text = await res.text();
       const e: any = new Error(`Groq ${res.status}: ${text}`);
       e.status = res.status;
+      e.retryAfter = res.headers.get("retry-after");
       throw e;
     }
     const data = await res.json();
