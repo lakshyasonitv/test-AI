@@ -39,7 +39,13 @@ const ROLE_SWAP: Record<string, string> = { button: "link", link: "button" };
  * as an import — only as the same logic written twice.
  */
 export function resolveCode(t: Target): string {
-  if (t.role && t.name) return `(await locate(page, ${q(t.role)}, ${q(t.name)}))`;
+  if (t.role && t.name) {
+    // If nth is specified, use it to disambiguate duplicate elements
+    if (t.nth !== undefined && t.nth !== null) {
+      return `(await locate(page, ${q(t.role)}, ${q(t.name)}, ${t.nth}))`;
+    }
+    return `(await locate(page, ${q(t.role)}, ${q(t.name)}))`;
+  }
   return `${pick(t).code(t)}.first()`;
 }
 
@@ -63,7 +69,14 @@ async function resolveRoleWithFallback(page: Page, role: string, name: string): 
 
 /** Live Playwright Locator against a running page (for the replay runner). */
 export async function resolveLive(page: Page, t: Target): Promise<Locator> {
-  if (t.role && t.name) return resolveRoleWithFallback(page, t.role, t.name);
+  if (t.role && t.name) {
+    // If nth is specified, use it to disambiguate duplicate elements
+    if (t.nth !== undefined && t.nth !== null) {
+      const locator = page.getByRole(t.role as any, { name: t.name });
+      return locator.nth(t.nth);
+    }
+    return resolveRoleWithFallback(page, t.role, t.name);
+  }
   return pick(t).live(page, t).first();
 }
 

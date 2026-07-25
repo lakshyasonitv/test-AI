@@ -128,7 +128,11 @@ export async function analyzeFailure(ir: IR, result: ExecResult): Promise<Diagno
   const relevantSteps = ir.steps.slice(-5);
   
   const system = `You diagnose a failed Playwright test. Identify which IR step failed and the most likely cause. Output JSON only.
-Allowed categories: ${KNOWN_CATEGORIES.join(", ")}. If the failure doesn't clearly match one of the first five, use "other".
+Allowed categories: ${KNOWN_CATEGORIES.join(", ")}.
+- "element_missing" = element was NOT found in the DOM at all (zero matches).
+- "element_not_interactable" = element WAS found but was hidden, off-screen, or not enabled (visible=false, display:none, outside viewport, covered by overlay).
+- "element_hidden" = element was found but its visibility assertion failed.
+If the failure doesn't clearly match one of the above, use "other".
 Do NOT repeat Playwright's message verbatim. Only infer causes that cannot be determined from the raw error.
 Never invent selectors or missing elements.
 Treat the accessibility snapshot as the primary source of truth (more reliable than inferring from the screenshot).`;

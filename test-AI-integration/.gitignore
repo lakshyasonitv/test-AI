@@ -1,6 +1,0 @@
-node_modules
-.env
-runs/
-test-results/
-playwright-report/
-.claude/

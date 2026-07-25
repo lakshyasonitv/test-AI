@@ -37,7 +37,7 @@ export async function waitForAuthSettle(page: Page, timeoutMs = 8000): Promise<v
   }
   // Phase 2: wait for network idle (SPA may mutate state without URL change).
   try {
-    await page.waitForLoadState("networkidle", { timeout: timeoutMs });
+    await page.waitForLoadState("domcontentloaded", { timeout: timeoutMs });
   } catch {
     // Ignore timeout; the caller will handle ungrounded steps via its existing logic.
   }

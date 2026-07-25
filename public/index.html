@@ -23,6 +23,13 @@
 
     <ol id="stages" class="stages"></ol>
 
+    <!-- Suite progress (shown while suite is running) -->
+    <section id="suiteProgress" class="suite-progress hidden">
+      <h2>Running Suite</h2>
+      <div id="suiteProgressList" class="suite-progress-list"></div>
+    </section>
+
+    <!-- Single-test backward-compatible result -->
     <section id="finalResult" class="hidden">
       <h2 id="verdict"></h2>
       <div id="testSummary" class="test-summary hidden">
@@ -38,6 +45,12 @@
       <a id="traceLink" class="hidden" download>Download trace</a>
     </section>
 
+    <!-- Suite results -->
+    <section id="suiteResults" class="suite-results hidden">
+      <div id="suiteSummaryHeader" class="suite-summary-header"></div>
+      <div id="suiteCaseList" class="suite-case-list"></div>
+    </section>
+
     <section id="history">
       <h2>History</h2>
       <ul id="historyList" class="history-list"></ul>
@@ -46,4 +59,3 @@
   <script src="/app.js"></script>
 </body>
 </html>
-

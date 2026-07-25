@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 import { mkdirSync, writeFileSync, cpSync } from "node:fs";
-=======
-import { mkdirSync, writeFileSync } from "node:fs";
->>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
 import path from "node:path";
 import { toIR } from "./ir.js";
 import { generateSpec } from "./generator.js";
@@ -12,7 +8,6 @@ import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
 import type { OnEvent, StageEvent } from "../orchestrator.js";
 import { store } from "../runStore.js";
-<<<<<<< HEAD
 import type { ExecResult } from "./executor.js";
 import type { IR } from "../schema/ir.js";
 
@@ -24,8 +19,6 @@ export interface PrimaryCaseResult {
   specCode: string;
   healed: boolean;
 }
-=======
->>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
 
 export interface CaseRunResult {
   caseId: string;
@@ -60,12 +53,8 @@ export async function runSuite(
   runDir: string,
   sourcePrompt: string,
   entryUrl: string,
-<<<<<<< HEAD
   onEvent?: OnEvent,
   primaryResult?: PrimaryCaseResult
-=======
-  onEvent?: OnEvent
->>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
 ): Promise<CaseRunResult[]> {
   const results: CaseRunResult[] = [];
   const runId = path.basename(runDir);
@@ -80,7 +69,6 @@ export async function runSuite(
 
     emit(runId, "suite", "started", { caseId, title: tc.title }, undefined, onEvent);
 
-<<<<<<< HEAD
     // Detect if this case is the primary case that was already executed in the main pipeline.
     // Match by fromPrompt flag (the reliable selector) — if multiple cases have it (shouldn't
     // happen, but defensive), take the first match.
@@ -138,19 +126,26 @@ export async function runSuite(
     } else {
     // Non-primary case: execute as before (IR generation + Playwright run).
     try {
+      console.log("================================");
+      console.log("Running:", tc.title);
+
+      console.log("Generating IR...");
       const { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl);
-=======
-    try {
-      const ir = await toIR(tc, appModel, sourcePrompt, entryUrl);
->>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
+      console.log("IR generated");
       const irPath = path.join(caseDir, "04-ir.json");
       writeFileSync(irPath, JSON.stringify(ir, null, 2));
 
+      console.log("Generating spec...");
       const spec = generateSpec(ir);
+      console.log("Spec generated");
       const specPath = path.join(caseDir, "generated.spec.ts");
       writeFileSync(specPath, spec);
 
+      console.log("Running Playwright...");
       const result = await runSpec(spec, caseDir);
+      console.log("Playwright finished");
+
+      console.log(result);
 
       // Determine honest status before saving the result.
       let status: CaseRunResult["status"];
@@ -193,10 +188,7 @@ export async function runSuite(
       emit(runId, "suite", "failed", { caseId, title: tc.title },
         err?.message ?? String(err), onEvent);
     }
-<<<<<<< HEAD
     } // end non-primary else branch
-=======
->>>>>>> a406f2070172444d68df0761f4cfb621bffac50c
   }
 
   const passed = results.filter((r) => r.status === "passed").length;

@@ -189,7 +189,7 @@ export async function discover(url: string): Promise<AppModel> {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
-    const response = await page.goto(url, { waitUntil: "networkidle", timeout: 15000 });
+    const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
     // Fail fast on a dead entry URL. Without this, a 404/500 page becomes a valid-looking
     // AppModel and the downstream LLMs hallucinate a UI on top of an error page (seen in

@@ -2,6 +2,7 @@ import { chromium, type Page } from "playwright";
 import { AppModel } from "../schema/appModel.js";
 import type { Step } from "../schema/ir.js";
 import { modelFromAria } from "./discovery.js";
+import { discoverUsingCrawler } from "./domDiscovery.js";
 import { resolveLive } from "./targetResolver.js";
 import { credentialForTarget, type Credentials } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
@@ -61,13 +62,25 @@ async function replayAndSnapshot(
     // Let navigation triggered by the last step settle before snapshotting, else we'd
     // capture the pre-navigation page. Bounded so a site with long-lived connections
     // (never truly "idle") doesn't stall the whole run.
-    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+    await page.waitForLoadState("domcontentloaded", { timeout: 8000 }).catch(() => {});
 
     const reachedUrl = page.url();
     const title = await page.title();
-    const aria = await page.locator("body").ariaSnapshot();
-    const screenshotBase64 = (await page.screenshot()).toString("base64");
-    const fresh = await modelFromAria(reachedUrl, title, aria, screenshotBase64);
+    
+    // Try DOM-based discovery first for the reached page
+    let fresh: AppModel | null = null;
+    try {
+      fresh = await discoverUsingCrawler(reachedUrl);
+    } catch {
+      // DOM discovery failed for the reached page
+    }
+
+    // Fall back to vision-based discovery if DOM failed
+    if (!fresh || !fresh.pages[0]?.elements?.length) {
+      const aria = await page.locator("body").ariaSnapshot();
+      const screenshotBase64 = (await page.screenshot()).toString("base64");
+      fresh = await modelFromAria(reachedUrl, title, aria, screenshotBase64);
+    }
 
     const pageModel = fresh.pages.find((p) => p.url === reachedUrl) ?? fresh.pages[0];
     if (!pageModel) throw new Error(`replay reached ${reachedUrl} but produced no page model`);

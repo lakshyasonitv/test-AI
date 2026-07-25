@@ -5,7 +5,6 @@ import type { Plan } from "./planner.js";
 import type { Coverage } from "./planner.js";
 import type { AppModel } from "../schema/appModel.js";
 import { toLiteModel } from "../schema/appModel.js";
-import { strategyFor, unmatchedConcepts } from "../kb/testStrategy.js";
 import { strategyFor, unmatchedConcepts, filterByScope, ALL_SCOPES } from "../kb/testStrategy.js";
 
 // Models sometimes ignore case ("High") or return an array where a string was asked for

@@ -4,6 +4,7 @@ export const Target = z.object({
   url: z.string().optional(),         // navigate only
   role: z.string().optional(),        // preferred: accessibility role
   name: z.string().optional(),        // preferred: accessible name
+  nth: z.number().optional(),         // index for duplicate elements (0-indexed)
   label: z.string().optional(),
   text: z.string().optional(),
   placeholder: z.string().optional(),
@@ -20,6 +21,10 @@ export const Step = z.object({
     "visible", "hidden", "text_equals", "text_contains",
     "url_contains", "enabled", "disabled",
   ]).optional(),
+  preAction: z.object({
+    action: z.enum(["hover", "click"]),
+    target: Target,
+  }).optional(),
 });
 export type Step = z.infer<typeof Step>;
 

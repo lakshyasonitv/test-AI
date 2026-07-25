@@ -2,6 +2,7 @@ import { chromium } from "playwright";
 import { SiteGraph, type SiteGraphPage } from "../schema/siteGraph.js";
 import type { CrawlDirective } from "../schema/crawlDirective.js";
 import { modelFromAria } from "./discovery.js";
+import { discoverUsingCrawler } from "./domDiscovery.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 
 interface QueueEntry {
@@ -72,14 +73,35 @@ export async function crawlSite(
       let appModel = cacheGet(normalized);
 
       if (!appModel) {
-        // Navigate, snapshot, and label via existing Discovery logic.
+        // Try DOM-based discovery first (fast, deterministic, no LLM needed for structure)
         try {
-          const response = await page.goto(normalized, { waitUntil: "domcontentloaded" });
-          await page.waitForTimeout(1000);
+          appModel = await discoverUsingCrawler(normalized);
+        } catch {
+          // DOM discovery failed — try vision fallback
+        }
 
-          const status = response?.status() ?? 0;
-          if (!response || status >= 400) {
-            // Dead page — skip but still record it as visited with no outbound targets.
+        if (!appModel) {
+          // DOM failed — fall back to Playwright + Gemini vision
+          try {
+            const response = await page.goto(normalized, { waitUntil: "domcontentloaded" });
+            await page.waitForTimeout(1000);
+
+            const status = response?.status() ?? 0;
+            if (!response || status >= 400) {
+              pages[normalized] = {
+                appModel: { baseUrl: normalized, pages: [] },
+                outboundTargets: [],
+                visited: true,
+              };
+              continue;
+            }
+
+            const aria = await page.locator("body").ariaSnapshot();
+            const title = await page.title();
+            const screenshotBase64 = (await page.screenshot()).toString("base64");
+
+            appModel = await modelFromAria(normalized, title, aria, screenshotBase64);
+          } catch {
             pages[normalized] = {
               appModel: { baseUrl: normalized, pages: [] },
               outboundTargets: [],
@@ -87,22 +109,9 @@ export async function crawlSite(
             };
             continue;
           }
-
-          const aria = await page.locator("body").ariaSnapshot();
-          const title = await page.title();
-          const screenshotBase64 = (await page.screenshot()).toString("base64");
-
-          appModel = await modelFromAria(normalized, title, aria, screenshotBase64);
-          cacheSet(normalized, appModel);
-        } catch {
-          // Navigation or labeling failure — record empty model and move on.
-          pages[normalized] = {
-            appModel: { baseUrl: normalized, pages: [] },
-            outboundTargets: [],
-            visited: true,
-          };
-          continue;
         }
+
+        cacheSet(normalized, appModel);
       }
 
       // Extract outbound link URLs from the DOM (deterministic DOM order = link order).

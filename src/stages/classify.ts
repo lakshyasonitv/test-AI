@@ -4,7 +4,7 @@ import type { IR } from "../schema/ir.js";
 // schema imports this rather than defining its own list, so the deterministic and
 // LLM-fallback paths can never drift out of sync with each other.
 export const KNOWN_CATEGORIES = [
-  "selector_changed", "element_missing", "element_hidden", "multiple_matches",
+  "selector_changed", "element_missing", "element_not_interactable", "element_hidden", "multiple_matches",
   "detached", "timeout", "assertion_failed", "navigation_error", "network", "other",
 ] as const;
 export type FailureCategory = typeof KNOWN_CATEGORIES[number];
@@ -82,8 +82,18 @@ export function classify(errorText: string): ClassifiedFailure | null {
 
   if (/Timeout\s+\d+ms\s+exceeded/i.test(t) && /waiting for (getByRole|getByText|getByLabel|getByPlaceholder|getByTestId)/i.test(t)) {
     // "resolved to" present means the element WAS found — the assertion condition just
-    // never became true — as opposed to never being found at all (handled below).
+    // never became true within the timeout. Distinguish between "found but hidden/not
+    // interactable" and "found but assertion never became true".
     if (/resolved to/i.test(t)) {
+      // Element was found but not visible/interactable — covers mega-menu items,
+      // off-screen elements, and elements covered by overlays.
+      if (/hidden|not visible|not enabled|not editable|outside/i.test(t)) {
+        return {
+          category: "element_not_interactable",
+          explanation: "The element was found in the DOM but was not visible, not enabled, or was outside the viewport — likely hidden behind a collapsed menu, overlay, or off-screen.",
+          suggestedFix: "The element may need a preceding hover/scroll to become interactable, or the test should navigate to it directly (e.g. via href) instead of simulating the interaction.",
+        };
+      }
       return {
         category: "timeout",
         explanation: "The locator resolved to an element, but the expected assertion state was never reached within the timeout.",

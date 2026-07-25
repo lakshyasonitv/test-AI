@@ -1,11 +1,12 @@
 :root {
   --bg: #0e0f12; --panel: #17181c; --text: #e8e8ea; --muted: #8a8d94;
   --pending: #3a3d44; --running: #d9a441; --done: #3fb950; --failed: #f85149;
+  --truncated: #d29922; --partial: #58a6ff;
   font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); }
-.wrap { max-width: 720px; margin: 0 auto; padding: 40px 20px; }
+.wrap { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
 h1 { font-weight: 600; font-size: 1.4rem; margin-bottom: 24px; }
 
 form { display: flex; flex-direction: column; gap: 12px; margin-bottom: 32px; }
@@ -20,6 +21,10 @@ button {
 }
 button:hover { background: #3d68e0; }
 
+/* ---------------------------------------------------------------------------
+   Phase pipeline (progress dots)
+   --------------------------------------------------------------------------- */
+
 .stages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .stages li {
   background: var(--panel); border-radius: 8px; padding: 12px 14px;
@@ -31,17 +36,17 @@ li.completed .dot { background: var(--done); }
 li.failed .dot { background: var(--failed); }
 .label { font-size: 0.9rem; }
 .summary-text { font-size: 0.85rem; color: var(--muted); }
-.output {
-  width: 100%; margin: 8px 0 0;
-}
-.output summary {
-  cursor: pointer; font-size: 0.75rem; color: var(--muted); user-select: none;
-}
+.output { width: 100%; margin: 8px 0 0; }
+.output summary { cursor: pointer; font-size: 0.75rem; color: var(--muted); user-select: none; }
 .output pre {
   margin: 8px 0 0; padding: 10px; background: #0b0c0e; border-radius: 6px;
   font-size: 0.75rem; color: var(--muted); overflow-x: auto; max-height: 200px;
 }
 .hidden { display: none; }
+
+/* ---------------------------------------------------------------------------
+   Single-test result (backward compatible)
+   --------------------------------------------------------------------------- */
 
 #finalResult { margin-top: 28px; padding: 16px; background: var(--panel); border-radius: 8px; }
 #verdict { font-size: 1.1rem; margin: 0 0 10px; }
@@ -56,12 +61,118 @@ li.failed .dot { background: var(--failed); }
 #screenshot { max-width: 100%; border-radius: 6px; display: block; }
 #screenshotFigure figcaption { font-size: 0.75rem; color: var(--muted); margin-top: 6px; }
 
+/* ---------------------------------------------------------------------------
+   Suite progress (live during execution)
+   --------------------------------------------------------------------------- */
+
+.suite-progress { margin-top: 28px; padding: 16px; background: var(--panel); border-radius: 8px; }
+.suite-progress h2 { font-size: 1rem; margin: 0 0 12px; }
+.suite-progress-list { display: flex; flex-direction: column; gap: 6px; }
+
+.suite-progress-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  background: #0b0c0e; border-radius: 6px; font-size: 0.85rem;
+}
+.suite-progress-icon { font-size: 1rem; width: 24px; text-align: center; flex-shrink: 0; }
+.suite-progress-label { color: var(--muted); font-size: 0.8rem; flex-shrink: 0; }
+.suite-progress-title { flex: 1; }
+
+.suite-progress-item.running { border-left: 3px solid var(--running); }
+.suite-progress-item.passed { border-left: 3px solid var(--done); }
+.suite-progress-item.failed { border-left: 3px solid var(--failed); }
+.suite-progress-item.truncated { border-left: 3px solid var(--truncated); }
+.suite-progress-item.pending { border-left: 3px solid var(--pending); }
+
+/* ---------------------------------------------------------------------------
+   Suite results
+   --------------------------------------------------------------------------- */
+
+.suite-results { margin-top: 28px; }
+.suite-results[data-run-id] {}
+
+.suite-summary-header {
+  padding: 16px; background: var(--panel); border-radius: 8px; margin-bottom: 12px;
+}
+.suite-summary-stats { display: flex; gap: 16px; flex-wrap: wrap; }
+.suite-stat {
+  font-size: 0.9rem; font-weight: 600; padding: 4px 12px;
+  background: #0b0c0e; border-radius: 6px;
+}
+.suite-stat-passed { color: var(--done); }
+.suite-stat-failed { color: var(--failed); }
+.suite-stat-truncated { color: var(--truncated); }
+.suite-stat-partial { color: var(--partial); }
+
+.suite-case-list { display: flex; flex-direction: column; gap: 8px; }
+
+/* ---------------------------------------------------------------------------
+   Case card
+   --------------------------------------------------------------------------- */
+
+.case-card {
+  background: var(--panel); border-radius: 8px; overflow: hidden;
+}
+
+.case-card-header {
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+  cursor: pointer; user-select: none;
+}
+.case-card-header:hover { background: #1e1f24; }
+
+.case-status-icon { font-size: 1rem; width: 24px; text-align: center; flex-shrink: 0; }
+.case-title { flex: 1; font-size: 0.9rem; }
+.case-expand-icon { font-size: 0.75rem; color: var(--muted); flex-shrink: 0; }
+
+.case-badge {
+  padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; flex-shrink: 0; font-weight: 600;
+}
+.badge-passed { background: var(--done); color: #06210f; }
+.badge-failed { background: var(--failed); color: #2a0705; }
+.badge-truncated { background: var(--truncated); color: #2a1f05; }
+.badge-partial { background: var(--partial); color: #051a2a; }
+.badge-pending { background: var(--pending); color: var(--text); }
+
+.case-card-body { padding: 0 14px 14px; }
+
+.case-screenshot { margin: 0 0 10px; }
+.case-screenshot img { max-width: 100%; border-radius: 6px; display: block; }
+.case-screenshot figcaption { font-size: 0.75rem; color: var(--muted); margin-top: 6px; }
+
+.case-downloads { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.dl-btn {
+  padding: 4px 10px; border-radius: 6px; font-size: 0.75rem;
+  background: #0b0c0e; color: var(--muted); text-decoration: none;
+  border: 1px solid #2a2c33;
+}
+.dl-btn:hover { border-color: #4f7cff; color: var(--text); }
+
+.case-details { margin-top: 8px; }
+.case-details summary {
+  cursor: pointer; font-size: 0.75rem; color: var(--muted); user-select: none;
+}
+.case-details-content { margin-top: 8px; }
+.case-details-content h4 {
+  font-size: 0.75rem; color: var(--muted); margin: 12px 0 4px; font-weight: 600;
+}
+.case-details-content pre {
+  margin: 0; padding: 10px; background: #0b0c0e; border-radius: 6px;
+  font-size: 0.72rem; color: var(--muted); overflow-x: auto; max-height: 300px;
+}
+
+/* ---------------------------------------------------------------------------
+   Templates
+   --------------------------------------------------------------------------- */
+
 .templates { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .template-btn {
   background: var(--panel); border: 1px solid #2a2c33; color: var(--text);
   padding: 6px 12px; border-radius: 999px; font-size: 0.8rem; cursor: pointer;
 }
 .template-btn:hover { border-color: #4f7cff; }
+
+/* ---------------------------------------------------------------------------
+   History
+   --------------------------------------------------------------------------- */
 
 #history { margin-top: 32px; }
 #history h2 { font-size: 1rem; color: var(--muted); font-weight: 600; margin-bottom: 12px; }
@@ -78,6 +189,9 @@ li.failed .dot { background: var(--failed); }
 .badge.failed, .badge.error { background: var(--failed); color: #2a0705; }
 .badge.incomplete { background: var(--pending); color: var(--text); }
 .history-item .hprompt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-item .h-suite {
+  font-size: 0.75rem; color: var(--partial); flex-shrink: 0; white-space: nowrap;
+}
 .history-item .hurl { color: var(--muted); font-size: 0.75rem; }
 .history-del {
   flex-shrink: 0; border: none; background: transparent; color: var(--muted);
