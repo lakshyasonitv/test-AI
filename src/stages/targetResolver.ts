@@ -1,5 +1,6 @@
 import type { Page, Locator } from "playwright";
 import type { Target } from "../schema/ir.js";
+import { cosineSimilarity } from "../llm/embeddings.js";
 
 const q = (s: string) => JSON.stringify(s);
 
@@ -117,38 +118,15 @@ function similarity(a: string, b: string): number {
   return 1 - dp[s1.length][s2.length] / Math.max(s1.length, s2.length);
 }
 
-const embeddingCache = new Map<string, number>();
 
 async function semanticScore(
   a: string,
   b: string,
   embed: (text: string) => Promise<number[]>
 ): Promise<number> {
-  const key = `${a}|||${b}`;
-  if (embeddingCache.has(key)) {
-    return embeddingCache.get(key)!;
-  }
-  
-  // Calculate cosine similarity between embeddings of a and b
   const embA = await embed(a);
   const embB = await embed(b);
-  
-  // Cosine similarity
-  if (embA.length !== embB.length) {
-    throw new Error("Embedding dimensions differ.");
-  }
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < embA.length; i++) {
-    dot += embA[i] * embB[i];
-    normA += embA[i] * embA[i];
-    normB += embB[i] * embB[i];
-  }
-  const score = (normA === 0 || normB === 0) ? 0 : dot / (Math.sqrt(normA) * Math.sqrt(normB));
-  
-  embeddingCache.set(key, score);
-  return score;
+  return cosineSimilarity(embA, embB);
 }
 
 export async function resolveAgainstModel(

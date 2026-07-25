@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 const DIR = path.join("runs", "_cache", "llm");
 const memCache = new Map<string, { data: unknown; ts: number }>();
 const TTL_MS = 30 * 60 * 1000;
+const MAX_MEM_ENTRIES = 500;
 
 function hash(input: string): string {
   return crypto.createHash("sha1").update(input).digest("hex");
@@ -28,6 +29,10 @@ export function llmCacheGet<T>(key: string): T | null {
 
 export function llmCacheSet<T>(key: string, data: T): void {
   memCache.set(key, { data, ts: Date.now() });
+  if (memCache.size > MAX_MEM_ENTRIES) {
+    const oldest = memCache.keys().next().value;
+    if (oldest !== undefined) memCache.delete(oldest);
+  }
   mkdirSync(DIR, { recursive: true });
   writeFileSync(path.join(DIR, key + ".json"), JSON.stringify(data));
 }

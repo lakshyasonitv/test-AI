@@ -183,9 +183,6 @@ export async function discoverPages(urls: string[]): Promise<AppModel> {
 }
 
 export async function discover(url: string): Promise<AppModel> {
-  const cached = cacheGet(url);
-  if (cached) return cached;
-
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();

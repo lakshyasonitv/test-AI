@@ -20,6 +20,7 @@ import { AppModel, Element, PageModel } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 import { discoverUsingCrawler, needsVisionFallback } from "./domDiscovery.js";
 import { modelFromAria } from "./discovery.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 // ---------------------------------------------------------------------------
 // Concept labeling — the ONE remaining Gemini call in the primary path
@@ -47,6 +48,15 @@ async function labelConceptsWithDOM(
   const truncatedMarkdown = markdown.length > 4000
     ? markdown.slice(0, 4000) + "\n... (truncated)"
     : markdown;
+
+  const cacheKey = makeCacheKey(
+    pageTitle,
+    truncatedMarkdown,
+    elementsList,
+    screenshotBase64 ? "with-screenshot" : "no-screenshot"
+  );
+  const cachedLabels = llmCacheGet<{ concepts: string[]; labeledElements: { index: number; concept: string }[] }>(cacheKey);
+  if (cachedLabels) return cachedLabels;
 
   const system = `You analyze a web page's structured DOM data to identify concepts and label elements. Output ONLY JSON.
 Rules:
@@ -79,6 +89,7 @@ Return JSON: { "concepts": string[], "labeledElements": { "index": number, "conc
     try {
       const parsed = parseJson(raw);
       if (parsed && Array.isArray(parsed.concepts) && Array.isArray(parsed.labeledElements)) {
+        llmCacheSet(cacheKey, parsed);
         return parsed;
       }
       lastErr = "Invalid shape";

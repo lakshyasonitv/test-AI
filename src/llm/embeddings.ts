@@ -1,3 +1,6 @@
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 import { poolFromEnv } from "./keyPool.js";
 import { callWithPool } from "./backoff.js";
 
@@ -7,14 +10,36 @@ const MODEL =
   process.env.GEMINI_EMBED_MODEL ??
   "text-embedding-004";
 
-// Simple in-memory cache
+const CACHE_DIR = path.join("runs", "_cache", "embeddings");
+const MAX_LRU_ENTRIES = 300;
+const hashKey = (text: string) => crypto.createHash("sha1").update(text).digest("hex");
+
 const cache = new Map<string, number[]>();
 
 export async function embedText(text: string): Promise<number[]> {
   const key = text.trim();
 
   const cached = cache.get(key);
-  if (cached) return cached;
+  if (cached) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached;
+  }
+
+  const diskFile = path.join(CACHE_DIR, hashKey(key) + ".json");
+  if (existsSync(diskFile)) {
+    try {
+      const fromDisk = JSON.parse(readFileSync(diskFile, "utf8")) as number[];
+      cache.set(key, fromDisk);
+      if (cache.size > MAX_LRU_ENTRIES) {
+        const oldest = cache.keys().next().value;
+        if (oldest !== undefined) cache.delete(oldest);
+      }
+      return fromDisk;
+    } catch {
+      // fall through to a real API call if the cached file is corrupt/unreadable
+    }
+  }
 
   const embedding = await callWithPool(pool, async (apiKey) => {
     const res = await fetch(
@@ -51,6 +76,12 @@ export async function embedText(text: string): Promise<number[]> {
   });
 
   cache.set(key, embedding);
+  if (cache.size > MAX_LRU_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  mkdirSync(CACHE_DIR, { recursive: true });
+  writeFileSync(diskFile, JSON.stringify(embedding));
 
   return embedding;
 }
