@@ -23,6 +23,6 @@ export async function buildRagContext(query: RetrievalQuery): Promise<string> {
     budget -= block.length;
   }
 
-  if (parts.length === 0) return "";
-  return `## Relevant testing knowledge (retrieved)\n\n${parts.join("\n\n")}`;
+ if (parts.length === 0) return "";
+return `## Behavioral expectations for the named feature(s) (background only — do NOT turn these into separate test cases)\n\n${parts.join("\n\n")}`;
 }

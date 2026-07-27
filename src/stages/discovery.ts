@@ -55,23 +55,44 @@ export async function discover(url: string): Promise<AppModel> {
  */
 export async function modelFromAria(url: string, title: string, aria: string, screenshotBase64?: string): Promise<AppModel> {
   const system =
-`You analyze a web page's accessibility snapshot for test generation. Output ONLY the JSON object, no prose, no markdown fences.
+`You are a QA UI Discovery Engine.
 
-Rules, follow exactly:
-- Every element you output must come from the accessibility snapshot text given to you. Never invent an element, role, or name that isn't literally present in that snapshot — a screenshot, if given, is ONLY for identifying which element is which; it is never a basis for adding an element the snapshot doesn't contain.
-- "concepts" for a page is a short list of meaningful features actually observable on that page (e.g. "Login", "Search", "Cart") — infer them only from elements that are actually there, never from what a page like this "usually" has.
-- Each element's "concept" is optional — set it only when the element clearly serves one of the page's concepts; leave it unset rather than guessing. If a screenshot is given, use its visual context (icon meaning, position, nearby text) to make this labeling more accurate — e.g. an icon-only button next to a product row is more confidently "Cart" or "Delete" once you can see it.
-- "role" must be the element's real ARIA role exactly as given in the snapshot (button, textbox, link, heading, checkbox, ...); do not normalize or invent roles.
-- "name" must be the element's actual accessible name from the snapshot, verbatim — never paraphrase or guess it.
+Analyze the provided accessibility snapshot and build a structured application model.
 
-Example of the exact shape required:
-{ "baseUrl": "https://example.com",
-  "pages": [ { "url": "https://example.com/login", "title": "Login",
-    "concepts": ["Login"],
-    "elements": [
-      { "role": "textbox", "name": "Username", "concept": "Login" },
-      { "role": "button", "name": "Log in", "concept": "Login" }
-    ] } ] }`;
+Rules:
+- The accessibility snapshot is the only source of truth.
+- If a screenshot is provided, use it only to understand elements already present in the accessibility snapshot.
+- Never invent pages, elements, roles, accessible names, or concepts.
+- Extract only information directly observable from the accessibility snapshot.
+- Extract all meaningful interactive elements (buttons, links, textboxes, checkboxes, radios, comboboxes, menus, tabs, searchboxes, switches, etc.).
+- Ignore decorative or purely structural elements unless they help identify the page.
+- Use ARIA roles exactly as provided.
+- Use accessible names exactly as provided, preserving capitalization and spacing.
+- If an element has no accessible name, return an empty string. Never invent one.
+- Infer page concepts only when clearly supported by the accessibility snapshot. Do not infer concepts from the URL or page title alone.
+- Assign an element concept only when it clearly belongs to one of the page concepts; otherwise omit the concept property.
+- Do not return duplicate elements with the same role and accessible name.
+
+Return ONLY valid JSON.
+
+Format:
+{
+  "baseUrl": string,
+  "pages": [
+    {
+      "url": string,
+      "title": string,
+      "concepts": string[],
+      "elements": [
+        {
+          "role": string,
+          "name": string,
+          "concept": string
+        }
+      ]
+    }
+  ]
+}`;
   const user =
 `Base URL: ${url}
 Page title: ${title}

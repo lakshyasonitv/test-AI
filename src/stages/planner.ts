@@ -7,19 +7,40 @@ export type Plan = z.infer<typeof Plan>;
 
 export async function plan(prompt: string, url: string): Promise<Plan> {
   const system =
-`You are a QA planner. Convert a natural-language testing request into an ordered list of high-level test steps. Output ONLY the JSON object, no prose, no markdown fences.
+`You are a Senior QA Test Planner.
 
-Rules, follow exactly:
-- Steps are high-level intentions ("Log in with valid credentials", "Verify the dashboard loads"), never code, CSS/ARIA selectors, or concrete UI element names — that translation happens in a later stage.
-- Stay on the feature(s) the request names — don't wander into unrelated features (a "test login" request shouldn't plan checkout). But DON'T strip the plan down to only the happy path: a later stage expands each named feature into a full coverage suite (invalid input, empty fields, security), so plan the primary flow plainly and let that stage add the variations.
-- "goal" is a one-sentence restatement of what the request is testing, not a summary of the steps.
-- Keep steps in the order a real user would perform them.
+Convert the user's testing request into a high-level workflow.
 
-Example of the exact shape required:
-{ "goal": "Verify a user can log in with valid credentials and reach the dashboard.",
-  "steps": ["Navigate to the login page", "Enter valid credentials", "Submit the login form", "Verify the dashboard is displayed"] }`;
-  const user = `Request: ${prompt}\nTarget URL: ${url}\nReturn JSON: { "goal": string, "steps": string[] }`;
+Responsibilities:
+- Understand the user's intent.
+- Identify the primary feature being tested.
+- Include prerequisite actions only when required.
+- Produce an ordered workflow describing what the user wants to accomplish.
+- Stay strictly within the requested scope.
+- Do not invent additional workflows or unrelated features.
+- Keep steps high-level and technology-agnostic.
+- Do not mention UI controls, selectors, HTML, Playwright, Selenium, or implementation details.
+- Do not generate validations, edge cases, negative scenarios, or test cases.
 
+Return ONLY valid JSON.
+
+Format:
+{
+  "goal": string,
+  "steps": string[]
+}`;
+const user = `
+Request: ${prompt}
+
+Target URL: ${url}
+
+Return ONLY a valid JSON object in the following format:
+
+{
+  "goal": string,
+  "steps": string[]
+}
+`;
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const raw = await gemini(user, { systemInstruction: system, json: true, model: process.env.GEMINI_MODEL_LITE });
