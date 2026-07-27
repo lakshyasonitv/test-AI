@@ -36,7 +36,7 @@ async function collectElementMetadata(page: any, ariaElements: any[]): Promise<R
     try {
       const locator = page.getByRole(el.role, { name: el.name });
       const count = await locator.count();
-      
+
       if (count === 0) continue;
 
       for (let i = 0; i < count; i++) {
@@ -52,24 +52,24 @@ async function collectElementMetadata(page: any, ariaElements: any[]): Promise<R
 
           while (parent && path.length < 10) {
             const role = parent.getAttribute('role') || parent.tagName.toLowerCase();
-            const name = parent.getAttribute('aria-label') || 
-                        parent.getAttribute('name') || 
-                        parent.textContent?.trim().slice(0, 50) || null;
-            
+            const name = parent.getAttribute('aria-label') ||
+              parent.getAttribute('name') ||
+              parent.textContent?.trim().slice(0, 50) || null;
+
             if (['form', 'nav', 'main', 'header', 'footer', 'dialog', 'section', 'article', 'aside'].includes(role)) {
               containerRole = containerRole || role;
               containerName = containerName || name;
             }
-            
+
             path.unshift(role);
             parent = parent.parentElement;
           }
 
           const pageSection = path.includes('main') ? 'main' :
-                             path.includes('nav') ? 'nav' :
-                             path.includes('header') ? 'header' :
-                             path.includes('footer') ? 'footer' :
-                             path.includes('dialog') ? 'dialog' : 'body';
+            path.includes('nav') ? 'nav' :
+              path.includes('header') ? 'header' :
+                path.includes('footer') ? 'footer' :
+                  path.includes('dialog') ? 'dialog' : 'body';
 
           return { containerRole, containerName, path, pageSection };
         });
@@ -97,10 +97,10 @@ async function collectElementMetadata(page: any, ariaElements: any[]): Promise<R
 function parseAriaStructure(aria: string): any[] {
   const elements: any[] = [];
   const lines = aria.split('\n');
-  
+
   for (const line of lines) {
     const match = line.match(/^\s*(?:- )?(button|textbox|link|heading|checkbox|radio|combobox|listbox|option|menuitem|tab|switch|slider|spinbutton|searchbox|img|list|listitem|table|row|cell|dialog|alert|navigation|banner|main|contentinfo|form|region|group|generic|article|figure)(?:\s+"([^"]*)")?/i);
-    
+
     if (match) {
       elements.push({
         role: match[1].toLowerCase(),
@@ -108,7 +108,7 @@ function parseAriaStructure(aria: string): any[] {
       });
     }
   }
-  
+
   return elements;
 }
 
@@ -140,10 +140,10 @@ Return JSON: { "concepts": string[], "labeledElements": { "index": number, "conc
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const raw = await gemini(user, {
-      systemInstruction: system, 
-      json: true, 
+      systemInstruction: system,
+      json: true,
       model: process.env.GEMINI_MODEL_LITE,
-      imageBase64: screenshotBase64, 
+      imageBase64: screenshotBase64,
       imageMime: "image/png",
     });
     try {
@@ -156,7 +156,7 @@ Return JSON: { "concepts": string[], "labeledElements": { "index": number, "conc
       lastErr = err?.message ?? String(err);
     }
   }
-  
+
   return { concepts: [], labeledElements: [] };
 }
 
@@ -275,16 +275,16 @@ export async function discover(url: string): Promise<AppModel> {
     const interactiveElements = await discoverInteractiveElements(page);
     const title = await page.title();
     const pageUrl = page.url();
-    
+
     const ariaHash = computeAriaHash(aria);
     const cacheKey = `${url}|||${title}|||${ariaHash}`;
     const cached = cacheGet(cacheKey);
     if (cached) return cached;
 
     const ariaElements = parseAriaStructure(aria);
-    
+
     const enrichedElements = await collectElementMetadata(page, ariaElements);
-    
+
     const screenshotBase64 = (await page.screenshot({
       type: "jpeg",
       quality: 60
@@ -295,7 +295,7 @@ export async function discover(url: string): Promise<AppModel> {
     const model = await modelFromAria(url, title, combinedSnapshot, screenshotBase64);
 
     const { concepts, labeledElements } = await labelConcepts(enrichedElements, title, screenshotBase64);
-    
+
     const elements: Element[] = enrichedElements.map((el, i) => {
       const label = labeledElements.find(l => l.index === i);
       return {
@@ -348,7 +348,7 @@ export async function discover(url: string): Promise<AppModel> {
  */
 export async function modelFromAria(url: string, title: string, aria: string, screenshotBase64?: string, siteOutline?: string): Promise<AppModel> {
   const system =
-`You analyze a web page's accessibility snapshot for test generation. Output ONLY the JSON object, no prose, no markdown fences.
+    `You analyze a web page's accessibility snapshot for test generation. Output ONLY the JSON object, no prose, no markdown fences.
 
 Rules, follow exactly:
 - Every element you output must come from the accessibility snapshot or the interactive elements list given to you. Never invent an element, role, or name that isn't literally present in those sources — a screenshot, if given, is ONLY for identifying which element is which; it is never a basis for adding an element the snapshot doesn't contain.
@@ -370,7 +370,7 @@ Example of the exact shape required:
     ? `\nThis page is part of a larger site. Site map for context:\n${siteOutline}\n(Use this only to interpret ambiguous links/labels — never to invent elements not in the snapshot below.)\n`
     : "";
   const user =
-`Base URL: ${url}
+    `Base URL: ${url}
 Page title: ${title}${siteContext}
 Accessibility snapshot:
 ${aria}

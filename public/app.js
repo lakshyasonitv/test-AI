@@ -105,7 +105,6 @@ function summarize(stage, data) {
         const extra = data.reactive ? ` (${data.reactive} reactive)` : "";
         return `Generated ${count} test case(s)${extra}`;
       }
-      case "testcases": return `Generated ${data.length ?? data.total ?? 0} test case(s)`;
       case "ir": return `Test plan: ${data.meta?.title ?? ""}`;
       case "generate": return "Test script generated";
       case "execute": return data.passed ? "Executed — passed" : "Executed — failed";
@@ -130,15 +129,6 @@ function setPhaseFromStage(stage, status, data) {
   }
 }
 
-const STATUS_LABEL = { passed: "Passed", failed: "Failed", error: "Error", incomplete: "Incomplete", truncated_no_assertion: "Incomplete" };
-
-// Test steps can legitimately contain raw markup (the security coverage cases fill fields
-// with literal <script> payloads) — never trust them into innerHTML unescaped.
-const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
-async function loadHistory() {
-  const res = await fetch("/api/runs");
-  const runs = await res.json();
   // -----------------------------------------------------------------------------
   // Suite progress (live updates during execution)
   // -----------------------------------------------------------------------------
