@@ -4,7 +4,9 @@ import { parseJson } from "../llm/json.js";
 import type { Plan } from "./planner.js";
 import type { Coverage } from "./planner.js";
 import type { AppModel } from "../schema/appModel.js";
+import { toLiteModel } from "../schema/appModel.js";
 import { strategyFor, unmatchedConcepts, filterByScope, ALL_SCOPES } from "../kb/testStrategy.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 // Models sometimes ignore case ("High") or return an array where a string was asked for
 // ("expected": [...]) — normalize before validating rather than rejecting valid content.
@@ -158,9 +160,14 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
   const gapsLine = gaps.length
     ? `\nConcepts with NO checklist entry — apply the 5 reasoning dimensions above to these directly, do not just emit one generic case: ${gaps.join(", ")}\n`
     : "";
+  const liteModel = toLiteModel(appModel);
+  const cacheKey = makeCacheKey(JSON.stringify(p), JSON.stringify(liteModel));
+  const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
+  if (cachedCases) return cachedCases;
+
   const user =
     `Plan: ${JSON.stringify(p)}
-Application model: ${JSON.stringify(appModel)}
+Application model: ${JSON.stringify(liteModel)}
 
 Coverage checklist floor (produce one grounded case per applicable item):
 ${strategyList}
@@ -181,7 +188,9 @@ Return JSON array: [ { "title","priority","feature","steps":string[],"expected",
         const scope = (p.testTypeScope ?? ALL_SCOPES) as typeof ALL_SCOPES;
         const scopedCases = filterByScope(stamped, scope);
         // Apply coverage limiting based on user's chosen level
-        return limitByCoverage(scopedCases, p.coverage);
+        const finalCases = limitByCoverage(scopedCases, p.coverage);
+        llmCacheSet(cacheKey, finalCases);
+        return finalCases;
       }
       lastErr = result.error.message;
     } catch (err: any) {

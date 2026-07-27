@@ -1,5 +1,6 @@
 import type { Page, Locator } from "playwright";
 import type { Target } from "../schema/ir.js";
+import { cosineSimilarity } from "../llm/embeddings.js";
 
 const q = (s: string) => JSON.stringify(s);
 
@@ -39,7 +40,13 @@ const ROLE_SWAP: Record<string, string> = { button: "link", link: "button" };
  * as an import — only as the same logic written twice.
  */
 export function resolveCode(t: Target): string {
-  if (t.role && t.name) return `(await locate(page, ${q(t.role)}, ${q(t.name)}))`;
+  if (t.role && t.name) {
+    // If nth is specified, use it to disambiguate duplicate elements
+    if (t.nth !== undefined && t.nth !== null) {
+      return `(await locate(page, ${q(t.role)}, ${q(t.name)}, ${t.nth}))`;
+    }
+    return `(await locate(page, ${q(t.role)}, ${q(t.name)}))`;
+  }
   return `${pick(t).code(t)}.first()`;
 }
 
@@ -63,6 +70,137 @@ async function resolveRoleWithFallback(page: Page, role: string, name: string): 
 
 /** Live Playwright Locator against a running page (for the replay runner). */
 export async function resolveLive(page: Page, t: Target): Promise<Locator> {
-  if (t.role && t.name) return resolveRoleWithFallback(page, t.role, t.name);
+  if (t.role && t.name) {
+    // If nth is specified, use it to disambiguate duplicate elements
+    if (t.nth !== undefined && t.nth !== null) {
+      const locator = page.getByRole(t.role as any, { name: t.name });
+      return locator.nth(t.nth);
+    }
+    return resolveRoleWithFallback(page, t.role, t.name);
+  }
   return pick(t).live(page, t).first();
+}
+
+// --- Fuzzy AppModel matching (no AI) ---------------------------------------------------
+// Used when an exact/substring role+name match against the AppModel fails — the single
+// most common real-world locator break is a same-role rename (e.g. "Login" -> "Sign In"),
+// not a structural change that actually needs rediscovery. Deterministic and cheap, so
+// ir.ts tries this BEFORE spending a live-extend browser launch or another Groq call on it.
+
+import type { Element as ModelElement } from "../schema/appModel.js";
+
+export interface ModelMatch {
+  kind: "exact" | "similar" | "multiple" | "none";
+  element: ModelElement | null;
+  candidates?: ModelElement[];
+  score: number;
+}
+
+function normName(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Levenshtein edit distance, normalized to a 0..1 similarity score (1 = identical). */
+function similarity(a: string, b: string): number {
+  const s1 = normName(a), s2 = normName(b);
+  if (s1 === s2) return 1;
+  if (!s1.length || !s2.length) return 0;
+  const dp: number[][] = Array.from({ length: s1.length + 1 }, () => new Array(s2.length + 1).fill(0));
+  for (let i = 0; i <= s1.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= s2.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= s1.length; i++) {
+    for (let j = 1; j <= s2.length; j++) {
+      dp[i][j] = s1[i - 1] === s2[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return 1 - dp[s1.length][s2.length] / Math.max(s1.length, s2.length);
+}
+
+
+async function semanticScore(
+  a: string,
+  b: string,
+  embed: (text: string) => Promise<number[]>
+): Promise<number> {
+  const embA = await embed(a);
+  const embB = await embed(b);
+  return cosineSimilarity(embA, embB);
+}
+
+export async function resolveAgainstModel(
+  role: string,
+  name: string,
+  elements: ModelElement[],
+  opts: {
+    syntacticThreshold?: number;
+    semanticThreshold?: number;
+    embed?: (text: string) => Promise<number[]>;
+  } = {}
+): Promise<ModelMatch> {
+  const syntacticThreshold = opts.syntacticThreshold ?? 0.72;
+  const semanticThreshold = opts.semanticThreshold ?? 0.82;
+
+  const r = role.toLowerCase();
+  const sameRole = elements.filter((e) => e.role.toLowerCase() === r);
+  const n = normName(name);
+
+  const exactMatches = sameRole.filter(e => {
+    const en = normName(e.name);
+    return en === n || en.includes(n) || n.includes(en);
+  });
+
+  if (exactMatches.length === 1) {
+    return {
+      kind: "exact",
+      element: exactMatches[0],
+      score: 1
+    };
+  }
+
+  if (exactMatches.length > 1) {
+    return {
+      kind: "multiple",
+      element: null,
+      candidates: exactMatches,
+      score: 1
+    };
+  }
+
+  if (!sameRole.length) return { kind: "none", element: null, score: 0 };
+
+  let bestSyntactic: { element: ModelElement; score: number } | null = null;
+  for (const e of sameRole) {
+    const score = similarity(name, e.name);
+    if (!bestSyntactic || score > bestSyntactic.score) bestSyntactic = { element: e, score };
+  }
+  if (bestSyntactic && bestSyntactic.score >= syntacticThreshold) {
+    return { kind: "similar", element: bestSyntactic.element, score: bestSyntactic.score };
+  }
+
+  if (opts.embed) {
+    try {
+      const visibleElements = sameRole.filter(e => e.visible !== false);
+      const candidateElements = visibleElements.length > 0 ? visibleElements : sameRole;
+      
+      let bestSemantic: { element: ModelElement; score: number } | null = null;
+      for (const e of candidateElements) {
+        const query = `${role}: ${name}`;
+        const target = e.concept 
+          ? `${e.role}: ${e.concept}` 
+          : `${e.role}: ${e.name}`;
+        
+        const score = await semanticScore(query, target, opts.embed);
+        if (!bestSemantic || score > bestSemantic.score) bestSemantic = { element: e, score };
+      }
+      if (bestSemantic && bestSemantic.score >= semanticThreshold) {
+        return { kind: "similar", element: bestSemantic.element, score: bestSemantic.score };
+      }
+    } catch (err: any) {
+      console.log(`[targetResolver] semantic match skipped: ${err?.message ?? err}`);
+    }
+  }
+
+  return { kind: "none", element: null, score: bestSyntactic?.score ?? 0 };
 }

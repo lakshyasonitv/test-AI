@@ -43,6 +43,14 @@ export interface RunSummary {
   startedAt: number;
   /** False for runs that predate events.ndjson — nothing to replay via SSE for those. */
   hasEvents: boolean;
+  suite?: {
+    total: number;
+    passed: number;
+    failed: number;
+    truncated: number;
+    truncated_no_assertion: number;
+    cases: { caseId: string; title: string; status: string; resultPath: string }[];
+  };
 }
 
 function readJson(runId: string, name: string): any {
@@ -89,6 +97,9 @@ export function listRuns(): RunSummary[] {
         }
       }
 
+      // Read suite summary if available
+      const suiteSummary = readJson(runId, "07-suite-summary.json") as RunSummary["suite"] | undefined;
+
       return {
         runId,
         url: inputData?.url ?? fallbackInput?.url ?? "",
@@ -96,6 +107,7 @@ export function listRuns(): RunSummary[] {
         status,
         startedAt: statSync(path.join(root, runId)).birthtimeMs,
         hasEvents: events.length > 0,
+        suite: suiteSummary,
       };
     });
 }

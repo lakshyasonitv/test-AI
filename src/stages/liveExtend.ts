@@ -1,10 +1,13 @@
 import { chromium, type Page } from "playwright";
 import { AppModel } from "../schema/appModel.js";
 import type { Step } from "../schema/ir.js";
+import { modelFromAria } from "./discovery.js";
+import { discoverUsingCrawler } from "./domDiscovery.js";
 import { modelFromAria, discoverInteractiveElements } from "./discovery.js";
 import { resolveLive } from "./targetResolver.js";
 import { credentialForTarget, type Credentials } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -22,11 +25,11 @@ async function runStepLive(page: Page, step: Step, baseUrl: string, creds?: Cred
       await (await resolveLive(page, step.target!)).fill(val);
       return;
     }
-    case "click":  await (await resolveLive(page, step.target!)).click(); return;
+    case "click": await (await resolveLive(page, step.target!)).click(); return;
     case "select": await (await resolveLive(page, step.target!)).selectOption(step.value ?? ""); return;
-    case "check":  await (await resolveLive(page, step.target!)).check(); return;
-    case "press":  await (await resolveLive(page, step.target!)).press(step.value ?? "Enter"); return;
-    case "wait":   await page.waitForTimeout(Number(step.value ?? 1000)); return;
+    case "check": await (await resolveLive(page, step.target!)).check(); return;
+    case "press": await (await resolveLive(page, step.target!)).press(step.value ?? "Enter"); return;
+    case "wait": await page.waitForTimeout(Number(step.value ?? 1000)); return;
     case "assert": return; // state check only — skip during replay
   }
 }
@@ -40,6 +43,10 @@ async function replayAndSnapshot(
   prefix: Step[],
   creds?: Credentials
 ): Promise<{ reachedUrl: string; pageModel: AppModel["pages"][number] }> {
+  const cacheKey = makeCacheKey(model.baseUrl, JSON.stringify(prefix));
+  const cached = llmCacheGet<{ reachedUrl: string; pageModel: AppModel["pages"][number] }>(cacheKey);
+  if (cached) return cached;
+
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
@@ -56,10 +63,25 @@ async function replayAndSnapshot(
     // Let navigation triggered by the last step settle before snapshotting, else we'd
     // capture the pre-navigation page. Bounded so a site with long-lived connections
     // (never truly "idle") doesn't stall the whole run.
-    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+    await page.waitForLoadState("domcontentloaded", { timeout: 8000 }).catch(() => { });
 
     const reachedUrl = page.url();
     const title = await page.title();
+
+    // Try DOM-based discovery first for the reached page
+    let fresh: AppModel | null = null;
+    try {
+      fresh = await discoverUsingCrawler(reachedUrl);
+    } catch {
+      // DOM discovery failed for the reached page
+    }
+
+    // Fall back to vision-based discovery if DOM failed
+    if (!fresh || !fresh.pages[0]?.elements?.length) {
+      const aria = await page.locator("body").ariaSnapshot();
+      const screenshotBase64 = (await page.screenshot()).toString("base64");
+      fresh = await modelFromAria(reachedUrl, title, aria, screenshotBase64);
+    }
     const aria = await page.locator("body").ariaSnapshot();
     const interactiveElements = await discoverInteractiveElements(page);
     const screenshotBase64 = (await page.screenshot()).toString("base64");
@@ -68,7 +90,9 @@ async function replayAndSnapshot(
 
     const pageModel = fresh.pages.find((p) => p.url === reachedUrl) ?? fresh.pages[0];
     if (!pageModel) throw new Error(`replay reached ${reachedUrl} but produced no page model`);
-    return { reachedUrl, pageModel };
+    const result = { reachedUrl, pageModel };
+    llmCacheSet(cacheKey, result);
+    return result;
   } finally {
     await browser.close();
   }

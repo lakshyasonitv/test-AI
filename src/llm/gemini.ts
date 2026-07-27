@@ -12,7 +12,8 @@ export interface GeminiOpts {
 }
 
 export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<string> {
-  const model = opts.model ?? process.env.GEMINI_MODEL ?? "gemini-3.5-flash";
+  const model = opts.model ?? process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+  console.log("[gemini] calling model:", model, "| prompt length:", prompt.length);
 
   return callWithPool(pool, async (apiKey) => {
     const parts: any[] = [{ text: prompt }];
@@ -23,6 +24,7 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<str
     if (opts.systemInstruction) body.system_instruction = { parts: [{ text: opts.systemInstruction }] };
     if (opts.json) body.generationConfig = { responseMimeType: "application/json" };
 
+    console.log("[gemini] sending request...");
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
       {
@@ -31,14 +33,22 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<str
         body: JSON.stringify(body),
       }
     );
+    console.log("[gemini] response status:", res.status);
     if (!res.ok) {
       const text = await res.text();
+      console.error("[gemini] error body:", text.slice(0, 200));
       const e: any = new Error(`Gemini ${res.status}: ${text}`);
       e.status = res.status;
+      e.retryAfter = res.headers.get("retry-after");
+      if (res.status === 429) {
+        console.warn("[gemini] quota exceeded — will retry after backoff (status 429)");
+      }
       throw e;
     }
     const data = await res.json();
-    return (data.candidates?.[0]?.content?.parts ?? [])
+    const content = (data.candidates?.[0]?.content?.parts ?? [])
       .map((p: any) => p.text ?? "").join("");
+    console.log("[gemini] response length:", content.length);
+    return content;
   });
 }

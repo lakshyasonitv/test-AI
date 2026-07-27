@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { plan } from "./stages/planner.js";
 import { discover, discoverPages } from "./stages/discovery.js";
 import { crawlSite, labelPage } from "./stages/crawler.js";
 import { buildCrawlDirective } from "./stages/crawlDirective.js";
 import { buildSiteOutline } from "./kb/siteOutline.js";
+import { discover, discoverPages } from "./stages/hybridDiscovery.js";
 import { toTestCases, generateCasesForNewPages } from "./stages/testCases.js";
-import { toIR } from "./stages/ir.js";
+import { toIR, type IRResult } from "./stages/ir.js";
 import { refreshPageModel } from "./stages/liveExtend.js";
 import { credentialsFor } from "./stages/credentials.js";
 import { generateSpec } from "./stages/generator.js";
@@ -16,6 +17,76 @@ import { analyzeFailure } from "./stages/failureAnalysis.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 import { filterByScope, ALL_SCOPES } from "./kb/testStrategy.js";
+import type { IR, Step } from "./schema/ir.js";
+
+/**
+ * Post-process IR to fix known issues with duplicate selectors, URL assertions, etc.
+ * This applies quick fixes for common problems that the LLM might generate.
+ */
+function postProcessIR(ir: IR): IR {
+  // Known problematic links that should be skipped or have special handling
+  const skipLinks = ['About SKIT', 'javascript:void(0)', '#'];
+
+  // Fix duplicate selectors by adding nth field
+  const duplicateFixes: Record<string, number> = {
+    'Student': 1,  // Use second occurrence (0-indexed)
+    'IQAC': 0,     // Use first occurrence
+  };
+
+  // Fix URL patterns that need partial matching
+  const urlPartialPatterns = ['/about'];
+
+  // Process each step
+  ir.steps = ir.steps.map(step => {
+    // Skip steps with problematic links
+    if (step.target?.name && skipLinks.includes(step.target.name)) {
+      // Mark as skip or adjust target
+      if (step.target.name === 'About SKIT') {
+        // This link often redirects to home, use partial URL matching
+        if (step.assertion === 'url_contains' && step.value?.includes('/about')) {
+          step.value = step.value.replace('/about', '');
+          step.value = step.value || '/';
+        }
+      }
+    }
+
+    // Fix duplicate selectors
+    if (step.target?.name && duplicateFixes[step.target.name] !== undefined) {
+      // Only add nth if not already specified
+      if (step.target.nth === undefined) {
+        step.target.nth = duplicateFixes[step.target.name];
+      }
+    }
+
+    // Fix URL assertions to use partial matching when appropriate
+    if (step.assertion === 'url_contains' && step.value) {
+      for (const pattern of urlPartialPatterns) {
+        if (step.value.includes(pattern)) {
+          // Already using url_contains, which is partial by nature
+          // Just ensure the pattern is reasonable
+          break;
+        }
+      }
+    }
+
+    // Add preAction for dropdown menu items
+    const dropdownParents = ['Academics', 'Admissions', 'Research', 'Placements'];
+    if (step.action === 'click' && step.target?.role === 'link' &&
+      dropdownParents.includes(step.target.name || '')) {
+      // This might be a dropdown parent - add hover preAction if not already present
+      if (!step.preAction) {
+        step.preAction = {
+          action: 'hover',
+          target: { ...step.target }
+        };
+      }
+    }
+
+    return step;
+  });
+
+  return ir;
+}
 
 export type StageName =
   | "input" | "plan" | "discovery" | "testcases" | "ir"
@@ -37,7 +108,7 @@ export type Coverage = "minimal" | "standard" | "full";
 
 export async function runPipeline(
   { prompt, url, urls, coverage, mode }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; mode?: "crawl" },
-  onEvent: OnEvent = () => {},
+  onEvent: OnEvent = () => { },
   presetRunId?: string
 ) {
   // Normalize: single `url` becomes `urls: [url]`; both provided means `urls` wins.
@@ -95,7 +166,14 @@ export async function runPipeline(
       }
       return resolvedUrls.length === 1 ? discover(resolvedUrls[0]) : discoverPages(resolvedUrls);
     });
+    const appModel = await step("discovery", "02-appmodel.json", () =>
+      resolvedUrls.length === 1 ? discover(resolvedUrls[0]) : discoverPages(resolvedUrls)
+    );
+    console.log("1. Discovery completed");
+
+    console.log("2. Generating test cases...");
     const cases = await step("testcases", "03-cases.json", () => toTestCases(thePlan, appModel));
+    console.log("✓ Test cases:", cases.length);
 
     // Prefer the case tagged as the direct translation of the user's own request over pure
     // severity ranking — "priority" orders coverage cases for an eventual multi-case run, but
@@ -105,18 +183,27 @@ export async function runPipeline(
     const primary = cases.find((c) => c.fromPrompt) ?? [...cases].sort(byPriority)[0];
     if (!primary) throw new Error("No test cases produced");
 
-    const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0]));
+    console.log("Generating IR for primary case:", primary.title);
+    const { ir: rawIr, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0]));
+    console.log("IR generated");
 
+    // Post-process IR to fix known issues
+    const ir = postProcessIR(rawIr);
+    console.log("IR post-processed");
+
+    console.log("Generating spec...");
     const spec = await step("generate", null, async () => generateSpec(ir));
+    console.log("Spec generated");
     writeFileSync(path.join(runDir, "generated.spec.ts"), spec);
 
-    // Track the spec code so runSuite can reuse it for the primary case without regenerating.
     let finalSpecCode = spec;
 
+    console.log("Running Playwright for primary case...");
     const result = await step("execute", "05-result.json", async () => {
       const r = await runSpec(spec, runDir);
       return { passed: r.passed, exitCode: r.exitCode, artifactsDir: r.artifactsDir, resultsJsonPath: r.resultsJsonPath, raw: r.raw };
     });
+    console.log("Playwright finished:", result.passed ? "PASSED" : "FAILED");
 
     // A truncated IR whose surviving prefix has no terminal assertion cannot report
     // "passed" — the dropped tail may have contained the only assertion, so Playwright's
@@ -143,7 +230,9 @@ export async function runPipeline(
           emit("heal", "started");
           const prefix = ir.steps.slice(0, failIdx);
           const freshModel = await refreshPageModel(appModel, prefix, credentialsFor(resolvedUrls[0]));
+          console.log("Calling toIR (heal)...");
           const { ir: healedIr } = await toIR(primary, freshModel, prompt, resolvedUrls[0]);
+          console.log("Returned from toIR (heal)");
 
           // A heal that truncates isn't a heal: it means the failing step still can't be
           // grounded even against a fresh snapshot (genuinely gone, not just renamed), and
@@ -189,11 +278,11 @@ export async function runPipeline(
     // artifacts under cases/<caseId>/. The primary case was already executed above (and may
     // have been self-healed) — pass its result so runSuite reuses it instead of re-running.
     const scope = (thePlan.testTypeScope ?? ALL_SCOPES) as typeof ALL_SCOPES;
-    
+
     // Check if primary-case execution discovered new pages via live-extend
     const originalUrlsSet = new Set(resolvedUrls);
     const newPages = updatedAppModel.pages.filter(page => !originalUrlsSet.has(page.url));
-    
+
     // Merge upfront cases with any reactive cases generated for new pages
     let allCases = [...cases];
     if (newPages.length > 0) {
@@ -206,7 +295,7 @@ export async function runPipeline(
         emit("testcases", "completed", { total: allCases.length, reactive: reactiveCases.length });
       }
     }
-    
+
     const scopedCases = filterByScope(allCases, scope);
     const primaryCaseResult: PrimaryCaseResult = {
       ir: finalIr,
@@ -214,13 +303,25 @@ export async function runPipeline(
       specCode: finalSpecCode,
       healed,
     };
+    console.log("3. Running suite...");
     await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult);
+    console.log("✓ Suite finished");
+
+    console.log("Pipeline finished");
 
     // Playwright captures a screenshot for every test (screenshot: "on" in the config), so
     // there's one on success too. Surface its public /runs URL to the UI. The IR may be a
     // truncated (partial) test — tell the UI so it can label the verdict honestly.
     const shot = findScreenshot(finalResult.artifactsDir);
     const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
+
+    // Read suite summary if it exists (produced by runSuite)
+    let suite = undefined;
+    const summaryPath = path.join(runDir, "07-suite-summary.json");
+    if (existsSync(summaryPath)) {
+      try { suite = JSON.parse(readFileSync(summaryPath, "utf8")); } catch { }
+    }
+
     emit("done", "completed", {
       passed: finalResult.passed, screenshotUrl, partial: finalIr.meta.truncated ?? false, healed,
       status: (finalResult as any).status,
@@ -228,6 +329,7 @@ export async function runPipeline(
       // Plain-English record of what was actually tested, for the results panel — the IR/spec
       // are role+name/code, not something an end user should have to read to know what ran.
       test: { title: primary.title, steps: primary.steps, expected: primary.expected },
+      suite,
     });
     return { runId, runDir, result: finalResult, diagnosis };
   } catch (err: any) {

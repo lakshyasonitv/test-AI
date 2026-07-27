@@ -2,6 +2,7 @@ import { z } from "zod";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import { classifyScope, ALL_SCOPES } from "../kb/testStrategy.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 // Derive the Zod enum directly from ALL_SCOPES so it can never drift out of sync.
 const TestTypeScopeEnum = z.enum(ALL_SCOPES as [string, ...string[]]);
@@ -25,6 +26,10 @@ export async function plan(
   const scopeNote = testTypeScope.length < ALL_SCOPES.length
     ? `\nTest-type scope for this run: ${testTypeScope.join(", ")}. Only generate test cases belonging to these categories.`
     : "";
+
+  const cacheKey = makeCacheKey(prompt, url, coverage, testTypeScope.join(","), process.env.GEMINI_MODEL_LITE ?? "default");
+  const cached = llmCacheGet<Plan>(cacheKey);
+  if (cached) return cached;
 
   const system =
 `You are a QA planner. Convert a natural-language testing request into an ordered list of high-level test steps. Output ONLY the JSON object, no prose, no markdown fences.
@@ -54,7 +59,10 @@ Example of the exact shape required:
       // Override coverage with user-provided value
       parsed.coverage = coverage;
       const result = Plan.safeParse(parsed);
-      if (result.success) return result.data;
+      if (result.success) {
+        llmCacheSet(cacheKey, result.data);
+        return result.data;
+      }
       lastErr = result.error.message;
     } catch (err: any) {
       lastErr = err?.message ?? String(err);

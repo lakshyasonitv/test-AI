@@ -2,9 +2,12 @@ import { groq } from "../llm/groq.js";
 import { parseJson } from "../llm/json.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import type { AppModel } from "../schema/appModel.js";
+import { AppModel, toLiteModel } from "../schema/appModel.js";
 import { extendAppModel, refreshPageModel } from "./liveExtend.js";
+import { resolveAgainstModel, type ModelMatch } from "./targetResolver.js";
+import { embedText, cosineSimilarity } from "../llm/embeddings.js";
 import { credentialsFor, applyCredentials, shouldSkipCredentialSubstitution } from "./credentials.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 /** Return type for toIR that includes the updated AppModel after live-extension. */
 export interface IRResult {
@@ -46,10 +49,10 @@ function normalizeIR(raw: any): any {
     if (typeof step.id === "number") step.id = String(step.id);
     if (typeof step.value === "number") step.value = String(step.value);
     if (step.target === "" || step.target === null) delete step.target;
-    if (step.value === "" ) delete step.value;
+    if (step.value === "") delete step.value;
 
     if (step.target && typeof step.target === "object" && step.target.role
-        && !KNOWN_ROLES.has(String(step.target.role).toLowerCase())) {
+      && !KNOWN_ROLES.has(String(step.target.role).toLowerCase())) {
       const literalText = step.target.name ?? step.target.text;
       delete step.target.role;
       delete step.target.name;
@@ -140,8 +143,12 @@ export async function toIR(
   const { origin, pathname, search } = new URL(entryUrl);
   const entryPath = pathname + search || "/";
 
+  const cacheKey = makeCacheKey(JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel));
+  const cached = llmCacheGet<IR>(cacheKey);
+  if (cached) return { ir: cached, updatedAppModel: appModel };
+
   const system =
-`Convert ONE human-readable test case into a strict JSON test model (IR).
+    `Convert ONE human-readable test case into a strict JSON test model (IR).
 Address elements only by accessibility role + name taken from the application model.
 Allowed actions: navigate, click, fill, select, check, press, wait, assert.
 Allowed assertions: visible, hidden, text_equals, text_contains, url_contains, enabled, disabled.
@@ -157,29 +164,129 @@ Rules, follow exactly:
 - "role" must be a real ARIA role (button, textbox, link, heading, checkbox, ...) for an element actually present in the application model. For asserting on plain visible text that ISN'T in the application model — e.g. an error/flash message that only appears after an action, so discovery never saw it — use target: { "text": "..." } instead. Never invent a role like "text" or "message".
 - A success assertion must be FALSE before the action and TRUE only after it — otherwise it verifies nothing. Never assert on a persistent, site-wide element (a header, logo, or nav bar that appears on every page regardless of state) as proof an action succeeded; it was already visible before the action too. In the application model, a decorative/structural element like this typically has no "concept" (empty or absent) — treat that as a signal to avoid it as a success assertion.
 - The application model only covers the page you start on, so you usually can't see the page an action like login navigates to. When you can't ground a success assertion on the destination page, assert instead that something from the STARTING page disappears because of the action — e.g. the login form's own submit button going "hidden" once login succeeds. That element is already in the model (grounded, no extra discovery needed), and is a real discriminator: visible before, gone after.
+
+Navigation & Assertion rules (CRITICAL):
+- NEVER assert that the clicked link/button itself is "visible" after clicking it — that is redundant and proves nothing. The element was already visible (that's why you could click it).
+- After clicking a NAVIGATION link (role="link"), assert the result using "url_contains" (check the URL changed to the expected path) or assert a heading/unique text on the DESTINATION page. Do NOT re-assert the link you just clicked.
+- Each navigation path should be INDEPENDENT: if testing "Home -> About -> Academics", each branch should start with its own "navigate" step from the base URL, not chain clicks sequentially. Example: for testing About, start with navigate to "/" then click About. For testing Academics, start with a separate navigate to "/" then click Academics. This prevents cascading failures.
+- When a click triggers a page navigation, the assertion should verify the DESTINATION state (URL or heading), not the source element.
+
+Selector Specificity rules (CRITICAL for avoiding strict mode violations):
+- If multiple elements share the same role+name (e.g., multiple "Student" links), use the "nth" field to disambiguate: { "role": "link", "name": "Student", "nth": 1 } for the second occurrence (0-indexed).
+- When duplicate names exist in the application model, prefer the MOST SPECIFIC one:
+  * For navigation links in header: use nth: 0 (first occurrence in header)
+  * For sidebar/footer links: use nth: 1 or higher
+  * Check the application model's element positions to determine which occurrence to target
+- Skip elements that are likely problematic:
+  * Links with href="#" or href="javascript:void(0)" — these are non-functional
+  * Links that redirect to homepage when a specific page is expected
+- For URL assertions: use partial matching (url_contains) instead of exact matching when the destination URL may vary or include query parameters
+- For dropdown menus: the parent menu item must be clicked/hovered first to reveal hidden child items. Add a "preAction" field: { "preAction": { "action": "click", "target": { "role": "link", "name": "Academics" } } }
+
+Hidden Element Handling rules:
+- Elements in collapsed dropdowns or tabs are not visible until their parent is activated
+- When targeting a dropdown item, include the preAction to expand the parent first
+- Use "wait" steps with value: 500 after hover/click actions to allow animations to complete
+- For tabs: click the tab first, then wait for content to load
+
 Return ONLY the JSON object, no prose, no markdown fences.
 
-Example of the exact shape required — note the login case asserts NEW dynamic content that couldn't have existed before submission, and the success case asserts the login control disappearing rather than a page it can't see yet:
+Example — multi-link navigation test with independent paths:
+{
+  "meta": { "feature": "Navigation", "title": "Navigation links work", "priority": "high", "sourcePrompt": "...", "baseUrl": "https://example.com" },
+  "steps": [
+    { "id": "s1", "action": "navigate", "target": { "url": "/" } },
+    { "id": "s2", "action": "click", "target": { "role": "link", "name": "About" } },
+    { "id": "s3", "action": "assert", "target": { "url": "/about" }, "assertion": "url_contains" }
+  ]
+}
+
+Example — login with post-action assertion:
 {
   "meta": { "feature": "Login", "title": "...", "priority": "high", "sourcePrompt": "...", "baseUrl": "https://example.com" },
   "steps": [
     { "id": "s1", "action": "navigate", "target": { "url": "/login" } },
     { "id": "s2", "action": "fill", "target": { "role": "textbox", "name": "Username" }, "value": "tomsmith" },
-    { "id": "s3", "action": "click", "target": { "role": "button", "name": "Login" } },
-    { "id": "s4", "action": "assert", "target": { "text": "Invalid credentials" }, "assertion": "visible" }
+    { "id": "s3", "action": "fill", "target": { "role": "textbox", "name": "Password" }, "value": "SuperSecretPassword!" },
+    { "id": "s4", "action": "click", "target": { "role": "button", "name": "Login" } },
+    { "id": "s5", "action": "assert", "target": { "role": "button", "name": "Login" }, "assertion": "hidden" }
   ]
 }
-For a case that instead expects login to SUCCEED, the last step would ground on the login button itself going away, not on anything from a page discovery hasn't seen:
-{ "id": "s4", "action": "assert", "target": { "role": "button", "name": "Login" }, "assertion": "hidden" }`;
 
-  // Rebuilt each attempt because the model grows as live-extension discovers new pages.
-  const buildUser = (model: AppModel) =>
-`Application model: ${JSON.stringify(model)}
+Example — dropdown menu with preAction:
+{
+  "meta": { "feature": "Navigation", "title": "Dropdown menu works", "priority": "medium", "sourcePrompt": "...", "baseUrl": "https://example.com" },
+  "steps": [
+    { "id": "s1", "action": "navigate", "target": { "url": "/" } },
+    { "id": "s2", "action": "click", "target": { "role": "link", "name": "Academics" }, "preAction": { "action": "hover", "target": { "role": "link", "name": "Academics" } } },
+    { "id": "s3", "action": "click", "target": { "role": "link", "name": "Programmes" } },
+    { "id": "s4", "action": "assert", "target": { "url": "/programmes" }, "assertion": "url_contains" }
+  ]
+}
+
+Example — handling duplicate selectors with nth:
+{
+  "meta": { "feature": "Navigation", "title": "Student link works", "priority": "high", "sourcePrompt": "...", "baseUrl": "https://example.com" },
+  "steps": [
+    { "id": "s1", "action": "navigate", "target": { "url": "/" } },
+    { "id": "s2", "action": "click", "target": { "role": "link", "name": "Student", "nth": 1 } },
+    { "id": "s3", "action": "assert", "target": { "url": "/student" }, "assertion": "url_contains" }
+  ]
+}`;
+
+  const buildUser = (model: AppModel) => {
+    // Only send pages relevant to this test case: the entry page + pages whose
+    // concepts or URL overlap with the test feature. Never send the full model.
+    const entryOrigin = new URL(entryUrl).origin;
+    const featureLower = testCase.feature.toLowerCase();
+    const relevantPages = model.pages.filter(p => {
+      // Always include the entry page
+      if (p.url.startsWith(entryOrigin) && entryPath && p.url.includes(entryPath)) return true;
+      // Include pages whose concepts match the test feature
+      if (p.concepts.some(c => c.toLowerCase().includes(featureLower))) return true;
+      // Include pages whose URL path contains the feature name
+      if (p.url.toLowerCase().includes(featureLower)) return true;
+      return false;
+    });
+    // Fallback: if filtering yielded nothing, use the entry page only
+    const pagesToSend = relevantPages.length > 0 ? relevantPages : model.pages.slice(0, 1);
+
+    // Filter elements: only named interactive elements (links, buttons, menuitems,
+    // textboxes, checkboxes, headings). Drops thousands of anonymous list/div/container
+    // nodes that bloat the prompt without helping the LLM generate better IR.
+    const INTERACTIVE_ROLES = new Set([
+      "link", "button", "menuitem", "textbox", "checkbox", "radio",
+      "combobox", "listbox", "option", "tab", "switch", "heading",
+      "searchbox", "spinbutton", "slider",
+    ]);
+    const filteredPages = pagesToSend.map(p => ({
+      ...p,
+      elements: p.elements.filter(e =>
+        e.name && e.name.trim() && INTERACTIVE_ROLES.has(e.role?.toLowerCase() ?? "")
+      ),
+    }));
+
+    const liteFiltered = toLiteModel({ ...model, pages: filteredPages });
+    const modelJson = JSON.stringify(liteFiltered);
+
+    const prompt = `Application model: ${modelJson}
 Test case: ${JSON.stringify(testCase)}
 baseUrl (origin only): ${origin}
 entry path (where the page under test lives): ${entryPath}
 sourcePrompt: ${sourcePrompt}
 Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps":[{id,action,target,value,assertion}] }`;
+
+    console.log("[ir] prompt chars:", prompt.length, "| approx tokens:", Math.round(prompt.length / 4), "| pages sent:", filteredPages.length, "/", model.pages.length);
+
+    // Hard cap: if still over 30K chars, truncate the model JSON
+    const MAX_CHARS = 30_000;
+    if (prompt.length > MAX_CHARS) {
+      console.warn("[ir] prompt exceeds", MAX_CHARS, "chars, truncating model JSON");
+      const truncated = prompt.slice(0, MAX_CHARS) + `\n... (truncated from ${prompt.length} chars)`;
+      return truncated;
+    }
+    return prompt;
+  };
 
   // baseUrl is a fact we already know; and real credentials for known hosts are injected
   // into login fill steps so the generated test actually authenticates instead of using
@@ -192,6 +299,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     ir.meta.baseUrl = origin;
     ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
     if (creds) applyCredentials(ir.steps, creds, testCase);
+    if (creds) applyCredentials(ir.steps, creds);
+    llmCacheSet(cacheKey, ir);
     return ir;
   };
 
@@ -202,39 +311,47 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   let lastErr = "";
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    console.log("[ir] attempt", attempt + 1, "/", MAX_ATTEMPTS);
     let parsed;
     try {
-      parsed = IR.safeParse(normalizeIR(parseJson(await groq(buildUser(currentModel), { system, json: true }))));
+      const raw = await groq(buildUser(currentModel), { system, json: true });
+      console.log("[ir] groq returned, length:", raw.length);
+      parsed = IR.safeParse(normalizeIR(parseJson(raw)));
+      console.log("[ir] parsed:", parsed.success ? "valid" : "INVALID");
     } catch (err: any) {
       lastErr = err?.message ?? String(err);
+      console.error("[ir] groq/parse error:", lastErr);
       continue;
     }
     if (!parsed.success) { lastErr = parsed.error.message; continue; }
 
     parsed.data.meta.baseUrl = origin;
     const ungrounded = groundingError(parsed.data, currentModel);
-    if (!ungrounded) return { ir: finalize(parsed.data), updatedAppModel: currentModel };
+    if (!ungrounded) {
+      console.log("[ir] all steps grounded, returning");
+      return { ir: finalize(parsed.data), updatedAppModel: currentModel };
+    }
 
     lastErr = ungrounded.message;
+    console.log("[ir] ungrounded step", ungrounded.index, ":", ungrounded.message);
     const prefix = parsed.data.steps.slice(0, ungrounded.index);
 
-    // Try to reach and model the missing state by replaying the grounded prefix live,
-    // then retry generation against the enriched model. Bounded; needs a prefix to replay.
     if (extensions < MAX_EXTENSIONS && prefix.length) {
       try {
         const before = currentModel.pages.length;
+        console.log("[ir] calling extendAppModel...");
         currentModel = await extendAppModel(currentModel, prefix, creds);
+        console.log("[ir] extendAppModel returned,", currentModel.pages.length, "pages");
         extensions++;
-        // A browser launch is expensive and otherwise invisible — say when it happened.
         console.log(`[ir] live-extend: replayed ${prefix.length} step(s) past "${ungrounded.message.split(",")[0]}" — app model ${before} -> ${currentModel.pages.length} pages (${currentModel.pages.at(-1)?.url})`);
         continue;
       } catch (err: any) {
-        // If extendAppModel fails because the URL is already known (SPA state changed),
-        // fall back to refreshPageModel to capture dynamic content on the same page.
         if (err?.message?.includes("already in the model") && prefix.length > 0) {
           try {
             const before = currentModel.pages.length;
+            console.log("[ir] calling refreshPageModel...");
             currentModel = await refreshPageModel(currentModel, prefix, creds);
+            console.log("[ir] refreshPageModel returned,", currentModel.pages.length, "pages");
             extensions++;
             console.log(`[ir] refresh-page: refreshed page model at step ${prefix.length} — app model ${before} -> ${currentModel.pages.length} pages`);
             continue;

@@ -124,59 +124,70 @@ export async function runSuite(
         emit(runId, "suite", "failed", { caseId, title: tc.title }, err?.message ?? String(err), onEvent);
       }
     } else {
-    // Non-primary case: execute as before (IR generation + Playwright run).
-    try {
-      const { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl);
-      const irPath = path.join(caseDir, "04-ir.json");
-      writeFileSync(irPath, JSON.stringify(ir, null, 2));
+      // Non-primary case: execute as before (IR generation + Playwright run).
+      try {
+        console.log("================================");
+        console.log("Running:", tc.title);
 
-      const spec = generateSpec(ir);
-      const specPath = path.join(caseDir, "generated.spec.ts");
-      writeFileSync(specPath, spec);
+        console.log("Generating IR...");
+        const { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl);
+        console.log("IR generated");
+        const irPath = path.join(caseDir, "04-ir.json");
+        writeFileSync(irPath, JSON.stringify(ir, null, 2));
 
-      const result = await runSpec(spec, caseDir);
+        console.log("Generating spec...");
+        const spec = generateSpec(ir);
+        console.log("Spec generated");
+        const specPath = path.join(caseDir, "generated.spec.ts");
+        writeFileSync(specPath, spec);
 
-      // Determine honest status before saving the result.
-      let status: CaseRunResult["status"];
-      if (ir.meta.truncated && !ir.meta.hasTerminalAssertion) {
-        status = "truncated_no_assertion";
-      } else if (ir.meta.truncated) {
-        status = "truncated";
-      } else if (result.passed) {
-        status = "passed";
-      } else {
-        status = "failed";
+        console.log("Running Playwright...");
+        const result = await runSpec(spec, caseDir);
+        console.log("Playwright finished");
+
+        console.log(result);
+
+        // Determine honest status before saving the result.
+        let status: CaseRunResult["status"];
+        if (ir.meta.truncated && !ir.meta.hasTerminalAssertion) {
+          status = "truncated_no_assertion";
+        } else if (ir.meta.truncated) {
+          status = "truncated";
+        } else if (result.passed) {
+          status = "passed";
+        } else {
+          status = "failed";
+        }
+
+        const resultPath = path.join(caseDir, "05-result.json");
+        writeFileSync(resultPath, JSON.stringify({
+          passed: status === "passed" || status === "truncated",
+          status: status !== "passed" ? status : undefined,
+          exitCode: result.exitCode,
+          artifactsDir: result.artifactsDir,
+          resultsJsonPath: result.resultsJsonPath,
+          raw: result.raw,
+        }, null, 2));
+
+        let diagnosisPath: string | undefined;
+        if (!result.passed) {
+          const diagnosis = await analyzeFailure(ir, result);
+          diagnosisPath = path.join(caseDir, "06-diagnosis.json");
+          writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
+        }
+
+        results.push({ caseId, title: tc.title, status, irPath, resultPath, diagnosisPath });
+
+        emit(runId, "suite", "completed", { caseId, title: tc.title, status }, undefined, onEvent);
+      } catch (err: any) {
+        results.push({
+          caseId, title: tc.title, status: "failed",
+          irPath: "", resultPath: "",
+        });
+
+        emit(runId, "suite", "failed", { caseId, title: tc.title },
+          err?.message ?? String(err), onEvent);
       }
-
-      const resultPath = path.join(caseDir, "05-result.json");
-      writeFileSync(resultPath, JSON.stringify({
-        passed: status === "passed" || status === "truncated",
-        status: status !== "passed" ? status : undefined,
-        exitCode: result.exitCode,
-        artifactsDir: result.artifactsDir,
-        resultsJsonPath: result.resultsJsonPath,
-        raw: result.raw,
-      }, null, 2));
-
-      let diagnosisPath: string | undefined;
-      if (!result.passed) {
-        const diagnosis = await analyzeFailure(ir, result);
-        diagnosisPath = path.join(caseDir, "06-diagnosis.json");
-        writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
-      }
-
-      results.push({ caseId, title: tc.title, status, irPath, resultPath, diagnosisPath });
-
-      emit(runId, "suite", "completed", { caseId, title: tc.title, status }, undefined, onEvent);
-    } catch (err: any) {
-      results.push({
-        caseId, title: tc.title, status: "failed",
-        irPath: "", resultPath: "",
-      });
-
-      emit(runId, "suite", "failed", { caseId, title: tc.title },
-        err?.message ?? String(err), onEvent);
-    }
     } // end non-primary else branch
   }
 

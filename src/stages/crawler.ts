@@ -2,6 +2,7 @@ import { chromium } from "playwright";
 import { SiteGraph, type SiteGraphPage } from "../schema/siteGraph.js";
 import type { CrawlDirective } from "../schema/crawlDirective.js";
 import { modelFromAria } from "./discovery.js";
+import { discoverUsingCrawler } from "./domDiscovery.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 
 interface QueueEntry {
