@@ -148,7 +148,7 @@ export async function discover(url: string): Promise<AppModel> {
  * it assumes every element traces to the real snapshot; vision must not become a second,
  * looser path to inventing one.
  */
-export async function modelFromAria(url: string, title: string, aria: string, screenshotBase64?: string): Promise<AppModel> {
+export async function modelFromAria(url: string, title: string, aria: string, screenshotBase64?: string, siteOutline?: string): Promise<AppModel> {
   const system =
 `You analyze a web page's accessibility snapshot for test generation. Output ONLY the JSON object, no prose, no markdown fences.
 
@@ -168,9 +168,12 @@ Example of the exact shape required:
       { "role": "textbox", "name": "Username", "concept": "Login" },
       { "role": "button", "name": "Log in", "concept": "Login" }
     ] } ] }`;
+  const siteContext = siteOutline
+    ? `\nThis page is part of a larger site. Site map for context:\n${siteOutline}\n(Use this only to interpret ambiguous links/labels — never to invent elements not in the snapshot below.)\n`
+    : "";
   const user =
 `Base URL: ${url}
-Page title: ${title}
+Page title: ${title}${siteContext}
 Accessibility snapshot:
 ${aria}
 ${screenshotBase64 ? "\nA screenshot of this exact page is attached — use it to label elements more accurately, especially icon-only buttons and unlabeled interactive elements, per the rules above." : ""}

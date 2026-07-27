@@ -2,7 +2,11 @@ import { z } from "zod";
 import { AppModel } from "./appModel.js";
 
 export const SiteGraphPage = z.object({
-  appModel: AppModel,
+  raw: z.object({
+    title: z.string(),
+    ariaSnapshot: z.string(),
+  }),
+  appModel: AppModel.optional(),
   outboundTargets: z.array(z.string()),
   visited: z.boolean(),
 });

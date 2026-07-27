@@ -81,7 +81,7 @@ async function locate(page, role, name) {
   for (const c of candidates) {
     if (await c.count() === 1) return c;
   }
-  return original;
+  return original.first();
 }
 `;
 

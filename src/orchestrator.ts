@@ -3,6 +3,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { plan } from "./stages/planner.js";
 import { discover, discoverPages } from "./stages/discovery.js";
+import { crawlSite, labelPage } from "./stages/crawler.js";
+import { buildCrawlDirective } from "./stages/crawlDirective.js";
+import { buildSiteOutline } from "./kb/siteOutline.js";
 import { toTestCases, generateCasesForNewPages } from "./stages/testCases.js";
 import { toIR } from "./stages/ir.js";
 import { refreshPageModel } from "./stages/liveExtend.js";
@@ -33,7 +36,7 @@ export type OnEvent = (e: StageEvent) => void;
 export type Coverage = "minimal" | "standard" | "full";
 
 export async function runPipeline(
-  { prompt, url, urls, coverage }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage },
+  { prompt, url, urls, coverage, mode }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; mode?: "crawl" },
   onEvent: OnEvent = () => {},
   presetRunId?: string
 ) {
@@ -72,9 +75,26 @@ export async function runPipeline(
     emit("input", "completed", { prompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
 
     const thePlan = await step("plan", "01-plan.json", () => plan(prompt, resolvedUrls[0], coverage));
-    const appModel = await step("discovery", "02-appmodel.json", () =>
-      resolvedUrls.length === 1 ? discover(resolvedUrls[0]) : discoverPages(resolvedUrls)
-    );
+    // Crawl mode: produce appModel via crawlSite + labelPage (only entry page labeled).
+    // Non-crawl mode: existing discover/discoverPages path, unchanged.
+    let siteGraph: import("./schema/siteGraph.js").SiteGraph | undefined;
+    let siteOutline: string | undefined;
+
+    const appModel = await step("discovery", "02-appmodel.json", async () => {
+      if (mode === "crawl") {
+        const directive = buildCrawlDirective(thePlan, resolvedUrls[0]);
+        siteGraph = await crawlSite(directive);
+        siteOutline = buildSiteOutline(siteGraph);
+        save("02-sitegraph.json", siteGraph);
+        save("02-siteoutline.txt", siteOutline);
+        // Label only the entry page — other pages stay unlabeled until
+        // test case generation selects them (lazy, Phase 2d).
+        const entryPage = siteGraph.pages[resolvedUrls[0]];
+        if (!entryPage) throw new Error(`Entry URL ${resolvedUrls[0]} not found in crawl results`);
+        return labelPage(entryPage, resolvedUrls[0], siteOutline);
+      }
+      return resolvedUrls.length === 1 ? discover(resolvedUrls[0]) : discoverPages(resolvedUrls);
+    });
     const cases = await step("testcases", "03-cases.json", () => toTestCases(thePlan, appModel));
 
     // Prefer the case tagged as the direct translation of the user's own request over pure
@@ -204,6 +224,7 @@ export async function runPipeline(
     emit("done", "completed", {
       passed: finalResult.passed, screenshotUrl, partial: finalIr.meta.truncated ?? false, healed,
       status: (finalResult as any).status,
+      truncationNote: finalIr.meta.truncationNote,
       // Plain-English record of what was actually tested, for the results panel — the IR/spec
       // are role+name/code, not something an end user should have to read to know what ran.
       test: { title: primary.title, steps: primary.steps, expected: primary.expected },

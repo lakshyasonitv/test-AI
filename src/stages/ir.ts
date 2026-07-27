@@ -88,24 +88,33 @@ const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
  */
 export function groundingError(ir: IR, appModel: AppModel): { index: number; message: string } | null {
   const elements = appModel.pages.flatMap(p => p.elements);
+  // ponytail: strip decorative glyphs (+, emoji, bullets) for fuzzy name matching —
+  // catches "+ Add New" vs "Add New" without the unsound reverse-direction check.
+  const stripGlyphs = (s: string) => s.replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
   for (let index = 0; index < ir.steps.length; index++) {
     const step = ir.steps[index];
     const t = step.target;
     if (!t?.role || !t?.name) continue; // navigate / text-only / wait steps
     const role = norm(t.role);
     const name = norm(t.name);
-    const hit = elements.some(e => {
-      if (norm(e.role) !== role) return false;
+    let matchedName: string | null = null;
+    for (const e of elements) {
+      if (norm(e.role) !== role) continue;
       const en = norm(e.name);
-      return en === name || en.includes(name) || name.includes(en);
-    });
-    if (!hit) {
+      if (en === name || en.includes(name)) { matchedName = e.name; break; }
+      const sn = stripGlyphs(name);
+      const sen = stripGlyphs(en);
+      if (sn && sen && sn === sen) { matchedName = e.name; break; }
+    }
+    if (!matchedName) {
       return {
         index,
         message: `Step ${step.id} targets role="${t.role}" name="${t.name}", ` +
           `which is not present in the application model — the page under test does not have this element.`,
       };
     }
+    // ponytail: self-correct to the app model's literal name so Playwright matches
+    t.name = matchedName;
   }
   return null;
 }

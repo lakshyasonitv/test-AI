@@ -17,7 +17,7 @@ app.use("/runs", express.static("runs"));   // serves screenshots/trace/spec dir
 // Start a run: generate the runId up front so we can hand it back immediately,
 // then let the pipeline run in the background, pushing events into the registry.
 app.post("/api/runs", (req, res) => {
-  const { prompt, url, urls, coverage } = req.body ?? {};
+  const { prompt, url, urls, coverage, mode } = req.body ?? {};
   if (!prompt || (!url && !urls?.length)) return res.status(400).json({ error: "prompt and url (or urls) are required" });
 
   const VALID_COVERAGE = ["minimal", "standard", "full"];
@@ -25,10 +25,14 @@ app.post("/api/runs", (req, res) => {
     return res.status(400).json({ error: `Invalid coverage "${coverage}". Use: minimal, standard, or full` });
   }
 
+  if (mode && mode !== "crawl") {
+    return res.status(400).json({ error: `Invalid mode "${mode}". Use: crawl (or omit for default)` });
+  }
+
   const runId = makeRunId();
   // Hand back the runId immediately; the run waits for a free slot, then executes.
   // Over-cap runs sit queued (UI shows pending) until a slot frees — no dropped requests.
-  runLimit.run(() => runPipeline({ prompt, url, urls, coverage }, record, runId))
+  runLimit.run(() => runPipeline({ prompt, url, urls, coverage, mode }, record, runId))
     .catch(() => { /* failure already emitted as an "error" event */ });
   res.status(202).json({ runId });
 });

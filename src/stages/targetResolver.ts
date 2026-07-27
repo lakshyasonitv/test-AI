@@ -58,7 +58,7 @@ async function resolveRoleWithFallback(page: Page, role: string, name: string): 
   for (const c of candidates) {
     if (await c.count() === 1) return c;
   }
-  return original;
+  return original.first();
 }
 
 /** Live Playwright Locator against a running page (for the replay runner). */

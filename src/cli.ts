@@ -5,16 +5,19 @@ const VALID_COVERAGE: Coverage[] = ["minimal", "standard", "full"];
 
 const args = process.argv.slice(2);
 const arg = (n: string) => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : undefined; };
+const flag = (n: string) => args.includes(`--${n}`);
 const prompt = arg("prompt");
 const url = arg("url");
 const urlsRaw = arg("urls");
 const coverageRaw = arg("coverage") ?? "standard";
+const crawlMode = flag("crawl");
 
 if (!prompt || (!url && !urlsRaw)) {
   console.error('Usage: npm run generate -- --prompt "..." --url "https://..."');
   console.error('   or: npm run generate -- --prompt "..." --urls "https://page1,https://page2"');
   console.error('Options:');
   console.error('  --coverage <minimal|standard|full>  Number of test cases (default: standard)');
+  console.error('  --crawl                             Enable full-site crawl mode (opt-in)');
   process.exit(1);
 }
 
@@ -26,7 +29,7 @@ const coverage = coverageRaw as Coverage;
 
 const urls = urlsRaw ? urlsRaw.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
 
-runPipeline({ prompt, url, urls, coverage }, (e) => {
+runPipeline({ prompt, url, urls, coverage, mode: crawlMode ? "crawl" : undefined }, (e) => {
   const mark = e.status === "started" ? "…" : e.status === "completed" ? "✓" : "✗";
   console.log(`[${mark}] ${e.stage}${e.error ? ": " + e.error : ""}`);
 })

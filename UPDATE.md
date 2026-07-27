@@ -1,162 +1,82 @@
 # Update Log
 
-## Reactive Coverage Generation (Phase N)
+## Phases 2a–2d: Full-Site Crawl Pipeline
 
 ### Date
-July 24, 2026
+July 26, 2026
 
 ### Summary
-Implemented reactive test case generation for pages discovered during primary-case execution via `live-extend.ts`. Previously, when `toIR()` discovered new pages (e.g., after login), the test suite only contained cases for the original entry page. Now, new pages automatically get their own test cases generated and merged into the suite.
+Split the crawler into a pure traversal pass (no LLM) and a lazy labeling step, added a site outline helper, wired optional site-outline context into the labeling prompt, and hooked everything into the orchestrator as an opt-in `mode: "crawl"` flag.
 
 ---
 
-### Changes
+### Phase 2a — Crawler Split & Schema Update
 
-#### 1. `src/stages/testCases.ts`
+**`src/schema/siteGraph.ts`**
+- Added required `raw: { title: string; ariaSnapshot: string }` field to `SiteGraphPage`
+- Made `appModel` optional (`z.optional()`) — no longer set during crawl
 
-**New field on `TestCase` schema:**
-```typescript
-generatedFrom: z.enum(["upfront", "reactive"]).optional().default("upfront")
-```
-- Distinguishes cases generated before execution ("upfront") from those generated after discovering new pages ("reactive")
-- All existing cases default to "upfront" for backward compatibility
+**`src/stages/crawler.ts`**
+- `crawlSite()` no longer calls `modelFromAria()` or `gemini()` — navigates, captures raw signal (title + aria snapshot), extracts outbound links, returns `SiteGraph`
+- Dead/error pages record empty `raw` instead of a placeholder `appModel`
+- Added `labelPage(crawledPage, url, siteOutline?)` — lazily calls `modelFromAria()` on demand using stored raw data, respects existing cache (`cacheGet`/`cacheSet`)
 
-**New function: `generateCasesForNewPages()`**
-```typescript
-export async function generateCasesForNewPages(
-  updatedAppModel: AppModel,
-  originalPageUrls: string[],
-  plan: Plan,
-  prompt: string
-): Promise<TestCase[]>
-```
-- Filters the updated AppModel to only include pages NOT in the original URL set
-- Calls `toTestCases()` with the filtered model
-- Tags all generated cases with `generatedFrom: "reactive"`
+**`src/scripts/test-crawler.ts`**
+- Added optional chaining on `page.appModel?.pages` (2 lines) to handle now-optional field
 
 ---
 
-#### 2. `src/stages/ir.ts`
+### Phase 2b — Site Outline Helper
 
-**New return type: `IRResult`**
-```typescript
-export interface IRResult {
-  ir: IR;
-  updatedAppModel: AppModel;
-}
-```
-
-**Modified `toIR()` signature:**
-```typescript
-export async function toIR(
-  testCase: TestCase, appModel: AppModel, sourcePrompt: string, entryUrl: string
-): Promise<IRResult>  // was: Promise<IR>
-```
-- Returns both the IR and the updated AppModel after live-extension
-- Allows orchestrator to see what pages were discovered during grounding
-- All return statements updated to include `updatedAppModel: currentModel`
+**`src/kb/siteOutline.ts` (new file)**
+- Pure function `buildSiteOutline(graph: SiteGraph): string`
+- Depth-first tree rooted at `entryUrl`, labels from `raw.title`, edges from `outboundTargets`
+- Deduplicates visited nodes, caps output at 40 lines
+- Appends truncation notice when `truncatedByScope` is true
+- Zero I/O, zero LLM calls
 
 ---
 
-#### 3. `src/orchestrator.ts`
+### Phase 2c — Outline as Labeling Context
 
-**Updated imports:**
-```typescript
-import { toTestCases, generateCasesForNewPages } from "./stages/testCases.js";
-```
+**`src/stages/discovery.ts`**
+- `modelFromAria()` gains optional 5th parameter `siteOutline?: string`
+- When provided, injects a site-map context block into the user prompt with the instruction: "Use this only to interpret ambiguous links/labels — never to invent elements not in the snapshot below"
+- When omitted, prompt is byte-identical to before
 
-**Updated primary IR generation:**
-```typescript
-const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => 
-  toIR(primary, appModel, prompt, resolvedUrls[0])
-);
-```
-
-**New reactive coverage step (after primary execution):**
-```typescript
-const originalUrlsSet = new Set(resolvedUrls);
-const newPages = updatedAppModel.pages.filter(page => !originalUrlsSet.has(page.url));
-
-let allCases = [...cases];
-if (newPages.length > 0) {
-  emit("testcases", "started", { newPages: newPages.map(p => p.url) });
-  const reactiveCases = await generateCasesForNewPages(
-    updatedAppModel, resolvedUrls, thePlan, prompt
-  );
-  if (reactiveCases.length > 0) {
-    allCases = [...allCases, ...reactiveCases];
-    save("03-cases.json", allCases);  // Persist updated cases
-    emit("testcases", "completed", { total: allCases.length, reactive: reactiveCases.length });
-  }
-}
-```
-
-**Updated heal path:**
-```typescript
-const { ir: healedIr } = await toIR(primary, freshModel, prompt, resolvedUrls[0]);
-```
+**`src/stages/crawler.ts`**
+- `labelPage()` gains optional `siteOutline?: string`, passes it through to `modelFromAria()`
 
 ---
 
-#### 4. `src/stages/suiteRunner.ts`
+### Phase 2d — Pipeline Wiring (Opt-In)
 
-**Updated non-primary case execution:**
-```typescript
-const { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl);
-```
-- Destructures the `IRResult` to get just the IR for suite execution
+**`src/orchestrator.ts`**
+- `runPipeline()` options gain `mode?: "crawl"` (defaults to `undefined`)
+- When `mode === "crawl"`: runs `crawlSite()` → `buildSiteOutline()` → `labelPage()` for the entry page only, saving `02-sitegraph.json` and `02-siteoutline.txt` as artifacts
+- Non-crawl runs hit the exact same `discover()`/`discoverPages()` path as before
+- Crawl mode runs inside the existing `"discovery"` step wrapper — event shape unchanged
 
----
+**`src/server/index.ts`**
+- Extracts `mode` from `req.body`, validates it (only `"crawl"` or omitted), threads to `runPipeline`
 
-#### 5. `README.md`
-
-**Architecture diagram updated:**
-```
-  → Reactive coverage generation     → generate cases for newly-discovered pages (if any)
-```
-
-**Architecture notes updated:**
-- Added description of `generateCasesForNewPages()` function
-- Explained `generatedFrom: "reactive"` tagging
-
-**Phase 2+ section updated:**
-- Noted that reactive coverage generation is now implemented
-- Clarified that full suite execution is still a Phase 2+ item
+**`src/cli.ts`**
+- Added `--crawl` flag via `flag()` helper, maps to `mode: "crawl"` or `undefined`
 
 ---
 
-### How It Works
+### Key Design Decisions
 
-1. **Primary case executes** → `toIR()` may call `extendAppModel()` to discover new pages
-2. **Orchestrator receives `updatedAppModel`** with any newly-discovered pages
-3. **Compare page URLs** → detect new pages not in original `urls` array
-4. **Generate cases for new pages** → `generateCasesForNewPages()` creates test cases tagged as "reactive"
-5. **Merge into suite** → reactive cases appended to upfront cases
-6. **Persist updated `03-cases.json`** → includes both upfront and reactive cases
-7. **Re-apply scope filter** → final suite passed to `runSuite()`
-
----
-
-### Example Flow
-
-**Input:**
-- `urls: ["https://example.com/login"]`
-- Prompt: "Log in and buy a product"
-
-**Execution:**
-1. Discovery generates AppModel for `/login`
-2. `toTestCases()` generates cases for login page (upfront)
-3. Primary case executes login, `live-extend` discovers `/products` and `/cart`
-4. `toIR()` returns `updatedAppModel` with 3 pages
-5. Orchestrator detects 2 new pages (`/products`, `/cart`)
-6. `generateCasesForNewPages()` creates cases for product browsing and cart operations
-7. Suite now includes: 5 upfront cases + 3 reactive cases = 8 total cases
+- **Opt-in only** — `mode` defaults to `undefined`, existing callers unaffected
+- **No LLM in crawl pass** — `crawlSite()` is pure traversal; labeling is deferred
+- **Entry page only labeled eagerly** — other crawled pages stay raw until downstream stages select them (future Phase 2e)
+- **Byte-identical prompts** — without `siteOutline`, `modelFromAria()` produces the exact same prompt as before
 
 ---
 
 ### Backward Compatibility
 
-- `generatedFrom` defaults to `"upfront"` if not specified
-- Existing `03-cases.json` files without the field are still valid
-- `runSuite()` doesn't use the field (execution logic unchanged)
-- All TypeScript compilation checks pass
+- Existing runs (no `mode` field) are provably unaffected — no code path changes
+- `SiteGraph.parse()` validates crawl output against updated schema
+- `appModel` optional on `SiteGraphPage` — all existing callers that don't use it are unaffected
+- All TypeScript compilation checks pass (`npx tsc --noEmit`)

@@ -76,7 +76,8 @@ li.failed .dot { background: var(--failed); }
 .history-item .badge { padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; flex-shrink: 0; }
 .badge.passed { background: var(--done); color: #06210f; }
 .badge.failed, .badge.error { background: var(--failed); color: #2a0705; }
-.badge.incomplete { background: var(--pending); color: var(--text); }
+.badge.incomplete { background: var(--running); color: #1a1400; }
+#verdict.incomplete { color: var(--running); }
 .history-item .hprompt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-item .hurl { color: var(--muted); font-size: 0.75rem; }
 .history-del {

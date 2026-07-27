@@ -68,41 +68,35 @@ export async function crawlSite(
 
       visited.add(normalized);
 
-      // Try cache first — avoids re-paying the Gemini labeling call.
-      let appModel = cacheGet(normalized);
+      // Navigate and capture raw per-page signal (title + aria snapshot) — no
+      // Gemini call, no labeling. labelPage() handles that lazily on demand.
+      let raw: SiteGraphPage["raw"] = { title: "", ariaSnapshot: "" };
 
-      if (!appModel) {
-        // Navigate, snapshot, and label via existing Discovery logic.
-        try {
-          const response = await page.goto(normalized, { waitUntil: "domcontentloaded" });
-          await page.waitForTimeout(1000);
+      try {
+        const response = await page.goto(normalized, { waitUntil: "domcontentloaded" });
+        await page.waitForTimeout(1000);
 
-          const status = response?.status() ?? 0;
-          if (!response || status >= 400) {
-            // Dead page — skip but still record it as visited with no outbound targets.
-            pages[normalized] = {
-              appModel: { baseUrl: normalized, pages: [] },
-              outboundTargets: [],
-              visited: true,
-            };
-            continue;
-          }
-
-          const aria = await page.locator("body").ariaSnapshot();
-          const title = await page.title();
-          const screenshotBase64 = (await page.screenshot()).toString("base64");
-
-          appModel = await modelFromAria(normalized, title, aria, screenshotBase64);
-          cacheSet(normalized, appModel);
-        } catch {
-          // Navigation or labeling failure — record empty model and move on.
+        const status = response?.status() ?? 0;
+        if (!response || status >= 400) {
           pages[normalized] = {
-            appModel: { baseUrl: normalized, pages: [] },
+            raw,
             outboundTargets: [],
             visited: true,
           };
           continue;
         }
+
+        raw = {
+          title: await page.title(),
+          ariaSnapshot: await page.locator("body").ariaSnapshot(),
+        };
+      } catch {
+        pages[normalized] = {
+          raw,
+          outboundTargets: [],
+          visited: true,
+        };
+        continue;
       }
 
       // Extract outbound link URLs from the DOM (deterministic DOM order = link order).
@@ -132,7 +126,7 @@ export async function crawlSite(
       }
 
       pages[normalized] = {
-        appModel,
+        raw,
         outboundTargets,
         visited: true,
       };
@@ -146,4 +140,22 @@ export async function crawlSite(
     pages,
     truncatedByScope,
   });
+}
+
+/**
+ * Label a crawled page on demand — calls modelFromAria() using the stored raw
+ * data (title + ariaSnapshot) to produce an AppModel. Respects the existing
+ * cache so repeated calls for the same URL are free.
+ */
+export async function labelPage(
+  crawledPage: SiteGraphPage,
+  url: string,
+  siteOutline?: string,
+): Promise<Awaited<ReturnType<typeof modelFromAria>>> {
+  const cached = cacheGet(url);
+  if (cached) return cached;
+
+  const model = await modelFromAria(url, crawledPage.raw.title, crawledPage.raw.ariaSnapshot, undefined, siteOutline);
+  cacheSet(url, model);
+  return model;
 }

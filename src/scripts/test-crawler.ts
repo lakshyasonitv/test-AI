@@ -48,8 +48,8 @@ async function main() {
   console.log(`Truncated:  ${graph.truncatedByScope}\n`);
 
   for (const [pageUrl, page] of Object.entries(graph.pages)) {
-    const concepts = page.appModel.pages.flatMap((p) => p.concepts);
-    const elements = page.appModel.pages.flatMap((p) => p.elements);
+    const concepts = page.appModel?.pages.flatMap((p) => p.concepts) ?? [];
+    const elements = page.appModel?.pages.flatMap((p) => p.elements) ?? [];
     console.log(`  ${pageUrl}`);
     console.log(`    concepts: ${concepts.length ? concepts.join(", ") : "(none)"}`);
     console.log(`    elements: ${elements.length}`);

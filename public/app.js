@@ -100,7 +100,7 @@ function setPhaseFromStage(stage, status, data) {
   }
 }
 
-const STATUS_LABEL = { passed: "Passed", failed: "Failed", error: "Error", incomplete: "Incomplete" };
+const STATUS_LABEL = { passed: "Passed", failed: "Failed", error: "Error", incomplete: "Incomplete", truncated_no_assertion: "Incomplete" };
 
 // Test steps can legitimately contain raw markup (the security coverage cases fill fields
 // with literal <script> payloads) — never trust them into innerHTML unescaped.
@@ -142,11 +142,18 @@ function applyEvent(event, runId) {
     const passed = event.data?.passed;
     const partial = event.data?.partial;
     const healed = event.data?.healed;
+    const status = event.data?.status;
+    verdictEl.className = status === "truncated_no_assertion" ? "incomplete" : "";
     verdictEl.textContent =
       event.stage === "error" ? `⚠️ Pipeline error: ${event.error}` :
+      status === "truncated_no_assertion" ? "⚠️ Incomplete — didn't verify what you asked (stopped before reaching an assertion)" :
       passed && healed ? "✅ Passed (self-healed — a locator broke and was automatically repaired; see below)" :
       passed ? (partial ? "✅ Passed (partial — verified as far as the flow could be grounded)" : "✅ Passed") :
       "❌ Failed";
+
+    if (status === "truncated_no_assertion" && event.data?.truncationNote) {
+      diagnosisEl.textContent = event.data.truncationNote;
+    }
 
     // Plain-English record of what actually ran, so the verdict isn't just a bare badge.
     const test = event.data?.test;
