@@ -82,12 +82,6 @@ async function replayAndSnapshot(
       const screenshotBase64 = (await page.screenshot()).toString("base64");
       fresh = await modelFromAria(reachedUrl, title, aria, screenshotBase64);
     }
-    const aria = await page.locator("body").ariaSnapshot();
-    const interactiveElements = await discoverInteractiveElements(page);
-    const screenshotBase64 = (await page.screenshot()).toString("base64");
-    const combinedSnapshot = aria + interactiveElements;
-    const fresh = await modelFromAria(reachedUrl, title, combinedSnapshot, screenshotBase64);
-
     const pageModel = fresh.pages.find((p) => p.url === reachedUrl) ?? fresh.pages[0];
     if (!pageModel) throw new Error(`replay reached ${reachedUrl} but produced no page model`);
     const result = { reachedUrl, pageModel };

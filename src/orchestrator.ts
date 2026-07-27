@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { plan } from "./stages/planner.js";
-import { discover, discoverPages } from "./stages/discovery.js";
 import { crawlSite, labelPage } from "./stages/crawler.js";
 import { buildCrawlDirective } from "./stages/crawlDirective.js";
 import { buildSiteOutline } from "./kb/siteOutline.js";
@@ -166,9 +165,6 @@ export async function runPipeline(
       }
       return resolvedUrls.length === 1 ? discover(resolvedUrls[0]) : discoverPages(resolvedUrls);
     });
-    const appModel = await step("discovery", "02-appmodel.json", () =>
-      resolvedUrls.length === 1 ? discover(resolvedUrls[0]) : discoverPages(resolvedUrls)
-    );
     console.log("1. Discovery completed");
 
     console.log("2. Generating test cases...");
