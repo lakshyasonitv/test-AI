@@ -3,10 +3,30 @@
 // -----------------------------------------------------------------------------
 
 const PHASES = [
-  { key: "understand", label: "Understanding your request", stages: ["plan"] },
-  { key: "analyze", label: "Analyzing the site", stages: ["discovery"] },
-  { key: "build_run", label: "Building & running the test", stages: ["testcases", "ir", "generate", "execute"] },
-  { key: "results", label: "Results", stages: ["failure_analysis", "heal"] },
+  {
+    key: "understand",
+    label: "1. Understanding Your Request",
+    desc: "The AI is analyzing your prompt to build an intelligent test plan.",
+    stages: ["plan"]
+  },
+  {
+    key: "analyze",
+    label: "2. Analyzing the Website",
+    desc: "Exploring web page layout, finding forms, inputs, buttons, and links.",
+    stages: ["discovery"]
+  },
+  {
+    key: "build_run",
+    label: "3. Building & Executing Tests",
+    desc: "Generating automated test scripts & running them in a real browser.",
+    stages: ["testcases", "ir", "generate", "execute"]
+  },
+  {
+    key: "results",
+    label: "4. Evaluating Results & Verdict",
+    desc: "Checking pass/fail state, verifying assertions, and capturing screenshots.",
+    stages: ["failure_analysis", "heal"]
+  },
 ];
 const STAGE_TO_PHASE = Object.fromEntries(
   PHASES.flatMap((p) => p.stages.map((s) => [s, p.key]))
@@ -74,18 +94,22 @@ function renderTemplates() {
 }
 
 // -----------------------------------------------------------------------------
-// Phase pipeline (progress dots)
+// Phase pipeline (progress cards)
 // -----------------------------------------------------------------------------
 
 function renderPhases() {
   phasesEl.innerHTML = PHASES.map(
     (p) => `
     <li data-phase="${p.key}" class="pending">
-      <span class="dot"></span>
-      <span class="label">${p.label}</span>
-      <span class="summary-text"></span>
+      <div class="phase-header">
+        <span class="dot"></span>
+        <span class="label">${p.label}</span>
+        <span class="phase-badge pending">Pending</span>
+      </div>
+      <div class="phase-desc">${p.desc}</div>
+      <div class="summary-text"></div>
       <details class="output hidden">
-        <summary>Technical details</summary>
+        <summary>Technical Details (Developer View)</summary>
         <pre></pre>
       </details>
     </li>`
@@ -95,37 +119,78 @@ function renderPhases() {
 function summarize(stage, data) {
   try {
     switch (stage) {
-      case "plan": return data.goal ?? "";
+      case "plan": return data.goal ? `AI Strategy: ${data.goal}` : "";
       case "discovery": {
+        const pagesCount = data.pages?.length ?? 1;
         const concepts = [...new Set((data.pages ?? []).flatMap((p) => p.concepts ?? []))];
-        return `Found ${data.pages?.length ?? 0} page(s)${concepts.length ? " — " + concepts.join(", ") : ""}`;
+        const conceptStr = concepts.length ? ` — Concepts: ${concepts.join(", ")}` : "";
+        return `Discovered ${pagesCount} page(s)${conceptStr}`;
       }
       case "testcases": {
         const count = data.total ?? data.length ?? 0;
         const extra = data.reactive ? ` (${data.reactive} reactive)` : "";
-        return `Generated ${count} test case(s)${extra}`;
+        return `Generated ${count} test scenarios${extra}`;
       }
-      case "ir": return `Test plan: ${data.meta?.title ?? ""}`;
-      case "generate": return "Test script generated";
-      case "execute": return data.passed ? "Executed — passed" : "Executed — failed";
-      case "heal": return data.healed ? "Automatically repaired a broken step" : "Attempted a repair — it didn't resolve the failure";
-      case "suite": return data.summary ? `Suite: ${data.summary.passed}/${data.summary.total} passed` : "";
+      case "ir": return `Test Plan Model: ${data.meta?.title ?? ""}`;
+      case "generate": return "Playwright test script generated successfully";
+      case "execute": return data.passed ? "✅ Test execution passed — All assertions verified" : "❌ Test execution failed";
+      case "heal": return data.healed ? "🔧 Self-healed — Repaired broken UI selector automatically" : "Attempted repair";
+      case "suite": return data.summary ? `Suite Progress: ${data.summary.passed}/${data.summary.total} tests passed` : "";
       default: return "";
     }
   } catch { return ""; }
 }
 
 function setPhaseFromStage(stage, status, data) {
+  if (stage === "done" || stage === "error") {
+    PHASES.forEach((p) => {
+      const li = phasesEl.querySelector(`li[data-phase="${p.key}"]`);
+      if (li) {
+        const isFail = stage === "error" || (p.key === "results" && data?.passed === false);
+        if (!li.classList.contains("completed") && !li.classList.contains("failed")) {
+          li.className = isFail ? "failed" : "completed";
+          const badgeEl = li.querySelector(".phase-badge");
+          if (badgeEl) {
+            badgeEl.className = isFail ? "phase-badge failed" : "phase-badge done";
+            badgeEl.textContent = isFail ? "❌ Failed" : "✅ Complete";
+          }
+        }
+      }
+    });
+    return;
+  }
+
   const phaseKey = STAGE_TO_PHASE[stage];
   if (!phaseKey) return;
   const li = phasesEl.querySelector(`li[data-phase="${phaseKey}"]`);
   if (!li) return;
+
   li.className = status;
+  const badgeEl = li.querySelector(".phase-badge");
+  if (badgeEl) {
+    if (status === "started") {
+      badgeEl.className = "phase-badge running";
+      badgeEl.textContent = "⏳ In Progress";
+    } else if (status === "completed") {
+      badgeEl.className = "phase-badge done";
+      badgeEl.textContent = "✅ Complete";
+    } else if (status === "failed") {
+      badgeEl.className = "phase-badge failed";
+      badgeEl.textContent = "❌ Failed";
+    }
+  }
+
   if (data !== undefined) {
-    li.querySelector(".summary-text").textContent = summarize(stage, data);
+    const summary = summarize(stage, data);
+    if (summary) {
+      const summaryEl = li.querySelector(".summary-text");
+      if (summaryEl) summaryEl.textContent = summary;
+    }
     const details = li.querySelector(".output");
-    details.querySelector("pre").textContent = JSON.stringify(data, null, 2);
-    details.classList.remove("hidden");
+    if (details) {
+      details.querySelector("pre").textContent = JSON.stringify(data, null, 2);
+      details.classList.remove("hidden");
+    }
   }
 }
 
@@ -191,7 +256,6 @@ function setPhaseFromStage(stage, status, data) {
     const specUrl = `${caseDir}/generated.spec.ts`;
     const irUrl = `${caseDir}/04-ir.json`;
     const resultUrl = `${caseDir}/05-result.json`;
-    const diagnosisUrl = `${caseDir}/06-diagnosis.json`;
     const traceUrl = `${caseDir}/artifacts`;
 
     return `
@@ -215,7 +279,7 @@ function setPhaseFromStage(stage, status, data) {
           <a href="${traceUrl}" class="dl-btn" target="_blank">Artifacts</a>
         </div>
         <details class="case-details">
-          <summary>Technical Details</summary>
+          <summary>Technical Details (Developer View)</summary>
           <div class="case-details-content">
             <h4>IR JSON</h4>
             <pre class="case-ir">Loading...</pre>
@@ -341,18 +405,23 @@ function setPhaseFromStage(stage, status, data) {
         ? `<span class="h-suite">${r.suite.passed}/${r.suite.total} tests</span>`
         : "";
       return `
-    <li class="history-item${r.hasEvents ? "" : " no-detail"}" data-run-id="${r.runId}">
+    <li class="history-item" data-run-id="${r.runId}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
       <span class="badge ${r.status}">${STATUS_LABEL[r.status] ?? r.status}</span>
-      <span class="hprompt">${r.prompt || "(no prompt)"}</span>
+      <span class="hprompt">${escapeHtml(r.prompt || "(no prompt)")}</span>
       ${suiteInfo}
-      <span class="hurl">${r.url}</span>
-      ${r.hasEvents ? "" : '<span class="hurl">(no detailed log)</span>'}
+      <span class="hurl">${escapeHtml(r.url)}</span>
       <button type="button" class="history-del" title="Delete this run" aria-label="Delete run">✕</button>
     </li>`;
     }).join("");
 
-    historyListEl.querySelectorAll(".history-item:not(.no-detail)").forEach((li) => {
-      li.addEventListener("click", () => connectToRun(li.dataset.runId));
+    historyListEl.querySelectorAll(".history-item").forEach((li) => {
+      li.addEventListener("click", () => {
+        historyListEl.querySelectorAll(".history-item").forEach(item => item.classList.remove("active"));
+        li.classList.add("active");
+        if (li.dataset.prompt) promptEl.value = li.dataset.prompt;
+        if (li.dataset.url) urlEl.value = li.dataset.url;
+        connectToRun(li.dataset.runId);
+      });
     });
     historyListEl.querySelectorAll(".history-del").forEach((btn) => {
       btn.addEventListener("click", async (e) => {
@@ -376,6 +445,8 @@ function setPhaseFromStage(stage, status, data) {
   // -----------------------------------------------------------------------------
 
   function applyEvent(event, runId) {
+    setPhaseFromStage(event.stage, event.status, event.data);
+
     if (event.stage === "done" || event.stage === "error") {
       finalResult.classList.remove("hidden");
       const passed = event.data?.passed;
@@ -401,140 +472,155 @@ function setPhaseFromStage(stage, status, data) {
         testStepsEl.innerHTML = (test.steps ?? []).map((s) => `<li>${escapeHtml(s)}</li>`).join("");
         testExpectedEl.textContent = test.expected ? `Expected: ${test.expected}` : "";
         testSummaryEl.classList.remove("hidden");
-        hideSuiteProgress();
-
-        // Check if this is a suite run or a single-test run
-        const suite = event.data?.suite;
-        if (suite && suite.cases && suite.cases.length > 0) {
-          // Suite mode
-          renderSuiteResults(suite, runId);
-          // Also show the primary test result for backward compatibility
-          renderSingleTestResult(event.data, event.stage, event.error);
-          traceLinkEl.href = `/runs/${runId}/generated/`;
-          traceLinkEl.classList.remove("hidden");
-        } else {
-          // Single-test mode (backward compatible)
-          renderSingleTestResult(event.data, event.stage, event.error);
-          traceLinkEl.href = `/runs/${runId}/generated/`;
-          traceLinkEl.classList.remove("hidden");
-        }
-
-        loadHistory();
-        return true;
+      } else {
+        testSummaryEl.classList.add("hidden");
       }
 
-      // Suite progress events
-      if (event.stage === "suite" && event.status === "started" && event.data) {
-        const caseId = event.data.caseId;
-        // Build or update progress from the suite summary event
-        if (event.data.total) {
-          // This is the initial "suite started" event with total count
-          renderSuiteProgress({ total: event.data.total, cases: [] }, null);
-        } else if (caseId) {
-          // This is a per-case "started" event — update progress
-          const progressItems = suiteProgressListEl.querySelectorAll(".suite-progress-item");
-          if (progressItems.length) {
-            // Find the matching item and update it
-            const idx = Array.from(progressItems).findIndex(el =>
-              el.querySelector(".suite-progress-title")?.textContent === event.data.title
-            );
-            if (idx >= 0) {
-              progressItems[idx].classList.add("running");
-              progressItems[idx].querySelector(".suite-progress-icon").textContent = "⏳";
-            }
+      hideSuiteProgress();
+
+      // Check if this is a suite run or a single-test run
+      const suite = event.data?.suite;
+      if (suite && suite.cases && suite.cases.length > 0) {
+        // Suite mode
+        renderSuiteResults(suite, runId);
+        // Also show the primary test result for backward compatibility
+        renderSingleTestResult(event.data, event.stage, event.error);
+        traceLinkEl.href = `/runs/${runId}/generated/`;
+        traceLinkEl.classList.remove("hidden");
+      } else {
+        // Single-test mode (backward compatible)
+        renderSingleTestResult(event.data, event.stage, event.error);
+        traceLinkEl.href = `/runs/${runId}/generated/`;
+        traceLinkEl.classList.remove("hidden");
+      }
+
+      loadHistory();
+      return true; // Stop polling
+    }
+
+    // Suite progress events
+    if (event.stage === "suite" && event.status === "started" && event.data) {
+      const caseId = event.data.caseId;
+      // Build or update progress from the suite summary event
+      if (event.data.total) {
+        // This is the initial "suite started" event with total count
+        renderSuiteProgress({ total: event.data.total, cases: [] }, null);
+      } else if (caseId) {
+        // This is a per-case "started" event — update progress
+        const progressItems = suiteProgressListEl.querySelectorAll(".suite-progress-item");
+        if (progressItems.length) {
+          // Find the matching item and update it
+          const idx = Array.from(progressItems).findIndex(el =>
+            el.querySelector(".suite-progress-title")?.textContent === event.data.title
+          );
+          if (idx >= 0) {
+            progressItems[idx].classList.add("running");
+            progressItems[idx].querySelector(".suite-progress-icon").textContent = "⏳";
           }
         }
       }
-
-      if (event.stage === "suite" && event.status === "completed" && event.data?.summary) {
-        // Final suite summary — update progress to show completion
-        renderSuiteProgress(event.data.summary, null);
-      }
-
-      // Failure analysis
-      if (event.stage === "failure_analysis" && event.status === "completed") {
-        diagnosisEl.textContent = event.data?.explanation
-          ? `${event.data.explanation} — ${event.data.suggestedFix}`
-          : "";
-      }
-
-      // Phase progress (always update)
-      setPhaseFromStage(event.stage, event.status, event.data);
-      return false;
     }
 
-    // -----------------------------------------------------------------------------
-    // Polling / connection management
-    // -----------------------------------------------------------------------------
+    if (event.stage === "suite" && event.status === "completed" && event.data?.summary) {
+      // Final suite summary — update progress to show completion
+      renderSuiteProgress(event.data.summary, null);
+    }
 
-    let pollGeneration = 0;
+    // Failure analysis
+    if (event.stage === "failure_analysis" && event.status === "completed") {
+      diagnosisEl.textContent = event.data?.explanation
+        ? `${event.data.explanation} — ${event.data.suggestedFix}`
+        : "";
+    }
 
-    async function connectToRun(runId) {
-      const generation = ++pollGeneration;
+    // Phase progress (always update)
+    setPhaseFromStage(event.stage, event.status, event.data);
+    return false;
+  }
 
-      // Reset UI
-      renderPhases();
-      hideSingleTestResult();
-      hideSuiteResults();
-      hideSuiteProgress();
-      diagnosisEl.textContent = "";
+  // -----------------------------------------------------------------------------
+  // Polling / connection management
+  // -----------------------------------------------------------------------------
 
-      let seen = 0;
-      let fails = 0;
+  let pollGeneration = 0;
 
-      while (generation === pollGeneration) {
-        let done = false;
-        try {
-          const res = await fetch(`/api/runs/${runId}/state`);
-          const events = await res.json();
-          if (!Array.isArray(events)) throw new Error("bad payload");
+  async function connectToRun(runId) {
+    const generation = ++pollGeneration;
 
-          for (const event of events.slice(seen)) {
+    // Reset UI
+    renderPhases();
+    hideSingleTestResult();
+    hideSuiteResults();
+    hideSuiteProgress();
+    diagnosisEl.textContent = "";
+
+    let seen = 0;
+    let fails = 0;
+    let noNewEventsCount = 0;
+
+    while (generation === pollGeneration) {
+      let done = false;
+      try {
+        const res = await fetch(`/api/runs/${runId}/state`);
+        const events = await res.json();
+        if (!Array.isArray(events)) throw new Error("bad payload");
+
+        const newEvents = events.slice(seen);
+        if (newEvents.length > 0) {
+          noNewEventsCount = 0;
+          for (const event of newEvents) {
             if (applyEvent(event, runId)) done = true;
           }
           seen = events.length;
-
-          // Reset failure counter on successful read
-          if (fails && !done) {
-            finalResult.classList.add("hidden");
-            verdictEl.textContent = "";
-          }
-          fails = 0;
-        } catch {
-          if (++fails === 5) {
-            finalResult.classList.remove("hidden");
-            verdictEl.textContent = "⚠️ Lost contact with the server — retrying…";
+        } else if (seen > 0) {
+          // If events exist and no new events arrive for 2 consecutive polls, complete event processing
+          noNewEventsCount++;
+          if (noNewEventsCount >= 2) {
+            done = true;
           }
         }
 
-        if (done) return;
-        await new Promise((r) => setTimeout(r, 1000));
+        // Reset failure counter on successful read
+        if (fails && !done) {
+          finalResult.classList.add("hidden");
+          verdictEl.textContent = "";
+        }
+        fails = 0;
+      } catch {
+        if (++fails === 5) {
+          finalResult.classList.remove("hidden");
+          verdictEl.textContent = "⚠️ Lost contact with the server — retrying…";
+        }
       }
+
+      if (done) return;
+      await new Promise((r) => setTimeout(r, 1000));
     }
+  }
 
-    // -----------------------------------------------------------------------------
-    // Form submission
-    // -----------------------------------------------------------------------------
+  // -----------------------------------------------------------------------------
+  // Form submission
+  // -----------------------------------------------------------------------------
 
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const prompt = promptEl.value.trim();
-      const url = urlEl.value.trim();
-      if (!prompt || !url) return;
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const prompt = promptEl.value.trim();
+    const url = urlEl.value.trim();
+    if (!prompt || !url) return;
 
-      const res = await fetch("/api/runs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt, url }),
-      });
-      const { runId } = await res.json();
-      connectToRun(runId);
+    const res = await fetch("/api/runs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt, url }),
     });
+    const { runId } = await res.json();
+    connectToRun(runId);
+  });
 
-    // -----------------------------------------------------------------------------
-    // Init
-    // -----------------------------------------------------------------------------
+  // -----------------------------------------------------------------------------
+  // Init
+  // -----------------------------------------------------------------------------
 
-    renderTemplates();
-    renderPhases();
-    loadHistory();
+  renderTemplates();
+  renderPhases();
+  loadHistory();

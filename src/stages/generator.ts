@@ -206,23 +206,6 @@ function emitStep(step: Step, baseUrl: string): string {
   return code;
 }
 
-// Self-healing role+name locator, inlined into the generated spec (which stays self-contained
-// — no deps beyond @playwright/test, so this can't be a shared import). Mirrors
-// targetResolver.ts's resolveRoleWithFallback() exactly; keep both in sync if either changes.
-const LOCATE_HELPER = `
-async function locate(page, role, name) {
-  const swap = { button: "link", link: "button" };
-  const original = page.getByRole(role, { name });
-  const candidates = [original];
-  const alt = swap[role.toLowerCase()];
-  if (alt) candidates.push(page.getByRole(alt, { name }));
-  candidates.push(page.getByText(name));
-  for (const c of candidates) {
-    if (await c.count() === 1) return c;
-  }
-  return original.first();
-}
-`;
 // -----------------------------------------------------------------------------
 // Generate Playwright spec
 // -----------------------------------------------------------------------------
@@ -240,12 +223,6 @@ export function generateSpec(ir: IR): string {
       .replace(/\s+/g, " ")
       .slice(0, 200)}\n`
     : "";
-  const helpers: string[] = [];
-  if (body.includes("await locate(")) helpers.push(LOCATE_HELPER);
-  if (body.includes("await waitForAuthSettle(")) helpers.push(AUTH_SETTLE_HELPER);
-  const helper = helpers.join("\n");
-  return `import { test, expect } from '@playwright/test';
-${helper}
 
   const needsLocate = body.includes("await locate(") || body.includes("await safeClick(");
   const needsSafeClick = body.includes("await safeClick(");

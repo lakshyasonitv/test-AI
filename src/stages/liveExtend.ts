@@ -1,7 +1,6 @@
 import { chromium, type Page } from "playwright";
 import { AppModel } from "../schema/appModel.js";
 import type { Step } from "../schema/ir.js";
-import { modelFromAria } from "./discovery.js";
 import { discoverUsingCrawler } from "./domDiscovery.js";
 import { modelFromAria, discoverInteractiveElements } from "./discovery.js";
 import { resolveLive } from "./targetResolver.js";

@@ -299,7 +299,6 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     ir.meta.baseUrl = origin;
     ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
     if (creds) applyCredentials(ir.steps, creds, testCase);
-    if (creds) applyCredentials(ir.steps, creds);
     llmCacheSet(cacheKey, ir);
     return ir;
   };

@@ -27,11 +27,66 @@ export const store: RunStore = {
     appendFileSync(f, JSON.stringify(event) + "\n", "utf8");
   },
   read(runId) {
+    let events: StageEvent[] = [];
     const f = fileFor(runId);
-    if (!existsSync(f)) return [];
-    return readFileSync(f, "utf8")
-      .split("\n").filter(Boolean)
-      .map((l) => JSON.parse(l) as StageEvent);
+
+    if (existsSync(f)) {
+      const lines = readFileSync(f, "utf8").split("\n").filter(Boolean);
+      if (lines.length > 0) {
+        events = lines.map((l) => JSON.parse(l) as StageEvent);
+      }
+    }
+
+    // Fallback for runs where events.ndjson is missing/empty: reconstruct events from stage JSON files
+    if (events.length === 0) {
+      const input = readJson(runId, "00-input.json");
+      if (!input) return [];
+
+      events.push({ runId, stage: "input", status: "completed", data: input, ts: Date.now() });
+
+      const planData = readJson(runId, "01-plan.json");
+      if (planData) events.push({ runId, stage: "plan", status: "completed", data: planData, ts: Date.now() });
+
+      const appModel = readJson(runId, "02-appmodel.json");
+      if (appModel) events.push({ runId, stage: "discovery", status: "completed", data: appModel, ts: Date.now() });
+
+      const cases = readJson(runId, "03-cases.json");
+      if (cases) events.push({ runId, stage: "testcases", status: "completed", data: cases, ts: Date.now() });
+
+      const ir = readJson(runId, "04-ir.json");
+      if (ir) events.push({ runId, stage: "ir", status: "completed", data: ir, ts: Date.now() });
+
+      const result = readJson(runId, "05-result.json");
+      if (result) events.push({ runId, stage: "execute", status: "completed", data: result, ts: Date.now() });
+
+      const diagnosis = readJson(runId, "06-diagnosis.json");
+      if (diagnosis) events.push({ runId, stage: "failure_analysis", status: "completed", data: diagnosis, ts: Date.now() });
+    }
+
+    // Guarantee that if the run has concluded, the event stream ends with a 'done' event
+    const last = events[events.length - 1];
+    if (last && last.stage !== "done" && last.stage !== "error") {
+      const result = readJson(runId, "05-result.json");
+      const suite = readJson(runId, "07-suite-summary.json");
+      const cases = readJson(runId, "03-cases.json");
+      const primaryTest = Array.isArray(cases) && cases[0] ? { title: cases[0].title, steps: cases[0].steps, expected: cases[0].expected } : undefined;
+
+      events.push({
+        runId,
+        stage: "done",
+        status: "completed",
+        data: {
+          passed: result?.passed ?? (suite ? suite.passed === suite.total : false),
+          status: result?.status,
+          screenshotUrl: result?.screenshotUrl,
+          test: primaryTest,
+          suite,
+        },
+        ts: Date.now(),
+      });
+    }
+
+    return events;
   },
 };
 
