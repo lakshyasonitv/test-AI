@@ -207,12 +207,48 @@ function emitStep(step: Step, baseUrl: string): string {
 }
 
 // -----------------------------------------------------------------------------
+// Step label helper — human-readable name for test.step()
+// -----------------------------------------------------------------------------
+
+function stepLabel(step: Step, index: number, baseUrl: string): string {
+  const t = step.target;
+  const name = t?.name ? ` '${t.name}'` : "";
+  const val = step.value ? ` '${step.value}'` : "";
+  switch (step.action) {
+    case "navigate": {
+      const u = t?.url ?? "/";
+      const full = u.startsWith("http") ? u : baseUrl.replace(/\/$/, "") + u;
+      return `Navigate to ${full}`;
+    }
+    case "click": return `Click${name}`;
+    case "fill": return `Fill${name} with${val}`;
+    case "select": return `Select${val} in${name}`;
+    case "check": return `Check${name}`;
+    case "press": return `Press${val || " Enter"} in${name}`;
+    case "wait": return `Wait ${step.value ?? 1000}ms`;
+    case "assert": {
+      const assertion = step.assertion ?? "visible";
+      if (assertion === "text_contains") return `Assert${name} contains${val}`;
+      if (assertion === "text_equals") return `Assert${name} text is${val}`;
+      if (assertion === "url_contains") return `Assert URL contains${val}`;
+      return `Assert${name} is ${assertion}`;
+    }
+    default: return `Step ${index + 1}: ${step.action}`;
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Generate Playwright spec
 // -----------------------------------------------------------------------------
 
 export function generateSpec(ir: IR): string {
   const body = ir.steps
-    .map((step, i) => `  console.log("STEP ${i + 1}: ${step.action}");\n${emitStep(step, ir.meta.baseUrl)}`)
+    .map((step, i) => {
+      const label = stepLabel(step, i, ir.meta.baseUrl);
+      const code = emitStep(step, ir.meta.baseUrl);
+      const indented = code.split("\n").map((l) => "    " + l).join("\n");
+      return `    await test.step(${q(label)}, async () => {\n${indented}\n      await page.screenshot({ path: "artifacts/step-${i + 1}.png" });\n    });`;
+    })
     .join("\n");
 
   const truncNote = ir.meta.truncated

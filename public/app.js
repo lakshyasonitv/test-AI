@@ -32,6 +32,9 @@ const STAGE_TO_PHASE = Object.fromEntries(
   PHASES.flatMap((p) => p.stages.map((s) => [s, p.key]))
 );
 
+// Per-phase stage tracking: { phaseKey: { stageName: "pending"|"started"|"completed"|"failed" } }
+let phaseStageStatus = {};
+
 const TEMPLATES = [
   { label: "Login test", prompt: "Test the login functionality: attempt to log in with invalid credentials and verify an appropriate error is shown." },
   { label: "Homepage smoke test", prompt: "Verify the homepage loads successfully and key elements (header, navigation, main content) are visible." },
@@ -55,6 +58,7 @@ const phasesEl = document.getElementById("stages");
 const form = document.getElementById("runForm");
 const promptEl = document.getElementById("prompt");
 const urlEl = document.getElementById("url");
+const submitBtn = form.querySelector('button[type="submit"]');
 const finalResult = document.getElementById("finalResult");
 const verdictEl = document.getElementById("verdict");
 const testSummaryEl = document.getElementById("testSummary");
@@ -70,6 +74,8 @@ const suiteProgressListEl = document.getElementById("suiteProgressList");
 const suiteResultsEl = document.getElementById("suiteResults");
 const suiteSummaryHeaderEl = document.getElementById("suiteSummaryHeader");
 const suiteCaseListEl = document.getElementById("suiteCaseList");
+const screenshotToggleEl = document.getElementById("screenshotToggle");
+const screenshotGridEl = document.getElementById("screenshotGrid");
 
 // -----------------------------------------------------------------------------
 // Utilities
@@ -98,6 +104,7 @@ function renderTemplates() {
 // -----------------------------------------------------------------------------
 
 function renderPhases() {
+  phaseStageStatus = {};
   phasesEl.innerHTML = PHASES.map(
     (p) => `
     <li data-phase="${p.key}" class="pending">
@@ -141,20 +148,47 @@ function summarize(stage, data) {
   } catch { return ""; }
 }
 
+function computePhaseStatus(phaseKey) {
+  const tracked = phaseStageStatus[phaseKey];
+  if (!tracked) return "pending";
+  const statuses = Object.values(tracked);
+  if (statuses.length === 0) return "pending";
+  if (statuses.some((s) => s === "failed")) return "failed";
+  if (statuses.every((s) => s === "completed")) return "completed";
+  if (statuses.some((s) => s === "started")) return "started";
+  return "pending";
+}
+
+function applyPhaseUI(phaseKey, phaseStatus, summaryText) {
+  const li = phasesEl.querySelector(`li[data-phase="${phaseKey}"]`);
+  if (!li) return;
+  li.className = phaseStatus;
+  const badgeEl = li.querySelector(".phase-badge");
+  if (badgeEl) {
+    if (phaseStatus === "started") {
+      badgeEl.className = "phase-badge running";
+      badgeEl.textContent = "\u23f3 In Progress";
+    } else if (phaseStatus === "completed") {
+      badgeEl.className = "phase-badge done";
+      badgeEl.textContent = "\u2705 Complete";
+    } else if (phaseStatus === "failed") {
+      badgeEl.className = "phase-badge failed";
+      badgeEl.textContent = "\u274c Failed";
+    }
+  }
+  if (summaryText !== undefined) {
+    const summaryEl = li.querySelector(".summary-text");
+    if (summaryEl) summaryEl.textContent = summaryText;
+  }
+}
+
 function setPhaseFromStage(stage, status, data) {
   if (stage === "done" || stage === "error") {
     PHASES.forEach((p) => {
-      const li = phasesEl.querySelector(`li[data-phase="${p.key}"]`);
-      if (li) {
-        const isFail = stage === "error" || (p.key === "results" && data?.passed === false);
-        if (!li.classList.contains("completed") && !li.classList.contains("failed")) {
-          li.className = isFail ? "failed" : "completed";
-          const badgeEl = li.querySelector(".phase-badge");
-          if (badgeEl) {
-            badgeEl.className = isFail ? "phase-badge failed" : "phase-badge done";
-            badgeEl.textContent = isFail ? "❌ Failed" : "✅ Complete";
-          }
-        }
+      const phaseStatus = computePhaseStatus(p.key);
+      if (phaseStatus === "completed" || phaseStatus === "failed") return;
+      if (phaseStatus === "started") {
+        applyPhaseUI(p.key, "failed", "Interrupted — pipeline ended before this step finished");
       }
     });
     return;
@@ -162,34 +196,36 @@ function setPhaseFromStage(stage, status, data) {
 
   const phaseKey = STAGE_TO_PHASE[stage];
   if (!phaseKey) return;
-  const li = phasesEl.querySelector(`li[data-phase="${phaseKey}"]`);
-  if (!li) return;
 
-  li.className = status;
-  const badgeEl = li.querySelector(".phase-badge");
-  if (badgeEl) {
-    if (status === "started") {
-      badgeEl.className = "phase-badge running";
-      badgeEl.textContent = "⏳ In Progress";
-    } else if (status === "completed") {
-      badgeEl.className = "phase-badge done";
-      badgeEl.textContent = "✅ Complete";
-    } else if (status === "failed") {
-      badgeEl.className = "phase-badge failed";
-      badgeEl.textContent = "❌ Failed";
+  if (!phaseStageStatus[phaseKey]) phaseStageStatus[phaseKey] = {};
+
+  if (status === "started") {
+    const phase = PHASES.find((p) => p.key === phaseKey);
+    if (phase) {
+      phase.stages.forEach((s) => {
+        if (!phaseStageStatus[phaseKey][s]) phaseStageStatus[phaseKey][s] = "pending";
+      });
     }
+    phaseStageStatus[phaseKey][stage] = "started";
+  } else if (status === "completed" || status === "failed") {
+    phaseStageStatus[phaseKey][stage] = status;
   }
 
+  const phaseStatus = computePhaseStatus(phaseKey);
+  let summaryText;
   if (data !== undefined) {
-    const summary = summarize(stage, data);
-    if (summary) {
-      const summaryEl = li.querySelector(".summary-text");
-      if (summaryEl) summaryEl.textContent = summary;
-    }
-    const details = li.querySelector(".output");
-    if (details) {
-      details.querySelector("pre").textContent = JSON.stringify(data, null, 2);
-      details.classList.remove("hidden");
+    summaryText = summarize(stage, data);
+  }
+  applyPhaseUI(phaseKey, phaseStatus, summaryText);
+
+  if (data !== undefined) {
+    const li = phasesEl.querySelector(`li[data-phase="${phaseKey}"]`);
+    if (li) {
+      const details = li.querySelector(".output");
+      if (details) {
+        details.querySelector("pre").textContent = JSON.stringify(data, null, 2);
+        details.classList.remove("hidden");
+      }
     }
   }
 }
@@ -237,6 +273,29 @@ function setPhaseFromStage(stage, status, data) {
     </div>`;
   }
 
+  function renderScreenshotGrid(suite, runId) {
+    if (!suite || !suite.cases) return "";
+    const withScreenshots = suite.cases.filter(c => c.screenshotUrl);
+    if (withScreenshots.length === 0) return "";
+    return withScreenshots.map((c, i) => {
+      const badge = c.status === "passed" ? "badge-passed" :
+        c.status === "failed" ? "badge-failed" : "badge-pending";
+      return `
+      <div class="screenshot-tile">
+        <img src="${c.screenshotUrl}" alt="Case ${i + 1}" loading="lazy" />
+        <span class="screenshot-tile-label ${badge}">${escapeHtml(c.title)}</span>
+      </div>`;
+    }).join("");
+  }
+
+  function setupScreenshotToggle(suite, runId) {
+    const hasScreenshots = suite?.cases?.some(c => c.screenshotUrl);
+    screenshotToggleEl.classList.toggle("hidden", !hasScreenshots);
+    screenshotGridEl.innerHTML = renderScreenshotGrid(suite, runId);
+    screenshotGridEl.classList.add("hidden");
+    screenshotToggleEl.textContent = "View All Screenshots";
+  }
+
   // -----------------------------------------------------------------------------
   // Case card
   // -----------------------------------------------------------------------------
@@ -247,12 +306,12 @@ function setPhaseFromStage(stage, status, data) {
         c.status === "truncated" ? "badge-truncated" :
           c.status === "truncated_no_assertion" ? "badge-partial" : "badge-pending";
 
-    const statusIcon = c.status === "passed" ? "✔" :
-      c.status === "failed" ? "✘" :
-        c.status === "truncated" ? "⚠" : "○";
+    const statusIcon = c.status === "passed" ? "\u2714" :
+      c.status === "failed" ? "\u2718" :
+        c.status === "truncated" ? "\u26a0" : "\u25cb";
 
     const caseDir = `/runs/${runId}/${c.resultPath}`;
-    const screenshotUrl = `${caseDir}/artifacts/trace.png`;
+    const screenshotUrl = c.screenshotUrl || "";
     const specUrl = `${caseDir}/generated.spec.ts`;
     const irUrl = `${caseDir}/04-ir.json`;
     const resultUrl = `${caseDir}/05-result.json`;
@@ -264,18 +323,19 @@ function setPhaseFromStage(stage, status, data) {
         <span class="case-status-icon ${statusBadge}">${statusIcon}</span>
         <span class="case-title">${escapeHtml(c.title)}</span>
         <span class="case-badge ${statusBadge}">${STATUS_LABEL[c.status] ?? c.status}</span>
-        <span class="case-expand-icon">▼</span>
+        <span class="case-expand-icon">\u25bc</span>
       </div>
       <div class="case-card-body hidden">
-        <figure class="case-screenshot hidden">
+        ${screenshotUrl ? `
+        <figure class="case-screenshot">
           <img src="${screenshotUrl}" alt="screenshot for case ${index + 1}" loading="lazy"
                onerror="this.parentElement.classList.add('hidden')" />
           <figcaption>Final state</figcaption>
-        </figure>
+        </figure>` : ""}
         <div class="case-downloads">
-          <a href="${specUrl}" download class="dl-btn">Generated Spec</a>
-          <a href="${irUrl}" download class="dl-btn">IR JSON</a>
-          <a href="${resultUrl}" download class="dl-btn">Result JSON</a>
+          <a href="${specUrl}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">Generated Spec</a>
+          <a href="${irUrl}" download="ir.json" class="dl-btn">IR JSON</a>
+          <a href="${resultUrl}" download="result.json" class="dl-btn">Result JSON</a>
           <a href="${traceUrl}" class="dl-btn" target="_blank">Artifacts</a>
         </div>
         <details class="case-details">
@@ -337,6 +397,7 @@ function setPhaseFromStage(stage, status, data) {
     suiteResultsEl.classList.remove("hidden");
     suiteResultsEl.dataset.runId = runId;
     suiteSummaryHeaderEl.innerHTML = renderSuiteSummaryHeader(suite);
+    setupScreenshotToggle(suite, runId);
     suiteCaseListEl.innerHTML = suite.cases.map((c, i) => renderCaseCard(c, runId, i)).join("");
     setupCaseCardListeners();
   }
@@ -346,6 +407,9 @@ function setPhaseFromStage(stage, status, data) {
     suiteResultsEl.removeAttribute("data-run-id");
     suiteSummaryHeaderEl.innerHTML = "";
     suiteCaseListEl.innerHTML = "";
+    screenshotToggleEl.classList.add("hidden");
+    screenshotGridEl.classList.add("hidden");
+    screenshotGridEl.innerHTML = "";
   }
 
   // -----------------------------------------------------------------------------
@@ -388,7 +452,7 @@ function setPhaseFromStage(stage, status, data) {
     diagnosisEl.textContent = "";
     screenshotFigureEl.classList.add("hidden");
     screenshotEl.removeAttribute("src");
-    traceLinkEl.classList.add("hidden");
+    if (traceLinkEl) traceLinkEl.classList.add("hidden");
   }
 
   // -----------------------------------------------------------------------------
@@ -448,6 +512,9 @@ function setPhaseFromStage(stage, status, data) {
     setPhaseFromStage(event.stage, event.status, event.data);
 
     if (event.stage === "done" || event.stage === "error") {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Run";
+
       finalResult.classList.remove("hidden");
       const passed = event.data?.passed;
       const partial = event.data?.partial;
@@ -485,13 +552,17 @@ function setPhaseFromStage(stage, status, data) {
         renderSuiteResults(suite, runId);
         // Also show the primary test result for backward compatibility
         renderSingleTestResult(event.data, event.stage, event.error);
-        traceLinkEl.href = `/runs/${runId}/generated/`;
-        traceLinkEl.classList.remove("hidden");
+        if (traceLinkEl) {
+          traceLinkEl.href = `/runs/${runId}/generated.spec.ts`;
+          traceLinkEl.classList.remove("hidden");
+        }
       } else {
         // Single-test mode (backward compatible)
         renderSingleTestResult(event.data, event.stage, event.error);
-        traceLinkEl.href = `/runs/${runId}/generated/`;
-        traceLinkEl.classList.remove("hidden");
+        if (traceLinkEl) {
+          traceLinkEl.href = `/runs/${runId}/generated.spec.ts`;
+          traceLinkEl.classList.remove("hidden");
+        }
       }
 
       loadHistory();
@@ -501,21 +572,56 @@ function setPhaseFromStage(stage, status, data) {
     // Suite progress events
     if (event.stage === "suite" && event.status === "started" && event.data) {
       const caseId = event.data.caseId;
-      // Build or update progress from the suite summary event
-      if (event.data.total) {
-        // This is the initial "suite started" event with total count
-        renderSuiteProgress({ total: event.data.total, cases: [] }, null);
+      if (event.data.total && !caseId) {
+        // Initial "suite started" event with total count — create placeholder items
+        suiteProgressEl.classList.remove("hidden");
+        suiteProgressListEl.innerHTML = "";
+        for (let i = 0; i < event.data.total; i++) {
+          const item = document.createElement("div");
+          item.className = "suite-progress-item pending";
+          item.innerHTML = `
+            <span class="suite-progress-icon">○</span>
+            <span class="suite-progress-label">Case ${i + 1} / ${event.data.total}</span>
+            <span class="suite-progress-title">Waiting…</span>`;
+          suiteProgressListEl.appendChild(item);
+        }
       } else if (caseId) {
-        // This is a per-case "started" event — update progress
+        // Per-case "started" event — find or create the progress item
         const progressItems = suiteProgressListEl.querySelectorAll(".suite-progress-item");
-        if (progressItems.length) {
-          // Find the matching item and update it
-          const idx = Array.from(progressItems).findIndex(el =>
-            el.querySelector(".suite-progress-title")?.textContent === event.data.title
+        let item = null;
+        for (const el of progressItems) {
+          if (el.dataset.caseId === caseId) { item = el; break; }
+        }
+        if (!item && progressItems.length > 0) {
+          // Use the first pending item as a slot for this case
+          item = Array.from(progressItems).find(el =>
+            el.classList.contains("pending") && !el.dataset.caseId
           );
-          if (idx >= 0) {
-            progressItems[idx].classList.add("running");
-            progressItems[idx].querySelector(".suite-progress-icon").textContent = "⏳";
+        }
+        if (item) {
+          item.dataset.caseId = caseId;
+          item.className = "suite-progress-item running";
+          item.querySelector(".suite-progress-icon").textContent = "⏳";
+          if (event.data.title) {
+            item.querySelector(".suite-progress-title").textContent = event.data.title;
+          }
+        }
+      }
+    }
+
+    if (event.stage === "suite" && event.status === "completed" && event.data && !event.data.summary) {
+      // Per-case completed — update the corresponding progress item
+      const caseId = event.data.caseId;
+      if (caseId) {
+        const item = suiteProgressListEl.querySelector(`[data-case-id="${caseId}"]`);
+        if (item) {
+          const statusClass = event.data.status || "passed";
+          item.className = `suite-progress-item ${statusClass}`;
+          const icon = item.querySelector(".suite-progress-icon");
+          if (icon) {
+            icon.textContent = statusClass === "passed" ? "✔" :
+              statusClass === "failed" ? "✘" :
+                statusClass === "truncated" ? "⚠" : "✔";
           }
         }
       }
@@ -556,7 +662,6 @@ function setPhaseFromStage(stage, status, data) {
 
     let seen = 0;
     let fails = 0;
-    let noNewEventsCount = 0;
 
     while (generation === pollGeneration) {
       let done = false;
@@ -567,17 +672,10 @@ function setPhaseFromStage(stage, status, data) {
 
         const newEvents = events.slice(seen);
         if (newEvents.length > 0) {
-          noNewEventsCount = 0;
           for (const event of newEvents) {
             if (applyEvent(event, runId)) done = true;
           }
           seen = events.length;
-        } else if (seen > 0) {
-          // If events exist and no new events arrive for 2 consecutive polls, complete event processing
-          noNewEventsCount++;
-          if (noNewEventsCount >= 2) {
-            done = true;
-          }
         }
 
         // Reset failure counter on successful read
@@ -588,6 +686,8 @@ function setPhaseFromStage(stage, status, data) {
         fails = 0;
       } catch {
         if (++fails === 5) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Run";
           finalResult.classList.remove("hidden");
           verdictEl.textContent = "⚠️ Lost contact with the server — retrying…";
         }
@@ -608,6 +708,9 @@ function setPhaseFromStage(stage, status, data) {
     const url = urlEl.value.trim();
     if (!prompt || !url) return;
 
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Running\u2026";
+
     const res = await fetch("/api/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -624,3 +727,9 @@ function setPhaseFromStage(stage, status, data) {
   renderTemplates();
   renderPhases();
   loadHistory();
+
+  screenshotToggleEl.addEventListener("click", () => {
+    const isOpen = !screenshotGridEl.classList.contains("hidden");
+    screenshotGridEl.classList.toggle("hidden");
+    screenshotToggleEl.textContent = isOpen ? "View All Screenshots" : "Hide Screenshots";
+  });

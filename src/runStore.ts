@@ -1,6 +1,7 @@
 import { appendFileSync, readFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type { StageEvent } from "./orchestrator.js";
+import { findScreenshot } from "./stages/executor.js";
 
 /**
  * Durable per-run event log — the one seam that separates "demo" from "product".
@@ -29,11 +30,13 @@ export const store: RunStore = {
   read(runId) {
     let events: StageEvent[] = [];
     const f = fileFor(runId);
+    let fromNdjson = false;
 
     if (existsSync(f)) {
       const lines = readFileSync(f, "utf8").split("\n").filter(Boolean);
       if (lines.length > 0) {
         events = lines.map((l) => JSON.parse(l) as StageEvent);
+        fromNdjson = true;
       }
     }
 
@@ -63,13 +66,25 @@ export const store: RunStore = {
       if (diagnosis) events.push({ runId, stage: "failure_analysis", status: "completed", data: diagnosis, ts: Date.now() });
     }
 
-    // Guarantee that if the run has concluded, the event stream ends with a 'done' event
+    // For legacy runs without events.ndjson: guarantee the event stream ends with a
+    // 'done' event so the frontend doesn't poll forever.  When events.ndjson EXISTS
+    // the events are authoritative — the run is either still in progress (no "done"
+    // yet) or has completed with a real "done"/"error" event.  Injecting a synthetic
+    // "done" with passed:false for an in-progress run would prematurely mark all
+    // in-progress phases as "failed" on the frontend.
     const last = events[events.length - 1];
-    if (last && last.stage !== "done" && last.stage !== "error") {
+    if (!fromNdjson && last && last.stage !== "done" && last.stage !== "error") {
       const result = readJson(runId, "05-result.json");
       const suite = readJson(runId, "07-suite-summary.json");
       const cases = readJson(runId, "03-cases.json");
       const primaryTest = Array.isArray(cases) && cases[0] ? { title: cases[0].title, steps: cases[0].steps, expected: cases[0].expected } : undefined;
+
+      // Compute screenshotUrl from artifactsDir if not already present
+      let screenshotUrl = result?.screenshotUrl;
+      if (!screenshotUrl && result?.artifactsDir) {
+        const shot = findScreenshot(result.artifactsDir);
+        if (shot) screenshotUrl = "/" + path.relative(".", shot).replace(/\\/g, "/");
+      }
 
       events.push({
         runId,
@@ -78,7 +93,7 @@ export const store: RunStore = {
         data: {
           passed: result?.passed ?? (suite ? suite.passed === suite.total : false),
           status: result?.status,
-          screenshotUrl: result?.screenshotUrl,
+          screenshotUrl,
           test: primaryTest,
           suite,
         },

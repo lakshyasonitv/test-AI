@@ -20,6 +20,7 @@ button {
   padding: 10px 20px; border-radius: 8px; font-size: 0.95rem; cursor: pointer;
 }
 button:hover { background: #3d68e0; }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* ---------------------------------------------------------------------------
    Phase pipeline (progress dots)
@@ -31,7 +32,10 @@ button:hover { background: #3d68e0; }
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
 }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--pending); flex-shrink: 0; }
-li.started .dot { background: var(--running); animation: pulse 1s infinite; }
+li.started .dot {
+  background: var(--running); animation: pulse 1s infinite;
+  box-shadow: 0 0 6px var(--running);
+}
 li.completed .dot { background: var(--done); }
 li.failed .dot { background: var(--failed); }
 .phase-header { display: flex; align-items: center; gap: 10px; width: 100%; }
@@ -40,11 +44,13 @@ li.failed .dot { background: var(--failed); }
 }
 .phase-badge.pending { background: #262830; color: var(--muted); }
 .phase-badge.running { background: var(--running); color: #1a1400; animation: pulse 1s infinite; }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 .phase-badge.done { background: var(--done); color: #06210f; }
 .phase-badge.failed { background: var(--failed); color: #2a0705; }
 
 .phase-desc { font-size: 0.8rem; color: var(--muted); margin-top: 4px; width: 100%; }
 .summary-text { font-size: 0.85rem; color: #58a6ff; margin-top: 6px; width: 100%; font-weight: 500; }
+li.failed .summary-text { color: var(--failed); }
 
 .output { width: 100%; margin: 8px 0 0; }
 .output summary { cursor: pointer; font-size: 0.75rem; color: var(--muted); user-select: none; }
@@ -66,6 +72,9 @@ li.failed .dot { background: var(--failed); }
 .test-summary ol { margin: 0 0 8px; padding-left: 20px; font-size: 0.85rem; color: var(--text); }
 .test-summary ol li { margin-bottom: 4px; }
 .test-summary p { margin: 0; font-size: 0.8rem; color: var(--muted); }
+
+#traceLink { display: inline-block; margin-top: 10px; color: #4f7cff; font-size: 0.85rem; text-decoration: none; }
+#traceLink:hover { text-decoration: underline; }
 
 #screenshotFigure { margin: 0 0 10px; }
 #screenshot { max-width: 100%; border-radius: 6px; display: block; }
@@ -113,6 +122,48 @@ li.failed .dot { background: var(--failed); }
 .suite-stat-truncated { color: var(--truncated); }
 .suite-stat-partial { color: var(--partial); }
 
+.screenshot-toggle {
+  margin: 10px 0;
+  padding: 6px 16px;
+  font-size: 0.85rem;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid #333;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.screenshot-toggle:hover { background: #1e1f24; }
+
+.screenshot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+  padding: 12px;
+  background: #0b0c0e;
+  border-radius: 8px;
+}
+.screenshot-tile {
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.screenshot-tile img {
+  width: 100%;
+  display: block;
+  border-radius: 6px;
+}
+.screenshot-tile-label {
+  display: block;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  background: #111215;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .suite-case-list { display: flex; flex-direction: column; gap: 8px; }
 
 /* ---------------------------------------------------------------------------
@@ -152,7 +203,7 @@ li.failed .dot { background: var(--failed); }
 .dl-btn {
   padding: 4px 10px; border-radius: 6px; font-size: 0.75rem;
   background: #0b0c0e; color: var(--muted); text-decoration: none;
-  border: 1px solid #2a2c33;
+  border: 1px solid #2a2c33; cursor: pointer;
 }
 .dl-btn:hover { border-color: #4f7cff; color: var(--text); }
 
@@ -213,3 +264,36 @@ li.failed .dot { background: var(--failed); }
 .history-empty { color: var(--muted); font-size: 0.85rem; }
 
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ---------------------------------------------------------------------------
+   Responsive
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 600px) {
+  .wrap { padding: 20px 12px; }
+  h1 { font-size: 1.2rem; margin-bottom: 16px; }
+
+  form { gap: 10px; }
+  textarea, input { font-size: 0.9rem; padding: 8px 10px; }
+  button { width: 100%; text-align: center; }
+
+  .templates { gap: 6px; }
+  .template-btn { font-size: 0.75rem; padding: 5px 10px; }
+
+  .stages li { padding: 10px 12px; }
+  .phase-header { gap: 8px; }
+  .phase-badge { font-size: 0.65rem; padding: 2px 6px; }
+
+  .suite-summary-stats { gap: 8px; }
+  .suite-stat { font-size: 0.8rem; padding: 3px 8px; }
+
+  .case-card-header { padding: 10px 12px; gap: 8px; flex-wrap: wrap; }
+  .case-title { font-size: 0.82rem; }
+  .case-downloads { flex-direction: column; }
+
+  .history-item { flex-wrap: wrap; gap: 6px; padding: 8px 10px; font-size: 0.8rem; }
+  .history-item .hprompt { white-space: normal; }
+  .history-item .hurl { width: 100%; }
+
+  .suite-progress-item { padding: 6px 10px; font-size: 0.8rem; }
+}

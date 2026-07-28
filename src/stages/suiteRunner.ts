@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync, cpSync } from "node:fs";
 import path from "node:path";
 import { toIR } from "./ir.js";
 import { generateSpec } from "./generator.js";
-import { runSpec } from "./executor.js";
+import { runSpec, findScreenshot } from "./executor.js";
 import { analyzeFailure } from "./failureAnalysis.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
@@ -202,12 +202,18 @@ export async function runSuite(
     failed,
     truncated,
     truncated_no_assertion: truncatedNoAssertion,
-    cases: results.map((r) => ({
-      caseId: r.caseId,
-      title: r.title,
-      status: r.status,
-      resultPath: path.join("cases", r.caseId),
-    })),
+    cases: results.map((r) => {
+      const caseDir = path.join(runDir, "cases", r.caseId);
+      const shot = r.resultPath ? findScreenshot(path.join(runDir, r.resultPath)) : null;
+      const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
+      return {
+        caseId: r.caseId,
+        title: r.title,
+        status: r.status,
+        resultPath: path.join("cases", r.caseId),
+        screenshotUrl,
+      };
+    }),
   };
 
   const summaryPath = path.join(runDir, "07-suite-summary.json");

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Test Platform</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
@@ -42,12 +43,14 @@
         <figcaption>Final state at the end of the test</figcaption>
       </figure>
       <p id="diagnosis"></p>
-      
+      <a id="traceLink" class="hidden" target="_blank" href="#">View Generated Spec &amp; Artifacts</a>
     </section>
 
     <!-- Suite results -->
     <section id="suiteResults" class="suite-results hidden">
       <div id="suiteSummaryHeader" class="suite-summary-header"></div>
+      <button id="screenshotToggle" class="screenshot-toggle hidden" type="button">View All Screenshots</button>
+      <div id="screenshotGrid" class="screenshot-grid hidden"></div>
       <div id="suiteCaseList" class="suite-case-list"></div>
     </section>
 

@@ -1,123 +1,315 @@
 # AI Test Platform
 
-A pipeline that turns a natural-language testing request + a URL into an **executed** Playwright test — with a live progress UI, artifacts (screenshot, trace, generated spec), and a plain-English failure diagnosis on failure. Handles multi-page flows ("log in and buy something") by discovering pages it hasn't seen yet, on demand, instead of failing outright when a step targets a page discovery never visited. On a failure that looks like a broken locator rather than a real app bug, it tries once, automatically, to repair and re-run before giving up.
+A pipeline that turns a natural-language testing request + a URL into **executed** Playwright tests — with a live progress UI, per-step screenshots, artifacts (trace, generated spec), per-case suite results, and plain-English failure diagnosis on failure. Handles multi-page flows by discovering pages on demand, and tries once to auto-repair broken locators before reporting failure.
 
-See [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) for the full architecture write-up, every design decision and why it was made, an honest list of what's solid vs. still a known gap, and — importantly — **exactly what testing this can currently do** (only one generated test case runs per request; read § 4 there before trusting a result). This file is the practical "how do I run it" doc.
-
-```
-prompt + url
-  → Planner (LLM)                    → high-level plan
-  → Discovery (LLM + browser, vision)→ app model: elements as accessibility role + name (entry page only)
-  → Structured Test Cases (LLM)      → a full coverage suite (valid/invalid/boundary/security);
-                                        one case tagged fromPrompt:true = the literal ask
-  → Primary-case selection           → fromPrompt case, else highest priority — the ONE case that runs
-  → IR generation (LLM) + grounding  → strict JSON test model (THE CONTRACT)
-       ↳ live-extend (browser, on demand) → reaches + models pages beyond the entry page
-       ↳ truncation (fallback)            → a real, partial test instead of a hard failure
-  → Reactive coverage generation     → generate cases for newly-discovered pages (if any)
-  → Playwright Generator (no AI)     → *.spec.ts (with a deterministic locator-fallback helper)
-  → Execution Engine (no AI)         → run + collect artifacts (screenshot, trace)
-  → Failure Analysis (LLM, vision)   → diagnosis (only if it failed)
-       ↳ Bounded self-heal (≤1×)          → re-snapshot + regenerate + re-run once, only for a
-                                             broken-locator-shaped diagnosis, never a real app bug
-```
-
-## Setup
+## Quick Start
 
 ```bash
-npm install
-cp .env.example .env   # fill in GEMINI_API_KEYS / GROQ_API_KEYS
+npm install                  # installs deps + playwright install chromium (postinstall)
+cp .env.example .env         # fill in GEMINI_API_KEYS / GROQ_API_KEYS
+npm run serve                # starts server on http://localhost:3000
 ```
 
-`postinstall` runs `playwright install chromium` automatically.
+Open the UI, enter a prompt + URL, and watch the phase panel update with live progress.
 
-## Run it
-
-**CLI:**
+**CLI mode:**
 
 ```bash
 npm run generate -- --prompt "Test login with an invalid password" --url "https://the-internet.herokuapp.com/login"
 ```
 
-**Web UI:**
+## How It Works
 
-```bash
-npm run serve
+```
+prompt + url
+  -> Planner (LLM)                    -> high-level test plan
+  -> Discovery (LLM + browser, vision)-> app model: elements as accessibility role + name
+  -> Structured Test Cases (LLM)      -> full coverage suite (valid/invalid/boundary/security)
+  -> Primary-case selection           -> fromPrompt case, else highest priority
+  -> IR generation (LLM) + grounding  -> strict JSON test model (the contract)
+       \_ live-extend (on demand)      -> reaches + models pages beyond the entry page
+       \_ truncation (fallback)        -> a real, partial test instead of a hard failure
+  -> Reactive coverage generation     -> generate cases for newly-discovered pages
+  -> Playwright Generator (no AI)     -> *.spec.ts with per-step test.step() blocks
+  -> Execution Engine (no AI)         -> run + collect per-step artifacts
+  -> Failure Analysis (LLM, vision)   -> diagnosis (only on failure)
+       \_ Bounded self-heal (<=1x)    -> re-snapshot + regenerate + re-run once
 ```
 
-Open `http://localhost:3000`, enter a prompt + URL, and watch the phase panel update (pending → running → done/failed) with a one-line plain-English summary per phase (the raw JSON is still there, collapsed behind "Technical details"), ending in a pass/fail/partial/healed banner, a "what we tested" checklist with the expected outcome, a labeled final-state screenshot, and — on failure — the diagnosis text. Run history keeps the newest 20 and each has a delete button.
+## Current Capabilities
 
-Both modes write everything under `runs/<id>/`: every stage's JSON output (`NN-stage.json`, including the **full generated test suite** in `03-cases.json` — only one case of which actually runs, see PROJECT_OVERVIEW.md § 4), the generated `generated.spec.ts`, a real Playwright run (screenshot + trace under `artifacts/`), and — on failure — a diagnosis JSON. If a self-heal attempt succeeds, a `healed/` subfolder holds the repaired IR + spec that actually ran.
+### What Works
 
-### Sharing it over the internet (Cloudflare Quick Tunnel)
+| Capability | Status | Details |
+|-----------|--------|---------|
+| Natural language to executed test | Working | Prompt + URL -> real Playwright test running in a browser |
+| Full coverage suite generation | Working | 6-11 test cases per run: valid path, invalid input, empty fields, boundaries, security |
+| All suite cases executed | Working | Every generated case runs independently with per-case artifacts |
+| Per-step screenshots | Working | Each IR step gets its own `test.step()` block and `step-N.png` screenshot |
+| Per-step pass/fail status | Working | Individual step results in Playwright JSON output, not just overall test status |
+| Phase pipeline (live UI) | Working | 4 phases track aggregate status across sub-stages; no premature green/red |
+| Multi-page flows (live-extend) | Working | On-demand page discovery when steps target unseen pages (capped at 2 extensions) |
+| Self-healing broken locators | Working | Re-snapshot + regenerate + re-run, bounded to 1 attempt, only for selector drift |
+| Truncated test handling | Working | Graceful degradation: partial real test instead of hard failure |
+| Terminal assertion guard | Working | Truncated tests without assertions marked as `truncated_no_assertion` |
+| Auth settle-wait | Working | Bounded wait after auth-triggering steps to handle SPA redirects |
+| Intent-aware credentials | Working | Protects "Invalid password" test cases from credential substitution |
+| Scope filtering | Working | Prompt can request smoke/functional/regression/security scope |
+| Suite result display | Working | Per-case cards with status, screenshots, download links for spec/IR/result |
+| Run history | Working | Newest 20 runs persisted, each deletable, with suite summary |
+| Full-site crawl mode | Working | Opt-in `--crawl` flag for BFS traversal + lazy labeling |
+| Reactive coverage | Working | New pages discovered during execution get auto-generated test cases |
 
-To let someone outside your machine hit the running server — a demo link, testing from a phone — run a Cloudflare Quick Tunnel alongside the server. Two terminals:
+### What Partially Works
+
+| Capability | Status | Known Issue |
+|-----------|--------|-------------|
+| Self-healing | Code verified | No end-to-end test against a real drifted site yet |
+| Flows needing 3+ page-hops | Works up to 2 | `MAX_EXTENSIONS = 2` cap |
+| Login gates without user credentials | Fails | Only demo sites have built-in credentials |
+
+### Known Limitations
+
+| Issue | Impact |
+|-------|--------|
+| No server authentication | Anyone with the URL can start runs and browse artifacts |
+| Gemini key inconsistency | Different keys from different projects can have different model access |
+| Credential substitution on demo hosts | "Invalid password" taxonomy cases still get overwritten on saucedemo/herokuapp |
+| Assertion quality | Prompt-nudged, not code-level validated |
+
+## Recent Updates
+
+### Per-Step Screenshots & Test Isolation (Latest)
+
+**Problem:** All IR steps were flat inside a single `test()` block. If step 2 failed, steps 3+ never ran. Only one screenshot per test. No per-step pass/fail status.
+
+**Changes:**
+- `src/stages/generator.ts` — Each IR step now wrapped in `await test.step("label", async () => { ... })` with `page.screenshot()` per step. Added `stepLabel()` helper for human-readable names (e.g., "Navigate to https://...", "Click 'Login'", "Assert 'Error' is visible")
+- Generated specs now produce per-step pass/fail status and per-step `artifacts/step-N.png` screenshots
+
+### Phase Pipeline Status Fix
+
+**Problem:** Phase 3 ("Building & Executing Tests") flickered between "In Progress" and "Complete" on every sub-stage transition. If the pipeline ended mid-transition, it showed "Failed - Interrupted" even though the phase had completed.
+
+**Changes:**
+- `public/app.js` — Added `phaseStageStatus` tracking object, `computePhaseStatus()` aggregate function, and `applyPhaseUI()` renderer. Phase status now computed from all sub-stage statuses: any "failed" -> failed; all "completed" -> completed; any "started" -> started. Phase stays "In Progress" until ALL sub-stages finish, then turns green.
+
+### Suite Case Screenshot Fix
+
+**Problem:** Case cards fell back to `artifacts/trace.png` (which doesn't exist; traces are `retain-on-failure` only), causing broken images.
+
+**Changes:**
+- `public/app.js` — Removed `trace.png` fallback. Screenshot `<figure>` only renders when `screenshotUrl` is provided by the backend. Backend `suiteRunner.ts` already computes `screenshotUrl` via `findScreenshot()`.
+
+### Phase 2a-2d: Full-Site Crawl Pipeline
+
+**Changes:**
+- `src/stages/crawler.ts` — Pure traversal pass (no LLM), deferred labeling via `labelPage()`
+- `src/kb/siteOutline.ts` — Depth-first site outline helper for labeling context
+- `src/stages/discovery.ts` — Optional `siteOutline` parameter for ambiguous label resolution
+- `src/orchestrator.ts` — Opt-in `mode: "crawl"` flag, entry-page-only eager labeling
+- `src/server/index.ts` — `mode` field validation in POST body
+- `src/cli.ts` — `--crawl` flag
+
+### Full Suite Execution
+
+- `src/stages/suiteRunner.ts` — `runSuite()` iterates all cases, per-case artifacts under `cases/case-N/`
+- `src/orchestrator.ts` — Primary case reused via `PrimaryCaseResult`, not re-executed
+- `07-suite-summary.json` — Suite-wide pass/fail/truncated counts with per-case status
+
+### Terminal Assertion Guard
+
+- `src/stages/ir.ts` — `hasTerminalAssertion()` checks if IR ends with an assert step
+- Truncated tests without terminal assertion marked as `truncated_no_assertion`
+
+### Auth Settle-Wait
+
+- `src/stages/authSettle.ts` — `isAuthTriggeringStep()` heuristic + `waitForAuthSettle()` bounded wait
+- Integrated into live-extend and generated specs
+
+### Intent-Aware Credentials
+
+- `src/stages/testCases.ts` — `category` field on test cases, `shouldSkipCredentialSubstitution()`
+- Protects "Invalid password" and similar negative test cases
+
+### Intent-Scoped Test Case Generation
+
+- `src/kb/testStrategy.ts` — Coverage categories with scope tags
+- `src/stages/classify.ts` — `classifyScope()` heuristic from prompt
+- `src/stages/testCases.ts` — `filterByScope()` filters cases to match requested scope
+
+### Reactive Coverage Generation
+
+- `src/stages/testCases.ts` — `generateCasesForNewPages()` creates cases for newly-discovered pages
+- `src/orchestrator.ts` — Detects new pages post-execution, generates cases, merges suite
+- `src/stages/ir.ts` — `toIR()` returns `{ ir, updatedAppModel }` for live-extend discoveries
+
+### SPA State Change Fix
+
+- `src/stages/ir.ts` — Fallback to `refreshPageModel()` when `extendAppModel()` fails with "already in model"
+
+### Discovery Enhancements
+
+- `src/stages/discovery.ts` — `discoverInteractiveElements(page)` via `page.evaluate()` DOM traversal
+- Icon-only buttons, clickable divs, onclick handlers detected and appended to ARIA snapshot
+- `modelFromAria()` prompt updated to incorporate interactive elements section
+
+### Frontend Improvements
+
+- `public/app.js` — Phase pipeline with aggregate status tracking
+- `public/app.js` — Suite progress live updates during execution
+- `public/app.js` — Per-case result cards with screenshots, download links, lazy-loaded technical details
+- `public/app.js` — Run history with suite summaries and delete buttons
+- `public/app.js` — Button disable/enable during execution
+- `public/style.css` — Responsive design, phase badges, download buttons, case cards
+- `public/index.html` — Viewport meta tag for mobile
+
+### Bug Fixes
+
+- `src/stages/generator.ts` — Fixed `${helpers}` (array) -> `${helper}` (joined string) syntax error
+- `public/app.js` — Fixed "Generated undefined test case(s)" by handling both array and object data shapes
+- `src/stages/testCases.ts` — Created `LLMTestCase` schema without `generatedFrom`, stamped in code post-parse
+- `public/app.js` — Added null guards on `traceLinkEl` references
+- `public/app.js` — Removed premature polling termination (`noNewEventsCount`)
+- `public/app.js` — Fixed suite progress items not rendering from empty initial events
+- `public/app.js` — Added `traceLink` element to HTML
+- `public/app.js` — Fixed traceLink href from `generated/` to `generated.spec.ts`
+- `public/app.js` — Added explicit `download` attributes on case card download buttons
+- Merge conflict resolution across `orchestrator.ts`, `generator.ts`, `ir.ts`, `suiteRunner.ts`
+
+## Architecture
+
+### Pipeline Stages
+
+| Stage | File | LLM? | Description |
+|-------|------|------|-------------|
+| Planner | `src/stages/planner.ts` | Gemini | NL request -> ordered high-level steps |
+| Discovery | `src/stages/discovery.ts` | Gemini | Accessibility snapshot + screenshot -> AppModel |
+| Hybrid Discovery | `src/stages/hybridDiscovery.ts` | Gemini | Combines crawl + discover for multi-page |
+| Crawler | `src/stages/crawler.ts` | No | BFS traversal, captures raw signal per page |
+| Test Cases | `src/stages/testCases.ts` | Gemini | Coverage suite (valid/invalid/boundary/security) |
+| IR Generation | `src/stages/ir.ts` | Groq | Test case -> strict JSON test model + grounding |
+| Live Extend | `src/stages/liveExtend.ts` | No | Browser replay to discover new pages |
+| Generator | `src/stages/generator.ts` | No | IR -> Playwright spec with test.step() blocks |
+| Executor | `src/stages/executor.ts` | No | Runs spec, captures screenshots/traces |
+| Failure Analysis | `src/stages/failureAnalysis.ts` | Gemini + Vision | Diagnoses failures with screenshots |
+| Suite Runner | `src/stages/suiteRunner.ts` | No | Executes all cases, per-case artifacts |
+| Target Resolver | `src/stages/targetResolver.ts` | No | IR Target -> locator with fallback chain |
+| Auth Settle | `src/stages/authSettle.ts` | No | Bounded wait after auth-triggering steps |
+| Credentials | `src/stages/credentials.ts` | No | Test credentials for public demo sites |
+
+### Shared Infrastructure
+
+| Module | File | Description |
+|--------|------|-------------|
+| Orchestrator | `src/orchestrator.ts` | Wires stages, manages primary case, suite execution, self-heal |
+| Run Store | `src/runStore.ts` | Durable per-run NDJSON event log |
+| LLM - Gemini | `src/llm/gemini.ts` | Gemini API client with key rotation |
+| LLM - Groq | `src/llm/groq.ts` | Groq API client with key rotation |
+| Key Pool | `src/llm/keyPool.ts` | API key rotation + 429 handling |
+| Backoff | `src/llm/backoff.ts` | Exponential backoff for retries |
+| JSON Parse | `src/llm/json.ts` | Robust JSON extraction from LLM output |
+| App Model Cache | `src/kb/cache.ts` | Per-URL AppModel cache |
+| Test Strategy | `src/kb/testStrategy.ts` | Coverage taxonomy (floor, not ceiling) |
+| Site Outline | `src/kb/siteOutline.ts` | Depth-first site tree for labeling context |
+| Config | `src/config.ts` | Environment configuration |
+
+### Schemas
+
+| Schema | File | Description |
+|--------|------|-------------|
+| AppModel | `src/schema/appModel.ts` | Elements by accessibility role + name |
+| IR | `src/schema/ir.ts` | Step, Target, Assertion — the contract |
+| SiteGraph | `src/schema/siteGraph.ts` | Crawl output: pages + outbound links |
+| CrawlDirective | `src/schema/crawlDirective.ts` | Crawl configuration |
+
+### Server
+
+| Module | File | Description |
+|--------|------|-------------|
+| Routes | `src/server/index.ts` | Express server, run CRUD, API endpoints |
+| Run Registry | `src/server/runRegistry.ts` | SSE fan-out for live progress |
+| Concurrency | `src/server/concurrency.ts` | Run cap enforcement |
+
+### Frontend
+
+| File | Description |
+|------|-------------|
+| `public/index.html` | Single-page HTML with phase pipeline, form, results |
+| `public/app.js` | Event processing, polling, phase tracking, suite rendering |
+| `public/style.css` | Responsive design, phase badges, case cards, download buttons |
+
+## Project Structure
+
+```
+ai-test-platform/
+  src/
+    stages/          # Pipeline stages (18 files)
+    schema/          # Zod contracts (4 files)
+    llm/             # LLM layer with key rotation (6 files)
+    kb/              # Knowledge base + caching (4 files)
+    server/          # Express server + SSE (3 files)
+    orchestrator.ts  # Pipeline wiring + self-heal
+    runStore.ts      # Durable event log
+    cli.ts           # CLI entry point
+    config.ts        # Environment config
+  public/            # Frontend (3 files)
+  runs/              # Runtime artifacts (gitignored)
+  PROJECT_OVERVIEW.md  # Full architecture + design decisions
+  ENTERPRISE.md       # Scaling roadmap (documented, not built)
+  PROGRESS.md         # Development timeline + verification status
+  UPDATE.md           # Detailed changelog for recent phases
+```
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GEMINI_API_KEYS` | Yes | Comma-separated Gemini API keys (quota stacks across projects) |
+| `GROQ_API_KEYS` | Yes | Comma-separated Groq API keys (failover only, same org) |
+
+### Playwright Config
+
+`playwright.config.ts` — Chromium headless, screenshots on, video retained on failure, traces retained on failure.
+
+### Key Constants
+
+| Constant | Location | Value | Description |
+|----------|----------|-------|-------------|
+| `MAX_EXTENSIONS` | `liveExtend.ts` | 2 | Max live-extend page hops per test case |
+| `TEST_RUN` timeout | `executor.ts` | 60s | Per-test execution timeout |
+| `RETRIES` | `executor.ts` | 2 | Retry attempts for flaky tests |
+| History limit | `runStore.ts` | 20 | Max runs shown in history |
+
+## Sharing Over the Internet
 
 ```bash
-# terminal 1 — the app itself
+# terminal 1
 npm run serve
 
-# terminal 2 — no Cloudflare account, login, or config file needed
+# terminal 2 (no Cloudflare account needed)
 cloudflared tunnel --url http://localhost:3000
 ```
 
-This prints a random `https://<four-random-words>.trycloudflare.com` URL that proxies to your local server. It's ephemeral — a new URL every time you restart the tunnel — and free, with no sign-up.
+This prints a random `https://<words>.trycloudflare.com` URL. Ephemeral, free, no sign-up.
 
-**Why the UI polls instead of streaming:** Cloudflare Quick Tunnels buffer `text/event-stream` (SSE) responses sent over `GET` — the tunnel holds every event and only flushes them once the connection closes, which for a long-lived progress stream means "not until the run ends." This is a known, still-open cloudflared limitation ([cloudflared#1449](https://github.com/cloudflare/cloudflared/issues/1449)), not a bug in this app — it reproduces even with the standard anti-buffering headers set. The web UI works around it by polling `GET /api/runs/:id/state` (a plain JSON snapshot of the run's event log) once a second, instead of subscribing to `GET /api/runs/:id/events` (SSE). Both routes exist; the SSE one still works fine on `localhost` and is left in place. A **named tunnel** (your own domain, `cloudflared tunnel login` + `cloudflared tunnel create`) doesn't have this buffering problem, so SSE would work there — Quick Tunnel is just the zero-setup option this project uses for demos.
+**Note:** Quick Tunnels buffer SSE responses, so the UI uses polling (`GET /api/runs/:id/state`) instead of streaming. Both routes exist; SSE works fine on localhost. Named tunnels don't have this limitation.
 
-**Before sharing a tunnel link:** the server has no authentication. Anyone with the URL can start a run (spends your Gemini/Groq quota) and browse every past run's screenshots/traces under `/runs`, since that's served as plain static files. Fine for a trusted audience; know that before sending it wider — see [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) for the full list of known gaps.
+**Security:** The server has no authentication. Anyone with the URL can start runs and browse artifacts. Fine for trusted audiences; know this before sharing widely.
 
-## API keys & quota — the honest model
+## Future Plans
 
-Free-tier numbers move; check the source of truth before relying on any number here:
-- `ai.google.dev/gemini-api/docs/rate-limits`
-- `console.groq.com/docs/rate-limits`
+- **Server authentication** for safe tunnel sharing
+- **Real/private site credentials** via env-var path (no artifact exposure)
+- **Multi-framework export** (Selenium, Cypress from same IR)
+- **Real Knowledge Base** — queryable store from run artifacts
+- **Business Flow Graph / Risk Analysis / Improvement Suggestions**
 
-- **Gemini keys stack quota only across distinct Google Cloud projects / accounts.** Four teammates each using their own key gives ~4x the free quota, legitimately. Two keys from the same project do not stack.
-- **Groq enforces limits at the org level.** Extra keys in one account add no quota — list them only for failover. Do not create multiple accounts to pool quota (against Groq's ToS). If Groq throughput is the wall, upgrade that one account to the paid Developer tier.
-- The `KeyPool` earns its place regardless of stacking: it gives failover and graceful 429 handling via rotation + exponential backoff.
-- **Team dev pattern:** each developer runs locally with their own keys in their own `.env`. No shared secrets are committed to the repo.
-- **Gotcha hit in practice:** keys from different projects can have **different model access entirely**, not just different quota. The `/v1beta/models` list endpoint isn't reliable for checking this — it advertised a model as available on a key that then 404'd on the real `generateContent` call. If a pipeline run fails at the very first LLM call (`plan`), or works intermittently as `KeyPool` rotates keys, re-verify the configured model with a real call against every key in the pool before assuming it's a code bug.
+## Further Reading
 
-## Architecture notes
-
-- The **Playwright Generator** (`src/stages/generator.ts`) and **Execution Engine** (`src/stages/executor.ts`) contain zero LLM calls — they are pure/deterministic, driven entirely by the IR contract (`src/schema/ir.ts`).
-- Every LLM output is schema-validated with `zod`. Invalid JSON triggers one retry, then a clear thrown error.
-- All LLM traffic goes through `src/llm/gemini.ts` / `src/llm/groq.ts`, which own key rotation (`keyPool.ts`) and backoff (`backoff.ts`). No other file calls an LLM endpoint directly.
-- Every stage's output is persisted to `runs/<id>/NN-stage.json` so a mid-pipeline failure is debuggable.
-- **Grounding is a code-level check, not just a prompt instruction.** `src/stages/ir.ts`'s `groundingError()` verifies every `{role, name}` target in the generated IR actually exists in the app model — deterministically, after generation, not by trusting the model to behave. This is the single authority; `testCases.ts` deliberately does **not** run its own grounding filter (it used to — that filter was silently killing multi-page test cases, since it only ever saw the entry-page model and couldn't distinguish "hallucinated" from "not discovered yet").
-- **Multi-page flows use reactive, on-demand discovery ("live-extend"), not upfront crawling.** When a generated step targets an element the app model doesn't have, `extendAppModel()` (`src/stages/liveExtend.ts`) replays the already-grounded prefix of steps in a real browser, reaches whatever page that leads to, snapshots and labels it (reusing discovery's own `modelFromAria()`), and merges it into the model before retrying generation. Bounded to 2 extensions per test case. After primary-case execution discovers new pages, `generateCasesForNewPages()` (`src/stages/testCases.ts`) generates test cases specifically for those newly-discovered pages and merges them into the suite, tagged with `generatedFrom: "reactive"` to distinguish them from upfront-generated cases.
-- **Graceful degradation over hard failure.** If a flow can't be fully grounded, `toIR` returns a real, executable test truncated to the last verified step (`meta.truncated`) instead of throwing the whole run away. Known gap: a truncated test isn't currently required to end in an assertion, so "passed" can mean "nothing threw" rather than "verified something" — see PROJECT_OVERVIEW.md.
-- **Discovery uses vision, narrowly.** `discovery.ts` passes a screenshot alongside the accessibility snapshot to the same Gemini call — zero extra requests — used only to improve *labeling* of elements already in the snapshot (icon-only buttons, duplicate names). It's never a basis for adding an element the snapshot doesn't contain; the grounding invariant is unchanged.
-- **The generated coverage suite (`03-cases.json`) is bigger than what executes.** `testCases.ts` produces a full suite (valid/invalid/empty/boundary/security) per the checklist in `src/kb/testStrategy.ts` — a floor, not a ceiling; the LLM also reasons from first principles about concepts the checklist doesn't cover. Exactly one case is tagged `fromPrompt: true` (the literal translation of the request); `orchestrator.ts` runs *only* that case, falling back to the highest-priority one if none was tagged. This exists because the naive "run highest priority" selection let an auto-generated SQL-injection case silently replace whatever the user actually asked to test.
-- `src/stages/targetResolver.ts` is the single source of truth for turning an IR `Target` into a locator, shared by the generator (emits code) and the live-extend runner (executes live) — they can't disagree about which element a step means. A role+name target that doesn't resolve uniquely also tries the button/link role swapped, then a broad text match, before giving up (zero LLM cost). Every locator ends in `.first()` since accessible names aren't guaranteed unique and Playwright's strict mode treats a 2-match locator as a hard error.
-- **A bounded, automatic self-heal** (`orchestrator.ts`) fires only when a failure is diagnosed as `selector_changed` or `element_missing`: re-snapshot the current page, regenerate the IR once against the fresh snapshot, regenerate the spec, re-run once. Capped at exactly one attempt, never a loop. A heal is only accepted if the re-run passes **and** the fresh IR isn't itself truncated — a truncated "pass" would mean the failing step got silently dropped, not repaired. `assertion_failed`/`timeout`/`navigation_error` never trigger a heal attempt — a real app bug has to stay a reported failure.
-- `src/stages/credentials.ts` holds real, published test credentials for well-known **public** demo sites only (saucedemo, the-internet.herokuapp.com) — used so live-extend can actually get past a login wall. Substitution is skipped for a `fromPrompt` case (a user's own literal credentials are never overwritten), but still fires for the taxonomy's own "Invalid password" case on those two hosts — a known, open gap (see PROJECT_OVERVIEW.md). For any other site, whatever credentials the user typed into the prompt flow through as plain values; there's no secret-storage mechanism, deliberately, since `/runs` is served publicly.
-- The web UI polls `GET /api/runs/:id/state` rather than streaming SSE, specifically so it survives being shared over a Cloudflare Quick Tunnel (see above). `src/runStore.ts`'s durable per-run event log backs both the SSE and the polling route.
-- Discovery caches the `AppModel` per URL under `runs/_cache/appmodels/` (a proto knowledge base) so repeat runs against the same site skip re-crawling. Live-extend's discovered pages are **not** cached — they're specific to one flow, and caching them risks serving a stale/wrong-flow model to a different prompt against the same URL.
-
-## Known limitations
-
-See [PROJECT_OVERVIEW.md § 4 — What testing this can currently do](PROJECT_OVERVIEW.md#4-what-testing-this-can-currently-do--read-this-before-trusting-a-result) for the full, honest list, including exactly which testing scenarios are verified working, which are generated but never executed, and which are known-unreliable. Found during real development against real sites, including a friend's live site, not hypothetical. In short: only one of the several generated test cases actually runs, truncated tests can still pass without asserting anything in some cases, live-extend can race a single-page app's own auth redirect, credential substitution can still clobber one specific taxonomy case on the two demo hosts, and there's no server auth.
-
-## Repo layout
-
-- `src/stages/` — the pipeline: `planner.ts`, `discovery.ts` (vision), `testCases.ts` (coverage suite + `fromPrompt` tagging), `ir.ts` (+ `liveExtend.ts`, `targetResolver.ts` with deterministic fallback, `credentials.ts`), `generator.ts`, `executor.ts`, `failureAnalysis.ts`.
-- `src/llm/` — the shared LLM layer: `gemini.ts`, `groq.ts`, `keyPool.ts`, `backoff.ts`, `json.ts`.
-- `src/schema/` — the zod contracts: `appModel.ts`, `ir.ts`.
-- `src/kb/` — the proto knowledge base: `cache.ts` (per-URL `AppModel` cache), `testStrategy.ts` (the coverage taxonomy).
-- `src/server/` — the web server: `index.ts` (routes, incl. run delete), `runRegistry.ts` (SSE fan-out), `concurrency.ts` (run cap).
-- `src/orchestrator.ts` — wires the stages together, picks the one case that runs, persists every stage's output, emits progress events, runs the bounded self-heal branch.
-- `src/runStore.ts` — durable per-run NDJSON event log.
-- `public/` — the single-page vanilla JS/CSS frontend (human-readable phase/result summaries, technical JSON behind a disclosure).
-- `runs/` — created at runtime, gitignored.
-- `ENTERPRISE.md` — the seam map for scaling this beyond a single-machine MVP (job queue, object storage, auth, etc.) — documented, not built, until real load demands it.
-- `PROJECT_OVERVIEW.md` — the full design/architecture narrative, every design decision and why, and an honest completion status — **the single place to understand the whole project end to end.**
-
-## Phase 2+ (not built — extension points)
-
-- **Execute every generated test case**, not just the one tagged `fromPrompt` — the biggest gap between what this generates and what it verifies today. Reactive coverage generation now ensures cases exist for newly-discovered pages, but only the primary case runs in the main pipeline; full suite execution is still a Phase 2+ item.
-- **Real/private site credentials:** an env-var + `process.env`-reference-in-generated-spec path, so a login can be tested without the credential ever touching a `runs/` artifact. `credentials.ts` is already structured for this.
-- **Multi-framework export:** add `selenium.ts` / `cypress.ts` alongside `generator.ts`, consuming the same IR.
-- **Real Knowledge Base:** promote the `runs/<id>/*.json` layout and the app-model cache to a queryable store.
-- **Business Flow Graph / Risk Analysis / Improvement Suggestions:** new stages reading existing outputs; none require changing the spine.
+- [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) — Full architecture, every design decision, honest completion status
+- [PROGRESS.md](PROGRESS.md) — Development timeline with verification evidence
+- [UPDATE.md](UPDATE.md) — Detailed changelog for recent phases
+- [ENTERPRISE.md](ENTERPRISE.md) — Scaling roadmap (documented, not built)
