@@ -18,12 +18,47 @@ Open the UI, enter a prompt + URL, and watch the phase panel update with live pr
 npm run generate -- --prompt "Test login with an invalid password" --url "https://the-internet.herokuapp.com/login"
 ```
 
+**Crawl mode** (full-site BFS traversal + lazy labeling):
+
+```bash
+npm run generate -- --prompt "Test the homepage" --url "https://example.com" --crawl
+```
+
+## Discovery Service (Optional)
+
+The platform has a Python-based discovery service (`discovery-service/`) that provides faster, deterministic DOM-based page discovery using Crawl4AI. When running, it becomes the primary discovery path — Gemini vision is used only as a fallback.
+
+```bash
+# Terminal 1 — start the discovery service before running tests
+cd discovery-service
+pip install -r requirements.txt
+python app.py
+
+# Terminal 2 — run the platform
+npm run serve
+```
+
+The service listens on `http://localhost:8000`. If it's not running, the platform automatically falls back to Playwright + Gemini vision discovery (slower, uses more LLM tokens). The auto-start mechanism in `domDiscovery.ts` will also try to spawn it if it detects the service is down.
+
+**When to use it:**
+- Standard pages with HTML forms, buttons, links, navigation — Crawl4AI extracts structured DOM data faster and cheaper than vision
+- Pages that don't need JavaScript rendering for structure (most server-rendered sites)
+- When you want to reduce Gemini API calls during discovery
+
+**When to skip it:**
+- Canvas/captcha/image-heavy pages — these need vision anyway
+- Quick one-off tests where the fallback is fine
+- If Python environment setup is a hassle
+
 ## How It Works
 
 ```
 prompt + url
   -> Planner (LLM)                    -> high-level test plan
-  -> Discovery (LLM + browser, vision)-> app model: elements as accessibility role + name
+  -> Discovery (hybrid)                -> app model: elements as accessibility role + name
+       |_ Crawl4AI (primary)           -> fast DOM extraction, no LLM needed
+       |_ Playwright + Aria (fallback) -> accessibility snapshot + interactive elements
+       |_ Gemini Vision (last resort)  -> only for canvas/captcha/image-heavy pages
   -> Structured Test Cases (LLM)      -> full coverage suite (valid/invalid/boundary/security)
   -> Primary-case selection           -> fromPrompt case, else highest priority
   -> IR generation (LLM) + grounding  -> strict JSON test model (the contract)
@@ -33,6 +68,8 @@ prompt + url
   -> Playwright Generator (no AI)     -> *.spec.ts with per-step test.step() blocks
   -> Execution Engine (no AI)         -> run + collect per-step artifacts
   -> Failure Analysis (LLM, vision)   -> diagnosis (only on failure)
+       \_ Deterministic classifier    -> pattern-matches Playwright errors first (free)
+       \_ Gemini fallback             -> only for ambiguous cases
        \_ Bounded self-heal (<=1x)    -> re-snapshot + regenerate + re-run once
 ```
 
@@ -59,6 +96,9 @@ prompt + url
 | Run history | Working | Newest 20 runs persisted, each deletable, with suite summary |
 | Full-site crawl mode | Working | Opt-in `--crawl` flag for BFS traversal + lazy labeling |
 | Reactive coverage | Working | New pages discovered during execution get auto-generated test cases |
+| Deterministic failure classifier | Working | Pattern-matches Playwright errors before spending a Gemini call |
+| Hybrid discovery | Working | Crawl4AI DOM-first, vision-fallback, auto-starts service if needed |
+| LLM response caching | Working | File + in-memory cache for repeated prompts, 30-min TTL |
 
 ### What Partially Works
 
@@ -77,106 +117,6 @@ prompt + url
 | Credential substitution on demo hosts | "Invalid password" taxonomy cases still get overwritten on saucedemo/herokuapp |
 | Assertion quality | Prompt-nudged, not code-level validated |
 
-## Recent Updates
-
-### Per-Step Screenshots & Test Isolation (Latest)
-
-**Problem:** All IR steps were flat inside a single `test()` block. If step 2 failed, steps 3+ never ran. Only one screenshot per test. No per-step pass/fail status.
-
-**Changes:**
-- `src/stages/generator.ts` — Each IR step now wrapped in `await test.step("label", async () => { ... })` with `page.screenshot()` per step. Added `stepLabel()` helper for human-readable names (e.g., "Navigate to https://...", "Click 'Login'", "Assert 'Error' is visible")
-- Generated specs now produce per-step pass/fail status and per-step `artifacts/step-N.png` screenshots
-
-### Phase Pipeline Status Fix
-
-**Problem:** Phase 3 ("Building & Executing Tests") flickered between "In Progress" and "Complete" on every sub-stage transition. If the pipeline ended mid-transition, it showed "Failed - Interrupted" even though the phase had completed.
-
-**Changes:**
-- `public/app.js` — Added `phaseStageStatus` tracking object, `computePhaseStatus()` aggregate function, and `applyPhaseUI()` renderer. Phase status now computed from all sub-stage statuses: any "failed" -> failed; all "completed" -> completed; any "started" -> started. Phase stays "In Progress" until ALL sub-stages finish, then turns green.
-
-### Suite Case Screenshot Fix
-
-**Problem:** Case cards fell back to `artifacts/trace.png` (which doesn't exist; traces are `retain-on-failure` only), causing broken images.
-
-**Changes:**
-- `public/app.js` — Removed `trace.png` fallback. Screenshot `<figure>` only renders when `screenshotUrl` is provided by the backend. Backend `suiteRunner.ts` already computes `screenshotUrl` via `findScreenshot()`.
-
-### Phase 2a-2d: Full-Site Crawl Pipeline
-
-**Changes:**
-- `src/stages/crawler.ts` — Pure traversal pass (no LLM), deferred labeling via `labelPage()`
-- `src/kb/siteOutline.ts` — Depth-first site outline helper for labeling context
-- `src/stages/discovery.ts` — Optional `siteOutline` parameter for ambiguous label resolution
-- `src/orchestrator.ts` — Opt-in `mode: "crawl"` flag, entry-page-only eager labeling
-- `src/server/index.ts` — `mode` field validation in POST body
-- `src/cli.ts` — `--crawl` flag
-
-### Full Suite Execution
-
-- `src/stages/suiteRunner.ts` — `runSuite()` iterates all cases, per-case artifacts under `cases/case-N/`
-- `src/orchestrator.ts` — Primary case reused via `PrimaryCaseResult`, not re-executed
-- `07-suite-summary.json` — Suite-wide pass/fail/truncated counts with per-case status
-
-### Terminal Assertion Guard
-
-- `src/stages/ir.ts` — `hasTerminalAssertion()` checks if IR ends with an assert step
-- Truncated tests without terminal assertion marked as `truncated_no_assertion`
-
-### Auth Settle-Wait
-
-- `src/stages/authSettle.ts` — `isAuthTriggeringStep()` heuristic + `waitForAuthSettle()` bounded wait
-- Integrated into live-extend and generated specs
-
-### Intent-Aware Credentials
-
-- `src/stages/testCases.ts` — `category` field on test cases, `shouldSkipCredentialSubstitution()`
-- Protects "Invalid password" and similar negative test cases
-
-### Intent-Scoped Test Case Generation
-
-- `src/kb/testStrategy.ts` — Coverage categories with scope tags
-- `src/stages/classify.ts` — `classifyScope()` heuristic from prompt
-- `src/stages/testCases.ts` — `filterByScope()` filters cases to match requested scope
-
-### Reactive Coverage Generation
-
-- `src/stages/testCases.ts` — `generateCasesForNewPages()` creates cases for newly-discovered pages
-- `src/orchestrator.ts` — Detects new pages post-execution, generates cases, merges suite
-- `src/stages/ir.ts` — `toIR()` returns `{ ir, updatedAppModel }` for live-extend discoveries
-
-### SPA State Change Fix
-
-- `src/stages/ir.ts` — Fallback to `refreshPageModel()` when `extendAppModel()` fails with "already in model"
-
-### Discovery Enhancements
-
-- `src/stages/discovery.ts` — `discoverInteractiveElements(page)` via `page.evaluate()` DOM traversal
-- Icon-only buttons, clickable divs, onclick handlers detected and appended to ARIA snapshot
-- `modelFromAria()` prompt updated to incorporate interactive elements section
-
-### Frontend Improvements
-
-- `public/app.js` — Phase pipeline with aggregate status tracking
-- `public/app.js` — Suite progress live updates during execution
-- `public/app.js` — Per-case result cards with screenshots, download links, lazy-loaded technical details
-- `public/app.js` — Run history with suite summaries and delete buttons
-- `public/app.js` — Button disable/enable during execution
-- `public/style.css` — Responsive design, phase badges, download buttons, case cards
-- `public/index.html` — Viewport meta tag for mobile
-
-### Bug Fixes
-
-- `src/stages/generator.ts` — Fixed `${helpers}` (array) -> `${helper}` (joined string) syntax error
-- `public/app.js` — Fixed "Generated undefined test case(s)" by handling both array and object data shapes
-- `src/stages/testCases.ts` — Created `LLMTestCase` schema without `generatedFrom`, stamped in code post-parse
-- `public/app.js` — Added null guards on `traceLinkEl` references
-- `public/app.js` — Removed premature polling termination (`noNewEventsCount`)
-- `public/app.js` — Fixed suite progress items not rendering from empty initial events
-- `public/app.js` — Added `traceLink` element to HTML
-- `public/app.js` — Fixed traceLink href from `generated/` to `generated.spec.ts`
-- `public/app.js` — Added explicit `download` attributes on case card download buttons
-- Merge conflict resolution across `orchestrator.ts`, `generator.ts`, `ir.ts`, `suiteRunner.ts`
-
 ## Architecture
 
 ### Pipeline Stages
@@ -184,15 +124,17 @@ prompt + url
 | Stage | File | LLM? | Description |
 |-------|------|------|-------------|
 | Planner | `src/stages/planner.ts` | Gemini | NL request -> ordered high-level steps |
-| Discovery | `src/stages/discovery.ts` | Gemini | Accessibility snapshot + screenshot -> AppModel |
-| Hybrid Discovery | `src/stages/hybridDiscovery.ts` | Gemini | Combines crawl + discover for multi-page |
-| Crawler | `src/stages/crawler.ts` | No | BFS traversal, captures raw signal per page |
+| Hybrid Discovery | `src/stages/hybridDiscovery.ts` | Gemini (optional) | DOM-first, vision-fallback discovery |
+| Crawl4AI Discovery | `src/stages/domDiscovery.ts` | No | Calls Python Crawl4AI service for DOM extraction |
+| Playwright Discovery | `src/stages/discovery.ts` | Gemini | Accessibility snapshot + screenshot -> AppModel |
+| Crawler (BFS) | `src/stages/crawler.ts` | No | Deterministic BFS traversal for full-site crawl mode |
 | Test Cases | `src/stages/testCases.ts` | Gemini | Coverage suite (valid/invalid/boundary/security) |
 | IR Generation | `src/stages/ir.ts` | Groq | Test case -> strict JSON test model + grounding |
 | Live Extend | `src/stages/liveExtend.ts` | No | Browser replay to discover new pages |
 | Generator | `src/stages/generator.ts` | No | IR -> Playwright spec with test.step() blocks |
 | Executor | `src/stages/executor.ts` | No | Runs spec, captures screenshots/traces |
-| Failure Analysis | `src/stages/failureAnalysis.ts` | Gemini + Vision | Diagnoses failures with screenshots |
+| Failure Classifier | `src/stages/classify.ts` | No | Deterministic pattern matching on Playwright errors |
+| Failure Analysis | `src/stages/failureAnalysis.ts` | Gemini + Vision | Diagnoses failures with screenshots (fallback) |
 | Suite Runner | `src/stages/suiteRunner.ts` | No | Executes all cases, per-case artifacts |
 | Target Resolver | `src/stages/targetResolver.ts` | No | IR Target -> locator with fallback chain |
 | Auth Settle | `src/stages/authSettle.ts` | No | Bounded wait after auth-triggering steps |
@@ -209,10 +151,12 @@ prompt + url
 | Key Pool | `src/llm/keyPool.ts` | API key rotation + 429 handling |
 | Backoff | `src/llm/backoff.ts` | Exponential backoff for retries |
 | JSON Parse | `src/llm/json.ts` | Robust JSON extraction from LLM output |
+| Embeddings | `src/llm/embeddings.ts` | Gemini embedding API with caching |
 | App Model Cache | `src/kb/cache.ts` | Per-URL AppModel cache |
+| LLM Cache | `src/kb/llmCache.ts` | LLM response cache (file + memory, 30-min TTL) |
 | Test Strategy | `src/kb/testStrategy.ts` | Coverage taxonomy (floor, not ceiling) |
 | Site Outline | `src/kb/siteOutline.ts` | Depth-first site tree for labeling context |
-| Config | `src/config.ts` | Environment configuration |
+| Config | `src/config.ts` | Centralized timeouts, retries, selector fixes |
 
 ### Schemas
 
@@ -239,26 +183,58 @@ prompt + url
 | `public/app.js` | Event processing, polling, phase tracking, suite rendering |
 | `public/style.css` | Responsive design, phase badges, case cards, download buttons |
 
+### Discovery Service (Python)
+
+| File | Description |
+|------|-------------|
+| `discovery-service/app.py` | FastAPI server — `/crawl` and `/health` endpoints |
+| `discovery-service/crawler.py` | Crawl4AI-based crawler with BeautifulSoup fallback |
+| `discovery-service/schemas.py` | Pydantic schemas for API request/response |
+| `discovery-service/requirements.txt` | Python dependencies |
+| `discovery-service/test_parse.py` | Parser tests |
+
 ## Project Structure
 
 ```
 ai-test-platform/
   src/
-    stages/          # Pipeline stages (18 files)
-    schema/          # Zod contracts (4 files)
-    llm/             # LLM layer with key rotation (6 files)
-    kb/              # Knowledge base + caching (4 files)
-    server/          # Express server + SSE (3 files)
-    orchestrator.ts  # Pipeline wiring + self-heal
-    runStore.ts      # Durable event log
-    cli.ts           # CLI entry point
-    config.ts        # Environment config
-  public/            # Frontend (3 files)
-  runs/              # Runtime artifacts (gitignored)
-  PROJECT_OVERVIEW.md  # Full architecture + design decisions
-  ENTERPRISE.md       # Scaling roadmap (documented, not built)
-  PROGRESS.md         # Development timeline + verification status
-  UPDATE.md           # Detailed changelog for recent phases
+    stages/              # Pipeline stages (18 files)
+      hybridDiscovery.ts # Hybrid discovery orchestrator (DOM-first, vision-fallback)
+      domDiscovery.ts    # Crawl4AI service client (652 lines)
+      discovery.ts       # Playwright + Gemini vision discovery (399 lines)
+      crawler.ts         # Deterministic BFS crawler for full-site crawl mode
+      crawlDirective.ts  # Maps Plan -> CrawlDirective
+      planner.ts         # NL request -> high-level plan
+      testCases.ts       # Coverage suite generation + reactive cases
+      ir.ts              # IR generation with grounding + live-extend
+      liveExtend.ts      # Browser replay for new page discovery
+      targetResolver.ts  # IR Target -> locator with fallback chain
+      generator.ts       # IR -> Playwright spec (pure code, zero LLM)
+      executor.ts        # Runs spec, captures artifacts
+      classify.ts        # Deterministic failure classifier (zero LLM)
+      failureAnalysis.ts # Gemini vision failure diagnosis (fallback)
+      failure/
+        ruleAnalysis.ts  # Rule-based failure analysis
+      suiteRunner.ts     # Executes all cases, per-case artifacts
+      authSettle.ts      # Bounded wait after auth-triggering steps
+      credentials.ts     # Demo site credentials + substitution logic
+    schema/              # Zod contracts (4 files)
+    llm/                 # LLM layer with key rotation (7 files)
+    kb/                  # Knowledge base + caching (5 files)
+    server/              # Express server + SSE (3 files)
+    scripts/             # Test scripts
+    orchestrator.ts      # Pipeline wiring + self-heal
+    runStore.ts          # Durable event log
+    cli.ts               # CLI entry point
+    config.ts            # Centralized configuration
+  discovery-service/     # Python Crawl4AI discovery service
+  public/                # Frontend (3 files)
+  runs/                  # Runtime artifacts (gitignored)
+  PROJECT_OVERVIEW.md    # Full architecture + design decisions
+  ARCHITECTURE.md        # Technical reference: crawlers, files, design decisions
+  ENTERPRISE.md          # Scaling roadmap (documented, not built)
+  PROGRESS.md            # Development timeline + verification status
+  UPDATE.md              # Detailed changelog for recent phases
 ```
 
 ## Configuration
@@ -269,6 +245,15 @@ ai-test-platform/
 |----------|----------|-------------|
 | `GEMINI_API_KEYS` | Yes | Comma-separated Gemini API keys (quota stacks across projects) |
 | `GROQ_API_KEYS` | Yes | Comma-separated Groq API keys (failover only, same org) |
+| `GEMINI_MODEL` | No | Gemini model for discovery/test-cases/failure-analysis (default: `gemini-2.5-flash`) |
+| `GEMINI_MODEL_LITE` | No | Gemini model for labeling (default: `gemini-2.5-flash`) |
+| `GEMINI_EMBED_MODEL` | No | Gemini embedding model (default: `text-embedding-004`) |
+| `GROQ_MODEL` | No | Groq model for IR generation (default: `llama-3.3-70b-versatile`) |
+| `DISCOVERY_SERVICE_URL` | No | Crawl4AI service URL (default: `http://localhost:8000`) |
+| `MAX_CONCURRENT_RUNS` | No | Max parallel pipeline runs (default: 3) |
+| `PORT` | No | Web UI port (default: 3000) |
+| `DEBUG` | No | Enable debug logging (`true`/`false`) |
+| `LOG_LEVEL` | No | Log level (default: `info`) |
 
 ### Playwright Config
 
@@ -279,9 +264,12 @@ ai-test-platform/
 | Constant | Location | Value | Description |
 |----------|----------|-------|-------------|
 | `MAX_EXTENSIONS` | `liveExtend.ts` | 2 | Max live-extend page hops per test case |
-| `TEST_RUN` timeout | `executor.ts` | 60s | Per-test execution timeout |
-| `RETRIES` | `executor.ts` | 2 | Retry attempts for flaky tests |
+| `TEST_RUN` timeout | `config.ts` | 60s | Per-test execution timeout |
+| `RETRIES` | `config.ts` | 2 | Retry attempts for flaky tests |
 | History limit | `runStore.ts` | 20 | Max runs shown in history |
+| `SERVICE_STARTUP_TIMEOUT` | `domDiscovery.ts` | 15s | Max wait for Crawl4AI service to start |
+| `REQUEST_TIMEOUT` | `domDiscovery.ts` | 30s | Crawl request timeout |
+| LLM cache TTL | `llmCache.ts` | 30min | LLM response cache duration |
 
 ## Sharing Over the Internet
 
@@ -299,17 +287,10 @@ This prints a random `https://<words>.trycloudflare.com` URL. Ephemeral, free, n
 
 **Security:** The server has no authentication. Anyone with the URL can start runs and browse artifacts. Fine for trusted audiences; know this before sharing widely.
 
-## Future Plans
-
-- **Server authentication** for safe tunnel sharing
-- **Real/private site credentials** via env-var path (no artifact exposure)
-- **Multi-framework export** (Selenium, Cypress from same IR)
-- **Real Knowledge Base** — queryable store from run artifacts
-- **Business Flow Graph / Risk Analysis / Improvement Suggestions**
-
 ## Further Reading
 
-- [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) — Full architecture, every design decision, honest completion status
+- [ARCHITECTURE.md](ARCHITECTURE.md) — Technical reference: two crawlers comparison, every file explained, design decisions
+- [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) — Full architecture narrative, every design decision, honest completion status
 - [PROGRESS.md](PROGRESS.md) — Development timeline with verification evidence
 - [UPDATE.md](UPDATE.md) — Detailed changelog for recent phases
 - [ENTERPRISE.md](ENTERPRISE.md) — Scaling roadmap (documented, not built)
