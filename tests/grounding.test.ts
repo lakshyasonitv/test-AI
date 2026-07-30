@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   groundingError, hasTerminalAssertion, normalizeIR,
-  assertionContradictsCase, vacuousAssertion,
+  assertionContradictsCase, vacuousAssertion, urlAssertionError,
 } from "../src/stages/ir.js";
 import { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -9,6 +9,31 @@ import type { TestCase } from "../src/stages/testCases.js";
 
 const model = (elements: any[]): AppModel =>
   ({ baseUrl: "https://x", pages: [{ url: "https://x", concepts: [], elements }] }) as AppModel;
+
+// Homepage + the two destinations a "Sign up"/"Dashboard" click can actually reach, wired
+// with domLinks so trackPages can resolve real click destinations — mirrors the shape
+// hybridDiscovery actually produces (community-connect-frontend run: Sign up -> /register).
+const multiPage = (): AppModel =>
+  ({
+    baseUrl: "https://x",
+    pages: [
+      {
+        url: "https://x/", concepts: [],
+        elements: [
+          { role: "heading", name: "Experience the magic of community." },
+          { role: "link", name: "Sign up" },
+          { role: "link", name: "Dashboard" },
+        ],
+        domLinks: [
+          { text: "Sign up", href: "/register", title: "", ariaLabel: "", isExternal: false, role: "link" },
+          { text: "Dashboard", href: "/dashboard", title: "", ariaLabel: "", isExternal: false, role: "link" },
+          { text: "Anchor", href: "#", title: "", ariaLabel: "", isExternal: false, role: "link" },
+        ],
+      },
+      { url: "https://x/register", concepts: [], elements: [{ role: "heading", name: "Create account" }] },
+      { url: "https://x/dashboard", concepts: [], elements: [{ role: "heading", name: "Dashboard" }] },
+    ],
+  }) as AppModel;
 
 const ir = (steps: any[]): IR =>
   ({
@@ -75,6 +100,97 @@ describe("groundingError", () => {
     expect(groundingError(t, cart)).toBeNull();
     expect(t.steps[0].target!.css).toBe('[data-test="shopping-cart-link"]');
     expect(t.steps[0].target!.testId).toBe("shopping-cart-link");
+  });
+
+  // Regression: a real run asserted the homepage-only heading was visible at a step deep
+  // into a flow that had already navigated away — groundingError wrongly passed it because
+  // the heading exists SOMEWHERE in the model, not because it's on the current page.
+  it("does not ground an element against a page the flow already left", () => {
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "link", name: "Dashboard" } },
+      { id: "s3", action: "assert", target: { role: "heading", name: "Experience the magic of community." }, assertion: "visible" },
+    ]);
+    expect(groundingError(t, multiPage())?.index).toBe(2);
+  });
+
+  it("grounds correctly after navigating directly to a non-entry page", () => {
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/dashboard" } },
+      { id: "s2", action: "assert", target: { role: "heading", name: "Dashboard" }, assertion: "visible" },
+    ]);
+    expect(groundingError(t, multiPage())).toBeNull();
+  });
+
+  it("still advances the page cursor through a click step that takes the css-shortcut path", () => {
+    const pages: AppModel = {
+      baseUrl: "https://x",
+      pages: [
+        {
+          url: "https://x/", concepts: [],
+          elements: [{ role: "link", name: "Dashboard", css: '[data-test="dashboard-link"]' }],
+          domLinks: [{ text: "Dashboard", href: "/dashboard", title: "", ariaLabel: "", isExternal: false, role: "link" }],
+        },
+        { url: "https://x/dashboard", concepts: [], elements: [{ role: "heading", name: "Dashboard" }] },
+      ],
+    } as AppModel;
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { css: '[data-test="dashboard-link"]', role: "link", name: "Dashboard" } },
+      { id: "s3", action: "assert", target: { role: "heading", name: "Dashboard" }, assertion: "visible" },
+    ]);
+    expect(groundingError(t, pages)).toBeNull();
+  });
+});
+
+describe("urlAssertionError", () => {
+  // Regression: a real run clicked "Sign up" (real destination /register) then asserted
+  // url_contains "/signup" — a hallucinated value groundingError never checks at all.
+  it("rejects an asserted path that doesn't match the clicked link's real destination", () => {
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "link", name: "Sign up" } },
+      { id: "s3", action: "assert", target: { url: "/signup" }, value: "/signup", assertion: "url_contains" },
+    ]);
+    const err = urlAssertionError(t, multiPage());
+    expect(err?.index).toBe(2);
+    expect(err?.message).toContain("/register");
+  });
+
+  it("accepts the real destination path", () => {
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "link", name: "Sign up" } },
+      { id: "s3", action: "assert", target: { url: "/register" }, value: "/register", assertion: "url_contains" },
+    ]);
+    expect(urlAssertionError(t, multiPage())).toBeNull();
+  });
+
+  it("does not check when there was no recent link click", () => {
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "assert", target: { url: "/whatever" }, value: "/whatever", assertion: "url_contains" },
+    ]);
+    expect(urlAssertionError(t, multiPage())).toBeNull();
+  });
+
+  it("clears a stale click destination after an intervening navigate", () => {
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "link", name: "Sign up" } },
+      { id: "s3", action: "navigate", target: { url: "/dashboard" } },
+      { id: "s4", action: "assert", target: { url: "/register" }, value: "/register", assertion: "url_contains" },
+    ]);
+    expect(urlAssertionError(t, multiPage())).toBeNull();
+  });
+
+  it("does not crash or set a bogus destination for a '#' link", () => {
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "link", name: "Anchor" } },
+      { id: "s3", action: "assert", target: { url: "/anything" }, value: "/anything", assertion: "url_contains" },
+    ]);
+    expect(urlAssertionError(t, multiPage())).toBeNull();
   });
 });
 

@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync, cpSync } from "node:fs";
 import path from "node:path";
 import { toIR } from "./ir.js";
+import type { GroqBudget } from "../llm/groqBudget.js";
 import { generateSpec } from "./generator.js";
 import { runSpec, findScreenshot } from "./executor.js";
 import { analyzeFailure } from "./failureAnalysis.js";
@@ -30,6 +31,10 @@ export interface CaseRunResult {
   irPath: string;
   resultPath: string;
   diagnosisPath?: string;
+  /** Groq calls/tokens spent generating this case's IR. Omitted for the reused primary
+   *  case, whose usage is already counted in the run's top-level groq-usage.json. */
+  groqCalls?: number;
+  groqTokens?: number;
 }
 
 interface SuiteSummary {
@@ -38,7 +43,10 @@ interface SuiteSummary {
   failed: number;
   truncated: number;
   truncated_no_assertion: number;
-  cases: { caseId: string; title: string; status: string; resultPath: string }[];
+  cases: {
+    caseId: string; title: string; status: string; resultPath: string;
+    groqCalls?: number; groqTokens?: number;
+  }[];
 }
 
 function emit(
@@ -57,7 +65,8 @@ export async function runSuite(
   sourcePrompt: string,
   entryUrl: string,
   onEvent?: OnEvent,
-  primaryResult?: PrimaryCaseResult
+  primaryResult?: PrimaryCaseResult,
+  groqBudget?: GroqBudget
 ): Promise<CaseRunResult[]> {
   const results: CaseRunResult[] = [];
   const runId = path.basename(runDir);
@@ -133,7 +142,11 @@ export async function runSuite(
         console.log("Running:", tc.title);
 
         console.log("Generating IR...");
-        const { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl);
+        const usageBefore = groqBudget?.snapshot();
+        const { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl, groqBudget);
+        const usageAfter = groqBudget?.snapshot();
+        const groqCalls = usageAfter && usageBefore ? usageAfter.calls - usageBefore.calls : undefined;
+        const groqTokens = usageAfter && usageBefore ? usageAfter.totalTokens - usageBefore.totalTokens : undefined;
         console.log("IR generated");
         const irPath = path.join(caseDir, "04-ir.json");
         writeFileSync(irPath, JSON.stringify(ir, null, 2));
@@ -180,7 +193,7 @@ export async function runSuite(
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
         }
 
-        results.push({ caseId, title: tc.title, status, irPath, resultPath, diagnosisPath });
+        results.push({ caseId, title: tc.title, status, irPath, resultPath, diagnosisPath, groqCalls, groqTokens });
 
         emit(runId, "suite", "completed", { caseId, title: tc.title, status }, undefined, onEvent);
       } catch (err: any) {
@@ -222,6 +235,8 @@ export async function runSuite(
         // Forward slashes: this is consumed as a URL fragment by the frontend.
         resultPath: `cases/${r.caseId}`,
         screenshotUrl,
+        groqCalls: r.groqCalls,
+        groqTokens: r.groqTokens,
       };
     }),
   };

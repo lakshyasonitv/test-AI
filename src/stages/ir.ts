@@ -1,9 +1,10 @@
 import { groq } from "../llm/groq.js";
+import { GroqBudget } from "../llm/groqBudget.js";
 import { parseJson } from "../llm/json.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import { AppModel, toLiteModel } from "../schema/appModel.js";
-import { extendAppModel, refreshPageModel } from "./liveExtend.js";
+import { AppModel, PageModel, Element, toLiteModel } from "../schema/appModel.js";
+import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import { credentialsFor, applyCredentials, shouldSkipCredentialSubstitution, NEGATIVE_CATEGORIES } from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
@@ -88,6 +89,85 @@ export function normalizeIR(raw: any): any {
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 
+const NON_NAVIGATING_HREF = /^\s*(#|javascript:|mailto:|tel:)/i;
+
+function resolveHref(base: string, hrefOrPath: string): string | null {
+  try { return new URL(hrefOrPath, base).href; } catch { return null; }
+}
+
+/** Origin + path, ignoring query/hash — enough to match a discovered page's URL against a
+ *  resolved href without tracking params throwing off the comparison. */
+function pageKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.origin + (u.pathname.replace(/\/+$/, "") || "/");
+  } catch { return url; }
+}
+
+function findPageByUrl(appModel: AppModel, absoluteUrl: string): PageModel | null {
+  const key = pageKey(absoluteUrl);
+  return appModel.pages.find(p => pageKey(p.url) === key) ?? null;
+}
+
+function findDomLink(page: PageModel, name: string) {
+  const target = norm(name);
+  return (page.domLinks ?? []).find(l =>
+    norm(l.text) === target ||
+    (l.ariaLabel && norm(l.ariaLabel) === target) ||
+    (l.title && norm(l.title) === target)
+  ) ?? null;
+}
+
+export interface PageTrail {
+  /** Page the flow is actually on entering step i, or null if unresolved — callers
+   *  should fall back to matching against every page's elements when null. */
+  pageAt: (PageModel | null)[];
+  /** Resolved destination href of the link clicked in the immediately preceding step,
+   *  or null. */
+  lastLinkHrefAt: (string | null)[];
+}
+
+/**
+ * Walk the IR's steps once, tracking which page the flow is actually on (advanced by
+ * navigate steps, and by clicking a link whose real destination — from the AppModel's
+ * domLinks — resolves to a known page) and the destination href of the most recent link
+ * click. Conservative by design: whenever the cursor can't be confidently resolved, it's
+ * null — callers fall back to "match against everything," today's behavior, never a new
+ * false negative. Doesn't track JS-driven navigation, SPA client routing, or
+ * nth-disambiguated duplicate link names; those fall back the same safe way.
+ */
+export function trackPages(ir: IR, appModel: AppModel): PageTrail {
+  const pageAt: (PageModel | null)[] = [];
+  const lastLinkHrefAt: (string | null)[] = [];
+  let currentPage: PageModel | null = null;
+  let lastLinkHref: string | null = null;
+
+  for (let i = 0; i < ir.steps.length; i++) {
+    pageAt[i] = currentPage;
+    lastLinkHrefAt[i] = lastLinkHref;
+
+    const step = ir.steps[i];
+    const t = step.target;
+    lastLinkHref = null; // only survives to the very next step; re-set below if this one earns it
+
+    if (step.action === "navigate" && t?.url) {
+      const resolved = resolveHref(appModel.baseUrl, t.url);
+      if (resolved) currentPage = findPageByUrl(appModel, resolved);
+    } else if (currentPage && step.action === "click" && t?.role && norm(t.role) === "link" && t?.name) {
+      const link = findDomLink(currentPage, t.name);
+      const href = link?.href?.trim();
+      if (href && !NON_NAVIGATING_HREF.test(href)) {
+        const resolved = resolveHref(currentPage.url, href);
+        if (resolved) {
+          lastLinkHref = resolved;
+          currentPage = findPageByUrl(appModel, resolved) ?? currentPage;
+        }
+      }
+    }
+  }
+  return { pageAt, lastLinkHrefAt };
+}
+
 /**
  * Deterministic grounding check: every interactive target the IR addresses by
  * role+name must correspond to a real element in the AppModel. This is the guard
@@ -99,10 +179,10 @@ const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
  * grounded prefix steps[0..index] to reach the missing state), or null if grounded.
  */
 export function groundingError(ir: IR, appModel: AppModel): { index: number; message: string } | null {
-  const elements = appModel.pages.flatMap(p => p.elements);
+  const allElements = appModel.pages.flatMap(p => p.elements);
   // Selectors the model is allowed to address directly, because discovery captured them.
   const knownSelectors = new Set<string>();
-  for (const e of elements) {
+  for (const e of allElements) {
     if (e.css) knownSelectors.add(e.css.toLowerCase());
     if (e.id) knownSelectors.add(`#${e.id}`.toLowerCase());
     if (e.testId) {
@@ -113,6 +193,10 @@ export function groundingError(ir: IR, appModel: AppModel): { index: number; mes
   // ponytail: strip decorative glyphs (+, emoji, bullets) for fuzzy name matching —
   // catches "+ Add New" vs "Add New" without the unsound reverse-direction check.
   const stripGlyphs = (s: string) => s.replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
+  // Which page the flow is actually on at each step — an element grounded only against
+  // some OTHER page (never the current one) shouldn't pass just because it exists
+  // somewhere in the model. Falls back to allElements wherever the cursor is unresolved.
+  const trail = trackPages(ir, appModel);
   for (let index = 0; index < ir.steps.length; index++) {
     const step = ir.steps[index];
     const t = step.target;
@@ -123,12 +207,13 @@ export function groundingError(ir: IR, appModel: AppModel): { index: number; mes
     if (!t?.role || !t?.name) continue; // navigate / text-only / wait steps
     const role = norm(t.role);
     const name = norm(t.name);
+    const elements = trail.pageAt[index]?.elements ?? allElements;
 
     // Rank candidates instead of taking the first substring hit. `en.includes(name)` alone
     // grounded "Continue" to "Continue Shopping" — a different control on a different page —
     // because that happened to come first in element order. An exact match must always beat
     // a partial one, and among partials the closest-length name is the least wrong.
-    let matched: typeof elements[number] | null = null;
+    let matched: Element | null = null;
     let bestTier = 99;
     let bestDelta = Infinity;
     const sn = stripGlyphs(name);
@@ -271,6 +356,38 @@ export function vacuousAssertion(ir: IR): { stepIds: string[]; message: string }
 }
 
 /**
+ * Reject a url_contains assertion whose value doesn't match the real destination of the
+ * most recently clicked link (per trackPages, using the AppModel's own domLinks). Caught
+ * in practice: a model clicks "Sign up" (real href "/register") then asserts
+ * url_contains "/signup" — a hallucinated path groundingError never checks, since it only
+ * validates role+name targets, not assertion values. Routed through the correction-only
+ * retry path like vacuousAssertion below, not groundingError's live-extend path — a wrong
+ * assertion string isn't something a browser replay can fix.
+ */
+export function urlAssertionError(ir: IR, appModel: AppModel): { index: number; message: string } | null {
+  const trail = trackPages(ir, appModel);
+  for (let index = 0; index < ir.steps.length; index++) {
+    const step = ir.steps[index];
+    if (step.action !== "assert" || step.assertion !== "url_contains") continue;
+    const actualHref = trail.lastLinkHrefAt[index];
+    if (!actualHref) continue; // no recently-resolved link click to check against — same
+                                // "don't validate" behavior as before this existed
+    const value = (step.value ?? step.target?.url ?? "").trim();
+    if (!value) continue; // vacuousAssertion already handles the empty case
+    let actualPath = actualHref;
+    try { const u = new URL(actualHref); actualPath = u.pathname + u.search; } catch { /* keep raw */ }
+    if (actualHref.includes(value) || actualPath.includes(value)) continue;
+    return {
+      index,
+      message: `Step ${step.id} asserts url_contains "${value}", but the most recently clicked ` +
+        `link actually navigates to "${actualPath}" per the application model's domLinks — ` +
+        `"${value}" does not appear in that destination. Use the real destination path instead.`,
+    };
+  }
+  return null;
+}
+
+/**
  * Check whether the surviving (after truncation) step list ends in a real assertion.
  * An assertion earlier in the sequence with non-assertion steps after it does not count
  * — only the final step's action discriminator determines whether the test actually
@@ -282,7 +399,8 @@ export function hasTerminalAssertion(steps: Step[]): boolean {
 }
 
 export async function toIR(
-  testCase: TestCase, appModel: AppModel, sourcePrompt: string, entryUrl: string
+  testCase: TestCase, appModel: AppModel, sourcePrompt: string, entryUrl: string,
+  budget?: GroqBudget
 ): Promise<IRResult> {
   // Compute these ourselves rather than trust the model: baseUrl must be the origin
   // (generator.ts appends relative step paths to it), and entryPath is where the
@@ -484,7 +602,10 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // model`. replayAndSnapshot() caches by step prefix, so re-reaching an already-seen state
   // is cheap; only genuinely new pages cost a launch.
   const MAX_EXTENSIONS = Number(process.env.MAX_LIVE_EXTENSIONS ?? 5);
-  const MAX_ATTEMPTS = 8;     // bound total groq calls so a broken app/prompt still fails fast
+  // Bound total groq calls so a broken app/prompt still fails fast. Was a hardcoded 8;
+  // stacked with backoff.ts's per-call retries that made a single case's worst case 48
+  // real Groq requests. Now env-overridable like MAX_LIVE_EXTENSIONS above.
+  const MAX_ATTEMPTS = Number(process.env.MAX_IR_ATTEMPTS ?? 4);
   let lastErr = "";
   // Feedback for the NEXT attempt's prompt. Separate from lastErr, which also carries
   // live-extend failures that the model can't act on.
@@ -492,14 +613,21 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   let lastContradiction: { ir: IR; stepIds: string[]; message: string } | undefined;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (budget && !budget.hasBudget) {
+      lastErr = `Groq per-run budget exhausted (${budget.snapshot().calls} calls)`;
+      console.warn("[ir]", lastErr, "— stopping retries early");
+      break;
+    }
     console.log("[ir] attempt", attempt + 1, "/", MAX_ATTEMPTS);
     let parsed;
     try {
-      const raw = await groq(buildUser(currentModel, correction), { system, json: true });
-      console.log("[ir] groq returned, length:", raw.length);
-      parsed = IR.safeParse(normalizeIR(parseJson(raw)));
+      const { content, usage } = await groq(buildUser(currentModel, correction), { system, json: true });
+      budget?.record(usage);
+      console.log("[ir] groq returned, length:", content.length);
+      parsed = IR.safeParse(normalizeIR(parseJson(content)));
       console.log("[ir] parsed:", parsed.success ? "valid" : "INVALID");
     } catch (err: any) {
+      budget?.record();
       lastErr = err?.message ?? String(err);
       console.error("[ir] groq/parse error:", lastErr);
       continue;
@@ -521,6 +649,29 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         lastContradiction = { ir: parsed.data, ...vacuous };
         continue;
       }
+
+      const urlMismatch = urlAssertionError(parsed.data, currentModel);
+      if (urlMismatch) {
+        console.log("[ir] hallucinated url_contains rejected:", urlMismatch.message);
+        lastErr = urlMismatch.message;
+        correction = urlMismatch.message;
+        lastContradiction = {
+          ir: parsed.data, stepIds: [parsed.data.steps[urlMismatch.index].id], message: urlMismatch.message,
+        };
+        continue;
+      }
+
+      // A pure-text terminal assertion (the one kind groundingError can't check — no
+      // role/name to match against the discovered model) is otherwise just an unvalidated
+      // LLM guess. Replay the prefix, read the real page, and correct the guess when it's
+      // wrong instead of only pattern-matching for the specific "asserted the success
+      // banner on a failing case" shape assertionContradictsCase below catches. Best-effort:
+      // on replay failure this returns the IR unchanged and the existing guards still apply.
+      if (isPureTextAssertion(parsed.data.steps[parsed.data.steps.length - 1])) {
+        const { ir: reground } = await groundTerminalTextAssertion(parsed.data, currentModel, creds);
+        parsed.data = reground;
+      }
+
       const contradiction = assertionContradictsCase(parsed.data, testCase);
       if (contradiction) {
         console.log("[ir] inverted assertion rejected:", contradiction.message);

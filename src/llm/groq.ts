@@ -7,14 +7,28 @@ const getPool = () => (pool ??= poolFromEnv("GROQ_API_KEYS"));
 
 export interface GroqOpts { model?: string; json?: boolean; system?: string; }
 
-export async function groq(prompt: string, opts: GroqOpts = {}): Promise<string> {
-  const model = opts.model ?? process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile";
+export interface GroqUsage { promptTokens: number; completionTokens: number; totalTokens: number; }
+export interface GroqResult { content: string; usage: GroqUsage; }
+
+export async function groq(prompt: string, opts: GroqOpts = {}): Promise<GroqResult> {
+  const model = opts.model ?? process.env.GROQ_MODEL ?? "openai/gpt-oss-120b";
   console.log("[groq] calling model:", model, "| prompt length:", prompt.length);
 
-  return callWithPool(getPool(), async (apiKey) => {
+  // gpt-oss models are reasoning models; "low" keeps this schema-constrained task from
+  // burning billed tokens on deep reasoning it doesn't need. Gated on the model name so a
+  // future non-reasoning fallback isn't sent a param it might reject.
+  const isGptOss = model.startsWith("openai/gpt-oss");
+
+  // Tighter than backoff.ts's shared default of 6: Groq has a single non-rotating key
+  // here (org-level rate limit), so a retry doesn't get a fresh key — it just waits on
+  // the same wall. ir.ts's own MAX_ATTEMPTS loop is the outer retry; this is only for
+  // genuine network/429 blips on top of that, and 6x8 was compounding into a 48-request
+  // worst case per test case.
+  return callWithPool(getPool(), async (apiKey, signal) => {
     console.log("[groq] sending request...");
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
+      signal,
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
@@ -24,6 +38,7 @@ export async function groq(prompt: string, opts: GroqOpts = {}): Promise<string>
           { role: "user", content: prompt },
         ],
         ...(opts.json ? { response_format: { type: "json_object" } } : {}),
+        ...(isGptOss ? { reasoning_effort: "low" } : {}),
       }),
     });
     console.log("[groq] response status:", res.status);
@@ -36,7 +51,15 @@ export async function groq(prompt: string, opts: GroqOpts = {}): Promise<string>
       throw e;
     }
     const data = await res.json();
-    console.log("[groq] response length:", (data.choices?.[0]?.message?.content ?? "").length);
-    return data.choices?.[0]?.message?.content ?? "";
-  });
+    const content = data.choices?.[0]?.message?.content ?? "";
+    console.log("[groq] response length:", content.length, "| usage:", data.usage);
+    return {
+      content,
+      usage: {
+        promptTokens: data.usage?.prompt_tokens ?? 0,
+        completionTokens: data.usage?.completion_tokens ?? 0,
+        totalTokens: data.usage?.total_tokens ?? 0,
+      },
+    };
+  }, { maxRetries: 2 });
 }

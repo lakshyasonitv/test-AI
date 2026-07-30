@@ -265,7 +265,7 @@ SiteGraph
 | Concept labeling | Gemini (`gemini-2.5-flash`) | DOM element list + markdown | Labeled AppModel | DOM discovery path, 1 call per page |
 | Vision discovery | Gemini (`gemini-2.5-flash`) | ARIA snapshot + JPEG screenshot | AppModel | Fallback only, 1 call per page |
 | Test cases | Gemini (`gemini-2.5-flash`) | Plan + AppModel + strategy | TestCase[] | Every run, 1 call |
-| IR generation | Groq (`llama-3.3-70b-versatile`) | TestCase + AppModel + site outline | IR (JSON) | Every run, 1 call per case |
+| IR generation | Groq (`openai/gpt-oss-120b`) | TestCase + AppModel + site outline | IR (JSON) | Every run, up to `MAX_IR_ATTEMPTS` (default 4) calls per case |
 | Failure analysis | Gemini (`gemini-2.5-flash`) | Error + ARIA + screenshots | Diagnosis | Only on failure, 0-1 calls |
 | Embeddings | Gemini (`text-embedding-004`) | Element role+name | Vector (768d) | Optional semantic matching |
 

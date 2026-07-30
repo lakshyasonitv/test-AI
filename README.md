@@ -248,7 +248,9 @@ ai-test-platform/
 | `GEMINI_MODEL` | No | Gemini model for discovery/test-cases/failure-analysis (default: `gemini-2.5-flash`) |
 | `GEMINI_MODEL_LITE` | No | Gemini model for labeling (default: `gemini-2.5-flash`) |
 | `GEMINI_EMBED_MODEL` | No | Gemini embedding model (default: `text-embedding-004`) |
-| `GROQ_MODEL` | No | Groq model for IR generation (default: `llama-3.3-70b-versatile`) |
+| `GROQ_MODEL` | No | Groq model for IR generation (default: `openai/gpt-oss-120b`) |
+| `MAX_IR_ATTEMPTS` | No | Max Groq IR-generation retry attempts per test case (default: 4) |
+| `MAX_GROQ_CALLS_PER_RUN` | No | Hard cap on total Groq calls per pipeline run (default: 60) |
 | `DISCOVERY_SERVICE_URL` | No | Crawl4AI service URL (default: `http://localhost:8000`) |
 | `MAX_CONCURRENT_RUNS` | No | Max parallel pipeline runs (default: 3) |
 | `PORT` | No | Web UI port (default: 3000) |

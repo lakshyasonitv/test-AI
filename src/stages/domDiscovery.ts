@@ -1,332 +1,29 @@
 /**
- * TypeScript client for the Crawl4AI-based Discovery Service.
+ * DOM-based page discovery — the primary discovery path, no LLM needed for standard pages.
+ * Gemini vision (hybridDiscovery.ts's fallback) is used only when this can't understand the
+ * page (canvas/captcha/image-heavy) or throws.
  *
- * Calls the Python FastAPI service, receives structured DOM data,
- * and converts it to the existing AppModel format.
- *
- * This is the primary discovery path — replaces the old Playwright+Gemini
- * pipeline for standard pages. Gemini vision becomes a fallback only.
+ * Was a TypeScript client for a Python FastAPI service (Crawl4AI + BeautifulSoup); that
+ * service and its Python dependency are gone. `extractCrawlResponse` in domExtract.ts is
+ * the same extraction logic ported to Node/cheerio, so `crawlResponseToAppModel` below is
+ * unchanged — only the SOURCE of the HTML changed, from an HTTP round-trip to a Python
+ * subprocess to a `page.content()` call on the Playwright browser this module now owns.
  */
 
+import { chromium } from "playwright";
 import { AppModel, PageModel, Element } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
-import { spawn, type ChildProcess } from "node:child_process";
-import path from "node:path";
-import { existsSync } from "node:fs";
+import { extractCrawlResponse, type CrawlResponse } from "./domExtract.js";
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-const DISCOVERY_SERVICE_URL = process.env.DISCOVERY_SERVICE_URL || "http://localhost:8000";
 const REQUEST_TIMEOUT = 30_000;
-const SERVICE_STARTUP_TIMEOUT = 15_000;
-
-// ---------------------------------------------------------------------------
-// Auto-start the Python discovery service
-// ---------------------------------------------------------------------------
-
-let serviceProcess: ChildProcess | null = null;
-let serviceStarting = false;
-let serviceStartPromise: Promise<boolean> | null = null;
-
-/**
- * Find the Python executable. Tries python3 first, then python.
- */
-function findPythonExecutable(): string {
-  // On Windows, try python first (python3 often doesn't exist on Windows)
-  return "python";
-}
-
-/**
- * Auto-start the Python discovery service if it's not already running.
- * This is a best-effort mechanism — if it fails, the system falls back to vision.
- */
-async function ensureServiceRunning(): Promise<boolean> {
-  // Already running
-  if (serviceAvailable === true) return true;
-
-  // Already starting — wait for it
-  if (serviceStarting && serviceStartPromise) {
-    return serviceStartPromise;
-  }
-
-  serviceStarting = true;
-  serviceStartPromise = startService();
-  
-  try {
-    return await serviceStartPromise;
-  } finally {
-    serviceStarting = false;
-  }
-}
-
-async function startService(): Promise<boolean> {
-  const serviceDir = path.join(process.cwd(), "discovery-service");
-  const appPath = path.join(serviceDir, "app.py");
-
-  // Check if the service directory exists
-  if (!existsSync(appPath)) {
-    console.warn(`[domDiscovery] Discovery service not found at ${appPath}`);
-    return false;
-  }
-
-  console.log(`[domDiscovery] Starting discovery service from ${serviceDir}`);
-
-  try {
-    const python = findPythonExecutable();
-    serviceProcess = spawn(python, ["-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"], {
-      cwd: serviceDir,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: false,
-    });
-
-    serviceProcess.on("error", (err) => {
-      console.error(`[domDiscovery] Service process error: ${err.message}`);
-      serviceAvailable = false;
-      serviceProcess = null;
-    });
-
-    serviceProcess.on("exit", (code) => {
-      console.log(`[domDiscovery] Service process exited with code ${code}`);
-      serviceAvailable = false;
-      serviceProcess = null;
-    });
-
-    // Capture stdout/stderr for debugging
-    serviceProcess.stdout?.on("data", (data) => {
-      const msg = data.toString().trim();
-      if (msg) console.log(`[discovery-service] ${msg}`);
-    });
-
-    serviceProcess.stderr?.on("data", (data) => {
-      const msg = data.toString().trim();
-      if (msg) console.log(`[discovery-service] ${msg}`);
-    });
-
-    // Wait for the service to be ready by polling the health endpoint
-    const ready = await waitForServiceReady(SERVICE_STARTUP_TIMEOUT);
-    if (ready) {
-      console.log(`[domDiscovery] Discovery service started successfully on ${DISCOVERY_SERVICE_URL}`);
-      serviceAvailable = true;
-      return true;
-    } else {
-      console.warn(`[domDiscovery] Discovery service failed to start within ${SERVICE_STARTUP_TIMEOUT}ms`);
-      serviceAvailable = false;
-      return false;
-    }
-  } catch (err: any) {
-    console.error(`[domDiscovery] Failed to start service: ${err?.message ?? err}`);
-    serviceAvailable = false;
-    return false;
-  }
-}
-
-/**
- * Poll the health endpoint until the service is ready.
- */
-async function waitForServiceReady(timeoutMs: number): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2000);
-      const resp = await fetch(`${DISCOVERY_SERVICE_URL}/health`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      if (resp.ok) return true;
-    } catch {
-      // Service not ready yet
-    }
-    await new Promise(r => setTimeout(r, 500));
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// Response type matching the Python service's CrawlResponse schema
-// ---------------------------------------------------------------------------
-
-interface CrawlResponse {
-  url: string;
-  title: string;
-  status_code: number;
-  metadata: {
-    title: string;
-    description: string;
-    keywords: string;
-    og_title: string;
-    og_description: string;
-    canonical: string;
-    favicon: string;
-  };
-  markdown: string;
-  cleaned_html: string;
-  forms: Array<{
-    action: string;
-    method: string;
-    id: string;
-    name: string;
-    fields: Array<{
-      tag: string;
-      input_type: string;
-      name: string;
-      placeholder: string;
-      label: string;
-      required: boolean;
-      value: string;
-      options: string[];
-      id: string;
-      aria_label: string;
-    }>;
-    aria_label: string;
-  }>;
-  navigation: Array<{
-    text: string;
-    href: string;
-    children: any[];
-    is_dropdown: boolean;
-    aria_label: string;
-    role: string;
-  }>;
-  links: Array<{
-    text: string;
-    href: string;
-    title: string;
-    aria_label: string;
-    is_external: boolean;
-    role: string;
-  }>;
-  buttons: Array<{
-    text: string;
-    button_type: string;
-    aria_label: string;
-    disabled: boolean;
-    id: string;
-    role: string;
-  }>;
-  headings: Array<{
-    level: number;
-    text: string;
-    id: string;
-  }>;
-  tables: Array<{
-    headers: string[];
-    rows: string[][];
-    caption: string;
-    aria_label: string;
-    id: string;
-  }>;
-  images: Array<{
-    src: string;
-    alt: string;
-    title: string;
-    width: number;
-    height: number;
-  }>;
-  interactive_elements: Array<{
-    tag: string;
-    role: string;
-    name: string;
-    text: string;
-    href: string;
-    id: string;
-    css_classes: string[];
-    aria_label: string;
-    aria_role: string;
-    visible: boolean;
-    enabled: boolean;
-    test_id?: string;
-    css?: string;
-    derived_name?: boolean;
-  }>;
-  internal_urls: string[];
-  external_urls: string[];
-  breadcrumbs: string[];
-  has_search: boolean;
-  has_pagination: boolean;
-  has_modal: boolean;
-  has_tabs: boolean;
-  has_accordion: boolean;
-  dom_depth: number;
-  accessibility: {
-    lang: string;
-    title: string;
-    landmark_roles: string[];
-    aria_landmarks: Array<Record<string, string>>;
-    skip_links: string[];
-    forms_with_labels: number;
-    images_with_alt: number;
-    images_total: number;
-    heading_order: number[];
-  };
-  needs_vision: boolean;
-  vision_reason: string;
-  crawl_time_ms: number;
-  error: string;
-}
-
-// ---------------------------------------------------------------------------
-// Service health check
-// ---------------------------------------------------------------------------
-
-let serviceAvailable: boolean | null = null;
-
-export async function checkDiscoveryServiceHealth(): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const resp = await fetch(`${DISCOVERY_SERVICE_URL}/health`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    serviceAvailable = resp.ok;
-    return serviceAvailable;
-  } catch {
-    // Service not running — try to start it
-    serviceAvailable = false;
-    return ensureServiceRunning();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Core crawl function
-// ---------------------------------------------------------------------------
-
-/**
- * Call the Python Discovery Service to crawl a URL.
- * Returns the raw CrawlResponse from the service.
- */
-async function callDiscoveryService(url: string): Promise<CrawlResponse> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
-
-  try {
-    const resp = await fetch(`${DISCOVERY_SERVICE_URL}/crawl`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-      signal: controller.signal,
-    });
-
-    if (!resp.ok) {
-      throw new Error(`Discovery service returned ${resp.status}: ${await resp.text()}`);
-    }
-
-    return (await resp.json()) as CrawlResponse;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Conversion: CrawlResponse → AppModel
 // ---------------------------------------------------------------------------
 
 /**
- * Convert the Python service's structured DOM response into the existing
- * AppModel format that the rest of the pipeline expects.
+ * Convert the structured DOM extraction into the existing AppModel format that the rest of
+ * the pipeline expects.
  *
  * The key insight: we populate BOTH the legacy `elements` array (for
  * backward compatibility with IR generation and test case generation)
@@ -624,63 +321,56 @@ function inferRole(tag: string, el: { aria_role?: string; aria_label?: string; c
 // ---------------------------------------------------------------------------
 
 /**
- * Discover a page using the Crawl4AI-based Discovery Service.
- * This is the PRIMARY discovery path — no Gemini vision needed for standard pages.
+ * Discover a page's structure directly from the rendered DOM. This is the PRIMARY discovery
+ * path — no Gemini vision needed for standard pages.
  *
- * Falls back to null if the service is unavailable or the crawl fails,
- * allowing the caller to fall back to vision-based discovery.
+ * Returns null (never throws) on navigation failure or a genuinely empty extraction, so the
+ * caller (hybridDiscovery.ts) falls back to vision-based discovery.
  */
 export async function discoverUsingCrawler(url: string): Promise<AppModel | null> {
-  // Check cache first
   const cached = cacheGet(`dom:${url}`);
   if (cached) {
     console.log(`[domDiscovery] cache hit for ${url}`);
     return cached;
   }
 
-  // Check if service is available, try to start if not
-  if (serviceAvailable === false) {
-    // Try to start the service once
-    const started = await ensureServiceRunning();
-    if (!started) {
-      console.log(`[domDiscovery] service unavailable, skipping DOM discovery for ${url}`);
-      return null;
-    }
-  }
-
+  let browser;
   try {
-    console.log(`[domDiscovery] calling discovery service for ${url}`);
-    const crawlResult = await callDiscoveryService(url);
+    console.log(`[domDiscovery] extracting DOM structure for ${url}`);
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: REQUEST_TIMEOUT });
 
-    if (crawlResult.error) {
-      console.warn(`[domDiscovery] crawl error for ${url}: ${crawlResult.error}`);
+    const statusCode = response?.status() ?? 0;
+    if (!response || statusCode >= 400) {
+      console.warn(`[domDiscovery] HTTP ${statusCode || "no response"} for ${url}`);
       return null;
     }
 
-    if (crawlResult.status_code >= 400) {
-      console.warn(`[domDiscovery] HTTP ${crawlResult.status_code} for ${url}`);
-      return null;
-    }
+    // Give client-rendered content a moment to mount (React/Next/etc — the raw HTML for an
+    // SPA is close to empty pre-hydration). Not `networkidle`: generator.ts strips that
+    // from generated specs because it hangs on real sites with long-lived connections, so
+    // it's avoided here for the same reason. Mirrors the old service's `wait_after_load`.
+    await page.waitForTimeout(800);
+
+    const html = await page.content();
+    const finalUrl = page.url();   // reflects any redirect the navigation followed
+    const crawlResult = extractCrawlResponse(html, finalUrl, statusCode);
 
     const appModel = crawlResponseToAppModel(crawlResult);
     console.log(
-      `[domDiscovery] converted ${url}: ${appModel.pages[0]?.elements.length ?? 0} elements, ` +
+      `[domDiscovery] extracted ${url}: ${appModel.pages[0]?.elements.length ?? 0} elements, ` +
       `${crawlResult.forms.length} forms, ${crawlResult.navigation.length} nav items, ` +
       `${crawlResult.buttons.length} buttons, needs_vision=${crawlResult.needs_vision}`
     );
 
-    // Cache the result
     cacheSet(`dom:${url}`, appModel);
-
     return appModel;
   } catch (err: any) {
-    if (err?.name === "AbortError") {
-      console.warn(`[domDiscovery] timeout for ${url}`);
-      serviceAvailable = false; // Short-circuit future calls
-    } else {
-      console.warn(`[domDiscovery] error for ${url}: ${err?.message ?? err}`);
-    }
+    console.warn(`[domDiscovery] error for ${url}: ${err?.message ?? err}`);
     return null;
+  } finally {
+    await browser?.close();
   }
 }
 

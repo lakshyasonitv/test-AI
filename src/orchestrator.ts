@@ -5,6 +5,7 @@ import { plan } from "./stages/planner.js";
 import { discover, discoverPages } from "./stages/hybridDiscovery.js";
 import { toTestCases, generateCasesForNewPages } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
+import { GroqBudget } from "./llm/groqBudget.js";
 import { refreshPageModel } from "./stages/liveExtend.js";
 import { credentialsFor } from "./stages/credentials.js";
 import { generateSpec } from "./stages/generator.js";
@@ -44,6 +45,11 @@ export async function runPipeline(
   const runId = presetRunId ?? makeRunId();
   const runDir = path.join("runs", runId);
   mkdirSync(runDir, { recursive: true });
+
+  // One budget per run, shared across the primary case, self-heal, and every suite case
+  // below — never a module-level singleton (MAX_CONCURRENT_RUNS lets several runs share
+  // one process).
+  const groqBudget = new GroqBudget();
 
   const save = (name: string, data: unknown) =>
     writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));
@@ -92,7 +98,7 @@ export async function runPipeline(
     if (!primary) throw new Error("No test cases produced");
 
     console.log("Generating IR for primary case:", primary.title);
-    const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0]));
+    const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0], groqBudget));
     console.log("IR generated");
 
     console.log("Generating spec...");
@@ -138,7 +144,7 @@ export async function runPipeline(
           const prefix = ir.steps.slice(0, failIdx);
           const freshModel = await refreshPageModel(appModel, prefix, credentialsFor(resolvedUrls[0]));
           console.log("Calling toIR (heal)...");
-          const { ir: healedIr } = await toIR(primary, freshModel, prompt, resolvedUrls[0]);
+          const { ir: healedIr } = await toIR(primary, freshModel, prompt, resolvedUrls[0], groqBudget);
           console.log("Returned from toIR (heal)");
 
           // A heal that truncates isn't a heal: it means the failing step still can't be
@@ -212,7 +218,7 @@ export async function runPipeline(
       healed,
     };
     console.log("3. Running suite...");
-    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult);
+    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, groqBudget);
     console.log("✓ Suite finished");
 
     console.log("Pipeline finished");
@@ -230,6 +236,12 @@ export async function runPipeline(
       try { suite = JSON.parse(readFileSync(summaryPath, "utf8")); } catch { }
     }
 
+    // Real Groq spend for this run — visible on disk and in the completion event so a
+    // regression (retry storm, model change) shows up immediately instead of being
+    // discovered later via a drained account.
+    const groqUsage = groqBudget.snapshot();
+    save("08-groq-usage.json", groqUsage);
+
     emit("done", "completed", {
       passed: finalResult.passed, screenshotUrl, partial: finalIr.meta.truncated ?? false, healed,
       status: (finalResult as any).status,
@@ -238,10 +250,15 @@ export async function runPipeline(
       // are role+name/code, not something an end user should have to read to know what ran.
       test: { title: primary.title, steps: primary.steps, expected: primary.expected },
       suite,
+      groqUsage,
     });
     return { runId, runDir, result: finalResult, diagnosis };
   } catch (err: any) {
-    emit("error", "failed", undefined, err?.message ?? String(err));
+    // Failed/truncated runs are exactly the ones most likely to have burned the most
+    // budget retrying — record usage here too instead of only on the happy path.
+    const groqUsage = groqBudget.snapshot();
+    try { save("08-groq-usage.json", groqUsage); } catch { }
+    emit("error", "failed", { groqUsage }, err?.message ?? String(err));
     throw err;
   }
 }

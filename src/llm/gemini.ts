@@ -19,7 +19,7 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<str
   const model = opts.model ?? process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
   console.log("[gemini] calling model:", model, "| prompt length:", prompt.length);
 
-  return callWithPool(getPool(), async (apiKey) => {
+  return callWithPool(getPool(), async (apiKey, signal) => {
     const parts: any[] = [{ text: prompt }];
     if (opts.imageBase64) {
       parts.push({ inline_data: { mime_type: opts.imageMime ?? "image/png", data: opts.imageBase64 } });
@@ -33,6 +33,7 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<str
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
       {
         method: "POST",
+        signal,
         headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
         body: JSON.stringify(body),
       }
