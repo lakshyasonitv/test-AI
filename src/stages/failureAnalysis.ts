@@ -3,10 +3,9 @@ import { readFileSync } from "node:fs";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import { findScreenshot } from "./executor.js";
-import { KNOWN_CATEGORIES, findFailingStepId } from "./classify.js";
+import { KNOWN_CATEGORIES, findFailingStepId, classify } from "./classify.js";
 import type { IR } from "../schema/ir.js";
 import type { ExecResult } from "./executor.js";
-import { ruleAnalysis } from "./failure/ruleAnalysis.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 // Falls back to "other" for anything outside the known set (e.g. Gemini describing a
@@ -101,10 +100,20 @@ function compressSnapshot(snapshot: string, target?: { role?: string; name?: str
 
 export async function analyzeFailure(ir: IR, result: ExecResult): Promise<Diagnosis> {
   const errorText = errorTextFrom(result);
-  
-  const deterministic = ruleAnalysis(result);
+
+  // Deterministic classifier first — free, instant, and anchored to real Playwright error
+  // strings. This used to call failure/ruleAnalysis.ts, which was coarser AND hard-coded
+  // `failingStepId: null` in every branch. That null was fatal to self-healing: the
+  // orchestrator needs a failing step id to compute a replay prefix, so heal could never
+  // fire — including for the two categories ruleAnalysis itself reported as healable.
+  const deterministic = classify(errorText);
   if (deterministic) {
-    return deterministic;
+    return {
+      failingStepId: findFailingStepId(ir, errorText),
+      category: deterministic.category,
+      explanation: deterministic.explanation,
+      suggestedFix: deterministic.suggestedFix,
+    };
   }
 
   const cacheKey = makeCacheKey(errorText, JSON.stringify(ir.steps.slice(-5)));

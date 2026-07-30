@@ -1,7 +1,9 @@
 import { poolFromEnv } from "./keyPool.js";
 import { callWithPool } from "./backoff.js";
 
-const pool = poolFromEnv("GROQ_API_KEYS");
+// Built on first use, not at import — see the note in gemini.ts.
+let pool: ReturnType<typeof poolFromEnv> | undefined;
+const getPool = () => (pool ??= poolFromEnv("GROQ_API_KEYS"));
 
 export interface GroqOpts { model?: string; json?: boolean; system?: string; }
 
@@ -9,7 +11,7 @@ export async function groq(prompt: string, opts: GroqOpts = {}): Promise<string>
   const model = opts.model ?? process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile";
   console.log("[groq] calling model:", model, "| prompt length:", prompt.length);
 
-  return callWithPool(pool, async (apiKey) => {
+  return callWithPool(getPool(), async (apiKey) => {
     console.log("[groq] sending request...");
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",

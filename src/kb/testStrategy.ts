@@ -121,36 +121,4 @@ export function filterByScope<T extends { category?: string; fromPrompt?: boolea
 /** Flat list of all defined categories with their scope, for lookup by title. */
 const ALL_CATEGORIES: Category[] = Object.values(STRATEGY).flat().concat(GENERIC);
 
-// One runnable check: node --import tsx src/kb/testStrategy.ts
-if (process.argv[1]?.replace(/\\/g, "/").endsWith("src/kb/testStrategy.ts")) {
-  const login = strategyFor(["Sign In"]);
-  if (!login.some(c => /sql injection/i.test(c.title))) throw new Error("FAIL: 'Sign In' should alias to login and include the injection case");
-  if (login.length < 6) throw new Error(`FAIL: expected a real login suite, got ${login.length}`);
-  const generic = strategyFor(["Totally Unknown Concept"]);
-  if (generic.length !== GENERIC.length) throw new Error("FAIL: an unknown concept should fall back to exactly the generic floor");
-  const deduped = strategyFor(["Login", "Sign In"]); // same concept twice → no dupes
-  if (deduped.length !== login.length) throw new Error("FAIL: duplicate concepts must not duplicate categories");
-
-  // Scope classification tests
-  if (JSON.stringify(classifyScope("run functional tests only")) !== '["functional"]') throw new Error("FAIL: 'functional tests only' should classify as functional");
-  if (JSON.stringify(classifyScope("test for SQL injection vulnerabilities")) !== '["security"]') throw new Error("FAIL: 'SQL injection vulnerabilities' should classify as security");
-  if (JSON.stringify(classifyScope("test the login page")) !== JSON.stringify(ALL_SCOPES)) throw new Error("FAIL: neutral prompt should classify as ALL_SCOPES");
-  if (JSON.stringify(classifyScope("functional and security testing")) !== '["functional","security"]') throw new Error("FAIL: both signals should return both scopes");
-
-  // Scope filtering tests
-  const mockCases = [
-    { category: "Valid credentials", fromPrompt: false },
-    { category: "SQL injection in login", fromPrompt: false },
-    { fromPrompt: true, category: "Valid credentials" },
-    { category: undefined, fromPrompt: false },
-  ];
-  const funcOnly = filterByScope(mockCases, ["functional"]);
-  if (funcOnly.length !== 3) throw new Error(`FAIL: functional filter should keep 3 cases (func + fromPrompt + uncategorized), got ${funcOnly.length}`);
-  if (funcOnly.some(c => c.category === "SQL injection in login")) throw new Error("FAIL: security case should be filtered out by functional scope");
-  const secOnly = filterByScope(mockCases, ["security"]);
-  if (secOnly.length !== 3) throw new Error(`FAIL: security filter should keep 3 cases (security + fromPrompt + uncategorized), got ${secOnly.length}`);
-  const allCases = filterByScope(mockCases, ALL_SCOPES);
-  if (allCases.length !== 4) throw new Error(`FAIL: ALL_SCOPES filter should keep all 4 cases, got ${allCases.length}`);
-
-  console.log(`OK: login suite = ${login.length} categories, generic floor = ${generic.length}, dedupe holds, scope & filter OK`);
-}
+// Covered by tests/strategy.test.ts (`npm test`).

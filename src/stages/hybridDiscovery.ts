@@ -19,7 +19,9 @@ import { parseJson } from "../llm/json.js";
 import { AppModel, Element, PageModel } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 import { discoverUsingCrawler, needsVisionFallback } from "./domDiscovery.js";
-import { modelFromAria } from "./discovery.js";
+import {
+  modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
+} from "./discovery.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 // ---------------------------------------------------------------------------
@@ -199,6 +201,10 @@ async function discoverUsingVision(url: string): Promise<AppModel> {
     }
 
     const aria = await page.locator("body").ariaSnapshot();
+    // The ARIA snapshot misses icon-only buttons, SVG-in-clickable-parent, and elements
+    // with no accessible name. modelFromAria's prompt already knows how to consume this
+    // extra section — append it so the vision path sees them too.
+    const detected = await detectInteractiveElements(page);
     const title = await page.title();
     const pageUrl = page.url();
 
@@ -207,8 +213,10 @@ async function discoverUsingVision(url: string): Promise<AppModel> {
       quality: 60,
     })).toString("base64");
 
-    // Use the original modelFromAria with vision
-    const result = await modelFromAria(pageUrl, title, aria, screenshotBase64);
+    const result = attachElementIdentity(
+      await modelFromAria(pageUrl, title, aria + formatInteractiveElements(detected), screenshotBase64),
+      detected
+    );
 
     // Mark all pages as vision-discovered
     const visionResult: AppModel = {

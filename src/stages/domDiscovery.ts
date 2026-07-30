@@ -237,6 +237,9 @@ interface CrawlResponse {
     aria_role: string;
     visible: boolean;
     enabled: boolean;
+    test_id?: string;
+    css?: string;
+    derived_name?: boolean;
   }>;
   internal_urls: string[];
   external_urls: string[];
@@ -343,6 +346,11 @@ function crawlResponseToAppModel(crawl: CrawlResponse): AppModel {
       visible: ie.visible,
       enabled: ie.enabled,
       id: ie.id || `${ie.role}_${order}`,
+      // Carry the deterministic selector through. For an element whose name was DERIVED
+      // from attributes (icon-only cart/close/search), this is the only thing that can
+      // locate it — getByRole with a synthetic name matches nothing.
+      ...(ie.test_id ? { testId: ie.test_id } : {}),
+      ...(ie.css ? { css: ie.css } : {}),
       order: order++,
     });
   }
@@ -365,12 +373,26 @@ function crawlResponseToAppModel(crawl: CrawlResponse): AppModel {
     });
   }
 
-  // Convert form fields to elements
+  // Convert form fields to elements.
+  //
+  // `name` here MUST be the element's ACCESSIBLE name, because that is what the whole
+  // downstream pipeline resolves against: ir.ts grounds role+name against this model, and
+  // generator.ts emits getByRole(role, { name }), which matches the accessible name only.
+  // The HTML `name` attribute plays no part in accessible-name computation — preferring it
+  // produced elements that could never be located. Seen in practice on saucedemo, whose
+  // input is <input name="user-name" placeholder="Username">: discovery emitted
+  // "user-name", every generated locator missed, and five test cases failed at the fill
+  // step against a perfectly working page.
+  //
+  // Precedence follows accname: aria-label -> associated <label> -> placeholder -> title.
+  // The HTML name attribute stays only as a last resort so a field with no accessible name
+  // at all still appears in the model rather than vanishing.
   for (const form of crawl.forms) {
     for (const field of form.fields) {
-      const name = field.label || field.name || field.placeholder;
+      const name = field.aria_label || field.label || field.placeholder || field.name;
       if (!name) continue;
-      const fieldRole = field.tag === "select" ? "combobox" : "textbox";
+      const fieldRole = roleForField(field.tag, field.input_type);
+      if (!fieldRole) continue;   // hidden inputs and the like
       const key = `${fieldRole}:${name}`;
       if (seenNames.has(key)) continue;
       seenNames.add(key);
@@ -550,6 +572,28 @@ function crawlResponseToAppModel(crawl: CrawlResponse): AppModel {
     baseUrl: new URL(crawl.url).origin,
     pages: [pageModel],
   };
+}
+
+/**
+ * ARIA role for a form field. Previously every non-select field was called a "textbox",
+ * which turned <input type="submit"> into a phantom textbox the IR could try to fill, and
+ * lost the distinction the assertion/action vocabulary depends on (check vs fill vs click).
+ * Returns null for fields that should not appear in the model at all.
+ */
+function roleForField(tag: string, inputType: string): string | null {
+  if (tag === "select") return "combobox";
+  if (tag === "textarea") return "textbox";
+  switch ((inputType || "text").toLowerCase()) {
+    case "hidden": return null;
+    case "submit": case "button": case "reset": case "image": return "button";
+    case "checkbox": return "checkbox";
+    case "radio": return "radio";
+    case "range": return "slider";
+    case "number": return "spinbutton";
+    case "search": return "searchbox";
+    // text, email, password, tel, url, date, ... all expose as textbox
+    default: return "textbox";
+  }
 }
 
 /**

@@ -2,9 +2,6 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { plan } from "./stages/planner.js";
-import { crawlSite, labelPage } from "./stages/crawler.js";
-import { buildCrawlDirective } from "./stages/crawlDirective.js";
-import { buildSiteOutline } from "./kb/siteOutline.js";
 import { discover, discoverPages } from "./stages/hybridDiscovery.js";
 import { toTestCases, generateCasesForNewPages } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
@@ -17,75 +14,6 @@ import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 import { filterByScope, ALL_SCOPES } from "./kb/testStrategy.js";
 import type { IR, Step } from "./schema/ir.js";
-
-/**
- * Post-process IR to fix known issues with duplicate selectors, URL assertions, etc.
- * This applies quick fixes for common problems that the LLM might generate.
- */
-function postProcessIR(ir: IR): IR {
-  // Known problematic links that should be skipped or have special handling
-  const skipLinks = ['About SKIT', 'javascript:void(0)', '#'];
-
-  // Fix duplicate selectors by adding nth field
-  const duplicateFixes: Record<string, number> = {
-    'Student': 1,  // Use second occurrence (0-indexed)
-    'IQAC': 0,     // Use first occurrence
-  };
-
-  // Fix URL patterns that need partial matching
-  const urlPartialPatterns = ['/about'];
-
-  // Process each step
-  ir.steps = ir.steps.map(step => {
-    // Skip steps with problematic links
-    if (step.target?.name && skipLinks.includes(step.target.name)) {
-      // Mark as skip or adjust target
-      if (step.target.name === 'About SKIT') {
-        // This link often redirects to home, use partial URL matching
-        if (step.assertion === 'url_contains' && step.value?.includes('/about')) {
-          step.value = step.value.replace('/about', '');
-          step.value = step.value || '/';
-        }
-      }
-    }
-
-    // Fix duplicate selectors
-    if (step.target?.name && duplicateFixes[step.target.name] !== undefined) {
-      // Only add nth if not already specified
-      if (step.target.nth === undefined) {
-        step.target.nth = duplicateFixes[step.target.name];
-      }
-    }
-
-    // Fix URL assertions to use partial matching when appropriate
-    if (step.assertion === 'url_contains' && step.value) {
-      for (const pattern of urlPartialPatterns) {
-        if (step.value.includes(pattern)) {
-          // Already using url_contains, which is partial by nature
-          // Just ensure the pattern is reasonable
-          break;
-        }
-      }
-    }
-
-    // Add preAction for dropdown menu items
-    const dropdownParents = ['Academics', 'Admissions', 'Research', 'Placements'];
-    if (step.action === 'click' && step.target?.role === 'link' &&
-      dropdownParents.includes(step.target.name || '')) {
-      // This might be a dropdown parent - add hover preAction if not already present
-      if (!step.preAction) {
-        step.preAction = {
-          action: 'hover',
-          target: { ...step.target }
-        };
-      }
-    }
-
-    return step;
-  });
-
-  return ir;
-}
 
 export type StageName =
   | "input" | "plan" | "discovery" | "testcases" | "ir"
@@ -106,7 +34,7 @@ export type OnEvent = (e: StageEvent) => void;
 export type Coverage = "minimal" | "standard" | "full";
 
 export async function runPipeline(
-  { prompt, url, urls, coverage, mode }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; mode?: "crawl" },
+  { prompt, url, urls, coverage }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage },
   onEvent: OnEvent = () => { },
   presetRunId?: string
 ) {
@@ -145,26 +73,10 @@ export async function runPipeline(
     emit("input", "completed", { prompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
 
     const thePlan = await step("plan", "01-plan.json", () => plan(prompt, resolvedUrls[0], coverage));
-    // Crawl mode: produce appModel via crawlSite + labelPage (only entry page labeled).
-    // Non-crawl mode: existing discover/discoverPages path, unchanged.
-    let siteGraph: import("./schema/siteGraph.js").SiteGraph | undefined;
-    let siteOutline: string | undefined;
 
-    const appModel = await step("discovery", "02-appmodel.json", async () => {
-      if (mode === "crawl") {
-        const directive = buildCrawlDirective(thePlan, resolvedUrls[0]);
-        siteGraph = await crawlSite(directive);
-        siteOutline = buildSiteOutline(siteGraph);
-        save("02-sitegraph.json", siteGraph);
-        save("02-siteoutline.txt", siteOutline);
-        // Label only the entry page — other pages stay unlabeled until
-        // test case generation selects them (lazy, Phase 2d).
-        const entryPage = siteGraph.pages[resolvedUrls[0]];
-        if (!entryPage) throw new Error(`Entry URL ${resolvedUrls[0]} not found in crawl results`);
-        return labelPage(entryPage, resolvedUrls[0], siteOutline);
-      }
-      return resolvedUrls.length === 1 ? discover(resolvedUrls[0]) : discoverPages(resolvedUrls);
-    });
+    const appModel = await step("discovery", "02-appmodel.json", async () =>
+      resolvedUrls.length === 1 ? discover(resolvedUrls[0]) : discoverPages(resolvedUrls)
+    );
     console.log("1. Discovery completed");
 
     console.log("2. Generating test cases...");
@@ -180,15 +92,14 @@ export async function runPipeline(
     if (!primary) throw new Error("No test cases produced");
 
     console.log("Generating IR for primary case:", primary.title);
-    const { ir: rawIr, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0]));
+    const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0]));
     console.log("IR generated");
 
-    // Post-process IR to fix known issues
-    const ir = postProcessIR(rawIr);
-    console.log("IR post-processed");
-
     console.log("Generating spec...");
-    const spec = await step("generate", null, async () => generateSpec(ir));
+    // Per-step screenshots must land inside THIS run's directory. A shared relative path
+    // meant concurrent runs overwrote each other's step images.
+    const stepShots = path.join(runDir, "artifacts");
+    const spec = await step("generate", null, async () => generateSpec(ir, stepShots));
     console.log("Spec generated");
     writeFileSync(path.join(runDir, "generated.spec.ts"), spec);
 
@@ -237,9 +148,9 @@ export async function runPipeline(
           // exactly the kind this project has hit before. Only accept a heal that still
           // covers the full, originally-intended test case.
           if (!healedIr.meta.truncated) {
-            const healedSpec = generateSpec(healedIr);
             const healedDir = path.join(runDir, "healed");
             mkdirSync(healedDir, { recursive: true });
+            const healedSpec = generateSpec(healedIr, path.join(healedDir, "artifacts"));
             const healedRun = await runSpec(healedSpec, healedDir);
             if (healedRun.passed) {
               writeFileSync(path.join(healedDir, "generated.spec.ts"), healedSpec);
@@ -294,6 +205,7 @@ export async function runPipeline(
 
     const scopedCases = filterByScope(allCases, scope);
     const primaryCaseResult: PrimaryCaseResult = {
+      testCase: primary,
       ir: finalIr,
       result: { passed: finalResult.passed, exitCode: finalResult.exitCode, artifactsDir: finalResult.artifactsDir, resultsJsonPath: finalResult.resultsJsonPath, raw: finalResult.raw },
       specCode: finalSpecCode,

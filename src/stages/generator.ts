@@ -6,8 +6,30 @@ const q = (s: string) => JSON.stringify(s);
 const escapeRe = (s: string) =>
   s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** Comparison value for the assertions that need one. Accepts target.url for url_contains
+ *  because the IR prompt's own examples put the path there; ir.ts normalizes it too, so
+ *  this is belt-and-braces. Empty is never OK — see emitAssert. */
+function comparisonValue(step: Step): string {
+  if (step.assertion === "url_contains") return step.value ?? step.target?.url ?? "";
+  return step.value ?? "";
+}
+
 function emitAssert(step: Step): string {
   const t = step.target!;
+
+  // An empty comparison value silently turns into `toHaveURL(new RegExp(""))` or
+  // `toContainText("")` — assertions that match anything and therefore verify nothing.
+  // A test that always passes is worse than one that fails: it reports a green verdict
+  // the user has no reason to doubt. Fail loudly instead of lying quietly.
+  if (step.assertion === "url_contains" || step.assertion === "text_contains" || step.assertion === "text_equals") {
+    if (!comparisonValue(step).trim()) {
+      throw new Error(
+        `Step ${step.id}: "${step.assertion}" has no comparison value, which would assert ` +
+        `nothing at all (it matches any page). Refusing to emit a vacuous assertion.`
+      );
+    }
+  }
+
   switch (step.assertion) {
     case "visible":
       return `  await expect(${locator(t)}).toBeVisible({ timeout: 10000 });`;
@@ -22,14 +44,14 @@ function emitAssert(step: Step): string {
       return `  await expect(${locator(t)}).toBeDisabled({ timeout: 10000 });`;
 
     case "text_equals":
-      return `  await expect(${locator(t)}).toHaveText(${q(step.value ?? "")}, { timeout: 10000 });`;
+      return `  await expect(${locator(t)}).toHaveText(${q(comparisonValue(step))}, { timeout: 10000 });`;
 
     case "text_contains":
-      return `  await expect(${locator(t)}).toContainText(${q(step.value ?? "")}, { timeout: 10000 });`;
+      return `  await expect(${locator(t)}).toContainText(${q(comparisonValue(step))}, { timeout: 10000 });`;
 
     case "url_contains":
       return `  await expect(page).toHaveURL(new RegExp(${q(
-        escapeRe(step.value ?? "")
+        escapeRe(comparisonValue(step))
       )}), { timeout: 10000 });`;
 
     default:
@@ -138,18 +160,19 @@ function emitStep(step: Step, baseUrl: string): string {
   let code: string;
 
   // Handle preAction (e.g., hover to reveal dropdown)
+  code = '';
   if (step.preAction) {
     const preAction = step.preAction;
     const t = preAction.target;
     if (preAction.action === 'hover') {
-      code = `  await page.locator(${locator(t)}).hover();\n  await page.waitForTimeout(500); // Wait for dropdown animation\n`;
+      // resolveCode() already returns a full locator expression — wrapping it in
+      // page.locator() would pass a Locator where a selector string is expected.
+      code = `  await ${locator(t)}.hover();\n  await page.waitForTimeout(500); // Wait for dropdown animation\n`;
     } else if (preAction.action === 'click') {
-      code = `  await safeClick(page, ${q(t.role ?? "")}, ${q(t.name ?? "")});\n  await page.waitForTimeout(500); // Wait for dropdown animation\n`;
-    } else {
-      code = '';
+      code = t.role && t.name
+        ? `  await safeClick(page, ${q(t.role)}, ${q(t.name)});\n  await page.waitForTimeout(500); // Wait for dropdown animation\n`
+        : `  await ${locator(t)}.click({ timeout: 10000 });\n  await page.waitForTimeout(500); // Wait for dropdown animation\n`;
     }
-  } else {
-    code = '';
   }
 
   switch (step.action) {
@@ -165,9 +188,20 @@ function emitStep(step: Step, baseUrl: string): string {
 
     case "click": {
       const t = step.target!;
-      // Pass nth parameter if specified
-      const nthParam = t.nth !== undefined ? `, ${t.nth}` : '';
-      code += `  await safeClick(page, ${q(t.role ?? "")}, ${q(t.name ?? "")}${nthParam});\n  await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});`;
+      // safeClick is the role+name path only — it calls getByRole under the hood, and
+      // Playwright rejects an empty role outright ("Role must not be empty"). A target
+      // carrying only text/label/placeholder/testId is legitimate (dynamic content the
+      // discovery snapshot never saw), so route it through the same resolver every other
+      // action uses instead of passing empty strings that silently drop the target.
+      // A verified css selector wins: safeClick goes through getByRole, which cannot match
+      // an element whose accessible name is empty or was derived by discovery.
+      if (!t.css && t.role && t.name) {
+        const nthParam = t.nth !== undefined ? `, ${t.nth}` : '';
+        code += `  await safeClick(page, ${q(t.role)}, ${q(t.name)}${nthParam});`;
+      } else {
+        code += `  await ${locator(t)}.click({ timeout: 10000 });`;
+      }
+      code += `\n  await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});`;
       break;
     }
 
@@ -241,13 +275,25 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
 // Generate Playwright spec
 // -----------------------------------------------------------------------------
 
-export function generateSpec(ir: IR): string {
+/**
+ * @param screenshotDir where per-step screenshots go, relative to the process CWD.
+ *   REQUIRED in practice: the previous hard-coded "artifacts/" was relative to the CWD of
+ *   the Playwright process (the project root), so every run and every case in a suite
+ *   overwrote the same artifacts/step-N.png files. On a multi-user deployment that is a
+ *   cross-user leak, since concurrent runs share one CWD.
+ */
+export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
+  // Forward slashes and no trailing separator: this string is embedded in generated code and
+  // has to be valid on Windows too, where path.join produces backslashes that would need
+  // escaping inside a JS string literal.
+  const shotDir = screenshotDir.replace(/\\/g, "/").replace(/\/+$/, "");
+
   const body = ir.steps
     .map((step, i) => {
       const label = stepLabel(step, i, ir.meta.baseUrl);
       const code = emitStep(step, ir.meta.baseUrl);
       const indented = code.split("\n").map((l) => "    " + l).join("\n");
-      return `    await test.step(${q(label)}, async () => {\n${indented}\n      await page.screenshot({ path: "artifacts/step-${i + 1}.png" });\n    });`;
+      return `    await test.step(${q(label)}, async () => {\n${indented}\n      await page.screenshot({ path: ${q(`${shotDir}/step-${i + 1}.png`)} });\n    });`;
     })
     .join("\n");
 

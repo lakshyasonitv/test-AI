@@ -2,7 +2,9 @@ import { chromium, type Page } from "playwright";
 import { AppModel } from "../schema/appModel.js";
 import type { Step } from "../schema/ir.js";
 import { discoverUsingCrawler } from "./domDiscovery.js";
-import { modelFromAria, discoverInteractiveElements } from "./discovery.js";
+import {
+  modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
+} from "./discovery.js";
 import { resolveLive } from "./targetResolver.js";
 import { credentialForTarget, type Credentials } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
@@ -75,11 +77,21 @@ async function replayAndSnapshot(
       // DOM discovery failed for the reached page
     }
 
-    // Fall back to vision-based discovery if DOM failed
+    // Fall back to vision-based discovery if DOM failed.
+    //
+    // This is the path that models EVERY post-login page — on a shop that means the
+    // inventory page, the cart, and checkout. The bare ARIA snapshot omits any control with
+    // no accessible name and no text (saucedemo's cart is an empty <a> with a CSS
+    // background-image), so those pages came back with no cart at all and every test that
+    // needed one truncated. The detector below finds them and gives them a stable selector.
     if (!fresh || !fresh.pages[0]?.elements?.length) {
       const aria = await page.locator("body").ariaSnapshot();
+      const detected = await detectInteractiveElements(page);
       const screenshotBase64 = (await page.screenshot()).toString("base64");
-      fresh = await modelFromAria(reachedUrl, title, aria, screenshotBase64);
+      fresh = await modelFromAria(
+        reachedUrl, title, aria + formatInteractiveElements(detected), screenshotBase64
+      );
+      fresh = attachElementIdentity(fresh, detected);
     }
     const pageModel = fresh.pages.find((p) => p.url === reachedUrl) ?? fresh.pages[0];
     if (!pageModel) throw new Error(`replay reached ${reachedUrl} but produced no page model`);

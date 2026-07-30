@@ -46,38 +46,37 @@ export async function runSpec(specCode: string, runDir: string): Promise<ExecRes
   console.log("[executor] cliPath:", cliPath, "| exists:", existsSync(cliPath));
   console.log("[executor] specArg:", specArg);
 
-  // Retry logic for flaky tests
-  let attempts = 0;
+  // Retry only what is worth retrying.
+  //
+  // This loop previously returned on `exitCode === 1`, and Playwright exits 1 for ANY test
+  // failure — so the retry never once ran for a real test, only for spawn/crash errors.
+  // Re-running a genuine assertion failure is also the wrong thing to do: it doubles the
+  // wall-clock cost of every failing run and can mask a real defect as "flaky". So: retry
+  // infrastructure failures (Playwright itself failed to run), report test failures once.
   let lastError: any;
-  
-  while (attempts < CONFIG.RETRIES) {
+
+  for (let attempt = 1; attempt <= CONFIG.RETRIES; attempt++) {
     try {
       const result = await executePlaywright(specPath, resultsJson, artifactsDir, cliPath);
-      
-      // If test passed or failed with assertion error (not transient), return immediately
-      if (result.passed || result.exitCode === 1) {
-        return result;
-      }
-      
-      // Transient error, retry
-      attempts++;
-      if (attempts < CONFIG.RETRIES) {
-        console.log(`[executor] Retrying test (attempt ${attempts + 1}/${CONFIG.RETRIES})...`);
-        await sleep(CONFIG.TIMEOUTS.RETRY_DELAY);
-      } else {
-        return result;
-      }
+
+      // exitCode 1 with a parsed report = Playwright ran and the test has a verdict.
+      // That verdict is the answer, pass or fail.
+      if (result.passed || result.raw) return result;
+
+      // No report at all: Playwright didn't get far enough to produce one (bad spawn,
+      // missing browser, killed by the safety timeout). That is worth another go.
+      if (attempt === CONFIG.RETRIES) return result;
+      console.log(`[executor] no report produced — retrying (${attempt + 1}/${CONFIG.RETRIES})`);
+      await sleep(CONFIG.TIMEOUTS.RETRY_DELAY);
     } catch (error) {
       lastError = error;
-      attempts++;
-      if (attempts < CONFIG.RETRIES) {
-        console.log(`[executor] Retrying after error (attempt ${attempts + 1}/${CONFIG.RETRIES})...`);
-        await sleep(CONFIG.TIMEOUTS.RETRY_DELAY);
-      }
+      if (attempt === CONFIG.RETRIES) break;
+      console.log(`[executor] run threw — retrying (${attempt + 1}/${CONFIG.RETRIES}): ${(error as any)?.message ?? error}`);
+      await sleep(CONFIG.TIMEOUTS.RETRY_DELAY);
     }
   }
-  
-  throw lastError || new Error('Test failed after retries');
+
+  throw lastError || new Error("Playwright produced no result after retries");
 }
 
 async function executePlaywright(

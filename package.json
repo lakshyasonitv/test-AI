@@ -5,6 +5,8 @@
   "scripts": {
     "generate": "node --env-file=.env --import tsx src/cli.ts",
     "serve": "node --env-file=.env --import tsx src/server/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "postinstall": "playwright install chromium"
   },
@@ -18,6 +20,7 @@
     "@types/node": "^22.20.1",
     "playwright": "^1.49.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.10"
   }
 }

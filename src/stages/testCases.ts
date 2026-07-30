@@ -230,6 +230,10 @@ export async function generateCasesForNewPages(
   // Generate cases for the new pages
   const cases = await toTestCases(plan, filteredModel);
 
-  // Tag all as reactive
-  return cases.map(c => ({ ...c, generatedFrom: "reactive" as const }));
+  // Tag all as reactive, and clear fromPrompt: toTestCases' prompt mandates exactly one
+  // fromPrompt case per call, so this batch mints its own — but the run already has a
+  // primary case from the upfront batch. Leaving both set made suiteRunner graft the
+  // primary's already-executed result onto an unrelated reactive case (seen in practice:
+  // two cases reporting "reused": true for different titles).
+  return cases.map(c => ({ ...c, generatedFrom: "reactive" as const, fromPrompt: false }));
 }

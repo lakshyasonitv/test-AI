@@ -1,7 +1,11 @@
 import { poolFromEnv } from "./keyPool.js";
 import { callWithPool } from "./backoff.js";
 
-const pool = poolFromEnv("GEMINI_API_KEYS");
+// Built on first use, not at import. KeyPool throws when no keys are configured, and at
+// module scope that made merely *importing* anything downstream of this file fail — so pure
+// functions in ir.ts / generator.ts could not be unit-tested without live credentials.
+let pool: ReturnType<typeof poolFromEnv> | undefined;
+const getPool = () => (pool ??= poolFromEnv("GEMINI_API_KEYS"));
 
 export interface GeminiOpts {
   model?: string;
@@ -15,7 +19,7 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<str
   const model = opts.model ?? process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
   console.log("[gemini] calling model:", model, "| prompt length:", prompt.length);
 
-  return callWithPool(pool, async (apiKey) => {
+  return callWithPool(getPool(), async (apiKey) => {
     const parts: any[] = [{ text: prompt }];
     if (opts.imageBase64) {
       parts.push({ inline_data: { mime_type: opts.imageMime ?? "image/png", data: opts.imageBase64 } });

@@ -117,6 +117,13 @@ class InteractiveElement(BaseModel):
     aria_role: str = ""
     visible: bool = True
     enabled: bool = True
+    # data-test / data-testid / data-qa value, when present.
+    test_id: str = ""
+    # Deterministic CSS selector for this exact element. The only way to reach a control
+    # whose accessible name is empty (icon-only cart, close, search).
+    css: str = ""
+    # True when `name` was derived from attributes rather than read from an accname source.
+    derived_name: bool = False
 
 
 class Metadata(BaseModel):

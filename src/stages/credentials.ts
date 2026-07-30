@@ -37,6 +37,29 @@ export function credentialForTarget(target: Target | undefined, creds: Credentia
 }
 
 /**
+ * Taxonomy categories (from kb/testStrategy.ts) whose whole point is that the action must
+ * FAIL. Substituting working credentials into these would defeat the case; asserting a
+ * success message in these is the inverted-assertion bug. Shared by both checks.
+ */
+export const NEGATIVE_CATEGORIES = new Set([
+  "Invalid password",
+  "Empty password",
+  "Empty identifier",
+  "Malformed email",
+  "SQL injection in login",
+  "Empty required fields",
+  "Password mismatch",
+  "Weak password",
+  "Existing account",
+  "Invalid card",
+  "Missing shipping info",
+  "Empty cart checkout",
+  "Empty query",
+  "Special characters",
+  "Submit with all required fields empty",
+]);
+
+/**
  * Returns true if credential substitution should be skipped for this case.
  * Skips for fromPrompt cases and deliberate negative credential test categories.
  */
@@ -44,14 +67,7 @@ export function shouldSkipCredentialSubstitution(testCase: TestCase): boolean {
   if (testCase.fromPrompt) return true;
   const cat = testCase.category;
   if (!cat) return false;
-  const negativeCategories = new Set([
-    "Invalid password",
-    "Empty password",
-    "Empty identifier",
-    "Malformed email",
-    "SQL injection in login"
-  ]);
-  return negativeCategories.has(cat);
+  return NEGATIVE_CATEGORIES.has(cat);
 }
 
 /** Substitute real credentials into an IR's login fill steps, in place. */

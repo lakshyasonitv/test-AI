@@ -381,6 +381,51 @@ def _extract_images(soup: BeautifulSoup, base_url: str) -> list[Image]:
     return images
 
 
+# Class tokens that describe what an element IS are useful as a name source; layout and
+# styling noise is not.
+_CLASS_NOISE = re.compile(
+    r"^(active|disabled|hidden|show|hide|open|closed|selected|first|last|odd|even|col|row"
+    r"|container|wrapper|inner|outer|flex|grid|sm|md|lg|xl|d|p|m|mt|mb|ml|mr|px|py|text|bg"
+    r"|border|rounded|shadow|w|h)([-_]?\d*)$",
+    re.I,
+)
+
+
+def _humanise(raw: str) -> str:
+    """'shopping-cart-link' / 'shopping_cart_container' / 'btnAddToCart' -> readable text."""
+    s = re.sub(r"[-_.]+", " ", raw)
+    s = re.sub(r"([a-z\d])([A-Z])", r"\1 \2", s)
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def _stable_selector(tag) -> str:
+    """A deterministic CSS selector for this element, most stable attribute first."""
+    for attr in ("data-test", "data-testid", "data-qa"):
+        val = _attr(tag, attr)
+        if val:
+            return f'[{attr}="{val}"]'
+    el_id = _attr(tag, "id")
+    return f"#{el_id}" if el_id else ""
+
+
+def _derive_name(tag, base_url: str) -> str:
+    """Readable name for an element with no accessible name, from stable attributes."""
+    for attr in ("data-test", "data-testid", "data-qa", "id"):
+        val = _attr(tag, attr)
+        if val:
+            return _humanise(val)
+    for cls in (_attr(tag, "class")).split():
+        if len(cls) > 2 and not _CLASS_NOISE.match(cls):
+            return _humanise(cls)
+    href = _attr(tag, "href")
+    if href and not href.startswith("#") and not href.startswith("javascript:"):
+        leaf = re.split(r"[?#]", href)[0].rstrip("/").split("/")[-1]
+        leaf = re.sub(r"\.[a-z]{2,5}$", "", leaf, flags=re.I)
+        if leaf:
+            return _humanise(leaf)
+    return ""
+
+
 def _extract_interactive_elements(soup: BeautifulSoup, base_url: str) -> list[InteractiveElement]:
     """Extract all interactive elements with their selectors for Playwright."""
     elements = []
@@ -404,11 +449,37 @@ def _extract_interactive_elements(soup: BeautifulSoup, base_url: str) -> list[In
             }
             role = role or role_map.get(input_type, "textbox")
 
-        name = _attr(tag, "aria-label") or _attr(tag, "name") or _text(tag)
+        # Accessible name, in accname precedence order. The HTML `name` attribute is NOT
+        # part of accessible-name computation and must come last: the pipeline resolves
+        # these via Playwright's getByRole(role, {name}), which matches the accessible
+        # name only. Preferring `name` emitted unlocatable elements — <input
+        # name="user-name" placeholder="Username"> became "user-name" and every generated
+        # locator missed. `value` covers <input type="submit" value="Login">.
+        name = (
+            _attr(tag, "aria-label")
+            or _attr(tag, "placeholder")
+            or _text(tag)
+            or _attr(tag, "value")
+            or _attr(tag, "title")
+            or _attr(tag, "name")
+        )
+        # No accessible name at all — derive one from stable attributes instead of dropping
+        # the element. Icon-only controls (cart, close, search, hamburger) have an empty
+        # accessible name by construction: saucedemo's cart is
+        # <a class="shopping_cart_link" data-test="shopping-cart-link" href="cart.html">
+        # with a CSS background-image. `continue` here made every such control invisible to
+        # the entire pipeline, and tests that needed one truncated.
+        derived_name = False
         if not name:
-            continue
+            name = _derive_name(tag, base_url)
+            if not name:
+                continue
+            derived_name = True
 
-        key = f"{role}:{name}"
+        # Dedupe on identity, not on name: with an empty name every unlabelled anchor
+        # collapsed into a single "link:" entry.
+        selector = _stable_selector(tag)
+        key = selector or f"{role}:{name}:{len(elements)}"
         if key in seen:
             continue
         seen.add(key)
@@ -424,6 +495,10 @@ def _extract_interactive_elements(soup: BeautifulSoup, base_url: str) -> list[In
                 href=_abs_url(_attr(tag, "href"), base_url) if tag.name == "a" else "",
                 id=_attr(tag, "id"),
                 css_classes=css_classes,
+                test_id=(_attr(tag, "data-test") or _attr(tag, "data-testid")
+                         or _attr(tag, "data-qa")),
+                css=selector,
+                derived_name=derived_name,
                 aria_label=_attr(tag, "aria-label"),
                 aria_role=_attr(tag, "role"),
                 visible=True,

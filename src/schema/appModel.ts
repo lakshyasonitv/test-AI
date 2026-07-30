@@ -10,6 +10,10 @@ export const Element = z.object({
   concept: z.string().optional(),   // e.g. "login-email", "search-box"
   testId: z.string().optional(),
   id: z.string().optional(),
+  // Deterministic selector captured by discovery (never invented by an LLM). Set for
+  // elements whose accessible name is empty or synthetic — an icon-only cart/close/search
+  // control can only be located this way.
+  css: z.string().optional(),
   visible: z.boolean().optional(),
   enabled: z.boolean().optional(),
   containerRole: z.string().optional(),

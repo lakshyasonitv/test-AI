@@ -32,28 +32,5 @@ export class Semaphore {
   }
 }
 
-// One runnable check: concurrency never exceeds `max`, INCLUDING when a new caller
-// arrives in the wake gap between a finish and a parked caller resuming (the case that
-// broke the naive release-then-reacquire version). Run directly:
-//   node --import tsx src/server/concurrency.ts
-if (process.argv[1]?.replace(/\\/g, "/").endsWith("src/server/concurrency.ts")) {
-  const sem = new Semaphore(2);
-  let running = 0, peak = 0;
-  const gates: Array<() => void> = [];              // manually control when each task finishes
-  const task = () => sem.run(async () => {
-    running++; peak = Math.max(peak, running);
-    await new Promise<void>((r) => gates.push(r));
-    running--;
-  });
-  const flush = () => new Promise((r) => setImmediate(r));
-
-  task(); task(); task();          // A,B run; C parks
-  await flush();
-  gates.shift()!();                // A finishes → should wake C
-  task();                          // D arrives in the wake gap — must NOT start a 3rd
-  await flush();
-  gates.forEach((g) => g()); await flush();
-
-  if (peak !== 2) throw new Error(`FAIL: peak concurrency ${peak}, expected 2`);
-  console.log("OK: interleaved arrival in wake gap held cap; peak concurrency =", peak);
-}
+// The wake-gap case that broke the naive release-then-reacquire version is covered by
+// tests/strategy.test.ts (`npm test`).

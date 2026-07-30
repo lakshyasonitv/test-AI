@@ -5,3 +5,12 @@ test-results/
 playwright-report/
 .claude/
 artifacts/
+
+# Python discovery service
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Crawl4AI disk cache — regenerated on demand; stale entries cause confusing runs
+discovery-service/.discovery-cache/

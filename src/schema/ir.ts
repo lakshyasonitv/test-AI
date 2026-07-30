@@ -9,6 +9,11 @@ export const Target = z.object({
   text: z.string().optional(),
   placeholder: z.string().optional(),
   testId: z.string().optional(),
+  // Deterministic selector. NEVER produced by the LLM (the IR prompt forbids CSS selectors,
+  // and that rule stands — it guards against invented selectors). This is written in code
+  // during grounding, copied from the matching AppModel element that discovery verified
+  // exists. It is what makes icon-only controls addressable at all.
+  css: z.string().optional(),
 });
 export type Target = z.infer<typeof Target>;
 

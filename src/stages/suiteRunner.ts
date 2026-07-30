@@ -14,6 +14,9 @@ import type { IR } from "../schema/ir.js";
 /** Already-computed result for the primary case, passed in from the main pipeline
  *  so runSuite can reuse it instead of regenerating IR and re-executing. */
 export interface PrimaryCaseResult {
+  /** The exact TestCase object the orchestrator executed. Matched by identity below —
+   *  a flag can be set on more than one case, an object reference cannot. */
+  testCase: TestCase;
   ir: IR;
   result: ExecResult;
   specCode: string;
@@ -69,10 +72,10 @@ export async function runSuite(
 
     emit(runId, "suite", "started", { caseId, title: tc.title }, undefined, onEvent);
 
-    // Detect if this case is the primary case that was already executed in the main pipeline.
-    // Match by fromPrompt flag (the reliable selector) — if multiple cases have it (shouldn't
-    // happen, but defensive), take the first match.
-    const isPrimary = primaryResult && (tc.fromPrompt === true);
+    // Detect if this case is the one the main pipeline already executed. Identity, not the
+    // fromPrompt flag: reactive generation can legitimately produce a second flagged case,
+    // and matching on the flag grafted the primary's result onto both of them.
+    const isPrimary = primaryResult !== undefined && tc === primaryResult.testCase;
 
     if (isPrimary) {
       // Reuse the already-executed result — copy artifacts into the suite's expected location
@@ -136,7 +139,8 @@ export async function runSuite(
         writeFileSync(irPath, JSON.stringify(ir, null, 2));
 
         console.log("Generating spec...");
-        const spec = generateSpec(ir);
+        // Per-case screenshot dir, so cases in one suite don't overwrite each other.
+        const spec = generateSpec(ir, path.join(caseDir, "artifacts"));
         console.log("Spec generated");
         const specPath = path.join(caseDir, "generated.spec.ts");
         writeFileSync(specPath, spec);
@@ -203,14 +207,20 @@ export async function runSuite(
     truncated,
     truncated_no_assertion: truncatedNoAssertion,
     cases: results.map((r) => {
+      // Search the case's artifacts directory. The previous
+      // `findScreenshot(path.join(runDir, r.resultPath))` double-counted runDir —
+      // r.resultPath already starts with it — so the path never existed and every case in
+      // every summary on disk had screenshotUrl: null. The UI's screenshot grid and
+      // per-case thumbnails therefore never rendered.
       const caseDir = path.join(runDir, "cases", r.caseId);
-      const shot = r.resultPath ? findScreenshot(path.join(runDir, r.resultPath)) : null;
+      const shot = findScreenshot(path.join(caseDir, "artifacts")) ?? findScreenshot(caseDir);
       const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
       return {
         caseId: r.caseId,
         title: r.title,
         status: r.status,
-        resultPath: path.join("cases", r.caseId),
+        // Forward slashes: this is consumed as a URL fragment by the frontend.
+        resultPath: `cases/${r.caseId}`,
         screenshotUrl,
       };
     }),

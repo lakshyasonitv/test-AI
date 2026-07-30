@@ -1,342 +1,298 @@
-import { chromium, type Page } from "playwright";
+import type { Page } from "playwright";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
-import { AppModel, Element, PageModel } from "../schema/appModel.js";
-import { cacheGet, cacheSet } from "../kb/cache.js";
-import crypto from "node:crypto";
+import { AppModel } from "../schema/appModel.js";
 
-interface RawElement {
+/** One interactive element found by the in-page detector below. */
+export interface DetectedElement {
   role: string;
+  /** Accessible name where one exists, otherwise a name derived from stable attributes. */
   name: string;
-  visible: boolean;
-  enabled: boolean;
-  containerRole: string | null;
-  containerName: string | null;
-  pageSection: string;
-  path: string[];
-  order: number;
-  concept?: string;
-}
-
-interface EnrichedElement extends RawElement {
+  /** True when `name` was derived rather than read from a real accname source. */
+  derived: boolean;
+  tag: string;
+  hasIcon: boolean;
+  /** A deterministic CSS selector for this exact element, when one can be built. */
+  css: string;
+  /** data-test / data-testid / data-qa value, if present. */
+  testId: string;
   id: string;
 }
 
-function computeAriaHash(aria: string): string {
-  return crypto.createHash('md5').update(aria).digest('hex').slice(0, 8);
+/** Raw per-element facts read out of the DOM. Deliberately dumb — see detectInteractiveElements. */
+interface RawInteractive {
+  tag: string; role: string; ariaLabel: string; innerText: string; title: string;
+  alt: string; placeholder: string; value: string; type: string;
+  dataTest: string; dataTestid: string; dataQa: string;
+  id: string; classes: string[]; href: string; hasIcon: boolean;
 }
 
-async function collectElementMetadata(page: any, ariaElements: any[]): Promise<RawElement[]> {
-  const enriched: RawElement[] = [];
-  let order = 0;
-
-  for (const el of ariaElements) {
-    if (!el.role || el.role === 'none' || el.role === 'presentation') continue;
-
-    try {
-      const locator = page.getByRole(el.role, { name: el.name });
-      const count = await locator.count();
-
-      if (count === 0) continue;
-
-      for (let i = 0; i < count; i++) {
-        const handle = locator.nth(i);
-        const visible = await handle.isVisible().catch(() => false);
-        const enabled = await handle.isEnabled().catch(() => false);
-
-        const containerInfo = await handle.evaluate((node: any) => {
-          let parent = node.parentElement;
-          let containerRole: string | null = null;
-          let containerName: string | null = null;
-          const path: string[] = [];
-
-          while (parent && path.length < 10) {
-            const role = parent.getAttribute('role') || parent.tagName.toLowerCase();
-            const name = parent.getAttribute('aria-label') ||
-              parent.getAttribute('name') ||
-              parent.textContent?.trim().slice(0, 50) || null;
-
-            if (['form', 'nav', 'main', 'header', 'footer', 'dialog', 'section', 'article', 'aside'].includes(role)) {
-              containerRole = containerRole || role;
-              containerName = containerName || name;
-            }
-
-            path.unshift(role);
-            parent = parent.parentElement;
-          }
-
-          const pageSection = path.includes('main') ? 'main' :
-            path.includes('nav') ? 'nav' :
-              path.includes('header') ? 'header' :
-                path.includes('footer') ? 'footer' :
-                  path.includes('dialog') ? 'dialog' : 'body';
-
-          return { containerRole, containerName, path, pageSection };
-        });
-
-        enriched.push({
-          role: el.role,
-          name: el.name || '',
-          visible,
-          enabled,
-          containerRole: containerInfo.containerRole,
-          containerName: containerInfo.containerName,
-          pageSection: containerInfo.pageSection,
-          path: containerInfo.path,
-          order: order++,
-        });
-      }
-    } catch (err) {
-      continue;
-    }
-  }
-
-  return enriched;
+/** "shopping-cart-link" / "shopping_cart_container" / "btnAddToCart" -> "shopping cart link" */
+export function humaniseIdentifier(raw: string): string {
+  return raw
+    .replace(/[-_.]+/g, " ")
+    .replace(/([a-z\d])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
-function parseAriaStructure(aria: string): any[] {
-  const elements: any[] = [];
-  const lines = aria.split('\n');
+// Class tokens that say what an element IS are useful as a name source; styling noise isn't.
+const CLASS_NOISE =
+  /^(active|disabled|hidden|show|hide|open|closed|selected|first|last|odd|even|col|row|container|wrapper|inner|outer|flex|grid|sm|md|lg|xl|d|p|m|mt|mb|ml|mr|px|py|text|bg|border|rounded|shadow|w|h)([-_]?\d*)$/i;
 
-  for (const line of lines) {
-    const match = line.match(/^\s*(?:- )?(button|textbox|link|heading|checkbox|radio|combobox|listbox|option|menuitem|tab|switch|slider|spinbutton|searchbox|img|list|listitem|table|row|cell|dialog|alert|navigation|banner|main|contentinfo|form|region|group|generic|article|figure)(?:\s+"([^"]*)")?/i);
+const cssEscape = (s: string) => s.replace(/["\\]/g, "\\$&");
 
-    if (match) {
-      elements.push({
-        role: match[1].toLowerCase(),
-        name: match[2] || '',
-      });
-    }
-  }
-
-  return elements;
-}
-
-
-async function labelConcepts(
-  elements: RawElement[],
-  pageTitle: string,
-  screenshotBase64?: string
-): Promise<{ concepts: string[]; labeledElements: { index: number; concept: string }[] }> {
-  const elementsList = elements
-    .map((e, i) => `[${i}] ${e.role} "${e.name}" (visible: ${e.visible}, section: ${e.pageSection}${e.containerName ? `, container: ${e.containerRole} "${e.containerName}"` : ''})`)
-    .join('\n');
-
-  const system = `You analyze web page elements to identify concepts and label elements. Output ONLY JSON.
-Rules:
-- Identify 2-5 meaningful concepts from the elements (e.g. "Login", "Search", "Cart", "Navigation")
-- Label elements that clearly serve a concept — only when confident
-- Use visual context from screenshot if provided
-- Never invent elements or concepts not supported by the element list
-- If two elements share the same name but are in different containers, they serve different concepts`;
-
-  const user = `Page title: ${pageTitle}
-Elements:
-${elementsList}
-${screenshotBase64 ? "\nScreenshot attached for visual context." : ""}
-
-Return JSON: { "concepts": string[], "labeledElements": { "index": number, "concept": string }[] }`;
-
-  let lastErr = "";
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const raw = await gemini(user, {
-      systemInstruction: system,
-      json: true,
-      model: process.env.GEMINI_MODEL_LITE,
-      imageBase64: screenshotBase64,
-      imageMime: "image/png",
-    });
-    try {
-      const parsed = parseJson(raw);
-      if (parsed && Array.isArray(parsed.concepts) && Array.isArray(parsed.labeledElements)) {
-        return parsed;
-      }
-      lastErr = "Invalid shape";
-    } catch (err: any) {
-      lastErr = err?.message ?? String(err);
-    }
-  }
-
-  return { concepts: [], labeledElements: [] };
+/** Deterministic selector for one element, most stable attribute first. "" when none exists. */
+export function stableSelector(el: {
+  dataTest?: string; dataTestid?: string; dataQa?: string; id?: string;
+}): string {
+  if (el.dataTest) return `[data-test="${cssEscape(el.dataTest)}"]`;
+  if (el.dataTestid) return `[data-testid="${cssEscape(el.dataTestid)}"]`;
+  if (el.dataQa) return `[data-qa="${cssEscape(el.dataQa)}"]`;
+  if (el.id) return `#${cssEscape(el.id)}`;
+  return "";
 }
 
 /**
- * Discover multiple explicit pages and merge them into one AppModel.
- * Calls discover() once per URL (reusing its cache and modelFromAria labeling),
- * then merges using the same spread-append pattern as liveExtend.ts's extendAppModel.
- * Deduplicates by URL — if the same URL appears twice, it's only modeled once.
+ * Readable name for an element that has no accessible name, from its stable attributes.
+ * Returns "" when the element is genuinely unaddressable and should be skipped.
  */
-export async function discoverPages(urls: string[]): Promise<AppModel> {
-  const seen = new Set<string>();
-  let merged: AppModel = { baseUrl: urls[0], pages: [] };
-
-  for (const url of urls) {
-    if (seen.has(url)) continue;
-    seen.add(url);
-    const model = await discover(url);
-    // Merge pattern from liveExtend.ts extendAppModel — append new pages to existing.
-    const newPages = model.pages.filter((p) => !merged.pages.some((mp) => mp.url === p.url));
-    merged = AppModel.parse({ ...merged, pages: [...merged.pages, ...newPages] });
+export function deriveElementName(el: {
+  dataTest?: string; dataTestid?: string; dataQa?: string;
+  id?: string; classes?: string[]; href?: string;
+}): string {
+  const attr = el.dataTest || el.dataTestid || el.dataQa || el.id;
+  if (attr) return humaniseIdentifier(attr);
+  const cls = (el.classes ?? []).find(c => c.length > 2 && !CLASS_NOISE.test(c));
+  if (cls) return humaniseIdentifier(cls);
+  const href = el.href ?? "";
+  if (href && !href.startsWith("#") && !href.startsWith("javascript:")) {
+    const leaf = (href.split(/[?#]/)[0].split("/").filter(Boolean).pop() ?? "")
+      .replace(/\.[a-z]{2,5}$/i, "");
+    if (leaf) return humaniseIdentifier(leaf);
   }
-
-  return merged;
+  return "";
 }
 
 /**
- * Discover all interactive elements on the current page using JavaScript evaluation.
- * This catches elements that the ARIA snapshot may miss: icon-only buttons without
- * aria-labels, SVG icons inside clickable parents, background CSS icons, etc.
- * Returns a string snapshot that can be appended to the ARIA snapshot.
+ * Find every interactive element on the page, including the ones the accessibility tree
+ * cannot express.
+ *
+ * Playwright's ariaSnapshot() reports only what the a11y tree exposes, and an element with
+ * no accessible name and no text content is simply absent from it. saucedemo's cart is
+ * exactly that shape — `<a class="shopping_cart_link" data-test="shopping-cart-link"
+ * href="cart.html">` with a CSS background-image — so the cart was invisible to the whole
+ * pipeline and every test needing it truncated. Icon-only controls (cart, close, search,
+ * hamburger, pagination arrows) are common, so this is a general capability.
+ *
+ * The in-page half only reads attributes: no helper functions are declared inside
+ * page.evaluate, because the bundler rewrites named functions with a `__name` helper that
+ * does not exist in the browser context. Naming logic lives in Node, where it is also
+ * directly unit-testable.
  */
-export async function discoverInteractiveElements(page: Page): Promise<string> {
-  const elements = await page.evaluate(() => {
-    const results: Array<{ role: string; name: string; tag: string; hasIcon: boolean }> = [];
-    const seen = new Set<string>();
-
-    // Find all interactive elements
-    const interactiveSelectors = [
-      'button', 'a[href]', 'input[type="button"]', 'input[type="submit"]',
-      'input[type="reset"]', '[role="button"]', '[role="link"]', '[role="menuitem"]',
+export async function detectInteractiveElements(page: Page): Promise<DetectedElement[]> {
+  const raw: RawInteractive[] = await page.evaluate(() => {
+    // Things that are controls by virtue of their tag or role.
+    const CONTROLS = [
+      'button',
+      // Bare `a`, not `a[href]`. saucedemo's cart is literally
+      // `<a class="shopping_cart_link" data-test="shopping-cart-link"></a>` — no href at
+      // all, navigation happens in a React onClick handler. Requiring href skipped it.
+      'a',
+      'input[type="button"]', 'input[type="submit"]', 'input[type="reset"]',
+      '[role="button"]', '[role="link"]', '[role="menuitem"]',
       '[role="tab"]', '[role="switch"]', '[role="checkbox"]', '[role="radio"]',
       '[onclick]', '[tabindex]:not([tabindex="-1"])',
-    ];
+    ].join(', ');
+    // An element the author tagged with a test hook is something a test should be able to
+    // target, regardless of tag or accessible name — but these also tag layout containers,
+    // so they're filtered below.
+    const HOOKS = '[data-test], [data-testid], [data-qa]';
+    const SELECTORS = CONTROLS + ', ' + HOOKS;
 
-    const elements = document.querySelectorAll(interactiveSelectors.join(', '));
+    const out: any[] = [];
+    for (const el of Array.from(document.querySelectorAll(SELECTORS))) {
+      const h = el as HTMLElement;
+      if (el.getAttribute('aria-hidden') === 'true') continue;
 
-    for (const el of elements) {
-      const htmlEl = el as HTMLElement;
-      if (htmlEl.offsetParent === null && htmlEl.getAttribute('aria-hidden') !== 'true') continue;
+      // Visibility via geometry + computed style. NOT offsetParent: that returns null for
+      // any position:fixed element, which silently excludes the fixed headers where cart /
+      // search / menu controls usually live.
+      let visible = false;
+      try {
+        const cs = getComputedStyle(h);
+        const r = h.getBoundingClientRect();
+        visible = r.width > 0 && r.height > 0 &&
+          cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) !== 0;
+      } catch { /* detached node */ }
+      if (!visible) continue;
 
-      // Get accessible name: aria-label → innerText → title → alt
-      const ariaLabel = el.getAttribute('aria-label')?.trim();
-      const innerText = htmlEl.innerText?.trim();
-      const title = el.getAttribute('title')?.trim();
-      const alt = el.getAttribute('alt')?.trim();
-      const placeholder = (el as HTMLInputElement).placeholder?.trim();
-
-      let name = ariaLabel || innerText || title || alt || placeholder || '';
-      if (name.length > 100) name = name.substring(0, 100) + '...';
-
-      // Determine role
-      let role = el.getAttribute('role') || '';
-      if (!role) {
-        const tag = el.tagName.toLowerCase();
-        if (tag === 'button' || tag === 'input') role = 'button';
-        else if (tag === 'a') role = 'link';
-        else role = 'generic';
+      // Icons are often a CSS background or ::before glyph on the element itself, not a
+      // child <svg>/<img> — the child-only check missed exactly the elements that most
+      // need a screenshot to interpret.
+      let hasIcon = el.querySelector('svg, img, [class*="icon"], [class*="Icon"]') !== null;
+      if (!hasIcon) {
+        try {
+          const cs = getComputedStyle(h);
+          const before = getComputedStyle(h, '::before');
+          hasIcon =
+            (!!cs.backgroundImage && cs.backgroundImage !== 'none') ||
+            (before.content !== 'none' && before.content !== '""' && before.content !== 'normal');
+        } catch { /* detached node */ }
       }
 
-      // Check for SVG/icon children
-      const hasIcon = el.querySelector('svg, img, [class*="icon"], [class*="Icon"]') !== null;
+      // A layout wrapper that merely carries a test hook is not a control. Without this,
+      // `[data-test="cart-contents-container"]` came back as an "element" whose name was
+      // the entire cart contents.
+      const isControl = el.matches(CONTROLS);
+      if (!isControl && el.querySelector(CONTROLS) !== null) continue;
 
-      // Create unique key to deduplicate
-      const key = `${role}:${name}:${htmlEl.tagName}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      results.push({ role, name, tag: htmlEl.tagName.toLowerCase(), hasIcon });
+      out.push({
+        tag: el.tagName.toLowerCase(),
+        role: el.getAttribute('role') || '',
+        ariaLabel: (el.getAttribute('aria-label') || '').trim(),
+        // Collapse whitespace: a multi-line innerText makes an unusable element name.
+        innerText: (h.innerText || '').replace(/\s+/g, ' ').trim(),
+        title: (el.getAttribute('title') || '').trim(),
+        alt: (el.getAttribute('alt') || '').trim(),
+        placeholder: ((el as HTMLInputElement).placeholder || '').trim(),
+        value: ((el as HTMLInputElement).value || '').trim(),
+        type: el.getAttribute('type') || '',
+        dataTest: (el.getAttribute('data-test') || '').trim(),
+        dataTestid: (el.getAttribute('data-testid') || '').trim(),
+        dataQa: (el.getAttribute('data-qa') || '').trim(),
+        id: (el.getAttribute('id') || '').trim(),
+        classes: Array.from(h.classList),
+        href: el.getAttribute('href') || '',
+        hasIcon,
+      });
     }
-
-    return results;
+    return out;
   });
 
+  const results: DetectedElement[] = [];
+  const seen = new Set<string>();
+
+  for (const r of raw) {
+    // Real accessible-name sources first. <input type=submit value="Login"> exposes
+    // `value` as its accessible name.
+    let name = r.ariaLabel || r.innerText || r.title || r.alt || r.placeholder || "";
+    if (!name && /^(submit|button|reset)$/i.test(r.type)) name = r.value;
+
+    let derived = false;
+    if (!name) {
+      name = deriveElementName(r);
+      if (!name) continue;   // genuinely unaddressable
+      derived = true;
+    }
+    if (name.length > 100) name = name.slice(0, 100) + "...";
+
+    let role = r.role;
+    if (!role) role = r.tag === "a" ? "link" : (r.tag === "button" || r.tag === "input") ? "button" : "generic";
+
+    const css = stableSelector(r);
+    const testId = r.dataTest || r.dataTestid || r.dataQa;
+
+    // Dedupe on identity, not on name: the old key was `role:name:tag`, so with an empty
+    // name EVERY unnamed link collapsed into one entry and the cart was whichever came first.
+    const key = css || `${role}:${name}:${r.tag}:${results.length}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    results.push({ role, name, derived, tag: r.tag, hasIcon: r.hasIcon, css, testId, id: r.id });
+  }
+
+  return results;
+}
+
+/**
+ * The detector's output formatted as a text block to append to an ARIA snapshot.
+ * `modelFromAria`'s prompt documents this "Interactive elements found on page" section.
+ */
+export function formatInteractiveElements(elements: DetectedElement[]): string {
   if (elements.length === 0) return '';
 
-  // Format as a readable list that the LLM can parse
+  // Count repeats so the model is told which names are ambiguous. Six identical
+  // "Add to cart" buttons produced Playwright strict-mode violations because the IR
+  // addressed them by name with no nth.
+  const counts = new Map<string, number>();
+  for (const el of elements) {
+    const k = `${el.role.toLowerCase()}|${el.name.toLowerCase()}`;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+
   const lines = elements.map(el => {
     const iconNote = el.hasIcon ? ' [has-icon]' : '';
     const namePart = el.name ? ` "${el.name}"` : ' [no-label]';
-    return `- ${el.role}${namePart}${iconNote}`;
+    // Tell the model the name is synthetic so it doesn't present it as visible UI text,
+    // and hand it the stable selector so the AppModel can carry it downstream.
+    const derivedNote = el.derived ? ' [derived-name]' : '';
+    const idNote = el.testId ? ` [testid=${el.testId}]` : el.id ? ` [id=${el.id}]` : '';
+    const n = counts.get(`${el.role.toLowerCase()}|${el.name.toLowerCase()}`) ?? 1;
+    const dupNote = n > 1 ? ` [x${n}-requires-nth]` : '';
+    return `- ${el.role}${namePart}${iconNote}${derivedNote}${idNote}${dupNote}`;
   });
 
   return `\nInteractive elements found on page:\n${lines.join('\n')}`;
 }
 
-export async function discover(url: string): Promise<AppModel> {
-  const browser = await chromium.launch();
-  try {
-    const page = await browser.newPage();
-    const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+/** Detect + format in one call — what the discovery paths append to the ARIA snapshot. */
+export async function discoverInteractiveElements(page: Page): Promise<string> {
+  return formatInteractiveElements(await detectInteractiveElements(page));
+}
 
-    // Fail fast on a dead entry URL. Without this, a 404/500 page becomes a valid-looking
-    // AppModel and the downstream LLMs hallucinate a UI on top of an error page (seen in
-    // practice: a /login that 404s produced a fictional login-form test). Catching it here
-    // gives a clear message and skips wasted LLM calls. Soft 404s (200 + "not found" body)
-    // are caught later by the grounding guard, not here.
-    const status = response?.status() ?? 0;
-    if (!response || status >= 400) {
-      throw new Error(
-        `Discovery aborted: ${url} returned HTTP ${status || "no response"}. ` +
-        `The entry URL must be a reachable page — check the URL and that the route exists.`
-      );
-    }
+const normalizeName = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 
-    const aria = await page.locator("body").ariaSnapshot();
-    const interactiveElements = await discoverInteractiveElements(page);
-    const title = await page.title();
-    const pageUrl = page.url();
+/**
+ * Copy the deterministic identity (css / testId / id) the in-page detector found onto the
+ * matching elements of an LLM-produced AppModel.
+ *
+ * The LLM gives us role + name; only the detector knows the stable selector. Without this
+ * an element whose name was DERIVED (e.g. "shopping cart link") is unlocatable, because
+ * getByRole('link', { name: 'shopping cart link' }) matches nothing — the accessible name
+ * is empty, which is why the name had to be derived in the first place.
+ */
+export function attachElementIdentity(model: AppModel, detected: DetectedElement[]): AppModel {
+  if (!detected.length) return model;
 
-    const ariaHash = computeAriaHash(aria);
-    const cacheKey = `${url}|||${title}|||${ariaHash}`;
-    const cached = cacheGet(cacheKey);
-    if (cached) return cached;
-
-    const ariaElements = parseAriaStructure(aria);
-
-    const enrichedElements = await collectElementMetadata(page, ariaElements);
-
-    const screenshotBase64 = (await page.screenshot({
-      type: "jpeg",
-      quality: 60
-    })).toString("base64");
-
-    const combinedSnapshot = aria + interactiveElements;
-
-    const model = await modelFromAria(url, title, combinedSnapshot, screenshotBase64);
-
-    const { concepts, labeledElements } = await labelConcepts(enrichedElements, title, screenshotBase64);
-
-    const elements: Element[] = enrichedElements.map((el, i) => {
-      const label = labeledElements.find(l => l.index === i);
-      return {
-        role: el.role,
-        name: el.name,
-        concept: label?.concept || el.concept,
-        visible: el.visible,
-        enabled: el.enabled,
-        containerRole: el.containerRole || undefined,
-        containerName: el.containerName || undefined,
-        pageSection: el.pageSection,
-        path: el.path,
-        order: el.order,
-        id: `${el.role}_${el.order}`,
-      } as Element;
-    });
-
-    const pageModel: PageModel = {
-      url: pageUrl,
-      title,
-      concepts,
-      elements,
-    };
-
-    const appModel: AppModel = {
-      baseUrl: new URL(url).origin,
-      pages: [pageModel],
-    };
-
-    cacheSet(cacheKey, appModel);
-    return appModel;
-  } finally {
-    await browser.close();
+  // Group by role+name. A key matching MORE THAN ONE detected element is ambiguous: the six
+  // "Add to cart" buttons on a product grid each have their own selector
+  // ([data-test="add-to-cart-sauce-labs-backpack"], ...-fleece-jacket, ...), so attaching
+  // "the first one" to all of them makes every add-to-cart click add the *backpack*.
+  // For ambiguous names we attach nothing and let the existing role+name+nth path handle it.
+  const groups = new Map<string, DetectedElement[]>();
+  for (const d of detected) {
+    const key = `${d.role.toLowerCase()}|${normalizeName(d.name)}`;
+    const g = groups.get(key);
+    if (g) g.push(d); else groups.set(key, [d]);
   }
+  const byKey = new Map<string, DetectedElement>();
+  for (const [key, g] of groups) if (g.length === 1) byKey.set(key, g[0]);
+
+  return {
+    ...model,
+    pages: model.pages.map(p => ({
+      ...p,
+      elements: p.elements.map(e => {
+        const hit = byKey.get(`${e.role.toLowerCase()}|${normalizeName(e.name)}`);
+        if (!hit) return e;
+        return {
+          ...e,
+          ...(hit.testId && !e.testId ? { testId: hit.testId } : {}),
+          ...(hit.id && !e.id ? { id: hit.id } : {}),
+          ...(hit.css ? { css: hit.css } : {}),
+        };
+      }),
+    })),
+  };
 }
 
 /**
  * Turn an accessibility snapshot of a single page into an AppModel via the LLM. Shared by
- * discover() (fresh page load) and the live-replay extender (a page reached only after
- * replaying a login/prefix), so both label pages with the exact same anti-hallucination
- * prompt. Retries once on schema-validation failure, same as the original discovery loop.
+ * the vision fallback in hybridDiscovery.ts (fresh page load) and the live-replay extender
+ * (a page reached only after replaying a login/prefix), so both label pages with the exact
+ * same anti-hallucination prompt. Retries once on schema-validation failure.
  *
  * screenshotBase64 is optional and, when given, rides the SAME call (Gemini is natively
  * multimodal) — it does not add a request. It exists to improve LABELING of elements that
@@ -346,13 +302,15 @@ export async function discover(url: string): Promise<AppModel> {
  * it assumes every element traces to the real snapshot; vision must not become a second,
  * looser path to inventing one.
  */
-export async function modelFromAria(url: string, title: string, aria: string, screenshotBase64?: string, siteOutline?: string): Promise<AppModel> {
+export async function modelFromAria(url: string, title: string, aria: string, screenshotBase64?: string): Promise<AppModel> {
   const system =
     `You analyze a web page's accessibility snapshot for test generation. Output ONLY the JSON object, no prose, no markdown fences.
 
 Rules, follow exactly:
 - Every element you output must come from the accessibility snapshot or the interactive elements list given to you. Never invent an element, role, or name that isn't literally present in those sources — a screenshot, if given, is ONLY for identifying which element is which; it is never a basis for adding an element the snapshot doesn't contain.
 - The snapshot may include an "Interactive elements found on page" section listing clickable elements detected via JavaScript. Include these elements in your output — they are real clickable elements on the page that may have been missed by the accessibility snapshot. For elements marked [has-icon], use the screenshot (if provided) to determine the icon's meaning and assign an appropriate concept. For elements marked [no-label], use the screenshot to infer what the element does and assign a descriptive name based on its visual appearance.
+- An element marked [derived-name] has NO accessible name; the name shown was derived from its test id, element id, or CSS class (e.g. a cart icon appearing as "shopping cart link"). ALWAYS include these elements — they are frequently the most important controls on the page (cart, checkout, close, search, menu). Keep the derived name as-is unless the screenshot clearly shows a better one; a later stage locates them by their id, not by name, so the name only has to be recognisable to a human.
+- Markers like [has-icon], [derived-name], [testid=...] and [id=...] are metadata for you — never include the marker text itself in an element's "name".
 - "concepts" for a page is a short list of meaningful features actually observable on that page (e.g. "Login", "Search", "Cart") — infer them only from elements that are actually there, never from what a page like this "usually" has.
 - Each element's "concept" is optional — set it only when the element clearly serves one of the page's concepts; leave it unset rather than guessing. If a screenshot is given, use its visual context (icon meaning, position, nearby text) to make this labeling more accurate — e.g. an icon-only button next to a product row is more confidently "Cart" or "Delete" once you can see it.
 - "role" must be the element's real ARIA role exactly as given in the snapshot (button, textbox, link, heading, checkbox, ...); do not normalize or invent roles.
@@ -366,12 +324,9 @@ Example of the exact shape required:
       { "role": "textbox", "name": "Username", "concept": "Login" },
       { "role": "button", "name": "Log in", "concept": "Login" }
     ] } ] }`;
-  const siteContext = siteOutline
-    ? `\nThis page is part of a larger site. Site map for context:\n${siteOutline}\n(Use this only to interpret ambiguous links/labels — never to invent elements not in the snapshot below.)\n`
-    : "";
   const user =
     `Base URL: ${url}
-Page title: ${title}${siteContext}
+Page title: ${title}
 Accessibility snapshot:
 ${aria}
 ${screenshotBase64 ? "\nA screenshot of this exact page is attached — use it to label elements more accurately, especially icon-only buttons and unlabeled interactive elements, per the rules above." : ""}
