@@ -1,8 +1,18 @@
 import type { IR, Step } from "../schema/ir.js";
 import { resolveCode as locator } from "./targetResolver.js";
 import { isAuthTriggeringStep } from "./authSettle.js";
+import { isEnvValueRef } from "./credentials.js";
 
 const q = (s: string) => JSON.stringify(s);
+
+/** The code for a fill/select value. A user's own credential arrives as an env-reference
+ *  sentinel rather than the literal, so it is emitted as a `process.env` read — the spec file
+ *  lives under runs/, which the server serves publicly, and must never contain the secret.
+ *  The env var name comes from a fixed two-item allowlist, never from LLM or user text. */
+const valueCode = (value: string | undefined): string => {
+  const envVar = isEnvValueRef(value);
+  return envVar ? `process.env.${envVar} ?? ""` : q(value ?? "");
+};
 const escapeRe = (s: string) =>
   s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -206,11 +216,11 @@ function emitStep(step: Step, baseUrl: string): string {
     }
 
     case "fill":
-      code += `  await ${locator(step.target!)}.fill(${q(step.value ?? "")}, { timeout: 10000 });`;
+      code += `  await ${locator(step.target!)}.fill(${valueCode(step.value)}, { timeout: 10000 });`;
       break;
 
     case "select":
-      code += `  await ${locator(step.target!)}.selectOption(${q(step.value ?? "")}, { timeout: 10000 });`;
+      code += `  await ${locator(step.target!)}.selectOption(${valueCode(step.value)}, { timeout: 10000 });`;
       break;
 
     case "check":
@@ -247,7 +257,11 @@ function emitStep(step: Step, baseUrl: string): string {
 function stepLabel(step: Step, index: number, baseUrl: string): string {
   const t = step.target;
   const name = t?.name ? ` '${t.name}'` : "";
-  const val = step.value ? ` '${step.value}'` : "";
+  // A credential the user supplied is an env reference here, not the literal. Label it in
+  // words: this string ends up in results.json and in the UI's step list, and "${env:...}"
+  // reads like a bug to anyone looking at it.
+  const val = isEnvValueRef(step.value) ? " the credentials you provided"
+    : step.value ? ` '${step.value}'` : "";
   switch (step.action) {
     case "navigate": {
       const u = t?.url ?? "/";

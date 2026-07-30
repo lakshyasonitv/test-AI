@@ -5,7 +5,10 @@ import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, Element, toLiteModel } from "../schema/appModel.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
-import { credentialsFor, applyCredentials, shouldSkipCredentialSubstitution, NEGATIVE_CATEGORIES } from "./credentials.js";
+import {
+  credentialsFor, applyCredentials, shouldSkipCredentialSubstitution, NEGATIVE_CATEGORIES,
+  type Credentials,
+} from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
 
@@ -400,7 +403,10 @@ export function hasTerminalAssertion(steps: Step[]): boolean {
 
 export async function toIR(
   testCase: TestCase, appModel: AppModel, sourcePrompt: string, entryUrl: string,
-  budget?: GroqBudget
+  budget?: GroqBudget,
+  /** Credentials for this run — user-supplied ones take precedence over the built-in demo
+   *  map. Undefined falls back to credentialsFor(entryUrl), i.e. today's behaviour. */
+  runCreds?: Credentials
 ): Promise<IRResult> {
   // Compute these ourselves rather than trust the model: baseUrl must be the origin
   // (generator.ts appends relative step paths to it), and entryPath is where the
@@ -584,7 +590,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // carry the user's own literal values on purpose (their real email/password, or a
   // taxonomy-style deliberately-wrong one) — silently swapping in the demo account would
   // just relocate the "system overrides what I asked for" bug to a different field.
-  const creds = (testCase.fromPrompt || shouldSkipCredentialSubstitution(testCase)) ? undefined : credentialsFor(entryUrl);
+  const creds = (testCase.fromPrompt || shouldSkipCredentialSubstitution(testCase))
+    ? undefined : (runCreds ?? credentialsFor(entryUrl));
   const finalize = (ir: IR): IR => {
     ir.meta.baseUrl = origin;
     ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
@@ -669,7 +676,13 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // on replay failure this returns the IR unchanged and the existing guards still apply.
       if (isPureTextAssertion(parsed.data.steps[parsed.data.steps.length - 1])) {
         const { ir: reground } = await groundTerminalTextAssertion(parsed.data, currentModel, creds);
-        parsed.data = reground;
+        // Only take the correction if it doesn't turn a negative case into a success
+        // assertion. groundTerminalTextAssertion picks the message-shaped page line closest
+        // in length to the guess — on a negative case whose replay actually succeeded, that
+        // can be the success banner, which would be a false PASS. The guard below would
+        // reject it anyway, but only at the cost of a whole attempt out of MAX_ATTEMPTS.
+        // Keeping the model's guess instead lets the test fail honestly at execution.
+        if (!assertionContradictsCase(reground, testCase)) parsed.data = reground;
       }
 
       const contradiction = assertionContradictsCase(parsed.data, testCase);

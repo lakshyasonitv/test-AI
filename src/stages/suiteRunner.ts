@@ -4,6 +4,7 @@ import { toIR } from "./ir.js";
 import type { GroqBudget } from "../llm/groqBudget.js";
 import { generateSpec } from "./generator.js";
 import { runSpec, findScreenshot } from "./executor.js";
+import { credentialEnvVars, type Credentials } from "./credentials.js";
 import { analyzeFailure } from "./failureAnalysis.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
@@ -66,7 +67,9 @@ export async function runSuite(
   entryUrl: string,
   onEvent?: OnEvent,
   primaryResult?: PrimaryCaseResult,
-  groqBudget?: GroqBudget
+  groqBudget?: GroqBudget,
+  /** Credentials the user supplied for this run, shared by every case. */
+  runCreds?: Credentials
 ): Promise<CaseRunResult[]> {
   const results: CaseRunResult[] = [];
   const runId = path.basename(runDir);
@@ -143,7 +146,7 @@ export async function runSuite(
 
         console.log("Generating IR...");
         const usageBefore = groqBudget?.snapshot();
-        const { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl, groqBudget);
+        const { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl, groqBudget, runCreds);
         const usageAfter = groqBudget?.snapshot();
         const groqCalls = usageAfter && usageBefore ? usageAfter.calls - usageBefore.calls : undefined;
         const groqTokens = usageAfter && usageBefore ? usageAfter.totalTokens - usageBefore.totalTokens : undefined;
@@ -159,7 +162,7 @@ export async function runSuite(
         writeFileSync(specPath, spec);
 
         console.log("Running Playwright...");
-        const result = await runSpec(spec, caseDir);
+        const result = await runSpec(spec, caseDir, credentialEnvVars(runCreds));
         console.log("Playwright finished");
 
         console.log(result);

@@ -24,31 +24,21 @@ npm run generate -- --prompt "Test login with an invalid password" --url "https:
 npm run generate -- --prompt "Test the homepage" --url "https://example.com" --crawl
 ```
 
-## Discovery Service (Optional)
+## Discovery
 
-The platform has a Python-based discovery service (`discovery-service/`) that provides faster, deterministic DOM-based page discovery using Crawl4AI. When running, it becomes the primary discovery path — Gemini vision is used only as a fallback.
+DOM-based discovery is built in and needs no setup — `domDiscovery.ts` drives Playwright and
+extracts structured elements with cheerio (`domExtract.ts`), no LLM tokens involved. It is the
+primary path and is tried first for every page.
 
-```bash
-# Terminal 1 — start the discovery service before running tests
-cd discovery-service
-pip install -r requirements.txt
-python app.py
+Gemini vision is the fallback, used only when DOM extraction returns nothing usable:
 
-# Terminal 2 — run the platform
-npm run serve
-```
+- canvas/captcha/image-heavy pages, where there's no meaningful DOM to read
+- controls with no accessible name and no text (an icon-only cart link that's styled purely
+  with a CSS background image)
 
-The service listens on `http://localhost:8000`. If it's not running, the platform automatically falls back to Playwright + Gemini vision discovery (slower, uses more LLM tokens). The auto-start mechanism in `domDiscovery.ts` will also try to spawn it if it detects the service is down.
-
-**When to use it:**
-- Standard pages with HTML forms, buttons, links, navigation — Crawl4AI extracts structured DOM data faster and cheaper than vision
-- Pages that don't need JavaScript rendering for structure (most server-rendered sites)
-- When you want to reduce Gemini API calls during discovery
-
-**When to skip it:**
-- Canvas/captcha/image-heavy pages — these need vision anyway
-- Quick one-off tests where the fallback is fine
-- If Python environment setup is a hassle
+There is nothing to start and no Python involved. Earlier versions shelled out to a
+Crawl4AI/FastAPI service on `localhost:8000`; that service is gone and its extraction logic
+was ported to Node.
 
 ## How It Works
 
@@ -56,7 +46,7 @@ The service listens on `http://localhost:8000`. If it's not running, the platfor
 prompt + url
   -> Planner (LLM)                    -> high-level test plan
   -> Discovery (hybrid)                -> app model: elements as accessibility role + name
-       |_ Crawl4AI (primary)           -> fast DOM extraction, no LLM needed
+       |_ DOM extraction (primary)     -> cheerio over page.content(), no LLM needed
        |_ Playwright + Aria (fallback) -> accessibility snapshot + interactive elements
        |_ Gemini Vision (last resort)  -> only for canvas/captcha/image-heavy pages
   -> Structured Test Cases (LLM)      -> full coverage suite (valid/invalid/boundary/security)

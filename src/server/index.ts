@@ -5,6 +5,10 @@ import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
 import { listRuns } from "../runStore.js";
 import { Semaphore } from "./concurrency.js";
+import { askCredentials, settle } from "./pendingCredentials.js";
+
+/** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
+const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
 
 // Bound concurrent runs (each launches Chromium). Tune via env as the box grows.
 const runLimit = new Semaphore(Number(process.env.MAX_CONCURRENT_RUNS ?? 3));
@@ -28,9 +32,29 @@ app.post("/api/runs", (req, res) => {
   const runId = makeRunId();
   // Hand back the runId immediately; the run waits for a free slot, then executes.
   // Over-cap runs sit queued (UI shows pending) until a slot frees — no dropped requests.
-  runLimit.run(() => runPipeline({ prompt, url, urls, coverage }, record, runId))
+  runLimit.run(() => runPipeline({ prompt, url, urls, coverage }, record, runId, askCredentials))
     .catch(() => { /* failure already emitted as an "error" event */ });
   res.status(202).json({ runId });
+});
+
+// Answer a paused run's credential prompt. `{ skip: true }` (or empty values) means "carry on
+// without them" — the same thing the wait timeout does.
+//
+// The body is never logged, never emitted as an event and never written to a run directory:
+// it goes straight into the waiting promise and lives only in the pipeline's memory. The
+// generated spec gets a process.env reference instead of the value (see credentials.ts).
+app.post("/api/runs/:runId/credentials", (req, res) => {
+  const { runId } = req.params;
+  if (!RUN_ID.test(runId)) return res.status(400).json({ error: "invalid runId" });
+
+  const { username, password, skip } = req.body ?? {};
+  const supplied = !skip && typeof username === "string" && typeof password === "string"
+    && username.length > 0 && password.length > 0;
+
+  // `secret: true` is what routes these away from the on-disk literal path.
+  const answered = settle(runId, supplied ? { username, password, secret: true } : null);
+  if (!answered) return res.status(409).json({ error: "this run is not waiting for credentials" });
+  res.status(204).end();
 });
 
 // SSE stream of progress for one run. Fine locally; a Cloudflare Quick Tunnel buffers
@@ -52,11 +76,11 @@ app.get("/api/runs", (_req, res) => {
 });
 
 // Delete one run's directory. runId comes from the URL, so validate it against the exact
-// makeRunId() shape before building a path — that regex has no "/", "." or ".." so it can't
-// escape runs/ (and won't match "_cache"). rmSync with force so an already-gone run is a no-op.
+// makeRunId() shape before building a path (see RUN_ID above — it also won't match "_cache").
+// rmSync with force so an already-gone run is a no-op.
 app.delete("/api/runs/:runId", (req, res) => {
   const { runId } = req.params;
-  if (!/^[\dT-]+Z-[0-9a-f]{8}$/.test(runId)) return res.status(400).json({ error: "invalid runId" });
+  if (!RUN_ID.test(runId)) return res.status(400).json({ error: "invalid runId" });
   try {
     rmSync(path.join("runs", runId), { recursive: true, force: true });
     res.status(204).end();

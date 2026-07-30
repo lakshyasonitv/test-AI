@@ -192,14 +192,6 @@ The `needsVisionFallback()` flag is set by the Python crawler when it detects ca
 | `runRegistry.ts` | 37 | SSE fan-out: broadcasts events, replays history on connect |
 | `concurrency.ts` | 59 | In-process semaphore: caps concurrent runs, queues overflow |
 
-### `discovery-service/` — Python Service (3 files, ~1,023 lines)
-
-| File | Lines | Purpose |
-|------|------:|---------|
-| `app.py` | 67 | FastAPI: `/crawl` and `/health` endpoints |
-| `crawler.py` | 771 | Crawl4AI crawler + httpx/BeautifulSoup fallback + disk cache |
-| `schemas.py` | 185 | Pydantic models for all API types |
-
 ### `public/` — Frontend (3 files, ~1,098 lines)
 
 | File | Lines | Purpose |

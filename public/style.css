@@ -297,3 +297,48 @@ li.failed .summary-text { color: var(--failed); }
 
   .suite-progress-item { padding: 6px 10px; font-size: 0.8rem; }
 }
+
+/* ---------------------------------------------------------------------------
+   Credential prompt — a paused run asking for a login.
+
+   Deliberately inline rather than a modal: the run isn't broken, it's waiting,
+   and a dimmed overlay reads as an error. The amber left edge is the same hue
+   as a running phase (--running), so "waiting on you" looks like part of the
+   pipeline rather than an interruption.
+   --------------------------------------------------------------------------- */
+
+.cred {
+  background: var(--panel); border: 1px solid #2a2c33; border-left: 3px solid var(--running);
+  border-radius: 8px; padding: 16px 18px; margin: 16px 0 8px;
+  animation: credIn 0.22s ease-out;
+}
+@keyframes credIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.cred-head { display: flex; gap: 12px; align-items: flex-start; }
+.cred-key { font-size: 1rem; line-height: 1.5; opacity: 0.85; }
+.cred h2 { font-size: 0.95rem; font-weight: 600; margin: 0; }
+.cred-why { font-size: 0.8rem; color: var(--muted); margin: 4px 0 0; line-height: 1.45; }
+
+.cred-form { margin: 14px 0 0; gap: 0; }
+.cred-fields { display: flex; gap: 10px; }
+.cred-fields label { flex: 1; min-width: 0; }
+.cred-fields input { background: #0b0c0e; }
+.cred-fields input:focus-visible { outline: 1px solid #4f7cff; outline-offset: 0; border-color: #4f7cff; }
+
+.cred-actions { display: flex; align-items: center; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+.cred-actions button { align-self: auto; padding: 8px 16px; font-size: 0.88rem; }
+
+/* Skip is a real choice, not a dead end — readable, but never competing with the primary. */
+.cred-skip {
+  background: none; color: var(--muted); padding: 8px 10px; font-size: 0.8rem;
+}
+.cred-skip:hover { background: #1f2129; color: var(--text); }
+
+.cred-note { font-size: 0.72rem; color: var(--muted); margin: 10px 0 0; line-height: 1.5; opacity: 0.85; }
+
+@media (max-width: 600px) {
+  .cred-fields { flex-direction: column; }
+}

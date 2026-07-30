@@ -76,6 +76,12 @@ const suiteSummaryHeaderEl = document.getElementById("suiteSummaryHeader");
 const suiteCaseListEl = document.getElementById("suiteCaseList");
 const screenshotToggleEl = document.getElementById("screenshotToggle");
 const screenshotGridEl = document.getElementById("screenshotGrid");
+const credPromptEl = document.getElementById("credentialPrompt");
+const credFormEl = document.getElementById("credForm");
+const credWhyEl = document.getElementById("credWhy");
+const credUserEl = document.getElementById("credUser");
+const credPassEl = document.getElementById("credPass");
+const credSkipEl = document.getElementById("credSkip");
 
 // -----------------------------------------------------------------------------
 // Utilities
@@ -508,8 +514,70 @@ async function loadHistory() {
 // Event processing
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Credential prompt (a run pauses here when the site needs a login)
+// -----------------------------------------------------------------------------
+
+// The run this prompt belongs to. Also the guard against a stale prompt: the poller replays
+// events, and a second run must never post its answer to the previous run's id.
+let credRunId = null;
+
+function showCredentialPrompt(runId, data) {
+  credRunId = runId;
+  const host = (() => { try { return new URL(data?.url).host; } catch { return data?.url ?? "this site"; } })();
+  credWhyEl.textContent =
+    `The tests for ${host} need to sign in, and there's no built-in account for it. ` +
+    `Add credentials to test the flow past the login, or skip to test only what's reachable without one.`;
+  credUserEl.value = "";
+  credPassEl.value = "";
+  credFormEl.querySelectorAll("button, input").forEach((el) => { el.disabled = false; });
+  credPromptEl.classList.remove("hidden");
+  credUserEl.focus();
+}
+
+function hideCredentialPrompt() {
+  credRunId = null;
+  // Don't leave the password sitting in the DOM once it's been handed over.
+  credUserEl.value = "";
+  credPassEl.value = "";
+  credPromptEl.classList.add("hidden");
+}
+
+async function submitCredentials(body) {
+  if (!credRunId) return;
+  const runId = credRunId;
+  credFormEl.querySelectorAll("button, input").forEach((el) => { el.disabled = true; });
+  try {
+    await fetch(`/api/runs/${runId}/credentials`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    // The pipeline's own wait timeout is the backstop, so a lost request can't wedge the run.
+  }
+  hideCredentialPrompt();
+}
+
+credFormEl.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const username = credUserEl.value.trim();
+  const password = credPassEl.value;
+  // Both or neither: half a login can't authenticate, and sending it would just fail slower.
+  if (!username || !password) return submitCredentials({ skip: true });
+  submitCredentials({ username, password });
+});
+
+credSkipEl.addEventListener("click", () => submitCredentials({ skip: true }));
+
 function applyEvent(event, runId) {
   setPhaseFromStage(event.stage, event.status, event.data);
+
+  if (event.stage === "credentials") {
+    if (event.status === "started") showCredentialPrompt(runId, event.data);
+    else hideCredentialPrompt();   // answered, skipped or timed out — the run has moved on
+    return;
+  }
 
   if (event.stage === "done" || event.stage === "error") {
     submitBtn.disabled = false;
@@ -658,6 +726,7 @@ async function connectToRun(runId) {
   hideSingleTestResult();
   hideSuiteResults();
   hideSuiteProgress();
+  hideCredentialPrompt();
   diagnosisEl.textContent = "";
 
   let seen = 0;

@@ -7,7 +7,10 @@ import { toTestCases, generateCasesForNewPages } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
 import { GroqBudget } from "./llm/groqBudget.js";
 import { refreshPageModel } from "./stages/liveExtend.js";
-import { credentialsFor } from "./stages/credentials.js";
+import {
+  credentialsFor, credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars,
+  type Credentials, type CredentialKind,
+} from "./stages/credentials.js";
 import { generateSpec } from "./stages/generator.js";
 import { runSpec, findScreenshot } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
@@ -17,7 +20,7 @@ import { filterByScope, ALL_SCOPES } from "./kb/testStrategy.js";
 import type { IR, Step } from "./schema/ir.js";
 
 export type StageName =
-  | "input" | "plan" | "discovery" | "testcases" | "ir"
+  | "input" | "plan" | "discovery" | "testcases" | "credentials" | "ir"
   | "generate" | "execute" | "failure_analysis" | "heal"
   | "suite" | "done" | "error";
 
@@ -32,12 +35,23 @@ export interface StageEvent {
 
 export type OnEvent = (e: StageEvent) => void;
 
+/** What the pipeline needs from whoever is driving it when a run hits a login it has no
+ *  credentials for. Resolve with the values, or null to carry on without them. The server
+ *  backs this with a UI prompt; the CLI passes nothing, so a CLI run never blocks. */
+export interface CredentialRequest {
+  runId: string;
+  url: string;
+  fields: CredentialKind[];
+}
+export type AskCredentials = (req: CredentialRequest) => Promise<Credentials | null>;
+
 export type Coverage = "minimal" | "standard" | "full";
 
 export async function runPipeline(
   { prompt, url, urls, coverage }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage },
   onEvent: OnEvent = () => { },
-  presetRunId?: string
+  presetRunId?: string,
+  askCredentials?: AskCredentials
 ) {
   // Normalize: single `url` becomes `urls: [url]`; both provided means `urls` wins.
   const resolvedUrls = urls?.length ? urls : url ? [url] : [];
@@ -97,8 +111,30 @@ export async function runPipeline(
     const primary = cases.find((c) => c.fromPrompt) ?? [...cases].sort(byPriority)[0];
     if (!primary) throw new Error("No test cases produced");
 
+    // Pause for credentials — once per run, here, because this is the first point where both
+    // halves of the question are known: what the site looks like (discovery) and what the
+    // tests intend to do (cases). Everything downstream that needs a real login (toIR's
+    // live-extend replay, the generated spec, every suite case) is still ahead of us.
+    //
+    // Only asks when it genuinely can't proceed: no built-in demo account for this host, the
+    // prompt didn't already carry credentials, and a login is actually in scope. Anything
+    // else would interrupt the user for nothing. A caller with no askCredentials (the CLI)
+    // never blocks at all.
+    let runCreds: Credentials | undefined = credentialsFor(resolvedUrls[0]);
+    if (askCredentials && !runCreds && !promptCarriesCredentials(prompt)) {
+      const fields = credentialFieldsNeeded(appModel, cases);
+      if (fields.length) {
+        emit("credentials", "started", { fields, url: resolvedUrls[0] });
+        // Never emitted, never saved: the answer would land in events.ndjson and 00-input.json,
+        // both under runs/, which the server serves as static files.
+        const supplied = await askCredentials({ runId, url: resolvedUrls[0], fields });
+        runCreds = supplied ?? undefined;
+        emit("credentials", "completed", { provided: !!runCreds });
+      }
+    }
+
     console.log("Generating IR for primary case:", primary.title);
-    const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0], groqBudget));
+    const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0], groqBudget, runCreds));
     console.log("IR generated");
 
     console.log("Generating spec...");
@@ -113,7 +149,7 @@ export async function runPipeline(
 
     console.log("Running Playwright for primary case...");
     const result = await step("execute", "05-result.json", async () => {
-      const r = await runSpec(spec, runDir);
+      const r = await runSpec(spec, runDir, credentialEnvVars(runCreds));
       return { passed: r.passed, exitCode: r.exitCode, artifactsDir: r.artifactsDir, resultsJsonPath: r.resultsJsonPath, raw: r.raw };
     });
     console.log("Playwright finished:", result.passed ? "PASSED" : "FAILED");
@@ -142,9 +178,9 @@ export async function runPipeline(
         try {
           emit("heal", "started");
           const prefix = ir.steps.slice(0, failIdx);
-          const freshModel = await refreshPageModel(appModel, prefix, credentialsFor(resolvedUrls[0]));
+          const freshModel = await refreshPageModel(appModel, prefix, runCreds);
           console.log("Calling toIR (heal)...");
-          const { ir: healedIr } = await toIR(primary, freshModel, prompt, resolvedUrls[0], groqBudget);
+          const { ir: healedIr } = await toIR(primary, freshModel, prompt, resolvedUrls[0], groqBudget, runCreds);
           console.log("Returned from toIR (heal)");
 
           // A heal that truncates isn't a heal: it means the failing step still can't be
@@ -157,7 +193,7 @@ export async function runPipeline(
             const healedDir = path.join(runDir, "healed");
             mkdirSync(healedDir, { recursive: true });
             const healedSpec = generateSpec(healedIr, path.join(healedDir, "artifacts"));
-            const healedRun = await runSpec(healedSpec, healedDir);
+            const healedRun = await runSpec(healedSpec, healedDir, credentialEnvVars(runCreds));
             if (healedRun.passed) {
               writeFileSync(path.join(healedDir, "generated.spec.ts"), healedSpec);
               writeFileSync(path.join(healedDir, "ir.json"), JSON.stringify(healedIr, null, 2));
@@ -218,7 +254,7 @@ export async function runPipeline(
       healed,
     };
     console.log("3. Running suite...");
-    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, groqBudget);
+    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, groqBudget, runCreds);
     console.log("✓ Suite finished");
 
     console.log("Pipeline finished");

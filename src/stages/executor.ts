@@ -30,7 +30,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-export async function runSpec(specCode: string, runDir: string): Promise<ExecResult> {
+export async function runSpec(
+  specCode: string, runDir: string, secretEnv: Record<string, string> = {}
+): Promise<ExecResult> {
   console.log("[executor] runSpec() called, runDir:", runDir);
   const genDir = path.join(runDir, "generated");
   mkdirSync(genDir, { recursive: true });
@@ -57,7 +59,7 @@ export async function runSpec(specCode: string, runDir: string): Promise<ExecRes
 
   for (let attempt = 1; attempt <= CONFIG.RETRIES; attempt++) {
     try {
-      const result = await executePlaywright(specPath, resultsJson, artifactsDir, cliPath);
+      const result = await executePlaywright(specPath, resultsJson, artifactsDir, cliPath, secretEnv);
 
       // exitCode 1 with a parsed report = Playwright ran and the test has a verdict.
       // That verdict is the answer, pass or fail.
@@ -80,10 +82,14 @@ export async function runSpec(specCode: string, runDir: string): Promise<ExecRes
 }
 
 async function executePlaywright(
-  specPath: string, 
-  resultsJson: string, 
-  artifactsDir: string, 
-  cliPath: string
+  specPath: string,
+  resultsJson: string,
+  artifactsDir: string,
+  cliPath: string,
+  /** Credentials the user supplied for their own site. Passed to the child process only —
+   *  the spec on disk holds a `process.env.X` reference, never the value. Deliberately not
+   *  logged anywhere in this file. */
+  secretEnv: Record<string, string> = {}
 ): Promise<ExecResult> {
   const exitCode: number = await new Promise((resolve) => {
     console.log("[executor] Spawning Playwright...");
@@ -93,6 +99,7 @@ async function executePlaywright(
       {
         env: {
           ...process.env,
+          ...secretEnv,
           PLAYWRIGHT_JSON_OUTPUT_NAME: resultsJson,
           PLAYWRIGHT_HEADLESS: 'true',
           PLAYWRIGHT_TIMEOUT: String(CONFIG.TIMEOUTS.TEST_RUN),

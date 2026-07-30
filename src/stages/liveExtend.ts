@@ -6,7 +6,7 @@ import {
   modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
 } from "./discovery.js";
 import { resolveLive } from "./targetResolver.js";
-import { credentialForTarget, type Credentials } from "./credentials.js";
+import { credentialForTarget, redactCredentials, type Credentials } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
@@ -95,15 +95,26 @@ async function replayAndSnapshot(
     // which generator.ts deliberately strips from generated specs because it hangs on real
     // sites, so it's avoided here too. Falls back to a short bounded wait when no dialog
     // appears, since the last step might not have opened one at all.
+    //
+    // Only worth probing when the last step DIDN'T navigate: a step that changed pages can't
+    // have opened a modal we care about (the merge branch below ignores dialogSeen in that
+    // case anyway), and paying the 2500ms timeout on every ordinary login/checkout replay
+    // added ~3s to each one. The 600ms floor is kept on both paths though — sitting directly
+    // above capturePageText and discoverUsingCrawler, it doubles as settle time for an SPA
+    // that updates the URL before rendering the page it navigated to.
+    const navigatedAway = page.url() !== urlBeforeLastStep;
     let dialogSeen = false;
-    await page.waitForSelector('[role="dialog"], [aria-modal="true"]', { state: "visible", timeout: 2500 })
-      .then(() => { dialogSeen = true; })
-      .catch(() => page.waitForTimeout(600));
+    if (navigatedAway) {
+      await page.waitForTimeout(600);
+    } else {
+      await page.waitForSelector('[role="dialog"], [aria-modal="true"]', { state: "visible", timeout: 2500 })
+        .then(() => { dialogSeen = true; })
+        .catch(() => page.waitForTimeout(600));
+    }
 
     const reachedUrl = page.url();
     const title = await page.title();
     const pageText = await capturePageText(page);
-    const navigatedAway = reachedUrl !== urlBeforeLastStep;
 
     // Try DOM-based discovery first for the reached page
     let fresh: AppModel | null = null;
@@ -160,7 +171,11 @@ async function replayAndSnapshot(
     // merge branch only runs when it was already non-null.
     const pageModel = fresh!.pages.find((p) => p.url === reachedUrl) ?? fresh!.pages[0];
     if (!pageModel) throw new Error(`replay reached ${reachedUrl} but produced no page model`);
-    const result: ReplayResult = { reachedUrl, pageModel, pageText };
+    // The replay just typed the user's real credentials into this page, and a logged-in page
+    // routinely echoes the identifier back. Scrub before anything persists it: this result is
+    // cached under runs/_cache and its pageModel ends up inside 04-ir.json, both of which the
+    // server exposes as static files. No-op for the public demo accounts.
+    const result = redactCredentials<ReplayResult>({ reachedUrl, pageModel, pageText }, creds);
     llmCacheSet(cacheKey, result);
     return result;
   } finally {
@@ -267,7 +282,12 @@ export async function groundTerminalTextAssertion(
 
   let pageText: string;
   try {
-    ({ pageText } = await replayAndSnapshot(model, prefix, creds));
+    // Defaulted, not asserted: replayAndSnapshot's result is cached to disk by llmCache, and
+    // only its in-memory half honours the TTL — a pre-`pageText` entry written before this
+    // function existed is returned verbatim, forever. Without the default, norm() below
+    // throws on it, outside this try, escaping toIR's loop instead of degrading to
+    // "leave the assertion alone" like every other failure here.
+    ({ pageText = "" } = await replayAndSnapshot(model, prefix, creds));
   } catch (err: any) {
     console.log("[liveExtend] text-assertion grounding: replay failed, leaving assertion as-is:", err?.message ?? err);
     return { ir, grounded: false, corrected: false };

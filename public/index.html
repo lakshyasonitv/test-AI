@@ -24,6 +24,35 @@
 
     <ol id="stages" class="stages"></ol>
 
+    <!-- Credential prompt: appears only when a run pauses because the site needs a login -->
+    <section id="credentialPrompt" class="cred hidden" aria-live="polite">
+      <div class="cred-head">
+        <span class="cred-key" aria-hidden="true">&#128273;</span>
+        <div>
+          <h2>This site needs a login</h2>
+          <p id="credWhy" class="cred-why"></p>
+        </div>
+      </div>
+      <form id="credForm" class="cred-form">
+        <div class="cred-fields">
+          <label>Username or email
+            <input id="credUser" type="text" autocomplete="off" spellcheck="false" />
+          </label>
+          <label>Password
+            <input id="credPass" type="password" autocomplete="off" />
+          </label>
+        </div>
+        <div class="cred-actions">
+          <button type="submit">Use these</button>
+          <button type="button" id="credSkip" class="cred-skip">Skip &mdash; test without logging in</button>
+        </div>
+        <p class="cred-note">
+          Used for this run only. Never written to the run folder or the generated test &mdash;
+          the test reads them from the environment at run time.
+        </p>
+      </form>
+    </section>
+
     <!-- Suite progress (shown while suite is running) -->
     <section id="suiteProgress" class="suite-progress hidden">
       <h2>Running Suite</h2>
