@@ -135,24 +135,44 @@ guess about site wording gets caught and corrected rather than silently producin
   generated spec, not literals — `runs/` is served publicly by the app, and the real value is
   injected only into the test process's environment at execution time.
 
-## Five Next Steps for Enterprise Readiness
+## Five Steps to Make the Backend Genuinely General-Purpose
 
-1. **Add server authentication and per-request authorization.** Right now anyone with the URL can
-   start a run or browse another run's artifacts (screenshots, generated specs, diagnosis) — fine
-   for a trusted audience, a blocker for anything shared more broadly.
-2. **Fix cross-leg credential handling for multi-attempt cases**, and while there, correct the
-   diagnosis tool's step-ID attribution — confirmed against a real run where `analyzeFailure`
-   reported a different `failingStepId` than the raw Playwright trace actually showed. Both are
-   trust issues: a user reading a wrong diagnosis (or a case failing for a reason the report
-   doesn't explain) has no way to tell the pipeline is right without re-deriving it themselves.
-3. **Move persistence off local disk.** `runs/` is a plain directory and the run cap is an
-   in-process semaphore — both are fine for one box, neither survives a restart cleanly or scales
-   past it. The seam is already partly there (`RunStore` in `src/runStore.ts` is an interface,
-   not a hardcoded filesystem call) — it needs an actual second implementation (S3/Postgres-backed)
-   to go further.
-4. **Add multi-user isolation** — per-user runs, quotas, and history, instead of one shared,
-   globally-visible run list.
-5. **Extend deterministic assertion validation beyond the terminal step.** Grounding currently
-   covers role+name targets and the case's *final* pure-text assertion; a mid-case free-text
-   assertion (which the reorder-based compound-case work surfaced as a real gap) has no
-   equivalent check yet.
+Not future features — structural gaps in the pipeline today that limit it to sites shaped like
+the ones it's been tuned against (login/e-commerce), rather than truly arbitrary sites.
+
+1. **The only "handle a blocking form" mechanism is login-shaped, not general.**
+   `credentials.ts` + `pendingCredentials.ts` + the server's pause/ask flow exist ONLY for
+   username/password. A cookie-consent wall, an OTP/2FA step, an age gate, a region-select modal,
+   or a popup covering the real target — none of these have any equivalent handling. Discovery and
+   IR generation have no general concept of "a form is blocking the target element"; they either
+   silently miss the real element or produce an IR that never gets past the gate. This is the
+   direct, structural reason the pipeline is currently tuned to auth-shaped sites specifically.
+2. **Wording-based detection, not structural, is used beyond login fields.** `credentials.ts`
+   guesses field purpose from English regexes (`PASSWORD_NAME`, `AUTH_WORDING`,
+   `REGISTRATION_URL`); `credentialFieldMap` proved a better pattern — read the DOM's own
+   `inputType` instead of guessing from wording — but only for login fields. `executor.ts`'s
+   `detectBlocked` has the same fragility: it recognizes an OTP/CAPTCHA gate purely by matching
+   English phrases ("verification code", "captcha") against page text, can only detect and report
+   the block, not resolve it, and won't recognize a non-English or unconventionally-worded gate
+   at all.
+3. **The coverage taxonomy's deterministic guarantee only covers six named concepts**
+   (`testStrategy.ts`: login/signup/search/checkout/cart/contact). `testCases.ts` does instruct
+   the model to reason from first principles about concepts the taxonomy misses, with extra weight
+   on the gap (`unmatchedConcepts`) — not a silent fallback — but that's a prompt instruction, not
+   a guaranteed floor. A booking system, a wizard, or a file-upload flow gets coverage quality that
+   depends entirely on the model's reasoning about an unfamiliar shape, with no guaranteed minimum
+   the way the six named concepts get.
+4. **The IR/credential-policy system has no first-class notion of state within one flow.** A test
+   case gets exactly one `CredentialPolicy` for its entire step list; `applyCredentials` decides
+   per-step only by pattern (registration-leg URL, last-occurrence-of-a-kind). This is why a
+   compound flow (real login, then a second attempt) is fragile — the pipeline doesn't model "this
+   flow transitions between states," only "this whole case gets one policy." Concretely open right
+   now, not just theoretical: a compound-login case shape currently fails roughly half the time in
+   production depending on whether the model happens to order its own steps favorably, and the
+   same class of bug will recur for any other stateful flow (an invalid coupon then a valid one, a
+   failed validation then a correction, a multi-step checkout).
+5. **The only "pause and ask a human" mechanism is for login credentials specifically**
+   (`askCredentials`/`pendingCredentials.ts`), not for any other required input discovery cannot
+   infer — a real API key, a specific coupon code, a phone-number format a site validates strictly,
+   a required file upload. On any site whose critical flow needs a real, human-supplied
+   non-login value, the pipeline's only fallback is inventing a placeholder that fails validation.
