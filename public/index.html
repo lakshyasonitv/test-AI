@@ -7,87 +7,137 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <main class="wrap">
-    <h1>AI Test Platform</h1>
+  <div class="app">
 
-    <div id="templates" class="templates"></div>
-
-    <form id="runForm">
-      <label>Prompt
-        <textarea id="prompt" rows="2" placeholder="Test the login page with an invalid password"></textarea>
-      </label>
-      <label>URL
-        <input id="url" type="url" placeholder="https://example.com/login" />
-      </label>
-      <button type="submit">Run</button>
-    </form>
-
-    <ol id="stages" class="stages"></ol>
-
-    <!-- Credential prompt: appears only when a run pauses because the site needs a login -->
-    <section id="credentialPrompt" class="cred hidden" aria-live="polite">
-      <div class="cred-head">
-        <span class="cred-key" aria-hidden="true">&#128273;</span>
-        <div>
-          <h2>This site needs a login</h2>
-          <p id="credWhy" class="cred-why"></p>
-        </div>
+    <!-- Sidebar: identity, new run, history. History used to live at the very bottom of
+         the page, which meant scrolling past a whole run to reach it. -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" id="brandMark"></span>
+        <span class="brand-name">AI Test Platform</span>
       </div>
-      <form id="credForm" class="cred-form">
-        <div class="cred-fields">
-          <label>Username or email
-            <input id="credUser" type="text" autocomplete="off" spellcheck="false" />
-          </label>
-          <label>Password
-            <input id="credPass" type="password" autocomplete="off" />
-          </label>
-        </div>
-        <div class="cred-actions">
-          <button type="submit">Use these</button>
-          <button type="button" id="credSkip" class="cred-skip">Skip &mdash; test without logging in</button>
-        </div>
-        <p class="cred-note">
-          Used for this run only. Never written to the run folder or the generated test &mdash;
-          the test reads them from the environment at run time.
-        </p>
-      </form>
-    </section>
 
-    <!-- Suite progress (shown while suite is running) -->
-    <section id="suiteProgress" class="suite-progress hidden">
-      <h2>Running Suite</h2>
-      <div id="suiteProgressList" class="suite-progress-list"></div>
-    </section>
+      <button type="button" id="newRunBtn" class="new-run">
+        <span id="newRunIcon"></span> New run
+      </button>
 
-    <!-- Single-test backward-compatible result -->
-    <section id="finalResult" class="hidden">
-      <h2 id="verdict"></h2>
-      <div id="testSummary" class="test-summary hidden">
-        <h3 id="testTitle"></h3>
-        <ol id="testSteps"></ol>
-        <p id="testExpected"></p>
+      <nav class="history-nav" aria-label="Recent runs">
+        <h2 class="rail-heading">Recent</h2>
+        <ul id="historyList" class="history-list"></ul>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <div class="main-inner">
+
+        <header class="page-head">
+          <h1>Test any website</h1>
+          <p class="tagline">
+            Describe what you want checked in plain words. It explores the site, writes the
+            tests, runs them in a real browser, and shows you what happened.
+          </p>
+        </header>
+
+        <!-- Composer -->
+        <form id="runForm" class="composer">
+          <label class="field">
+            <span class="field-label">What should I test?</span>
+            <textarea id="prompt" rows="3"
+              placeholder="Test the login page — try a wrong password and check a helpful error appears"></textarea>
+          </label>
+
+          <div class="composer-foot">
+            <label class="field field-url">
+              <span class="field-label">Website address</span>
+              <span class="input-wrap">
+                <span class="input-icon" id="urlIcon"></span>
+                <input id="url" type="url" placeholder="https://example.com" />
+              </span>
+            </label>
+            <button type="submit" class="run-btn">
+              <span id="runIcon"></span> <span class="run-btn-text">Run test</span>
+            </button>
+          </div>
+        </form>
+
+        <div class="templates-row">
+          <span class="templates-label">Try one of these</span>
+          <div id="templates" class="templates"></div>
+        </div>
+
+        <!-- Progress timeline -->
+        <section class="panel panel-progress" aria-label="Progress">
+          <ol id="stages" class="stages"></ol>
+        </section>
+
+        <!-- Credential prompt: appears only when a run pauses because the site needs a login -->
+        <section id="credentialPrompt" class="cred hidden" aria-live="polite">
+          <div class="cred-head">
+            <span class="cred-key" id="credIcon"></span>
+            <div>
+              <h2>This site needs a login</h2>
+              <p id="credWhy" class="cred-why"></p>
+            </div>
+          </div>
+          <form id="credForm" class="cred-form">
+            <div class="cred-fields">
+              <label class="field">
+                <span class="field-label">Username or email</span>
+                <input id="credUser" type="text" autocomplete="off" spellcheck="false" />
+              </label>
+              <label class="field">
+                <span class="field-label">Password</span>
+                <input id="credPass" type="password" autocomplete="off" />
+              </label>
+            </div>
+            <div class="cred-actions">
+              <button type="submit">Use these</button>
+              <button type="button" id="credSkip" class="cred-skip">Skip &mdash; test without logging in</button>
+            </div>
+            <p class="cred-note">
+              Used for this run only. Never written to the run folder or the generated test &mdash;
+              the test reads them from the environment when it runs.
+            </p>
+          </form>
+        </section>
+
+        <!-- Live suite progress -->
+        <section id="suiteProgress" class="panel suite-progress hidden">
+          <h2>Running checks</h2>
+          <div id="suiteProgressList" class="suite-progress-list"></div>
+        </section>
+
+        <!-- Verdict for the primary test -->
+        <section id="finalResult" class="hidden">
+          <h2 id="verdict"></h2>
+          <div id="testSummary" class="test-summary hidden">
+            <h3 id="testTitle"></h3>
+            <ol id="testSteps"></ol>
+            <p id="testExpected"></p>
+          </div>
+          <figure id="screenshotFigure" class="hidden">
+            <img id="screenshot" alt="Final state of the page at the end of the test" />
+            <figcaption>Final state at the end of the test</figcaption>
+          </figure>
+          <p id="diagnosis"></p>
+          <a id="traceLink" class="hidden" target="_blank" href="#">View generated spec &amp; artifacts</a>
+        </section>
+
+        <!-- Suite results -->
+        <section id="suiteResults" class="suite-results hidden">
+          <div id="suiteSummaryHeader" class="suite-summary-header"></div>
+          <button id="screenshotToggle" class="screenshot-toggle hidden" type="button">View all screenshots</button>
+          <div id="screenshotGrid" class="screenshot-grid hidden"></div>
+          <div id="suiteCaseList" class="suite-case-list"></div>
+        </section>
+
       </div>
-      <figure id="screenshotFigure" class="hidden">
-        <img id="screenshot" alt="result screenshot" />
-        <figcaption>Final state at the end of the test</figcaption>
-      </figure>
-      <p id="diagnosis"></p>
-      <a id="traceLink" class="hidden" target="_blank" href="#">View Generated Spec &amp; Artifacts</a>
-    </section>
+    </main>
+  </div>
 
-    <!-- Suite results -->
-    <section id="suiteResults" class="suite-results hidden">
-      <div id="suiteSummaryHeader" class="suite-summary-header"></div>
-      <button id="screenshotToggle" class="screenshot-toggle hidden" type="button">View All Screenshots</button>
-      <div id="screenshotGrid" class="screenshot-grid hidden"></div>
-      <div id="suiteCaseList" class="suite-case-list"></div>
-    </section>
-
-    <section id="history">
-      <h2>History</h2>
-      <ul id="historyList" class="history-list"></ul>
-    </section>
-  </main>
+  <script src="/icons.js"></script>
   <script src="/app.js"></script>
+  <!-- Dev-only; inert unless ?preview=states is present. -->
+  <script src="/preview.js"></script>
 </body>
 </html>

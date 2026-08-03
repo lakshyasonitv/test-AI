@@ -40,7 +40,7 @@ Rules, follow exactly:
 - "goal" is a one-sentence restatement of what the request is testing, not a summary of the steps.
 - Keep steps in the order a real user would perform them.
 - "testTypeScope" must be exactly the scope values listed above. Valid values are "functional" and "security". Use ["functional","security"] as the default when no scope is specified.${scopeNote}
-- "coverage" indicates how many test cases to generate: "minimal" (1-2 cases, just the core flow), "standard" (3-4 cases, core flow + common checks), or "full" (6-11 cases, complete QA coverage). Pass through the value provided.
+- "coverage" indicates how much to cover: "minimal" (just the core flow), "standard" (core flow + common checks), or "full" (broadest QA coverage). A later stage caps how many cases actually run, so propose good coverage and let it select. Pass through the value provided.
 
 Example of the exact shape required:
 { "goal": "Verify a user can log in with valid credentials and reach the dashboard.",

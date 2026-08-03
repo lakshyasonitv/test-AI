@@ -39,9 +39,80 @@ export type CredentialKind = "username" | "password";
 const PASSWORD_NAME = /pass/i;
 const USERNAME_NAME = /user|email|login|account/i;
 
+const normKey = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+
+/**
+ * Identifying strings (placeholder / name / label / id) → which credential that field wants,
+ * derived from the DOM's own input types instead of guessed from a human-readable name.
+ *
+ * Why this exists: a login form with no <label> and no name attribute gives its inputs an
+ * accessible name taken from the PLACEHOLDER. Seen in a real run —
+ *   role=textbox name='you@thinkvibes.com'   (the placeholder)
+ *   role=textbox name='*********'            (the placeholder)
+ * Neither matches the name patterns below ("*********" contains no letters at all), so the
+ * user's supplied credentials were silently ignored and the model's invented account was typed
+ * instead. The answer was already in the same app model — inputType email / password — and
+ * simply wasn't being read.
+ */
+export function credentialFieldMap(appModel: AppModel): Map<string, CredentialKind> {
+  const map = new Map<string, CredentialKind>();
+  const add = (field: { name?: string; placeholder?: string; label?: string; id?: string },
+               kind: CredentialKind) => {
+    for (const s of [field.placeholder, field.name, field.label, field.id]) {
+      const k = normKey(s ?? "");
+      // First writer wins: a password field's own strings must never be relabelled by a
+      // later field that happens to share a placeholder.
+      //
+      // Known limitation: this is one flat map across every page and form in the model. Once
+      // live-extend has added a register page alongside the login page, a placeholder both
+      // share (say "you@example.com") is claimed by whichever page was walked first. The
+      // per-step REGISTRATION_URL guard in applyCredentials still blocks substitution on the
+      // register leg, so the blast radius is contained — but if a login field ever resolves to
+      // the wrong kind, this merge is where to look.
+      if (k && !map.has(k)) map.set(k, kind);
+    }
+  };
+
+  for (const page of appModel.pages) {
+    for (const form of page.forms ?? []) {
+      const fields = form.fields ?? [];
+      fields.forEach((f, i) => {
+        const type = (f.inputType ?? "").toLowerCase();
+        if (type === "password") return add(f, "password");
+        if (type === "email") return add(f, "username");
+        // A text field immediately before a password field is the identifier — that's how
+        // login forms are built, and it's the only thing that catches an unlabelled
+        // type="text" username box. Best-effort: it can only be joined back to an IR target
+        // if this field carries at least one identifying string the target also uses.
+        const next = (fields[i + 1]?.inputType ?? "").toLowerCase();
+        if (next === "password" && (type === "text" || type === "" || type === "tel")) {
+          add(f, "username");
+        }
+      });
+    }
+  }
+  return map;
+}
+
 /** Which credential a fill target wants, or undefined for a non-login field (a search box,
- *  a "Full Name") whose model-generated value should be left alone. */
-export function credentialKindForTarget(target: Target | undefined): CredentialKind | undefined {
+ *  a "Full Name") whose model-generated value should be left alone.
+ *
+ *  Consults the DOM-derived map first, then falls back to matching the accessible name —
+ *  which still carries sites whose fields are properly labelled "username"/"password", and
+ *  sites where DOM discovery found no forms at all. */
+export function credentialKindForTarget(
+  target: Target | undefined,
+  fieldMap?: Map<string, CredentialKind>,
+): CredentialKind | undefined {
+  if (fieldMap?.size) {
+    // Target carries placeholder/label directly as well as the accessible name, and any of
+    // them can be the string the DOM field was keyed by. `#id`/`[data-x]` css selectors are
+    // stripped to their bare value so an id-keyed field still matches.
+    for (const s of [target?.name, target?.placeholder, target?.label, target?.css, target?.testId]) {
+      const hit = s && fieldMap.get(normKey(String(s).replace(/^#/, "")));
+      if (hit) return hit;
+    }
+  }
   const name = target?.name ?? "";
   if (!name) return undefined;
   if (PASSWORD_NAME.test(name)) return "password";
@@ -50,10 +121,21 @@ export function credentialKindForTarget(target: Target | undefined): CredentialK
 }
 
 /** The literal credential a fill target wants. Used by liveExtend's in-process replay,
- *  which never writes what it types to disk. */
-export function credentialForTarget(target: Target | undefined, creds: Credentials): string | undefined {
-  const kind = credentialKindForTarget(target);
-  return kind && creds[kind];
+ *  which never writes what it types to disk.
+ *
+ *  `policy` mirrors the skip `applyCredentials` already applies to the static-substitution
+ *  path: under "identifier-only" the case's own deliberately-wrong password must survive a
+ *  live replay too, or grounding logs in successfully and has nothing to correct against. */
+export function credentialForTarget(
+  target: Target | undefined,
+  creds: Credentials,
+  fieldMap?: Map<string, CredentialKind>,
+  policy: CredentialPolicy = "full",
+): string | undefined {
+  const kind = credentialKindForTarget(target, fieldMap);
+  if (!kind) return undefined;
+  if (policy === "identifier-only" && kind === "password") return undefined;
+  return creds[kind];
 }
 
 // ---------------------------------------------------------------------------
@@ -213,28 +295,143 @@ export const NEGATIVE_CATEGORIES = new Set([
 ]);
 
 /**
- * Returns true if credential substitution should be skipped for this case.
- * Skips for fromPrompt cases and deliberate negative credential test categories.
+ * Does this case mean to authenticate as a genuine user?
+ *
+ * OPT-IN, deliberately. The old rule was opt-out — substitute into every credential-shaped
+ * field unless the case's category appeared in a hardcoded blocklist — and a blocklist over
+ * model-authored strings can only leak. It did: a case labelled "Security - SQL Injection"
+ * matched nothing, so its `' OR '1'='1` payload was overwritten with the user's real email and
+ * the test stopped injecting anything at all.
+ *
+ * Default is NO. The cost of not substituting is a test that types an invented placeholder,
+ * which is what happened before credentials existed. The cost of substituting wrongly is a test
+ * that silently stops testing what its title says — strictly worse, because it still reports
+ * "passed".
  */
-export function shouldSkipCredentialSubstitution(testCase: TestCase): boolean {
-  if (testCase.fromPrompt) return true;
-  const cat = testCase.category;
-  if (!cat) return false;
-  return NEGATIVE_CATEGORIES.has(cat);
+export type CredentialPolicy =
+  /** Substitute both fields — the case is meant to authenticate successfully. */
+  | "full"
+  /** Substitute the identifier only; the case's own deliberately-wrong password stands. */
+  | "identifier-only"
+  /** Touch nothing. The values the case chose ARE the test. */
+  | "none";
+
+/** Categories whose whole point is that the input is wrong. */
+const NEGATIVE_CATEGORY = new Set([
+  "invalid-input", "empty-boundary", "security-injection", "security-xss",
+]);
+
+// The identifier is itself the thing under test — a malformed/empty/invalid email or username.
+// Its value must survive untouched, so this VETOES substitution outright.
+const IDENTIFIER_AT_FAULT =
+  /\b(?:e-?mail|username|user name|identifier|login id)\b[^.]{0,40}?\b(?:invalid|malformed|empty|blank|missing|format|incorrect|wrong)\b|\b(?:invalid|malformed|empty|blank|missing|bad)\b[^.]{0,25}?\b(?:e-?mail|username|identifier)\b/i;
+
+// The PASSWORD is the wrong thing — the classic "valid user, bad password" test.
+const PASSWORD_AT_FAULT = /\b(?:invalid|incorrect|wrong|bad)\s+(?:password|credential)/i;
+
+/**
+ * How much of the supplied credentials this case may receive.
+ *
+ * A boolean could not express what a good negative login test needs, and the ordering here IS
+ * the bug this replaced: `fromPrompt` used to be checked FIRST and short-circuited, so a case
+ * that was both the literal translation of the user's request AND a negative test ("log in with
+ * invalid credentials") received working credentials, logged in successfully, and then failed
+ * its own assertion. The negative checks now run before anything else.
+ *
+ * Default is "none". Substituting where we shouldn't silently guts the test while it still
+ * reports a verdict; not substituting merely leaves the model's invented value in place.
+ */
+export function credentialPolicyFor(
+  testCase: TestCase, promptHasCredentials: boolean,
+): CredentialPolicy {
+  const wording = [
+    testCase.title, testCase.expected, testCase.intent ?? "", ...(testCase.steps ?? []),
+  ].join(" ");
+
+  // Veto first, and deliberately before the password pattern below: a malformed-email case is
+  // routinely worded "Login with invalid email and valid password", which matches BOTH. Getting
+  // this order wrong would overwrite the deliberately-broken identifier with the real one —
+  // the same class of bug, one category over.
+  if (IDENTIFIER_AT_FAULT.test(wording)) return "none";
+  const category = testCase.category ?? "";
+  if (category === "empty-boundary" || category.startsWith("security-")) return "none";
+
+  if (NEGATIVE_CATEGORY.has(category)) {
+    // A real account with the wrong password is the stronger test: it proves an actual account
+    // is protected, where a nonexistent user only proves unknown identifiers are rejected —
+    // often an entirely different code path.
+    return PASSWORD_AT_FAULT.test(wording) ? "identifier-only" : "none";
+  }
+
+  // The user's own literal values in the prompt win over anything supplied separately.
+  if (testCase.fromPrompt) return promptHasCredentials ? "none" : "full";
+  return category === "valid" ? "full" : "none";
+}
+
+/** Does this case receive any substitution at all? Thin wrapper over the policy. */
+export function wantsRealCredentials(testCase: TestCase, promptHasCredentials: boolean): boolean {
+  return credentialPolicyFor(testCase, promptHasCredentials) !== "none";
+}
+
+const REGISTRATION_URL = /register|signup|sign-up|create-account|join/i;
+
+/** For each credential kind, the index of its LAST fill step in this list that would actually
+ *  be substituted — registration-leg fills (per `legUrlAt`) are excluded from consideration, so
+ *  "last occurrence" can't land on a leg that's skipped for an unrelated reason and accidentally
+ *  suppress substitution on BOTH the real login leg and the doomed registration leg.
+ *
+ *  A case with only one login attempt (the overwhelming majority) has exactly one eligible entry
+ *  per kind, so this changes nothing for them — "last occurrence" and "only occurrence" coincide.
+ *  A case with two attempts (a compound valid+invalid flow, e.g. "log in with the wrong password,
+ *  verify the error, then log in for real") is the one this exists for: only the FINAL attempt
+ *  should receive the real credential — earlier attempts are load-bearing test content (the
+ *  case's own deliberately-wrong values) and must survive untouched, or the earlier attempt
+ *  silently stops testing what its wording says. */
+export function lastFillIndexByKind(
+  steps: { action: string; target?: Target }[],
+  fieldMap?: Map<string, CredentialKind>,
+  legUrlAt?: (string | null | undefined)[],
+): Map<CredentialKind, number> {
+  const last = new Map<CredentialKind, number>();
+  steps.forEach((step, i) => {
+    if (step.action !== "fill") return;
+    if (legUrlAt && REGISTRATION_URL.test(legUrlAt[i] ?? "")) return;
+    const kind = credentialKindForTarget(step.target, fieldMap);
+    if (kind) last.set(kind, i);
+  });
+  return last;
 }
 
 /** Substitute credentials into an IR's login fill steps, in place. Secret (user-supplied)
- *  credentials become env references rather than literals — see ENV_VALUE_PREFIX above. */
+ *  credentials become env references rather than literals — see ENV_VALUE_PREFIX above.
+ *
+ *  `legUrlAt[i]` is the URL the flow is on entering step i (see trackPages in ir.ts). It's what
+ *  makes this decision PER STEP rather than per case, which matters because a single case can
+ *  do both: the run that prompted this was one "account creation and authentication" case whose
+ *  register leg must keep its invented values while its login leg needs the real ones. */
 export function applyCredentials(
   steps: { action: string; target?: Target; value?: string }[],
   creds: Credentials,
-  testCase?: TestCase
+  policy: CredentialPolicy = "full",
+  legUrlAt?: (string | null | undefined)[],
+  fieldMap?: Map<string, CredentialKind>,
 ): void {
-  if (testCase && shouldSkipCredentialSubstitution(testCase)) return;
-  for (const step of steps) {
+  if (policy === "none") return;
+  const lastOfKind = lastFillIndexByKind(steps, fieldMap, legUrlAt);
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
     if (step.action !== "fill") continue;
-    const kind = credentialKindForTarget(step.target);
+    const kind = credentialKindForTarget(step.target, fieldMap);
     if (!kind) continue;
+    // Never sign a user up with their own login credentials, whatever the case-level intent.
+    if (legUrlAt && REGISTRATION_URL.test(legUrlAt[i] ?? "")) continue;
+    // A repeated attempt at the same credential kind that ISN'T the last one is an earlier,
+    // deliberately-different login attempt (e.g. the wrong-password half of a compound case) —
+    // leave it as the model authored it.
+    if (lastOfKind.get(kind) !== i) continue;
+    // The point of identifier-only: a real account, a deliberately wrong password. Overwriting
+    // the password here would turn the negative test into a successful login.
+    if (policy === "identifier-only" && kind === "password") continue;
     step.value = creds.secret
       ? ENV_VALUE_PREFIX + ENV_VAR[kind] + ENV_VALUE_SUFFIX
       : creds[kind];

@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   groundingError, hasTerminalAssertion, normalizeIR,
-  assertionContradictsCase, vacuousAssertion, urlAssertionError,
+  assertionContradictsCase, vacuousAssertion, urlAssertionError, missingActions,
+  clickedElementHiddenAssertion,
 } from "../src/stages/ir.js";
 import { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
 import type { TestCase } from "../src/stages/testCases.js";
+import { selectCases } from "../src/stages/testCases.js";
 
 const model = (elements: any[]): AppModel =>
   ({ baseUrl: "https://x", pages: [{ url: "https://x", concepts: [], elements }] }) as AppModel;
@@ -274,6 +276,18 @@ describe("assertionContradictsCase", () => {
     expect(assertionContradictsCase(t, NEG)).toBeNull();
   });
 
+  // Guards the credential-policy grounding fix specifically: once liveExtend's replay types
+  // the case's own wrong password instead of the real one, groundTerminalTextAssertion can
+  // finally correct the guess to the real page text — "Invalid login credentials" (the exact
+  // string from runs/2026-08-02T12-49-23-839Z-3b887895). That correction only survives if this
+  // guard doesn't veto it. It's safe today only because FAILURE_SIGNAL ("invalid") is checked
+  // before SUCCESS_SIGNAL ("\bvalid\b") — if that order ever flipped, grounding would produce
+  // the right text and this guard would silently throw it away.
+  it("does not veto the real corrected text from the credential-policy grounding fix", () => {
+    const t = ir([{ id: "s5", action: "assert", target: { text: "Invalid login credentials" }, assertion: "visible" }]);
+    expect(assertionContradictsCase(t, NEG)).toBeNull();
+  });
+
   it("flags landing on /dashboard after a failed login", () => {
     const t = ir([{ id: "s5", action: "assert", target: { role: "h", name: "x" }, value: "/dashboard", assertion: "url_contains" }]);
     expect(assertionContradictsCase(t, NEG)?.stepIds).toEqual(["s5"]);
@@ -308,5 +322,176 @@ describe("hasTerminalAssertion", () => {
     expect(hasTerminalAssertion([{ action: "assert" }] as any)).toBe(true);
     expect(hasTerminalAssertion([{ action: "assert" }, { action: "click" }] as any)).toBe(false);
     expect(hasTerminalAssertion([])).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressions from run 2026-07-30T15-19-00-537Z-dcd09643: 5 of its 7 "passed"
+// verdicts verified nothing.
+// ---------------------------------------------------------------------------
+
+describe("vacuousAssertion — assertions that cannot fail", () => {
+  const m = { baseUrl: "https://x.example", pages: [] } as any;
+  const step = (o: any) => ({ id: o.id, action: "assert", assertion: "url_contains", ...o });
+
+  // This single assertion is why a run parked on an unpassable OTP screen reported PASSED:
+  // toHaveURL(new RegExp("/")) matches every URL there is.
+  it('rejects url_contains "/"', () => {
+    const ir = { meta: {}, steps: [step({ id: "s1", value: "/" })] } as any;
+    expect(vacuousAssertion(ir, m)?.stepIds).toEqual(["s1"]);
+  });
+
+  it("rejects asserting the path you just navigated to with nothing in between", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/register" } },
+      step({ id: "s2", value: "/register" }),
+    ] } as any;
+    expect(vacuousAssertion(ir, m)?.stepIds).toEqual(["s2"]);
+  });
+
+  // Both of these are CORRECT assertions and an earlier version of the rule flagged them.
+  it("accepts asserting the destination after a link click", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "link", name: "Log in" } },
+      step({ id: "s3", value: "/login" }),
+    ] } as any;
+    expect(vacuousAssertion(ir, m)).toBeNull();
+  });
+
+  it("accepts 'still on /login' as proof a login was rejected", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { name: "Email" }, value: "a@b.c" },
+      { id: "s3", action: "fill", target: { name: "Password" }, value: "wrong" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+      step({ id: "s5", value: "/login" }),
+    ] } as any;
+    expect(vacuousAssertion(ir, m)).toBeNull();
+  });
+});
+
+describe("missingActions — the IR must carry out its case", () => {
+  const loginCase = tc({
+    title: "Log in with valid credentials",
+    steps: ["Click the 'Log in' link", "Fill the login form with valid credentials", "Click 'Sign In'"],
+    expected: "The user reaches the dashboard",
+  });
+
+  // The real case-2 IR: click the link, assert the link is hidden. No fill, no submit.
+  // Its final screenshot was an empty login form and it reported PASSED.
+  it("flags an IR that never fills the form its case describes", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "link", name: "Log in" } },
+      { id: "s3", action: "assert", target: { role: "link", name: "Log in" }, assertion: "hidden" },
+    ] } as any;
+    expect(missingActions(ir, loginCase)?.message).toMatch(/no "fill" step/);
+  });
+
+  it("accepts an IR that does perform the described actions", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { name: "Email" }, value: "a@b.c" },
+      { id: "s3", action: "fill", target: { name: "Password" }, value: "pw" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+      { id: "s5", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
+    ] } as any;
+    expect(missingActions(ir, loginCase)).toBeNull();
+  });
+
+  it("says nothing about a case that only navigates and asserts", () => {
+    const navCase = tc({ title: "Home page loads", steps: ["Open the home page"], expected: "The hero is visible" });
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "assert", target: { role: "heading", name: "Hero" }, assertion: "visible" },
+    ] } as any;
+    expect(missingActions(ir, navCase)).toBeNull();
+  });
+});
+
+describe("selectCases — one suite, capped and deduplicated", () => {
+  const mk = (title: string, category: any, extra: any = {}) =>
+    tc({ title, category, ...extra });
+
+  // The real duplicate pair: the reactive batch restated the primary in different words.
+  it("collapses a reworded restatement of the primary case", () => {
+    const cases = [
+      mk("Verify end-to-end account creation and authentication flow", "valid", { fromPrompt: true }),
+      mk("Verify the end-to-end functionality of user account creation and authentication", "valid"),
+    ];
+    const out = selectCases(cases, 5);
+    expect(out).toHaveLength(1);
+    expect(out[0].fromPrompt).toBe(true);
+  });
+
+  // ... but two genuinely different cases that share a category must both survive.
+  it("keeps two different cases that happen to share a category", () => {
+    const cases = [
+      mk("Log in with valid credentials", "valid"),
+      mk("Register a new account successfully", "valid"),
+    ];
+    expect(selectCases(cases, 5)).toHaveLength(2);
+  });
+
+  it("caps the suite and prefers category diversity over priority", () => {
+    const cases = [
+      mk("asked for", "valid", { fromPrompt: true }),
+      mk("bad password", "invalid-input", { priority: "low" }),
+      mk("empty password", "empty-boundary", { priority: "low" }),
+      mk("wrong email format", "invalid-input", { priority: "critical" }),
+      mk("blank identifier", "empty-boundary", { priority: "critical" }),
+    ];
+    const out = selectCases(cases, 3);
+    expect(out).toHaveLength(3);
+    expect(out[0].fromPrompt).toBe(true);
+    expect(new Set(out.map(c => c.category)).size).toBe(3);
+  });
+});
+
+describe("clickedElementHiddenAssertion", () => {
+  // The real case-2: "Navigate to registration page" compiled to click Sign Up, then assert
+  // Sign Up is hidden. Nothing was typed, so this is a navigation click — whether that button
+  // disappears is incidental and proves nothing about the app.
+  it("flags assert-hidden on a control that was merely clicked", () => {
+    const nav = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "click", target: { role: "button", name: "Sign Up" } },
+      { id: "s3", action: "assert", target: { role: "button", name: "Sign Up" }, assertion: "hidden" },
+    ] } as any;
+    expect(clickedElementHiddenAssertion(nav)?.stepIds).toEqual(["s3"]);
+  });
+
+  // The real case-1, which passed and must stay legal: this is the pattern ir.ts's own prompt
+  // recommends for a submit button. It differs from the above ONLY in having fills first.
+  it("allows it after a form submission", () => {
+    const login = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "a@b.c" },
+      { id: "s3", action: "fill", target: { role: "textbox", name: "Password" }, value: "pw" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+      { id: "s5", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
+    ] } as any;
+    expect(clickedElementHiddenAssertion(login)).toBeNull();
+  });
+
+  // Zero fills is the threshold, not "fewer than two" — one field then Continue is a real
+  // submission and must stay legal.
+  it("allows a single-field submission", () => {
+    const oneField = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "a@b.c" },
+      { id: "s3", action: "click", target: { role: "button", name: "Continue" } },
+      { id: "s4", action: "assert", target: { role: "button", name: "Continue" }, assertion: "hidden" },
+    ] } as any;
+    expect(clickedElementHiddenAssertion(oneField)).toBeNull();
+  });
+
+  it("ignores an assert-hidden on a different element", () => {
+    const other = { meta: {}, steps: [
+      { id: "s1", action: "click", target: { role: "button", name: "Sign Up" } },
+      { id: "s2", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
+    ] } as any;
+    expect(clickedElementHiddenAssertion(other)).toBeNull();
   });
 });

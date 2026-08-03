@@ -85,8 +85,8 @@ describe("generateSpec", () => {
       meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "s", baseUrl: "https://x" },
       steps: [{ id: "s1", action: "navigate", target: { url: "/" } }],
     } as unknown as IR, "runs/abc/cases/case-0/artifacts");
-    expect(out).toContain('path: "runs/abc/cases/case-0/artifacts/step-1.png"');
-    expect(out).not.toContain('path: "artifacts/step-1.png"');
+    expect(out).toContain('await shot(page, "runs/abc/cases/case-0/artifacts/step-1.png")');
+    expect(out).not.toContain('"artifacts/step-1.png"');
   });
 
   it("normalises Windows separators in the screenshot directory", () => {
@@ -94,6 +94,46 @@ describe("generateSpec", () => {
       meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "s", baseUrl: "https://x" },
       steps: [{ id: "s1", action: "navigate", target: { url: "/" } }],
     } as unknown as IR, "runs\\abc\\artifacts\\");
-    expect(out).toContain('path: "runs/abc/artifacts/step-1.png"');
+    expect(out).toContain('await shot(page, "runs/abc/artifacts/step-1.png")');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Screenshot capture. Regression: step screenshots came out solid white (4,254-byte
+// PNGs) because `page.screenshot()` fired immediately after the action, catching the
+// app's JS-driven fade-in at ~0% opacity.
+// ---------------------------------------------------------------------------
+
+describe("generateSpec — screenshots", () => {
+  const ir = (steps: any[]) => ({
+    meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://x.example" },
+    steps,
+  }) as any;
+
+  const threeSteps = ir([
+    { id: "s1", action: "navigate", target: { url: "/" } },
+    { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "a@b.c" },
+    { id: "s3", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
+  ]);
+
+  it("routes every step capture through the settling helper, never a bare screenshot", () => {
+    const spec = generateSpec(threeSteps, "runs/demo/artifacts");
+    expect(spec).not.toMatch(/await page\.screenshot\(\{ path/);
+    expect(spec.match(/await shot\(page, /g) ?? []).toHaveLength(3);
+  });
+
+  // Unconditional injection — a `needsShot` gate could compute false and emit a spec that
+  // calls a function that isn't there.
+  it("always injects the helper, exactly once", () => {
+    for (const spec of [generateSpec(threeSteps, "a"), generateSpec(ir([{ id: "s1", action: "navigate", target: { url: "/" } }]), "a")]) {
+      expect(spec.match(/async function shot\(/g) ?? []).toHaveLength(1);
+      expect(spec).toContain('import { writeFileSync } from "node:fs"');
+    }
+  });
+
+  // generateSpec rewrites "networkidle" -> "domcontentloaded" on the way out; the helper must
+  // not depend on a wait that rewrite would silently change.
+  it("does not rely on networkidle", () => {
+    expect(generateSpec(threeSteps, "a")).not.toContain("networkidle");
   });
 });

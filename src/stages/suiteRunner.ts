@@ -3,7 +3,7 @@ import path from "node:path";
 import { toIR } from "./ir.js";
 import type { GroqBudget } from "../llm/groqBudget.js";
 import { generateSpec } from "./generator.js";
-import { runSpec, findScreenshot } from "./executor.js";
+import { runSpec, findScreenshot, detectBlocked } from "./executor.js";
 import { credentialEnvVars, type Credentials } from "./credentials.js";
 import { analyzeFailure } from "./failureAnalysis.js";
 import type { TestCase } from "./testCases.js";
@@ -28,7 +28,11 @@ export interface PrimaryCaseResult {
 export interface CaseRunResult {
   caseId: string;
   title: string;
-  status: "passed" | "failed" | "truncated" | "truncated_no_assertion";
+  status: "passed" | "failed" | "truncated" | "truncated_no_assertion" | "blocked";
+  /** Set when the flow hit something automation cannot pass (emailed code, external
+   *  sign-in). Carries the proof screenshot. */
+  blockedBy?: string;
+  blockedScreenshot?: string;
   irPath: string;
   resultPath: string;
   diagnosisPath?: string;
@@ -36,6 +40,10 @@ export interface CaseRunResult {
    *  case, whose usage is already counted in the run's top-level groq-usage.json. */
   groqCalls?: number;
   groqTokens?: number;
+  /** Plain-English "what this check proves", for the UI. `intent` is the model's own words
+   *  and is optional in the schema; `expected` is required, so it is the guaranteed fallback. */
+  intent?: string;
+  expected?: string;
 }
 
 interface SuiteSummary {
@@ -44,10 +52,17 @@ interface SuiteSummary {
   failed: number;
   truncated: number;
   truncated_no_assertion: number;
+  blocked: number;
   cases: {
     caseId: string; title: string; status: string; resultPath: string;
-    groqCalls?: number; groqTokens?: number;
+    groqCalls?: number; groqTokens?: number; blockedBy?: string;
+    intent?: string; expected?: string;
   }[];
+}
+
+/** Origin of a url, for deciding whether a flow left the application. */
+function originOf(url: string): string | undefined {
+  try { return new URL(url).origin; } catch { return undefined; }
 }
 
 function emit(
@@ -99,9 +114,15 @@ export async function runSuite(
         const specPath = path.join(caseDir, "generated.spec.ts");
         writeFileSync(specPath, primaryResult.specCode);
 
-        // Compute honest status from the final (post-heal) result.
+        // Compute honest status from the final (post-heal) result. The primary case is REUSED
+        // rather than re-executed, so its blocked check reads the artifacts the main pipeline
+        // already produced — without this the run verdict said "blocked" while this case's own
+        // card still said "passed".
+        const primaryBlocked = detectBlocked(primaryResult.result.artifactsDir, originOf(entryUrl));
         let status: CaseRunResult["status"];
-        if (primaryResult.ir.meta.truncated && !primaryResult.ir.meta.hasTerminalAssertion) {
+        if (primaryBlocked) {
+          status = "blocked";
+        } else if (primaryResult.ir.meta.truncated && !primaryResult.ir.meta.hasTerminalAssertion) {
           status = "truncated_no_assertion";
         } else if (primaryResult.ir.meta.truncated) {
           status = "truncated";
@@ -114,6 +135,8 @@ export async function runSuite(
         const resultPath = path.join(caseDir, "05-result.json");
         writeFileSync(resultPath, JSON.stringify({
           passed: status === "passed" || status === "truncated",
+          intent: tc.intent, expected: tc.expected,
+          blockedBy: primaryBlocked?.reason,
           status: status !== "passed" ? status : undefined,
           exitCode: primaryResult.result.exitCode,
           artifactsDir: primaryResult.result.artifactsDir,
@@ -132,7 +155,14 @@ export async function runSuite(
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
         }
 
-        results.push({ caseId, title: tc.title, status, irPath, resultPath, diagnosisPath });
+        results.push({
+          caseId, title: tc.title, status, irPath, resultPath, diagnosisPath,
+          intent: tc.intent, expected: tc.expected,
+          blockedBy: primaryBlocked?.reason,
+          // Point at the copy inside the case dir — the source artifacts were copied there above.
+          blockedScreenshot: primaryBlocked?.screenshot
+            ? path.join(destArtifacts, path.basename(primaryBlocked.screenshot)) : undefined,
+        });
         emit(runId, "suite", "completed", { caseId, title: tc.title, status, reused: true }, undefined, onEvent);
       } catch (err: any) {
         results.push({ caseId, title: tc.title, status: "failed", irPath: "", resultPath: "" });
@@ -168,8 +198,13 @@ export async function runSuite(
         console.log(result);
 
         // Determine honest status before saving the result.
+        // A wall the test can't pass outranks every other verdict: "passed" would be a lie and
+        // "failed" would blame the application for something that isn't its fault.
+        const blocked = detectBlocked(path.join(caseDir, "artifacts"), originOf(entryUrl));
         let status: CaseRunResult["status"];
-        if (ir.meta.truncated && !ir.meta.hasTerminalAssertion) {
+        if (blocked) {
+          status = "blocked";
+        } else if (ir.meta.truncated && !ir.meta.hasTerminalAssertion) {
           status = "truncated_no_assertion";
         } else if (ir.meta.truncated) {
           status = "truncated";
@@ -182,6 +217,7 @@ export async function runSuite(
         const resultPath = path.join(caseDir, "05-result.json");
         writeFileSync(resultPath, JSON.stringify({
           passed: status === "passed" || status === "truncated",
+          blockedBy: blocked?.reason,
           status: status !== "passed" ? status : undefined,
           exitCode: result.exitCode,
           artifactsDir: result.artifactsDir,
@@ -196,7 +232,11 @@ export async function runSuite(
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
         }
 
-        results.push({ caseId, title: tc.title, status, irPath, resultPath, diagnosisPath, groqCalls, groqTokens });
+        results.push({
+          caseId, title: tc.title, status, irPath, resultPath, diagnosisPath, groqCalls, groqTokens,
+          intent: tc.intent, expected: tc.expected,
+          blockedBy: blocked?.reason, blockedScreenshot: blocked?.screenshot ?? undefined,
+        });
 
         emit(runId, "suite", "completed", { caseId, title: tc.title, status }, undefined, onEvent);
       } catch (err: any) {
@@ -215,6 +255,7 @@ export async function runSuite(
   const failed = results.filter((r) => r.status === "failed").length;
   const truncated = results.filter((r) => r.status === "truncated").length;
   const truncatedNoAssertion = results.filter((r) => r.status === "truncated_no_assertion").length;
+  const blockedCount = results.filter((r) => r.status === "blocked").length;
 
   const summary: SuiteSummary = {
     total: results.length,
@@ -222,6 +263,7 @@ export async function runSuite(
     failed,
     truncated,
     truncated_no_assertion: truncatedNoAssertion,
+    blocked: blockedCount,
     cases: results.map((r) => {
       // Search the case's artifacts directory. The previous
       // `findScreenshot(path.join(runDir, r.resultPath))` double-counted runDir —
@@ -229,7 +271,9 @@ export async function runSuite(
       // every summary on disk had screenshotUrl: null. The UI's screenshot grid and
       // per-case thumbnails therefore never rendered.
       const caseDir = path.join(runDir, "cases", r.caseId);
-      const shot = findScreenshot(path.join(caseDir, "artifacts")) ?? findScreenshot(caseDir);
+      // For a blocked case, the proof is the frame showing the wall — not just any screenshot.
+      const shot = r.blockedScreenshot
+        ?? findScreenshot(path.join(caseDir, "artifacts")) ?? findScreenshot(caseDir);
       const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
       return {
         caseId: r.caseId,
@@ -240,6 +284,9 @@ export async function runSuite(
         screenshotUrl,
         groqCalls: r.groqCalls,
         groqTokens: r.groqTokens,
+        blockedBy: r.blockedBy,
+        intent: r.intent,
+        expected: r.expected,
       };
     }),
   };

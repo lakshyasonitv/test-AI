@@ -6,14 +6,30 @@ import {
   modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
 } from "./discovery.js";
 import { resolveLive } from "./targetResolver.js";
-import { credentialForTarget, redactCredentials, type Credentials } from "./credentials.js";
+import {
+  credentialForTarget, redactCredentials, credentialFieldMap, credentialKindForTarget,
+  lastFillIndexByKind, type Credentials, type CredentialKind, type CredentialPolicy,
+} from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
  *  check state, they don't advance it, and a strict assertion shouldn't abort the replay. */
-async function runStepLive(page: Page, step: Step, baseUrl: string, creds?: Credentials): Promise<void> {
+export async function runStepLive(
+  page: Page, step: Step, baseUrl: string, creds?: Credentials,
+  /** Same DOM-derived field map the IR uses. Without it the replay can't tell which box is
+   *  the password on an unlabelled login form, types the wrong value, never gets past the
+   *  login, and every later step loses its grounding. */
+  fieldMap?: Map<string, CredentialKind>,
+  policy: CredentialPolicy = "full",
+  /** False for an earlier, deliberately-different login attempt in a compound case (e.g. the
+   *  wrong-password half of a "verify invalid login, then verify valid login" flow) — mirrors
+   *  applyCredentials's own lastFillIndexByKind rule so live replay doesn't type the real
+   *  credential into a fill the executed test will leave alone. Defaults true: every existing
+   *  single-occurrence call is unaffected. */
+  isFinalCredentialAttempt: boolean = true,
+): Promise<void> {
   switch (step.action) {
     case "navigate": {
       const u = step.target?.url ?? "/";
@@ -22,7 +38,7 @@ async function runStepLive(page: Page, step: Step, baseUrl: string, creds?: Cred
       return;
     }
     case "fill": {
-      const val = (creds && credentialForTarget(step.target, creds)) ?? step.value ?? "";
+      const val = (creds && isFinalCredentialAttempt ? credentialForTarget(step.target, creds, fieldMap, policy) : undefined) ?? step.value ?? "";
       await (await resolveLive(page, step.target!)).fill(val);
       return;
     }
@@ -60,12 +76,21 @@ export interface ReplayResult {
 async function replayAndSnapshot(
   model: AppModel,
   prefix: Step[],
-  creds?: Credentials
+  creds?: Credentials,
+  policy: CredentialPolicy = "full",
 ): Promise<ReplayResult> {
-  const cacheKey = makeCacheKey(model.baseUrl, JSON.stringify(prefix));
+  // Policy is folded in because the fill values it produces differ by policy, and relying on
+  // that difference to always change the prefix's own JSON (rather than asserting it) is the
+  // exact caching-bug shape that has already bitten this codebase twice.
+  const cacheKey = makeCacheKey(model.baseUrl, JSON.stringify(prefix), policy);
   const cached = llmCacheGet<ReplayResult>(cacheKey);
   if (cached) return cached;
 
+  const fieldMap = credentialFieldMap(model);
+  // Same "only the LAST attempt at a given credential kind gets substituted" rule
+  // applyCredentials applies at execution time — computed here too so a compound case's
+  // grounding replay doesn't type the real password into its earlier, deliberately-wrong leg.
+  const lastOfKind = lastFillIndexByKind(prefix, fieldMap);
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
@@ -73,7 +98,9 @@ async function replayAndSnapshot(
     for (let i = 0; i < prefix.length; i++) {
       if (i === prefix.length - 1) urlBeforeLastStep = page.url();
       const step = prefix[i];
-      await runStepLive(page, step, model.baseUrl, creds);
+      const kind = credentialKindForTarget(step.target, fieldMap);
+      const isFinalAttempt = kind ? lastOfKind.get(kind) === i : true;
+      await runStepLive(page, step, model.baseUrl, creds, fieldMap, policy, isFinalAttempt);
       // After an auth‑triggering step (click/press on a login‑verb button),
       // wait for the SPA's own async redirect to settle before evaluating
       // whether the target page was reached.  Bounded so a hung redirect
@@ -194,9 +221,10 @@ async function replayAndSnapshot(
 export async function extendAppModel(
   model: AppModel,
   prefix: Step[],
-  creds?: Credentials
+  creds?: Credentials,
+  policy: CredentialPolicy = "full",
 ): Promise<AppModel> {
-  const { reachedUrl, pageModel } = await replayAndSnapshot(model, prefix, creds);
+  const { reachedUrl, pageModel } = await replayAndSnapshot(model, prefix, creds, policy);
   const knownUrls = new Set(model.pages.map((p) => p.url));
   if (knownUrls.has(reachedUrl)) {
     throw new Error(`replay reached ${reachedUrl} but discovered no page not already in the model`);
@@ -214,9 +242,10 @@ export async function extendAppModel(
 export async function refreshPageModel(
   model: AppModel,
   prefix: Step[],
-  creds?: Credentials
+  creds?: Credentials,
+  policy: CredentialPolicy = "full",
 ): Promise<AppModel> {
-  const { reachedUrl, pageModel } = await replayAndSnapshot(model, prefix, creds);
+  const { reachedUrl, pageModel } = await replayAndSnapshot(model, prefix, creds, policy);
   const pages = model.pages.filter((p) => p.url !== reachedUrl);
   return AppModel.parse({ ...model, pages: [...pages, pageModel] });
 }
@@ -272,7 +301,7 @@ export function isPureTextAssertion(step: Step): boolean {
  * fix. Returns the same IR unchanged whenever it can't confidently improve on it.
  */
 export async function groundTerminalTextAssertion(
-  ir: IR, model: AppModel, creds?: Credentials
+  ir: IR, model: AppModel, creds?: Credentials, policy: CredentialPolicy = "full",
 ): Promise<{ ir: IR; grounded: boolean; corrected: boolean }> {
   const last = ir.steps[ir.steps.length - 1];
   if (!isPureTextAssertion(last)) return { ir, grounded: false, corrected: false };
@@ -287,7 +316,7 @@ export async function groundTerminalTextAssertion(
     // function existed is returned verbatim, forever. Without the default, norm() below
     // throws on it, outside this try, escaping toIR's loop instead of degrading to
     // "leave the assertion alone" like every other failure here.
-    ({ pageText = "" } = await replayAndSnapshot(model, prefix, creds));
+    ({ pageText = "" } = await replayAndSnapshot(model, prefix, creds, policy));
   } catch (err: any) {
     console.log("[liveExtend] text-assertion grounding: replay failed, leaving assertion as-is:", err?.message ?? err);
     return { ir, grounded: false, corrected: false };

@@ -3,16 +3,16 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { plan } from "./stages/planner.js";
 import { discover, discoverPages } from "./stages/hybridDiscovery.js";
-import { toTestCases, generateCasesForNewPages } from "./stages/testCases.js";
+import { toTestCases, generateCasesForNewPages, selectCases, budgetFor } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
 import { GroqBudget } from "./llm/groqBudget.js";
 import { refreshPageModel } from "./stages/liveExtend.js";
 import {
-  credentialsFor, credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars,
+  credentialsFor, credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, credentialPolicyFor,
   type Credentials, type CredentialKind,
 } from "./stages/credentials.js";
 import { generateSpec } from "./stages/generator.js";
-import { runSpec, findScreenshot } from "./stages/executor.js";
+import { runSpec, findScreenshot, detectBlocked } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
@@ -178,7 +178,8 @@ export async function runPipeline(
         try {
           emit("heal", "started");
           const prefix = ir.steps.slice(0, failIdx);
-          const freshModel = await refreshPageModel(appModel, prefix, runCreds);
+          const primaryCredPolicy = credentialPolicyFor(primary, promptCarriesCredentials(prompt));
+          const freshModel = await refreshPageModel(appModel, prefix, runCreds, primaryCredPolicy);
           console.log("Calling toIR (heal)...");
           const { ir: healedIr } = await toIR(primary, freshModel, prompt, resolvedUrls[0], groqBudget, runCreds);
           console.log("Returned from toIR (heal)");
@@ -234,18 +235,36 @@ export async function runPipeline(
 
     // Merge upfront cases with any reactive cases generated for new pages
     let allCases = [...cases];
+    let reactiveCount = 0;
     if (newPages.length > 0) {
       emit("testcases", "started", { newPages: newPages.map(p => p.url) });
-      const reactiveCases = await generateCasesForNewPages(updatedAppModel, resolvedUrls, thePlan, prompt);
+      const reactiveCases = await generateCasesForNewPages(
+        updatedAppModel, resolvedUrls, thePlan, prompt, cases.map(c => c.title));
       if (reactiveCases.length > 0) {
         allCases = [...allCases, ...reactiveCases];
-        // Persist updated cases list
-        save("03-cases.json", allCases);
-        emit("testcases", "completed", { total: allCases.length, reactive: reactiveCases.length });
+        reactiveCount = reactiveCases.length;
       }
     }
 
-    const scopedCases = filterByScope(allCases, scope);
+    // Single selection authority over the merged list: dedup, then fill a hard budget by
+    // category diversity. Doing this per-batch inside toTestCases is what made one prompt
+    // yield 4 cases or 8, with the reactive batch restating the primary in different words.
+    const scopedCases = selectCases(filterByScope(allCases, scope), budgetFor(thePlan.coverage));
+    console.log(`Cases: ${allCases.length} generated -> ${scopedCases.length} selected`,
+      scopedCases.map(c => `${c.category}:${c.title}`));
+    save("03-cases.json", scopedCases);
+
+    // Announce the counts only AFTER selection. Emitting them before meant the UI reported
+    // "Generated 15 test scenarios" and then ran 4, with nothing connecting the two numbers.
+    emit("testcases", "completed", {
+      generated: allCases.length,
+      reactive: reactiveCount,
+      selected: scopedCases.length,
+      budget: budgetFor(thePlan.coverage),
+      // Kept so anything reading the old shape still sees a sane count — but it is now the
+      // number that actually RUNS, which is what "total" should always have meant here.
+      total: scopedCases.length,
+    });
     const primaryCaseResult: PrimaryCaseResult = {
       testCase: primary,
       ir: finalIr,
@@ -278,9 +297,19 @@ export async function runPipeline(
     const groqUsage = groqBudget.snapshot();
     save("08-groq-usage.json", groqUsage);
 
+    // Did the primary case end at a wall automation can't pass? That outranks pass/fail: the
+    // app isn't broken and the test didn't succeed, and the user needs to see the proof frame.
+    const blocked = detectBlocked(path.join(runDir, "artifacts"), originOf(resolvedUrls[0]));
+    const blockedScreenshotUrl = blocked?.screenshot
+      ? "/" + path.relative(".", blocked.screenshot).replace(/\\/g, "/")
+      : undefined;
+
     emit("done", "completed", {
-      passed: finalResult.passed, screenshotUrl, partial: finalIr.meta.truncated ?? false, healed,
-      status: (finalResult as any).status,
+      passed: blocked ? false : finalResult.passed,
+      screenshotUrl: blockedScreenshotUrl ?? screenshotUrl,
+      partial: finalIr.meta.truncated ?? false, healed,
+      status: blocked ? "blocked" : (finalResult as any).status,
+      blockedBy: blocked?.reason,
       truncationNote: finalIr.meta.truncationNote,
       // Plain-English record of what was actually tested, for the results panel — the IR/spec
       // are role+name/code, not something an end user should have to read to know what ran.
@@ -303,6 +332,11 @@ const rank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 }
 const byPriority = (a: { priority: string }, b: { priority: string }) => rank[a.priority] - rank[b.priority];
 
 /** Shared run-id format so the server can generate one before starting the pipeline. */
+/** Origin of a url, for deciding whether a flow left the application. */
+function originOf(url: string): string | undefined {
+  try { return new URL(url).origin; } catch { return undefined; }
+}
+
 export function makeRunId(): string {
   return new Date().toISOString().replace(/[:.]/g, "-") + "-" + randomUUID().slice(0, 8);
 }

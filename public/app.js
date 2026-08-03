@@ -43,9 +43,18 @@ const TEMPLATES = [
   { label: "Form validation test", prompt: "Find a form on the page and verify it shows validation errors when submitted with empty required fields." },
 ];
 
+// Labels are read by people who don't know what an assertion or a truncated IR is.
+// "Truncated"/"Partial (no assertion)" were pipeline vocabulary leaking into the UI.
 const STATUS_LABEL = {
-  passed: "Passed", failed: "Failed", error: "Error", incomplete: "Incomplete",
-  truncated: "Truncated", truncated_no_assertion: "Partial (no assertion)",
+  passed: "Passed",
+  failed: "Failed",
+  error: "Error",
+  incomplete: "Unconfirmed",
+  truncated: "Partial",
+  truncated_no_assertion: "Unconfirmed",
+  // Not a pass and not an app bug: the flow reached something automation can't get past,
+  // like an emailed verification code or an external sign-in provider.
+  blocked: "Blocked",
 };
 
 // -----------------------------------------------------------------------------
@@ -115,14 +124,14 @@ function renderPhases() {
     (p) => `
     <li data-phase="${p.key}" class="pending">
       <div class="phase-header">
-        <span class="dot"></span>
+        <span class="dot">${icon("clock", { size: 11 })}</span>
         <span class="label">${p.label}</span>
         <span class="phase-badge pending">Pending</span>
       </div>
-      <div class="phase-desc">${p.desc}</div>
-      <div class="summary-text"></div>
+      <p class="phase-desc">${p.desc}</p>
+      <p class="summary-text"></p>
       <details class="output hidden">
-        <summary>Technical Details (Developer View)</summary>
+        <summary>${icon("code", { size: 12 })} Technical details</summary>
         <pre></pre>
       </details>
     </li>`
@@ -140,14 +149,26 @@ function summarize(stage, data) {
         return `Discovered ${pagesCount} page(s)${conceptStr}`;
       }
       case "testcases": {
+        // Report generated AND selected, with the reason. Reporting only the generated count
+        // meant the UI said "Generated 15 test scenarios" and then ran 4, with nothing
+        // explaining the gap.
+        if (data.selected !== undefined && data.generated !== undefined) {
+          const reason = data.generated > data.selected
+            ? ` — duplicates removed, capped at ${data.budget ?? data.selected} for coverage`
+            : "";
+          return `Generated ${data.generated} scenarios → selected ${data.selected} to run${reason}`;
+        }
+        // Runs recorded before this event carried the counts (history is on disk forever).
         const count = data.total ?? data.length ?? 0;
         const extra = data.reactive ? ` (${data.reactive} reactive)` : "";
         return `Generated ${count} test scenarios${extra}`;
       }
       case "ir": return `Test Plan Model: ${data.meta?.title ?? ""}`;
       case "generate": return "Playwright test script generated successfully";
-      case "execute": return data.passed ? "✅ Test execution passed — All assertions verified" : "❌ Test execution failed";
-      case "heal": return data.healed ? "🔧 Self-healed — Repaired broken UI selector automatically" : "Attempted repair";
+      case "execute": return data.passed ? "The test ran and everything it checked was correct" : "The test ran and something didn’t match what was expected";
+      case "heal": return data.healed
+        ? "An element had moved on the page — the test found it again and carried on"
+        : "Tried to recover from a step that broke";
       case "suite": return data.summary ? `Suite Progress: ${data.summary.passed}/${data.summary.total} tests passed` : "";
       default: return "";
     }
@@ -170,17 +191,22 @@ function applyPhaseUI(phaseKey, phaseStatus, summaryText) {
   if (!li) return;
   li.className = phaseStatus;
   const badgeEl = li.querySelector(".phase-badge");
-  if (badgeEl) {
-    if (phaseStatus === "started") {
-      badgeEl.className = "phase-badge running";
-      badgeEl.textContent = "\u23f3 In Progress";
-    } else if (phaseStatus === "completed") {
-      badgeEl.className = "phase-badge done";
-      badgeEl.textContent = "\u2705 Complete";
-    } else if (phaseStatus === "failed") {
-      badgeEl.className = "phase-badge failed";
-      badgeEl.textContent = "\u274c Failed";
+  const dotEl = li.querySelector(".dot");
+  // Badge wording and the dot glyph are set together \u2014 they describe the same thing, and
+  // when they were set in separate places the dot kept showing a clock on finished steps.
+  const LOOK = {
+    started: { cls: "running", text: "Working", ic: "loader" },
+    completed: { cls: "done", text: "Done", ic: "check" },
+    failed: { cls: "failed", text: "Failed", ic: "x" },
+    pending: { cls: "pending", text: "Pending", ic: "clock" },
+  };
+  const look = LOOK[phaseStatus];
+  if (look) {
+    if (badgeEl) {
+      badgeEl.className = `phase-badge ${look.cls}`;
+      badgeEl.textContent = look.text;
     }
+    if (dotEl) dotEl.innerHTML = icon(look.ic, { size: look.ic === "check" ? 12 : 11 });
   }
   if (summaryText !== undefined) {
     const summaryEl = li.querySelector(".summary-text");
@@ -246,10 +272,7 @@ function renderSuiteProgress(suiteSummary, runningCaseId) {
   suiteProgressListEl.innerHTML = suiteSummary.cases.map((c, i) => {
     const isRunning = c.caseId === runningCaseId;
     const statusClass = isRunning ? "running" : c.status;
-    const statusIcon = isRunning ? "⏳" :
-      c.status === "passed" ? "✔" :
-        c.status === "failed" ? "✘" :
-          c.status === "truncated" ? "⚠" : "○";
+    const statusIcon = icon(isRunning ? "loader" : (STATUS_ICON[c.status] ?? "circle"), { size: 14 });
     return `
       <div class="suite-progress-item ${statusClass}">
         <span class="suite-progress-icon">${statusIcon}</span>
@@ -271,11 +294,12 @@ function renderSuiteSummaryHeader(suite) {
   if (!suite) return "";
   return `
     <div class="suite-summary-stats">
-      <span class="suite-stat">${suite.total} Total</span>
-      <span class="suite-stat suite-stat-passed">${suite.passed} Passed</span>
-      <span class="suite-stat suite-stat-failed">${suite.failed} Failed</span>
-      ${suite.truncated ? `<span class="suite-stat suite-stat-truncated">${suite.truncated} Truncated</span>` : ""}
-      ${suite.truncated_no_assertion ? `<span class="suite-stat suite-stat-partial">${suite.truncated_no_assertion} Partial</span>` : ""}
+      <span class="suite-stat">${suite.total} checks</span>
+      <span class="suite-stat suite-stat-passed">${icon("check", { size: 13 })} ${suite.passed} passed</span>
+      <span class="suite-stat suite-stat-failed">${icon("x", { size: 13 })} ${suite.failed} failed</span>
+      ${suite.truncated ? `<span class="suite-stat suite-stat-truncated">${icon("alert-triangle", { size: 13 })} ${suite.truncated} partial</span>` : ""}
+      ${suite.truncated_no_assertion ? `<span class="suite-stat suite-stat-partial">${icon("minus-circle", { size: 13 })} ${suite.truncated_no_assertion} unconfirmed</span>` : ""}
+      ${suite.blocked ? `<span class="suite-stat suite-stat-blocked">${icon("slash-circle", { size: 13 })} ${suite.blocked} blocked</span>` : ""}
     </div>`;
 }
 
@@ -299,7 +323,7 @@ function setupScreenshotToggle(suite, runId) {
   screenshotToggleEl.classList.toggle("hidden", !hasScreenshots);
   screenshotGridEl.innerHTML = renderScreenshotGrid(suite, runId);
   screenshotGridEl.classList.add("hidden");
-  screenshotToggleEl.textContent = "View All Screenshots";
+  screenshotToggleEl.innerHTML = `${icon("image", { size: 14 })} View all screenshots`;
 }
 
 // -----------------------------------------------------------------------------
@@ -307,14 +331,19 @@ function setupScreenshotToggle(suite, runId) {
 // -----------------------------------------------------------------------------
 
 function renderCaseCard(c, runId, index) {
-  const statusBadge = c.status === "passed" ? "badge-passed" :
-    c.status === "failed" ? "badge-failed" :
-      c.status === "truncated" ? "badge-truncated" :
-        c.status === "truncated_no_assertion" ? "badge-partial" : "badge-pending";
+  // One lookup, so the badge colour and the icon can never disagree about a status.
+  // "blocked" was absent from the old chain, which rendered a blocked case as a grey
+  // "pending" dot \u2014 the opposite of the point of having the status at all.
+  const BADGE = {
+    passed: "badge-passed", failed: "badge-failed", blocked: "badge-blocked",
+    truncated: "badge-truncated", truncated_no_assertion: "badge-partial",
+  };
+  const statusBadge = BADGE[c.status] ?? "badge-pending";
+  const statusIcon = icon(STATUS_ICON[c.status] ?? "circle", { size: 16 });
 
-  const statusIcon = c.status === "passed" ? "\u2714" :
-    c.status === "failed" ? "\u2718" :
-      c.status === "truncated" ? "\u26a0" : "\u25cb";
+  // Plain-English line: what this check actually proves. `intent` is the model's own words
+  // and is optional in the schema; `expected` is required, so it's the guaranteed fallback.
+  const whatItChecks = c.intent || c.expected || "";
 
   const caseDir = `/runs/${runId}/${c.resultPath}`;
   const screenshotUrl = c.screenshotUrl || "";
@@ -327,11 +356,15 @@ function renderCaseCard(c, runId, index) {
     <div class="case-card" data-case-id="${c.caseId}">
       <div class="case-card-header" role="button" tabindex="0">
         <span class="case-status-icon ${statusBadge}">${statusIcon}</span>
-        <span class="case-title">${escapeHtml(c.title)}</span>
+        <span class="case-heading">
+          <span class="case-title">${escapeHtml(c.title)}</span>
+          ${whatItChecks ? `<p class="case-intent">${escapeHtml(whatItChecks)}</p>` : ""}
+        </span>
         <span class="case-badge ${statusBadge}">${STATUS_LABEL[c.status] ?? c.status}</span>
-        <span class="case-expand-icon">\u25bc</span>
+        <span class="case-expand-icon">${icon("chevron-down", { size: 14 })}</span>
       </div>
       <div class="case-card-body hidden">
+        ${c.blockedBy ? `<p class="blocked-note">Couldn't finish: ${escapeHtml(c.blockedBy)}. The screenshot below is where it stopped.</p>` : ""}
         ${screenshotUrl ? `
         <figure class="case-screenshot">
           <img src="${screenshotUrl}" alt="screenshot for case ${index + 1}" loading="lazy"
@@ -339,18 +372,19 @@ function renderCaseCard(c, runId, index) {
           <figcaption>Final state</figcaption>
         </figure>` : ""}
         <div class="case-downloads">
-          <a href="${specUrl}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">Generated Spec</a>
-          <a href="${irUrl}" download="ir.json" class="dl-btn">IR JSON</a>
-          <a href="${resultUrl}" download="result.json" class="dl-btn">Result JSON</a>
-          <a href="${traceUrl}" class="dl-btn" target="_blank">Artifacts</a>
+          <a href="${specUrl}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">${icon("file-text", { size: 13 })} Test script</a>
+          <a href="${irUrl}" download="ir.json" class="dl-btn">${icon("braces", { size: 13 })} Test model (IR)</a>
+          <a href="${resultUrl}" download="result.json" class="dl-btn">${icon("download", { size: 13 })} Raw result</a>
+          <a href="${traceUrl}" class="dl-btn" target="_blank">${icon("external-link", { size: 13 })} Artifacts</a>
         </div>
         <details class="case-details">
-          <summary>Technical Details (Developer View)</summary>
+          <summary>${icon("code", { size: 13 })} Technical details</summary>
           <div class="case-details-content">
-            <h4>IR JSON</h4>
-            <pre class="case-ir">Loading...</pre>
-            <h4>Generated Playwright Spec</h4>
-            <pre class="case-spec">Loading...</pre>
+            ${c.groqCalls ? `<h4>Cost</h4><pre>${c.groqCalls} model call(s), ${c.groqTokens ?? 0} tokens</pre>` : ""}
+            <h4>Test model (IR)</h4>
+            <pre class="case-ir">Loading…</pre>
+            <h4>Generated Playwright spec</h4>
+            <pre class="case-spec">Loading…</pre>
           </div>
         </details>
       </div>
@@ -365,7 +399,8 @@ function setupCaseCardListeners() {
       const body = card.querySelector(".case-card-body");
       const isHidden = body.classList.contains("hidden");
       body.classList.toggle("hidden");
-      header.querySelector(".case-expand-icon").textContent = isHidden ? "▲" : "▼";
+      // The chevron is rotated by CSS via .case-card.open, so only the class needs to change.
+      header.closest(".case-card").classList.toggle("open", isHidden);
 
       // Lazy-load technical details on first expand
       if (isHidden && !card.dataset.loaded) {
@@ -422,16 +457,61 @@ function hideSuiteResults() {
 // Single-test backward-compatible rendering
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Verdict wording
+// -----------------------------------------------------------------------------
+
+/**
+ * One place for the headline sentence, used by both the live path and the replay path,
+ * which previously carried two copies of this copy that could drift.
+ *
+ * Written for someone who doesn't know what an assertion is. "Blocked" in particular must
+ * never read as a failure — the site is fine, the test simply hit something no automation
+ * can get past, like a code emailed to a human.
+ */
+function verdictFor(data, stage, error) {
+  const status = data?.status;
+  if (stage === "error") {
+    return { cls: "failed", ic: "alert-circle", head: "Something went wrong while running this",
+             detail: error || "" };
+  }
+  if (status === "blocked") {
+    return { cls: "blocked", ic: "slash-circle", head: "Couldn’t finish — the site needs something a test can’t provide",
+             detail: `${data?.blockedBy ?? "The flow hit a step automation can’t pass."} The screenshot below is where it stopped.` };
+  }
+  if (status === "truncated_no_assertion") {
+    return { cls: "incomplete", ic: "minus-circle", head: "Ran, but couldn’t confirm the result",
+             detail: "It stopped before it got far enough to check the outcome, so this isn’t a pass or a failure." };
+  }
+  if (data?.passed && data?.healed) {
+    return { cls: "passed", ic: "check", head: "Passed",
+             detail: "One element had moved on the page — the test found it again and carried on." };
+  }
+  if (data?.passed && data?.partial) {
+    return { cls: "passed", ic: "check", head: "Passed, as far as it could go",
+             detail: "Everything it was able to reach behaved correctly." };
+  }
+  if (data?.passed) {
+    return { cls: "passed", ic: "check", head: "Passed", detail: "Everything checked out." };
+  }
+  return { cls: "failed", ic: "x", head: "Failed",
+           detail: "The site didn’t do what this test expected. Details below." };
+}
+
+/** Paint the verdict heading from that description. */
+function paintVerdict(v) {
+  verdictEl.className = v.cls;
+  verdictEl.innerHTML =
+    `${icon(v.ic, { size: 20 })}<span>${escapeHtml(v.head)}` +
+    `${v.detail ? `<span class="verdict-detail">${escapeHtml(v.detail)}</span>` : ""}</span>`;
+}
+
 function renderSingleTestResult(data, stage, error) {
   finalResult.classList.remove("hidden");
   const passed = data?.passed;
   const partial = data?.partial;
   const healed = data?.healed;
-  verdictEl.textContent =
-    stage === "error" ? `⚠️ Pipeline error: ${error}` :
-      passed && healed ? "✅ Passed (self-healed — a locator broke and was automatically repaired; see below)" :
-        passed ? (partial ? "✅ Passed (partial — verified as far as the flow could be grounded)" : "✅ Passed") :
-          "❌ Failed";
+  paintVerdict(verdictFor(data, stage, error));
 
   const test = data?.test;
   if (test) {
@@ -476,11 +556,11 @@ function renderHistory(runs) {
       : "";
     return `
     <li class="history-item" data-run-id="${r.runId}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
-      <span class="badge ${r.status}">${STATUS_LABEL[r.status] ?? r.status}</span>
+      <span class="badge ${r.status}" title="${STATUS_LABEL[r.status] ?? r.status}">${icon(STATUS_ICON[r.status] ?? "circle", { size: 14 })}</span>
       <span class="hprompt">${escapeHtml(r.prompt || "(no prompt)")}</span>
       ${suiteInfo}
       <span class="hurl">${escapeHtml(r.url)}</span>
-      <button type="button" class="history-del" title="Delete this run" aria-label="Delete run">✕</button>
+      <button type="button" class="history-del" title="Delete this run" aria-label="Delete run">${icon("trash", { size: 13 })}</button>
     </li>`;
   }).join("");
 
@@ -581,20 +661,14 @@ function applyEvent(event, runId) {
 
   if (event.stage === "done" || event.stage === "error") {
     submitBtn.disabled = false;
-    submitBtn.textContent = "Run";
+    submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
 
     finalResult.classList.remove("hidden");
     const passed = event.data?.passed;
     const partial = event.data?.partial;
     const healed = event.data?.healed;
     const status = event.data?.status;
-    verdictEl.className = status === "truncated_no_assertion" ? "incomplete" : "";
-    verdictEl.textContent =
-      event.stage === "error" ? `⚠️ Pipeline error: ${event.error}` :
-        status === "truncated_no_assertion" ? "⚠️ Incomplete — didn't verify what you asked (stopped before reaching an assertion)" :
-          passed && healed ? "✅ Passed (self-healed — a locator broke and was automatically repaired; see below)" :
-            passed ? (partial ? "✅ Passed (partial — verified as far as the flow could be grounded)" : "✅ Passed") :
-              "❌ Failed";
+    paintVerdict(verdictFor(event.data, event.stage, event.error));
 
     if (status === "truncated_no_assertion" && event.data?.truncationNote) {
       diagnosisEl.textContent = event.data.truncationNote;
@@ -648,7 +722,7 @@ function applyEvent(event, runId) {
         const item = document.createElement("div");
         item.className = "suite-progress-item pending";
         item.innerHTML = `
-            <span class="suite-progress-icon">○</span>
+            <span class="suite-progress-icon">${icon("circle", { size: 14 })}</span>
             <span class="suite-progress-label">Case ${i + 1} / ${event.data.total}</span>
             <span class="suite-progress-title">Waiting…</span>`;
         suiteProgressListEl.appendChild(item);
@@ -669,7 +743,7 @@ function applyEvent(event, runId) {
       if (item) {
         item.dataset.caseId = caseId;
         item.className = "suite-progress-item running";
-        item.querySelector(".suite-progress-icon").textContent = "⏳";
+        item.querySelector(".suite-progress-icon").innerHTML = icon("loader", { size: 14 });
         if (event.data.title) {
           item.querySelector(".suite-progress-title").textContent = event.data.title;
         }
@@ -685,11 +759,10 @@ function applyEvent(event, runId) {
       if (item) {
         const statusClass = event.data.status || "passed";
         item.className = `suite-progress-item ${statusClass}`;
-        const icon = item.querySelector(".suite-progress-icon");
-        if (icon) {
-          icon.textContent = statusClass === "passed" ? "✔" :
-            statusClass === "failed" ? "✘" :
-              statusClass === "truncated" ? "⚠" : "✔";
+        // Named iconEl, not icon — a local `icon` would shadow the global icon() helper.
+        const iconEl = item.querySelector(".suite-progress-icon");
+        if (iconEl) {
+          iconEl.innerHTML = icon(STATUS_ICON[statusClass] ?? "check", { size: 14 });
         }
       }
     }
@@ -756,9 +829,11 @@ async function connectToRun(runId) {
     } catch {
       if (++fails === 5) {
         submitBtn.disabled = false;
-        submitBtn.textContent = "Run";
+        submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
         finalResult.classList.remove("hidden");
-        verdictEl.textContent = "⚠️ Lost contact with the server — retrying…";
+        paintVerdict({ cls: "incomplete", ic: "alert-triangle",
+          head: "Lost contact with the server",
+          detail: "Still trying to reconnect — the run may still be going." });
       }
     }
 
@@ -793,6 +868,31 @@ form.addEventListener("submit", async (e) => {
 // Init
 // -----------------------------------------------------------------------------
 
+// Static chrome icons — set once, here, so index.html stays free of inline SVG.
+document.getElementById("brandMark").innerHTML = icon("zap", { size: 18 });
+document.getElementById("newRunIcon").innerHTML = icon("plus", { size: 15 });
+document.getElementById("urlIcon").innerHTML = icon("globe", { size: 15 });
+document.getElementById("runIcon").innerHTML = icon("play", { size: 14 });
+document.getElementById("credIcon").innerHTML = icon("key", { size: 18 });
+
+// "New run" clears the workspace without a page reload, so an in-flight poll is abandoned
+// (pollGeneration is what stops the old loop touching the DOM again).
+document.getElementById("newRunBtn").addEventListener("click", () => {
+  pollGeneration++;
+  promptEl.value = "";
+  urlEl.value = "";
+  renderPhases();
+  hideSingleTestResult();
+  hideSuiteResults();
+  hideSuiteProgress();
+  hideCredentialPrompt();
+  diagnosisEl.textContent = "";
+  submitBtn.disabled = false;
+  submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
+  historyListEl.querySelectorAll(".history-item").forEach(i => i.classList.remove("active"));
+  promptEl.focus();
+});
+
 renderTemplates();
 renderPhases();
 loadHistory();
@@ -800,5 +900,7 @@ loadHistory();
 screenshotToggleEl.addEventListener("click", () => {
   const isOpen = !screenshotGridEl.classList.contains("hidden");
   screenshotGridEl.classList.toggle("hidden");
-  screenshotToggleEl.textContent = isOpen ? "View All Screenshots" : "Hide Screenshots";
+  screenshotToggleEl.innerHTML = isOpen
+    ? `${icon("image", { size: 14 })} View all screenshots`
+    : `${icon("chevron-down", { size: 14 })} Hide screenshots`;
 });

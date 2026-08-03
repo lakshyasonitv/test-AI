@@ -6,8 +6,9 @@ import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, Element, toLiteModel } from "../schema/appModel.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import {
-  credentialsFor, applyCredentials, shouldSkipCredentialSubstitution, NEGATIVE_CATEGORIES,
-  type Credentials,
+  credentialsFor, applyCredentials, credentialPolicyFor, promptCarriesCredentials,
+  credentialFieldMap,
+  NEGATIVE_CATEGORIES, type Credentials,
 } from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
@@ -169,6 +170,43 @@ export function trackPages(ir: IR, appModel: AppModel): PageTrail {
     }
   }
   return { pageAt, lastLinkHrefAt };
+}
+
+/**
+ * The URL the flow is on entering each step, carried forward.
+ *
+ * trackPages' own `pageAt` only resolves to pages the AppModel already contains, which is too
+ * strict here: a signup form reached by clicking "Sign up" often lives on a page discovery
+ * hasn't modelled yet, so pageAt stays parked on the entry page and the step looks like it's
+ * still on "/". `lastLinkHrefAt` knows the real destination of that click even when the page is
+ * unknown, so prefer it and carry it forward until something moves the flow again.
+ */
+export function legUrls(ir: IR, appModel: AppModel, entryUrl: string): (string | null)[] {
+  const trail = trackPages(ir, appModel);
+  const out: (string | null)[] = [];
+  let leg: string | null = entryUrl;
+  let prevPage: string | null = null;
+  for (let i = 0; i < ir.steps.length; i++) {
+    // pageAt only counts when it CHANGES. It resolves against pages the model already knows,
+    // so on a flow into an undiscovered page it sits frozen on the last known one — and
+    // letting it win every step would overwrite the destination carried forward from the link
+    // click that got us there. Seen exactly that: a signup flow's fill steps reverted from
+    // /register back to /, which is what decides whether they receive real credentials.
+    const page = trail.pageAt[i]?.url ?? null;
+    if (trail.lastLinkHrefAt[i]) leg = trail.lastLinkHrefAt[i];
+    else if (page && page !== prevPage) leg = page;
+    if (page) prevPage = page;
+    out[i] = leg;
+    // A navigate step moves the flow for every step AFTER it — including to a page the model
+    // has never seen, which trackPages' pageAt cannot represent (it resolves against known
+    // pages only and stays null otherwise).
+    const s = ir.steps[i];
+    if (s.action === "navigate" && s.target?.url) {
+      const resolved = resolveHref(appModel.baseUrl, s.target.url);
+      if (resolved) leg = resolved;
+    }
+  }
+  return out;
 }
 
 /**
@@ -341,12 +379,64 @@ export function assertionContradictsCase(
  * false pass is the most expensive failure mode a test tool has, because unlike a false
  * failure nobody goes and looks at it.
  */
-export function vacuousAssertion(ir: IR): { stepIds: string[]; message: string } | null {
+export function vacuousAssertion(ir: IR, appModel?: AppModel): { stepIds: string[]; message: string } | null {
   const NEEDS_VALUE = new Set(["url_contains", "text_contains", "text_equals"]);
   const offending = ir.steps.filter(s =>
     s.action === "assert" && s.assertion && NEEDS_VALUE.has(s.assertion) &&
     !(s.value ?? (s.assertion === "url_contains" ? s.target?.url : undefined) ?? "").trim()
   );
+
+  // A non-empty value can still be worthless. `url_contains "/"` compiles to
+  // `toHaveURL(new RegExp("/"))`, which matches every URL that has ever existed — that single
+  // assertion is why a run that was parked on an unpassable OTP screen reported PASSED.
+  const trivial = ir.steps.filter(s => {
+    if (s.action !== "assert" || s.assertion !== "url_contains") return false;
+    const v = (s.value ?? s.target?.url ?? "").trim();
+    if (!v) return false;                       // already covered above
+    if (v === "/" || v === "*") return true;
+    try { return new URL(v).pathname.replace(/\/+$/, "") === ""; } catch { /* relative path */ }
+    return false;
+  });
+
+  // Asserting the URL you explicitly navigated to, with nothing done in between.
+  //
+  // Deliberately narrow, and the narrowness is the whole point. Only a bare `navigate` makes
+  // this worthless — you told the browser where to go, so arriving proves nothing. If ANY
+  // action has happened since, the same assertion is meaningful and often the correct one:
+  //  - `click "Log in" → assert url_contains "/login"` verifies the link actually navigated;
+  //  - `fill → fill → click "Sign In" → assert url_contains "/login"` is exactly how you
+  //    assert a login was REJECTED.
+  // Both appear in real runs here, and an earlier version of this rule flagged both.
+  const notMoved: typeof ir.steps = [];
+  if (appModel) {
+    const legs = legUrls(ir, appModel, appModel.baseUrl);
+    const STATE_CHANGING = new Set(["click", "fill", "press", "select", "check"]);
+    let arrivedByNavigate = false;
+    let actedSinceArrival = false;
+    for (let i = 0; i < ir.steps.length; i++) {
+      const s = ir.steps[i];
+      if (s.action === "navigate") { arrivedByNavigate = true; actedSinceArrival = false; continue; }
+      if (STATE_CHANGING.has(s.action)) { actedSinceArrival = true; continue; }
+      if (s.action !== "assert" || s.assertion !== "url_contains") continue;
+      const v = (s.value ?? s.target?.url ?? "").trim();
+      if (!v || !(legs[i] ?? "").includes(v)) continue;
+      if (arrivedByNavigate && !actedSinceArrival) notMoved.push(s);
+    }
+  }
+
+  const all = [...new Set([...offending, ...trivial, ...notMoved])];
+  if (trivial.length || notMoved.length) {
+    const ids = all.map(s => s.id);
+    return {
+      stepIds: ids,
+      message:
+        `Step(s) ${ids.join(", ")} assert a URL condition that is already true and cannot fail ` +
+        `(e.g. url_contains "/" matches every page, or asserting the page you just navigated to ` +
+        `with no action in between). Assert something that is FALSE before the action and TRUE ` +
+        `only after it — a specific destination path, or an element that only appears once the ` +
+        `action has succeeded.`,
+    };
+  }
   if (!offending.length) return null;
   return {
     stepIds: offending.map(s => s.id),
@@ -396,6 +486,85 @@ export function urlAssertionError(ir: IR, appModel: AppModel): { index: number; 
  * — only the final step's action discriminator determines whether the test actually
  * verified anything before the ungrounded tail was cut off.
  */
+/**
+ * Reject an IR that doesn't actually perform what its test case describes.
+ *
+ * Caught in practice, and the reason this exists: a case titled "Log in with valid credentials"
+ * whose steps read "Click the 'Log in' link | Fill the login form with valid credentials |
+ * Click the 'Submit' button" compiled to navigate → click the link → assert that link is
+ * hidden. No fill, no submit. The final screenshot was an empty login form and the run reported
+ * PASSED. Nothing anywhere checked that the IR covered the case.
+ *
+ * Pure string comparison against the case's own words — no LLM, no browser.
+ */
+export function missingActions(ir: IR, testCase: TestCase): { message: string } | null {
+  const text = [testCase.title, ...(testCase.steps ?? []), testCase.expected ?? ""]
+    .join(" ").toLowerCase();
+  const has = (...actions: string[]) => ir.steps.some(s => actions.includes(s.action));
+  const missing: string[] = [];
+
+  if (/\b(fill|enter|type|input|provide|supply)\b|credential/.test(text) && !has("fill")) {
+    missing.push(`the case describes entering values, but the IR has no "fill" step`);
+  }
+  if (/\b(submit|click|press|tap|sign in|log ?in|continue)\b/.test(text) && !has("click", "press")) {
+    missing.push(`the case describes submitting or clicking, but the IR has no "click" or "press" step`);
+  }
+  if (!missing.length) return null;
+  return {
+    message:
+      `This IR does not carry out the test case: ${missing.join("; ")}. Emit a step for EVERY ` +
+      `action the case describes, in order, before the assertion. A test that skips the actions ` +
+      `it was written to perform verifies nothing, even when it passes.`,
+  };
+}
+
+/**
+ * Reject "click X, then assert X is hidden" when the click wasn't a form submission.
+ *
+ * The pattern is legitimate — and this file's own prompt recommends it — for a SUBMIT button:
+ * fill the form, press Sign In, and the button really is gone once login succeeds. It is
+ * meaningless for a navigation control. Caught in practice: a case titled "Navigate to
+ * registration page" compiled to `click button "Sign Up"` then `assert button "Sign Up" hidden`,
+ * which asserts nothing about the app — only whether that particular click happened to navigate.
+ *
+ * The discriminator is whether anything was typed first. Compare two real IRs that differ in
+ * nothing else: the login case had two fills before its click (legitimate, passed); the
+ * navigation case had none (meaningless, failed).
+ *
+ * The threshold is ZERO fills, not "fewer than two" — a single-field flow (one fill, then a
+ * "Continue" button) is a genuine submission and must stay legal.
+ */
+export function clickedElementHiddenAssertion(ir: IR): { stepIds: string[]; message: string } | null {
+  for (let i = 1; i < ir.steps.length; i++) {
+    const assertStep = ir.steps[i];
+    if (assertStep.action !== "assert" || assertStep.assertion !== "hidden") continue;
+    const clickStep = ir.steps[i - 1];
+    if (clickStep.action !== "click") continue;
+
+    const a = assertStep.target, c = clickStep.target;
+    if (!a?.role || !c?.role) continue;
+    if (norm(a.role) !== norm(c.role) || norm(a.name ?? "") !== norm(c.name ?? "")) continue;
+
+    let fillsBefore = 0;
+    for (let j = i - 2; j >= 0; j--) {
+      if (ir.steps[j].action === "navigate") break;   // a new page starts a new form
+      if (ir.steps[j].action === "fill") fillsBefore++;
+    }
+    if (fillsBefore > 0) continue;                     // a real submission — allowed
+
+    return {
+      stepIds: [assertStep.id],
+      message:
+        `Step ${assertStep.id} asserts that "${c.name}" is hidden immediately after clicking it, ` +
+        `but nothing was filled in first, so this is a navigation click and not a form ` +
+        `submission. Whether that control disappears is incidental and proves nothing. Assert ` +
+        `something about the DESTINATION instead — a heading or unique element on the page the ` +
+        `click leads to, or the URL changing to that page's specific path.`,
+    };
+  }
+  return null;
+}
+
 export function hasTerminalAssertion(steps: Step[]): boolean {
   if (steps.length === 0) return false;
   return steps[steps.length - 1].action === "assert";
@@ -415,7 +584,19 @@ export async function toIR(
   const { origin, pathname, search } = new URL(entryUrl);
   const entryPath = pathname + search || "/";
 
-  const cacheKey = makeCacheKey(JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel));
+  // Credentials are decided BEFORE the cache lookup because they belong in the key. The cached
+  // IR is stored post-substitution (see finalize below) and a cache hit returns immediately
+  // without running finalize — so a key that ignored credentials meant an IR generated once
+  // without them was replayed forever, silently discarding whatever the user supplied. The
+  // disk half of that cache never expires, so it would not have healed on its own.
+  const credPolicy = credentialPolicyFor(testCase, promptCarriesCredentials(sourcePrompt));
+  const creds = credPolicy === "none" ? undefined : (runCreds ?? credentialsFor(entryUrl));
+  // Never the secret itself: a secret run substitutes an env REFERENCE, so every such run
+  // produces a byte-identical IR and this marker fully discriminates. Demo accounts are
+  // published by the sites themselves, so keying on that username leaks nothing.
+  const credKey = creds ? `${credPolicy}:${creds.secret ? "env" : creds.username}` : "no-creds";
+  const cacheKey = makeCacheKey(
+    JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey);
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -426,6 +607,7 @@ Allowed actions: navigate, click, fill, select, check, press, wait, assert.
 Allowed assertions: visible, hidden, text_equals, text_contains, url_contains, enabled, disabled.
 
 Rules, follow exactly:
+- CARRY OUT THE WHOLE CASE. Every action the test case describes — each field it says to fill, each button it says to click — must appear as a step, in order, before the assertion. An IR that skips the fill steps and jumps to an assertion verifies nothing even when it passes, and will be rejected.
 - "id" is always a string like "s1", "s2", never a number.
 - "assertion" is a single string from the allowed list above — NEVER an object. Omit "assertion" entirely on steps whose action is not "assert".
 - Omit "target" entirely for steps that don't need one (e.g. a "wait" step); never set it to an empty string.
@@ -435,7 +617,8 @@ Rules, follow exactly:
 - A "navigate" step's target.url is a path RELATIVE to that origin (it gets concatenated onto baseUrl) — for the page under test here, that path is exactly "${entryPath}". Do not repeat the origin inside it.
 - "role" must be a real ARIA role (button, textbox, link, heading, checkbox, ...) for an element actually present in the application model. For asserting on plain visible text that ISN'T in the application model — e.g. an error/flash message that only appears after an action, so discovery never saw it — use target: { "text": "..." } instead. Never invent a role like "text" or "message".
 - A success assertion must be FALSE before the action and TRUE only after it — otherwise it verifies nothing. Never assert on a persistent, site-wide element (a header, logo, or nav bar that appears on every page regardless of state) as proof an action succeeded; it was already visible before the action too. In the application model, a decorative/structural element like this typically has no "concept" (empty or absent) — treat that as a signal to avoid it as a success assertion.
-- The application model only covers the page you start on, so you usually can't see the page an action like login navigates to. When you can't ground a success assertion on the destination page, assert instead that something from the STARTING page disappears because of the action — e.g. the login form's own submit button going "hidden" once login succeeds. That element is already in the model (grounded, no extra discovery needed), and is a real discriminator: visible before, gone after.
+- The application model only covers the page you start on, so you usually can't see the page an action like login navigates to. When you can't ground a success assertion on the destination page, assert instead that the FORM'S OWN SUBMIT BUTTON goes "hidden" after you submit it — e.g. the "Sign In" button once login succeeds. That element is already in the model, and is a real discriminator: visible before, gone after.
+- This applies ONLY to a submit button after an actual submission. Do NOT assert that a navigation link goes hidden after clicking it, and never use it as a substitute for performing the test: "click the Log in link, then assert the Log in link is hidden" carries out none of the case and verifies nothing.
 
 Negative-path rules (CRITICAL — read the test case's own "expected" field first):
 - Some test cases exist to prove an action FAILS: invalid password, empty required field, malformed email, SQL injection, unauthorized access. For these, the PASS condition is that the app REJECTED the input.
@@ -445,7 +628,8 @@ Negative-path rules (CRITICAL — read the test case's own "expected" field firs
 
 Navigation & Assertion rules (CRITICAL):
 - NEVER assert that the clicked link/button itself is "visible" after clicking it — that is redundant and proves nothing. The element was already visible (that's why you could click it).
-- After clicking a NAVIGATION link (role="link"), assert the result using "url_contains" (check the URL changed to the expected path) or assert a heading/unique text on the DESTINATION page. Do NOT re-assert the link you just clicked.
+- After clicking a NAVIGATION link (role="link"), assert a heading or unique text on the DESTINATION page. Use "url_contains" only with a SPECIFIC path that the click actually leads to. Do NOT re-assert the link you just clicked.
+- An assertion must be able to FAIL. Never assert url_contains "/" (it matches every page), and never assert the path you just navigated to when nothing has happened since — both pass no matter what the app does. Asserting you are STILL on a page after submitting a form is fine: that is a real result.
 - Each navigation path should be INDEPENDENT: if testing "Home -> About -> Academics", each branch should start with its own "navigate" step from the base URL, not chain clicks sequentially. Example: for testing About, start with navigate to "/" then click About. For testing Academics, start with a separate navigate to "/" then click Academics. This prevents cascading failures.
 - When a click triggers a page navigation, the assertion should verify the DESTINATION state (URL or heading), not the source element.
 
@@ -590,12 +774,13 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // carry the user's own literal values on purpose (their real email/password, or a
   // taxonomy-style deliberately-wrong one) — silently swapping in the demo account would
   // just relocate the "system overrides what I asked for" bug to a different field.
-  const creds = (testCase.fromPrompt || shouldSkipCredentialSubstitution(testCase))
-    ? undefined : (runCreds ?? credentialsFor(entryUrl));
   const finalize = (ir: IR): IR => {
     ir.meta.baseUrl = origin;
     ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
-    if (creds) applyCredentials(ir.steps, creds, testCase);
+    if (creds) {
+      applyCredentials(ir.steps, creds, credPolicy, legUrls(ir, currentModel, entryUrl),
+        credentialFieldMap(currentModel));
+    }
     llmCacheSet(cacheKey, ir);
     return ir;
   };
@@ -618,6 +803,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // live-extend failures that the model can't act on.
   let correction: string | undefined;
   let lastContradiction: { ir: IR; stepIds: string[]; message: string } | undefined;
+  /** Longest grounded prefix seen across all attempts — the fallback that keeps a run alive
+   *  when the attempt budget is spent extending the model rather than converging. */
+  let bestPartial: { ir: IR; steps: Step[]; note: string } | undefined;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (budget && !budget.hasBudget) {
@@ -648,7 +836,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     parsed.data.meta.baseUrl = origin;
     const ungrounded = groundingError(parsed.data, currentModel);
     if (!ungrounded) {
-      const vacuous = vacuousAssertion(parsed.data);
+      const vacuous = vacuousAssertion(parsed.data, currentModel);
       if (vacuous) {
         console.log("[ir] vacuous assertion rejected:", vacuous.message);
         lastErr = vacuous.message;
@@ -668,6 +856,23 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         continue;
       }
 
+      const clickedHidden = clickedElementHiddenAssertion(parsed.data);
+      if (clickedHidden) {
+        console.log("[ir] assert-hidden on a merely-clicked element rejected:", clickedHidden.message);
+        lastErr = clickedHidden.message;
+        correction = clickedHidden.message;
+        lastContradiction = { ir: parsed.data, ...clickedHidden };
+        continue;
+      }
+
+      const incomplete = missingActions(parsed.data, testCase);
+      if (incomplete) {
+        console.log("[ir] IR does not carry out the case:", incomplete.message);
+        lastErr = incomplete.message;
+        correction = incomplete.message;
+        continue;
+      }
+
       // A pure-text terminal assertion (the one kind groundingError can't check — no
       // role/name to match against the discovered model) is otherwise just an unvalidated
       // LLM guess. Replay the prefix, read the real page, and correct the guess when it's
@@ -675,7 +880,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // banner on a failing case" shape assertionContradictsCase below catches. Best-effort:
       // on replay failure this returns the IR unchanged and the existing guards still apply.
       if (isPureTextAssertion(parsed.data.steps[parsed.data.steps.length - 1])) {
-        const { ir: reground } = await groundTerminalTextAssertion(parsed.data, currentModel, creds);
+        const { ir: reground } = await groundTerminalTextAssertion(parsed.data, currentModel, creds, credPolicy);
         // Only take the correction if it doesn't turn a negative case into a success
         // assertion. groundTerminalTextAssertion picks the message-shaped page line closest
         // in length to the guess — on a negative case whose replay actually succeeded, that
@@ -702,11 +907,22 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     console.log("[ir] ungrounded step", ungrounded.index, ":", ungrounded.message);
     const prefix = parsed.data.steps.slice(0, ungrounded.index);
 
+    // Remember the best partial test seen so far. The graceful "ship the grounded prefix"
+    // return below is only reached when extension STOPS — so when every attempt ends in a
+    // successful extend-and-retry, the loop simply runs out of attempts and falls through to
+    // the hard throw at the end, killing the whole run. That is reachable with the shipped
+    // defaults (MAX_IR_ATTEMPTS=4 < MAX_LIVE_EXTENSIONS=5) and it happened: an 11-step
+    // signup+login+logout case died with "Step s10 targets ... Email Address" and produced
+    // no test at all, when 9 grounded steps were available to run.
+    if (prefix.length && prefix.length > (bestPartial?.steps.length ?? 0)) {
+      bestPartial = { ir: parsed.data, steps: prefix, note: ungrounded.message };
+    }
+
     if (extensions < MAX_EXTENSIONS && prefix.length) {
       try {
         const before = currentModel.pages.length;
         console.log("[ir] calling extendAppModel...");
-        currentModel = await extendAppModel(currentModel, prefix, creds);
+        currentModel = await extendAppModel(currentModel, prefix, creds, credPolicy);
         console.log("[ir] extendAppModel returned,", currentModel.pages.length, "pages");
         extensions++;
         console.log(`[ir] live-extend: replayed ${prefix.length} step(s) past "${ungrounded.message.split(",")[0]}" — app model ${before} -> ${currentModel.pages.length} pages (${currentModel.pages.at(-1)?.url})`);
@@ -716,7 +932,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           try {
             const before = currentModel.pages.length;
             console.log("[ir] calling refreshPageModel...");
-            currentModel = await refreshPageModel(currentModel, prefix, creds);
+            currentModel = await refreshPageModel(currentModel, prefix, creds, credPolicy);
             console.log("[ir] refreshPageModel returned,", currentModel.pages.length, "pages");
             extensions++;
             console.log(`[ir] refresh-page: refreshed page model at step ${prefix.length} — app model ${before} -> ${currentModel.pages.length} pages`);
@@ -779,5 +995,27 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       return { ir: finalize(stripped), updatedAppModel: currentModel };
     }
   }
+  // Attempts exhausted without ever reaching the in-loop truncation path (every attempt ended
+  // in a live extension, so the loop kept going until it ran out). Ship the longest grounded
+  // prefix instead of failing the entire run — a partial test that really exercised 9 steps is
+  // worth far more than a pipeline error, and it is reported honestly as truncated.
+  if (bestPartial) {
+    console.warn(
+      `[ir] attempts exhausted while still extending — shipping the grounded prefix ` +
+      `(${bestPartial.steps.length} of ${bestPartial.ir.steps.length} steps)`
+    );
+    const truncated: IR = {
+      ...bestPartial.ir,
+      steps: bestPartial.steps,
+      meta: {
+        ...bestPartial.ir.meta,
+        truncated: true,
+        truncationNote: bestPartial.note,
+        hasTerminalAssertion: hasTerminalAssertion(bestPartial.steps),
+      },
+    };
+    return { ir: finalize(truncated), updatedAppModel: currentModel };
+  }
+
   throw new Error(`IR failed schema validation after retry: ${lastErr}`);
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { strategyFor, classifyScope, filterByScope, ALL_SCOPES } from "../src/kb/testStrategy.js";
+import { strategyFor, classifyScope, filterByScope, ALL_SCOPES, normalizeCategory } from "../src/kb/testStrategy.js";
 import { Semaphore } from "../src/server/concurrency.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "../src/stages/promptSelectors.js";
 import { classify, findFailingStepId } from "../src/stages/classify.js";
@@ -142,5 +142,57 @@ describe("findFailingStepId", () => {
 
   it("returns null rather than guessing", () => {
     expect(findFailingStepId(ir, "no locator line here")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressions from run 2026-07-30T15-19-00-537Z-dcd09643, which produced 8 cases
+// (with a duplicated primary) and SQL-injection/XSS cases for a request that said
+// "functionality".
+// ---------------------------------------------------------------------------
+
+describe("scope + category routing", () => {
+  const REAL_PROMPT =
+    "Please perform a comprehensive test of the login and signup functionality for the application in url,";
+
+  // The old regex was \b(functional|functionalit)\b, which cannot match "functionality" —
+  // the trailing "y" blocks the closing word boundary — so the run silently kept both scopes.
+  it("classifies an inflected 'functionality' request as functional-only", () => {
+    expect(classifyScope(REAL_PROMPT)).toEqual(["functional"]);
+    expect(classifyScope("test the functionality of checkout")).toEqual(["functional"]);
+    expect(classifyScope("functionally verify the cart")).toEqual(["functional"]);
+  });
+
+  it("still detects security requests, and stays open when neither is named", () => {
+    expect(classifyScope("check for sql injection")).toEqual(["security"]);
+    expect(classifyScope("look for security vulnerabilities")).toEqual(["security"]);
+    expect(classifyScope("test the login page")).toEqual(["functional", "security"]);
+  });
+
+  // Free-text categories were the shared root cause of three bugs. These are the exact
+  // strings the model emitted in that run.
+  it("normalises the categories the model actually invented", () => {
+    expect(normalizeCategory("Security - SQL Injection")).toBe("security-injection");
+    expect(normalizeCategory("Security - XSS")).toBe("security-xss");
+    expect(normalizeCategory("Invalid input")).toBe("invalid-input");
+    expect(normalizeCategory("Valid credentials")).toBe("valid");
+    expect(normalizeCategory("Empty password")).toBe("empty-boundary");
+    expect(normalizeCategory(undefined)).toBe("functional-other");
+  });
+
+  // filterByScope used to KEEP any category it couldn't look up, so an invented security
+  // label sailed through a functional-only run.
+  it("drops security cases from a functional-only run", () => {
+    const cases = [
+      { title: "SQLi", category: "Security - SQL Injection" },
+      { title: "XSS", category: "Security - XSS" },
+      { title: "Bad password", category: "Invalid input" },
+    ];
+    expect(filterByScope(cases, ["functional"]).map(c => c.title)).toEqual(["Bad password"]);
+  });
+
+  it("never drops the case the user literally asked for", () => {
+    const cases = [{ title: "asked for", category: "Security - XSS", fromPrompt: true }];
+    expect(filterByScope(cases, ["functional"])).toHaveLength(1);
   });
 });

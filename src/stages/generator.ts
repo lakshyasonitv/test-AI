@@ -94,6 +94,53 @@ async function waitForAuthSettle(page) {
 `;
 
 // -----------------------------------------------------------------------------
+// Screenshot helper — capture a frame that is actually worth looking at
+// -----------------------------------------------------------------------------
+
+/**
+ * Screenshots taken immediately after an action came out solid white or ghost-faded, which is
+ * what a user sees as "blank and blurry".
+ *
+ * The cause is NOT paint timing, which was the obvious guess and is wrong: measured against the
+ * real site, the DOM is fully populated within a few milliseconds of `domcontentloaded`
+ * (233 characters of text, 751px of layout height) while the captured frame is still blank. The
+ * app fades its content in with JS-driven animation, so the pixels are near-transparent long
+ * after the DOM is complete. Waiting on load/fonts/DOM signals returns in 20-70ms and still
+ * captures the faded frame.
+ *
+ * `page.screenshot({ animations: "disabled" })` does not save us either — it freezes CSS
+ * animations and transitions, not animation driven from JavaScript.
+ *
+ * So the only signal that actually means "this page has stopped moving" is the pixels
+ * themselves: sample until two consecutive frames are identical. Measured cost — an animated
+ * page settles in ~750-950ms (4 samples), a static one in ~500ms (2 samples), versus a blind
+ * 2-3s delay that would be paid on every step of every case regardless.
+ */
+const SHOT_HELPER = `
+async function shot(page, path) {
+  const step = Number(process.env.SCREENSHOT_SETTLE_MS ?? 150);
+  const maxSamples = Number(process.env.SCREENSHOT_MAX_SAMPLES ?? 10);
+  await page.waitForLoadState("load", { timeout: 5000 }).catch(() => {});
+  await page.evaluate(() => document.fonts && document.fonts.ready.then(() => true)).catch(() => {});
+
+  let prev = null;
+  let buf = null;
+  for (let i = 0; i < maxSamples; i++) {
+    try {
+      buf = await page.screenshot({ animations: "disabled", caret: "hide" });
+    } catch {
+      break;   // page closed/navigating — keep whatever we already have
+    }
+    if (prev && buf.equals(prev)) break;
+    prev = buf;
+    await page.waitForTimeout(step);
+  }
+  // A screenshot is diagnostic output. It must never be able to fail a passing test.
+  try { if (buf) writeFileSync(path, buf); } catch {}
+}
+`;
+
+// -----------------------------------------------------------------------------
 // Self-healing locator helper — ARIA role → CSS fallback chain
 // -----------------------------------------------------------------------------
 
@@ -307,7 +354,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
       const label = stepLabel(step, i, ir.meta.baseUrl);
       const code = emitStep(step, ir.meta.baseUrl);
       const indented = code.split("\n").map((l) => "    " + l).join("\n");
-      return `    await test.step(${q(label)}, async () => {\n${indented}\n      await page.screenshot({ path: ${q(`${shotDir}/step-${i + 1}.png`)} });\n    });`;
+      return `    await test.step(${q(label)}, async () => {\n${indented}\n      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)});\n    });`;
     })
     .join("\n");
 
@@ -328,6 +375,10 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   );
 
   const helper = [
+    // Unconditional, unlike the others: every step calls shot(), so a `needsShot` flag could
+    // only ever be true — and if the splice order ever shifted it could compute false and emit
+    // a spec that calls an undefined function. Always-on cannot fail that way.
+    SHOT_HELPER,
     needsLocate ? LOCATE_HELPER : "",
     needsSafeClick ? SAFE_CLICK_HELPER : "",
     needsAuthSettle ? AUTH_SETTLE_HELPER : "",
@@ -336,6 +387,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     .join("\n\n");
 
   const spec = `import { test, expect } from "@playwright/test";
+import { writeFileSync } from "node:fs";
 
 ${ helper }
 
@@ -344,6 +396,17 @@ ${ helper }
 // Priority: ${ir.meta.priority}
 // Source: ${ir.meta.sourcePrompt}
 ${ truncNote }
+// Record where the flow actually ended up. Some apps stop automation dead — an emailed
+// verification code, an external OAuth provider — and a run that halts there must be reported
+// as blocked with proof, not as a pass or as a bug in the app. afterEach, not a final step, so
+// it still runs when the test fails.
+test.afterEach(async ({ page }) => {
+  try {
+    const text = await page.locator("body").innerText({ timeout: 5000 });
+    writeFileSync(${q(`${shotDir}/final-page.txt`)}, page.url() + "\\n" + text.slice(0, 4000));
+  } catch { /* best effort: never fail a test over its own postscript */ }
+});
+
   test(${ q(ir.meta.title)
 }, async ({ page }) => {
 ${ body }

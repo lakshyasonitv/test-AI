@@ -1,22 +1,23 @@
 # Architecture Reference
 
-This is the technical reference for the AI test automation platform. It covers the two discovery/crawling systems, every source file with its role, data contracts, LLM integration, and key design decisions.
+This is the technical reference for the AI test automation platform. It covers every source file
+with its role, data contracts, LLM integration, and key design decisions.
 
-For the narrative version of design decisions, see [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md).
+For a quick-read project statement, a detailed architecture diagram, and honest current-state
+bullets, see [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md).
 
 ---
 
 ## Table of Contents
 
 1. [Pipeline Overview](#pipeline-overview)
-2. [Two Crawlers: Crawl4AI vs Playwright BFS](#two-crawlers)
-3. [Discovery Fallback Chain](#discovery-fallback-chain)
-4. [Source Files by Module](#source-files)
-5. [Schema Contracts](#schema-contracts)
-6. [LLM Integration](#llm-integration)
-7. [Frontend & Server](#frontend--server)
-8. [Key Design Decisions](#key-design-decisions)
-9. [Current Gaps](#current-gaps)
+2. [Discovery Fallback Chain](#discovery-fallback-chain)
+3. [Source Files by Module](#source-files)
+4. [Schema Contracts](#schema-contracts)
+5. [LLM Integration](#llm-integration)
+6. [Frontend & Server](#frontend--server)
+7. [Key Design Decisions](#key-design-decisions)
+8. [Current Gaps](#current-gaps)
 
 ---
 
@@ -24,78 +25,26 @@ For the narrative version of design decisions, see [PROJECT_OVERVIEW.md](PROJECT
 
 ```
 prompt + url
-  -> Planner (LLM)                    -> high-level test plan
-  -> Discovery (hybrid)                -> app model: elements as accessibility role + name
-       |_ Crawl4AI (primary)           -> fast DOM extraction, no LLM needed
-       |_ Playwright + Aria (fallback) -> accessibility snapshot + interactive elements
-       |_ Gemini Vision (last resort)  -> only for canvas/captcha/image-heavy pages
-  -> Structured Test Cases (LLM)      -> full coverage suite (valid/invalid/boundary/security)
+  -> Planner (Gemini)                 -> structured test plan
+  -> Discovery                        -> app model: elements as accessibility role + name
+       |_ DOM extraction (primary)     -> cheerio over page.content(), no LLM needed
+       |_ Gemini Vision (fallback)     -> only when DOM extraction finds nothing usable
+  -> Structured Test Cases (Gemini)   -> full coverage suite (valid/invalid/boundary/security)
   -> Primary-case selection           -> fromPrompt case, else highest priority
-  -> IR generation (LLM) + grounding  -> strict JSON test model (the contract)
-       \_ live-extend (on demand)      -> reaches + models pages beyond the entry page
+  -> IR generation (Groq) + grounding -> strict JSON test model (the contract)
+       \_ credentialPolicyFor(case)    -> full / identifier-only / none, from case wording,
+                                          computed before any credential ever gets substituted
+       \_ live-extend (on demand)      -> reaches + models pages beyond the entry page,
+                                          policy-aware during replay
+       \_ text-assertion grounding     -> replays the terminal step, corrects a wrong-worded
+                                          guess against the real page
        \_ truncation (fallback)        -> a real, partial test instead of a hard failure
-  -> Reactive coverage generation     -> generate cases for newly-discovered pages
   -> Playwright Generator (no AI)     -> *.spec.ts with per-step test.step() blocks
-  -> Execution Engine (no AI)         -> run + collect per-step artifacts
+  -> Suite Runner (no AI)             -> every case in its own Playwright test()/browser context
   -> Failure Analysis (LLM, vision)   -> diagnosis (only on failure)
        \_ Deterministic classifier    -> pattern-matches Playwright errors first (free)
        \_ Gemini fallback             -> only for ambiguous cases
-       \_ Bounded self-heal (<=1x)    -> re-snapshot + regenerate + re-run once
-```
-
----
-
-## Two Crawlers: Crawl4AI vs Playwright BFS
-
-These are two completely separate crawlers that serve different purposes. They do not share code or logic.
-
-### Crawl4AI (Discovery Service)
-
-| Aspect | Detail |
-|--------|--------|
-| **Location** | `discovery-service/crawler.py` (Python), `src/stages/domDiscovery.ts` (TypeScript client) |
-| **Language** | Python 3.11+ |
-| **Libraries** | Crawl4AI (primary), httpx + BeautifulSoup (fallback) |
-| **Purpose** | Single-page DOM extraction for discovery — converts one URL into structured element data |
-| **Scope** | One URL per request, no traversal |
-| **BFS logic** | None — crawls only the requested URL |
-| **Rendering** | Full headless Chromium via Crawl4AI's built-in browser |
-| **Output** | Structured elements (forms, buttons, links, nav, tables, images, accessibility), page markdown, `needsVision` flag |
-| **Fallback chain** | Crawl4AI -> httpx plain HTTP GET -> BeautifulSoup parse |
-| **Caching** | Disk cache in `.discovery-cache/`, SHA256-keyed |
-| **When to use** | Standard HTML pages with forms/buttons/links; server-rendered sites; reducing LLM token usage |
-| **When NOT to use** | Canvas/image-heavy pages (needs vision anyway); quick one-offs where fallback is fine; if Python setup is a hassle |
-| **Service** | FastAPI on port 8000 (`/crawl`, `/health`), auto-started by `domDiscovery.ts` if not running |
-| **Total size** | ~1,023 lines across 3 files |
-
-### Playwright BFS Crawler
-
-| Aspect | Detail |
-|--------|--------|
-| **Location** | `src/stages/crawler.ts` |
-| **Language** | TypeScript |
-| **Libraries** | Playwright (Chromium), `modelFromAria` from `discovery.ts` for on-demand labeling |
-| **Purpose** | Full-site breadth-first traversal — maps an entire site for `mode: "crawl"` |
-| **Scope** | Entry URL + all reachable pages up to `maxPages` and `maxDepth` |
-| **BFS logic** | Queue-based BFS with visited set, depth tracking, and deduplication |
-| **Rendering** | Playwright Chromium |
-| **Output** | `SiteGraph` — list of pages with titles, raw ARIA snapshots, outbound links, optional AppModel per page |
-| **Labeling** | Lazy — `labelPage()` calls `modelFromAria()` on demand with LLM cache deduplication |
-| **When to use** | Full-site crawl mode (`--crawl` flag); testing entire site navigation; site mapping |
-| **Total size** | ~162 lines (single file, no service) |
-
-### Which to Use
-
-```
-Is this a standard HTML page with forms/buttons/links?
-  YES -> Use Crawl4AI discovery (default, auto-tried first)
-  NO  -> Does it need vision (canvas, captcha, image-heavy)?
-          YES -> Vision fallback (auto-selected by hybridDiscovery)
-          NO  -> Still use Crawl4AI (it falls back to httpx + BeautifulSoup)
-
-Do you need to crawl the entire site (multiple pages)?
-  YES -> Use --crawl flag (Playwright BFS)
-  NO  -> Single-page discovery (Crawl4AI or vision fallback)
+       \_ Bounded self-heal (<=1x)    -> re-snapshot (policy-aware) + regenerate + re-run once
 ```
 
 ---
@@ -107,102 +56,111 @@ The hybrid discovery orchestrator (`hybridDiscovery.ts`) tries these in order:
 ```
 1. AppModel cache hit?  -> Return immediately (zero cost)
      |
-2. Crawl4AI DOM path    -> POST to localhost:8000/crawl (auto-starts service if needed)
+2. DOM extraction path  -> domDiscovery.ts drives Playwright to fetch page.content(),
+     |                      domExtract.ts (cheerio) parses it into structured elements
      |                      + Gemini concept labeling (text-only, no screenshot)
-     |                      = Fast, deterministic structure, ~1 Gemini call
+     |                      = Fast, deterministic structure, ~1 Gemini call, no service to run
      |
 3. If DOM returns null   -> Gemini Vision fallback
-   (service down,          = Playwright ARIA snapshot + JPEG screenshot
-    error, timeout)          + Gemini with image input
-                           = Slow, token-heavy, but works for everything
+   (no usable elements)    = Playwright ARIA snapshot + JPEG screenshot
+                           + Gemini with image input
+                           = Slow, token-heavy, but works for everything (canvas, captcha,
+                             icon-only controls with no accessible name or text)
 ```
 
-The `needsVisionFallback()` flag is set by the Python crawler when it detects canvas, embed/object, image-heavy pages, or CAPTCHA text. In that case, the DOM result is still used for structure, but vision is also consulted — the `discoveryMethod` becomes `"hybrid"`.
+`domExtract.ts` is a 1:1 Node port of an earlier Python/Crawl4AI implementation (`discovery-service/`,
+now deleted) — same extraction logic, same output shape, no external service, no Python. The
+`needsVision` signal is set when the extracted page has canvas/embed/image-heavy content or CAPTCHA
+text; in that case the DOM result still supplies structure but vision is also consulted, and
+`discoveryMethod` becomes `"hybrid"`.
 
 ---
 
 ## Source Files
 
-### `src/stages/` — Pipeline Stages (18 files, ~3,925 lines)
+### `src/stages/` — Pipeline Stages (17 files, ~5,378 lines)
 
 | File | Lines | LLM? | Purpose |
 |------|------:|:-----:|---------|
-| `hybridDiscovery.ts` | 260 | Gemini (text) | Discovery orchestrator: Crawl4AI first, vision fallback |
-| `domDiscovery.ts` | 652 | No | Crawl4AI service client + auto-start logic + response conversion |
-| `discovery.ts` | 399 | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel |
-| `crawler.ts` | 162 | No | BFS site crawler for full-site crawl mode |
-| `crawlDirective.ts` | 18 | No | Maps Plan -> CrawlDirective schema |
+| `authSettle.ts` | 43 | No | Post-auth SPA redirect handling |
 | `planner.ts` | 72 | Gemini | NL request -> structured Plan |
-| `testCases.ts` | 235 | Gemini | Coverage suite + reactive generation |
-| `ir.ts` | 379 | Groq | TestCase -> IR with grounding + truncation |
-| `liveExtend.ts` | 130 | No | Browser replay to discover new pages |
-| `targetResolver.ts` | 206 | No | IR Target -> Playwright Locator with fallbacks |
-| `generator.ts` | 295 | No | IR -> Playwright spec (pure code) |
-| `executor.ts` | 199 | No | Runs spec, captures artifacts |
-| `classify.ts` | 147 | No | Deterministic failure classifier |
-| `failureAnalysis.ts` | 167 | Gemini + Vision | Failure diagnosis (fallback only) |
-| `failure/ruleAnalysis.ts` | 72 | No | Rule-based failure pre-filter |
-| `suiteRunner.ts` | 225 | No | Runs all cases, per-case artifacts |
-| `authSettle.ts` | 44 | No | Post-auth SPA redirect handling |
-| `credentials.ts` | 69 | No | Demo site credential substitution |
+| `targetResolver.ts` | 95 | No | IR Target -> Playwright Locator with fallbacks |
+| `promptSelectors.ts` | 98 | No | Honors selectors the user wrote directly into their prompt |
+| `classify.ts` | 146 | No | Deterministic failure classifier |
+| `failureAnalysis.ts` | 176 | Gemini + Vision | Failure diagnosis (fallback only) |
+| `executor.ts` | 259 | No | Runs spec, captures artifacts |
+| `hybridDiscovery.ts` | 268 | Gemini (text) | Discovery orchestrator: DOM first, vision fallback |
+| `suiteRunner.ts` | 300 | No | Runs every case in its own browser context, per-case artifacts |
+| `testCases.ts` | 339 | Gemini | Coverage suite generation, capped by `MAX_CASES_PER_RUN` |
+| `discovery.ts` | 354 | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
+| `liveExtend.ts` | 358 | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding |
+| `domDiscovery.ts` | 386 | No | Drives Playwright to fetch page HTML, hands it to `domExtract.ts` |
+| `generator.ts` | 418 | No | IR -> Playwright spec (pure code) |
+| `credentials.ts` | 439 | No | Demo credentials + full/identifier-only/none substitution policy |
+| `domExtract.ts` | 606 | No | Cheerio DOM extraction — Node port of the deleted Python parser |
+| `ir.ts` | 1021 | Groq | TestCase -> IR: grounding, credential policy, live-extend, truncation |
 
-### `src/schema/` — Data Contracts (4 files, ~320 lines)
-
-| File | Lines | Purpose |
-|------|------:|---------|
-| `appModel.ts` | 230 | Element, PageModel, AppModel + DOM-structured types + `toLiteModel` |
-| `ir.ts` | 56 | Target, Step (action/assertion enums), IR with truncation tracking |
-| `siteGraph.ts` | 20 | SiteGraph, SiteGraphPage — crawl output structure |
-| `crawlDirective.ts` | 14 | CrawlDirective — entry URL, scope limits, intent hints |
-
-### `src/` Core (4 files, ~630 lines)
+### `src/schema/` — Data Contracts (2 files, ~295 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
-| `orchestrator.ts` | 343 | Pipeline wiring: plan -> discovery -> test cases -> IR -> generate -> execute -> heal -> suite |
+| `appModel.ts` | 234 | Element, PageModel, AppModel + DOM-structured types + `toLiteModel` |
+| `ir.ts` | 61 | Target, Step (action/assertion enums), IR with truncation tracking |
+
+### `src/` Core (3 files, ~563 lines)
+
+| File | Lines | Purpose |
+|------|------:|---------|
+| `orchestrator.ts` | 342 | Pipeline wiring: plan -> discovery -> test cases -> IR -> generate -> execute -> heal -> suite |
 | `runStore.ts` | 183 | File-backed per-run NDJSON event log with SSE replay + fallback reconstruction |
-| `cli.ts` | 41 | CLI entry point: parses flags, calls `runPipeline` |
-| `config.ts` | 63 | Centralized timeouts, retries, Playwright settings, selector fixes |
+| `cli.ts` | 38 | CLI entry point: parses `--prompt`/`--url`/`--urls`/`--coverage`, calls `runPipeline` |
 
-### `src/llm/` — LLM Layer (6 files, ~314 lines)
+Timeouts, retries, and other constants that used to live in a single `config.ts` are now inline
+per-stage (mostly env-overridable — see `README.md`'s Configuration section and `.env.example`).
+
+### `src/llm/` — LLM Layer (6 files, ~360 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
-| `gemini.ts` | 54 | Google Gemini client (REST API, key-pool rotation, backoff) |
-| `groq.ts` | 40 | Groq/Llama client (OpenAI-compatible REST API, key-pool rotation, backoff) |
+| `gemini.ts` | 59 | Google Gemini client (REST API, key-pool rotation, backoff) |
+| `groq.ts` | 65 | Groq client (OpenAI-compatible REST API, key-pool rotation, backoff) |
 | `keyPool.ts` | 39 | Round-robin API key pool with cooldown tracking |
-| `backoff.ts` | 72 | Exponential backoff with rate-limit detection + key rotation |
+| `groqBudget.ts` | 55 | Per-run hard cap on Groq calls; usage recorded to `08-groq-usage.json` |
+| `backoff.ts` | 133 | Exponential backoff, per-attempt timeout, rate-limit detection + key rotation |
 | `json.ts` | 9 | Strip markdown fences and parse JSON from LLM output |
-| `embeddings.ts` | 107 | Gemini text-embedding client with LRU + disk cache + cosine similarity |
 
-### `src/kb/` — Knowledge Base (4 files, ~267 lines)
-
-| File | Lines | Purpose |
-|------|------:|---------|
-| `cache.ts` | 19 | SHA1-keyed file-based AppModel cache |
-| `llmCache.ts` | 42 | Two-tier LLM response cache (in-memory LRU + disk, 30-min TTL) |
-| `testStrategy.ts` | 156 | Static QA knowledge: coverage taxonomy, scope classification, filtering |
-| `siteOutline.ts` | 50 | Depth-first SiteGraph text outline for LLM context injection |
-
-### `src/server/` — Web Server (3 files, ~173 lines)
+### `src/kb/` — Knowledge Base (3 files, ~278 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
-| `index.ts` | 77 | Express: `/api/runs` CRUD, SSE stream, polling, static files |
+| `cache.ts` | 38 | SHA1-keyed file-based AppModel cache |
+| `llmCache.ts` | 42 | Two-tier LLM response cache (in-memory, 30-min TTL + disk, no expiry) |
+| `testStrategy.ts` | 198 | Static QA knowledge: coverage taxonomy, scope classification, filtering |
+
+### `src/server/` — Web Server (4 files, ~225 lines)
+
+| File | Lines | Purpose |
+|------|------:|---------|
+| `concurrency.ts` | 36 | In-process semaphore: caps concurrent runs, queues overflow |
 | `runRegistry.ts` | 37 | SSE fan-out: broadcasts events, replays history on connect |
-| `concurrency.ts` | 59 | In-process semaphore: caps concurrent runs, queues overflow |
+| `pendingCredentials.ts` | 55 | Parks a paused run's credential prompt in memory; resolved by the UI's answer or `CREDENTIAL_WAIT_MS` timeout |
+| `index.ts` | 97 | Express: `/api/runs` CRUD, credential-prompt endpoint, SSE stream, polling, static files |
 
-### `public/` — Frontend (3 files, ~1,098 lines)
+### `public/` — Frontend (5 files, ~1,822 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
-| `app.js` | 735 | Single-page app: run form, phase UI, suite cards, history |
-| `style.css` | 299 | Dark theme, responsive design |
-| `index.html` | 64 | Minimal HTML shell |
+| `icons.js` | 90 | Inline SVG icon set |
+| `index.html` | 143 | Single-page HTML shell |
+| `preview.js` | 108 | Static preview/demo states for UI development |
+| `style.css` | 575 | Dark theme, responsive design |
+| `app.js` | 906 | Single-page app: run form, phase UI, suite cards, history |
 
 ---
 
 ## Schema Contracts
+
+Two Zod schemas, `src/schema/appModel.ts` and `src/schema/ir.ts` (295 lines combined).
 
 ### AppModel (the discovery output)
 
@@ -211,41 +169,41 @@ AppModel
   pages: PageModel[]
     url, title, discoveryMethod: "dom" | "vision" | "hybrid"
     elements: Element[]
-      role: "link" | "button" | "textbox" | "checkbox" | "radio" | ...
-      name: string
-      selector: string (CSS)
-      details: string (optional — placeholder, href, etc.)
+      role, name (accessibility role + name — the primary identity)
+      concept?           e.g. "login-email", "search-box" — used for taxonomy matching
+      css?                deterministic selector, NEVER invented by an LLM — set by
+                          discovery for elements with an empty/synthetic accessible name
+      visible?, enabled?, containerRole?, containerName?, pageSection?, path?, order?
+    forms?: DomForm[]      structured <form> extraction: fields (inputType, placeholder,
+                          label, required, ...) — this is what credentialFieldMap reads to
+                          tell a password field from a username field on an unlabelled form
+    domLinks?, navigation?: DomLink[] / NavigationItem[]  — raw link/nav structure
 ```
 
-This is the shared language between discovery, planning, test-case generation, IR grounding, and target resolution. Every stage reads or writes AppModels.
+This is the shared language between discovery, planning, test-case generation, IR grounding, and
+target resolution. Every stage reads or writes AppModels.
 
 ### IR (the execution contract)
 
 ```
 IR
-  meta: { truncated: boolean, ... }
+  meta: { feature, title, priority, sourcePrompt, baseUrl,
+          truncated?, truncationNote?, hasTerminalAssertion? }
   steps: Step[]
-    action: "click" | "fill" | "press" | "select" | "navigate" | "assert_text" | ...
-    target: { selector: string, role?: string, name?: string, fallbacks?: string[] }
+    id: string
+    action: "navigate" | "click" | "fill" | "select" | "check" | "press" | "wait" | "assert"
+    target?: { url?, role?, name?, nth?, label?, text?, placeholder?, testId?, css? }
+              -- css is written in code during grounding (copied from a verified AppModel
+                 element), never produced by the LLM directly
     value?: string
-    assertion?: { kind: "text_present" | "url_contains" | "visible" | "value_is", expected: string }
-    screenshot?: string (step filename)
-    grounded?: boolean
-    needsLiveExtend?: boolean
+    assertion?: "visible" | "hidden" | "text_equals" | "text_contains" |
+                "url_contains" | "enabled" | "disabled"
+    preAction?: { action: "hover" | "click", target: Target }
 ```
 
-The Generator reads this contract and emits Playwright code. The Executor runs it. Failure analysis inspects it step-by-step.
-
-### SiteGraph (the crawl output)
-
-```
-SiteGraph
-  pages: SiteGraphPage[]
-    url, title
-    rawAriaSnapshot: string
-    outboundLinks: string[]
-    appModel?: AppModel (lazily populated)
-```
+The Generator reads this contract and emits Playwright code (one `test.step()` per Step). The
+Executor runs it. Failure analysis inspects it step-by-step. `truncated`/`hasTerminalAssertion`
+are what let a partially-grounded IR ship as a real, honest partial test instead of a hard failure.
 
 ---
 
@@ -254,16 +212,15 @@ SiteGraph
 | Stage | Model | Input | Output | When Used |
 |-------|-------|-------|--------|-----------|
 | Planner | Gemini (`gemini-2.5-flash`) | Prompt + URL | Plan (steps, scope, coverage) | Every run, 1 call |
-| Concept labeling | Gemini (`gemini-2.5-flash`) | DOM element list + markdown | Labeled AppModel | DOM discovery path, 1 call per page |
+| Concept labeling | Gemini (`gemini-2.5-flash`) | DOM element list | Labeled AppModel | DOM discovery path, 1 call per page |
 | Vision discovery | Gemini (`gemini-2.5-flash`) | ARIA snapshot + JPEG screenshot | AppModel | Fallback only, 1 call per page |
 | Test cases | Gemini (`gemini-2.5-flash`) | Plan + AppModel + strategy | TestCase[] | Every run, 1 call |
-| IR generation | Groq (`openai/gpt-oss-120b`) | TestCase + AppModel + site outline | IR (JSON) | Every run, up to `MAX_IR_ATTEMPTS` (default 4) calls per case |
-| Failure analysis | Gemini (`gemini-2.5-flash`) | Error + ARIA + screenshots | Diagnosis | Only on failure, 0-1 calls |
-| Embeddings | Gemini (`text-embedding-004`) | Element role+name | Vector (768d) | Optional semantic matching |
+| IR generation | Groq (`openai/gpt-oss-120b`) | TestCase + AppModel + sourcePrompt | IR (JSON) | Every run, up to `MAX_IR_ATTEMPTS` (default 4) calls per case, hard-capped run-wide by `MAX_GROQ_CALLS_PER_RUN` (default 60) |
+| Failure analysis | Gemini (`gemini-2.5-flash`) | Error + ARIA + screenshots | Diagnosis | Only on failure, and only when the deterministic classifier can't resolve it |
 
-**Key rotation:** Both Gemini and Groq clients use `keyPool.ts` for round-robin key selection with cooldown. `backoff.ts` handles rate-limit detection, exponential delay, and key penalization (up to 6 attempts).
+**Key rotation:** Both Gemini and Groq clients use `keyPool.ts` for round-robin key selection with cooldown. `backoff.ts` handles rate-limit detection, exponential delay, key penalization, and a per-attempt abort (`LLM_TIMEOUT_MS`, default 45s) so a hung fetch can't stall a run indefinitely.
 
-**Caching:** `llmCache.ts` provides a two-tier cache (in-memory LRU + disk persistence, 30-min TTL) keyed by SHA1 of concatenated inputs. Avoids duplicate LLM calls for identical prompts across runs.
+**Caching:** `llmCache.ts` provides a two-tier cache — in-memory (30-min TTL) + disk (no expiry) — keyed by a hash of concatenated inputs. Avoids duplicate LLM calls for identical inputs across runs. The disk half's lack of expiry has bitten this project more than once: a cache key that omits a real input dimension (e.g. credential policy) can silently serve stale results forever — see credential-policy fixes in the project history.
 
 ---
 
@@ -272,19 +229,23 @@ SiteGraph
 ### Server Architecture
 
 ```
-Express (port 3000)
-  POST /api/runs              -> starts pipeline (via concurrency semaphore)
-  GET  /api/runs/:id/state    -> polling endpoint (for Cloudflare tunnels)
-  GET  /api/runs/:id/events   -> SSE event stream (for localhost)
-  DELETE /api/runs/:id        -> remove run
-  GET  /api/history           -> list all runs (newest first)
-  /                           -> static files (public/)
+Express (port 3000, PORT env)
+  POST   /api/runs                     -> starts pipeline (via concurrency semaphore)
+  POST   /api/runs/:runId/credentials  -> answers a paused run's credential prompt
+                                           (never logged, never written to disk)
+  GET    /api/runs/:runId/state        -> polling endpoint (for Cloudflare tunnels)
+  GET    /api/runs/:runId/events       -> SSE event stream (for localhost)
+  GET    /api/runs                     -> list all runs (newest first)
+  DELETE /api/runs/:runId              -> remove a run
+  /                                    -> static files (public/)
 ```
 
 ### Frontend Architecture
 
 Single-page HTML/JS/CSS app (`public/`):
-- **Run form:** prompt, URL, coverage dropdown, crawl toggle
+- **Run form:** prompt, URL, coverage dropdown
+- **Credential prompt:** appears when a run pauses waiting for login details; submitted values go
+  straight into the paused pipeline's memory, never through `runStore`/disk
 - **Phase pipeline:** 4 phases (Plan & Discover, Generate & Execute, Analyze, Report) with live aggregate status
 - **Suite progress:** per-case status, lazy-loaded details, screenshots, download buttons
 - **History panel:** newest 20 runs, each deletable
@@ -300,16 +261,16 @@ Single-page HTML/JS/CSS app (`public/`):
 
 | Decision | Rationale |
 |----------|-----------|
-| **Two separate crawlers** | Crawl4AI (Python) is fast and DOM-deterministic for single-page discovery. Playwright BFS (TypeScript) handles full-site traversal. They solve different problems and don't share code. |
-| **DOM-first discovery** | Crawl4AI extracts structured elements without LLM tokens. Vision is expensive and slow — used only when DOM fails or for canvas/captcha pages. |
+| **DOM-first discovery** | `domExtract.ts` extracts structured elements without LLM tokens. Vision is expensive and slow — used only when DOM extraction finds nothing usable (canvas/captcha/icon-only controls). |
 | **Deterministic failure classifier** | Pattern-matching on Playwright error text is free and instant. Gemini vision diagnosis is used only for ambiguous cases. |
-| **Bounded self-heal** | `MAX_EXTENSIONS = 2` page hops, 1 heal attempt per test case. Prevents infinite loops and runaway LLM usage. |
-| **Truncation as fallback** | A partial real test is better than a hard failure. IR truncation + `truncated_no_assertion` terminal guard ensures execution always happens. |
-| **Intent-aware credentials** | "Invalid password" test cases get their literal values preserved, while normal flows get credential substitution for demo sites. |
-| **LLM caching everywhere** | Same prompt -> same response. File + memory cache with 30-min TTL deduplicates across runs and stages. |
+| **Bounded self-heal** | `MAX_LIVE_EXTENSIONS` (default 5) page hops, 1 heal attempt per test case, policy-aware re-snapshot. Prevents infinite loops and runaway LLM usage. |
+| **Truncation as fallback** | A partial real test is better than a hard failure. IR truncation + `hasTerminalAssertion` guard ensures execution always happens on real, grounded steps. |
+| **Credential policy is decided per case, from the case's own wording, before any substitution** | A boolean ("substitute or not") can't express a good negative-password test, which needs the identifier real but the password wrong. `credentialPolicyFor` returns `full` / `identifier-only` / `none`; getting the check order right matters (identifier-at-fault must be vetoed before the broader password-at-fault check, or a malformed-email case gets its email silently "fixed"). Currently case-scoped, not leg-scoped — a case with TWO login attempts in one browser session is a known open edge. |
+| **Secrets never reach disk** | User-supplied (non-demo) credentials become `${env:...}` references in the IR/generated spec; the real value is injected only into the Playwright child process's environment at execution time. `runs/` is served as static files, so this is a hard requirement, not a nicety. |
+| **LLM caching, two-tier** | Same input -> same response. In-memory (30-min TTL) + disk (no expiry) deduplicates across runs and stages — the cache key must include every real input dimension, or a result gets served stale forever (this has been a recurring bug source). |
 | **Key rotation with cooldown** | Multiple API keys with round-robin selection and rate-limit cooldown prevents single-key exhaustion. |
 | **SSE + polling dual mode** | SSE for localhost (real-time), polling for Cloudflare tunnels (which buffer SSE). |
-| **Auto-start discovery service** | `domDiscovery.ts` spawns the Python service if not running, removing a manual step. |
+| **Isolated per-case execution** | Every case in a suite gets its own Playwright `test()` — a fresh browser context, so one case's login session can't leak into the next case's assumptions. |
 
 ---
 
@@ -317,10 +278,11 @@ Single-page HTML/JS/CSS app (`public/`):
 
 | Gap | Impact | Status |
 |-----|--------|--------|
-| No server authentication | Anyone with the URL can start runs and browse artifacts | Documented in ENTERPRISE.md |
-| Credential substitution on demo hosts | "Invalid password" cases still get overwritten on saucedemo/herokuapp | Intent-awareness works but has edge cases |
+| No server authentication | Anyone with the URL can start runs and browse artifacts | Open |
+| Cross-leg credential handling for multi-attempt cases | A case that logs in for real, then tries a second (wrong-credential) login in the same browser session, can substitute the real credential into the wrong attempt if the model doesn't order the real attempt last — confirmed in production | Open, diagnosed, fix not yet implemented |
+| Failure diagnosis step attribution | `analyzeFailure` reported a different `failingStepId` than a run's raw Playwright trace actually showed, confirmed against a real run | Open, not yet investigated |
 | No end-to-end self-heal test | Self-heal is verified in code but not against a real drifted site | Pending manual verification |
-| No multi-user isolation | Single-process, no per-user runs or quotas | Documented in ENTERPRISE.md |
+| No multi-user isolation | Single-process, shared run history, no per-user quotas | Open |
+| Assertion quality beyond the terminal step | The case's final pure-text assertion is grounded against the live page; a mid-case free-text assertion has no equivalent check yet | Open |
 | Playwright generator is pure code | No LLM used for spec generation (intentional) | Feature, not a gap |
-| Assertion quality | Prompt-nudged, not code-level validated | Known limitation |
 | Cloudflare tunnel buffering | SSE events delayed; UI uses polling as workaround | Works, not a blocker |

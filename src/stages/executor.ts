@@ -190,6 +190,60 @@ async function executePlaywright(
 }
 
 /** Best-effort: find a screenshot in the artifacts tree (for Failure Analysis vision). */
+/**
+ * Things an automated test cannot get past, no matter how well written: a verification code
+ * emailed to a human, an SMS one-time code, a CAPTCHA. A run that ends on one of these has not
+ * passed and has not found a bug — it has hit a wall, and saying so with a screenshot is the
+ * only honest report.
+ *
+ * Deliberately does NOT include "continue with google": that button sits on the login page
+ * itself, so matching it against final page text would mark every ordinary login case blocked.
+ * OAuth counts only when the flow actually left the app's origin, which is checked separately.
+ */
+const VERIFICATION_GATE =
+  /check your email|verification code|verify your email|6[- ]digit|one[- ]time (code|password)|\bOTP\b|enter the code|captcha|recaptcha/i;
+
+export interface BlockedInfo {
+  /** Plain-English reason, for the UI. */
+  reason: string;
+  /** The step screenshot showing the wall — the proof. */
+  screenshot: string | null;
+}
+
+/**
+ * Did this test end somewhere automation cannot continue from? Reads the `final-page.txt` the
+ * generated spec writes in its afterEach hook (url on the first line, visible text after).
+ * Returns null when nothing blocked it, which is the normal case.
+ */
+export function detectBlocked(artifactsDir: string, appOrigin?: string): BlockedInfo | null {
+  const f = path.join(artifactsDir, "final-page.txt");
+  if (!existsSync(f)) return null;
+  let body = "";
+  try { body = readFileSync(f, "utf8"); } catch { return null; }
+  const [finalUrl = "", ...rest] = body.split("\n");
+  const text = rest.join("\n");
+
+  let reason: string | null = null;
+  if (VERIFICATION_GATE.test(text)) {
+    reason = "the flow reached a verification step that needs a code sent to a real inbox or phone, " +
+      "which an automated test can't read";
+  } else if (appOrigin && finalUrl && !finalUrl.startsWith(appOrigin)) {
+    try {
+      reason = `the flow left the application for ${new URL(finalUrl).host}, an external sign-in ` +
+        `provider the test can't complete`;
+    } catch { /* unparseable url — not a reliable signal, fall through */ }
+  }
+  if (!reason) return null;
+
+  // Prefer the LAST step screenshot: that's the frame showing the wall itself.
+  const shots = existsSync(artifactsDir)
+    ? readdirSync(artifactsDir).filter(n => /^step-\d+\.png$/.test(n))
+      .sort((a, b) => Number(a.match(/\d+/)![0]) - Number(b.match(/\d+/)![0]))
+    : [];
+  const screenshot = shots.length ? path.join(artifactsDir, shots[shots.length - 1]) : findScreenshot(artifactsDir);
+  return { reason, screenshot };
+}
+
 export function findScreenshot(dir: string): string | null {
   if (!existsSync(dir)) return null;
   const stack = [dir];
