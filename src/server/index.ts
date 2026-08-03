@@ -1,7 +1,7 @@
 import express from "express";
 import path from "node:path";
 import { rmSync } from "node:fs";
-import { runPipeline, makeRunId } from "../orchestrator.js";
+import { runPipeline, makeRunId, resumePipeline } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
 import { listRuns } from "../runStore.js";
 import { Semaphore } from "./concurrency.js";
@@ -33,6 +33,29 @@ app.post("/api/runs", (req, res) => {
   // Hand back the runId immediately; the run waits for a free slot, then executes.
   // Over-cap runs sit queued (UI shows pending) until a slot frees — no dropped requests.
   runLimit.run(() => runPipeline({ prompt, url, urls, coverage, mode }, record, runId))
+    .catch(() => { /* failure already emitted as an "error" event */ });
+  res.status(202).json({ runId });
+});
+
+// ADDED: resume a paused run with the login/signup data the user just supplied.
+// Only reached when the pipeline previously emitted a "needs_input" event (see
+// orchestrator.ts's classifyAuthNeed check) — resumePipeline() reloads the saved
+// plan + appModel from disk and continues straight into testCases, skipping a
+// second plan/discovery pass entirely.
+app.post("/api/runs/:runId/credentials", (req, res) => {
+  const { runId } = req.params;
+  const { username, password, confirmPassword } = req.body ?? {};
+
+  if (!/^[\dT-]+Z-[0-9a-f]{8}$/.test(runId)) {
+    return res.status(400).json({ error: "invalid runId" });
+  }
+  if (!username || !password) {
+    return res.status(400).json({ error: "username and password are required" });
+  }
+  // confirmPassword is optional — only meaningful when the paused stage was a signup
+  // form; resumePipeline/toIR simply won't use it for a login-only case.
+
+  runLimit.run(() => resumePipeline(runId, { username, password, confirmPassword }, record))
     .catch(() => { /* failure already emitted as an "error" event */ });
   res.status(202).json({ runId });
 });

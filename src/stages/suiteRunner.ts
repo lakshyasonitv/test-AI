@@ -10,6 +10,7 @@ import type { OnEvent, StageEvent } from "../orchestrator.js";
 import { store } from "../runStore.js";
 import type { ExecResult } from "./executor.js";
 import type { IR } from "../schema/ir.js";
+import type { Credentials } from "./credentials.js";
 
 /** Already-computed result for the primary case, passed in from the main pipeline
  *  so runSuite can reuse it instead of regenerating IR and re-executing. */
@@ -54,7 +55,8 @@ export async function runSuite(
   sourcePrompt: string,
   entryUrl: string,
   onEvent?: OnEvent,
-  primaryResult?: PrimaryCaseResult
+  primaryResult?: PrimaryCaseResult,
+  credentials?: Credentials
 ): Promise<CaseRunResult[]> {
   const results: CaseRunResult[] = [];
   const runId = path.basename(runDir);
@@ -130,7 +132,7 @@ export async function runSuite(
         console.log("Running:", tc.title);
 
         console.log("Generating IR...");
-        const { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl);
+        const { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl, credentials);
         console.log("IR generated");
         const irPath = path.join(caseDir, "04-ir.json");
         writeFileSync(irPath, JSON.stringify(ir, null, 2));

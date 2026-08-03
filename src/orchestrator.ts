@@ -1,96 +1,28 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import { plan } from "./stages/planner.js";
+import { plan, type Plan } from "./stages/planner.js";
+import { discover, discoverPages } from "./stages/discovery.js";
 import { crawlSite, labelPage } from "./stages/crawler.js";
 import { buildCrawlDirective } from "./stages/crawlDirective.js";
 import { buildSiteOutline } from "./kb/siteOutline.js";
-import { discover, discoverPages } from "./stages/hybridDiscovery.js";
-import { toTestCases, generateCasesForNewPages } from "./stages/testCases.js";
-import { toIR, type IRResult } from "./stages/ir.js";
+import { toTestCases, generateCasesForNewPages, type TestCase } from "./stages/testCases.js";
+import { toIR } from "./stages/ir.js";
 import { refreshPageModel } from "./stages/liveExtend.js";
-import { credentialsFor } from "./stages/credentials.js";
+import { credentialsFor, type Credentials } from "./stages/credentials.js";
 import { generateSpec } from "./stages/generator.js";
 import { runSpec, findScreenshot } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 import { filterByScope, ALL_SCOPES } from "./kb/testStrategy.js";
-import type { IR, Step } from "./schema/ir.js";
-
-/**
- * Post-process IR to fix known issues with duplicate selectors, URL assertions, etc.
- * This applies quick fixes for common problems that the LLM might generate.
- */
-function postProcessIR(ir: IR): IR {
-  // Known problematic links that should be skipped or have special handling
-  const skipLinks = ['About SKIT', 'javascript:void(0)', '#'];
-
-  // Fix duplicate selectors by adding nth field
-  const duplicateFixes: Record<string, number> = {
-    'Student': 1,  // Use second occurrence (0-indexed)
-    'IQAC': 0,     // Use first occurrence
-  };
-
-  // Fix URL patterns that need partial matching
-  const urlPartialPatterns = ['/about'];
-
-  // Process each step
-  ir.steps = ir.steps.map(step => {
-    // Skip steps with problematic links
-    if (step.target?.name && skipLinks.includes(step.target.name)) {
-      // Mark as skip or adjust target
-      if (step.target.name === 'About SKIT') {
-        // This link often redirects to home, use partial URL matching
-        if (step.assertion === 'url_contains' && step.value?.includes('/about')) {
-          step.value = step.value.replace('/about', '');
-          step.value = step.value || '/';
-        }
-      }
-    }
-
-    // Fix duplicate selectors
-    if (step.target?.name && duplicateFixes[step.target.name] !== undefined) {
-      // Only add nth if not already specified
-      if (step.target.nth === undefined) {
-        step.target.nth = duplicateFixes[step.target.name];
-      }
-    }
-
-    // Fix URL assertions to use partial matching when appropriate
-    if (step.assertion === 'url_contains' && step.value) {
-      for (const pattern of urlPartialPatterns) {
-        if (step.value.includes(pattern)) {
-          // Already using url_contains, which is partial by nature
-          // Just ensure the pattern is reasonable
-          break;
-        }
-      }
-    }
-
-    // Add preAction for dropdown menu items
-    const dropdownParents = ['Academics', 'Admissions', 'Research', 'Placements'];
-    if (step.action === 'click' && step.target?.role === 'link' &&
-      dropdownParents.includes(step.target.name || '')) {
-      // This might be a dropdown parent - add hover preAction if not already present
-      if (!step.preAction) {
-        step.preAction = {
-          action: 'hover',
-          target: { ...step.target }
-        };
-      }
-    }
-
-    return step;
-  });
-
-  return ir;
-}
+import type { AppModel } from "./schema/appModel.js";
 
 export type StageName =
   | "input" | "plan" | "discovery" | "testcases" | "ir"
   | "generate" | "execute" | "failure_analysis" | "heal"
-  | "suite" | "done" | "error";
+  | "suite" | "done" | "error"
+  | "needs_input";
 
 export interface StageEvent {
   runId: string;
@@ -102,18 +34,18 @@ export interface StageEvent {
 }
 
 export type OnEvent = (e: StageEvent) => void;
-
 export type Coverage = "minimal" | "standard" | "full";
 
-export async function runPipeline(
-  { prompt, url, urls, coverage, mode }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; mode?: "crawl" },
-  onEvent: OnEvent = () => { },
-  presetRunId?: string
-) {
-  // Normalize: single `url` becomes `urls: [url]`; both provided means `urls` wins.
-  const resolvedUrls = urls?.length ? urls : url ? [url] : [];
-  if (!resolvedUrls.length) throw new Error("Either url or urls must be provided");
-  const runId = presetRunId ?? makeRunId();
+interface RunContext {
+  runId: string;
+  runDir: string;
+  onEvent: OnEvent;
+  save: (name: string, data: unknown) => void;
+  emit: (stage: StageName, status: StageEvent["status"], data?: unknown, error?: string) => void;
+  step: <T>(stage: StageName, filename: string | null, fn: () => Promise<T>) => Promise<T>;
+}
+
+function makeContext(runId: string, onEvent: OnEvent): RunContext {
   const runDir = path.join("runs", runId);
   mkdirSync(runDir, { recursive: true });
 
@@ -122,11 +54,10 @@ export async function runPipeline(
 
   const emit = (stage: StageName, status: StageEvent["status"], data?: unknown, error?: string) => {
     const event: StageEvent = { runId, stage, status, data, error, ts: Date.now() };
-    store.append(event); // durable log first, so a crash mid-callback still records the event
+    store.append(event);
     onEvent(event);
   };
 
-  /** Wrap a stage: emit started -> run -> save -> emit completed (or failed). */
   async function step<T>(stage: StageName, filename: string | null, fn: () => Promise<T>): Promise<T> {
     emit(stage, "started");
     try {
@@ -140,13 +71,70 @@ export async function runPipeline(
     }
   }
 
+  return { runId, runDir, onEvent, save, emit, step };
+}
+
+/**
+ * Classify whether a discovered page needs login or signup data — based on the actual
+ * FIELDS present, not the page's free-text "concept" label. Concepts come from an LLM
+ * (see discovery.ts's labelConcepts) and are unpredictable ("Login", "Authentication",
+ * "Account Access", "Member Sign In", ...) — regex-matching that label is a losing game
+ * of whack-a-mole. A password-shaped textbox is a hard, unambiguous signal regardless of
+ * what the page happens to be labeled: any page with one needs credentials to fill it.
+ *
+ * "login" vs "signup" is distinguished by the presence of a confirm-password field — the
+ * same signal credentials.ts's credentialForTarget already uses for substitution, so
+ * detection and substitution now agree on one rule instead of two independent ones.
+ */
+function classifyAuthNeed(appModel: AppModel): "login" | "signup" | null {
+  const textboxes = appModel.pages.flatMap(p => p.elements).filter(e => e.role === "textbox");
+
+  const looksLikePassword = (e: { name?: string; containerName?: string }) => {
+    const name = (e.name ?? "").toLowerCase();
+    const container = (e.containerName ?? "").toLowerCase();
+    if (/pass(word)?|pwd/.test(name) || /pass(word)?|pwd/.test(container)) return true;
+    // Masked placeholder heuristic: password-type inputs with no real label often get
+    // their displayed dot/asterisk mask captured as "name" by discovery instead of a
+    // semantic label (seen in practice: name === "*********").
+    if (/^[*•●]{4,}$/.test(e.name ?? "")) return true;
+    return false;
+  };
+
+  const hasPasswordField = textboxes.some(looksLikePassword);
+  if (!hasPasswordField) return null;
+
+  const hasConfirmPasswordField = textboxes.some(e => {
+    const name = (e.name ?? "").toLowerCase();
+    const container = (e.containerName ?? "").toLowerCase();
+    return /confirm/.test(name + " " + container) && looksLikePassword(e);
+  });
+  return hasConfirmPasswordField ? "signup" : "login";
+}
+
+function requiredFieldsFor(authType: "login" | "signup"): string[] {
+  return authType === "signup"
+    ? ["username", "password", "confirmPassword"]
+    : ["username_or_email", "password"];
+}
+
+export async function runPipeline(
+  { prompt, url, urls, coverage, mode, credentials }:
+    { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; mode?: "crawl"; credentials?: Credentials },
+  onEvent: OnEvent = () => {},
+  presetRunId?: string
+) {
+  const resolvedUrls = urls?.length ? urls : url ? [url] : [];
+  if (!resolvedUrls.length) throw new Error("Either url or urls must be provided");
+  const runId = presetRunId ?? makeRunId();
+  const ctx = makeContext(runId, onEvent);
+  const { save, emit, step, runDir } = ctx;
+
   try {
-    save("00-input.json", { prompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
+    save("00-input.json", { prompt, url: resolvedUrls[0], urls: resolvedUrls, coverage, mode });
     emit("input", "completed", { prompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
 
     const thePlan = await step("plan", "01-plan.json", () => plan(prompt, resolvedUrls[0], coverage));
-    // Crawl mode: produce appModel via crawlSite + labelPage (only entry page labeled).
-    // Non-crawl mode: existing discover/discoverPages path, unchanged.
+
     let siteGraph: import("./schema/siteGraph.js").SiteGraph | undefined;
     let siteOutline: string | undefined;
 
@@ -157,187 +145,239 @@ export async function runPipeline(
         siteOutline = buildSiteOutline(siteGraph);
         save("02-sitegraph.json", siteGraph);
         save("02-siteoutline.txt", siteOutline);
-        // Label only the entry page — other pages stay unlabeled until
-        // test case generation selects them (lazy, Phase 2d).
         const entryPage = siteGraph.pages[resolvedUrls[0]];
         if (!entryPage) throw new Error(`Entry URL ${resolvedUrls[0]} not found in crawl results`);
         return labelPage(entryPage, resolvedUrls[0], siteOutline);
       }
       return resolvedUrls.length === 1 ? discover(resolvedUrls[0]) : discoverPages(resolvedUrls);
     });
-    console.log("1. Discovery completed");
 
-    console.log("2. Generating test cases...");
-    const cases = await step("testcases", "03-cases.json", () => toTestCases(thePlan, appModel));
-    console.log("✓ Test cases:", cases.length);
-
-    // Prefer the case tagged as the direct translation of the user's own request over pure
-    // severity ranking — "priority" orders coverage cases for an eventual multi-case run, but
-    // at a single execution slot the highest-severity taxonomy case (e.g. SQL injection,
-    // always "critical") was silently outranking and replacing whatever the user actually
-    // asked to test. Fall back to priority if the model didn't tag one (never crash on it).
-    const primary = cases.find((c) => c.fromPrompt) ?? [...cases].sort(byPriority)[0];
-    if (!primary) throw new Error("No test cases produced");
-
-    console.log("Generating IR for primary case:", primary.title);
-    const { ir: rawIr, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0]));
-    console.log("IR generated");
-
-    // Post-process IR to fix known issues
-    const ir = postProcessIR(rawIr);
-    console.log("IR post-processed");
-
-    console.log("Generating spec...");
-    const spec = await step("generate", null, async () => generateSpec(ir));
-    console.log("Spec generated");
-    writeFileSync(path.join(runDir, "generated.spec.ts"), spec);
-
-    let finalSpecCode = spec;
-
-    console.log("Running Playwright for primary case...");
-    const result = await step("execute", "05-result.json", async () => {
-      const r = await runSpec(spec, runDir);
-      return { passed: r.passed, exitCode: r.exitCode, artifactsDir: r.artifactsDir, resultsJsonPath: r.resultsJsonPath, raw: r.raw };
-    });
-    console.log("Playwright finished:", result.passed ? "PASSED" : "FAILED");
-
-    // A truncated IR whose surviving prefix has no terminal assertion cannot report
-    // "passed" — the dropped tail may have contained the only assertion, so Playwright's
-    // passing verdict is a false positive. This check is independent of the real-failure
-    // diagnosis path below (which only triggers on actual Playwright failures).
-    const truncatedNoAssertion = !!(ir.meta.truncated && !ir.meta.hasTerminalAssertion);
-
-    let diagnosis = null;
-    let finalResult = result;
-    let finalIr = ir;
-    let healed = false;
-
-    if (!result.passed) {
-      diagnosis = await step("failure_analysis", "06-diagnosis.json", () => analyzeFailure(ir, result as any));
-
-      const healable = diagnosis.category === "selector_changed" || diagnosis.category === "element_missing";
-      const failIdx = diagnosis.failingStepId ? ir.steps.findIndex((s) => s.id === diagnosis!.failingStepId) : -1;
-
-      // A step with no real prefix (first step, or an id toIR never emitted) has nothing to
-      // replay from — skip healing. Capped at exactly one attempt total, no loop: this only
-      // runs once, only on an already-failed run with a matching diagnosis category.
-      if (healable && failIdx > 0) {
-        try {
-          emit("heal", "started");
-          const prefix = ir.steps.slice(0, failIdx);
-          const freshModel = await refreshPageModel(appModel, prefix, credentialsFor(resolvedUrls[0]));
-          console.log("Calling toIR (heal)...");
-          const { ir: healedIr } = await toIR(primary, freshModel, prompt, resolvedUrls[0]);
-          console.log("Returned from toIR (heal)");
-
-          // A heal that truncates isn't a heal: it means the failing step still can't be
-          // grounded even against a fresh snapshot (genuinely gone, not just renamed), and
-          // toIR silently fell back to the safe prefix. Running just that prefix would
-          // "pass" without ever exercising the thing that broke — a false positive of
-          // exactly the kind this project has hit before. Only accept a heal that still
-          // covers the full, originally-intended test case.
-          if (!healedIr.meta.truncated) {
-            const healedSpec = generateSpec(healedIr);
-            const healedDir = path.join(runDir, "healed");
-            mkdirSync(healedDir, { recursive: true });
-            const healedRun = await runSpec(healedSpec, healedDir);
-            if (healedRun.passed) {
-              writeFileSync(path.join(healedDir, "generated.spec.ts"), healedSpec);
-              writeFileSync(path.join(healedDir, "ir.json"), JSON.stringify(healedIr, null, 2));
-              finalResult = {
-                passed: true, exitCode: healedRun.exitCode,
-                artifactsDir: healedRun.artifactsDir, resultsJsonPath: healedRun.resultsJsonPath, raw: healedRun.raw,
-              };
-              finalIr = healedIr;
-              finalSpecCode = healedSpec;
-              healed = true;
-            }
-          }
-          emit("heal", "completed", { healed });
-        } catch (err: any) {
-          // Original diagnosis stands unchanged — a failed heal attempt never masks the
-          // real failure with a different error, and never retries.
-          emit("heal", "failed", undefined, err?.message ?? String(err));
-        }
-      }
+    // ---------------------------------------------------------------------
+    // CHECKPOINT 1: does the ENTRY page itself have a password field we
+    // have no credentials for? Cheap — catches the common case (login IS
+    // the entry page) before spending an LLM call on test-case generation.
+    // Does NOT catch "homepage -> click Login -> real login page", since
+    // that page hasn't been discovered yet at this point — checkpoint 2
+    // (below, after toIR) handles that case once live-extend has reached it.
+    // ---------------------------------------------------------------------
+    const authNeed1 = classifyAuthNeed(appModel);
+    const creds = credentials ?? credentialsFor(resolvedUrls[0]);
+    if (authNeed1 && !creds) {
+      emit("needs_input", "completed", {
+        reason: authNeed1 === "signup"
+          ? "This page requires signup details, and none were provided."
+          : "This site requires login credentials, and none are on file for this URL.",
+        requiredFields: requiredFieldsFor(authNeed1),
+        authType: authNeed1,
+        url: resolvedUrls[0],
+      });
+      return { runId, runDir, status: "needs_input" as const, authType: authNeed1 };
     }
 
-    // If the IR was truncated without a terminal assertion, override the result to
-    // prevent a false pass. The diagnosis/heal path above is for real Playwright failures;
-    // this handles the case where Playwright itself passed but the test verified nothing.
-    if (truncatedNoAssertion && !healed) {
-      finalResult = { ...result, passed: false, status: "truncated_no_assertion" } as typeof finalResult;
-      save("05-result.json", finalResult);
-    }
-
-    // Run every case in the suite through the full per-case pipeline, persisting per-case
-    // artifacts under cases/<caseId>/. The primary case was already executed above (and may
-    // have been self-healed) — pass its result so runSuite reuses it instead of re-running.
-    const scope = (thePlan.testTypeScope ?? ALL_SCOPES) as typeof ALL_SCOPES;
-
-    // Check if primary-case execution discovered new pages via live-extend
-    const originalUrlsSet = new Set(resolvedUrls);
-    const newPages = updatedAppModel.pages.filter(page => !originalUrlsSet.has(page.url));
-
-    // Merge upfront cases with any reactive cases generated for new pages
-    let allCases = [...cases];
-    if (newPages.length > 0) {
-      emit("testcases", "started", { newPages: newPages.map(p => p.url) });
-      const reactiveCases = await generateCasesForNewPages(updatedAppModel, resolvedUrls, thePlan, prompt);
-      if (reactiveCases.length > 0) {
-        allCases = [...allCases, ...reactiveCases];
-        // Persist updated cases list
-        save("03-cases.json", allCases);
-        emit("testcases", "completed", { total: allCases.length, reactive: reactiveCases.length });
-      }
-    }
-
-    const scopedCases = filterByScope(allCases, scope);
-    const primaryCaseResult: PrimaryCaseResult = {
-      ir: finalIr,
-      result: { passed: finalResult.passed, exitCode: finalResult.exitCode, artifactsDir: finalResult.artifactsDir, resultsJsonPath: finalResult.resultsJsonPath, raw: finalResult.raw },
-      specCode: finalSpecCode,
-      healed,
-    };
-    console.log("3. Running suite...");
-    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult);
-    console.log("✓ Suite finished");
-
-    console.log("Pipeline finished");
-
-    // Playwright captures a screenshot for every test (screenshot: "on" in the config), so
-    // there's one on success too. Surface its public /runs URL to the UI. The IR may be a
-    // truncated (partial) test — tell the UI so it can label the verdict honestly.
-    const shot = findScreenshot(finalResult.artifactsDir);
-    const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
-
-    // Read suite summary if it exists (produced by runSuite)
-    let suite = undefined;
-    const summaryPath = path.join(runDir, "07-suite-summary.json");
-    if (existsSync(summaryPath)) {
-      try { suite = JSON.parse(readFileSync(summaryPath, "utf8")); } catch { }
-    }
-
-    emit("done", "completed", {
-      passed: finalResult.passed, screenshotUrl, partial: finalIr.meta.truncated ?? false, healed,
-      status: (finalResult as any).status,
-      truncationNote: finalIr.meta.truncationNote,
-      // Plain-English record of what was actually tested, for the results panel — the IR/spec
-      // are role+name/code, not something an end user should have to read to know what ran.
-      test: { title: primary.title, steps: primary.steps, expected: primary.expected },
-      suite,
-    });
-    return { runId, runDir, result: finalResult, diagnosis };
+    return await continuePipeline(ctx, { prompt, resolvedUrls, thePlan, appModel, credentials: creds });
   } catch (err: any) {
     emit("error", "failed", undefined, err?.message ?? String(err));
     throw err;
   }
 }
 
+/**
+ * Resume a paused run. Two possible pause points, distinguished by whether
+ * 03-cases.json already exists on disk:
+ *   - Missing  -> paused at checkpoint 1 (before testCases ran). Resume via
+ *                 continuePipeline, which regenerates cases then proceeds.
+ *   - Present  -> paused at checkpoint 2 (during/after IR generation, once
+ *                 live-extend reached the real login/signup page). Cases
+ *                 were already generated and saved — skip straight to
+ *                 runFromIR with the now-provided credentials.
+ */
+export async function resumePipeline(
+  runId: string,
+  credentials: Credentials,
+  onEvent: OnEvent = () => {}
+) {
+  const runDir = path.join("runs", runId);
+  const inputPath = path.join(runDir, "00-input.json");
+  const planPath = path.join(runDir, "01-plan.json");
+  const appModelPath = path.join(runDir, "02-appmodel.json");
+  const casesPath = path.join(runDir, "03-cases.json");
+
+  if (!existsSync(inputPath) || !existsSync(planPath) || !existsSync(appModelPath)) {
+    throw new Error(`Run ${runId} has no saved state to resume from (missing plan/appModel/input).`);
+  }
+
+  const input = JSON.parse(readFileSync(inputPath, "utf-8"));
+  const thePlan: Plan = JSON.parse(readFileSync(planPath, "utf-8"));
+  const appModel: AppModel = JSON.parse(readFileSync(appModelPath, "utf-8"));
+  const resolvedUrls: string[] = input.urls;
+  const prompt: string = input.prompt;
+
+  const ctx = makeContext(runId, onEvent);
+  try {
+    if (existsSync(casesPath)) {
+      // Checkpoint 2: cases already exist — skip straight to IR onward.
+      const cases: TestCase[] = JSON.parse(readFileSync(casesPath, "utf-8"));
+      return await runFromIR(ctx, { prompt, resolvedUrls, thePlan, appModel, cases, credentials });
+    }
+    // Checkpoint 1: resume the full flow from testCases onward.
+    return await continuePipeline(ctx, { prompt, resolvedUrls, thePlan, appModel, credentials });
+  } catch (err: any) {
+    ctx.emit("error", "failed", undefined, err?.message ?? String(err));
+    throw err;
+  }
+}
+
+/** From testCases through done. Generates cases, then delegates to runFromIR. */
+async function continuePipeline(
+  ctx: RunContext,
+  { prompt, resolvedUrls, thePlan, appModel, credentials }:
+    { prompt: string; resolvedUrls: string[]; thePlan: Plan; appModel: AppModel; credentials?: Credentials | null }
+) {
+  const { step } = ctx;
+  const cases = await step("testcases", "03-cases.json", () => toTestCases(thePlan, appModel, prompt));
+  return await runFromIR(ctx, { prompt, resolvedUrls, thePlan, appModel, cases, credentials });
+}
+
+/**
+ * From IR generation through done. Shared by a fresh run, a checkpoint-1 resume
+ * (via continuePipeline), and a checkpoint-2 resume (direct from resumePipeline).
+ * Contains CHECKPOINT 2: after toIR() resolves the actual page the primary case
+ * reaches (via live-extend, which may go several clicks past the entry page —
+ * e.g. homepage -> Login button -> real login form), check whether THAT page
+ * has a password field we still have no credentials for. This is what catches
+ * login/signup pages that aren't the entry page itself.
+ */
+async function runFromIR(
+  ctx: RunContext,
+  { prompt, resolvedUrls, thePlan, appModel, cases, credentials }:
+    { prompt: string; resolvedUrls: string[]; thePlan: Plan; appModel: AppModel; cases: TestCase[]; credentials?: Credentials | null }
+) {
+  const { save, emit, step, runDir, runId } = ctx;
+
+  const primary = cases.find((c) => c.fromPrompt) ?? [...cases].sort(byPriority)[0];
+  if (!primary) throw new Error("No test cases produced");
+
+  const { ir, updatedAppModel } = await step("ir", "04-ir.json", () =>
+    toIR(primary, appModel, prompt, resolvedUrls[0], credentials ?? undefined)
+  );
+
+  // ---------------------------------------------------------------------
+  // CHECKPOINT 2: toIR's live-extend may have replayed several steps past
+  // the entry page (e.g. clicked through a homepage to a real login form)
+  // and appended that page to updatedAppModel. Check THAT page for a
+  // password field now that we actually know what it looks like. If it
+  // needs auth and we still have no credentials, pause here — cases are
+  // already saved on disk, so resumePipeline can skip straight back here.
+  // ---------------------------------------------------------------------
+  const authNeed2 = classifyAuthNeed(updatedAppModel);
+  if (authNeed2 && !credentials) {
+    emit("needs_input", "completed", {
+      reason: authNeed2 === "signup"
+        ? "A signup page was found while building the test, and no signup details were provided."
+        : "A login page was found while building the test, and no credentials were provided.",
+      requiredFields: requiredFieldsFor(authNeed2),
+      authType: authNeed2,
+      url: resolvedUrls[0],
+    });
+    return { runId, runDir, status: "needs_input" as const, authType: authNeed2 };
+  }
+
+  const spec = await step("generate", null, async () => generateSpec(ir));
+  writeFileSync(path.join(runDir, "generated.spec.ts"), spec);
+
+  let finalSpecCode = spec;
+
+  const result = await step("execute", "05-result.json", async () => {
+    const r = await runSpec(spec, runDir);
+    return { passed: r.passed, exitCode: r.exitCode, artifactsDir: r.artifactsDir, resultsJsonPath: r.resultsJsonPath, raw: r.raw };
+  });
+
+  const truncatedNoAssertion = !!(ir.meta.truncated && !ir.meta.hasTerminalAssertion);
+
+  let diagnosis = null;
+  let finalResult = result;
+  let finalIr = ir;
+  let healed = false;
+
+  if (!result.passed) {
+    diagnosis = await step("failure_analysis", "06-diagnosis.json", () => analyzeFailure(ir, result as any));
+    const healable = diagnosis.category === "selector_changed" || diagnosis.category === "element_missing";
+    const failIdx = diagnosis.failingStepId ? ir.steps.findIndex((s) => s.id === diagnosis!.failingStepId) : -1;
+
+    if (healable && failIdx > 0) {
+      try {
+        emit("heal", "started");
+        const prefix = ir.steps.slice(0, failIdx);
+        const freshModel = await refreshPageModel(appModel, prefix, credentials ?? credentialsFor(resolvedUrls[0]));
+        const { ir: healedIr } = await toIR(primary, freshModel, prompt, resolvedUrls[0], credentials ?? undefined);
+
+        if (!healedIr.meta.truncated) {
+          const healedSpec = generateSpec(healedIr);
+          const healedDir = path.join(runDir, "healed");
+          mkdirSync(healedDir, { recursive: true });
+          const healedRun = await runSpec(healedSpec, healedDir);
+          if (healedRun.passed) {
+            writeFileSync(path.join(healedDir, "generated.spec.ts"), healedSpec);
+            writeFileSync(path.join(healedDir, "ir.json"), JSON.stringify(healedIr, null, 2));
+            finalResult = {
+              passed: true, exitCode: healedRun.exitCode,
+              artifactsDir: healedRun.artifactsDir, resultsJsonPath: healedRun.resultsJsonPath, raw: healedRun.raw,
+            };
+            finalIr = healedIr;
+            finalSpecCode = healedSpec;
+            healed = true;
+          }
+        }
+        emit("heal", "completed", { healed });
+      } catch (err: any) {
+        emit("heal", "failed", undefined, err?.message ?? String(err));
+      }
+    }
+  }
+
+  if (truncatedNoAssertion && !healed) {
+    finalResult = { ...result, passed: false, status: "truncated_no_assertion" } as typeof finalResult;
+    save("05-result.json", finalResult);
+  }
+
+  const scope = (thePlan.testTypeScope ?? ALL_SCOPES) as typeof ALL_SCOPES;
+  const originalUrlsSet = new Set(resolvedUrls);
+  const newPages = updatedAppModel.pages.filter(page => !originalUrlsSet.has(page.url));
+
+  let allCases = [...cases];
+  if (newPages.length > 0) {
+    emit("testcases", "started", { newPages: newPages.map(p => p.url) });
+    const reactiveCases = await generateCasesForNewPages(updatedAppModel, resolvedUrls, thePlan, prompt);
+    if (reactiveCases.length > 0) {
+      allCases = [...allCases, ...reactiveCases];
+      save("03-cases.json", allCases);
+      emit("testcases", "completed", { total: allCases.length, reactive: reactiveCases.length });
+    }
+  }
+
+  const scopedCases = filterByScope(allCases, scope);
+  const primaryCaseResult: PrimaryCaseResult = {
+    ir: finalIr,
+    result: { passed: finalResult.passed, exitCode: finalResult.exitCode, artifactsDir: finalResult.artifactsDir, resultsJsonPath: finalResult.resultsJsonPath, raw: finalResult.raw },
+    specCode: finalSpecCode,
+    healed,
+  };
+  await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], ctx.onEvent, primaryCaseResult, credentials ?? undefined);
+
+  const shot = findScreenshot(finalResult.artifactsDir);
+  const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
+  emit("done", "completed", {
+    passed: finalResult.passed, screenshotUrl, partial: finalIr.meta.truncated ?? false, healed,
+    status: (finalResult as any).status,
+    truncationNote: finalIr.meta.truncationNote,
+    test: { title: primary.title, steps: primary.steps, expected: primary.expected },
+  });
+  return { runId, runDir, result: finalResult, diagnosis };
+}
+
 const rank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const byPriority = (a: { priority: string }, b: { priority: string }) => rank[a.priority] - rank[b.priority];
 
-/** Shared run-id format so the server can generate one before starting the pipeline. */
 export function makeRunId(): string {
   return new Date().toISOString().replace(/[:.]/g, "-") + "-" + randomUUID().slice(0, 8);
 }

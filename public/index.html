@@ -45,7 +45,26 @@
       <p id="diagnosis"></p>
       <a id="traceLink" class="hidden" target="_blank" href="#">View Generated Spec &amp; Artifacts</a>
     </section>
-
+<!-- Needs-input form (shown when the pipeline pauses for login/signup data) -->
+    <section id="needsInput" class="hidden">
+      <h2 id="needsInputReason"></h2>
+      <form id="credentialsForm">
+        <label class="hidden" id="usernameLabel">
+          <span id="usernameLabelText">Username / Email</span>
+          <input id="credUsername" type="text" />
+        </label>
+        <label class="hidden" id="passwordLabel">
+          Password
+          <input id="credPassword" type="password" />
+        </label>
+        <label class="hidden" id="confirmPasswordLabel">
+          Confirm Password
+          <input id="credConfirmPassword" type="password" />
+        </label>
+        <button type="submit">Continue</button>
+      </form>
+    </section>
+    
     <!-- Suite results -->
     <section id="suiteResults" class="suite-results hidden">
       <div id="suiteSummaryHeader" class="suite-summary-header"></div>

@@ -6,7 +6,7 @@ import { AppModel, toLiteModel } from "../schema/appModel.js";
 import { extendAppModel, refreshPageModel } from "./liveExtend.js";
 import { resolveAgainstModel, type ModelMatch } from "./targetResolver.js";
 import { embedText, cosineSimilarity } from "../llm/embeddings.js";
-import { credentialsFor, applyCredentials, shouldSkipCredentialSubstitution } from "./credentials.js";
+import { credentialsFor, applyCredentials, shouldSkipNegativeCredentialCategory,shouldSkipCredentialSubstitution, type Credentials } from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 
 /** Return type for toIR that includes the updated AppModel after live-extension. */
@@ -134,7 +134,8 @@ export function hasTerminalAssertion(steps: Step[]): boolean {
 }
 
 export async function toIR(
-  testCase: TestCase, appModel: AppModel, sourcePrompt: string, entryUrl: string
+  testCase: TestCase, appModel: AppModel, sourcePrompt: string, entryUrl: string,
+  credentials?: Credentials
 ): Promise<IRResult> {
   // Compute these ourselves rather than trust the model: baseUrl must be the origin
   // (generator.ts appends relative step paths to it), and entryPath is where the
@@ -142,8 +143,10 @@ export async function toIR(
   // double-path bug ("https://host/login" + "/login" -> 404) at the source.
   const { origin, pathname, search } = new URL(entryUrl);
   const entryPath = pathname + search || "/";
-
-  const cacheKey = makeCacheKey(JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel));
+const cacheKey = makeCacheKey(
+  JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel),
+  credentials ? JSON.stringify(credentials) : "no-creds"
+);
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -170,6 +173,23 @@ Navigation & Assertion rules (CRITICAL):
 - After clicking a NAVIGATION link (role="link"), assert the result using "url_contains" (check the URL changed to the expected path) or assert a heading/unique text on the DESTINATION page. Do NOT re-assert the link you just clicked.
 - Each navigation path should be INDEPENDENT: if testing "Home -> About -> Academics", each branch should start with its own "navigate" step from the base URL, not chain clicks sequentially. Example: for testing About, start with navigate to "/" then click About. For testing Academics, start with a separate navigate to "/" then click Academics. This prevents cascading failures.
 - When a click triggers a page navigation, the assertion should verify the DESTINATION state (URL or heading), not the source element.
+
+CREDENTIAL RULES:
+- Never invent usernames, emails, passwords, OTPs, API keys, or tokens.
+- If a required credential value is missing, output:
+
+{
+  "needsInput": true,
+  "missing": ["login.email", "login.password"]
+}
+
+- Do not use placeholders such as:
+  validusername
+  validpassword
+  user@example.com
+  test@test.com
+  Password123
+  admin/admin
 
 Selector Specificity rules (CRITICAL for avoiding strict mode violations):
 - If multiple elements share the same role+name (e.g., multiple "Student" links), use the "nth" field to disambiguate: { "role": "link", "name": "Student", "nth": 1 } for the second occurrence (0-indexed).
@@ -294,14 +314,22 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // carry the user's own literal values on purpose (their real email/password, or a
   // taxonomy-style deliberately-wrong one) — silently swapping in the demo account would
   // just relocate the "system overrides what I asked for" bug to a different field.
-  const creds = (testCase.fromPrompt || shouldSkipCredentialSubstitution(testCase)) ? undefined : credentialsFor(entryUrl);
-  const finalize = (ir: IR): IR => {
-    ir.meta.baseUrl = origin;
-    ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
-    if (creds) applyCredentials(ir.steps, creds, testCase);
-    llmCacheSet(cacheKey, ir);
-    return ir;
-  };
+  //
+  // FIXED: prefer the caller-supplied `credentials` (e.g. from a resumed run where the
+  // user just typed in their login/signup data) over the demo-site lookup. Falls back to
+  // credentialsFor(entryUrl) for known public demo sites (saucedemo, the-internet) when
+  // no override was passed in.
+
+
+  console.log("[ir] DEBUG credentials param:", credentials, "| fromPrompt:", testCase.fromPrompt);
+const creds = credentials ?? (testCase.fromPrompt ? undefined : credentialsFor(entryUrl));
+const finalize = (ir: IR): IR => {
+  ir.meta.baseUrl = origin;
+  ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
+  if (creds) applyCredentials(ir.steps, creds, testCase, !!credentials);
+  llmCacheSet(cacheKey, ir);
+  return ir;
+};
 
   let currentModel = appModel;
   let extensions = 0;
