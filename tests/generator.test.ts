@@ -72,6 +72,21 @@ describe("generateSpec", () => {
     expect(out).toContain("could not ground step s2");
   });
 
+  // Regression: a `//` line comment ends at the first newline. sourcePrompt is free-form
+  // user text — nothing stops it from containing a literal newline — and an unsanitized
+  // `// Source: ${sourcePrompt}` interpolation let the rest of the prompt fall onto a bare,
+  // uncommented line, producing "SyntaxError: Missing semicolon" in the generated spec.
+  it("never emits a raw newline into the Feature/Source comment lines", () => {
+    const out = spec([{ id: "s1", action: "navigate", target: { url: "/" } }], {
+      feature: "Auth\nInjected",
+      sourcePrompt: "select the product named '\nSauce Labs Fleece Jacket\n' and click it",
+    });
+    const sourceLine = out.split("\n").find((l) => l.startsWith("// Source:"));
+    const featureLine = out.split("\n").find((l) => l.startsWith("// Feature:"));
+    expect(sourceLine).toBe("// Source: select the product named ' Sauce Labs Fleece Jacket ' and click it");
+    expect(featureLine).toBe("// Feature: Auth Injected");
+  });
+
   it("rewrites networkidle, which hangs on real sites", () => {
     const out = spec([{ id: "s1", action: "navigate", target: { url: "/" } }]);
     expect(out).not.toContain("networkidle");

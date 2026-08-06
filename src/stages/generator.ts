@@ -358,6 +358,12 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     })
     .join("\n");
 
+  // A `//` line comment breaks on ANY embedded newline — collapsing to a single space (not
+  // cutAtBoundary, which preserves internal newlines on purpose for multi-line text) is what
+  // truncNote below already does for truncationNote; feature/sourcePrompt need the same
+  // treatment since sourcePrompt is free-form user text that can contain a literal newline.
+  const oneLine = (s: string, max = 300) => s.replace(/\s+/g, " ").trim().slice(0, max);
+
   const truncNote = ir.meta.truncated
     ? `// PARTIAL: verified only up to the last grounded step — ${(
       ir.meta.truncationNote ??
@@ -392,9 +398,9 @@ import { writeFileSync } from "node:fs";
 ${ helper }
 
 // AUTO-GENERATED from IR — do not edit by hand.
-// Feature: ${ir.meta.feature}
+// Feature: ${oneLine(ir.meta.feature, 100)}
 // Priority: ${ir.meta.priority}
-// Source: ${ir.meta.sourcePrompt}
+// Source: ${oneLine(ir.meta.sourcePrompt, 300)}
 ${ truncNote }
 // Record where the flow actually ended up. Some apps stop automation dead — an emailed
 // verification code, an external OAuth provider — and a run that halts there must be reported

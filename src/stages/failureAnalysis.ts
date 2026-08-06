@@ -7,6 +7,7 @@ import { KNOWN_CATEGORIES, findFailingStepId, classify } from "./classify.js";
 import type { IR } from "../schema/ir.js";
 import type { ExecResult } from "./executor.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
+import { cutAtBoundary } from "../text.js";
 
 // Falls back to "other" for anything outside the known set (e.g. Gemini describing a
 // real Playwright error like "strict mode violation" accurately but outside our
@@ -55,7 +56,7 @@ function extractErrors(raw: any): unknown[] {
 
 export function errorTextFrom(result: ExecResult): string {
   const errors = extractErrors(result.raw);
-  return JSON.stringify(errors.length ? errors : result.raw ?? {}, null, 2).slice(0, 8000);
+  return cutAtBoundary(JSON.stringify(errors.length ? errors : result.raw ?? {}, null, 2), 8000);
 }
 
 /** Extract only the failing element + nearby ancestors/siblings from a full ARIA snapshot. */

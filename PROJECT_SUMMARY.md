@@ -3,13 +3,15 @@
 ## What This Is
 
 Give it a URL and a plain-English testing request (e.g. *"check the login page and
-functionality"*) — it discovers the app's real UI, writes a full QA coverage suite (valid path,
-invalid input, boundaries, security), converts each case into a strict, schema-validated
-execution plan, generates real Playwright specs from that plan, runs them in real browsers, and
-reports per-case pass/fail with screenshots, traces, and plain-English failure diagnosis. The
-difference from writing Playwright tests by hand isn't just speed — every generated assertion is
-checked against what the live page actually contains before it's allowed to ship, so a wrong
-guess about site wording gets caught and corrected rather than silently producing a flaky test.
+functionality"*) — it discovers the app's real UI (following the site's own internal links, not
+just the one page you typed), writes a full QA coverage suite (valid path, invalid input,
+boundaries, security), optionally pauses for you to review and refine that suite before anything
+runs, converts each case into a strict, schema-validated execution plan, generates real
+Playwright specs from that plan, runs them in real browsers, and reports per-case pass/fail with
+screenshots, traces, and plain-English failure diagnosis. The difference from writing Playwright
+tests by hand isn't just speed — every generated assertion is checked against what the live page
+actually contains before it's allowed to ship, so a wrong guess about site wording gets caught
+and corrected rather than silently producing a flaky test.
 
 ## Architecture
 
@@ -25,6 +27,8 @@ guess about site wording gets caught and corrected rather than silently producin
                         │      Discovery       │
                         │  DOM extract (Node,  │  domExtract.ts — cheerio over page.content(),
                         │    NO LLM) --------- │  zero tokens, tried first for every page
+                        │  Site crawl -------- │  follows the entry page's own same-origin
+                        │    (same-origin)     │  links too, bounded (MAX_DISCOVERY_PAGES)
                         │  Gemini Vision       │  fallback only: canvas/captcha/image-heavy,
                         │    (fallback)        │  or no accessible name/text to key off
                         └──────────┬───────────┘
@@ -38,8 +42,16 @@ guess about site wording gets caught and corrected rather than silently producin
                         │  Test Cases (Gemini) │  Plan + AppModel + coverage taxonomy (floor,
                         │                      │  not ceiling) -> full suite: valid /
                         │                      │  invalid-input / empty-boundary / security-* /
-                        │                      │  functional-other, capped by coverage budget
+                        │                      │  functional-other, capped by coverage budget,
+                        │                      │  checklist itself filtered by scope first
                         └──────────┬───────────┘
+                                   v
+                     Case-selection gate (OPTIONAL,
+                     ENABLE_CASE_SELECTION_GATE): pause,
+                     let a human accept/reject/refine the
+                     batch before anything executes. Off
+                     by default -> straight through.
+                                   |
                                    v
                      Primary-case selection: the case
                      tagged fromPrompt (literal ask),
@@ -112,18 +124,26 @@ guess about site wording gets caught and corrected rather than silently producin
 
 ## What Works Beautifully and Correctly
 
-- **DOM-first discovery at zero LLM cost.** `domExtract.ts` reads the real page structure via
-  cheerio — no tokens spent — and vision is only consulted when DOM extraction genuinely has
-  nothing to work with.
+- **DOM-first discovery at zero LLM cost, now site-wide.** `domExtract.ts` reads the real page
+  structure via cheerio — no tokens spent — and now also follows the entry page's own
+  same-origin links (bounded, `MAX_DISCOVERY_PAGES`) instead of modeling only the one URL you
+  typed. Vision is only consulted when DOM extraction genuinely has nothing to work with.
 - **Deterministic grounding against the live app**, not LLM self-report. Every generated step's
   target is checked against a real AppModel; a terminal pure-text assertion is replayed in an
   actual browser and corrected against what the page really says, rather than trusting the
-  model's first guess.
+  model's first guess. The model is also told a page's `title` field is `<title>`-tag metadata,
+  not visible content, and steered away from grounding a general visibility check on a
+  mobile-menu toggle — both root-caused from real failed runs, not hypothetical.
+- **A human can sit in the loop, opt-in.** The case-selection gate pauses a run after generating
+  a batch so cases can be reviewed and a "not satisfied" refinement regenerated against the full
+  history of what's already been accepted or rejected — enforced in code (`filterNovelCases`),
+  not just requested in the prompt, so a repeat can't slip through.
 - **Credential-policy-aware substitution for the standard case.** `credentialPolicyFor` correctly
   distinguishes full / identifier-only / none per case from its own wording (a negative
   "invalid password" case keeps its deliberately-wrong value; a real login gets the real one) —
   solid for the common single-login-attempt case. (A case that embeds *two* login attempts in one
-  browser session is a known open edge — see next steps.)
+  browser session is a known open edge — see next steps.) No site gets special-cased with
+  built-in demo credentials anymore — every login gate goes through the same general prompt flow.
 - **Self-healing locators**, bounded to one attempt: a drifted selector triggers a fresh page
   snapshot and IR regeneration rather than a hard failure.
 - **Isolated per-case execution.** Every case in a suite runs in its own Playwright `test()` —
@@ -132,8 +152,12 @@ guess about site wording gets caught and corrected rather than silently producin
   Playwright error classifies most failures for free; Gemini is only consulted when the pattern
   match is ambiguous.
 - **Secrets never touch disk.** User-supplied credentials become `${env:...}` references in the
-  generated spec, not literals — `runs/` is served publicly by the app, and the real value is
-  injected only into the test process's environment at execution time.
+  generated spec, not literals, and are also scrubbed from every artifact a page might echo them
+  into (`results.json`, `final-page.txt`, error-context) — `runs/` is served publicly by the app,
+  and the real value is injected only into the test process's environment at execution time.
+- **A case's screenshot actually shows what it tested.** The representative image per case is
+  the LAST step captured, not the first — a "navigate to Services" case shows Services, not the
+  homepage it started from.
 
 ## Five Steps to Make the Backend Genuinely General-Purpose
 
@@ -171,8 +195,12 @@ the ones it's been tuned against (login/e-commerce), rather than truly arbitrary
    production depending on whether the model happens to order its own steps favorably, and the
    same class of bug will recur for any other stateful flow (an invalid coupon then a valid one, a
    failed validation then a correction, a multi-step checkout).
-5. **The only "pause and ask a human" mechanism is for login credentials specifically**
-   (`askCredentials`/`pendingCredentials.ts`), not for any other required input discovery cannot
-   infer — a real API key, a specific coupon code, a phone-number format a site validates strictly,
-   a required file upload. On any site whose critical flow needs a real, human-supplied
-   non-login value, the pipeline's only fallback is inventing a placeholder that fails validation.
+5. **Pausing for a human is still purpose-built per case, not a general primitive.** Two
+   pause-and-resume mechanisms exist now — `askCredentials`/`pendingCredentials.ts` for login
+   details, and `pendingCaseSelection.ts` for reviewing/refining the generated case batch — and
+   they don't share an abstraction; a third need would mean a third bespoke implementation. More
+   importantly, there is still no way to pause for any OTHER required input discovery cannot
+   infer — a real API key, a specific coupon code, a phone-number format a site validates
+   strictly, a required file upload. On any site whose critical flow needs a real, human-supplied
+   non-login value mid-flow, the pipeline's only fallback is inventing a placeholder that fails
+   validation.

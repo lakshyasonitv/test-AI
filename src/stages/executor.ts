@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { redactCredentials, type Credentials } from "./credentials.js";
 
 export interface ExecResult {
   passed: boolean;
@@ -28,6 +29,43 @@ const CONFIG = {
  */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Build a Credentials object from the env vars handed to the child process, so the same
+ * redactCredentials scrub (same values, same REDACTED token) applies to executor output.
+ * undefined for non-secret runs — scrubbing the public demo accounts would be pointless.
+ */
+function secretCreds(secretEnv: Record<string, string>): Credentials | undefined {
+  const username = secretEnv.TEST_USERNAME;
+  const password = secretEnv.TEST_PASSWORD;
+  if (!username && !password) return undefined;
+  return { username: username ?? "", password: password ?? "", secret: true };
+}
+
+/**
+ * The spec's afterEach writes the visible page text (final-page.txt), Playwright writes the
+ * failure error-context attachment, and results.json embeds both — and a page the user is
+ * logged into routinely echoes the identifier ("Signed in as you@example.com"). All of these
+ * are served to the browser under /runs, so scrub the secret values out of every one of them.
+ * Best-effort: never fail a run over its own cleanup.
+ */
+export function scrubServedSecrets(raw: any, artifactsDir: string, resultsJson: string, errorContextFiles: string[], secretEnv: Record<string, string>): any {
+  const creds = secretCreds(secretEnv);
+  if (!creds) return raw;
+  let out = raw;
+  try {
+    if (raw) {
+      out = redactCredentials(raw, creds);
+      writeFileSync(resultsJson, JSON.stringify(out, null, 2), "utf8");
+    }
+  } catch { /* keep the unscrubbed raw */ }
+  for (const f of [path.join(artifactsDir, "final-page.txt"), ...errorContextFiles]) {
+    try {
+      if (existsSync(f)) writeFileSync(f, redactCredentials(readFileSync(f, "utf8"), creds), "utf8");
+    } catch { /* best effort */ }
+  }
+  return out;
 }
 
 export async function runSpec(
@@ -150,6 +188,7 @@ async function executePlaywright(
 
   let screenshot: string | undefined;
   let accessibilitySnapshot: string | undefined;
+  const errorContextFiles: string[] = [];
 
   if (raw) {
     for (const suite of raw.suites ?? []) {
@@ -160,6 +199,7 @@ async function executePlaywright(
               if (attach.name === "screenshot") {
                 screenshot = attach.path;
               } else if (attach.name === "error-context") {
+                errorContextFiles.push(attach.path);
                 try {
                   const content = readFileSync(attach.path, "utf8");
                   const match = content.match(/```yaml\n([\s\S]*?)\n```/);
@@ -183,7 +223,7 @@ async function executePlaywright(
     exitCode,
     resultsJsonPath: resultsJson,
     artifactsDir,
-    raw,
+    raw: scrubServedSecrets(raw, artifactsDir, resultsJson, errorContextFiles, secretEnv),
     screenshot,
     accessibilitySnapshot
   };
@@ -244,8 +284,22 @@ export function detectBlocked(artifactsDir: string, appOrigin?: string): Blocked
   return { reason, screenshot };
 }
 
+/**
+ * The representative screenshot for a case. Prefers the LAST step-N.png (the frame closest
+ * to whatever the case actually verified — e.g. the destination page after a navigation, not
+ * the pre-action homepage) over a blind "first .png found" walk, which always landed on
+ * step-1.png and showed the same generic pre-action frame for every case in a run regardless
+ * of what it tested. Falls back to the original DFS-first-found walk only when this directory
+ * has no numbered step screenshots at all (a case that crashed before its first shot() call,
+ * or a subdirectory holding only Playwright's own attachment).
+ */
 export function findScreenshot(dir: string): string | null {
   if (!existsSync(dir)) return null;
+  const steps = readdirSync(dir)
+    .filter(n => /^step-\d+\.png$/.test(n))
+    .sort((a, b) => Number(a.match(/\d+/)![0]) - Number(b.match(/\d+/)![0]));
+  if (steps.length) return path.join(dir, steps[steps.length - 1]);
+
   const stack = [dir];
   while (stack.length) {
     const d = stack.pop()!;

@@ -81,10 +81,20 @@ export function classify(errorText: string): ClassifiedFailure | null {
   }
 
   if (/Timeout\s+\d+ms\s+exceeded/i.test(t) && /waiting for (getByRole|getByText|getByLabel|getByPlaceholder|getByTestId)/i.test(t)) {
-    // "resolved to" present means the element WAS found — the assertion condition just
-    // never became true within the timeout. Distinguish between "found but hidden/not
-    // interactable" and "found but assertion never became true".
-    if (/resolved to/i.test(t)) {
+    // The log Playwright appends to a locator timeout always ends in
+    // "locator resolved to N elements". N=0 means the element was never in the DOM
+    // (missing); N>=1 means it was found and the *condition* never became true.
+    // The old /resolved to/ check matched BOTH, so missing elements were misread as
+    // found and dumped into the generic "timeout" bucket — making the element_missing
+    // category (and its self-heal path in orchestrator.ts) unreachable.
+    if (/resolved to\s+0/i.test(t)) {
+      return {
+        category: "element_missing",
+        explanation: "No element matching this role/name was ever found on the page during the entire retry window.",
+        suggestedFix: "The element may have been renamed, moved behind another interaction, or removed entirely — worth a fresh look at the live page.",
+      };
+    }
+    if (/resolved to\s+[1-9]\d*/i.test(t)) {
       // Element was found but not visible/interactable — covers mega-menu items,
       // off-screen elements, and elements covered by overlays.
       if (/hidden|not visible|not enabled|not editable|outside/i.test(t)) {
@@ -100,6 +110,8 @@ export function classify(errorText: string): ClassifiedFailure | null {
         suggestedFix: "Increase the timeout if the app is simply slow, or re-check whether the asserted condition is actually the right success signal for this step.",
       };
     }
+    // No "resolved to" line at all — the retry window closed before a single poll
+    // resolved the locator, so it was never present either.
     return {
       category: "element_missing",
       explanation: "No element matching this role/name was ever found on the page during the entire retry window.",

@@ -6,6 +6,9 @@ import { record, subscribe, getEvents } from "./runRegistry.js";
 import { listRuns } from "../runStore.js";
 import { Semaphore } from "./concurrency.js";
 import { askCredentials, settle } from "./pendingCredentials.js";
+import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
+import { resolveCaseSelection, getPendingSelection } from "./pendingCaseSelection.js";
+import { getAllAcceptedCases, remainingCapacity } from "./caseAccumulator.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -55,6 +58,60 @@ app.post("/api/runs/:runId/credentials", (req, res) => {
   const answered = settle(runId, supplied ? { username, password, secret: true } : null);
   if (!answered) return res.status(409).json({ error: "this run is not waiting for credentials" });
   res.status(204).end();
+});
+
+// Submit the user's pick for a paused run's case-selection round. `done` with no picks is
+// rejected when nothing was accumulated yet, so an accidental click can't end the round with
+// an empty pool. Like the credential prompt, the decision goes straight into the waiting
+// promise and lives only in the pipeline's memory.
+app.post("/api/runs/:runId/case-selection", express.json(), (req, res) => {
+  const { runId } = req.params;
+  if (!getPendingSelection(runId)) {
+    return res.status(409).json({ error: "No case-selection round is pending for this run" });
+  }
+  const parsed = CaseSelectionDecisionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+  if (parsed.data.action === "done") {
+    const willHaveAny =
+      getAllAcceptedCases(runId).length > 0 || parsed.data.selectedIndexes.length > 0;
+    if (!willHaveAny) {
+      return res.status(400).json({ error: "Select at least one case before clicking Done" });
+    }
+  }
+  const resolved = resolveCaseSelection(runId, parsed.data);
+  if (!resolved) {
+    return res.status(409).json({ error: "This round was already resolved or timed out" });
+  }
+  res.status(200).json({ ok: true });
+});
+
+// Current accumulated pool state, for the frontend to render accepted cases and how much
+// capacity remains before the pool's cap forces newer picks into overflow.
+app.get("/api/runs/:runId/accepted-cases", (req, res) => {
+  const cases = getAllAcceptedCases(req.params.runId);
+  res.json({
+    cases,
+    count: cases.length,
+    cap: Number(process.env.MAX_ACCUMULATED_CASES ?? 5),
+    remainingCapacity: remainingCapacity(req.params.runId),
+  });
+});
+
+// Snapshot of the currently-pending round, for polling (SSE buffers behind a Cloudflare
+// tunnel, so the UI polls this instead). NOT a new event type — just what's parked right now.
+app.get("/api/runs/:runId/case-selection-status", (req, res) => {
+  const pending = getPendingSelection(req.params.runId);
+  if (!pending) {
+    return res.status(404).json({ error: "No case-selection round is pending" });
+  }
+  res.json({
+    attempt: pending.attempt,
+    batch: pending.batch,
+    acceptedCount: getAllAcceptedCases(req.params.runId).length,
+    cap: Number(process.env.MAX_ACCUMULATED_CASES ?? 5),
+  });
 });
 
 // SSE stream of progress for one run. Fine locally; a Cloudflare Quick Tunnel buffers

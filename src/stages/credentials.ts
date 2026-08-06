@@ -13,18 +13,13 @@ export interface Credentials {
 }
 
 /**
- * Published test credentials for well-known public demo sites. These are NOT secrets —
- * the sites print them on their own login pages — so it's fine for them to end up in a
- * generated spec. A user's own credentials take the `secret: true` path above instead.
+ * No built-in demo-account registry. An earlier version hardcoded published demo
+ * credentials for a few well-known test sites (saucedemo, the-internet.herokuapp.com);
+ * that per-site data is gone so the platform never assumes anything about a given host.
+ * A user's own credentials take the `secret: true` path above instead.
  */
-const DEMO_CREDS: Record<string, Credentials> = {
-  "www.saucedemo.com": { username: "standard_user", password: "secret_sauce" },
-  "saucedemo.com": { username: "standard_user", password: "secret_sauce" },
-  "the-internet.herokuapp.com": { username: "tomsmith", password: "SuperSecretPassword!" },
-};
-
-export function credentialsFor(url: string): Credentials | undefined {
-  try { return DEMO_CREDS[new URL(url).hostname]; } catch { return undefined; }
+export function credentialsFor(_url: string): Credentials | undefined {
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +252,7 @@ export const REDACTED = "[redacted]";
  *
  * Redacting at the single point where replay output is produced covers every one of those
  * sinks at once, and keeps covering them if another is added later. Only meaningful for
- * `secret` credentials: the demo accounts are published on the sites' own login pages.
+ * `secret` credentials — there is no built-in demo-account registry anymore.
  * Values shorter than 4 characters are left alone — replacing a 1-2 character string would
  * shred unrelated text for no benefit.
  */

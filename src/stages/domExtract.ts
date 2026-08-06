@@ -394,6 +394,13 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
     const role = attr($el, "role");
     const name = attr($el, "aria-label") || text($el);
     if (!name || ["presentation", "none", "img"].includes(role)) return;
+    // The loop above already emits every a/button/input/select/textarea — with the same
+    // role+name — but keyed as `selector || role:name:index`, which never collides with
+    // the `role:name` key here. So without this skip, `<a role="tab">` (or any control
+    // carrying a role) was emitted twice with identical role+name, producing duplicate
+    // AppModel elements and strict-mode "matched 2 elements" failures in generated tests.
+    const tag = (el as DomElement).tagName.toLowerCase();
+    if (["a", "button", "input", "select", "textarea"].includes(tag)) return;
     const key = `${role}:${name}`;
     if (seen.has(key)) return;
     seen.add(key);

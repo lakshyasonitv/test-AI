@@ -1,7 +1,7 @@
 import { chromium, type Page } from "playwright";
 import { AppModel } from "../schema/appModel.js";
 import type { IR, Step } from "../schema/ir.js";
-import { discoverUsingCrawler } from "./domDiscovery.js";
+import { extractDomModelFromPage } from "./domDiscovery.js";
 import {
   modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
 } from "./discovery.js";
@@ -12,6 +12,7 @@ import {
 } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
+import { cutAtBoundary } from "../text.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -56,7 +57,8 @@ export async function runStepLive(
 async function capturePageText(page: Page): Promise<string> {
   try {
     const text = await page.locator("body").innerText();
-    return text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, 8000);
+    const normalized = text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    return normalized.length > 8000 ? cutAtBoundary(normalized, 8000) : normalized;
   } catch {
     return "";
   }
@@ -127,7 +129,7 @@ async function replayAndSnapshot(
     // have opened a modal we care about (the merge branch below ignores dialogSeen in that
     // case anyway), and paying the 2500ms timeout on every ordinary login/checkout replay
     // added ~3s to each one. The 600ms floor is kept on both paths though — sitting directly
-    // above capturePageText and discoverUsingCrawler, it doubles as settle time for an SPA
+    // above capturePageText and the DOM extraction, it doubles as settle time for an SPA
     // that updates the URL before rendering the page it navigated to.
     const navigatedAway = page.url() !== urlBeforeLastStep;
     let dialogSeen = false;
@@ -143,26 +145,30 @@ async function replayAndSnapshot(
     const title = await page.title();
     const pageText = await capturePageText(page);
 
-    // Try DOM-based discovery first for the reached page
+    // Try DOM-based discovery first for the reached page. Snapshot the replay's OWN page
+    // handle — its session/cookies are intact, so an authenticated URL is modeled as the
+    // real post-login page. discoverUsingCrawler would launch a fresh, session-less browser
+    // that hits the login redirect: the resulting LOGIN-page snapshot is non-empty, so the
+    // vision fallback below was never consulted to correct it, and the wrong model got
+    // cached under dom:reachedUrl for every later run.
     let fresh: AppModel | null = null;
     try {
-      fresh = await discoverUsingCrawler(reachedUrl);
+      fresh = await extractDomModelFromPage(page, reachedUrl);
     } catch {
       // DOM discovery failed for the reached page
     }
 
     // Consult vision when either:
     //  - DOM found nothing at all (existing case), or
-    //  - the last step opened a dialog WITHOUT navigating (the modal case). This is only a
-    //    signal, not proof DOM missed anything — but discovery gets exactly one shot at a
-    //    modal (it isn't reachable again without replaying the whole prefix), and DOM
-    //    extraction is attribute-based: a custom-built dialog's fields can be real <input>
-    //    elements (so DOM sees them) or, in component libraries that skip semantic HTML,
-    //    effectively invisible to it. Vision reads pixels, so it catches that case too.
-    // A dialog signal never REPLACES the DOM result (unlike the empty case) — it's merged
-    // in, adding whatever elements vision saw that DOM's page didn't already have, by
-    // role+name. This keeps DOM's richer structured fields (forms, buttons, ...) as the
-    // base instead of discarding them for a strictly poorer vision-only model.
+    //  - the last step opened a dialog WITHOUT navigating (the modal case). DOM extraction
+    //    from the live page usually sees the dialog's fields too, but it is attribute-based:
+    //    a custom-built dialog's fields can be real <input> elements (so DOM sees them) or,
+    //    in component libraries that skip semantic HTML, effectively invisible to it. Vision
+    //    reads pixels, so it catches that case. A dialog signal never REPLACES the DOM result
+    //    (unlike the empty case) — it's merged in, adding whatever elements vision saw that
+    //    DOM's page didn't already have, by role+name. This keeps DOM's richer structured
+    //    fields (forms, buttons, ...) as the base instead of discarding them for a strictly
+    //    poorer vision-only model.
     const domEmpty = !fresh || !fresh.pages[0]?.elements?.length;
     const consultVision = domEmpty || (dialogSeen && !navigatedAway);
 

@@ -91,6 +91,18 @@ const credWhyEl = document.getElementById("credWhy");
 const credUserEl = document.getElementById("credUser");
 const credPassEl = document.getElementById("credPass");
 const credSkipEl = document.getElementById("credSkip");
+const caseSelectionPanelEl = document.getElementById("case-selection-panel");
+const caseRoundLabelEl = document.getElementById("case-round-label");
+const casePoolCounterEl = document.getElementById("case-pool-counter");
+const caseSelectionListEl = document.getElementById("case-selection-list");
+const caseSelectAllBtnEl = document.getElementById("case-select-all-btn");
+const caseSelectNoneBtnEl = document.getElementById("case-select-none-btn");
+const caseRefineInputWrapEl = document.getElementById("case-refine-input-wrap");
+const caseNewPromptInputEl = document.getElementById("case-new-prompt-input");
+const caseNoticeEl = document.getElementById("caseNotice");
+const caseNotSatisfiedBtnEl = document.getElementById("case-not-satisfied-btn");
+const caseDoneBtnEl = document.getElementById("case-done-btn");
+const caseRegenAttemptsLeftEl = document.getElementById("case-regen-attempts-left");
 
 // -----------------------------------------------------------------------------
 // Utilities
@@ -98,6 +110,20 @@ const credSkipEl = document.getElementById("credSkip");
 
 const escapeHtml = (s) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// Inline status lines for the case-selection panel. Rendered in-panel, not a toast: the
+// run is paused on this section, so a message that scrolls away would go unread.
+function showNotice(msg) {
+  caseNoticeEl.classList.remove("hidden", "error");
+  caseNoticeEl.classList.add("notice");
+  caseNoticeEl.textContent = msg;
+}
+
+function showError(msg) {
+  caseNoticeEl.classList.remove("hidden", "notice");
+  caseNoticeEl.classList.add("error");
+  caseNoticeEl.textContent = msg;
+}
 
 // -----------------------------------------------------------------------------
 // Templates (quick-fill buttons)
@@ -216,12 +242,25 @@ function applyPhaseUI(phaseKey, phaseStatus, summaryText) {
 
 function setPhaseFromStage(stage, status, data) {
   if (stage === "done" || stage === "error") {
+    // Terminal event. A phase still "started" was interrupted mid-step — always a failure,
+    // regardless of whether the run overall succeeded (a genuinely unfinished step can't be
+    // reported "completed" just because a LATER phase went on to pass). A phase that was
+    // never started is "pending": on "done" the pipeline finished without ever needing it
+    // (the results phase's stages only fire when there is a failure to analyze), on "error"
+    // it was aborted before reaching it. Without the pending case, the final "Evaluating
+    // Results & Verdict" phase stayed stuck on "Pending" forever after every passing run.
+    const interrupted = stage === "error";
     PHASES.forEach((p) => {
       const phaseStatus = computePhaseStatus(p.key);
       if (phaseStatus === "completed" || phaseStatus === "failed") return;
       if (phaseStatus === "started") {
         applyPhaseUI(p.key, "failed", "Interrupted — pipeline ended before this step finished");
+        return;
       }
+      const summary = interrupted
+        ? "Skipped — the run aborted before reaching this step"
+        : "Pipeline finished — nothing left to evaluate";
+      applyPhaseUI(p.key, interrupted ? "failed" : "completed", summary);
     });
     return;
   }
@@ -312,7 +351,7 @@ function renderScreenshotGrid(suite, runId) {
       c.status === "failed" ? "badge-failed" : "badge-pending";
     return `
       <div class="screenshot-tile">
-        <img src="${c.screenshotUrl}" alt="Case ${i + 1}" loading="lazy" />
+        <img src="${escapeHtml(c.screenshotUrl)}" alt="Case ${i + 1}" loading="lazy" />
         <span class="screenshot-tile-label ${badge}">${escapeHtml(c.title)}</span>
       </div>`;
   }).join("");
@@ -353,29 +392,29 @@ function renderCaseCard(c, runId, index) {
   const traceUrl = `${caseDir}/artifacts`;
 
   return `
-    <div class="case-card" data-case-id="${c.caseId}">
+    <div class="case-card" data-case-id="${escapeHtml(c.caseId)}">
       <div class="case-card-header" role="button" tabindex="0">
         <span class="case-status-icon ${statusBadge}">${statusIcon}</span>
         <span class="case-heading">
           <span class="case-title">${escapeHtml(c.title)}</span>
           ${whatItChecks ? `<p class="case-intent">${escapeHtml(whatItChecks)}</p>` : ""}
         </span>
-        <span class="case-badge ${statusBadge}">${STATUS_LABEL[c.status] ?? c.status}</span>
+        <span class="case-badge ${statusBadge}">${escapeHtml(STATUS_LABEL[c.status] ?? c.status)}</span>
         <span class="case-expand-icon">${icon("chevron-down", { size: 14 })}</span>
       </div>
       <div class="case-card-body hidden">
         ${c.blockedBy ? `<p class="blocked-note">Couldn't finish: ${escapeHtml(c.blockedBy)}. The screenshot below is where it stopped.</p>` : ""}
         ${screenshotUrl ? `
         <figure class="case-screenshot">
-          <img src="${screenshotUrl}" alt="screenshot for case ${index + 1}" loading="lazy"
+          <img src="${escapeHtml(screenshotUrl)}" alt="screenshot for case ${index + 1}" loading="lazy"
                onerror="this.parentElement.classList.add('hidden')" />
           <figcaption>Final state</figcaption>
         </figure>` : ""}
         <div class="case-downloads">
-          <a href="${specUrl}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">${icon("file-text", { size: 13 })} Test script</a>
-          <a href="${irUrl}" download="ir.json" class="dl-btn">${icon("braces", { size: 13 })} Test model (IR)</a>
-          <a href="${resultUrl}" download="result.json" class="dl-btn">${icon("download", { size: 13 })} Raw result</a>
-          <a href="${traceUrl}" class="dl-btn" target="_blank">${icon("external-link", { size: 13 })} Artifacts</a>
+          <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">${icon("file-text", { size: 13 })} Test script</a>
+          <a href="${escapeHtml(irUrl)}" download="ir.json" class="dl-btn">${icon("braces", { size: 13 })} Test model (IR)</a>
+          <a href="${escapeHtml(resultUrl)}" download="result.json" class="dl-btn">${icon("download", { size: 13 })} Raw result</a>
+          <a href="${escapeHtml(traceUrl)}" class="dl-btn" target="_blank">${icon("external-link", { size: 13 })} Artifacts</a>
         </div>
         <details class="case-details">
           <summary>${icon("code", { size: 13 })} Technical details</summary>
@@ -555,8 +594,8 @@ function renderHistory(runs) {
       ? `<span class="h-suite">${r.suite.passed}/${r.suite.total} tests</span>`
       : "";
     return `
-    <li class="history-item" data-run-id="${r.runId}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
-      <span class="badge ${r.status}" title="${STATUS_LABEL[r.status] ?? r.status}">${icon(STATUS_ICON[r.status] ?? "circle", { size: 14 })}</span>
+    <li class="history-item" data-run-id="${escapeHtml(r.runId)}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
+      <span class="badge ${escapeHtml(r.status)}" title="${escapeHtml(STATUS_LABEL[r.status] ?? r.status)}">${icon(STATUS_ICON[r.status] ?? "circle", { size: 14 })}</span>
       <span class="hprompt">${escapeHtml(r.prompt || "(no prompt)")}</span>
       ${suiteInfo}
       <span class="hurl">${escapeHtml(r.url)}</span>
@@ -650,6 +689,150 @@ credFormEl.addEventListener("submit", (e) => {
 
 credSkipEl.addEventListener("click", () => submitCredentials({ skip: true }));
 
+// -----------------------------------------------------------------------------
+// Case-selection panel (the gate pauses a run here to review generated cases)
+// -----------------------------------------------------------------------------
+
+// The run this panel belongs to. Guards against a stale panel the way credRunId guards the
+// credential prompt: the poller replays events, and a decision must never post to an old run.
+let caseRunId = null;
+
+// The batch currently on screen and how many cases were already accepted before this round.
+let currentBatch = [];
+let acceptedSoFarCount = 0;
+
+// Local mirrors of the gate's pool cap and regeneration budget, so the panel can render its
+// counters and notes without asking the backend for every number.
+const CASE_POOL_CAP = 5; // MAX_ACCUMULATED_CASES
+const MAX_CASE_REGEN_ATTEMPTS_LOCAL = 3; // MAX_CASE_REGEN_ATTEMPTS
+
+function renderCaseSelectionPanel(batch, attempt, acceptedCount) {
+  currentBatch = Array.isArray(batch) ? batch : [];
+  acceptedSoFarCount = acceptedCount || 0;
+
+  caseRoundLabelEl.textContent = `Round ${attempt} — review the test cases`;
+  casePoolCounterEl.textContent =
+    `${acceptedSoFarCount} of ${CASE_POOL_CAP} case${acceptedSoFarCount === 1 ? "" : "s"} accepted so far`;
+
+  caseSelectionListEl.innerHTML = currentBatch.map((c, i) => {
+    const primary = c.fromPrompt ? `<span class="case-primary-badge">Primary</span>` : "";
+    const title = escapeHtml(c.title || `Case ${i + 1}`);
+    const intent = c.intent || c.expected || "";
+    const checked = c.fromPrompt ? "checked" : "";
+    return `
+      <li>
+        <input type="checkbox" id="case-pick-${i}" data-index="${i}" ${checked} />
+        <label for="case-pick-${i}" class="case-label">
+          <span class="case-label-row">
+            <span class="case-title">${title}</span>${primary}
+          </span>
+          ${intent ? `<span class="case-intent">${escapeHtml(intent)}</span>` : ""}
+        </label>
+      </li>`;
+  }).join("");
+
+  caseRefineInputWrapEl.classList.add("hidden");
+  caseNewPromptInputEl.value = "";
+  caseNotSatisfiedBtnEl.textContent = "Not satisfied — refine";
+  caseRegenAttemptsLeftEl.textContent =
+    `Refine attempts left: ${Math.max(0, MAX_CASE_REGEN_ATTEMPTS_LOCAL - attempt)} of ${MAX_CASE_REGEN_ATTEMPTS_LOCAL}`;
+  caseNoticeEl.classList.add("hidden");
+  caseNoticeEl.textContent = "";
+
+  updateDoneButtonState();
+  caseSelectionPanelEl.classList.remove("hidden");
+  // The panel used to just appear wherever it sat in the page flow, with nothing drawing
+  // the eye to it — easy to miss while watching the progress timeline above. Guarantee it
+  // enters the viewport the moment a round is actually ready for review.
+  caseSelectionPanelEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function hideCaseSelectionPanel() {
+  caseRunId = null;
+  currentBatch = [];
+  acceptedSoFarCount = 0;
+  caseSelectionPanelEl.classList.add("hidden");
+}
+
+function getCheckedCaseIndexes() {
+  return Array.from(caseSelectionListEl.querySelectorAll('input[type="checkbox"]:checked'))
+    .map((cb) => Number(cb.dataset.index));
+}
+
+// Done can't be clicked until there's at least one case to run: accepted in earlier rounds
+// or checked in this one. The label doubles as a running count.
+function updateDoneButtonState() {
+  const total = acceptedSoFarCount + getCheckedCaseIndexes().length;
+  caseDoneBtnEl.disabled = total === 0;
+  caseDoneBtnEl.textContent = total === 0
+    ? "Run selected tests"
+    : `Run ${total} test${total === 1 ? "" : "s"}`;
+}
+
+async function postCaseSelectionDecision(runId, decision) {
+  try {
+    const res = await fetch(`/api/runs/${runId}/case-selection`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(decision),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showError(err.error ?? "Failed to submit case selection");
+      return false;
+    }
+    return true;
+  } catch {
+    showError("Failed to submit case selection");
+    return false;
+  }
+}
+
+caseSelectAllBtnEl.addEventListener("click", () => {
+  caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => { cb.checked = true; });
+  updateDoneButtonState();
+});
+
+caseSelectNoneBtnEl.addEventListener("click", () => {
+  const primaryWasChecked = Array.from(caseSelectionListEl.querySelectorAll('input[type="checkbox"]'))
+    .some((cb) => cb.checked && currentBatch[Number(cb.dataset.index)]?.fromPrompt);
+  caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => { cb.checked = false; });
+  if (primaryWasChecked) {
+    showNotice("Primary case unselected — if you refine again, the next round will generate a new primary case.");
+  }
+  updateDoneButtonState();
+});
+
+caseDoneBtnEl.addEventListener("click", async () => {
+  if (!caseRunId) return;
+  const selectedIndexes = getCheckedCaseIndexes();
+  if (acceptedSoFarCount + selectedIndexes.length === 0) return;
+  const ok = await postCaseSelectionDecision(caseRunId, { action: "done", selectedIndexes });
+  if (ok) hideCaseSelectionPanel();
+});
+
+caseNotSatisfiedBtnEl.addEventListener("click", async () => {
+  if (!caseRunId) return;
+  if (caseRefineInputWrapEl.classList.contains("hidden")) {
+    caseRefineInputWrapEl.classList.remove("hidden");
+    caseNotSatisfiedBtnEl.textContent = "Confirm refine";
+    caseNewPromptInputEl.focus();
+    return;
+  }
+  const newPrompt = caseNewPromptInputEl.value.trim();
+  if (!newPrompt) {
+    showError("Describe what should change before refining.");
+    return;
+  }
+  const selectedIndexes = getCheckedCaseIndexes();
+  const ok = await postCaseSelectionDecision(caseRunId, { action: "not_satisfied", selectedIndexes, newPrompt });
+  if (ok) hideCaseSelectionPanel();
+});
+
+caseSelectionListEl.addEventListener("change", (e) => {
+  if (e.target.matches('input[type="checkbox"]')) updateDoneButtonState();
+});
+
 function applyEvent(event, runId) {
   setPhaseFromStage(event.stage, event.status, event.data);
 
@@ -657,6 +840,35 @@ function applyEvent(event, runId) {
     if (event.status === "started") showCredentialPrompt(runId, event.data);
     else hideCredentialPrompt();   // answered, skipped or timed out — the run has moved on
     return;
+  }
+
+  // Case-selection gate. The batch to review rides in the event; the accepted-so-far count
+  // comes from the accumulator, since that's the number the pool cap and Done button depend on.
+  if (event.stage === "testcases" && event.data?.action === "case_round_requested") {
+    caseRunId = runId;
+    const batch = event.data.batch ?? [];
+    const attempt = event.data.attempt ?? 1;
+    fetch(`/api/runs/${runId}/accepted-cases`)
+      .then((res) => res.json())
+      .then(({ count }) => renderCaseSelectionPanel(batch, attempt, count))
+      .catch(() => renderCaseSelectionPanel(batch, attempt, 0));
+    return false;
+  }
+
+  if (event.stage === "testcases" && event.data?.action === "case_pool_cap_warning") {
+    const cap = event.data.poolCap ?? CASE_POOL_CAP;
+    showNotice(`The case pool is full — ${cap} of ${cap} cases already accepted. The run will continue with what's been picked.`);
+    return false;
+  }
+
+  if (event.stage === "testcases" && event.data?.action === "case_end_of_capacity") {
+    showNotice("No new test cases could be generated — everything the model produced repeats a case you already saw. The run will continue with the cases you've picked.");
+    return false;
+  }
+
+  if (event.stage === "testcases" && event.data?.action === "case_selection_finalized") {
+    hideCaseSelectionPanel();
+    return false;
   }
 
   if (event.stage === "done" || event.stage === "error") {
@@ -686,6 +898,7 @@ function applyEvent(event, runId) {
     }
 
     hideSuiteProgress();
+    hideCaseSelectionPanel();
 
     // Check if this is a suite run or a single-test run
     const suite = event.data?.suite;
@@ -800,6 +1013,7 @@ async function connectToRun(runId) {
   hideSuiteResults();
   hideSuiteProgress();
   hideCredentialPrompt();
+  hideCaseSelectionPanel();
   diagnosisEl.textContent = "";
 
   let seen = 0;
@@ -853,15 +1067,28 @@ form.addEventListener("submit", async (e) => {
   if (!prompt || !url) return;
 
   submitBtn.disabled = true;
-  submitBtn.textContent = "Running\u2026";
+  submitBtn.innerHTML = `${icon("loader", { size: 14 })} <span class="run-btn-text">Running\u2026</span>`;
 
-  const res = await fetch("/api/runs", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt, url }),
-  });
-  const { runId } = await res.json();
-  connectToRun(runId);
+  try {
+    const res = await fetch("/api/runs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt, url }),
+    });
+    if (!res.ok) throw new Error(`Server responded with HTTP ${res.status}`);
+    const { runId } = await res.json();
+    if (!runId) throw new Error("Server didn't return a run id");
+    connectToRun(runId);
+  } catch (err) {
+    // A failed POST previously left the button stuck on "Running\u2026" forever. Reset it and
+    // surface the reason instead of silently swallowing the error.
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
+    finalResult.classList.remove("hidden");
+    paintVerdict({ cls: "incomplete", ic: "alert-triangle",
+      head: "Couldn't start the run",
+      detail: err?.message ?? "The server didn't accept the request. Try again." });
+  }
 });
 
 // -----------------------------------------------------------------------------
@@ -874,6 +1101,38 @@ document.getElementById("newRunIcon").innerHTML = icon("plus", { size: 15 });
 document.getElementById("urlIcon").innerHTML = icon("globe", { size: 15 });
 document.getElementById("runIcon").innerHTML = icon("play", { size: 14 });
 document.getElementById("credIcon").innerHTML = icon("key", { size: 18 });
+document.getElementById("caseSelectionIcon").innerHTML = icon("list", { size: 18 });
+document.getElementById("themeIconSun").innerHTML = icon("sun", { size: 14 });
+document.getElementById("themeIconMoon").innerHTML = icon("moon", { size: 14 });
+
+// -----------------------------------------------------------------------------
+// Theme (light/dark)
+// -----------------------------------------------------------------------------
+
+const themeToggleEl = document.getElementById("themeToggle");
+const themeToggleLabelEl = document.getElementById("themeToggleLabel");
+
+function applyTheme(theme) {
+  const isLight = theme === "light";
+  if (isLight) document.documentElement.dataset.theme = "light";
+  else delete document.documentElement.dataset.theme;
+
+  themeToggleEl.classList.toggle("is-light", isLight);
+  themeToggleEl.setAttribute("aria-pressed", String(isLight));
+  themeToggleEl.setAttribute("aria-label", isLight ? "Switch to dark theme" : "Switch to light theme");
+  themeToggleLabelEl.textContent = isLight ? "Light" : "Dark";
+
+  try { localStorage.setItem("theme", theme); } catch {}
+}
+
+// The inline script in index.html's <head> already applied a saved "light" preference
+// before first paint (to avoid a flash of the wrong theme) — this just syncs the toggle's
+// own UI state to match on load, and defaults to dark when nothing is saved yet.
+applyTheme(document.documentElement.dataset.theme === "light" ? "light" : "dark");
+
+themeToggleEl.addEventListener("click", () => {
+  applyTheme(themeToggleEl.classList.contains("is-light") ? "dark" : "light");
+});
 
 // "New run" clears the workspace without a page reload, so an in-flight poll is abandoned
 // (pollGeneration is what stops the old loop touching the DOM again).
@@ -886,6 +1145,7 @@ document.getElementById("newRunBtn").addEventListener("click", () => {
   hideSuiteResults();
   hideSuiteProgress();
   hideCredentialPrompt();
+  hideCaseSelectionPanel();
   diagnosisEl.textContent = "";
   submitBtn.disabled = false;
   submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;

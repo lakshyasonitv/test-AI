@@ -113,6 +113,19 @@ export function selectCases(all: TestCase[], budget: number = maxCases()): TestC
   return out;
 }
 
+/**
+ * Hard guarantee that a case already shown to the user (accepted OR rejected in an earlier
+ * selection round) never reappears in a new batch. The LLM prompt asks for novelty and the
+ * cache key now includes the rejected titles, but neither of those is a guarantee — the model
+ * can ignore the instruction and the cache can return a stale batch. This is the enforced
+ * floor: anything overlapping an already-seen title is dropped, whatever the model said.
+ * Round 1 is unaffected (seenTitles is empty), so it still gets the full upfront suite.
+ */
+export function filterNovelCases(all: TestCase[], seenTitles: string[]): TestCase[] {
+  if (seenTitles.length === 0) return all;
+  return all.filter((c) => !seenTitles.some((s) => titleOverlap(s, c.title) >= DUPLICATE_AT));
+}
+
 export const TestCase = z.object({
   title: z.string(),
   priority: Priority,
@@ -162,24 +175,47 @@ const LLMTestCase = TestCase.omit({ generatedFrom: true });
 export interface ExtendContext {
   /** Titles already covered by an earlier batch. Present only on the reactive call. */
   existingTitles: string[];
+  /** Titles the user explicitly rejected in an earlier case-selection round. The model must
+   *  never propose these again, not even reworded. */
+  rejectedTitles?: string[];
+  /** When true, this extend call must still mint exactly one fromPrompt:true case — used
+   *  when no primary has been accepted into the gate's pool yet. When false/absent,
+   *  preserves today's behavior (never mint a primary on an extend call). */
+  mintPrimary?: boolean;
+  /** The user's latest prompt/refinement for THIS batch (round N+1's "not satisfied" reply,
+   *  or the original prompt on a reactive extend). Rendered as an additive focus instruction,
+   *  never as a replacement for the plan/checklist grounding. */
+  latestPrompt?: string;
+}
+
+/** Options that shape generation without switching it into "extend" mode. Kept separate from
+ *  ExtendContext so round 1 (which must mint exactly one fromPrompt case) can carry them
+ *  without tripping the extend branch's "never set fromPrompt" rule. */
+export interface GenerationOptions {
+  /** The literal source prompt of the run. Used in the cache key so two runs whose plans
+   *  happen to be identical (a rephrased prompt) never collide on a stale cached suite. */
+  sourcePrompt?: string;
 }
 
 export async function toTestCases(
-  p: Plan, appModel: AppModel, extend?: ExtendContext
+  p: Plan, appModel: AppModel, extend?: ExtendContext, opts: GenerationOptions = {}
 ): Promise<TestCase[]> {
   // A human QA engineer doesn't stop at the happy path. Pull the standard coverage
   // categories for whatever features discovery found, and require one case per category —
   // this is what turns "test the login" (one bare case before) into a real suite.
   const concepts = [...new Set(appModel.pages.flatMap(pg => pg.concepts))];
-  const categories = strategyFor(concepts);
-  const strategyList = categories.map(c => `- [${c.priority}] ${c.title}: ${c.intent}`).join("\n");
-  const gaps = unmatchedConcepts(concepts);
 
   // Scope reaches the PROMPT now, not just a post-filter. Generating security cases and then
   // discarding them wasted a Gemini call and skewed the suite toward attack shapes even when
   // the user asked for a functionality test.
   const scope = (p.testTypeScope ?? ALL_SCOPES) as ScopeFilter[];
   const wantsSecurity = scope.includes("security");
+  // The checklist itself must obey scope too — telling the model "do NOT write security
+  // cases" while still handing it a "[critical] SQL injection in login" line item is a
+  // contradiction the model doesn't reliably resolve in the instruction's favor.
+  const categories = strategyFor(concepts).filter(c => scope.includes(c.scope));
+  const strategyList = categories.map(c => `- [${c.priority}] ${c.title}: ${c.intent}`).join("\n");
+  const gaps = unmatchedConcepts(concepts);
   const scopeLine = wantsSecurity
     ? "valid path, invalid inputs, empty fields, boundaries, and security."
     : `valid path, invalid inputs, empty fields, and boundaries.
@@ -192,11 +228,22 @@ no payloads. A case whose point is an attack is out of scope and will be discard
   // the extension batch: re-running it against the SAME plan produced a reworded copy of the
   // primary case ("Verify end-to-end account creation and authentication flow" vs "Verify the
   // end-to-end functionality of user account creation and authentication").
+  const rejectedBlock = (extend?.rejectedTitles?.length ?? 0)
+    ? `\nThe user explicitly REJECTED the cases below in an earlier selection round. Do NOT propose
+any of them again, and do NOT write a near-reworded copy of any of them. Rejected:
+${extend!.rejectedTitles!.map((t) => `  - ${t}`).join("\n")}`
+    : "";
   const fromPromptRule = extend
-    ? `These cases EXTEND an existing suite. Do NOT restate anything already covered — write only
-cases for behaviour the list below does not reach. Never set "fromPrompt"; the suite already has
-its primary case. Already covered:
-${extend.existingTitles.map(t => `  - ${t}`).join("\n")}`
+    ? (extend.mintPrimary
+        ? `These cases EXTEND an existing suite, but no primary case has been accepted yet.
+Exactly ONE case in this batch must be tagged "fromPrompt": true — the direct, literal translation
+of the plan itself, using the plan's own concrete values. Do NOT restate anything already covered
+below. Already covered:
+${extend.existingTitles.map(t => `  - ${t}`).join("\n")}${rejectedBlock}`
+        : `These cases EXTEND an existing suite. Do NOT restate anything already covered — write
+only cases for behaviour the list below does not reach. Never set "fromPrompt"; the suite already
+has its primary case. Already covered:
+${extend.existingTitles.map(t => `  - ${t}`).join("\n")}${rejectedBlock}`)
     : `Exactly ONE case — the direct, literal translation of the plan itself — must be tagged
 "fromPrompt": true.`;
 
@@ -259,9 +306,28 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     ? `\nConcepts with NO checklist entry — apply the 5 reasoning dimensions above to these directly, do not just emit one generic case: ${gaps.join(", ")}\n`
     : "";
   const liteModel = toLiteModel(appModel);
-  const cacheKey = makeCacheKey(JSON.stringify(p), JSON.stringify(liteModel), scope.join(","), (extend?.existingTitles ?? []).join("|"));
+  // The literal prompt is part of the key: two runs whose plans are identical (a rephrased
+  // request) must NOT collide on a cached batch, or "customizing" silently returns yesterday's
+  // suite. The round's refinement prompt joins too, so a new focus direction in a later gate
+  // round forces a fresh generation instead of the previous batch.
+  const cacheKey = makeCacheKey(
+    JSON.stringify(p), JSON.stringify(liteModel), scope.join(","),
+    (extend?.existingTitles ?? []).join("|"), (extend?.rejectedTitles ?? []).join("|"),
+    opts.sourcePrompt ?? "", extend?.latestPrompt ?? "");
   const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
   if (cachedCases) return cachedCases;
+
+  // Additive focus for a regeneration round: the user's "not satisfied" reply steers WHAT to
+  // cover, but the plan, the checklist floor, and the element-grounding rules still apply — a
+  // refinement must not be able to invent elements or drag the batch away from the model.
+  const focusBlock = extend?.latestPrompt
+    ? `\nThe user refined the request for this round. Cover what they asked for below, but stay
+grounded: elements on the CURRENT page must still come verbatim from the application model, the
+checklist floor above still applies, and nothing already covered or rejected may be restated.
+Refinement:
+${extend.latestPrompt}
+`
+    : "";
 
   const user =
     `Plan: ${JSON.stringify(p)}
@@ -270,7 +336,7 @@ Application model: ${JSON.stringify(liteModel)}
 Coverage checklist floor (produce one grounded case per applicable item):
 ${strategyList}
 ${gapsLine}
-Return JSON array: [ { "title","priority","feature","steps":string[],"expected","fromPrompt","category","intent","checklistTitle","targetUrl" } ]`;
+${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[],"expected","fromPrompt","category","intent","checklistTitle","targetUrl" } ]`;
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -327,8 +393,10 @@ export async function generateCasesForNewPages(
     pages: newPages,
   };
 
-  // Generate cases for the new pages
-  const cases = await toTestCases(plan, filteredModel, { existingTitles });
+  // Generate cases for the new pages. The run's own prompt is threaded through as this
+  // batch's latestPrompt AND part of the cache key, so reactive cases follow the user's
+  // actual request instead of anchoring to whatever feature the first page happened to have.
+  const cases = await toTestCases(plan, filteredModel, { existingTitles, latestPrompt: prompt }, { sourcePrompt: prompt });
 
   // Tag all as reactive, and clear fromPrompt: toTestCases' prompt mandates exactly one
   // fromPrompt case per call, so this batch mints its own — but the run already has a

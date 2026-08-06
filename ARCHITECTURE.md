@@ -4,7 +4,8 @@ This is the technical reference for the AI test automation platform. It covers e
 with its role, data contracts, LLM integration, and key design decisions.
 
 For a quick-read project statement, a detailed architecture diagram, and honest current-state
-bullets, see [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md).
+bullets, see [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md). For what changed in the most recent
+working session specifically, see [SESSION_SUMMARY.md](SESSION_SUMMARY.md).
 
 ---
 
@@ -12,12 +13,13 @@ bullets, see [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md).
 
 1. [Pipeline Overview](#pipeline-overview)
 2. [Discovery Fallback Chain](#discovery-fallback-chain)
-3. [Source Files by Module](#source-files)
-4. [Schema Contracts](#schema-contracts)
-5. [LLM Integration](#llm-integration)
-6. [Frontend & Server](#frontend--server)
-7. [Key Design Decisions](#key-design-decisions)
-8. [Current Gaps](#current-gaps)
+3. [Case Selection Gate](#case-selection-gate)
+4. [Source Files by Module](#source-files)
+5. [Schema Contracts](#schema-contracts)
+6. [LLM Integration](#llm-integration)
+7. [Frontend & Server](#frontend--server)
+8. [Key Design Decisions](#key-design-decisions)
+9. [Current Gaps](#current-gaps)
 
 ---
 
@@ -28,14 +30,17 @@ prompt + url
   -> Planner (Gemini)                 -> structured test plan
   -> Discovery                        -> app model: elements as accessibility role + name
        |_ DOM extraction (primary)     -> cheerio over page.content(), no LLM needed
+       |_ site crawl (same-origin)     -> follows the entry page's own internal links, bounded
        |_ Gemini Vision (fallback)     -> only when DOM extraction finds nothing usable
-  -> Structured Test Cases (Gemini)   -> full coverage suite (valid/invalid/boundary/security)
+  -> Test Cases (Gemini)              -> full coverage suite (valid/invalid/boundary/security)
+       \_ case-selection gate (opt.)   -> pauses for human review/regeneration, feature-flagged
   -> Primary-case selection           -> fromPrompt case, else highest priority
   -> IR generation (Groq) + grounding -> strict JSON test model (the contract)
        \_ credentialPolicyFor(case)    -> full / identifier-only / none, from case wording,
                                           computed before any credential ever gets substituted
        \_ live-extend (on demand)      -> reaches + models pages beyond the entry page,
-                                          policy-aware during replay
+                                          policy-aware during replay, from the SAME session
+                                          (not a fresh, session-less browser)
        \_ text-assertion grounding     -> replays the terminal step, corrects a wrong-worded
                                           guess against the real page
        \_ truncation (fallback)        -> a real, partial test instead of a hard failure
@@ -54,14 +59,23 @@ prompt + url
 The hybrid discovery orchestrator (`hybridDiscovery.ts`) tries these in order:
 
 ```
-1. AppModel cache hit?  -> Return immediately (zero cost)
+1. AppModel cache hit?  -> Return immediately (zero cost). Site-crawl results live under their
+     |                     OWN cache key ("site:<url>"), distinct from the single-page result's
+     |                     bare-URL key — the two shapes can't silently overwrite each other.
      |
 2. DOM extraction path  -> domDiscovery.ts drives Playwright to fetch page.content(),
      |                      domExtract.ts (cheerio) parses it into structured elements
      |                      + Gemini concept labeling (text-only, no screenshot)
      |                      = Fast, deterministic structure, ~1 Gemini call, no service to run
      |
-3. If DOM returns null   -> Gemini Vision fallback
+3. Entry page has        -> collectCrawlTargets filters its internal links to same-origin,
+   crawlable links?         http(s), non-asset, not-already-visited, and the crawl repeats
+     |                      step 2 for each (bounded by MAX_DISCOVERY_PAGES, default 5) —
+     |                      merging every reachable page into ONE AppModel. A site with no
+     |                      crawlable entry-page links (auth wall, SPA) is unaffected: same
+     |                      one-page result as before this existed.
+     |
+4. If DOM returns null   -> Gemini Vision fallback
    (no usable elements)    = Playwright ARIA snapshot + JPEG screenshot
                            + Gemini with image input
                            = Slow, token-heavy, but works for everything (canvas, captcha,
@@ -74,11 +88,80 @@ now deleted) — same extraction logic, same output shape, no external service, 
 text; in that case the DOM result still supplies structure but vision is also consulted, and
 `discoveryMethod` becomes `"hybrid"`.
 
+**A structural limitation worth knowing:** `domExtract.ts` is a static HTML parser (cheerio) — it
+never executes CSS, so it cannot detect visibility controlled by a media query. An element hidden
+only at a certain viewport width (a mobile hamburger toggle being the canonical example) gets
+recorded `visible: true` regardless. IR-generation carries a prompt rule steering it away from
+grounding a general "is this section visible" check on a menu-toggle-shaped control specifically,
+but nothing detects the broader class of CSS-conditional visibility.
+
+`extractDomModelFromPage(page, url)` (`domDiscovery.ts`) is the piece that makes replay-time
+discovery trustworthy: it snapshots a Playwright `Page` object that's ALREADY open and navigated
+— no new browser launch. Both `liveExtend.ts`'s replay and `hybridDiscovery.ts`'s site crawl use
+it. The alternative, `discoverUsingCrawler(url)`, launches a fresh, session-less browser; for an
+authenticated URL that hits the login redirect and models the wrong page — and would cache that
+wrong snapshot under the real URL's key permanently. `extractDomModelFromPage` has no such trap:
+it can only ever see whatever the calling code's own browser session sees.
+
+---
+
+## Case Selection Gate
+
+Optional (`ENABLE_CASE_SELECTION_GATE=true`; off leaves the pipeline byte-for-byte identical to
+before this existed — the gate module isn't even imported). Pauses upfront case generation for a
+human review loop instead of running straight through with the model's first batch.
+
+```
+runCaseSelectionGate (caseSelectionGate.ts)
+  round 1: toTestCases(plan, appModel) — the plain upfront call, mints its own primary case
+     |
+     v
+  store.append("case_round_requested") -> UI shows the batch, parks on your decision
+     |
+     v
+  awaitCaseSelection (pendingCaseSelection.ts) -- parks a Promise in memory (never on disk)
+     |
+     v
+  decision: "done"                     decision: "not_satisfied" + refinement prompt
+     |                                       |
+     v                                       v
+  appendAcceptedCases            appendAcceptedCases (whatever WAS checked)
+  (caseAccumulator.ts)           appendRoundToHistory (caseHistoryLedger.ts) — every title
+     |                           in this batch recorded as selected / selected_but_capped /
+     |                           rejected, keyed by normalized title
+     |                                       |
+     v                                       v
+  finalize, return pool          round 2: toTestCases(plan, appModel, {
+                                    existingTitles, rejectedTitles, mintPrimary, latestPrompt
+                                  }) -- filterNovelCases() then HARD-drops anything overlapping
+                                  an already-seen title, regardless of what the model/cache
+                                  returned -- loop back to "store.append(...)"
+```
+
+Two things make the regeneration actually reliable rather than just prompt-requested:
+
+- **`filterNovelCases`** (`testCases.ts`) is an enforced floor, not an instruction: it drops any
+  generated case whose title overlaps (Jaccard-style token match, same threshold `selectCases`
+  already used) an accepted OR rejected title, even if the LLM or the LLM cache handed one back
+  anyway.
+- **The extend-context additions** (`rejectedTitles`, `mintPrimary`, `latestPrompt`, all folded
+  into the cache key) are what let a "not satisfied, focus on X" reply actually steer the next
+  batch instead of being recorded and having no effect — without `latestPrompt` reaching the
+  prompt as an additive focus block, round 2 was just round 1 again.
+
+The pool is capped at `MAX_ACCUMULATED_CASES` (default 5); a pick that doesn't fit becomes
+`selected_but_capped` in the history ledger — treated the same as rejected for repetition
+purposes (eligible to be regenerated later), but distinguished in the UI-facing prompt block so
+the model understands it WAS wanted, just didn't fit. Regeneration is bounded by
+`MAX_CASE_REGEN_ATTEMPTS` (default 3); the wait for a decision on a parked round is bounded by
+`CASE_SELECTION_WAIT_MS` (default 10 min) — a paused round times out as `"done"` with nothing
+new accepted, same shape as the credential prompt's timeout.
+
 ---
 
 ## Source Files
 
-### `src/stages/` — Pipeline Stages (17 files, ~5,378 lines)
+### `src/stages/` — Pipeline Stages (18 files, ~5,903 lines)
 
 | File | Lines | LLM? | Purpose |
 |------|------:|:-----:|---------|
@@ -86,34 +169,37 @@ text; in that case the DOM result still supplies structure but vision is also co
 | `planner.ts` | 72 | Gemini | NL request -> structured Plan |
 | `targetResolver.ts` | 95 | No | IR Target -> Playwright Locator with fallbacks |
 | `promptSelectors.ts` | 98 | No | Honors selectors the user wrote directly into their prompt |
-| `classify.ts` | 146 | No | Deterministic failure classifier |
-| `failureAnalysis.ts` | 176 | Gemini + Vision | Failure diagnosis (fallback only) |
-| `executor.ts` | 259 | No | Runs spec, captures artifacts |
-| `hybridDiscovery.ts` | 268 | Gemini (text) | Discovery orchestrator: DOM first, vision fallback |
+| `classify.ts` | 158 | No | Deterministic failure classifier |
+| `failureAnalysis.ts` | 177 | Gemini + Vision | Failure diagnosis (fallback only) |
+| `caseSelectionGate.ts` | 183 | Gemini (via testCases) | Optional human-review loop over generated case batches |
 | `suiteRunner.ts` | 300 | No | Runs every case in its own browser context, per-case artifacts |
-| `testCases.ts` | 339 | Gemini | Coverage suite generation, capped by `MAX_CASES_PER_RUN` |
+| `executor.ts` | 313 | No | Runs spec, captures artifacts, redacts secrets from served output |
 | `discovery.ts` | 354 | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
-| `liveExtend.ts` | 358 | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding |
-| `domDiscovery.ts` | 386 | No | Drives Playwright to fetch page HTML, hands it to `domExtract.ts` |
-| `generator.ts` | 418 | No | IR -> Playwright spec (pure code) |
-| `credentials.ts` | 439 | No | Demo credentials + full/identifier-only/none substitution policy |
-| `domExtract.ts` | 606 | No | Cheerio DOM extraction — Node port of the deleted Python parser |
-| `ir.ts` | 1021 | Groq | TestCase -> IR: grounding, credential policy, live-extend, truncation |
+| `liveExtend.ts` | 364 | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding |
+| `domDiscovery.ts` | 402 | No | Drives Playwright to fetch page HTML; `extractDomModelFromPage` snapshots an already-open page |
+| `testCases.ts` | 407 | Gemini | Coverage suite generation, capped by `MAX_CASES_PER_RUN`, scope-filtered checklist |
+| `generator.ts` | 424 | No | IR -> Playwright spec (pure code) |
+| `credentials.ts` | 434 | No | Per-case/per-leg substitution policy — no demo-site registry |
+| `hybridDiscovery.ts` | 443 | Gemini (text) | Discovery orchestrator: DOM first, same-origin site crawl, vision fallback |
+| `domExtract.ts` | 613 | No | Cheerio DOM extraction — Node port of the deleted Python parser |
+| `ir.ts` | 1023 | Groq | TestCase -> IR: grounding, credential policy, live-extend, truncation |
 
-### `src/schema/` — Data Contracts (2 files, ~295 lines)
+### `src/schema/` — Data Contracts (3 files, ~334 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
-| `appModel.ts` | 234 | Element, PageModel, AppModel + DOM-structured types + `toLiteModel` |
+| `caseSelection.ts` | 39 | Case-selection decision schema + on-disk accepted-cases/history file shapes |
 | `ir.ts` | 61 | Target, Step (action/assertion enums), IR with truncation tracking |
+| `appModel.ts` | 234 | Element, PageModel, AppModel + DOM-structured types + `toLiteModel` |
 
-### `src/` Core (3 files, ~563 lines)
+### `src/` Core (4 files, ~622 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
-| `orchestrator.ts` | 342 | Pipeline wiring: plan -> discovery -> test cases -> IR -> generate -> execute -> heal -> suite |
-| `runStore.ts` | 183 | File-backed per-run NDJSON event log with SSE replay + fallback reconstruction |
+| `text.ts` | 16 | `cutAtBoundary` — cuts text at the last line/word boundary at or before a length cap, never mid-word |
 | `cli.ts` | 38 | CLI entry point: parses `--prompt`/`--url`/`--urls`/`--coverage`, calls `runPipeline` |
+| `runStore.ts` | 216 | File-backed per-run NDJSON event log with SSE replay + fallback reconstruction + orphaned-run detection |
+| `orchestrator.ts` | 352 | Pipeline wiring: plan -> discovery -> test cases (-> optional gate) -> IR -> generate -> execute -> heal -> suite |
 
 Timeouts, retries, and other constants that used to live in a single `config.ts` are now inline
 per-stage (mostly env-overridable — see `README.md`'s Configuration section and `.env.example`).
@@ -137,30 +223,34 @@ per-stage (mostly env-overridable — see `README.md`'s Configuration section an
 | `llmCache.ts` | 42 | Two-tier LLM response cache (in-memory, 30-min TTL + disk, no expiry) |
 | `testStrategy.ts` | 198 | Static QA knowledge: coverage taxonomy, scope classification, filtering |
 
-### `src/server/` — Web Server (4 files, ~225 lines)
+### `src/server/` — Web Server (7 files, ~522 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
 | `concurrency.ts` | 36 | In-process semaphore: caps concurrent runs, queues overflow |
 | `runRegistry.ts` | 37 | SSE fan-out: broadcasts events, replays history on connect |
 | `pendingCredentials.ts` | 55 | Parks a paused run's credential prompt in memory; resolved by the UI's answer or `CREDENTIAL_WAIT_MS` timeout |
-| `index.ts` | 97 | Express: `/api/runs` CRUD, credential-prompt endpoint, SSE stream, polling, static files |
+| `pendingCaseSelection.ts` | 62 | Parks a paused run's case-review round in memory; resolved by the UI's decision or `CASE_SELECTION_WAIT_MS` timeout |
+| `caseAccumulator.ts` | 86 | File-backed pool of accepted cases across gate rounds, capped at `MAX_ACCUMULATED_CASES` |
+| `caseHistoryLedger.ts` | 92 | File-backed record of every case title ever shown and its outcome, so rejections never resurface |
+| `index.ts` | 154 | Express: `/api/runs` CRUD, credential-prompt + case-selection endpoints, SSE stream, polling, static files |
 
-### `public/` — Frontend (5 files, ~1,822 lines)
+### `public/` — Frontend (5 files, ~2,343 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
-| `icons.js` | 90 | Inline SVG icon set |
-| `index.html` | 143 | Single-page HTML shell |
-| `preview.js` | 108 | Static preview/demo states for UI development |
-| `style.css` | 575 | Dark theme, responsive design |
-| `app.js` | 906 | Single-page app: run form, phase UI, suite cards, history |
+| `icons.js` | 93 | Inline SVG icon set |
+| `preview.js` | 123 | Static preview/demo states for UI development |
+| `index.html` | 191 | Single-page HTML shell, case-selection panel, theme toggle |
+| `style.css` | 770 | Dark theme (default) + `[data-theme="light"]` override, responsive design |
+| `app.js` | 1166 | Single-page app: run form, phase UI, suite cards, history, case-selection panel, theme toggle |
 
 ---
 
 ## Schema Contracts
 
-Two Zod schemas, `src/schema/appModel.ts` and `src/schema/ir.ts` (295 lines combined).
+Three Zod schemas: `src/schema/appModel.ts`, `src/schema/ir.ts`, `src/schema/caseSelection.ts`
+(334 lines combined).
 
 ### AppModel (the discovery output)
 
@@ -177,7 +267,8 @@ AppModel
     forms?: DomForm[]      structured <form> extraction: fields (inputType, placeholder,
                           label, required, ...) — this is what credentialFieldMap reads to
                           tell a password field from a username field on an unlabelled form
-    domLinks?, navigation?: DomLink[] / NavigationItem[]  — raw link/nav structure
+    domLinks?, navigation?, internalUrls?: DomLink[] / NavigationItem[] / string[]  —
+                          raw link/nav structure; internalUrls feeds the site crawl's queue
 ```
 
 This is the shared language between discovery, planning, test-case generation, IR grounding, and
@@ -205,6 +296,24 @@ The Generator reads this contract and emits Playwright code (one `test.step()` p
 Executor runs it. Failure analysis inspects it step-by-step. `truncated`/`hasTerminalAssertion`
 are what let a partially-grounded IR ship as a real, honest partial test instead of a hard failure.
 
+### Case Selection (the gate's contract)
+
+```
+CaseSelectionDecision (discriminated on "action")
+  { action: "done", selectedIndexes: number[] }
+  { action: "not_satisfied", selectedIndexes: number[], newPrompt: string }
+
+AcceptedCasesFile (runs/<id>/accepted-cases.json)
+  runId, hasAcceptedPrimary: boolean
+  rounds: { attempt, prompt, acceptedCases: TestCase[], overflowIndexes: number[] }[]
+
+CaseHistoryFile (runs/<id>/case-history.json)
+  runId
+  rounds: { attempt, prompt,
+            entries: { normalizedTitle, originalTitle,
+                       status: "selected" | "selected_but_capped" | "rejected" }[] }[]
+```
+
 ---
 
 ## LLM Integration
@@ -212,15 +321,15 @@ are what let a partially-grounded IR ship as a real, honest partial test instead
 | Stage | Model | Input | Output | When Used |
 |-------|-------|-------|--------|-----------|
 | Planner | Gemini (`gemini-2.5-flash`) | Prompt + URL | Plan (steps, scope, coverage) | Every run, 1 call |
-| Concept labeling | Gemini (`gemini-2.5-flash`) | DOM element list | Labeled AppModel | DOM discovery path, 1 call per page |
+| Concept labeling | Gemini (`gemini-2.5-flash`) | DOM element list | Labeled AppModel | DOM discovery path, 1 call per page (including each crawled page) |
 | Vision discovery | Gemini (`gemini-2.5-flash`) | ARIA snapshot + JPEG screenshot | AppModel | Fallback only, 1 call per page |
-| Test cases | Gemini (`gemini-2.5-flash`) | Plan + AppModel + strategy | TestCase[] | Every run, 1 call |
+| Test cases | Gemini (`gemini-2.5-flash`) | Plan + AppModel + strategy (scope-filtered) | TestCase[] | Every run, 1 call per round (1 round unless the gate is on and you ask for more) |
 | IR generation | Groq (`openai/gpt-oss-120b`) | TestCase + AppModel + sourcePrompt | IR (JSON) | Every run, up to `MAX_IR_ATTEMPTS` (default 4) calls per case, hard-capped run-wide by `MAX_GROQ_CALLS_PER_RUN` (default 60) |
 | Failure analysis | Gemini (`gemini-2.5-flash`) | Error + ARIA + screenshots | Diagnosis | Only on failure, and only when the deterministic classifier can't resolve it |
 
 **Key rotation:** Both Gemini and Groq clients use `keyPool.ts` for round-robin key selection with cooldown. `backoff.ts` handles rate-limit detection, exponential delay, key penalization, and a per-attempt abort (`LLM_TIMEOUT_MS`, default 45s) so a hung fetch can't stall a run indefinitely.
 
-**Caching:** `llmCache.ts` provides a two-tier cache — in-memory (30-min TTL) + disk (no expiry) — keyed by a hash of concatenated inputs. Avoids duplicate LLM calls for identical inputs across runs. The disk half's lack of expiry has bitten this project more than once: a cache key that omits a real input dimension (e.g. credential policy) can silently serve stale results forever — see credential-policy fixes in the project history.
+**Caching:** `llmCache.ts` provides a two-tier cache — in-memory (30-min TTL) + disk (no expiry) — keyed by a hash of concatenated inputs. Avoids duplicate LLM calls for identical inputs across runs. The disk half's lack of expiry has bitten this project more than once: a cache key that omits a real input dimension (e.g. credential policy, or — fixed this session — the case-selection gate's rejected titles and refinement prompt) can silently serve stale results forever.
 
 ---
 
@@ -230,14 +339,17 @@ are what let a partially-grounded IR ship as a real, honest partial test instead
 
 ```
 Express (port 3000, PORT env)
-  POST   /api/runs                     -> starts pipeline (via concurrency semaphore)
-  POST   /api/runs/:runId/credentials  -> answers a paused run's credential prompt
-                                           (never logged, never written to disk)
-  GET    /api/runs/:runId/state        -> polling endpoint (for Cloudflare tunnels)
-  GET    /api/runs/:runId/events       -> SSE event stream (for localhost)
-  GET    /api/runs                     -> list all runs (newest first)
-  DELETE /api/runs/:runId              -> remove a run
-  /                                    -> static files (public/)
+  POST   /api/runs                              -> starts pipeline (via concurrency semaphore)
+  POST   /api/runs/:runId/credentials            -> answers a paused run's credential prompt
+                                                     (never logged, never written to disk)
+  POST   /api/runs/:runId/case-selection         -> answers a paused run's case-review round
+  GET    /api/runs/:runId/accepted-cases         -> current accepted-pool state (count, cap)
+  GET    /api/runs/:runId/case-selection-status  -> snapshot of the currently-pending round
+  GET    /api/runs/:runId/state                  -> polling endpoint (for Cloudflare tunnels)
+  GET    /api/runs/:runId/events                 -> SSE event stream (for localhost)
+  GET    /api/runs                               -> list all runs (newest first)
+  DELETE /api/runs/:runId                        -> remove a run
+  /                                              -> static files (public/)
 ```
 
 ### Frontend Architecture
@@ -246,9 +358,13 @@ Single-page HTML/JS/CSS app (`public/`):
 - **Run form:** prompt, URL, coverage dropdown
 - **Credential prompt:** appears when a run pauses waiting for login details; submitted values go
   straight into the paused pipeline's memory, never through `runStore`/disk
+- **Case-selection panel:** appears when the gate pauses a run; checkbox review list, select
+  all/none, a "not satisfied" refinement flow, scrolls itself into view when it renders
 - **Phase pipeline:** 4 phases (Plan & Discover, Generate & Execute, Analyze, Report) with live aggregate status
 - **Suite progress:** per-case status, lazy-loaded details, screenshots, download buttons
 - **History panel:** newest 20 runs, each deletable
+- **Theme toggle:** light/dark, persisted in `localStorage`, applied before first paint via an
+  inline script (no flash of the wrong theme)
 - **Polling:** uses `GET /api/runs/:id/state` (works through Cloudflare tunnels; SSE is localhost-only)
 
 ### Concurrency
@@ -261,16 +377,21 @@ Single-page HTML/JS/CSS app (`public/`):
 
 | Decision | Rationale |
 |----------|-----------|
-| **DOM-first discovery** | `domExtract.ts` extracts structured elements without LLM tokens. Vision is expensive and slow — used only when DOM extraction finds nothing usable (canvas/captcha/icon-only controls). |
-| **Deterministic failure classifier** | Pattern-matching on Playwright error text is free and instant. Gemini vision diagnosis is used only for ambiguous cases. |
+| **DOM-first discovery, now site-wide by default** | `domExtract.ts` extracts structured elements without LLM tokens. The site crawl (`discoverSiteHybrid`) follows the entry page's own links so more of an app is groundable without a separate discovery pass per page; vision stays reserved for pages DOM extraction finds nothing usable on. |
+| **The case-selection gate is additive, not a fork** | Feature-flagged behind `ENABLE_CASE_SELECTION_GATE`; while off, `caseSelectionGate.ts` is never even imported, so the default path is provably unchanged from before the gate existed. |
+| **A rejected/accepted case title is a hard filter, not a prompt hint** | `filterNovelCases` drops overlapping titles in code, after generation — a model that ignores the "don't repeat this" instruction, or a stale cache hit, can't reintroduce something the user already dismissed. |
+| **`extractDomModelFromPage` over `discoverUsingCrawler` for replay-time snapshots** | A fresh, session-less browser hits the login redirect on an authenticated URL and models the wrong page; snapshotting the page the calling code already has open can't make that mistake. |
+| **Deterministic failure classifier** | Pattern-matching on Playwright error text is free and instant. Gemini vision diagnosis is used only for ambiguous cases. Distinguishes "0 elements resolved" (genuinely missing) from "N elements resolved, condition never true" (found but wrong state) — collapsing the two made the missing-element self-heal path unreachable. |
 | **Bounded self-heal** | `MAX_LIVE_EXTENSIONS` (default 5) page hops, 1 heal attempt per test case, policy-aware re-snapshot. Prevents infinite loops and runaway LLM usage. |
 | **Truncation as fallback** | A partial real test is better than a hard failure. IR truncation + `hasTerminalAssertion` guard ensures execution always happens on real, grounded steps. |
 | **Credential policy is decided per case, from the case's own wording, before any substitution** | A boolean ("substitute or not") can't express a good negative-password test, which needs the identifier real but the password wrong. `credentialPolicyFor` returns `full` / `identifier-only` / `none`; getting the check order right matters (identifier-at-fault must be vetoed before the broader password-at-fault check, or a malformed-email case gets its email silently "fixed"). Currently case-scoped, not leg-scoped — a case with TWO login attempts in one browser session is a known open edge. |
-| **Secrets never reach disk** | User-supplied (non-demo) credentials become `${env:...}` references in the IR/generated spec; the real value is injected only into the Playwright child process's environment at execution time. `runs/` is served as static files, so this is a hard requirement, not a nicety. |
-| **LLM caching, two-tier** | Same input -> same response. In-memory (30-min TTL) + disk (no expiry) deduplicates across runs and stages — the cache key must include every real input dimension, or a result gets served stale forever (this has been a recurring bug source). |
+| **No built-in demo-credential registry** | An earlier version silently auto-filled known demo sites (saucedemo, the-internet.herokuapp.com); removed so the pipeline never special-cases a specific host — every login gate now goes through the same general `askCredentials` prompt, deliberately trading silent convenience for uniform behavior. |
+| **Secrets never reach disk** | User-supplied (non-demo) credentials become `${env:...}` references in the IR/generated spec; the real value is injected only into the Playwright child process's environment at execution time. Extended this session to also scrub `results.json`, `final-page.txt`, and error-context attachments — a logged-in page routinely echoes the identifier back into visible text. `runs/` is served as static files, so this is a hard requirement, not a nicety. |
+| **LLM caching, two-tier** | Same input -> same response. In-memory (30-min TTL) + disk (no expiry) deduplicates across runs and stages — the cache key must include every real input dimension, or a result gets served stale forever (this has been a recurring bug source; the case-selection gate's cache key was fixed this session for exactly this reason). |
 | **Key rotation with cooldown** | Multiple API keys with round-robin selection and rate-limit cooldown prevents single-key exhaustion. |
 | **SSE + polling dual mode** | SSE for localhost (real-time), polling for Cloudflare tunnels (which buffer SSE). |
 | **Isolated per-case execution** | Every case in a suite gets its own Playwright `test()` — a fresh browser context, so one case's login session can't leak into the next case's assumptions. |
+| **A case's representative screenshot is its LAST step, not its first** | `findScreenshot` used to return the first `.png` a directory walk found, which was always the pre-action frame — every case in a run showed the same generic screenshot regardless of what it tested. Fixed by sorting `step-N.png` numerically and taking the last one. |
 
 ---
 
@@ -280,9 +401,12 @@ Single-page HTML/JS/CSS app (`public/`):
 |-----|--------|--------|
 | No server authentication | Anyone with the URL can start runs and browse artifacts | Open |
 | Cross-leg credential handling for multi-attempt cases | A case that logs in for real, then tries a second (wrong-credential) login in the same browser session, can substitute the real credential into the wrong attempt if the model doesn't order the real attempt last — confirmed in production | Open, diagnosed, fix not yet implemented |
+| `toIR`'s retry loop spends an LLM attempt on every live-extend hop | A flow needing several page hops to fully discover can burn its entire `MAX_IR_ATTEMPTS` budget just reaching the right page state, leaving none to actually use the now-correct model — ships a stale truncation note instead. Diagnosed and a fix was approved (decouple extension retries from the outer attempt budget), but never implemented — the session pivoted to a different task first | Open, planned, fix not yet implemented |
+| `sourcePrompt`'s full scope can bleed into a narrower case's IR | `buildUser` (ir.ts) sends both the specific `testCase` and the full original `sourcePrompt` in the same message with no rule telling the model the latter is background context only — a narrower case's IR generation can absorb extra steps the case itself never asked for (confirmed: a plain 3-step login case's IR came back referencing an unrelated product page from the run's overall prompt). Diagnosed and a fix was approved (a system-prompt rule scoping generation to `testCase` alone), but never implemented | Open, planned, fix not yet implemented |
 | Failure diagnosis step attribution | `analyzeFailure` reported a different `failingStepId` than a run's raw Playwright trace actually showed, confirmed against a real run | Open, not yet investigated |
 | No end-to-end self-heal test | Self-heal is verified in code but not against a real drifted site | Pending manual verification |
 | No multi-user isolation | Single-process, shared run history, no per-user quotas | Open |
+| Discovery can't see CSS-media-query visibility | `domExtract.ts` has no CSS engine — an element hidden only by a responsive breakpoint is recorded `visible: true`. IR-generation is steered away from the one common shape this bites (menu toggles), but the general case is unhandled | Open, partially mitigated |
 | Assertion quality beyond the terminal step | The case's final pure-text assertion is grounded against the live page; a mid-case free-text assertion has no equivalent check yet | Open |
 | Playwright generator is pure code | No LLM used for spec generation (intentional) | Feature, not a gap |
 | Cloudflare tunnel buffering | SSE events delayed; UI uses polling as workaround | Works, not a blocker |

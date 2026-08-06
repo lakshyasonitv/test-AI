@@ -10,7 +10,7 @@
  * subprocess to a `page.content()` call on the Playwright browser this module now owns.
  */
 
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
 import { AppModel, PageModel, Element } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 import { extractCrawlResponse, type CrawlResponse } from "./domExtract.js";
@@ -321,6 +321,24 @@ function inferRole(tag: string, el: { aria_role?: string; aria_label?: string; c
 // ---------------------------------------------------------------------------
 
 /**
+ * Extract a page's DOM model from an ALREADY-OPEN Playwright page — no browser launch, no
+ * navigation, no cache write. This is what live-extend uses to snapshot a replayed page, so
+ * the page's real session/credentials are intact when it is modeled. (discoverUsingCrawler
+ * would start a fresh, session-less browser, which hits the login redirect for an
+ * authenticated URL and models the LOGIN page instead — and caches that wrong snapshot.)
+ */
+export async function extractDomModelFromPage(page: Page, url: string): Promise<AppModel | null> {
+  try {
+    const html = await page.content();
+    const crawlResult = extractCrawlResponse(html, url, 200);
+    return crawlResponseToAppModel(crawlResult);
+  } catch (err: any) {
+    console.warn(`[domDiscovery] DOM extraction error for ${url}: ${err?.message ?? err}`);
+    return null;
+  }
+}
+
+/**
  * Discover a page's structure directly from the rendered DOM. This is the PRIMARY discovery
  * path — no Gemini vision needed for standard pages.
  *
@@ -353,15 +371,13 @@ export async function discoverUsingCrawler(url: string): Promise<AppModel | null
     // it's avoided here for the same reason. Mirrors the old service's `wait_after_load`.
     await page.waitForTimeout(800);
 
-    const html = await page.content();
     const finalUrl = page.url();   // reflects any redirect the navigation followed
-    const crawlResult = extractCrawlResponse(html, finalUrl, statusCode);
+    const appModel = await extractDomModelFromPage(page, finalUrl);
+    if (!appModel) return null;
 
-    const appModel = crawlResponseToAppModel(crawlResult);
     console.log(
       `[domDiscovery] extracted ${url}: ${appModel.pages[0]?.elements.length ?? 0} elements, ` +
-      `${crawlResult.forms.length} forms, ${crawlResult.navigation.length} nav items, ` +
-      `${crawlResult.buttons.length} buttons, needs_vision=${crawlResult.needs_vision}`
+      `needs_vision=${appModel.pages[0]?.needsVision}`
     );
 
     cacheSet(`dom:${url}`, appModel);

@@ -1,10 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { strategyFor, classifyScope, filterByScope, ALL_SCOPES, normalizeCategory } from "../src/kb/testStrategy.js";
 import { Semaphore } from "../src/server/concurrency.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "../src/stages/promptSelectors.js";
 import { classify, findFailingStepId } from "../src/stages/classify.js";
 import type { AppModel } from "../src/schema/appModel.js";
 import type { IR } from "../src/schema/ir.js";
+
+const { geminiMock } = vi.hoisted(() => ({ geminiMock: vi.fn().mockResolvedValue("[]") }));
+vi.mock("../src/llm/gemini.js", () => ({ gemini: geminiMock }));
+const { toTestCases } = await import("../src/stages/testCases.js");
 
 // --- converted from the inline `if (process.argv[1]...)` self-check in testStrategy.ts ---
 describe("testStrategy", () => {
@@ -194,5 +198,43 @@ describe("scope + category routing", () => {
   it("never drops the case the user literally asked for", () => {
     const cases = [{ title: "asked for", category: "Security - XSS", fromPrompt: true }];
     expect(filterByScope(cases, ["functional"])).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: toTestCases's checklist wasn't filtered by scope, so a functional-only
+// run's prompt said "do NOT write security cases" while its own checklist still listed
+// "[critical] SQL injection in login" — a contradiction the model doesn't reliably resolve.
+// ---------------------------------------------------------------------------
+
+describe("toTestCases — checklist obeys scope", () => {
+  const appModel: AppModel = {
+    baseUrl: "https://example.com",
+    pages: [{
+      url: "https://example.com/login", title: "Login", concepts: ["Login"],
+      elements: [{ role: "textbox", name: "Username" }, { role: "textbox", name: "Password" },
+                 { role: "button", name: "Log in" }],
+    }],
+  } as unknown as AppModel;
+
+  // toTestCases disk-caches by a hash of its inputs (runs/_cache/llm) — a static plan/model
+  // fixture would hit that cache on the second time this suite runs and never call gemini()
+  // again, silently making the assertion vacuous. A unique goal per invocation keeps every
+  // run a guaranteed cache miss.
+  const uniquePlan = (scope: string[]) =>
+    ({ goal: `test login ${Date.now()}-${Math.random()}`, steps: ["test login"], testTypeScope: scope, coverage: "standard" } as any);
+
+  it("omits the security checklist item from a functional-only run's prompt", async () => {
+    geminiMock.mockClear();
+    await toTestCases(uniquePlan(["functional"]), appModel);
+    const userPrompt = geminiMock.mock.calls[0][0] as string;
+    expect(userPrompt).not.toContain("SQL injection");
+  });
+
+  it("still includes it when scope is the default ALL_SCOPES (no behavior change for the tested default)", async () => {
+    geminiMock.mockClear();
+    await toTestCases(uniquePlan(ALL_SCOPES), appModel);
+    const userPrompt = geminiMock.mock.calls[0][0] as string;
+    expect(userPrompt).toContain("SQL injection");
   });
 });

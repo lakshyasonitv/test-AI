@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Test Platform</title>
   <link rel="stylesheet" href="/style.css" />
+  <!-- Applied before first paint so a saved "light" preference never flashes dark first. -->
+  <script>
+    try {
+      var t = localStorage.getItem("theme");
+      if (t === "light") document.documentElement.dataset.theme = "light";
+    } catch (e) {}
+  </script>
 </head>
 <body>
   <div class="app">
@@ -25,6 +32,15 @@
         <h2 class="rail-heading">Recent</h2>
         <ul id="historyList" class="history-list"></ul>
       </nav>
+
+      <button type="button" id="themeToggle" class="theme-toggle" aria-label="Switch to light theme" aria-pressed="false">
+        <span class="theme-toggle-track">
+          <span class="theme-toggle-icon theme-toggle-icon-sun" id="themeIconSun"></span>
+          <span class="theme-toggle-icon theme-toggle-icon-moon" id="themeIconMoon"></span>
+          <span class="theme-toggle-thumb"></span>
+        </span>
+        <span class="theme-toggle-label" id="themeToggleLabel">Dark</span>
+      </button>
     </aside>
 
     <main class="main">
@@ -99,6 +115,38 @@
               the test reads them from the environment when it runs.
             </p>
           </form>
+        </section>
+
+        <!-- Case-selection panel: the gate pauses a run here to let you pick test cases -->
+        <section id="case-selection-panel" class="case-selection hidden" aria-live="polite">
+          <div class="case-selection-head">
+            <span class="case-selection-key" id="caseSelectionIcon"></span>
+            <div>
+              <div class="case-selection-head-row">
+                <h2 id="case-round-label">Review the test cases</h2>
+                <span class="case-action-pill">Action needed</span>
+              </div>
+              <p id="case-pool-counter" class="case-pool-counter"></p>
+            </div>
+          </div>
+          <ul id="case-selection-list" class="case-selection-list"></ul>
+          <div class="case-selection-bulk">
+            <button type="button" id="case-select-all-btn" class="case-selection-link">Select all</button>
+            <button type="button" id="case-select-none-btn" class="case-selection-link">Select none</button>
+          </div>
+          <div id="case-refine-input-wrap" class="case-refine-input-wrap hidden">
+            <label class="field">
+              <span class="field-label">What should change?</span>
+              <textarea id="case-new-prompt-input" rows="2"
+                placeholder="Describe what should change before refining."></textarea>
+            </label>
+          </div>
+          <p id="caseNotice" class="case-notice hidden" role="status"></p>
+          <div class="case-selection-final-actions">
+            <button type="button" id="case-not-satisfied-btn" class="case-not-satisfied">Not satisfied &mdash; refine</button>
+            <button type="button" id="case-done-btn" disabled>Run selected tests</button>
+          </div>
+          <p id="case-regen-attempts-left" class="case-regen-note"></p>
         </section>
 
         <!-- Live suite progress -->

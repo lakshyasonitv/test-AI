@@ -24,11 +24,17 @@
 
   --accent: #6d8cff;
   --accent-hover: #8aa2ff;
-  --accent-soft: rgba(109, 140, 255, .13);
+  --accent-rgb: 109, 140, 255;
+  --accent-soft: rgba(var(--accent-rgb), .13);
+
+  /* Hover-only elevation, distinct from the resting surface/line tokens above. */
+  --surface-hover: #232830;
+  --line-hover: #2e333d;
 
   /* Status. Names are referenced by app.js-driven classes below — keep them. */
   --pending: #3a3f4a;
   --running: #e5a943;
+  --running-rgb: 229, 169, 67;
   --done: #46c46d;
   --failed: #f2635a;
   --truncated: #d9a12b;
@@ -49,6 +55,51 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 16px;
   color-scheme: dark;
+}
+
+/* ---------------------------------------------------------------------------
+   Light theme — palette inspired by medium.com: warm white surfaces, near-
+   black body text (never pure #000), hairline gray borders, and Medium's own
+   signature green as the accent in place of the dark theme's blue. Toggled by
+   app.js setting data-theme="light" on <html>, persisted in localStorage.
+   Every token below has the exact same name as its dark counterpart above —
+   that contract is what makes every existing rule theme-aware for free.
+   --------------------------------------------------------------------------- */
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f7f7f5;
+  --surface-3: #f2f2f0;
+  --sunken: #fafaf9;
+  --line: #e6e6e6;
+  --line-soft: #eeeeec;
+
+  --text: #242424;
+  --text-2: #5b5b5b;
+  --muted: #757575;
+  --faint: #9b9b9b;
+
+  --accent: #1a8917;
+  --accent-hover: #0f730c;
+  --accent-rgb: 26, 137, 23;
+  --accent-soft: rgba(var(--accent-rgb), .1);
+
+  --surface-hover: #f0f0ee;
+  --line-hover: #d8d8d6;
+
+  --pending: #c9c9c7;
+  --running: #b8720f;
+  --running-rgb: 184, 114, 15;
+  --done: #1e8e3e;
+  --failed: #c5221f;
+  --truncated: #a1670c;
+  --partial: #1a56c4;
+  --blocked: #8944ab;
+
+  --shadow: 0 1px 3px rgba(36,36,36,.08);
+  --shadow-lg: 0 12px 32px rgba(36,36,36,.12);
+
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -103,13 +154,53 @@ h1, h2, h3, h4 { letter-spacing: -0.015em; margin: 0; }
   cursor: pointer;
   transition: background .15s var(--ease), border-color .15s var(--ease);
 }
-.new-run:hover { background: #232830; border-color: #2e333d; }
+.new-run:hover { background: var(--surface-hover); border-color: var(--line-hover); }
 
 .history-nav { display: flex; flex-direction: column; gap: var(--sp-2); min-height: 0; flex: 1; }
 .rail-heading {
   font-size: .68rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
   color: var(--faint); padding: 0 var(--sp-2);
 }
+
+/* ---------------------------------------------------------------------------
+   Theme toggle — sits at the bottom of the sidebar (history-nav's flex: 1
+   pushes it there). Thumb rests over the moon by default (dark, the app's
+   original look) and slides to the sun when switched to light.
+   --------------------------------------------------------------------------- */
+.theme-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
+  width: 100%; flex-shrink: 0;
+  background: none; border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer; font: inherit; color: var(--text-2);
+  transition: background .15s var(--ease), border-color .15s var(--ease);
+}
+.theme-toggle:hover { background: var(--surface-hover); border-color: var(--line-hover); }
+.theme-toggle-label { font-size: .82rem; font-weight: 550; }
+
+.theme-toggle-track {
+  position: relative; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: space-between;
+  width: 44px; height: 24px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 0 5px;
+}
+.theme-toggle-icon {
+  position: relative; z-index: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; color: var(--faint);
+}
+.theme-toggle-thumb {
+  position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: var(--shadow);
+  transform: translateX(20px); /* default: dark theme, resting over the moon */
+  transition: transform .22s var(--ease), background .15s var(--ease);
+}
+.theme-toggle.is-light .theme-toggle-thumb { transform: translateX(0); } /* light theme: slid to the sun */
 
 .main { flex: 1; min-width: 0; }
 .main-inner { max-width: 780px; margin: 0 auto; padding: var(--sp-7) var(--sp-5) 96px; }
@@ -190,7 +281,7 @@ summary:focus-visible, .history-item:focus-visible {
   cursor: pointer;
   transition: background .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);
 }
-.template-btn:hover { background: var(--surface-3); color: var(--text); border-color: #2e333d; }
+.template-btn:hover { background: var(--surface-3); color: var(--text); border-color: var(--line-hover); }
 
 /* ---------------------------------------------------------------------------
    Panels
@@ -307,6 +398,110 @@ li.failed .summary-text { color: var(--failed); }
 .cred-note { font-size: .72rem; color: var(--faint); margin: var(--sp-3) 0 0; line-height: 1.55; }
 
 /* ---------------------------------------------------------------------------
+   Case-selection panel — same semantics as the credential prompt: the run is
+   waiting on the user, so it reads as an inline call-to-action, not a modal.
+   Given a visibly stronger treatment than the passive progress timeline above
+   it (glow ring, "action needed" pill, scrollIntoView on render in app.js) —
+   it used to render with no strong visual cue and go unnoticed further down
+   the page.
+   --------------------------------------------------------------------------- */
+
+@keyframes caseSelectionGlow {
+  0%, 100% { box-shadow: var(--shadow-lg), 0 0 0 1px rgba(var(--accent-rgb), .25); }
+  50%      { box-shadow: var(--shadow-lg), 0 0 0 4px rgba(var(--accent-rgb), .12); }
+}
+
+#case-selection-panel {
+  background: linear-gradient(165deg, var(--surface-2), var(--surface));
+  border: 1px solid rgba(var(--accent-rgb), .3);
+  border-radius: var(--r-lg);
+  padding: var(--sp-5);
+  margin-bottom: var(--sp-4);
+  animation: fadeUp .22s var(--ease), caseSelectionGlow 2.6s ease-in-out .22s 2;
+}
+.case-selection-head { display: flex; gap: var(--sp-3); align-items: flex-start; }
+.case-selection-key {
+  color: var(--accent); display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; flex: none; border-radius: var(--r); background: var(--accent-soft);
+}
+#case-selection-panel h2 { font-size: 1rem; font-weight: 650; letter-spacing: -.01em; }
+.case-selection-head > div { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.case-selection-head-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.case-action-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: .68rem; font-weight: 650; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--running); background: rgba(var(--running-rgb), .14);
+  border: 1px solid rgba(var(--running-rgb), .35);
+  padding: 2px 9px 2px 7px; border-radius: var(--r-pill); white-space: nowrap;
+}
+.case-action-pill::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--running);
+  animation: casePillPulse 1.6s ease-in-out infinite;
+}
+@keyframes casePillPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.case-pool-counter { font-size: .82rem; color: var(--text-2); margin: 0; line-height: 1.55; }
+
+.case-selection-list {
+  list-style: none; margin: var(--sp-4) 0 0; padding: 0;
+  display: grid; gap: var(--sp-2);
+}
+.case-selection-list li {
+  display: grid; grid-template-columns: auto 1fr; align-items: start; gap: var(--sp-3);
+  background: var(--surface); border: 1px solid var(--line-soft); border-radius: var(--r);
+  padding: var(--sp-3); transition: border-color .15s var(--ease), background .15s var(--ease);
+}
+.case-selection-list li:hover { border-color: var(--line); background: var(--surface-2); }
+.case-selection-list li:has(input:checked) { border-color: rgba(var(--accent-rgb), .4); background: var(--accent-soft); }
+.case-selection-list input[type="checkbox"] {
+  width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent);
+  cursor: pointer; flex: none;
+}
+.case-selection-list .case-label {
+  display: flex; flex-direction: column; gap: 5px; cursor: pointer; min-width: 0;
+}
+.case-selection-list .case-label-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.case-selection-list .case-title { font-size: .88rem; font-weight: 600; line-height: 1.4; }
+.case-selection-list .case-intent { font-size: .76rem; color: var(--muted); line-height: 1.55; }
+.case-primary-badge {
+  font-size: .62rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-soft);
+  border: 1px solid rgba(var(--accent-rgb), .35);
+  padding: 1px 7px; border-radius: var(--r-pill); white-space: nowrap;
+}
+
+.case-selection-bulk { display: flex; gap: var(--sp-4); margin-top: var(--sp-3); }
+.case-selection-link {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font: inherit; font-size: .78rem; font-weight: 550; color: var(--partial);
+}
+.case-selection-link:hover { text-decoration: underline; }
+
+.case-refine-input-wrap { margin-top: var(--sp-3); }
+.case-notice { font-size: .8rem; margin: var(--sp-3) 0 0; }
+.case-notice.notice { color: var(--text-2); }
+.case-notice.error { color: var(--failed); }
+
+.case-selection-final-actions {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin-top: var(--sp-5); padding-top: var(--sp-4); border-top: 1px solid var(--line-soft);
+  flex-wrap: wrap;
+}
+.case-selection-final-actions button {
+  background: var(--accent); color: #fff; border: none; border-radius: var(--r-sm);
+  padding: 9px var(--sp-4); font: inherit; font-size: .86rem; font-weight: 550; cursor: pointer;
+  transition: background .15s var(--ease), transform .1s var(--ease);
+}
+.case-selection-final-actions button:hover:not(:disabled) { background: var(--accent-hover); }
+.case-selection-final-actions button:active:not(:disabled) { transform: scale(.98); }
+.case-selection-final-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.case-selection-final-actions .case-not-satisfied {
+  background: none !important; color: var(--muted) !important; font-weight: 450 !important;
+}
+.case-selection-final-actions .case-not-satisfied:hover { background: var(--surface-3) !important; color: var(--text) !important; }
+
+.case-regen-note { font-size: .72rem; color: var(--faint); margin: var(--sp-3) 0 0; line-height: 1.55; }
+
+/* ---------------------------------------------------------------------------
    Verdict — plain English, stated as a sentence
    --------------------------------------------------------------------------- */
 
@@ -413,7 +608,7 @@ figcaption { font-size: .74rem; color: var(--faint); margin-top: 6px; }
   border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--surface);
   transition: transform .15s var(--ease), border-color .15s var(--ease), box-shadow .15s var(--ease);
 }
-.screenshot-tile:hover { transform: translateY(-2px); border-color: #333a45; box-shadow: var(--shadow-lg); }
+.screenshot-tile:hover { transform: translateY(-2px); border-color: var(--line-hover); box-shadow: var(--shadow-lg); }
 .screenshot-tile img { width: 100%; display: block; }
 .screenshot-tile-label {
   font-size: .72rem; color: var(--muted); padding: 8px 10px;
@@ -480,7 +675,7 @@ figcaption { font-size: .74rem; color: var(--faint); margin-top: 6px; }
   background: var(--sunken); border: 1px solid var(--line);
   transition: color .15s var(--ease), border-color .15s var(--ease);
 }
-.dl-btn:hover { color: var(--text); border-color: #333a45; }
+.dl-btn:hover { color: var(--text); border-color: var(--line-hover); }
 
 .case-details { margin-top: var(--sp-2); }
 .case-details summary {

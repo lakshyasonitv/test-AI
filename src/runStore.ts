@@ -21,6 +21,19 @@ export interface RunStore {
 
 const fileFor = (runId: string) => path.join("runs", runId, "events.ndjson");
 
+// Set once at module load. runStore.ts is imported at the top of server/index.ts, so this is
+// effectively the server's boot time — used below to tell "run still in progress" from "run
+// died with the previous server process".
+const PROCESS_BOOT_MS = Date.now();
+
+/** Parse the ISO prefix of a makeRunId() id back to epoch ms. Returns NaN on any other shape.
+ *  runId = `2026-08-06T14-36-00-537Z-1a2b3c4d` (ISO with ":" and "." replaced by "-"). */
+function runIdToStartMs(runId: string): number {
+  const m = runId.match(/^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})-(\d{3})Z-/);
+  if (!m) return NaN;
+  return Date.parse(`${m[1]}:${m[2]}:${m[3]}.${m[4]}Z`);
+}
+
 export const store: RunStore = {
   append(event) {
     const f = fileFor(event.runId);
@@ -99,6 +112,26 @@ export const store: RunStore = {
         },
         ts: Date.now(),
       });
+    }
+
+    // events.ndjson EXISTS but holds no terminal event. The events are authoritative, so a
+    // run started in THIS process is either still in progress or has written a real
+    // done/error — leave it alone. But a run whose id predates this server process died
+    // with the previous one (its orchestrator promise vanished on restart); no event will
+    // ever arrive, and the frontend would poll it forever. Close the stream with a
+    // synthetic "error" so the UI resolves instead of spinning.
+    if (fromNdjson && last && last.stage !== "done" && last.stage !== "error") {
+      const startedMs = runIdToStartMs(runId);
+      if (Number.isFinite(startedMs) && startedMs < PROCESS_BOOT_MS) {
+        events.push({
+          runId,
+          stage: "error",
+          status: "failed",
+          data: {},
+          error: "This run was interrupted — the server restarted before it finished.",
+          ts: Date.now(),
+        });
+      }
     }
 
     return events;
