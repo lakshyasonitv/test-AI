@@ -1,0 +1,613 @@
+/**
+ * Structured DOM extraction — the Node port of discovery-service/crawler.py.
+ *
+ * Ported 1:1 from the Python/BeautifulSoup implementation so the CrawlResponse shape
+ * domDiscovery.ts's crawlResponseToAppModel() already consumes doesn't have to change.
+ * Only the SOURCE of the HTML changes: domDiscovery.ts now gets it from the Playwright
+ * page it already launches for vision fallback, instead of a second browser (Crawl4AI's,
+ * via a Python subprocess and HTTP round-trip) or an httpx-only fallback with no rendering.
+ *
+ * Element-naming logic (stableSelector / deriveElementName / humaniseIdentifier) is NOT
+ * duplicated here — it's imported from discovery.ts, which already has it for the
+ * Playwright-side interactive-element detector. Same rules, one implementation.
+ */
+
+import * as cheerio from "cheerio";
+import type { AnyNode, Element as DomElement } from "domhandler";
+import { deriveElementName, stableSelector } from "./discovery.js";
+
+type CQ = cheerio.CheerioAPI;
+
+// ---------------------------------------------------------------------------
+// Response shape — exported so domDiscovery.ts can import instead of redeclaring it
+// ---------------------------------------------------------------------------
+
+export interface CrawlResponse {
+  url: string;
+  title: string;
+  status_code: number;
+  metadata: {
+    title: string; description: string; keywords: string; author: string;
+    og_title: string; og_description: string; og_image: string;
+    canonical: string; charset: string; viewport: string; favicon: string;
+  };
+  markdown: string;
+  cleaned_html: string;
+  forms: Array<{
+    action: string; method: string; id: string; name: string; aria_label: string;
+    fields: Array<{
+      tag: string; input_type: string; name: string; placeholder: string; label: string;
+      required: boolean; value: string; options: string[]; id: string; aria_label: string;
+    }>;
+  }>;
+  navigation: NavigationItem[];
+  links: Array<{ text: string; href: string; title: string; aria_label: string; is_external: boolean; role: string }>;
+  buttons: Array<{ text: string; button_type: string; aria_label: string; disabled: boolean; id: string; role: string }>;
+  headings: Array<{ level: number; text: string; id: string }>;
+  tables: Array<{ headers: string[]; rows: string[][]; caption: string; aria_label: string; id: string }>;
+  images: Array<{ src: string; alt: string; title: string; width: number; height: number }>;
+  interactive_elements: Array<{
+    tag: string; role: string; name: string; text: string; href: string; id: string;
+    css_classes: string[]; aria_label: string; aria_role: string; visible: boolean; enabled: boolean;
+    test_id: string; css: string; derived_name: boolean;
+  }>;
+  internal_urls: string[];
+  external_urls: string[];
+  breadcrumbs: string[];
+  has_search: boolean; has_pagination: boolean; has_modal: boolean; has_tabs: boolean; has_accordion: boolean;
+  dom_depth: number;
+  accessibility: {
+    lang: string; title: string; landmark_roles: string[]; aria_landmarks: Array<Record<string, string>>;
+    skip_links: string[]; forms_with_labels: number; images_with_alt: number; images_total: number;
+    heading_order: number[];
+  };
+  needs_vision: boolean;
+  vision_reason: string;
+  crawl_time_ms: number;
+  error: string;
+}
+
+interface NavigationItem {
+  text: string; href: string; children: NavigationItem[]; is_dropdown: boolean;
+  aria_label: string; role: string;
+}
+
+// ---------------------------------------------------------------------------
+// HTML helpers (mirrors _text / _attr / _abs_url / _is_external / _origin)
+// ---------------------------------------------------------------------------
+
+const text = ($el: cheerio.Cheerio<AnyNode>): string => $el.text().replace(/\s+/g, " ").trim();
+
+const attr = ($el: cheerio.Cheerio<AnyNode>, name: string, fallback = ""): string => {
+  const v = $el.attr(name);
+  return v === undefined ? fallback : v.trim();
+};
+
+const has = ($el: cheerio.Cheerio<AnyNode>, name: string): boolean => $el.attr(name) !== undefined;
+
+function absUrl(href: string, base: string): string {
+  if (!href || /^(javascript:|#|mailto:|tel:)/i.test(href)) return "";
+  try {
+    return new URL(href, base).href;
+  } catch {
+    return "";
+  }
+}
+
+function isExternal(url: string, baseOrigin: string): boolean {
+  try {
+    const u = new URL(url);
+    if (!u.host) return false;
+    return u.host !== new URL(baseOrigin).host;
+  } catch {
+    return false;
+  }
+}
+
+const classesOf = ($el: cheerio.Cheerio<AnyNode>): string[] => attr($el, "class").split(/\s+/).filter(Boolean);
+
+// Class-attribute substring match — BeautifulSoup's `class_=lambda c: "x" in c` pattern.
+function findByClassSubstring($: CQ, needle: string): cheerio.Cheerio<AnyNode> {
+  return $("[class]").filter((_, el) => attr($(el), "class").toLowerCase().includes(needle));
+}
+
+// ---------------------------------------------------------------------------
+// Extractors — one function per Python `_extract_*`
+// ---------------------------------------------------------------------------
+
+function extractMetadata($: CQ, pageTitle: string): CrawlResponse["metadata"] {
+  const meta: CrawlResponse["metadata"] = {
+    title: pageTitle, description: "", keywords: "", author: "",
+    og_title: "", og_description: "", og_image: "", canonical: "", charset: "", viewport: "", favicon: "",
+  };
+  $("meta").each((_, el) => {
+    const $el = $(el);
+    const name = attr($el, "name").toLowerCase();
+    const prop = attr($el, "property").toLowerCase();
+    const content = attr($el, "content");
+    if (name === "description") meta.description = content;
+    else if (name === "keywords") meta.keywords = content;
+    else if (name === "author") meta.author = content;
+    else if (name === "viewport") meta.viewport = content;
+    else if (prop === "og:title") meta.og_title = content;
+    else if (prop === "og:description") meta.og_description = content;
+    else if (prop === "og:image") meta.og_image = content;
+  });
+  const canonical = $('link[rel="canonical"]').first();
+  if (canonical.length) meta.canonical = attr(canonical, "href");
+  const favicon = $("link[rel]").filter((_, el) => attr($(el), "rel").toLowerCase().includes("icon")).first();
+  if (favicon.length) meta.favicon = attr(favicon, "href");
+  const charsetTag = $("meta[charset]").first();
+  if (charsetTag.length) meta.charset = attr(charsetTag, "charset");
+  return meta;
+}
+
+function extractHeadings($: CQ): CrawlResponse["headings"] {
+  const out: CrawlResponse["headings"] = [];
+  for (let level = 1; level <= 6; level++) {
+    $(`h${level}`).each((_, el) => {
+      const $el = $(el);
+      out.push({ level, text: text($el), id: attr($el, "id") });
+    });
+  }
+  return out;
+}
+
+function extractForms($: CQ, baseUrl: string): CrawlResponse["forms"] {
+  const forms: CrawlResponse["forms"] = [];
+  $("form").each((_, formEl) => {
+    const $form = $(formEl);
+    const fields: CrawlResponse["forms"][number]["fields"] = [];
+    $form.find("input, select, textarea").each((__, inputEl) => {
+      const $in = $(inputEl);
+      const tag = (inputEl as DomElement).tagName.toLowerCase();
+      const inputType = attr($in, "type", tag === "input" ? "text" : "");
+      const fieldId = attr($in, "id");
+
+      let labelText = "";
+      if (fieldId) labelText = text($(`label[for="${fieldId.replace(/"/g, '\\"')}"]`).first());
+      if (!labelText) {
+        const parentLabel = $in.closest("label");
+        if (parentLabel.length) labelText = text(parentLabel);
+      }
+
+      const options: string[] = [];
+      if (tag === "select") {
+        $in.find("option").each((___, opt) => {
+          const t = text($(opt));
+          if (t) options.push(t);
+        });
+      }
+
+      fields.push({
+        tag, input_type: inputType, name: attr($in, "name"), placeholder: attr($in, "placeholder"),
+        label: labelText, required: has($in, "required"), value: attr($in, "value"),
+        options, id: fieldId, aria_label: attr($in, "aria-label"),
+      });
+    });
+    forms.push({
+      action: absUrl(attr($form, "action"), baseUrl), method: attr($form, "method", "GET").toUpperCase(),
+      id: attr($form, "id"), name: attr($form, "name"), fields, aria_label: attr($form, "aria-label"),
+    });
+  });
+  return forms;
+}
+
+function extractLinks($: CQ, baseUrl: string, baseOrigin: string): CrawlResponse["links"] {
+  const links: CrawlResponse["links"] = [];
+  const seen = new Set<string>();
+  $("a[href]").each((_, el) => {
+    const $el = $(el);
+    const href = absUrl(attr($el, "href"), baseUrl);
+    if (!href || seen.has(href)) return;
+    seen.add(href);
+    links.push({
+      text: text($el), href, title: attr($el, "title"), aria_label: attr($el, "aria-label"),
+      is_external: isExternal(href, baseOrigin), role: "link",
+    });
+  });
+  return links;
+}
+
+function extractButtons($: CQ): CrawlResponse["buttons"] {
+  const buttons: CrawlResponse["buttons"] = [];
+  $("button, input").each((_, el) => {
+    const $el = $(el);
+    const tag = (el as DomElement).tagName.toLowerCase();
+    if (tag === "input") {
+      const inputType = attr($el, "type", "submit");
+      if (!["submit", "button", "reset"].includes(inputType)) return;
+    }
+    const btnType = tag === "button" ? attr($el, "type", "button") : attr($el, "type", "submit");
+    const btnText = tag === "button" ? text($el) : attr($el, "value");
+    buttons.push({
+      text: btnText, button_type: btnType, aria_label: attr($el, "aria-label"),
+      disabled: has($el, "disabled"), id: attr($el, "id"), role: attr($el, "role", "button"),
+    });
+  });
+  $('[role="button"]').each((_, el) => {
+    const tag = (el as DomElement).tagName.toLowerCase();
+    if (tag === "button" || tag === "input") return;
+    const $el = $(el);
+    buttons.push({
+      text: text($el), button_type: "button", aria_label: attr($el, "aria-label"),
+      disabled: has($el, "aria-disabled"), id: attr($el, "id"), role: "button",
+    });
+  });
+  return buttons;
+}
+
+function extractNavigation($: CQ, baseUrl: string): CrawlResponse["navigation"] {
+  function parseNavElement($el: cheerio.Cheerio<AnyNode>): NavigationItem[] {
+    const items: NavigationItem[] = [];
+    $el.children("li").each((_, liEl) => {
+      const $li = $(liEl);
+      const $a = $li.find("a[href]").first();
+      if (!$a.length) return;
+
+      const dropdownClass = $li.children("ul, ol, div").filter((__, c) => {
+        const cls = attr($(c), "class").toLowerCase();
+        return cls.includes("dropdown") || cls.includes("submenu") || cls.includes("menu");
+      }).first();
+
+      let children: NavigationItem[] = [];
+      let isDropdown = false;
+      if (dropdownClass.length) {
+        children = parseNavElement(dropdownClass);
+        isDropdown = true;
+      }
+
+      items.push({
+        text: text($a), href: absUrl(attr($a, "href"), baseUrl), children,
+        is_dropdown: isDropdown, aria_label: attr($a, "aria-label"), role: attr($a, "role", "link"),
+      });
+    });
+    return items;
+  }
+
+  let navItems: NavigationItem[] = [];
+  $("nav, header").each((_, navEl) => {
+    const $ul = $(navEl).find("ul, ol").first();
+    if ($ul.length) {
+      const items = parseNavElement($ul);
+      if (items.length) navItems = navItems.concat(items);
+    }
+  });
+
+  if (!navItems.length) {
+    const navLike = $("[class]").filter((_, el) => {
+      const cls = attr($(el), "class").toLowerCase();
+      return ["navbar", "nav-menu", "main-menu", "navigation"].some(kw => cls.includes(kw));
+    });
+    navLike.each((_, el) => {
+      $(el).find("a[href]").each((__, a) => {
+        const $a = $(a);
+        navItems.push({
+          text: text($a), href: absUrl(attr($a, "href"), baseUrl), children: [],
+          is_dropdown: false, aria_label: attr($a, "aria-label"), role: "link",
+        });
+      });
+    });
+  }
+  return navItems;
+}
+
+function extractTables($: CQ): CrawlResponse["tables"] {
+  const tables: CrawlResponse["tables"] = [];
+  $("table").each((_, tableEl) => {
+    const $table = $(tableEl);
+    const headers: string[] = [];
+    const $thead = $table.find("thead").first();
+    if ($thead.length) $thead.find("th").each((__, th) => { headers.push(text($(th))); });
+
+    const rows: string[][] = [];
+    const $tbody = $table.find("tbody").first();
+    const rowScope = $tbody.length ? $tbody : $table;
+    rowScope.find("tr").each((__, tr) => {
+      const cells: string[] = [];
+      $(tr).find("td, th").each((___, cell) => { cells.push(text($(cell))); });
+      if (cells.length) rows.push(cells);
+    });
+
+    const $caption = $table.find("caption").first();
+    tables.push({
+      headers, rows, caption: $caption.length ? text($caption) : "",
+      aria_label: attr($table, "aria-label"), id: attr($table, "id"),
+    });
+  });
+  return tables;
+}
+
+function extractImages($: CQ, baseUrl: string): CrawlResponse["images"] {
+  const images: CrawlResponse["images"] = [];
+  const parseDim = (v: string): number => {
+    const n = parseInt(v.replace(/px|em|%/g, ""), 10);
+    return Number.isFinite(n) ? n : 0;
+  };
+  $("img").each((_, el) => {
+    const $el = $(el);
+    const src = absUrl(attr($el, "src"), baseUrl);
+    if (!src) return;
+    images.push({
+      src, alt: attr($el, "alt"), title: attr($el, "title"),
+      width: parseDim(attr($el, "width", "0")), height: parseDim(attr($el, "height", "0")),
+    });
+  });
+  return images;
+}
+
+function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["interactive_elements"] {
+  const elements: CrawlResponse["interactive_elements"] = [];
+  const seen = new Set<string>();
+
+  $("a, button, input, select, textarea").each((_, el) => {
+    const $el = $(el);
+    const tag = (el as DomElement).tagName.toLowerCase();
+    let role = attr($el, "role");
+    if (tag === "a") role = role || "link";
+    else if (tag === "button") role = role || "button";
+    else if (["input", "select", "textarea"].includes(tag)) {
+      const inputType = attr($el, "type", "text");
+      const roleMap: Record<string, string> = {
+        checkbox: "checkbox", radio: "radio", submit: "button", button: "button", search: "searchbox",
+      };
+      role = role || roleMap[inputType] || "textbox";
+    }
+
+    // Accessible name in accname precedence order — see roleForField's comment in
+    // domDiscovery.ts for why the HTML `name` attribute must come last, not first.
+    const name0 =
+      attr($el, "aria-label") || attr($el, "placeholder") || text($el)
+      || attr($el, "value") || attr($el, "title") || attr($el, "name");
+
+    const testId = attr($el, "data-test") || attr($el, "data-testid") || attr($el, "data-qa");
+    const id = attr($el, "id");
+    const classes = classesOf($el);
+    const href = attr($el, "href");
+
+    let name = name0;
+    let derivedName = false;
+    if (!name) {
+      name = deriveElementName({ dataTest: attr($el, "data-test"), dataTestid: attr($el, "data-testid"),
+        dataQa: attr($el, "data-qa"), id, classes, href });
+      if (!name) return;   // genuinely unaddressable, matches Python's `continue`
+      derivedName = true;
+    }
+
+    const selector = stableSelector({ dataTest: attr($el, "data-test"), dataTestid: attr($el, "data-testid"),
+      dataQa: attr($el, "data-qa"), id });
+    const key = selector || `${role}:${name}:${elements.length}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    elements.push({
+      tag, role, name, text: text($el).slice(0, 100),
+      href: tag === "a" ? absUrl(href, baseUrl) : "",
+      id, css_classes: classes, test_id: testId, css: selector, derived_name: derivedName,
+      aria_label: attr($el, "aria-label"), aria_role: attr($el, "role"),
+      visible: true, enabled: !has($el, "disabled"),
+    });
+  });
+
+  $("[role]").each((_, el) => {
+    const $el = $(el);
+    const role = attr($el, "role");
+    const name = attr($el, "aria-label") || text($el);
+    if (!name || ["presentation", "none", "img"].includes(role)) return;
+    // The loop above already emits every a/button/input/select/textarea — with the same
+    // role+name — but keyed as `selector || role:name:index`, which never collides with
+    // the `role:name` key here. So without this skip, `<a role="tab">` (or any control
+    // carrying a role) was emitted twice with identical role+name, producing duplicate
+    // AppModel elements and strict-mode "matched 2 elements" failures in generated tests.
+    const tag = (el as DomElement).tagName.toLowerCase();
+    if (["a", "button", "input", "select", "textarea"].includes(tag)) return;
+    const key = `${role}:${name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    elements.push({
+      tag: (el as DomElement).tagName.toLowerCase(), role, name, text: text($el).slice(0, 100), href: "",
+      id: attr($el, "id"), css_classes: classesOf($el), test_id: "", css: "", derived_name: false,
+      aria_label: attr($el, "aria-label"), aria_role: role,
+      visible: true, enabled: !has($el, "aria-disabled"),
+    });
+  });
+
+  return elements;
+}
+
+function extractAccessibility(
+  $: CQ, images: CrawlResponse["images"], headings: CrawlResponse["headings"]
+): CrawlResponse["accessibility"] {
+  const lang = attr($("html").first(), "lang");
+  const title = text($("title").first());
+
+  const landmarkRoles = new Set<string>();
+  const ariaLandmarks: Array<Record<string, string>> = [];
+  const LANDMARK = new Set(["banner", "navigation", "main", "contentinfo", "complementary", "search", "form", "region"]);
+  $("[role]").each((_, el) => {
+    const $el = $(el);
+    const role = attr($el, "role");
+    if (LANDMARK.has(role)) {
+      landmarkRoles.add(role);
+      ariaLandmarks.push({ role, label: attr($el, "aria-label") });
+    }
+  });
+
+  const skipLinks: string[] = [];
+  $("a").each((_, el) => {
+    const $el = $(el);
+    const href = attr($el, "href");
+    const t = text($el).toLowerCase();
+    if (href.startsWith("#") && (t.includes("skip") || t.includes("jump"))) skipLinks.push(text($el));
+  });
+
+  return {
+    lang, title, landmark_roles: [...landmarkRoles].sort(), aria_landmarks: ariaLandmarks, skip_links: skipLinks,
+    forms_with_labels: 0, images_with_alt: images.filter(i => i.alt).length, images_total: images.length,
+    heading_order: headings.map(h => h.level),
+  };
+}
+
+function detectUiPatterns($: CQ): { has_modal: boolean; has_tabs: boolean; has_accordion: boolean; has_search: boolean; has_pagination: boolean } {
+  const hasModal = $('[role="dialog"]').length > 0 || findByClassSubstring($, "modal").length > 0
+    || $("[id]").filter((_, el) => attr($(el), "id").toLowerCase().includes("modal")).length > 0;
+  const hasTabs = $('[role="tablist"]').length > 0 || findByClassSubstring($, "tab").length > 0;
+  const hasAccordion =
+    ["accordion", "collapsible", "expandable"].some(kw => findByClassSubstring($, kw).length > 0)
+    || $("[aria-expanded]").length > 0;
+  const hasSearch = $('[role="search"]').length > 0 || $('input[type="search"]').length > 0
+    || findByClassSubstring($, "search").length > 0;
+  const hasPagination = findByClassSubstring($, "pagination").length > 0
+    || $('[role="navigation"]').filter((_, el) => attr($(el), "aria-label").toLowerCase().includes("pagination")).length > 0;
+  return { has_modal: hasModal, has_tabs: hasTabs, has_accordion: hasAccordion, has_search: hasSearch, has_pagination: hasPagination };
+}
+
+function computeDomDepth($: CQ): number {
+  let maxDepth = 0;
+  function walk(node: AnyNode, depth: number): void {
+    if (depth > maxDepth) maxDepth = depth;
+    const children = (node as DomElement).children ?? [];
+    for (const child of children) {
+      if ((child as DomElement).type === "tag") walk(child, depth + 1);
+    }
+  }
+  const body = $("body").get(0);
+  if (body) walk(body, 0);
+  return maxDepth;
+}
+
+function needsVision($: CQ): { needs: boolean; reason: string } {
+  if ($("canvas").length) return { needs: true, reason: "Page contains canvas element" };
+  if ($("embed, object").length) return { needs: true, reason: "Page contains embedded content" };
+  const interactive = $("a, button, input, select, textarea").length;
+  const images = $("img").length;
+  if (interactive < 3 && images > 10) return { needs: true, reason: "Image-heavy page with few interactive elements" };
+  const pageText = text($("body")).toLowerCase();
+  if (["captcha", "recaptcha", "hcaptcha"].some(ind => pageText.includes(ind))) {
+    return { needs: true, reason: "CAPTCHA detected" };
+  }
+  return { needs: false, reason: "" };
+}
+
+function htmlToMarkdown($: CQ): string {
+  const lines: string[] = [];
+  const SKIP_TAGS = new Set(["script", "style", "noscript"]);
+
+  function walk(node: AnyNode): void {
+    // Text nodes are a distinct domhandler class (Text), not Element — check before
+    // casting, since Element's own `.type` can never be "text".
+    if (node.type === "text") {
+      const t = (("data" in node ? (node as any).data : "") as string).trim();
+      if (t) lines.push(t);
+      return;
+    }
+    if (node.type !== "tag") return;
+    const n = node as DomElement;
+    const tag = n.tagName.toLowerCase();
+    if (SKIP_TAGS.has(tag)) return;
+
+    if (/^h[1-6]$/.test(tag)) {
+      const level = Number(tag[1]);
+      lines.push(`\n${"#".repeat(level)} ${text($(n))}\n`);
+      return;
+    }
+    if (tag === "p") { lines.push(`\n${text($(n))}\n`); return; }
+    if (tag === "a") {
+      const href = attr($(n), "href");
+      const t = text($(n));
+      if (t && href) lines.push(`[${t}](${href})`);
+      else if (t) lines.push(t);
+      return;
+    }
+    if (tag === "img") {
+      const alt = attr($(n), "alt", "image");
+      const src = attr($(n), "src");
+      lines.push(`![${alt}](${src})`);
+      return;
+    }
+    if (tag === "ul" || tag === "ol") {
+      $(n).children("li").each((i, li) => {
+        const prefix = tag === "ol" ? `${i + 1}.` : "-";
+        lines.push(`  ${prefix} ${text($(li))}`);
+      });
+      return;
+    }
+    if (tag === "table") {
+      $(n).find("tr").each((_, tr) => {
+        const cells: string[] = [];
+        $(tr).find("th, td").each((__, c) => { cells.push(text($(c))); });
+        if (cells.length) lines.push("| " + cells.join(" | ") + " |");
+      });
+      lines.push("");
+      return;
+    }
+    if (tag === "br") { lines.push(""); return; }
+    if (tag === "hr") { lines.push("---"); return; }
+
+    for (const child of n.children ?? []) walk(child);
+  }
+
+  const body = $("body").get(0);
+  if (!body) return "";
+  for (const child of (body as DomElement).children ?? []) walk(child);
+  return lines.join("\n").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration — mirrors the extraction half of Python's crawl()
+// ---------------------------------------------------------------------------
+
+/**
+ * Turn raw page HTML into the same structured CrawlResponse shape the Python service used
+ * to return. Pure function — no network, no browser; the caller (domDiscovery.ts) is
+ * responsible for fetching `html` (via a Playwright page.content() call) and passing in the
+ * final URL and HTTP status after any redirects.
+ */
+export function extractCrawlResponse(html: string, url: string, statusCode: number): CrawlResponse {
+  const start = Date.now();
+  const $ = cheerio.load(html);
+  const baseOrigin = new URL(url).origin;
+
+  const pageTitle = text($("title").first());
+  const headings = extractHeadings($);
+  const forms = extractForms($, url);
+  const links = extractLinks($, url, baseOrigin);
+  const buttons = extractButtons($);
+  const navigation = extractNavigation($, url);
+  const tables = extractTables($);
+  const images = extractImages($, url);
+  const interactiveElements = extractInteractiveElements($, url);
+
+  const allUrls = new Set<string>();
+  for (const l of links) allUrls.add(l.href);
+  for (const n of navigation) if (n.href) allUrls.add(n.href);
+  const internalUrls: string[] = [];
+  const externalUrls: string[] = [];
+  for (const u of allUrls) (isExternal(u, baseOrigin) ? externalUrls : internalUrls).push(u);
+
+  const patterns = detectUiPatterns($);
+
+  const breadcrumbEl = findByClassSubstring($, "breadcrumb").first();
+  const breadcrumbs = breadcrumbEl.length
+    ? breadcrumbEl.find("a").toArray().map(a => text($(a)))
+    : [];
+
+  const domDepth = computeDomDepth($);
+  const accessibility = extractAccessibility($, images, headings);
+  const markdown = htmlToMarkdown($);
+  const vision = needsVision($);
+
+  return {
+    url, title: pageTitle, status_code: statusCode,
+    metadata: extractMetadata($, pageTitle),
+    markdown, cleaned_html: html,
+    forms, navigation, links, buttons, headings, tables, images,
+    interactive_elements: interactiveElements,
+    internal_urls: internalUrls, external_urls: externalUrls, breadcrumbs,
+    has_search: patterns.has_search, has_pagination: patterns.has_pagination,
+    has_modal: patterns.has_modal, has_tabs: patterns.has_tabs, has_accordion: patterns.has_accordion,
+    dom_depth: domDepth, accessibility,
+    needs_vision: vision.needs, vision_reason: vision.reason,
+    crawl_time_ms: Date.now() - start, error: "",
+  };
+}

@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Test Platform</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app">
+
+    <!-- Sidebar: identity, new run, history. History used to live at the very bottom of
+         the page, which meant scrolling past a whole run to reach it. -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" id="brandMark"></span>
+        <span class="brand-name">AI Test Platform</span>
+      </div>
+
+      <button type="button" id="newRunBtn" class="new-run">
+        <span id="newRunIcon"></span> New run
+      </button>
+
+      <nav class="history-nav" aria-label="Recent runs">
+        <h2 class="rail-heading">Recent</h2>
+        <ul id="historyList" class="history-list"></ul>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <div class="main-inner">
+
+        <header class="page-head">
+          <h1>Test any website</h1>
+          <p class="tagline">
+            Describe what you want checked in plain words. It explores the site, writes the
+            tests, runs them in a real browser, and shows you what happened.
+          </p>
+        </header>
+
+        <!-- Composer -->
+        <form id="runForm" class="composer">
+          <label class="field">
+            <span class="field-label">What should I test?</span>
+            <textarea id="prompt" rows="3"
+              placeholder="Test the login page — try a wrong password and check a helpful error appears"></textarea>
+          </label>
+
+          <div class="composer-foot">
+            <label class="field field-url">
+              <span class="field-label">Website address</span>
+              <span class="input-wrap">
+                <span class="input-icon" id="urlIcon"></span>
+                <input id="url" type="url" placeholder="https://example.com" />
+              </span>
+            </label>
+            <button type="submit" class="run-btn">
+              <span id="runIcon"></span> <span class="run-btn-text">Run test</span>
+            </button>
+          </div>
+        </form>
+
+        <div class="templates-row">
+          <span class="templates-label">Try one of these</span>
+          <div id="templates" class="templates"></div>
+        </div>
+
+        <!-- Progress timeline -->
+        <section class="panel panel-progress" aria-label="Progress">
+          <ol id="stages" class="stages"></ol>
+        </section>
+
+        <!-- Credential prompt: appears only when a run pauses because the site needs a login -->
+        <section id="credentialPrompt" class="cred hidden" aria-live="polite">
+          <div class="cred-head">
+            <span class="cred-key" id="credIcon"></span>
+            <div>
+              <h2>This site needs a login</h2>
+              <p id="credWhy" class="cred-why"></p>
+            </div>
+          </div>
+          <form id="credForm" class="cred-form">
+            <div class="cred-fields">
+              <label class="field">
+                <span class="field-label">Username or email</span>
+                <input id="credUser" type="text" autocomplete="off" spellcheck="false" />
+              </label>
+              <label class="field">
+                <span class="field-label">Password</span>
+                <input id="credPass" type="password" autocomplete="off" />
+              </label>
+            </div>
+            <div class="cred-actions">
+              <button type="submit">Use these</button>
+              <button type="button" id="credSkip" class="cred-skip">Skip &mdash; test without logging in</button>
+            </div>
+            <p class="cred-note">
+              Used for this run only. Never written to the run folder or the generated test &mdash;
+              the test reads them from the environment when it runs.
+            </p>
+          </form>
+        </section>
+
+        <!-- Case-selection panel: the gate pauses a run here to let you pick test cases -->
+        <section id="case-selection-panel" class="case-selection hidden" aria-live="polite">
+          <div class="case-selection-head">
+            <span class="case-selection-key" id="caseSelectionIcon"></span>
+            <div>
+              <h2 id="case-round-label">Review the test cases</h2>
+              <p id="case-pool-counter" class="case-pool-counter"></p>
+            </div>
+          </div>
+          <ul id="case-selection-list" class="case-selection-list"></ul>
+          <div class="case-selection-bulk">
+            <button type="button" id="case-select-all-btn" class="case-selection-link">Select all</button>
+            <button type="button" id="case-select-none-btn" class="case-selection-link">Select none</button>
+          </div>
+          <div id="case-refine-input-wrap" class="case-refine-input-wrap hidden">
+            <label class="field">
+              <span class="field-label">What should change?</span>
+              <textarea id="case-new-prompt-input" rows="2"
+                placeholder="Describe what should change before refining."></textarea>
+            </label>
+          </div>
+          <p id="caseNotice" class="case-notice hidden" role="status"></p>
+          <div class="case-selection-final-actions">
+            <button type="button" id="case-not-satisfied-btn" class="case-not-satisfied">Not satisfied &mdash; refine</button>
+            <button type="button" id="case-done-btn" disabled>Run selected tests</button>
+          </div>
+          <p id="case-regen-attempts-left" class="case-regen-note"></p>
+        </section>
+
+        <!-- Live suite progress -->
+        <section id="suiteProgress" class="panel suite-progress hidden">
+          <h2>Running checks</h2>
+          <div id="suiteProgressList" class="suite-progress-list"></div>
+        </section>
+
+        <!-- Verdict for the primary test -->
+        <section id="finalResult" class="hidden">
+          <h2 id="verdict"></h2>
+          <div id="testSummary" class="test-summary hidden">
+            <h3 id="testTitle"></h3>
+            <ol id="testSteps"></ol>
+            <p id="testExpected"></p>
+          </div>
+          <figure id="screenshotFigure" class="hidden">
+            <img id="screenshot" alt="Final state of the page at the end of the test" />
+            <figcaption>Final state at the end of the test</figcaption>
+          </figure>
+          <p id="diagnosis"></p>
+          <a id="traceLink" class="hidden" target="_blank" href="#">View generated spec &amp; artifacts</a>
+        </section>
+
+        <!-- Suite results -->
+        <section id="suiteResults" class="suite-results hidden">
+          <div id="suiteSummaryHeader" class="suite-summary-header"></div>
+          <button id="screenshotToggle" class="screenshot-toggle hidden" type="button">View all screenshots</button>
+          <div id="screenshotGrid" class="screenshot-grid hidden"></div>
+          <div id="suiteCaseList" class="suite-case-list"></div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <script src="/icons.js"></script>
+  <script src="/app.js"></script>
+  <!-- Dev-only; inert unless ?preview=states is present. -->
+  <script src="/preview.js"></script>
+</body>
+</html>
