@@ -100,7 +100,17 @@ export async function runPipeline(
     console.log("1. Discovery completed");
 
     console.log("2. Generating test cases...");
-    const cases = await step("testcases", "03-cases.json", () => toTestCases(thePlan, appModel));
+    // The case-selection gate pauses here: it generates a batch, parks the run on a selection
+    // prompt, and regenerates on "not satisfied" — while the flag is off, the gate is never
+    // even imported, so the happy path stays byte-for-byte identical to the old flow.
+    const cases = await step("testcases", "03-cases.json", async () => {
+      if (process.env.ENABLE_CASE_SELECTION_GATE === "true") {
+        const { runCaseSelectionGate } = await import("./stages/caseSelectionGate.js");
+        const { finalCases } = await runCaseSelectionGate({ runId, plan: thePlan, appModel, sourcePrompt: prompt });
+        return finalCases;
+      }
+      return toTestCases(thePlan, appModel);
+    });
     console.log("✓ Test cases:", cases.length);
 
     // Prefer the case tagged as the direct translation of the user's own request over pure

@@ -235,6 +235,7 @@ are in `.env.example`.
 | `CREDENTIAL_WAIT_MS` | No | How long a paused run waits for you to supply credentials before continuing without them (default: 300000 / 5 min) |
 | `SCREENSHOT_SETTLE_MS` / `SCREENSHOT_MAX_SAMPLES` | No | Animation-settle detection before a screenshot (defaults: 150ms / 10 samples) |
 | `PORT` | No | Web UI port (default: 3000) |
+| `ENABLE_CASE_SELECTION_GATE` | No | Opt-in feature gate; when `"true"`, runs the case-selection-gate pipeline (Phases 1-8). Unset/anything else = current behavior (default: disabled) |
 
 ### Playwright Config
 

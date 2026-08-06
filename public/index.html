@@ -101,6 +101,35 @@
           </form>
         </section>
 
+        <!-- Case-selection panel: the gate pauses a run here to let you pick test cases -->
+        <section id="case-selection-panel" class="case-selection hidden" aria-live="polite">
+          <div class="case-selection-head">
+            <span class="case-selection-key" id="caseSelectionIcon"></span>
+            <div>
+              <h2 id="case-round-label">Review the test cases</h2>
+              <p id="case-pool-counter" class="case-pool-counter"></p>
+            </div>
+          </div>
+          <ul id="case-selection-list" class="case-selection-list"></ul>
+          <div class="case-selection-bulk">
+            <button type="button" id="case-select-all-btn" class="case-selection-link">Select all</button>
+            <button type="button" id="case-select-none-btn" class="case-selection-link">Select none</button>
+          </div>
+          <div id="case-refine-input-wrap" class="case-refine-input-wrap hidden">
+            <label class="field">
+              <span class="field-label">What should change?</span>
+              <textarea id="case-new-prompt-input" rows="2"
+                placeholder="Describe what should change before refining."></textarea>
+            </label>
+          </div>
+          <p id="caseNotice" class="case-notice hidden" role="status"></p>
+          <div class="case-selection-final-actions">
+            <button type="button" id="case-not-satisfied-btn" class="case-not-satisfied">Not satisfied &mdash; refine</button>
+            <button type="button" id="case-done-btn" disabled>Run selected tests</button>
+          </div>
+          <p id="case-regen-attempts-left" class="case-regen-note"></p>
+        </section>
+
         <!-- Live suite progress -->
         <section id="suiteProgress" class="panel suite-progress hidden">
           <h2>Running checks</h2>

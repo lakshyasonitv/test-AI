@@ -162,6 +162,10 @@ const LLMTestCase = TestCase.omit({ generatedFrom: true });
 export interface ExtendContext {
   /** Titles already covered by an earlier batch. Present only on the reactive call. */
   existingTitles: string[];
+  /** When true, this extend call must still mint exactly one fromPrompt:true case — used
+   *  when no primary has been accepted into the gate's pool yet. When false/absent,
+   *  preserves today's behavior (never mint a primary on an extend call). */
+  mintPrimary?: boolean;
 }
 
 export async function toTestCases(
@@ -193,10 +197,16 @@ no payloads. A case whose point is an attack is out of scope and will be discard
   // primary case ("Verify end-to-end account creation and authentication flow" vs "Verify the
   // end-to-end functionality of user account creation and authentication").
   const fromPromptRule = extend
-    ? `These cases EXTEND an existing suite. Do NOT restate anything already covered — write only
-cases for behaviour the list below does not reach. Never set "fromPrompt"; the suite already has
-its primary case. Already covered:
+    ? (extend.mintPrimary
+        ? `These cases EXTEND an existing suite, but no primary case has been accepted yet.
+Exactly ONE case in this batch must be tagged "fromPrompt": true — the direct, literal translation
+of the plan itself, using the plan's own concrete values. Do NOT restate anything already covered
+below. Already covered:
 ${extend.existingTitles.map(t => `  - ${t}`).join("\n")}`
+        : `These cases EXTEND an existing suite. Do NOT restate anything already covered — write
+only cases for behaviour the list below does not reach. Never set "fromPrompt"; the suite already
+has its primary case. Already covered:
+${extend.existingTitles.map(t => `  - ${t}`).join("\n")}`)
     : `Exactly ONE case — the direct, literal translation of the plan itself — must be tagged
 "fromPrompt": true.`;
 

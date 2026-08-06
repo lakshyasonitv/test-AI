@@ -307,6 +307,74 @@ li.failed .summary-text { color: var(--failed); }
 .cred-note { font-size: .72rem; color: var(--faint); margin: var(--sp-3) 0 0; line-height: 1.55; }
 
 /* ---------------------------------------------------------------------------
+   Case-selection panel — same semantics as the credential prompt: the run is
+   waiting on the user, so it reads as an inline call-to-action, not a modal
+   --------------------------------------------------------------------------- */
+
+#case-selection-panel {
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: var(--r);
+  padding: var(--sp-4) var(--sp-5);
+  margin-bottom: var(--sp-4);
+  box-shadow: var(--shadow);
+  animation: fadeUp .22s var(--ease);
+}
+.case-selection-head { display: flex; gap: var(--sp-3); align-items: flex-start; }
+.case-selection-key { color: var(--accent); display: inline-flex; margin-top: 2px; }
+#case-selection-panel h2 { font-size: .95rem; font-weight: 600; }
+.case-pool-counter { font-size: .82rem; color: var(--text-2); margin: 5px 0 0; line-height: 1.55; }
+
+.case-selection-list {
+  list-style: none; margin: var(--sp-4) 0 0; padding: 0;
+  display: grid; gap: var(--sp-2);
+}
+.case-selection-list li {
+  display: flex; align-items: flex-start; gap: var(--sp-2);
+  background: var(--surface); border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+}
+.case-selection-list input[type="checkbox"] { margin-top: 4px; accent-color: var(--accent); }
+.case-selection-list .case-label { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); cursor: pointer; }
+.case-selection-list .case-title { font-size: .86rem; font-weight: 550; }
+.case-selection-list .case-intent { font-size: .74rem; color: var(--muted); width: 100%; line-height: 1.5; }
+.case-primary-badge {
+  font-size: .62rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-soft);
+  border: 1px solid rgba(109, 140, 255, .35);
+  padding: 1px 7px; border-radius: var(--r-pill); white-space: nowrap;
+}
+
+.case-selection-bulk { display: flex; gap: var(--sp-3); margin-top: var(--sp-3); }
+.case-selection-link {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font: inherit; font-size: .78rem; font-weight: 550; color: var(--partial);
+}
+.case-selection-link:hover { text-decoration: underline; }
+
+.case-refine-input-wrap { margin-top: var(--sp-3); }
+.case-notice { font-size: .8rem; margin: var(--sp-3) 0 0; }
+.case-notice.notice { color: var(--text-2); }
+.case-notice.error { color: var(--failed); }
+
+.case-selection-final-actions {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin-top: var(--sp-4); flex-wrap: wrap;
+}
+.case-selection-final-actions button {
+  background: var(--accent); color: #fff; border: none; border-radius: var(--r-sm);
+  padding: 9px var(--sp-4); font: inherit; font-size: .86rem; font-weight: 550; cursor: pointer;
+}
+.case-selection-final-actions button:hover { background: var(--accent-hover); }
+.case-selection-final-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.case-selection-final-actions .case-not-satisfied {
+  background: none !important; color: var(--muted) !important; font-weight: 450 !important;
+}
+.case-selection-final-actions .case-not-satisfied:hover { background: var(--surface-3) !important; color: var(--text) !important; }
+
+.case-regen-note { font-size: .72rem; color: var(--faint); margin: var(--sp-3) 0 0; line-height: 1.55; }
+
+/* ---------------------------------------------------------------------------
    Verdict — plain English, stated as a sentence
    --------------------------------------------------------------------------- */
 

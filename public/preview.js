@@ -72,6 +72,21 @@
       suite } }],
     unconfirmed: [{ stage: "done", status: "completed", data: { passed: true, status: "truncated_no_assertion", screenshotUrl: SHOT, suite } }],
     error: [{ stage: "error", status: "failed", error: "IR failed schema validation after retry" }],
+    // Case-selection gate: the round-requested event alone, so the panel stays open for
+    // manual interaction. Resolution events are omitted on purpose — the point of the scene
+    // is to exercise Select all / none, the Done state, and the two-click refine, not to
+    // watch the panel close itself.
+    caseSelection: [{ stage: "testcases", status: "started", data: {
+      action: "case_round_requested", attempt: 1,
+      batch: [
+        { title: "Log in with valid credentials", fromPrompt: true,
+          intent: "proves a real user can sign in and reach their account" },
+        { title: "Log in with the wrong password", fromPrompt: false,
+          intent: "proves a wrong password is rejected rather than quietly accepted" },
+        { title: "Submit the form with nothing filled in", fromPrompt: false,
+          intent: "proves a validation message appears and nothing is submitted" },
+      ],
+    } }],
   };
 
   function play(name) {
