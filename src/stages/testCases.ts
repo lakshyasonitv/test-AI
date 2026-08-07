@@ -160,12 +160,12 @@ const LLMTestCase = TestCase.omit({ generatedFrom: true });
 // legitimate multi-page cases before they got to the stage that can resolve them. ir.ts's
 // groundingError (exact role+name) plus extendAppModel is the single grounding authority.
 export interface ExtendContext {
-  /** Titles already covered by an earlier batch. Present only on the reactive call. */
+  /** Titles already covered across ALL prior attempts (accepted AND rejected). */
   existingTitles: string[];
-  /** When true, this extend call must still mint exactly one fromPrompt:true case — used
-   *  when no primary has been accepted into the gate's pool yet. When false/absent,
-   *  preserves today's behavior (never mint a primary on an extend call). */
+  /** When true, this extend call must mint exactly one fromPrompt:true case. */
   mintPrimary?: boolean;
+  /** Refined user prompt submitted during "Not Satisfied" */
+  refinedPrompt?: string;
 }
 
 export async function toTestCases(
@@ -269,12 +269,23 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     ? `\nConcepts with NO checklist entry — apply the 5 reasoning dimensions above to these directly, do not just emit one generic case: ${gaps.join(", ")}\n`
     : "";
   const liteModel = toLiteModel(appModel);
-  const cacheKey = makeCacheKey(JSON.stringify(p), JSON.stringify(liteModel), scope.join(","), (extend?.existingTitles ?? []).join("|"));
+  const cacheKey = makeCacheKey(
+    JSON.stringify(p), 
+    extend?.refinedPrompt ?? "", 
+    JSON.stringify(liteModel), 
+    scope.join(","), 
+    (extend?.existingTitles ?? []).join("|")
+  );
   const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
   if (cachedCases) return cachedCases;
 
-  const user =
-    `Plan: ${JSON.stringify(p)}
+
+  const planContext = extend?.refinedPrompt 
+    ? `Original Plan: ${JSON.stringify(p)}\nRefined User Request for this round: "${extend.refinedPrompt}"`
+    : `Plan: ${JSON.stringify(p)}`;
+
+ const user = 
+    `${planContext}
 Application model: ${JSON.stringify(liteModel)}
 
 Coverage checklist floor (produce one grounded case per applicable item):

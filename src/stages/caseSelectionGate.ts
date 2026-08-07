@@ -1,3 +1,5 @@
+// --- In src/stages/caseSelectionGate.ts ---
+
 import { store } from "../runStore.js";
 import type { Plan } from "./planner.js";
 import type { AppModel } from "../schema/appModel.js";
@@ -10,7 +12,11 @@ import {
   remainingCapacity,
   MAX_ACCUMULATED_CASES,
 } from "../server/caseAccumulator.js";
-import { appendRoundToHistory, buildHistoryPromptBlock } from "../server/caseHistoryLedger.js";
+import { 
+  appendRoundToHistory, 
+  buildHistoryPromptBlock, 
+  getAllHistoryTitles // <--- ADDED IMPORT
+} from "../server/caseHistoryLedger.js";
 
 export const MAX_CASE_REGEN_ATTEMPTS = Number(process.env.MAX_CASE_REGEN_ATTEMPTS ?? 3);
 
@@ -18,8 +24,6 @@ export interface CaseSelectionGateParams {
   runId: string;
   plan: Plan;
   appModel: AppModel;
-  /** The original user prompt. The Plan type does not carry it, but the gate needs it to seed
-   *  the "prompt that generated the current batch" that round 1 is attributed to. */
   sourcePrompt: string;
 }
 
@@ -27,28 +31,25 @@ export interface CaseSelectionGateResult {
   finalCases: TestCase[];
 }
 
-/** Generate one round's batch. Round 1 is the plain upfront call (mints its own primary);
- *  later rounds extend the suite — never restating already-accepted titles, and minting a
- *  fresh primary only while none has been accepted yet. */
+/** Updated helper to pass refinedPrompt */
 async function caseSelectionBatch(
   plan: Plan,
   appModel: AppModel,
   attempt: number,
   seenTitles: string[],
-  forcePrimary: boolean
+  forcePrimary: boolean,
+  refinedPrompt?: string // <--- ADDED PARAMETER
 ): Promise<TestCase[]> {
   if (attempt === 1) {
     return toTestCases(plan, appModel);
   }
-  return toTestCases(plan, appModel, { existingTitles: seenTitles, mintPrimary: forcePrimary });
+  return toTestCases(plan, appModel, { 
+    existingTitles: seenTitles, 
+    mintPrimary: forcePrimary,
+    refinedPrompt // <--- PASSED TO GENERATOR
+  });
 }
 
-/**
- * The gate around upfront case generation. Generates a batch, parks the run on a selection
- * prompt, and on "not satisfied" regenerates against the running history — until the user
- * says done, the pool fills, or the regeneration budget is spent. Emits one store event per
- * round so a restarting server / reconnecting SSE client can replay what the user picked.
- */
 export async function runCaseSelectionGate({
   runId,
   plan,
@@ -59,9 +60,20 @@ export async function runCaseSelectionGate({
   let promptThatGeneratedCurrentBatch = sourcePrompt;
 
   while (attempt <= MAX_CASE_REGEN_ATTEMPTS) {
-    const seenTitles = getAllAcceptedCases(runId).map((c) => c.title);
+    // FIX 1: Fetch ALL titles shown in past rounds (accepted + rejected)
+    const seenTitles = getAllHistoryTitles(runId);
+    
     const forcePrimary = attempt === 1 ? true : !hasAcceptedPrimary(runId);
-    const batch = await caseSelectionBatch(plan, appModel, attempt, seenTitles, forcePrimary);
+    
+    // FIX 2: Pass promptThatGeneratedCurrentBatch into batch generator
+    const batch = await caseSelectionBatch(
+      plan, 
+      appModel, 
+      attempt, 
+      seenTitles, 
+      forcePrimary,
+      attempt > 1 ? promptThatGeneratedCurrentBatch : undefined
+    );
 
     store.append({
       runId,

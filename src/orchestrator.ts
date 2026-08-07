@@ -106,6 +106,7 @@ export async function runPipeline(
     const cases = await step("testcases", "03-cases.json", async () => {
       if (process.env.ENABLE_CASE_SELECTION_GATE === "true") {
         const { runCaseSelectionGate } = await import("./stages/caseSelectionGate.js");
+        
         const { finalCases } = await runCaseSelectionGate({ runId, plan: thePlan, appModel, sourcePrompt: prompt });
         return finalCases;
       }
@@ -246,7 +247,8 @@ export async function runPipeline(
     // Merge upfront cases with any reactive cases generated for new pages
     let allCases = [...cases];
     let reactiveCount = 0;
-    if (newPages.length > 0) {
+    if (process.env.ENABLE_CASE_SELECTION_GATE !== "true")
+    {if (newPages.length > 0) {
       emit("testcases", "started", { newPages: newPages.map(p => p.url) });
       const reactiveCases = await generateCasesForNewPages(
         updatedAppModel, resolvedUrls, thePlan, prompt, cases.map(c => c.title));
@@ -254,7 +256,7 @@ export async function runPipeline(
         allCases = [...allCases, ...reactiveCases];
         reactiveCount = reactiveCases.length;
       }
-    }
+    }}
 
     // Single selection authority over the merged list: dedup, then fill a hard budget by
     // category diversity. Doing this per-batch inside toTestCases is what made one prompt
