@@ -23,6 +23,13 @@ export function normalizeTitle(title: string): string {
   return title.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
 }
 
+/** How many rounds have been recorded so far — used to number a reactive round (cases for a
+ *  newly-discovered page) as a continuation of the upfront gate rounds, so "Round N" in the UI
+ *  stays monotonic instead of restarting or colliding with an existing attempt number. */
+export function getRoundCount(runId: string): number {
+  return readFile(runId).rounds.length;
+}
+
 export function appendRoundToHistory(
   runId: string,
   attempt: number,

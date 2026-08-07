@@ -55,6 +55,8 @@ const STATUS_LABEL = {
   // Not a pass and not an app bug: the flow reached something automation can't get past,
   // like an emailed verification code or an external sign-in provider.
   blocked: "Blocked",
+  // The case-selection gate's review round timed out before anything was ever picked.
+  no_cases_selected: "Nothing selected",
 };
 
 // -----------------------------------------------------------------------------
@@ -521,6 +523,10 @@ function verdictFor(data, stage, error) {
   if (status === "truncated_no_assertion") {
     return { cls: "incomplete", ic: "minus-circle", head: "Ran, but couldn’t confirm the result",
              detail: "It stopped before it got far enough to check the outcome, so this isn’t a pass or a failure." };
+  }
+  if (status === "no_cases_selected") {
+    return { cls: "incomplete", ic: "minus-circle", head: "No test cases were selected",
+             detail: "The review round timed out before anything was picked, so nothing ran. Start a new run and pick at least one case before it times out." };
   }
   if (data?.passed && data?.healed) {
     return { cls: "passed", ic: "check", head: "Passed",

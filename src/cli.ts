@@ -31,7 +31,11 @@ runPipeline({ prompt, url, urls, coverage }, (e) => {
   console.log(`[${mark}] ${e.stage}${e.error ? ": " + e.error : ""}`);
 })
   .then(r => {
-    console.log(`\nRun ${r.runId}: ${r.result.passed ? "✅ PASSED" : "❌ FAILED"}`);
+    if (!r.result) {
+      console.log(`\nRun ${r.runId}: no test cases were selected — nothing ran.`);
+    } else {
+      console.log(`\nRun ${r.runId}: ${r.result.passed ? "✅ PASSED" : "❌ FAILED"}`);
+    }
     console.log(`Artifacts: ${r.runDir}`);
     if (r.diagnosis) console.log(`Diagnosis: ${r.diagnosis.explanation}`);
   })

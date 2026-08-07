@@ -320,6 +320,74 @@ function inferRole(tag: string, el: { aria_role?: string; aria_label?: string; c
 // Public API
 // ---------------------------------------------------------------------------
 
+/** A clickable element found ONLY by the live in-page scan below — no semantic tag, no
+ *  role attribute, so the cheerio pass over the HTML string could never have found it. */
+interface GenericClickable {
+  name: string;
+  id: string;
+  testId: string;
+}
+
+// Skip anything bigger than a generous "this is a real control, not a section wrapper"
+// threshold — a large container commonly inherits `cursor: pointer` from a parent or a
+// global CSS reset without itself being the intended click target.
+const MAX_CLICKABLE_WIDTH = 500;
+const MAX_CLICKABLE_HEIGHT = 200;
+// Hard cap so a noisy/animated page (hundreds of hover-styled elements) can't flood the
+// AppModel with junk — the far more common case (a handful of custom "buttons") is well
+// under this either way.
+const MAX_GENERIC_CLICKABLES = 40;
+
+/**
+ * Find elements that are clickable in practice but invisible to tag/role-based extraction:
+ * a `<div onClick={...}>Submit</div>` styled as a button by a component library, with no
+ * semantic tag and no `role` attribute. Cheerio (extractCrawlResponse) operates on an HTML
+ * *string* and has no access to computed styles or layout, so this has to run in the live
+ * page instead. Runs alongside `page.content()` in `extractDomModelFromPage` below, the one
+ * function every discovery path (primary crawl, live-extend replay, site crawl) already
+ * shares — so every caller gets this for free from one change.
+ */
+async function detectGenericClickables(page: Page): Promise<GenericClickable[]> {
+  try {
+    return await page.evaluate(
+      ({ maxWidth, maxHeight, maxCount }) => {
+        const SEMANTIC_TAGS = new Set(["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA"]);
+        const out: { name: string; id: string; testId: string }[] = [];
+        const candidates = document.querySelectorAll("div, span, li, p");
+        for (const el of Array.from(candidates)) {
+          if (out.length >= maxCount) break;
+          if (SEMANTIC_TAGS.has(el.tagName)) continue;
+          if (el.getAttribute("role")) continue; // already covered by the [role] cheerio pass
+
+          const tabindexAttr = el.getAttribute("tabindex");
+          const hasTabIndex = tabindexAttr !== null && tabindexAttr !== "-1";
+          const hasOnClickAttr = el.hasAttribute("onclick");
+          const cursorPointer = window.getComputedStyle(el).cursor === "pointer";
+          if (!hasTabIndex && !hasOnClickAttr && !cursorPointer) continue;
+
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue; // not actually visible
+          if (rect.width > maxWidth || rect.height > maxHeight) continue;
+
+          const name = (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 80);
+          if (!name) continue;
+
+          out.push({
+            name,
+            id: el.id || "",
+            testId: el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-qa") || "",
+          });
+        }
+        return out;
+      },
+      { maxWidth: MAX_CLICKABLE_WIDTH, maxHeight: MAX_CLICKABLE_HEIGHT, maxCount: MAX_GENERIC_CLICKABLES }
+    );
+  } catch (err: any) {
+    console.warn(`[domDiscovery] generic-clickable scan failed: ${err?.message ?? err}`);
+    return [];
+  }
+}
+
 /**
  * Extract a page's DOM model from an ALREADY-OPEN Playwright page — no browser launch, no
  * navigation, no cache write. This is what live-extend uses to snapshot a replayed page, so
@@ -331,7 +399,34 @@ export async function extractDomModelFromPage(page: Page, url: string): Promise<
   try {
     const html = await page.content();
     const crawlResult = extractCrawlResponse(html, url, 200);
-    return crawlResponseToAppModel(crawlResult);
+    const model = crawlResponseToAppModel(crawlResult);
+
+    const generic = await detectGenericClickables(page);
+    if (generic.length && model.pages[0]) {
+      const seen = new Set(model.pages[0].elements.map(e => `${e.role}:${e.name}`.toLowerCase()));
+      let order = model.pages[0].elements.length;
+      for (const g of generic) {
+        const key = `button:${g.name}`.toLowerCase();
+        if (seen.has(key)) continue; // defensive: shouldn't happen, the evaluate() pass already excludes [role]
+        seen.add(key);
+        // role: "button" — the closest real fit, and the one ir.ts's buildUser() keeps in its
+        // INTERACTIVE_ROLES allow-list; an unlisted role like "generic" would make the LLM
+        // never even see the element. Whether the real accessibility tree agrees with this
+        // guess doesn't matter: targetResolver.ts's locate() already falls back from
+        // getByRole to a CSS text-match to getByText at execution time.
+        model.pages[0].elements.push({
+          role: "button",
+          name: g.name,
+          ...(g.testId ? { testId: g.testId } : {}),
+          ...(g.id ? { css: `#${g.id}` } : {}),
+          visible: true,
+          enabled: true,
+          order: order++,
+        });
+      }
+    }
+
+    return model;
   } catch (err: any) {
     console.warn(`[domDiscovery] DOM extraction error for ${url}: ${err?.message ?? err}`);
     return null;

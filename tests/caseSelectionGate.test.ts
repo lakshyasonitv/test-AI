@@ -19,7 +19,7 @@ vi.mock("../src/server/pendingCaseSelection.js", () => ({
   awaitCaseSelection: awaitCaseSelectionMock,
 }));
 
-const { runCaseSelectionGate } = await import("../src/stages/caseSelectionGate.js");
+const { runCaseSelectionGate, runReactiveCaseRound } = await import("../src/stages/caseSelectionGate.js");
 
 const plan = { goal: "g", steps: [], testTypeScope: ["functional"], coverage: "standard" } as any;
 const appModel = { baseUrl: "https://example.com", pages: [] } as any;
@@ -67,5 +67,64 @@ describe("runCaseSelectionGate", () => {
     await expect(
       runCaseSelectionGate({ runId, plan, appModel, sourcePrompt: "test the login" })
     ).rejects.toThrow(/No primary case accepted/);
+  });
+
+  // Regression: a round timing out (CASE_SELECTION_WAIT_MS) resolves awaitCaseSelection with
+  // {action:"done", selectedIndexes:[]} — exactly what a real timeout looks like from the
+  // caller's side. With nothing ever accepted, this used to throw and crash the whole run;
+  // it must now report a clean, distinguishable "nothing selected" outcome instead.
+  it("reports a clean outcome, not a throw, when nothing was ever accepted (timeout)", async () => {
+    toTestCasesMock.mockResolvedValueOnce([tc("Login", true), tc("Invalid password")]);
+    awaitCaseSelectionMock.mockResolvedValueOnce({ action: "done", selectedIndexes: [] });
+
+    const result = await runCaseSelectionGate({ runId, plan, appModel, sourcePrompt: "test the login" });
+
+    expect(result.finalCases).toEqual([]);
+    expect(result.noCasesSelected).toBe(true);
+  });
+});
+
+// Regression: cases generated reactively for a page live-extend discovered during the primary
+// case used to be merged into the final list silently, with no review — the gate's whole
+// premise ("nothing runs without being shown to you first") only held for the upfront batch.
+describe("runReactiveCaseRound", () => {
+  const runId = "test-run-reactiveCaseRound";
+  afterEach(() => {
+    rmSync(path.join("runs", runId), { recursive: true, force: true });
+    awaitCaseSelectionMock.mockReset();
+  });
+
+  it("offers reactive cases as a review round and returns only what was accepted", async () => {
+    const { appendAcceptedCases } = await import("../src/server/caseAccumulator.js");
+    appendAcceptedCases(runId, 1, "original prompt", [tc("Login", true)], [0]);
+
+    awaitCaseSelectionMock.mockResolvedValueOnce({ action: "done", selectedIndexes: [1] });
+
+    const reactive = [tc("View cart contents"), tc("Remove item from cart")];
+    const accepted = await runReactiveCaseRound(runId, reactive);
+
+    expect(accepted.map((c) => c.title)).toEqual(["Remove item from cart"]);
+    expect(awaitCaseSelectionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns nothing and never parks a round when every reactive case was already seen", async () => {
+    const { appendAcceptedCases } = await import("../src/server/caseAccumulator.js");
+    appendAcceptedCases(runId, 1, "original prompt", [tc("View cart contents", true)], [0]);
+
+    const accepted = await runReactiveCaseRound(runId, [tc("View cart contents")]);
+
+    expect(accepted).toEqual([]);
+    expect(awaitCaseSelectionMock).not.toHaveBeenCalled();
+  });
+
+  it("does not touch anything the upfront gate already accepted", async () => {
+    const { appendAcceptedCases, getAllAcceptedCases } = await import("../src/server/caseAccumulator.js");
+    appendAcceptedCases(runId, 1, "original prompt", [tc("Login", true)], [0]);
+
+    awaitCaseSelectionMock.mockResolvedValueOnce({ action: "done", selectedIndexes: [0] });
+    await runReactiveCaseRound(runId, [tc("View cart contents")]);
+
+    const all = getAllAcceptedCases(runId).map((c) => c.title);
+    expect(all).toEqual(["Login", "View cart contents"]);
   });
 });

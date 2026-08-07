@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { plan } from "./stages/planner.js";
 import { discover, discoverPages } from "./stages/hybridDiscovery.js";
-import { toTestCases, generateCasesForNewPages, selectCases, budgetFor } from "./stages/testCases.js";
+import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
 import { GroqBudget } from "./llm/groqBudget.js";
 import { refreshPageModel } from "./stages/liveExtend.js";
@@ -16,7 +16,7 @@ import { runSpec, findScreenshot, detectBlocked } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
-import { filterByScope, ALL_SCOPES } from "./kb/testStrategy.js";
+import { ALL_SCOPES } from "./kb/testStrategy.js";
 import type { IR, Step } from "./schema/ir.js";
 
 export type StageName =
@@ -103,8 +103,9 @@ export async function runPipeline(
     // The case-selection gate pauses here: it generates a batch, parks the run on a selection
     // prompt, and regenerates on "not satisfied" — while the flag is off, the gate is never
     // even imported, so the happy path stays byte-for-byte identical to the old flow.
+    const gateUsed = process.env.ENABLE_CASE_SELECTION_GATE === "true";
     const cases = await step("testcases", "03-cases.json", async () => {
-      if (process.env.ENABLE_CASE_SELECTION_GATE === "true") {
+      if (gateUsed) {
         const { runCaseSelectionGate } = await import("./stages/caseSelectionGate.js");
         const { finalCases } = await runCaseSelectionGate({ runId, plan: thePlan, appModel, sourcePrompt: prompt });
         return finalCases;
@@ -112,6 +113,22 @@ export async function runPipeline(
       return toTestCases(thePlan, appModel, undefined, { sourcePrompt: prompt });
     });
     console.log("✓ Test cases:", cases.length);
+
+    // The case-selection gate can legitimately end with nothing accepted (a round timed out on
+    // CASE_SELECTION_WAIT_MS before anything was ever picked) — a clean, honest outcome, not a
+    // pipeline error. Report it and stop here rather than cascading into "No test cases
+    // produced" a few lines below, which would surface as a scary generic crash instead of
+    // "nothing was selected."
+    if (cases.length === 0) {
+      const groqUsage = groqBudget.snapshot();
+      save("08-groq-usage.json", groqUsage);
+      emit("done", "completed", {
+        passed: false,
+        status: "no_cases_selected",
+        groqUsage,
+      });
+      return { runId, runDir, result: null, diagnosis: null };
+    }
 
     // Prefer the case tagged as the direct translation of the user's own request over pure
     // severity ranking — "priority" orders coverage cases for an eventual multi-case run, but
@@ -251,15 +268,24 @@ export async function runPipeline(
       const reactiveCases = await generateCasesForNewPages(
         updatedAppModel, resolvedUrls, thePlan, prompt, cases.map(c => c.title));
       if (reactiveCases.length > 0) {
-        allCases = [...allCases, ...reactiveCases];
-        reactiveCount = reactiveCases.length;
+        if (gateUsed) {
+          // The gate's whole premise is "nothing runs without being shown to you first" — that
+          // has to hold for reactive cases too, not just the upfront batch. Offer them as one
+          // more review round instead of silently merging them into what's already final.
+          const { runReactiveCaseRound } = await import("./stages/caseSelectionGate.js");
+          const accepted = await runReactiveCaseRound(runId, reactiveCases);
+          allCases = [...allCases, ...accepted];
+          reactiveCount = accepted.length;
+        } else {
+          allCases = [...allCases, ...reactiveCases];
+          reactiveCount = reactiveCases.length;
+        }
       }
     }
 
-    // Single selection authority over the merged list: dedup, then fill a hard budget by
-    // category diversity. Doing this per-batch inside toTestCases is what made one prompt
-    // yield 4 cases or 8, with the reactive batch restating the primary in different words.
-    const scopedCases = selectCases(filterByScope(allCases, scope), budgetFor(thePlan.coverage));
+    // Single selection authority over the merged list — see finalizeCaseSelection's own doc
+    // comment for why this branches on gateUsed.
+    const scopedCases = finalizeCaseSelection(allCases, scope, thePlan.coverage, gateUsed);
     console.log(`Cases: ${allCases.length} generated -> ${scopedCases.length} selected`,
       scopedCases.map(c => `${c.category}:${c.title}`));
     save("03-cases.json", scopedCases);

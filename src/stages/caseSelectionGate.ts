@@ -14,6 +14,7 @@ import {
   appendRoundToHistory,
   buildHistoryPromptBlock,
   getRejectedTitles,
+  getRoundCount,
 } from "../server/caseHistoryLedger.js";
 
 export const MAX_CASE_REGEN_ATTEMPTS = Number(process.env.MAX_CASE_REGEN_ATTEMPTS ?? 3);
@@ -29,6 +30,13 @@ export interface CaseSelectionGateParams {
 
 export interface CaseSelectionGateResult {
   finalCases: TestCase[];
+  /** True when the gate ends with nothing accepted at all — the only way to reach this is a
+   *  round timing out (CASE_SELECTION_WAIT_MS) on the very first round before anything was
+   *  ever picked, since anything accepted in an earlier round survives a later round's timeout.
+   *  A distinct, honest outcome for the caller to report — not an error to throw and crash the
+   *  run over, the same way the credential prompt's own timeout just continues without
+   *  credentials instead of failing the run. */
+  noCasesSelected?: boolean;
 }
 
 /** Generate one round's batch. Round 1 is the plain upfront call (mints its own primary);
@@ -165,7 +173,14 @@ export async function runCaseSelectionGate({
 
   const finalCases = getAllAcceptedCases(runId);
   if (finalCases.length === 0) {
-    throw new Error(`No test cases were selected for run ${runId}`);
+    store.append({
+      runId,
+      stage: "testcases",
+      status: "completed",
+      data: { finalCases: [], action: "case_selection_finalized", noCasesSelected: true },
+      ts: Date.now(),
+    });
+    return { finalCases: [], noCasesSelected: true };
   }
   if (!hasAcceptedPrimary(runId)) {
     throw new Error(`No primary case accepted for run ${runId}: the user selected cases but none was the direct translation of the plan.`);
@@ -180,4 +195,60 @@ export async function runCaseSelectionGate({
   });
 
   return { finalCases };
+}
+
+/**
+ * A second kind of round, run AFTER the upfront gate has already finalized: cases generated
+ * reactively for a page live-extend discovered while executing the primary case. Offered
+ * through the exact same review mechanism as the upfront batch instead of being silently merged
+ * in — the gate's whole premise (nothing runs without being shown to you first) otherwise only
+ * held for the upfront batch, not anything reactive. Returns just the cases actually accepted
+ * from THIS round (a subset of `reactiveCases`, possibly empty) — the caller merges them into
+ * the final list itself; this never touches anything the upfront gate already decided.
+ */
+export async function runReactiveCaseRound(
+  runId: string, reactiveCases: TestCase[]
+): Promise<TestCase[]> {
+  const acceptedTitles = getAllAcceptedCases(runId).map((c) => c.title);
+  const rejectedTitles = getRejectedTitles(runId);
+  const seenTitles = [...acceptedTitles, ...rejectedTitles];
+  const batch = filterNovelCases(reactiveCases, seenTitles);
+  if (batch.length === 0) return [];
+
+  const beforeTitles = new Set(acceptedTitles);
+  const attempt = getRoundCount(runId) + 1;
+  const roundPrompt = "A new page was discovered while running the primary case — review these additional cases.";
+
+  store.append({
+    runId,
+    stage: "testcases",
+    status: "started",
+    data: { batch, attempt, action: "case_round_requested", prompt: roundPrompt, reactive: true },
+    ts: Date.now(),
+  });
+
+  const decision = await awaitCaseSelection(runId, batch, attempt);
+
+  store.append({
+    runId,
+    stage: "testcases",
+    status: "completed",
+    data: { batch, attempt, action: "case_round_resolved", decision },
+    ts: Date.now(),
+  });
+
+  const { overflowIndexes } = appendAcceptedCases(runId, attempt, roundPrompt, batch, decision.selectedIndexes);
+  appendRoundToHistory(runId, attempt, roundPrompt, batch, decision.selectedIndexes, overflowIndexes);
+
+  // Closes the panel again — it was reopened for this round after the upfront gate's own
+  // "finalized" event already closed it once.
+  store.append({
+    runId,
+    stage: "testcases",
+    status: "completed",
+    data: { action: "case_selection_finalized" },
+    ts: Date.now(),
+  });
+
+  return getAllAcceptedCases(runId).filter((c) => !beforeTitles.has(c.title));
 }

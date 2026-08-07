@@ -114,6 +114,27 @@ export function selectCases(all: TestCase[], budget: number = maxCases()): TestC
 }
 
 /**
+ * The single decision point for "which generated cases actually become runnable scripts."
+ *
+ * When the case-selection gate was used, `allCases` is already the human's final, explicit
+ * decision (deduped by the accumulator, capped by MAX_ACCUMULATED_CASES) — `selectCases`'s
+ * budget-fill/cap exists to solve "one prompt yields 4 or 8 cases inconsistently" in the
+ * UNGATED flow, and re-applying it on top of an already-final human decision silently overrides
+ * it in either direction (padding a deliberately small pick back up via reactive cases, or
+ * capping a deliberately large one down to the coverage default). Only `filterByScope` — a
+ * defensive floor, not a count constraint — still applies.
+ *
+ * When the gate was NOT used, this is exactly today's behavior: `selectCases` picks a
+ * budget-capped, category-diverse subset of the raw generated batch.
+ */
+export function finalizeCaseSelection(
+  allCases: TestCase[], scope: ScopeFilter[], coverage: Coverage, gateUsed: boolean
+): TestCase[] {
+  const scoped = filterByScope(allCases, scope);
+  return gateUsed ? scoped : selectCases(scoped, budgetFor(coverage));
+}
+
+/**
  * Hard guarantee that a case already shown to the user (accepted OR rejected in an earlier
  * selection round) never reappears in a new batch. The LLM prompt asks for novelty and the
  * cache key now includes the rejected titles, but neither of those is a guarantee — the model
