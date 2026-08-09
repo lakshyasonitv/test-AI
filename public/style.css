@@ -768,3 +768,126 @@ figcaption { font-size: .74rem; color: var(--faint); margin-top: 6px; }
 
 /* The run button's spinner while a run is in flight. */
 .run-btn .spin { animation: spin 1.6s linear infinite; }
+
+/* ---------------------------------------------------------------------------
+   Enterprise Diagnostic Card
+   --------------------------------------------------------------------------- */
+
+.diag-card {
+  margin-top: var(--sp-4);
+  background: var(--surface-2);
+  border: 1px solid rgba(229, 169, 67, 0.35);
+  border-radius: var(--r-md);
+  padding: var(--sp-4);
+  font-size: .84rem;
+  color: var(--text);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.diag-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.diag-badge {
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  background: rgba(229, 169, 67, 0.18);
+  color: var(--running);
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(229, 169, 67, 0.3);
+}
+
+.diag-card-header h4 {
+  margin: 0;
+  font-size: .92rem;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.diag-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.diag-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.diag-label {
+  font-size: .76rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+.diag-text {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.diag-fix-box {
+  background: rgba(70, 196, 109, 0.08);
+  border: 1px solid rgba(70, 196, 109, 0.25);
+  border-radius: var(--r-sm);
+  padding: var(--sp-3);
+}
+
+.fix-label {
+  color: var(--done);
+  font-weight: 650;
+}
+
+.diag-fix-code {
+  margin: var(--sp-1) 0 0 0;
+  font-family: var(--font-mono);
+  font-size: .8rem;
+  background: var(--surface-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diag-tech-details {
+  margin-top: var(--sp-2);
+  font-size: .78rem;
+  color: var(--faint);
+}
+
+.diag-tech-details summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.diag-tech-details summary:hover {
+  color: var(--text);
+}
+
+.diag-tech-details code {
+  display: block;
+  margin-top: 6px;
+  background: var(--surface-1);
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: .75rem;
+  color: var(--failed);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -30,6 +30,18 @@ export const Diagnosis = z.object({
 });
 export type Diagnosis = z.infer<typeof Diagnosis>;
 
+// Module-level so the cache key can hash it before the call is built — the key is computed
+// early, and a prompt defined inside the function would be unavailable at that point.
+const SYSTEM = `You diagnose a failed Playwright test. Identify which IR step failed and the most likely cause. Output JSON only.
+Allowed categories: ${KNOWN_CATEGORIES.join(", ")}.
+- "element_missing" = element was NOT found in the DOM at all (zero matches).
+- "element_not_interactable" = element WAS found but was hidden, off-screen, or not enabled (visible=false, display:none, outside viewport, covered by overlay).
+- "element_hidden" = element was found but its visibility assertion failed.
+If the failure doesn't clearly match one of the above, use "other".
+Do NOT repeat Playwright's message verbatim. Only infer causes that cannot be determined from the raw error.
+Never invent selectors or missing elements.
+Treat the accessibility snapshot as the primary source of truth (more reliable than inferring from the screenshot).`;
+
 /**
  * Pull the real failure text out of Playwright's JSON report. The top-level `errors`
  * array is only populated for config/compile-time errors — for an ordinary test failure
@@ -117,7 +129,11 @@ export async function analyzeFailure(ir: IR, result: ExecResult): Promise<Diagno
     };
   }
 
-  const cacheKey = makeCacheKey(errorText, JSON.stringify(ir.steps.slice(-5)));
+  // SYSTEM joins the key so editing a diagnosis rule actually reaches errors already seen —
+  // the disk cache has no expiry, so anything left out is served stale permanently.
+  const cacheKey = makeCacheKey(
+    errorText, JSON.stringify(ir.steps.slice(-5)),
+    SYSTEM, process.env.GEMINI_MODEL_LITE ?? "default");
   const cached = llmCacheGet<Diagnosis>(cacheKey);
   if (cached) return cached;
 
@@ -137,16 +153,8 @@ export async function analyzeFailure(ir: IR, result: ExecResult): Promise<Diagno
   
   const relevantSteps = ir.steps.slice(-5);
   
-  const system = `You diagnose a failed Playwright test. Identify which IR step failed and the most likely cause. Output JSON only.
-Allowed categories: ${KNOWN_CATEGORIES.join(", ")}.
-- "element_missing" = element was NOT found in the DOM at all (zero matches).
-- "element_not_interactable" = element WAS found but was hidden, off-screen, or not enabled (visible=false, display:none, outside viewport, covered by overlay).
-- "element_hidden" = element was found but its visibility assertion failed.
-If the failure doesn't clearly match one of the above, use "other".
-Do NOT repeat Playwright's message verbatim. Only infer causes that cannot be determined from the raw error.
-Never invent selectors or missing elements.
-Treat the accessibility snapshot as the primary source of truth (more reliable than inferring from the screenshot).`;
-  
+  const system = SYSTEM;
+
   const user = `IR Steps: ${JSON.stringify(relevantSteps)}
 Execution error output:
 ${errorText}

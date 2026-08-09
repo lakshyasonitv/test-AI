@@ -21,6 +21,12 @@ app.use(express.json());
 app.use(express.static("public"));
 app.use("/runs", express.static("runs"));   // serves screenshots/trace/spec directly by path
 
+// Uniform validation middleware for any route parameter named :runId
+app.param("runId", (_req, res, next, runId) => {
+  if (!RUN_ID.test(runId)) return res.status(400).json({ error: "invalid runId" });
+  next();
+});
+
 // Start a run: generate the runId up front so we can hand it back immediately,
 // then let the pipeline run in the background, pushing events into the registry.
 app.post("/api/runs", (req, res) => {

@@ -6,7 +6,7 @@ import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, Element, toLiteModel } from "../schema/appModel.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import {
-  credentialsFor, applyCredentials, credentialPolicyFor, promptCarriesCredentials,
+  applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap,
   NEGATIVE_CATEGORIES, type Credentials,
 } from "./credentials.js";
@@ -108,9 +108,33 @@ function pageKey(url: string): string {
   } catch { return url; }
 }
 
+function originOf(url: string): string | null {
+  try { return new URL(url).origin; } catch { return null; }
+}
+
 function findPageByUrl(appModel: AppModel, absoluteUrl: string): PageModel | null {
   const key = pageKey(absoluteUrl);
   return appModel.pages.find(p => pageKey(p.url) === key) ?? null;
+}
+
+/**
+ * Every destination the application model can actually vouch for: each discovered page, plus
+ * the resolved href of every discovered link. A navigate step to anything outside this set is
+ * a route the model GUESSED rather than observed — see the navigate check in groundingError.
+ */
+function knownNavigationTargets(appModel: AppModel): Set<string> {
+  const out = new Set<string>();
+  const add = (u: string | null | undefined) => { if (u) out.add(pageKey(u)); };
+  add(appModel.baseUrl);
+  for (const page of appModel.pages) {
+    add(page.url);
+    for (const link of page.domLinks ?? []) {
+      const href = link.href?.trim();
+      if (!href || NON_NAVIGATING_HREF.test(href)) continue;
+      add(resolveHref(page.url, href));
+    }
+  }
+  return out;
 }
 
 function findDomLink(page: PageModel, name: string) {
@@ -139,15 +163,28 @@ export interface PageTrail {
  * null — callers fall back to "match against everything," today's behavior, never a new
  * false negative. Doesn't track JS-driven navigation, SPA client routing, or
  * nth-disambiguated duplicate link names; those fall back the same safe way.
+ *
+ * "Can't be confidently resolved" includes going STALE, which it previously didn't: a click
+ * this function can't follow (a form submit, an SPA router button) may have moved the flow
+ * anywhere, so from that point the cursor reports null until something re-resolves it. Leaving
+ * it parked on the last known page instead is what truncated the learnvibes admin flow — every
+ * step after "Sign In" was grounded against /login, so the dashboard's own sidebar button was
+ * "not present in the application model" while sitting in the model.
  */
 export function trackPages(ir: IR, appModel: AppModel): PageTrail {
   const pageAt: (PageModel | null)[] = [];
   const lastLinkHrefAt: (string | null)[] = [];
   let currentPage: PageModel | null = null;
   let lastLinkHref: string | null = null;
+  // The cursor is only worth reporting while it still describes where the flow actually is.
+  // A click that can navigate but whose destination we can't resolve (a form submit, an SPA
+  // router button) leaves it describing the PREVIOUS page — stale, not unknown — and reporting
+  // that as fact is a false negative, not conservatism. `currentPage` itself keeps updating
+  // regardless, because the link-resolution branch below reads it.
+  let stale = false;
 
   for (let i = 0; i < ir.steps.length; i++) {
-    pageAt[i] = currentPage;
+    pageAt[i] = stale ? null : currentPage;
     lastLinkHrefAt[i] = lastLinkHref;
 
     const step = ir.steps[i];
@@ -156,16 +193,24 @@ export function trackPages(ir: IR, appModel: AppModel): PageTrail {
 
     if (step.action === "navigate" && t?.url) {
       const resolved = resolveHref(appModel.baseUrl, t.url);
-      if (resolved) currentPage = findPageByUrl(appModel, resolved);
-    } else if (currentPage && step.action === "click" && t?.role && norm(t.role) === "link" && t?.name) {
-      const link = findDomLink(currentPage, t.name);
+      if (resolved) { currentPage = findPageByUrl(appModel, resolved); stale = false; }
+    } else if (step.action === "click" || step.action === "press") {
+      const link = currentPage && t?.role && norm(t.role) === "link" && t?.name
+        ? findDomLink(currentPage, t.name) : null;
       const href = link?.href?.trim();
-      if (href && !NON_NAVIGATING_HREF.test(href)) {
+      if (href && NON_NAVIGATING_HREF.test(href)) {
+        // Provably goes nowhere (an in-page anchor, a JS handler) — the cursor still holds.
+      } else if (currentPage && href) {
         const resolved = resolveHref(currentPage.url, href);
         if (resolved) {
           lastLinkHref = resolved;
           currentPage = findPageByUrl(appModel, resolved) ?? currentPage;
+          stale = false;
         }
+      } else {
+        // ponytail: anything else clickable might have navigated. Say "unknown" rather than
+        // keep asserting the old page — callers already fall back to the whole model on null.
+        stale = true;
       }
     }
   }
@@ -218,48 +263,66 @@ export function legUrls(ir: IR, appModel: AppModel, entryUrl: string): (string |
  * messages) that isn't in the discovery snapshot. Returns the index of the first
  * ungrounded step plus a human-readable reason (so the caller can replay the
  * grounded prefix steps[0..index] to reach the missing state), or null if grounded.
+ *
+ * `kind` marks errors that live-extension can never resolve, so toIR doesn't spend its
+ * extension budget replaying a prefix that cannot possibly teach the model anything new.
  */
-export function groundingError(ir: IR, appModel: AppModel): { index: number; message: string } | null {
+/** Steps that DO something to an element, as opposed to asserting about one. */
+const ACTION_STEPS = new Set(["click", "fill", "select", "check", "press"]);
+/** Of those, the ones that can only ever act on a form control. */
+const FIELD_ACTIONS = new Set(["fill", "select", "check"]);
+
+export function groundingError(
+  ir: IR, appModel: AppModel,
+): { index: number; message: string; kind?: "navigate-url" | "text-target" } | null {
   const allElements = appModel.pages.flatMap(p => p.elements);
   // Selectors the model is allowed to address directly, because discovery captured them.
   const knownSelectors = new Set<string>();
+  // Selector -> the element it names, so a direct-css target can be visibility-checked too,
+  // not just membership-checked against knownSelectors above.
+  const bySelector = new Map<string, Element>();
   for (const e of allElements) {
-    if (e.css) knownSelectors.add(e.css.toLowerCase());
-    if (e.id) knownSelectors.add(`#${e.id}`.toLowerCase());
+    if (e.css) { knownSelectors.add(e.css.toLowerCase()); bySelector.set(e.css.toLowerCase(), e); }
+    if (e.id) { knownSelectors.add(`#${e.id}`.toLowerCase()); bySelector.set(`#${e.id}`.toLowerCase(), e); }
     if (e.testId) {
       knownSelectors.add(`[data-test="${e.testId}"]`.toLowerCase());
       knownSelectors.add(`[data-testid="${e.testId}"]`.toLowerCase());
     }
   }
+  // A responsive-hidden control (a hamburger menu-toggle is the common case — present in the
+  // DOM, `display:none` at the current viewport) can be name-matched or directly css-targeted
+  // just like any other element, but asserting it VISIBLE will always time out at execution.
+  // Asserting it HIDDEN is exactly the point sometimes (e.g. a post-login "Sign In" check) —
+  // this must only block the "visible" direction.
+  const hiddenVisibleAssertError = (idx: number, roleOrCss: string, el: Element) =>
+    el.visible === false && ir.steps[idx].assertion === "visible"
+      ? { index: idx, message: `Step ${ir.steps[idx].id} targets ${roleOrCss}, which is currently ` +
+          `hidden (likely a responsive/mobile-only control not shown at this viewport) — it cannot ` +
+          `be asserted visible. Pick a different, currently-visible element instead.` }
+      : null;
   // ponytail: strip decorative glyphs (+, emoji, bullets) for fuzzy name matching —
   // catches "+ Add New" vs "Add New" without the unsound reverse-direction check.
   const stripGlyphs = (s: string) => s.replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
-  // Which page the flow is actually on at each step — an element grounded only against
-  // some OTHER page (never the current one) shouldn't pass just because it exists
-  // somewhere in the model. Falls back to allElements wherever the cursor is unresolved.
-  const trail = trackPages(ir, appModel);
-  for (let index = 0; index < ir.steps.length; index++) {
-    const step = ir.steps[index];
-    const t = step.target;
-    // A target carrying a selector discovery verified is already grounded — that IS the
-    // proof the element exists, and it's stronger than a role+name match. Covers the
-    // selectors a user names in their own request.
-    if (t?.css && knownSelectors.has(t.css.toLowerCase())) continue;
-    if (!t?.role || !t?.name) continue; // navigate / text-only / wait steps
-    const role = norm(t.role);
-    const name = norm(t.name);
-    const elements = trail.pageAt[index]?.elements ?? allElements;
-
-    // Rank candidates instead of taking the first substring hit. `en.includes(name)` alone
-    // grounded "Continue" to "Continue Shopping" — a different control on a different page —
-    // because that happened to come first in element order. An exact match must always beat
-    // a partial one, and among partials the closest-length name is the least wrong.
+  // Interactive controls a modern SPA frequently implements with the "wrong" semantic tag —
+  // a sidebar/nav item as <button onClick=router.push(...)> instead of <a href>, most commonly.
+  // Deliberately narrow: only roles where a same-named cross-role match is (a) plausible in
+  // practice and (b) safe to click even if the guess was wrong — NOT textbox/checkbox/heading,
+  // where matching the wrong role either can't work (.fill() on a heading) or changes what an
+  // assertion actually proves. safeClick/locate() already tolerate exactly this mismatch at
+  // runtime (their own css/text fallback chain), so this only stops grounding from being
+  // stricter than the code it's protecting.
+  const CLICKABLE_ROLE_GROUP = new Set(["link", "button", "menuitem", "tab"]);
+  // The roles a fill/select/check can legitimately land on. Kept separate from the clickable
+  // group so a `fill` can never be grounded onto a link, and a `click` never onto a textbox.
+  const FIELD_ROLE_GROUP = new Set(["textbox", "combobox", "searchbox", "checkbox", "radio", "spinbutton"]);
+  // Best name-tiered match among `elements` whose role satisfies `roleOk`. Factored out so the
+  // exact-role pass and the compatible-role fallback pass share identical ranking logic.
+  const bestNameMatch = (elements: Element[], name: string, sn: string, roleOk: (r: string) => boolean): Element | null => {
     let matched: Element | null = null;
     let bestTier = 99;
     let bestDelta = Infinity;
-    const sn = stripGlyphs(name);
     for (const e of elements) {
-      if (norm(e.role) !== role) continue;
+      if (!roleOk(norm(e.role))) continue;
       const en = norm(e.name);
       const sen = stripGlyphs(en);
 
@@ -276,16 +339,134 @@ export function groundingError(ir: IR, appModel: AppModel): { index: number; mes
         if (tier === 0 && delta === 0) break;                       // can't do better
       }
     }
-    const matchedName = matched?.name ?? null;
-    if (!matchedName) {
+    return matched;
+  };
+  // A navigate step's URL is every bit as invented-able as a CSS selector or a role+name, and
+  // nothing checked it: told to reach a destination through the UI ("open the Admin section via
+  // the sidebar"), the model would guess a plausible-looking route for it instead. On a
+  // client-routed app a guessed route typically loads a blank shell or bounces to a login
+  // redirect, and every later step then grounds against a page that was never really reached.
+  // Only destinations the model actually observed are allowed through.
+  const knownNav = knownNavigationTargets(appModel);
+  const baseOrigin = originOf(appModel.baseUrl);
+  const sourcePrompt = ir.meta?.sourcePrompt ?? "";
+  const navUrlAllowed = (url: string): boolean => {
+    const resolved = resolveHref(appModel.baseUrl, url);
+    if (!resolved) return true;                                  // unparseable — not this guard's business
+    if (!baseOrigin || originOf(resolved) !== baseOrigin) return true; // off-origin is a separate concern
+    if (knownNav.has(pageKey(resolved))) return true;
+    // A path the USER typed themselves is authoritative — they know their own app's routes,
+    // and that's a stated fact rather than a guess. Length > 1 so a bare "/" can't match
+    // incidentally on essentially every prompt.
+    const path = (() => { try { return new URL(resolved).pathname.replace(/\/+$/, ""); } catch { return ""; } })();
+    return path.length > 1 && sourcePrompt.includes(path);
+  };
+  const knownPathsHint = appModel.pages
+    .map(p => { try { return new URL(p.url).pathname || "/"; } catch { return null; } })
+    .filter(Boolean).slice(0, 6).join(", ") || "/";
+  // Which page the flow is actually on at each step — an element grounded only against
+  // some OTHER page (never the current one) shouldn't pass just because it exists
+  // somewhere in the model. Falls back to allElements wherever the cursor is unresolved.
+  const trail = trackPages(ir, appModel);
+  for (let index = 0; index < ir.steps.length; index++) {
+    const step = ir.steps[index];
+    const t = step.target;
+    // A target carrying a selector discovery verified is already grounded — that IS the
+    // proof the element exists, and it's stronger than a role+name match. Covers the
+    // selectors a user names in their own request.
+    if (t?.css && knownSelectors.has(t.css.toLowerCase())) {
+      const known = bySelector.get(t.css.toLowerCase());
+      const hiddenErr = known && hiddenVisibleAssertError(index, `css="${t.css}"`, known);
+      if (hiddenErr) return hiddenErr;
+      continue;
+    }
+    // Step 0's navigate is the entry URL the pipeline itself supplied, never a guess.
+    if (index > 0 && step.action === "navigate" && t?.url && !navUrlAllowed(t.url)) {
       return {
         index,
-        message: `Step ${step.id} targets role="${t.role}" name="${t.name}", ` +
-          `which is not present in the application model — the page under test does not have this element.`,
+        kind: "navigate-url",
+        message: `Step ${step.id} navigates to "${t.url}", which is not a page or link ` +
+          `destination present in the application model — that route is a guess, and a guessed ` +
+          `route usually loads a blank page or redirects, so everything after it runs against ` +
+          `the wrong page. Reach that destination the way a user would instead: click the ` +
+          `sidebar/menu control that leads there (it is an element in the application model). ` +
+          `Known paths: ${knownPathsHint}.`,
       };
     }
+    const elements = trail.pageAt[index]?.elements ?? allElements;
+
+    // A bare `{ text: ... }` target on an ACTION step. The exemption below it — "no role+name,
+    // nothing to check" — is right for an ASSERT (a flash message discovery never saw is the
+    // whole reason target.text exists), and was being used as a way around grounding entirely:
+    // in a real run every step after login was `{text:"Admin"}`, `{text:"users"}`,
+    // `{text:"Name"}`. None was checked, so nothing was ever rejected, so live-extend never
+    // ran, so the model still held only the login page when the run finished — and the fills
+    // resolved to <label> elements at execution time. Clicking or filling something is exactly
+    // as invented-able as addressing it by role+name, and deserves the same check.
+    if (!t?.css && !t?.testId && t?.text && !t?.role && ACTION_STEPS.has(step.action)) {
+      const hint = norm(t.text);
+      const roleOk = FIELD_ACTIONS.has(step.action)
+        ? (r: string) => FIELD_ROLE_GROUP.has(r)
+        : (r: string) => CLICKABLE_ROLE_GROUP.has(r);
+      const found = bestNameMatch(elements, hint, stripGlyphs(hint), roleOk);
+      if (found) {
+        // Upgrade the weak target into the verified one, exactly as the role+name path does
+        // below: real role, model's literal name, plus whatever deterministic identity
+        // discovery captured. "Name" becoming textbox "Full Name" happens here.
+        t.role = found.role;
+        t.name = found.name;
+        delete t.text;
+        if (found.css && !t.css) t.css = found.css;
+        if (found.testId && !t.testId) t.testId = found.testId;
+        continue;
+      }
+      return {
+        index,
+        kind: "text-target",
+        message: `Step ${step.id} ${step.action}s an element identified only by the text ` +
+          `"${t.text}", which no element in the application model matches. Target it by ` +
+          `accessibility role + name from the application model instead — { "text": ... } is ` +
+          `for asserting on content that appears only after an action, never for choosing ` +
+          `what to click or fill.`,
+      };
+    }
+
+    if (!t?.role || !t?.name) continue; // navigate / text-only / wait steps
+    const role = norm(t.role);
+    const name = norm(t.name);
+
+    // Rank candidates instead of taking the first substring hit. `en.includes(name)` alone
+    // grounded "Continue" to "Continue Shopping" — a different control on a different page —
+    // because that happened to come first in element order. An exact match must always beat
+    // a partial one, and among partials the closest-length name is the least wrong.
+    const sn = stripGlyphs(name);
+    let matched = bestNameMatch(elements, name, sn, (r) => r === role);
+    // Exact role found nothing — try again across the compatible-role group, but only when
+    // the STEP'S OWN role is itself one of those roles (never widen a heading/textbox search).
+    // An exact-role match always wins when one exists; this only runs when the pass above
+    // found nothing at all.
+    if (!matched && CLICKABLE_ROLE_GROUP.has(role)) {
+      matched = bestNameMatch(elements, name, sn, (r) => CLICKABLE_ROLE_GROUP.has(r));
+    }
+    const matchedName = matched?.name ?? null;
+    if (!matchedName) {
+      const pageUrl = trail.pageAt[index]?.url ?? appModel.baseUrl;
+      return {
+        index,
+        message: `Step ${step.id} targets role="${t.role}" name="${t.name}", which is not present under any compatible role on page "${pageUrl}". ` +
+          `If this element loads dynamically, verify that the page completed hydration/API rendering; ` +
+          `if it requires role-based access (e.g. Admin), verify that valid authorized credentials were provided.`,
+      };
+    }
+    const hiddenErr = matched && hiddenVisibleAssertError(index, `role="${t.role}" name="${t.name}"`, matched);
+    if (hiddenErr) return hiddenErr;
     // ponytail: self-correct to the app model's literal name so Playwright matches
     t.name = matchedName;
+    // Same self-correction, for role: the compatible-role fallback above may have matched an
+    // element under a DIFFERENT real role than the one guessed (a sidebar item implemented as
+    // <button>, guessed as "link") — carry the real role through so the generated
+    // getByRole(t.role, {name}) actually matches the live DOM.
+    if (matched?.role && norm(matched.role) !== role) t.role = matched.role;
     // Carry the deterministic identity discovery captured for this element. This is the
     // only route by which an icon-only control (empty accessible name, so its model name
     // was derived) becomes locatable — getByRole with a derived name matches nothing.
@@ -497,9 +678,15 @@ export function urlAssertionError(ir: IR, appModel: AppModel): { index: number; 
  *
  * Pure string comparison against the case's own words — no LLM, no browser.
  */
+// A case step "line" that names an action, vs. one that's purely a wait/verify. Deliberately
+// the same verbs the presence check below already uses — this just counts them per-line
+// instead of once across the whole case.
+const CASE_ACTION_LINE = /\b(fill|enter|type|input|provide|supply|click|press|tap|select|check|submit|sign ?in|log ?in)\b/i;
+const IR_ACTION_KINDS = new Set(["click", "press", "fill", "select", "check"]);
+
 export function missingActions(ir: IR, testCase: TestCase): { message: string } | null {
-  const text = [testCase.title, ...(testCase.steps ?? []), testCase.expected ?? ""]
-    .join(" ").toLowerCase();
+  const steps = testCase.steps ?? [];
+  const text = [testCase.title, ...steps, testCase.expected ?? ""].join(" ").toLowerCase();
   const has = (...actions: string[]) => ir.steps.some(s => actions.includes(s.action));
   const missing: string[] = [];
 
@@ -509,6 +696,22 @@ export function missingActions(ir: IR, testCase: TestCase): { message: string } 
   if (/\b(submit|click|press|tap|sign in|log ?in|continue)\b/.test(text) && !has("click", "press")) {
     missing.push(`the case describes submitting or clicking, but the IR has no "click" or "press" step`);
   }
+
+  // Presence isn't coverage: an IR that fills the login form and stops satisfies both checks
+  // above even if the case's later steps (open Admin, open Users, ...) never ran. Count
+  // action-bearing lines in the case vs. action steps the IR actually carries out, and reject
+  // when the gap is more than the slack of one legitimate consolidation (e.g. "fill the login
+  // form" being one case line but two IR fills). Caught in practice: a case naming 5 actions
+  // whose IR carried out login, then stopped — 2 fills and a click can't cover 5 named steps.
+  const caseActionLines = steps.filter(s => CASE_ACTION_LINE.test(s)).length;
+  const irActionSteps = ir.steps.filter(s => IR_ACTION_KINDS.has(s.action)).length;
+  if (caseActionLines >= 2 && irActionSteps < caseActionLines - 1) {
+    missing.push(
+      `the case describes ${caseActionLines} action steps but the IR only carries out ` +
+      `${irActionSteps} — it stopped before completing the flow`
+    );
+  }
+
   if (!missing.length) return null;
   return {
     message:
@@ -590,15 +793,11 @@ export async function toIR(
   // without them was replayed forever, silently discarding whatever the user supplied. The
   // disk half of that cache never expires, so it would not have healed on its own.
   const credPolicy = credentialPolicyFor(testCase, promptCarriesCredentials(sourcePrompt));
-  const creds = credPolicy === "none" ? undefined : (runCreds ?? credentialsFor(entryUrl));
+  const creds = credPolicy === "none" ? undefined : runCreds;
   // Never the secret itself: a secret run substitutes an env REFERENCE, so every such run
   // produces a byte-identical IR and this marker fully discriminates. Demo accounts are
   // published by the sites themselves, so keying on that username leaks nothing.
   const credKey = creds ? `${credPolicy}:${creds.secret ? "env" : creds.username}` : "no-creds";
-  const cacheKey = makeCacheKey(
-    JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey);
-  const cached = llmCacheGet<IR>(cacheKey);
-  if (cached) return { ir: cached, updatedAppModel: appModel };
 
   const system =
     `Convert ONE human-readable test case into a strict JSON test model (IR).
@@ -608,6 +807,7 @@ Allowed assertions: visible, hidden, text_equals, text_contains, url_contains, e
 
 Rules, follow exactly:
 - CARRY OUT THE WHOLE CASE. Every action the test case describes — each field it says to fill, each button it says to click — must appear as a step, in order, before the assertion. An IR that skips the fill steps and jumps to an assertion verifies nothing even when it passes, and will be rejected.
+- BUT ONLY THE CASE. Build the IR from "testCase"'s own title/steps/expected ONLY. "sourcePrompt" below is background context for vocabulary and credentials, not a second source of steps — never add an action that isn't implied by testCase itself just because sourcePrompt happens to mention it (e.g. a longer flow described elsewhere in the user's original request).
 - "id" is always a string like "s1", "s2", never a number.
 - "assertion" is a single string from the allowed list above — NEVER an object. Omit "assertion" entirely on steps whose action is not "assert".
 - Omit "target" entirely for steps that don't need one (e.g. a "wait" step); never set it to an empty string.
@@ -615,9 +815,11 @@ Rules, follow exactly:
 - Never invent CSS selectors. The only exception is a selector explicitly listed as verified in the user's request section below — those may be used as "target.css" exactly as given.
 - "meta.baseUrl" must be exactly the origin, with no path: ${origin}
 - A "navigate" step's target.url is a path RELATIVE to that origin (it gets concatenated onto baseUrl) — for the page under test here, that path is exactly "${entryPath}". Do not repeat the origin inside it.
+- Only "navigate" to a path that actually appears in the application model (a discovered page's URL, or a link's href). NEVER guess a route from a feature's name: a case step like "go to the Admin section via the sidebar" means CLICK the sidebar control named "Admin" — it does NOT mean navigate to "/admin". A guessed route typically loads a blank shell or bounces to a login redirect on a client-rendered app, and every step after it then runs against the wrong page. When the destination isn't a known path, reach it by clicking the control that leads there.
 - "role" must be a real ARIA role (button, textbox, link, heading, checkbox, ...) for an element actually present in the application model. For asserting on plain visible text that ISN'T in the application model — e.g. an error/flash message that only appears after an action, so discovery never saw it — use target: { "text": "..." } instead. Never invent a role like "text" or "message".
+- target: { "text": "..." } is for ASSERT steps ONLY. Never use it to choose what to click, fill, select, check or press — those must name a real element from the application model by role + name. A text target on an action step matches whatever element CONTAINS that text, which for a form field is its label, and a label cannot be filled. If the element you need isn't in the application model yet, still address it by the role + name you expect: it will be discovered and checked, and you'll be told if it isn't there.
 - A page's "title" field is the browser tab / <title> tag — it is never rendered in the page body and can NEVER be the target of a visible-text assertion, no matter how relevant it looks. Only use target: { "text": "..." } for text that actually appears in the page's rendered content (the elements/markdown), never the page title.
-- When a case describes a header/nav block by listing several of its items and only ONE element can be picked to ground a "visible" check for the whole thing, do NOT pick a menu-toggle/hamburger control (commonly named "Menu", "Toggle", or an icon-only name) as that representative — these are frequently hidden by a responsive CSS breakpoint the application model cannot detect, so the assertion can fail even though the header is genuinely fine. Prefer a plain, content-bearing nav link from the same list instead (e.g. one of the other named items).
+- When a case describes a navigation region by listing several of its items and only ONE element can be picked to ground a "visible" check for the whole thing, do NOT pick a control whose only job is to OPEN or COLLAPSE that region — a menu/drawer toggle, however it is named, including an icon-only one. Such controls are routinely shown at one viewport width and hidden at another, so the assertion can fail while the region itself is perfectly fine. Prefer a content-bearing item from the region — one that names a real destination or action.
 - A success assertion must be FALSE before the action and TRUE only after it — otherwise it verifies nothing. Never assert on a persistent, site-wide element (a header, logo, or nav bar that appears on every page regardless of state) as proof an action succeeded; it was already visible before the action too. In the application model, a decorative/structural element like this typically has no "concept" (empty or absent) — treat that as a signal to avoid it as a success assertion.
 - The application model only covers the page you start on, so you usually can't see the page an action like login navigates to. When you can't ground a success assertion on the destination page, assert instead that the FORM'S OWN SUBMIT BUTTON goes "hidden" after you submit it — e.g. the "Sign In" button once login succeeds. That element is already in the model, and is a real discriminator: visible before, gone after.
 - This applies ONLY to a submit button after an actual submission. Do NOT assert that a navigation link goes hidden after clicking it, and never use it as a substitute for performing the test: "click the Log in link, then assert the Log in link is hidden" carries out none of the case and verifies nothing.
@@ -632,20 +834,15 @@ Navigation & Assertion rules (CRITICAL):
 - NEVER assert that the clicked link/button itself is "visible" after clicking it — that is redundant and proves nothing. The element was already visible (that's why you could click it).
 - After clicking a NAVIGATION link (role="link"), assert a heading or unique text on the DESTINATION page. Use "url_contains" only with a SPECIFIC path that the click actually leads to. Do NOT re-assert the link you just clicked.
 - An assertion must be able to FAIL. Never assert url_contains "/" (it matches every page), and never assert the path you just navigated to when nothing has happened since — both pass no matter what the app does. Asserting you are STILL on a page after submitting a form is fine: that is a real result.
-- Each navigation path should be INDEPENDENT: if testing "Home -> About -> Academics", each branch should start with its own "navigate" step from the base URL, not chain clicks sequentially. Example: for testing About, start with navigate to "/" then click About. For testing Academics, start with a separate navigate to "/" then click Academics. This prevents cascading failures.
+- Each navigation path should be INDEPENDENT: when a case covers several sibling destinations, each branch should start with its own "navigate" step from the base URL rather than chaining clicks from the previous destination. Test the first destination by navigating to the entry page then clicking it; test the second by navigating to the entry page again and clicking that one. This prevents one broken branch from cascading into the rest.
 - When a click triggers a page navigation, the assertion should verify the DESTINATION state (URL or heading), not the source element.
 
 Selector Specificity rules (CRITICAL for avoiding strict mode violations):
 - If multiple elements share the same role+name (e.g., multiple "Student" links), use the "nth" field to disambiguate: { "role": "link", "name": "Student", "nth": 1 } for the second occurrence (0-indexed).
-- When duplicate names exist in the application model, prefer the MOST SPECIFIC one:
-  * For navigation links in header: use nth: 0 (first occurrence in header)
-  * For sidebar/footer links: use nth: 1 or higher
-  * Check the application model's element positions to determine which occurrence to target
-- Skip elements that are likely problematic:
-  * Links with href="#" or href="javascript:void(0)" — these are non-functional
-  * Links that redirect to homepage when a specific page is expected
+- When duplicate names exist, pick the occurrence by its position in the application model, not by assuming a layout. The elements are listed in document order, and each carries "containerRole"/"containerName"/"pageSection" when discovery could determine them — use those to tell two same-named controls apart, and set "nth" to that element's index among the duplicates. Do not assume the first occurrence is a header one or that later occurrences are in a sidebar or footer; that is true of some sites and false of many.
+- Skip elements that cannot perform a navigation you need: links whose href is "#" or "javascript:void(0)" do not navigate, so never use one as the step that reaches another page.
 - For URL assertions: use partial matching (url_contains) instead of exact matching when the destination URL may vary or include query parameters
-- For dropdown menus: the parent menu item must be clicked/hovered first to reveal hidden child items. Add a "preAction" field: { "preAction": { "action": "click", "target": { "role": "link", "name": "Academics" } } }
+- For dropdown menus: the parent menu item must be clicked/hovered first to reveal hidden child items. Add a "preAction" field naming the PARENT item from the application model: { "preAction": { "action": "click", "target": { "role": "link", "name": "<the parent menu item>" } } }
 
 Hidden Element Handling rules:
 - Elements in collapsed dropdowns or tabs are not visible until their parent is activated
@@ -670,21 +867,22 @@ Example — login with post-action assertion:
   "meta": { "feature": "Login", "title": "...", "priority": "high", "sourcePrompt": "...", "baseUrl": "https://example.com" },
   "steps": [
     { "id": "s1", "action": "navigate", "target": { "url": "/login" } },
-    { "id": "s2", "action": "fill", "target": { "role": "textbox", "name": "Username" }, "value": "tomsmith" },
-    { "id": "s3", "action": "fill", "target": { "role": "textbox", "name": "Password" }, "value": "SuperSecretPassword!" },
+    { "id": "s2", "action": "fill", "target": { "role": "textbox", "name": "Username" }, "value": "<the identifier from the test case>" },
+    { "id": "s3", "action": "fill", "target": { "role": "textbox", "name": "Password" }, "value": "<the password from the test case>" },
     { "id": "s4", "action": "click", "target": { "role": "button", "name": "Login" } },
     { "id": "s5", "action": "assert", "target": { "role": "button", "name": "Login" }, "assertion": "hidden" }
   ]
 }
 
-Example — dropdown menu with preAction:
+Example — dropdown menu with preAction (PARENT and CHILD stand for whatever the application
+model's own menu items are called — never reuse these placeholder names):
 {
   "meta": { "feature": "Navigation", "title": "Dropdown menu works", "priority": "medium", "sourcePrompt": "...", "baseUrl": "https://example.com" },
   "steps": [
     { "id": "s1", "action": "navigate", "target": { "url": "/" } },
-    { "id": "s2", "action": "click", "target": { "role": "link", "name": "Academics" }, "preAction": { "action": "hover", "target": { "role": "link", "name": "Academics" } } },
-    { "id": "s3", "action": "click", "target": { "role": "link", "name": "Programmes" } },
-    { "id": "s4", "action": "assert", "target": { "url": "/programmes" }, "assertion": "url_contains" }
+    { "id": "s2", "action": "click", "target": { "role": "link", "name": "PARENT" }, "preAction": { "action": "hover", "target": { "role": "link", "name": "PARENT" } } },
+    { "id": "s3", "action": "click", "target": { "role": "link", "name": "CHILD" } },
+    { "id": "s4", "action": "assert", "target": { "url": "/child-path" }, "assertion": "url_contains" }
   ]
 }
 
@@ -697,6 +895,18 @@ Example — handling duplicate selectors with nth:
     { "id": "s3", "action": "assert", "target": { "url": "/student" }, "assertion": "url_contains" }
   ]
 }`;
+
+  // Keyed AFTER `system` is built, and on `system` itself. The disk half of this cache never
+  // expires, so anything the key omits is served stale forever — and the prompt was the
+  // largest such omission: editing a rule changed nothing for any input already seen, which
+  // made two verification runs look like the fix hadn't worked. Hashing the prompt text is
+  // self-maintaining in a way a hand-bumped version constant is not: change a rule, get a new
+  // key, with nobody having to remember. The model name is in for the same reason.
+  const cacheKey = makeCacheKey(
+    JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
+    system, process.env.GROQ_MODEL ?? "default");
+  const cached = llmCacheGet<IR>(cacheKey);
+  if (cached) return { ir: cached, updatedAppModel: appModel };
 
   const buildUser = (model: AppModel, correction?: string) => {
     // Only send pages relevant to this test case: the entry page + pages whose
@@ -783,7 +993,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       applyCredentials(ir.steps, creds, credPolicy, legUrls(ir, currentModel, entryUrl),
         credentialFieldMap(currentModel));
     }
-    llmCacheSet(cacheKey, ir);
+    if (!ir.meta.truncated) {
+      llmCacheSet(cacheKey, ir);
+    }
     return ir;
   };
 
@@ -836,7 +1048,74 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
 
     parsed.data.meta.baseUrl = origin;
-    const ungrounded = groundingError(parsed.data, currentModel);
+
+    /** Longest grounded prefix seen for THIS ungrounded result — updates bestPartial in
+     *  place. Called both before each extension attempt and once more after the inner loop
+     *  below exits, so the final state (whatever it ends up being) is always captured. Cheap
+     *  to call twice for the same value: the length check makes repeats a no-op. */
+    const trackBestPartial = (u: NonNullable<ReturnType<typeof groundingError>>) => {
+      const prefix = parsed.data.steps.slice(0, u.index);
+      if (prefix.length && prefix.length > (bestPartial?.steps.length ?? 0)) {
+        bestPartial = { ir: parsed.data, steps: prefix, note: u.message };
+      }
+      return prefix;
+    };
+
+    let ungrounded = groundingError(parsed.data, currentModel);
+
+    // Live-extend hops are cheap relative to a fresh LLM generation — no new attempt spent —
+    // so keep extending and re-grounding the SAME already-parsed IR until it grounds, extension
+    // genuinely can't proceed, or the extension budget runs out. Previously every hop happened
+    // via `continue` back to the OUTER per-attempt loop, consuming one of only MAX_ATTEMPTS
+    // attempts identically to a fresh generation — a flow needing several hops to fully
+    // discover (e.g. login -> product -> cart -> checkout) could burn its entire attempt budget
+    // just reaching the right page state, leaving none to actually use the now-correct model.
+    // That's exactly what produced the stale "not present in the application model" truncation
+    // notes seen in practice: true on an earlier attempt, false in the model shipped alongside
+    // the note.
+    while (ungrounded && extensions < MAX_EXTENSIONS) {
+      lastErr = ungrounded.message;
+      correction = ungrounded.message;
+      console.log("[ir] ungrounded step", ungrounded.index, ":", ungrounded.message);
+      const prefix = trackBestPartial(ungrounded);
+      if (!prefix.length) break; // nothing to replay from — fall through, same as today
+      // A guessed navigate URL is an AUTHORING mistake, not a discovery gap: replaying the
+      // prefix can't make an invented route real, so extending here just drains the budget the
+      // steps that genuinely need discovery are relying on. Go straight to the next attempt,
+      // where the correction above tells the model to click through the UI instead.
+      if (ungrounded.kind === "navigate-url") break;
+
+      try {
+        const before = currentModel.pages.length;
+        console.log("[ir] calling extendAppModel...");
+        currentModel = await extendAppModel(currentModel, prefix, creds, credPolicy);
+        console.log("[ir] extendAppModel returned,", currentModel.pages.length, "pages");
+        extensions++;
+        console.log(`[ir] live-extend: replayed ${prefix.length} step(s) past "${ungrounded.message.split(",")[0]}" — app model ${before} -> ${currentModel.pages.length} pages (${currentModel.pages.at(-1)?.url})`);
+      } catch (err: any) {
+        if (err?.message?.includes("already in the model") && prefix.length > 0) {
+          try {
+            const before = currentModel.pages.length;
+            console.log("[ir] calling refreshPageModel...");
+            currentModel = await refreshPageModel(currentModel, prefix, creds, credPolicy);
+            console.log("[ir] refreshPageModel returned,", currentModel.pages.length, "pages");
+            extensions++;
+            console.log(`[ir] refresh-page: refreshed page model at step ${prefix.length} — app model ${before} -> ${currentModel.pages.length} pages`);
+          } catch (refreshErr: any) {
+            lastErr = `could not refresh state for step ${parsed.data.steps[ungrounded.index]?.id}: ${refreshErr?.message ?? refreshErr}`;
+            break; // extension genuinely can't proceed — fall through to truncation below
+          }
+        } else {
+          lastErr = `could not reach the state needed for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;
+          break;
+        }
+      }
+
+      // Re-ground the SAME parsed IR against the newly-extended model — no fresh LLM call,
+      // no attempt spent, just "does it ground now that the model has caught up."
+      ungrounded = groundingError(parsed.data, currentModel);
+    }
+
     if (!ungrounded) {
       const vacuous = vacuousAssertion(parsed.data, currentModel);
       if (vacuous) {
@@ -904,53 +1183,34 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       return { ir: finalize(parsed.data), updatedAppModel: currentModel };
     }
 
+    // The inner loop above exits here for one of three reasons: extension genuinely can't
+    // proceed (broke out early), the extension budget ran out while still ungrounded, or the
+    // very first ungrounded step had no prefix to replay from at all. Either way, `ungrounded`
+    // still describes the current, final unresolved reason — re-sync lastErr/correction/
+    // bestPartial to it (idempotent if the top-of-loop tracking already covered this exact
+    // value) and degrade to a real-but-partial test on the grounded prefix instead of failing
+    // the whole run. Only a fully ungrounded IR (empty prefix) falls through to the next
+    // outer-loop attempt (a fresh LLM generation).
     lastErr = ungrounded.message;
     correction = ungrounded.message;
-    console.log("[ir] ungrounded step", ungrounded.index, ":", ungrounded.message);
-    const prefix = parsed.data.steps.slice(0, ungrounded.index);
 
-    // Remember the best partial test seen so far. The graceful "ship the grounded prefix"
-    // return below is only reached when extension STOPS — so when every attempt ends in a
-    // successful extend-and-retry, the loop simply runs out of attempts and falls through to
-    // the hard throw at the end, killing the whole run. That is reachable with the shipped
-    // defaults (MAX_IR_ATTEMPTS=4 < MAX_LIVE_EXTENSIONS=5) and it happened: an 11-step
-    // signup+login+logout case died with "Step s10 targets ... Email Address" and produced
-    // no test at all, when 9 grounded steps were available to run.
-    if (prefix.length && prefix.length > (bestPartial?.steps.length ?? 0)) {
-      bestPartial = { ir: parsed.data, steps: prefix, note: ungrounded.message };
+    // A text-target rejection is a "we couldn't VERIFY this", not a "this cannot work". Its
+    // whole purpose is to make live-extend run so the page gets discovered; once the budget is
+    // spent, truncating on it would throw away a flow that has a real chance of executing —
+    // the field helper resolves a control positionally, without needing a model entry at all.
+    // Strictly better to run the step unverified than to ship a prefix that tests nothing:
+    // the run that motivated this reported `truncated_no_assertion` and checked zero of the
+    // user's eight steps. Every other rejection kind still truncates as before.
+    if (ungrounded.kind === "text-target" && attempt === MAX_ATTEMPTS - 1) {
+      console.log("[ir] shipping unverified text targets (best-effort):", ungrounded.message);
+      return { ir: finalize(parsed.data), updatedAppModel: currentModel };
     }
 
-    if (extensions < MAX_EXTENSIONS && prefix.length) {
-      try {
-        const before = currentModel.pages.length;
-        console.log("[ir] calling extendAppModel...");
-        currentModel = await extendAppModel(currentModel, prefix, creds, credPolicy);
-        console.log("[ir] extendAppModel returned,", currentModel.pages.length, "pages");
-        extensions++;
-        console.log(`[ir] live-extend: replayed ${prefix.length} step(s) past "${ungrounded.message.split(",")[0]}" — app model ${before} -> ${currentModel.pages.length} pages (${currentModel.pages.at(-1)?.url})`);
-        continue;
-      } catch (err: any) {
-        if (err?.message?.includes("already in the model") && prefix.length > 0) {
-          try {
-            const before = currentModel.pages.length;
-            console.log("[ir] calling refreshPageModel...");
-            currentModel = await refreshPageModel(currentModel, prefix, creds, credPolicy);
-            console.log("[ir] refreshPageModel returned,", currentModel.pages.length, "pages");
-            extensions++;
-            console.log(`[ir] refresh-page: refreshed page model at step ${prefix.length} — app model ${before} -> ${currentModel.pages.length} pages`);
-            continue;
-          } catch (refreshErr: any) {
-            lastErr = `could not refresh state for step ${parsed.data.steps[ungrounded.index]?.id}: ${refreshErr?.message ?? refreshErr}`;
-          }
-        } else {
-          lastErr = `could not reach the state needed for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;
-        }
-      }
+    const prefix = trackBestPartial(ungrounded);
+    if (prefix.length && attempt < MAX_ATTEMPTS - 1) {
+      console.log(`[ir] grounding rejected step ("${ungrounded.message}") — retrying with feedback (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
+      continue;
     }
-
-    // Can't extend further. Degrade to a real-but-partial test on the grounded prefix
-    // instead of failing the whole run — verifying "reached the product page" beats
-    // nothing. Only a fully ungrounded IR (empty prefix) falls through to a hard error.
     if (prefix.length) {
       const truncated: IR = { ...parsed.data, steps: prefix };
       truncated.meta = {

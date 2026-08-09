@@ -178,6 +178,43 @@ async function locate(page, role, name, nth) {
 `;
 
 // -----------------------------------------------------------------------------
+// Field helper — locate a form control by whatever labels it, however weakly
+// -----------------------------------------------------------------------------
+
+// Mirrors resolveField() in targetResolver.ts. Same manual-sync arrangement as LOCATE_HELPER
+// above: the generated spec is standalone (no imports beyond @playwright/test), so the
+// algorithm exists twice on purpose.
+//
+// The last rung is what makes an unlabelled field reachable at all. A control with no
+// accessible name, no placeholder and no id — `<div>Full Name</div><input>`, the ordinary
+// React form shape — cannot be found by any getBy* name lookup; only its position relative to
+// the visible text can find it. :text() matches on substring, so a request that says "Name"
+// still reaches the field labelled "Full Name".
+const FIELD_HELPER = `
+function nearField(hint) {
+  const anchor = ':text(' + JSON.stringify(hint) + ')';
+  return ['input', 'textarea', 'select'].map(t => t + ':near(' + anchor + ', 120)').join(', ');
+}
+
+async function field(page, hint) {
+  const candidates = [
+    page.getByLabel(hint),
+    page.getByPlaceholder(hint),
+    page.getByRole('textbox', { name: hint }),
+    page.getByRole('combobox', { name: hint }),
+    page.getByRole('checkbox', { name: hint }),
+    page.locator(nearField(hint)),
+  ];
+  for (const c of candidates) {
+    if (await c.count() === 1) return c;
+  }
+  // Nothing unique. The positional match is the only candidate that cannot resolve to a
+  // non-fillable node (a <label>, a <div>), so prefer its closest hit.
+  return page.locator(nearField(hint)).first();
+}
+`;
+
+// -----------------------------------------------------------------------------
 // Safe click helper — href-based navigation for links, interactive fallback
 // -----------------------------------------------------------------------------
 
@@ -263,15 +300,15 @@ function emitStep(step: Step, baseUrl: string): string {
     }
 
     case "fill":
-      code += `  await ${locator(step.target!)}.fill(${valueCode(step.value)}, { timeout: 10000 });`;
+      code += `  await ${locator(step.target!, "fill")}.fill(${valueCode(step.value)}, { timeout: 10000 });`;
       break;
 
     case "select":
-      code += `  await ${locator(step.target!)}.selectOption(${valueCode(step.value)}, { timeout: 10000 });`;
+      code += `  await ${locator(step.target!, "select")}.selectOption(${valueCode(step.value)}, { timeout: 10000 });`;
       break;
 
     case "check":
-      code += `  await ${locator(step.target!)}.check({ timeout: 10000 });`;
+      code += `  await ${locator(step.target!, "check")}.check({ timeout: 10000 });`;
       break;
 
     case "press":
@@ -375,6 +412,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
 
   const needsLocate = body.includes("await locate(") || body.includes("await safeClick(");
   const needsSafeClick = body.includes("await safeClick(");
+  const needsField = body.includes("await field(");
 
   const needsAuthSettle = body.includes(
     "await waitForAuthSettle(page)"
@@ -386,6 +424,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     // a spec that calls an undefined function. Always-on cannot fail that way.
     SHOT_HELPER,
     needsLocate ? LOCATE_HELPER : "",
+    needsField ? FIELD_HELPER : "",
     needsSafeClick ? SAFE_CLICK_HELPER : "",
     needsAuthSettle ? AUTH_SETTLE_HELPER : "",
   ]

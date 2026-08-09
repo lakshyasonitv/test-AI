@@ -30,14 +30,24 @@ prompt + url
   -> Planner (Gemini)                 -> structured test plan
   -> Discovery                        -> app model: elements as accessibility role + name
        |_ DOM extraction (primary)     -> cheerio over page.content(), no LLM needed
+       |_ generic clickables           -> div/span/li/p that behave as controls (cursor:pointer,
+                                          onclick, tabindex) but carry no semantic tag or role
+       |_ visibility recheck           -> real computed style for selector-bearing elements,
+                                          replacing the static parser's assumed visible:true
        |_ site crawl (same-origin)     -> follows the entry page's own internal links, bounded
        |_ Gemini Vision (fallback)     -> only when DOM extraction finds nothing usable
   -> Test Cases (Gemini)              -> full coverage suite (valid/invalid/boundary/security)
        \_ case-selection gate (opt.)   -> pauses for human review/regeneration, feature-flagged
   -> Primary-case selection           -> fromPrompt case, else highest priority
   -> IR generation (Groq) + grounding -> strict JSON test model (the contract)
+       \_ groundingError(ir, model)    -> the deterministic authority over EVERY target kind:
+                                          role+name (with a narrow clickable-role fallback),
+                                          css selector, navigate URL, and hidden-vs-visible.
+                                          Rejections feed correction text into the next attempt
        \_ credentialPolicyFor(case)    -> full / identifier-only / none, from case wording,
                                           computed before any credential ever gets substituted
+       \_ extractCredentialsFromPrompt -> real values the user typed into the prompt, kept as
+                                          ${env:...} references so they never reach disk
        \_ live-extend (on demand)      -> reaches + models pages beyond the entry page,
                                           policy-aware during replay, from the SAME session
                                           (not a fresh, session-less browser)
@@ -88,12 +98,21 @@ now deleted) — same extraction logic, same output shape, no external service, 
 text; in that case the DOM result still supplies structure but vision is also consulted, and
 `discoveryMethod` becomes `"hybrid"`.
 
-**A structural limitation worth knowing:** `domExtract.ts` is a static HTML parser (cheerio) — it
-never executes CSS, so it cannot detect visibility controlled by a media query. An element hidden
-only at a certain viewport width (a mobile hamburger toggle being the canonical example) gets
-recorded `visible: true` regardless. IR-generation carries a prompt rule steering it away from
-grounding a general "is this section visible" check on a menu-toggle-shaped control specifically,
-but nothing detects the broader class of CSS-conditional visibility.
+**A structural limitation, now mostly closed:** `domExtract.ts` is a static HTML parser (cheerio)
+— it never executes CSS, so on its own it cannot detect visibility controlled by a media query,
+and it records `visible: true` for everything. An element hidden only at a certain viewport width
+(a mobile hamburger toggle is the canonical case) therefore looked visible, and got grounded as a
+`visible` assertion target that could only ever time out.
+
+`recheckVisibility` (`domDiscovery.ts`) closes this where it matters: in one batched
+`page.evaluate()` it re-checks real computed visibility (geometry + `getComputedStyle`,
+deliberately *not* `offsetParent`, which reports null for `position:fixed` and would wrongly
+condemn fixed headers) for every element carrying a stable selector — precisely the set eligible
+for grounding's selector auto-attach, and so precisely the set that can reach a generated spec as
+a raw locator. It runs inside `extractDomModelFromPage`, the one function every discovery path
+already shares, so all of them get it. `groundingError` then refuses a `visible` assertion against
+anything recorded hidden. What remains uncovered: an element with no `id`/`data-test`/`css` at all,
+which still keeps the parser's assumed `visible: true`.
 
 `extractDomModelFromPage(page, url)` (`domDiscovery.ts`) is the piece that makes replay-time
 discovery trustworthy: it snapshots a Playwright `Page` object that's ALREADY open and navigated
@@ -161,7 +180,7 @@ new accepted, same shape as the credential prompt's timeout.
 
 ## Source Files
 
-### `src/stages/` — Pipeline Stages (18 files, ~5,903 lines)
+### `src/stages/` — Pipeline Stages (18 files, ~6,313 lines)
 
 | File | Lines | LLM? | Purpose |
 |------|------:|:-----:|---------|
@@ -171,18 +190,18 @@ new accepted, same shape as the credential prompt's timeout.
 | `promptSelectors.ts` | 98 | No | Honors selectors the user wrote directly into their prompt |
 | `classify.ts` | 158 | No | Deterministic failure classifier |
 | `failureAnalysis.ts` | 177 | Gemini + Vision | Failure diagnosis (fallback only) |
-| `caseSelectionGate.ts` | 183 | Gemini (via testCases) | Optional human-review loop over generated case batches |
+| `caseSelectionGate.ts` | 254 | Gemini (via testCases) | Optional human-review loop over generated case batches, incl. reactive-case rounds |
 | `suiteRunner.ts` | 300 | No | Runs every case in its own browser context, per-case artifacts |
 | `executor.ts` | 313 | No | Runs spec, captures artifacts, redacts secrets from served output |
 | `discovery.ts` | 354 | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
 | `liveExtend.ts` | 364 | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding |
-| `domDiscovery.ts` | 402 | No | Drives Playwright to fetch page HTML; `extractDomModelFromPage` snapshots an already-open page |
-| `testCases.ts` | 407 | Gemini | Coverage suite generation, capped by `MAX_CASES_PER_RUN`, scope-filtered checklist |
 | `generator.ts` | 424 | No | IR -> Playwright spec (pure code) |
-| `credentials.ts` | 434 | No | Per-case/per-leg substitution policy — no demo-site registry |
+| `testCases.ts` | 428 | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist |
 | `hybridDiscovery.ts` | 443 | Gemini (text) | Discovery orchestrator: DOM first, same-origin site crawl, vision fallback |
+| `credentials.ts` | 477 | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry |
+| `domDiscovery.ts` | 531 | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility |
 | `domExtract.ts` | 613 | No | Cheerio DOM extraction — Node port of the deleted Python parser |
-| `ir.ts` | 1023 | Groq | TestCase -> IR: grounding, credential policy, live-extend, truncation |
+| `ir.ts` | 1169 | Groq | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), credential policy, live-extend, truncation |
 
 ### `src/schema/` — Data Contracts (3 files, ~334 lines)
 
@@ -381,11 +400,15 @@ Single-page HTML/JS/CSS app (`public/`):
 | **The case-selection gate is additive, not a fork** | Feature-flagged behind `ENABLE_CASE_SELECTION_GATE`; while off, `caseSelectionGate.ts` is never even imported, so the default path is provably unchanged from before the gate existed. |
 | **A rejected/accepted case title is a hard filter, not a prompt hint** | `filterNovelCases` drops overlapping titles in code, after generation — a model that ignores the "don't repeat this" instruction, or a stale cache hit, can't reintroduce something the user already dismissed. |
 | **`extractDomModelFromPage` over `discoverUsingCrawler` for replay-time snapshots** | A fresh, session-less browser hits the login redirect on an authenticated URL and models the wrong page; snapshotting the page the calling code already has open can't make that mistake. |
+| **`groundingError` is the single deterministic authority over every target kind** | Each kind of target the model can emit is a different way for it to invent something, and each one needed its own check: a **role+name** must match a real discovered element (with a narrow `link`/`button`/`menuitem`/`tab` fallback, since SPA nav is routinely built from the "wrong" tag, and the real role is written back onto the target); a **css selector** must be one discovery actually captured; a **navigate URL** must be a discovered page or a discovered link's href, never a route guessed from a feature's name; and an element discovery recorded as hidden can't be the target of a `visible` assertion. Every rejection returns the same `{index, message}` shape and rides the existing correction-feedback retry loop, so adding a check never adds new control flow. |
+| **Prompt nudges are never the only guard** | Three separate bugs recurred after being "fixed" with a system-prompt instruction alone (menu-toggle assertions, guessed routes, role mismatches). The prompt rules are kept as cheap first-line steering, but every one of them now has a deterministic check behind it — an LLM instruction is a preference, not a constraint. |
+| **Live-extension is skipped for errors it can't possibly fix** | A grounding rejection carries an optional `kind`. A guessed navigate URL is an authoring mistake, not a discovery gap — replaying the prefix can never make an invented route real — so `toIR` breaks out instead of spending hops that the steps genuinely needing discovery depend on. |
 | **Deterministic failure classifier** | Pattern-matching on Playwright error text is free and instant. Gemini vision diagnosis is used only for ambiguous cases. Distinguishes "0 elements resolved" (genuinely missing) from "N elements resolved, condition never true" (found but wrong state) — collapsing the two made the missing-element self-heal path unreachable. |
 | **Bounded self-heal** | `MAX_LIVE_EXTENSIONS` (default 5) page hops, 1 heal attempt per test case, policy-aware re-snapshot. Prevents infinite loops and runaway LLM usage. |
 | **Truncation as fallback** | A partial real test is better than a hard failure. IR truncation + `hasTerminalAssertion` guard ensures execution always happens on real, grounded steps. |
 | **Credential policy is decided per case, from the case's own wording, before any substitution** | A boolean ("substitute or not") can't express a good negative-password test, which needs the identifier real but the password wrong. `credentialPolicyFor` returns `full` / `identifier-only` / `none`; getting the check order right matters (identifier-at-fault must be vetoed before the broader password-at-fault check, or a malformed-email case gets its email silently "fixed"). Currently case-scoped, not leg-scoped — a case with TWO login attempts in one browser session is a known open edge. |
-| **No built-in demo-credential registry** | An earlier version silently auto-filled known demo sites (saucedemo, the-internet.herokuapp.com); removed so the pipeline never special-cases a specific host — every login gate now goes through the same general `askCredentials` prompt, deliberately trading silent convenience for uniform behavior. |
+| **No built-in demo-credential registry** | An earlier version silently auto-filled known demo sites (saucedemo, the-internet.herokuapp.com); removed so the pipeline never special-cases a specific host. Credentials now come from exactly two general sources: extracted from the prompt when the user typed them there (`extractCredentialsFromPrompt`), otherwise the `askCredentials` UI prompt. |
+| **A prompt-derived case always gets real credentials substituted** | `credentialPolicyFor` used to return `none` for a `fromPrompt` case when the prompt carried credentials, assuming the model had copied the user's literal value into the case text. It routinely hadn't — it invented a placeholder instead. Always substituting the verified value is strictly safer: a no-op when the model was faithful, the only fix when it wasn't. |
 | **Secrets never reach disk** | User-supplied (non-demo) credentials become `${env:...}` references in the IR/generated spec; the real value is injected only into the Playwright child process's environment at execution time. Extended this session to also scrub `results.json`, `final-page.txt`, and error-context attachments — a logged-in page routinely echoes the identifier back into visible text. `runs/` is served as static files, so this is a hard requirement, not a nicety. |
 | **LLM caching, two-tier** | Same input -> same response. In-memory (30-min TTL) + disk (no expiry) deduplicates across runs and stages — the cache key must include every real input dimension, or a result gets served stale forever (this has been a recurring bug source; the case-selection gate's cache key was fixed this session for exactly this reason). |
 | **Key rotation with cooldown** | Multiple API keys with round-robin selection and rate-limit cooldown prevents single-key exhaustion. |
@@ -401,12 +424,12 @@ Single-page HTML/JS/CSS app (`public/`):
 |-----|--------|--------|
 | No server authentication | Anyone with the URL can start runs and browse artifacts | Open |
 | Cross-leg credential handling for multi-attempt cases | A case that logs in for real, then tries a second (wrong-credential) login in the same browser session, can substitute the real credential into the wrong attempt if the model doesn't order the real attempt last — confirmed in production | Open, diagnosed, fix not yet implemented |
-| `toIR`'s retry loop spends an LLM attempt on every live-extend hop | A flow needing several page hops to fully discover can burn its entire `MAX_IR_ATTEMPTS` budget just reaching the right page state, leaving none to actually use the now-correct model — ships a stale truncation note instead. Diagnosed and a fix was approved (decouple extension retries from the outer attempt budget), but never implemented — the session pivoted to a different task first | Open, planned, fix not yet implemented |
-| `sourcePrompt`'s full scope can bleed into a narrower case's IR | `buildUser` (ir.ts) sends both the specific `testCase` and the full original `sourcePrompt` in the same message with no rule telling the model the latter is background context only — a narrower case's IR generation can absorb extra steps the case itself never asked for (confirmed: a plain 3-step login case's IR came back referencing an unrelated product page from the run's overall prompt). Diagnosed and a fix was approved (a system-prompt rule scoping generation to `testCase` alone), but never implemented | Open, planned, fix not yet implemented |
+| Case-generation reword drift | The case-generation stage can reword an explicit "click on X" into "Navigate to the X section", and can silently drop waits the prompt asked for. The IR stage no longer *acts* on the misleading wording (guessed routes are rejected deterministically), so the blast radius is contained, but the case prose itself is still unconstrained | Open, contained downstream |
 | Failure diagnosis step attribution | `analyzeFailure` reported a different `failingStepId` than a run's raw Playwright trace actually showed, confirmed against a real run | Open, not yet investigated |
 | No end-to-end self-heal test | Self-heal is verified in code but not against a real drifted site | Pending manual verification |
 | No multi-user isolation | Single-process, shared run history, no per-user quotas | Open |
-| Discovery can't see CSS-media-query visibility | `domExtract.ts` has no CSS engine — an element hidden only by a responsive breakpoint is recorded `visible: true`. IR-generation is steered away from the one common shape this bites (menu toggles), but the general case is unhandled | Open, partially mitigated |
+| Visibility accuracy for selector-less elements | `domExtract.ts` has no CSS engine. `recheckVisibility` now re-checks every element carrying a stable selector against the live page's computed style, and a hidden element can't be asserted visible — but an element with no `id`/`data-test`/`css` still keeps the assumed `visible: true` | Mostly closed |
 | Assertion quality beyond the terminal step | The case's final pure-text assertion is grounded against the live page; a mid-case free-text assertion has no equivalent check yet | Open |
+| Deterministic rejections cost LLM attempts | Each grounding rejection (guessed route, hidden element, ungrounded target) re-generates with correction feedback. Bounded by `MAX_IR_ATTEMPTS`, but a case the model repeatedly gets wrong exhausts the budget and ships a truncated prefix. The navigate-URL rejection is marked `kind: "navigate-url"` so it at least doesn't also drain the live-extend budget | Open, bounded |
 | Playwright generator is pure code | No LLM used for spec generation (intentional) | Feature, not a gap |
 | Cloudflare tunnel buffering | SSE events delayed; UI uses polling as workaround | Works, not a blocker |

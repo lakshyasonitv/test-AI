@@ -156,15 +156,90 @@ tables, new environment variables, and — importantly — the two fixes from §
 but never implemented, which the first draft of this update accidentally omitted from the gaps
 tables until caught during review.
 
+## 9. Case-selection correctness: "select 1, run 4"
+
+Selecting a single case still ran four. Three separate causes, all fixed: `selectCases` re-applied
+its own coverage budget *after* the gate had already decided, silently topping the selection back
+up; reactive (live-extend-discovered) cases were merged in without passing through a gate round;
+and a timeout during selection crashed the run instead of resolving to a clean outcome.
+`finalizeCaseSelection` is now the single decision point — when the gate ran, its decision is
+final and only scope filtering applies.
+
+## 10. Two approved-but-never-implemented `ir.ts` fixes, finally closed
+
+Both carried from §3. The `sourcePrompt` scope-bleed guard (a narrow case's IR absorbing steps
+from the run's overall prompt), and the live-extend retry-budget decoupling — a hop now re-grounds
+the same parsed IR without spending one of `MAX_IR_ATTEMPTS`, so a multi-hop flow no longer burns
+its whole LLM budget just reaching the right page. The latter was verified by swapping in the
+pre-fix `ir.ts` from git and confirming the new test reproduced the exact original log line.
+
+## 11. Discovery: non-semantic clickables
+
+`detectGenericClickables` finds `div`/`span`/`li`/`p` elements that are clickable in practice
+(`cursor:pointer`, `onclick`, or a non-negative `tabindex`) but invisible to tag/role extraction —
+the shape a component library produces for a styled "button" with no semantic tag. Added at
+`extractDomModelFromPage`, the one function every discovery path already shares.
+
+## 12. Credentials typed directly into the prompt
+
+A prompt carrying real credentials (`email: … and password is "…"`) was *detected* but never
+*extracted* — the detector was a bare boolean used only to skip the credential-ask dialog, so the
+run proceeded with nothing to substitute and shipped the model's invented placeholder. Three
+fixes: `extractCredentialsFromPrompt` pulls the actual values (always `secret`, same env-reference
+path as UI-entered credentials); `credentialPolicyFor` now always substitutes for a
+prompt-derived case rather than trusting the model copied the value faithfully; and the
+orchestrator wires extraction in as the credential source. Caught two real regex bugs while
+building it — one in the external proposal's own suggested pattern (a non-greedy capture followed
+by an optional closing quote matches after one character), one of my own ("login" as a
+username trigger word matches the verb in "login to the website", and regex alternation is
+leftmost-match, not best-match).
+
+## 13. Four grounding guards — every target kind now has a deterministic check
+
+Each came from a specific failed production run, and each replaced (or backed) a prompt nudge that
+had already failed to hold:
+
+- **Viewport-hidden elements.** A mobile-only hamburger toggle (`display:none` at desktop width)
+  was grounded as a `visible` assertion target and timed out. Discovery had hardcoded
+  `visible: true` on every element — the static HTML parser has no CSS engine. Now every
+  selector-bearing element is re-checked against real computed style in the live page, and a
+  hidden element can't be asserted visible (asserting it *hidden* stays legal — that direction is
+  load-bearing elsewhere).
+- **Role mismatch.** A dashboard sidebar item built as `<button onClick=router.push(...)>` was
+  reported "not present in the application model" because the IR guessed `role: "link"` — the
+  element was right there under a different role. Grounding was stricter than the runtime code it
+  protects (`safeClick`'s own fallback chain would likely have found it). Now falls back across a
+  narrow clickable role group and writes the real role back onto the target.
+- **Guessed navigate routes.** The last unguarded target kind: `navigate` steps were skipped by
+  grounding entirely. A case step reworded as "Navigate to the Admin section via the sidebar"
+  became `navigate "/admin"` → `navigate "/admin/users"`, both invented, both landing on a blank
+  page — screenshots confirmed a stuck spinner then an empty black page. Now checked against every
+  discovered page URL and link href, with allowances for the entry URL, off-origin targets, and
+  any path the user typed themselves. Marked `kind: "navigate-url"` so `toIR` doesn't also spend
+  live-extend hops on an error replaying can never fix.
+
+Test suite grew from 209 to 229 across this work. Every fix went through the same cycle: write the
+regression test, disable the fix, confirm the test fails with the *real* error shape, restore,
+confirm byte-exact. The navigate-URL guard was additionally replayed against the failing run's own
+saved artifacts, where it now flags the true first bad step (s5) instead of the misleading
+downstream one (s7).
+
+## 14. Documentation overhaul (third pass)
+
+Updated `README.md`, `ARCHITECTURE.md`, and `PROJECT_SUMMARY.md` for §9–13: new capability rows,
+refreshed file/line-count tables, the grounding-authority and prompt-nudges-are-never-enough
+design decisions, and a rewritten gaps table — several entries moved from "open, planned" to
+closed, and the stale ones removed rather than left to rot.
+
 ## What's still open
 
-Carried over, unaddressed this session (see `ARCHITECTURE.md`'s Current Gaps table for the full
-list with impact/status):
-- Compound-login-case credential handling (§1)
-- `toIR`'s live-extend-retry-vs-attempt-budget coupling (§3)
-- `sourcePrompt` scope-bleed into a narrower case's IR (§3)
+Carried over, unaddressed (see `ARCHITECTURE.md`'s Current Gaps table for the full list with
+impact/status):
+- Compound-login-case credential handling (§1) — still the largest known correctness gap
+- Case-generation reword drift: the LLM paraphrases the user's literal instructions ("click on
+  Admin" → "Navigate to the Admin section", explicit waits dropped) before any deterministic
+  stage sees them. Contained downstream now, not fixed at the source
 - No server authentication
 - Failure-diagnosis step attribution can point at the wrong step
 - No end-to-end self-heal test against a real drifted site
-- Discovery can't detect CSS-media-query-only visibility in general (only the menu-toggle shape
-  of it is specifically mitigated)
+- Visibility for elements with no stable selector still falls back to an assumed `visible: true`

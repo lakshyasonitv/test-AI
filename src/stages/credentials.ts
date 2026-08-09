@@ -12,15 +12,8 @@ export interface Credentials {
   secret?: boolean;
 }
 
-/**
- * No built-in demo-account registry. An earlier version hardcoded published demo
- * credentials for a few well-known test sites (saucedemo, the-internet.herokuapp.com);
- * that per-site data is gone so the platform never assumes anything about a given host.
- * A user's own credentials take the `secret: true` path above instead.
- */
-export function credentialsFor(_url: string): Credentials | undefined {
-  return undefined;
-}
+
+
 
 // ---------------------------------------------------------------------------
 // Field matching — one source of truth for "does this field want a credential"
@@ -200,6 +193,42 @@ export function promptCarriesCredentials(prompt: string): boolean {
   return new RegExp(KEY + String.raw`\s+(?:is\s+)?["'\x60]?[^\s"'\x60]*[\d!@#$%^&*_.+-]`, "i").test(prompt);
 }
 
+/** The value following a "key: value" / "key is value" mention. Tries the quoted form first —
+ *  greedy up to the actual closing quote, so a multi-character value between real quotes is
+ *  captured whole — before falling back to a single bare (unquoted) token. Non-greedy + a fully
+ *  optional closing-quote group would under-capture here (e.g. `password is "123456"` matching
+ *  just "1"): the engine finds the pattern satisfied the moment the optional group matches zero
+ *  width, and never backtracks to extend the capture. Greedy-bounded-by-the-real-quote avoids
+ *  that trap entirely. */
+function extractValueAfter(prompt: string, keyPattern: string): string | undefined {
+  const quoted = new RegExp(`${keyPattern}\\s*(?:is\\s+)?[:=]?\\s*["'\`]([^"'\`]+)["'\`]`, "i");
+  const quotedMatch = prompt.match(quoted);
+  if (quotedMatch) return quotedMatch[1].trim();
+
+  const bare = new RegExp(`${keyPattern}\\s*(?:is\\s+)?[:=]?\\s*(\\S+)`, "i");
+  return prompt.match(bare)?.[1]?.replace(/[,.;:]+$/, ""); // drop trailing sentence punctuation
+}
+
+/**
+ * Pull real, user-supplied credentials directly out of the prompt text — e.g. "login using
+ * email: alice@example.com and password is 'hunter2'". Returns undefined unless BOTH an
+ * identifier and a password are found: a half-extracted credential (e.g. password only) would
+ * silently substitute an empty username somewhere, which is worse than substituting nothing.
+ *
+ * Always `secret: true` — a value the user typed directly into the prompt is exactly as
+ * sensitive as one typed into the credential-prompt UI, and gets the same env-var-reference
+ * treatment (never written to disk literally; see ENV_VALUE_PREFIX below).
+ */
+export function extractCredentialsFromPrompt(prompt: string): Credentials | undefined {
+  // Deliberately NOT "login" — it's commonly a verb in casual phrasing ("login to the
+  // website using...") that appears well before the actual "email:"/"username:" field the
+  // value follows, so including it as a trigger word grabbed the wrong next token entirely.
+  const username = extractValueAfter(prompt, String.raw`\b(?:e-?mail|user(?:\s*name)?)\b`);
+  const password = extractValueAfter(prompt, String.raw`\b(?:pass(?:word)?|pwd)\b`);
+  if (!username || !password) return undefined;
+  return { username, password, secret: true };
+}
+
 // ---------------------------------------------------------------------------
 // Keeping user-supplied credentials off disk
 // ---------------------------------------------------------------------------
@@ -358,8 +387,15 @@ export function credentialPolicyFor(
     return PASSWORD_AT_FAULT.test(wording) ? "identifier-only" : "none";
   }
 
-  // The user's own literal values in the prompt win over anything supplied separately.
-  if (testCase.fromPrompt) return promptHasCredentials ? "none" : "full";
+  // A prompt-derived case always gets "full" now — even when promptHasCredentials is true.
+  // The old assumption here was "the model already copied the user's literal value into the
+  // case text, so don't bother substituting" — but that's exactly the case that was failing:
+  // the model routinely invents a placeholder (e.g. admin@learnvibes.com) instead of faithfully
+  // copying the real value. extractCredentialsFromPrompt now supplies the actual verified value
+  // as runCreds, so always substituting is strictly safer: if the model WAS faithful this is a
+  // no-op (identical value in, identical value out); if it wasn't, this is the only thing that
+  // fixes it.
+  if (testCase.fromPrompt) return "full";
   return category === "valid" ? "full" : "none";
 }
 
@@ -370,30 +406,78 @@ export function wantsRealCredentials(testCase: TestCase, promptHasCredentials: b
 
 const REGISTRATION_URL = /register|signup|sign-up|create-account|join/i;
 
-/** For each credential kind, the index of its LAST fill step in this list that would actually
- *  be substituted — registration-leg fills (per `legUrlAt`) are excluded from consideration, so
- *  "last occurrence" can't land on a leg that's skipped for an unrelated reason and accidentally
- *  suppress substitution on BOTH the real login leg and the doomed registration leg.
+/**
+ * Find the index of the submit-click that ends the login form — the "auth boundary".
+ * 
+ * After this step, any email/password field is part of a DIFFERENT form (Add User, 
+ * Checkout, Profile) and must NOT receive login credentials.
  *
- *  A case with only one login attempt (the overwhelming majority) has exactly one eligible entry
- *  per kind, so this changes nothing for them — "last occurrence" and "only occurrence" coincide.
- *  A case with two attempts (a compound valid+invalid flow, e.g. "log in with the wrong password,
- *  verify the error, then log in for real") is the one this exists for: only the FINAL attempt
- *  should receive the real credential — earlier attempts are load-bearing test content (the
- *  case's own deliberately-wrong values) and must survive untouched, or the earlier attempt
- *  silently stops testing what its wording says. */
+ * Returns the step index of the submit click, or steps.length if no auth form is found.
+ */
+export function findAuthBoundary(
+  steps: { action: string; target?: Target }[],
+  fieldMap?: Map<string, CredentialKind>,
+): number {
+  let sawCredentialFill = false;
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    if (step.action === "fill") {
+      const kind = credentialKindForTarget(step.target, fieldMap);
+      if (kind) sawCredentialFill = true;
+    } else if (step.action === "click" && sawCredentialFill) {
+      // This click follows credential fills — it's the form submit.
+      return i;
+    } else if (step.action === "navigate") {
+      // A navigate resets: if credentials haven't been submitted yet, this
+      // might be navigating TO the login page, not away from it.
+      sawCredentialFill = false;
+    }
+  }
+  return steps.length;
+}
+
+/** For each credential kind, the index of its fill step in this list that would actually
+ *  be substituted.
+ *
+ *  When a password field is present, the login form is the form containing the LAST password
+ *  fill step (handling compound valid+invalid attempts), and the paired username field is the
+ *  username fill step immediately associated with that password field. Post-login fields
+ *  (e.g. Email in an Add User or Checkout form) that appear after the login form are excluded. */
 export function lastFillIndexByKind(
   steps: { action: string; target?: Target }[],
   fieldMap?: Map<string, CredentialKind>,
   legUrlAt?: (string | null | undefined)[],
 ): Map<CredentialKind, number> {
   const last = new Map<CredentialKind, number>();
+
+  const fillInfos: { index: number; kind: CredentialKind }[] = [];
   steps.forEach((step, i) => {
     if (step.action !== "fill") return;
     if (legUrlAt && REGISTRATION_URL.test(legUrlAt[i] ?? "")) return;
     const kind = credentialKindForTarget(step.target, fieldMap);
-    if (kind) last.set(kind, i);
+    if (kind) {
+      fillInfos.push({ index: i, kind });
+    }
   });
+
+  const lastPasswordInfo = [...fillInfos].reverse().find((f) => f.kind === "password");
+
+  if (lastPasswordInfo) {
+    last.set("password", lastPasswordInfo.index);
+    // Paired username field: closest username fill step at or before (or immediately adjacent to)
+    // the last password field.
+    const pairedUsername = [...fillInfos]
+      .filter((f) => f.kind === "username" && f.index <= lastPasswordInfo.index + 2)
+      .pop();
+    if (pairedUsername) {
+      last.set("username", pairedUsername.index);
+    }
+  } else {
+    // Fallback if no password field was identified
+    const lastUsername = [...fillInfos].reverse().find((f) => f.kind === "username");
+    if (lastUsername) last.set("username", lastUsername.index);
+  }
+
   return last;
 }
 

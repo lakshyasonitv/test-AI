@@ -124,6 +124,275 @@ describe("groundingError", () => {
     expect(groundingError(t, multiPage())).toBeNull();
   });
 
+  // Regression for the thinkvibes.com run (2026-08-07T04-47-41-260Z-40270415): a hamburger
+  // menu-toggle (visible: false — display:none at the current viewport, e.g. mobile-only) got
+  // name-matched and auto-attached a css selector, producing a generated test step that timed
+  // out asserting it visible. This must be a grounding failure, not a silent pass — same
+  // "return {index, message}, let the outer retry loop's correction feedback handle it" shape
+  // every other grounding rejection in this function uses.
+  it("rejects grounding a 'visible' assertion against an element already known to be hidden", () => {
+    const hiddenNav = model([
+      { role: "link", name: "Menu", css: "#nav-toggle", visible: false },
+    ]);
+    const t = ir([
+      { id: "s1", action: "assert", target: { role: "link", name: "Menu" }, assertion: "visible" },
+    ]);
+    const err = groundingError(t, hiddenNav);
+    expect(err?.index).toBe(0);
+    expect(err?.message).toMatch(/hidden/);
+  });
+
+  // The exact same hidden element, but asserting it HIDDEN — this is the correct, intended use
+  // (e.g. the post-login "Sign In" button going hidden) and must NOT be blocked.
+  it("does not block a 'hidden' assertion against the same hidden element", () => {
+    const hiddenNav = model([
+      { role: "link", name: "Menu", css: "#nav-toggle", visible: false },
+    ]);
+    const t = ir([
+      { id: "s1", action: "assert", target: { role: "link", name: "Menu" }, assertion: "hidden" },
+    ]);
+    expect(groundingError(t, hiddenNav)).toBeNull();
+  });
+
+  // Same rejection, but via the direct-css early-exit path (ir.ts:247) rather than the
+  // name-matched auto-attach path — a model that emits `target.css` directly for a selector
+  // discovery already verified must be checked too, not just membership-checked.
+  it("rejects a direct-css 'visible' target against an element already known to be hidden", () => {
+    const hiddenNav = model([
+      { role: "link", name: "Menu", css: "#nav-toggle", visible: false },
+    ]);
+    const t = ir([
+      { id: "s1", action: "assert", target: { css: "#nav-toggle" }, assertion: "visible" },
+    ]);
+    const err = groundingError(t, hiddenNav);
+    expect(err?.index).toBe(0);
+    expect(err?.message).toMatch(/hidden/);
+  });
+
+  // Regression for the learnvibes.vercel.app run (2026-08-08T07-00-16-355Z-219db80c): a
+  // dashboard sidebar item implemented as <button onClick=router.push(...)>, not <a href> — the
+  // IR reasonably guessed role:"link" for "navigate via the sidebar," and the strict role-equal
+  // filter reported "not present" for an element that WAS present, just under a different role.
+  // That falsely truncated the entire rest of the case. safeClick/locate() already tolerate this
+  // exact mismatch at runtime (their own css/text fallback chain) — grounding shouldn't be
+  // stricter than the code it's protecting.
+  it("falls back to a compatible role and self-corrects the target when the exact role isn't present", () => {
+    const dashboard = model([{ role: "button", name: "Admin" }]);
+    const t = ir([{ id: "s7", action: "click", target: { role: "link", name: "Admin" } }]);
+    expect(groundingError(t, dashboard)).toBeNull();
+    expect(t.steps[0].target!.role).toBe("button");
+    expect(t.steps[0].target!.name).toBe("Admin");
+  });
+
+  // An exact-role match must always win — the fallback only runs when the first pass finds
+  // nothing at all, never as a "better option" once a real match already exists.
+  it("prefers an exact-role match over a same-named compatible-role decoy", () => {
+    const both = model([
+      { role: "link", name: "Admin" },
+      { role: "button", name: "Admin" },
+    ]);
+    const t = ir([{ id: "s7", action: "click", target: { role: "link", name: "Admin" } }]);
+    expect(groundingError(t, both)).toBeNull();
+    expect(t.steps[0].target!.role).toBe("link"); // unchanged — no fallback needed
+  });
+
+  // The fallback is scoped to interactive-clickable roles only. A heading/textbox target must
+  // never be silently reinterpreted as a button — matching the wrong element type there either
+  // can't work (.fill() on a heading) or changes what an assertion actually proves.
+  it("does not widen a non-clickable role (heading) into the compatible-role group", () => {
+    const dashboard = model([{ role: "button", name: "Total" }]);
+    const t = ir([{ id: "s1", action: "assert", target: { role: "heading", name: "Total" }, assertion: "visible" }]);
+    expect(groundingError(t, dashboard)?.index).toBe(0);
+  });
+
+  // The fallback must still respect page-cursor scoping — a compatible-role match on a page
+  // the flow already left shouldn't ground, same as an exact-role match wouldn't.
+  it("does not let the compatible-role fallback ground against a page the flow already left", () => {
+    const pages: AppModel = {
+      baseUrl: "https://x",
+      pages: [
+        { url: "https://x/", concepts: [],
+          elements: [{ role: "link", name: "Dashboard" }, { role: "button", name: "Admin" }],
+          domLinks: [{ text: "Dashboard", href: "/dashboard", title: "", ariaLabel: "", isExternal: false, role: "link" }] },
+        { url: "https://x/dashboard", concepts: [], elements: [{ role: "heading", name: "Dashboard" }] },
+      ],
+    } as AppModel;
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "link", name: "Dashboard" } },
+      // Only reachable as role:"button" back on the ENTRY page, which the flow already left —
+      // must not fall back to it just because it shares a name with something once seen.
+      { id: "s3", action: "click", target: { role: "link", name: "Admin" } },
+    ]);
+    expect(groundingError(t, pages)?.index).toBe(2);
+  });
+
+  // Regression for the learnvibes.vercel.app run (2026-08-08T11-08-53-602Z-a986748a): the whole
+  // case truncated at s6 with `role="button" name="Admin" ... is not present in the application
+  // model` — while the shipped model in 04-ir.json contained exactly that element on /dashboard,
+  // next to `heading "Good Afternoon, Vaibhav Parmar"`. Login had worked; live-extend had found
+  // the page. trackPages advances its cursor only on a navigate or a resolvable LINK click, so
+  // clicking the "Sign In" button (a form submit / SPA route change) left the cursor parked on
+  // /login for every later step, and grounding searched only that page. A cursor that can't
+  // track the flow any more must report null so grounding falls back to the whole model — which
+  // is what trackPages' own docstring already promised, and didn't do.
+  it("grounds a post-login element after a form-submit click the cursor can't track", () => {
+    const app: AppModel = {
+      baseUrl: "https://x",
+      pages: [
+        { url: "https://x/login", concepts: [],
+          elements: [
+            { role: "textbox", name: "you@thinkvibes.com" },
+            { role: "textbox", name: "*********" },
+            { role: "button", name: "Sign In" },
+          ] },
+        { url: "https://x/dashboard", concepts: [],
+          elements: [
+            { role: "button", name: "Admin" },
+            { role: "heading", name: "Good Afternoon, Vaibhav Parmar" },
+          ] },
+      ],
+    } as AppModel;
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "you@thinkvibes.com" }, value: "e" },
+      { id: "s3", action: "fill", target: { role: "textbox", name: "*********" }, value: "p" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+      { id: "s5", action: "wait", value: "2000" },
+      { id: "s6", action: "click", target: { role: "button", name: "Admin" } },
+    ]);
+    expect(groundingError(t, app)).toBeNull();
+  });
+
+  // Regression for the learnvibes run (2026-08-08T11-52-35-503Z-0981bd0c): the IR addressed
+  // EVERY step after login by bare text — {text:"Admin"}, {text:"users"}, {text:"Name"} —
+  // which groundingError skipped wholesale, so nothing was rejected, live-extend never ran,
+  // the model still held only /login when the run ended, and `fill {text:"Name"}` resolved to
+  // <label>Full Name</label> at execution time ("Element is not an <input>...").
+  it("upgrades a text-only fill target to the verified field it names", () => {
+    const form = model([
+      { role: "textbox", name: "Full Name" },
+      { role: "textbox", name: "Email" },
+      { role: "button", name: "Submit" },
+    ]);
+    const t = ir([{ id: "s12", action: "fill", target: { text: "Name" }, value: "test" }]);
+    expect(groundingError(t, form)).toBeNull();
+    expect(t.steps[0].target!.role).toBe("textbox");
+    expect(t.steps[0].target!.name).toBe("Full Name");
+    expect(t.steps[0].target!.text).toBeUndefined();
+  });
+
+  // A fill must never ground onto a link/button just because the name matches, and a click
+  // must never ground onto a textbox — the two role groups are deliberately disjoint.
+  it("does not ground a text-only fill target onto a non-field element", () => {
+    const page = model([{ role: "link", name: "Name" }]);
+    const t = ir([{ id: "s1", action: "fill", target: { text: "Name" }, value: "x" }]);
+    expect(groundingError(t, page)?.kind).toBe("text-target");
+  });
+
+  it("rejects a text-only click target the model has never seen, so live-extend can run", () => {
+    const loginOnly = model([{ role: "button", name: "Sign In" }]);
+    const t = ir([{ id: "s7", action: "click", target: { text: "Admin" } }]);
+    const err = groundingError(t, loginOnly);
+    expect(err?.index).toBe(0);
+    expect(err?.kind).toBe("text-target");
+  });
+
+  // The exemption this narrows must survive for its real purpose: an assertion on content
+  // that only exists after an action, which discovery by definition never snapshotted.
+  it("still exempts a text target on an assert step", () => {
+    const loginOnly = model([{ role: "button", name: "Sign In" }]);
+    const t = ir([
+      { id: "s5", action: "assert", target: { text: "Invalid login credentials" }, assertion: "visible" },
+    ]);
+    expect(groundingError(t, loginOnly)).toBeNull();
+  });
+
+  // The other half of the same rule: a click that provably does NOT navigate (an in-page
+  // anchor, a JS handler) must leave the cursor intact, or every modal/accordion click would
+  // widen grounding back to the whole model for the rest of the flow.
+  it("keeps the page cursor after clicking a link that does not navigate", () => {
+    const app: AppModel = {
+      baseUrl: "https://x",
+      pages: [
+        { url: "https://x/", concepts: [],
+          elements: [{ role: "link", name: "Open panel" }],
+          domLinks: [{ text: "Open panel", href: "#", title: "", ariaLabel: "", isExternal: false, role: "link" }] },
+        { url: "https://x/other", concepts: [], elements: [{ role: "button", name: "Elsewhere" }] },
+      ],
+    } as AppModel;
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "link", name: "Open panel" } },
+      { id: "s3", action: "click", target: { role: "button", name: "Elsewhere" } },
+    ]);
+    expect(groundingError(t, app)?.index).toBe(2);
+  });
+
+  // Regression for the learnvibes.vercel.app run (2026-08-08T07-54-39-812Z-d322e1fe). The case
+  // step read "Navigate to the Admin section via the sidebar" — meaning click the sidebar item —
+  // and the IR took "navigate" literally, emitting navigate "/admin" then "/admin/users".
+  // Nothing validated those: groundingError only ever checked role+name targets, so a guessed
+  // route sailed straight through to the browser, landed on a blank page (screenshots confirmed
+  // a stuck spinner then an empty black page), and every later step ground against a page that
+  // was never really reached. Same "never invent" principle already applied to CSS selectors
+  // and role+name, now extended to the one target kind that had no check at all.
+  it("rejects a mid-flow navigate to a route the app model never saw", () => {
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "navigate", target: { url: "/admin" } },
+    ]);
+    const err = groundingError(t, multiPage());
+    expect(err?.index).toBe(1);
+    // Marked so toIR skips live-extension for it — replaying a prefix can never make an
+    // invented route real, and extending here would drain the budget real discovery needs.
+    expect(err?.kind).toBe("navigate-url");
+  });
+
+  it("allows a mid-flow navigate to a discovered page", () => {
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "navigate", target: { url: "/dashboard" } },
+    ]);
+    expect(groundingError(t, multiPage())).toBeNull();
+  });
+
+  // A link's href is a destination discovery genuinely observed, even when the page behind it
+  // was never crawled — navigating there is following the app's own wiring, not guessing.
+  it("allows a navigate to a path known only from a link href", () => {
+    const withLink: AppModel = {
+      baseUrl: "https://x",
+      pages: [{
+        url: "https://x/", concepts: [], elements: [{ role: "link", name: "Settings" }],
+        domLinks: [{ text: "Settings", href: "/settings", title: "", ariaLabel: "", isExternal: false, role: "link" }],
+      }],
+    } as AppModel;
+    const t = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "navigate", target: { url: "/settings" } },
+    ]);
+    expect(groundingError(t, withLink)).toBeNull();
+  });
+
+  // Step 0's navigate is the entry URL the pipeline supplied itself, never a model guess.
+  it("does not second-guess the entry navigate at step 0", () => {
+    const t = ir([{ id: "s1", action: "navigate", target: { url: "/some-entry-path" } }]);
+    expect(groundingError(t, multiPage())).toBeNull();
+  });
+
+  // The user naming a path in their own prompt is a stated fact about their app, not a guess.
+  it("allows a path the user typed in their own prompt", () => {
+    const t = {
+      meta: { feature: "f", title: "t", priority: "high", baseUrl: "https://x",
+              sourcePrompt: "log in then go to /admin and add a user" },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/" } },
+        { id: "s2", action: "navigate", target: { url: "/admin" } },
+      ],
+    } as unknown as IR;
+    expect(groundingError(t, multiPage())).toBeNull();
+  });
+
   it("still advances the page cursor through a click step that takes the css-shortcut path", () => {
     const pages: AppModel = {
       baseUrl: "https://x",
@@ -407,6 +676,46 @@ describe("missingActions — the IR must carry out its case", () => {
       { id: "s2", action: "assert", target: { role: "heading", name: "Hero" }, assertion: "visible" },
     ] } as any;
     expect(missingActions(ir, navCase)).toBeNull();
+  });
+
+  // The real bug: run 2026-08-08T11-33-53-639Z-0cc9b64c reported 4/4 passed while this case's
+  // IR stopped after logging in — it never touched Admin or Users, which its own case text
+  // names. The presence checks above are blind to this: a "fill" and a "click" both exist,
+  // they just belong to the login, not the rest of the flow.
+  const adminCase = tc({
+    title: "Admin can view the users list",
+    steps: [
+      "Fill 'Email' with the admin's email",
+      "Fill 'Password' with the admin's password",
+      "Click 'Sign In'",
+      "Click 'Admin' in the sidebar",
+      "Click 'Users'",
+    ],
+    expected: "The users list is displayed",
+  });
+
+  it("flags an IR that stops after login instead of completing the case's later steps", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { name: "Email" }, value: "a@b.c" },
+      { id: "s3", action: "fill", target: { name: "Password" }, value: "pw" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+      { id: "s5", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
+    ] } as any;
+    expect(missingActions(ir, adminCase)?.message).toMatch(/action steps/);
+  });
+
+  it("accepts an IR that carries out every action step the case names", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { name: "Email" }, value: "a@b.c" },
+      { id: "s3", action: "fill", target: { name: "Password" }, value: "pw" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+      { id: "s5", action: "click", target: { role: "link", name: "Admin" } },
+      { id: "s6", action: "click", target: { role: "link", name: "Users" } },
+      { id: "s7", action: "assert", target: { role: "heading", name: "Users" }, assertion: "visible" },
+    ] } as any;
+    expect(missingActions(ir, adminCase)).toBeNull();
   });
 });
 

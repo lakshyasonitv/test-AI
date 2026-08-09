@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { plan } from "./stages/planner.js";
-import { discover, discoverPages } from "./stages/hybridDiscovery.js";
+import { discoverSiteHybrid, discoverPagesHybrid } from "./stages/hybridDiscovery.js";
 import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
 import { GroqBudget } from "./llm/groqBudget.js";
 import { refreshPageModel } from "./stages/liveExtend.js";
 import {
-  credentialsFor, credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, credentialPolicyFor,
+  credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, credentialPolicyFor,
+  extractCredentialsFromPrompt,
   type Credentials, type CredentialKind,
 } from "./stages/credentials.js";
 import { generateSpec } from "./stages/generator.js";
@@ -95,15 +96,15 @@ export async function runPipeline(
     const thePlan = await step("plan", "01-plan.json", () => plan(prompt, resolvedUrls[0], coverage));
 
     const appModel = await step("discovery", "02-appmodel.json", async () =>
-      resolvedUrls.length === 1 ? discover(resolvedUrls[0]) : discoverPages(resolvedUrls)
+      resolvedUrls.length === 1 ? discoverSiteHybrid(resolvedUrls[0]) : discoverPagesHybrid(resolvedUrls)
     );
     console.log("1. Discovery completed");
 
     console.log("2. Generating test cases...");
     // The case-selection gate pauses here: it generates a batch, parks the run on a selection
-    // prompt, and regenerates on "not satisfied" — while the flag is off, the gate is never
-    // even imported, so the happy path stays byte-for-byte identical to the old flow.
-    const gateUsed = process.env.ENABLE_CASE_SELECTION_GATE === "true";
+    // prompt, and regenerates on "not satisfied" — while the flag is off or no interactive
+    // responder is supplied (CLI mode), the gate is never even imported.
+    const gateUsed = process.env.ENABLE_CASE_SELECTION_GATE === "true" && !!askCredentials;
     const cases = await step("testcases", "03-cases.json", async () => {
       if (gateUsed) {
         const { runCaseSelectionGate } = await import("./stages/caseSelectionGate.js");
@@ -147,7 +148,7 @@ export async function runPipeline(
     // prompt didn't already carry credentials, and a login is actually in scope. Anything
     // else would interrupt the user for nothing. A caller with no askCredentials (the CLI)
     // never blocks at all.
-    let runCreds: Credentials | undefined = credentialsFor(resolvedUrls[0]);
+    let runCreds: Credentials | undefined = extractCredentialsFromPrompt(prompt);
     if (askCredentials && !runCreds && !promptCarriesCredentials(prompt)) {
       const fields = credentialFieldsNeeded(appModel, cases);
       if (fields.length) {
@@ -350,6 +351,7 @@ export async function runPipeline(
       // Plain-English record of what was actually tested, for the results panel — the IR/spec
       // are role+name/code, not something an end user should have to read to know what ran.
       test: { title: primary.title, steps: primary.steps, expected: primary.expected },
+      ir: finalIr,
       suite,
       groqUsage,
     });

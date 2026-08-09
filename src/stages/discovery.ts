@@ -237,10 +237,7 @@ export function formatInteractiveElements(elements: DetectedElement[]): string {
   return `\nInteractive elements found on page:\n${lines.join('\n')}`;
 }
 
-/** Detect + format in one call — what the discovery paths append to the ARIA snapshot. */
-export async function discoverInteractiveElements(page: Page): Promise<string> {
-  return formatInteractiveElements(await detectInteractiveElements(page));
-}
+
 
 const normalizeName = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 

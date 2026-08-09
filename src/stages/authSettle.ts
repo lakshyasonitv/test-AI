@@ -31,14 +31,13 @@ export async function waitForAuthSettle(page: Page, timeoutMs = 8000): Promise<v
   // Phase 1: wait for URL to change (fast path for real redirects).
   try {
     await page.waitForURL((url) => url.toString() !== startUrl, { timeout: Math.min(timeoutMs, 3000) });
-    return;
   } catch {
-    // URL didn't change within the short window; fall through to network idle.
+    // URL didn't change within the short window
   }
-  // Phase 2: wait for network idle (SPA may mutate state without URL change).
+  // Phase 2: wait for network idle / DOM content loaded so SPA hydration & API calls complete.
   try {
-    await page.waitForLoadState("domcontentloaded", { timeout: timeoutMs });
+    await page.waitForLoadState("networkidle", { timeout: Math.min(timeoutMs, 4000) });
   } catch {
-    // Ignore timeout; the caller will handle ungrounded steps via its existing logic.
+    await page.waitForLoadState("domcontentloaded", { timeout: Math.min(timeoutMs, 3000) }).catch(() => {});
   }
 }

@@ -80,3 +80,65 @@ describe("extractDomModelFromPage — generic clickable detection", () => {
     expect(found).toBeUndefined();
   });
 });
+
+// Regression for the thinkvibes.com run (2026-08-07T04-47-41-260Z-40270415): a hamburger
+// menu-toggle (<a id="nav-toggle">, display:none at desktop width, mobile-only via a CSS media
+// query) got grounded as a "visible" assertion target and timed out — because cheerio
+// (extractCrawlResponse, the primary DOM-extraction path) has no computed-style access at all,
+// so every element's `visible` field arrives hardcoded true regardless of actual CSS state.
+// recheckVisibility re-checks real visibility, in the live page, for every element discovery
+// gave a css selector (an id, here) — that's exactly the subset eligible for ir.ts's
+// grounding-time auto-css-attach, which is what let the bad selector reach the generated test.
+describe("extractDomModelFromPage — real visibility for css-bearing elements", () => {
+  let browser: Browser;
+  let page: Page;
+
+  beforeAll(async () => {
+    browser = await chromium.launch();
+    page = await browser.newPage();
+  });
+
+  afterAll(async () => {
+    await browser.close();
+  });
+
+  it("flags a display:none, id-bearing element as not visible", async () => {
+    await page.setContent(`
+      <html><body>
+        <a href="#0" id="nav-toggle" style="display:none;">Menu</a>
+        <a href="#0" id="home-link" style="display:block;">Home</a>
+      </body></html>
+    `);
+    const model = await extractDomModelFromPage(page, "https://example.com/");
+    const toggle = model?.pages[0]?.elements.find((e) => e.css === "#nav-toggle");
+    const home = model?.pages[0]?.elements.find((e) => e.css === "#home-link");
+    expect(toggle?.visible).toBe(false);
+    expect(home?.visible).toBe(true);
+  });
+
+  it("flags visibility:hidden and zero-size id-bearing elements as not visible too", async () => {
+    await page.setContent(`
+      <html><body>
+        <a href="#0" id="vis-hidden" style="visibility:hidden;">Ghost</a>
+        <a href="#0" id="zero-size" style="display:inline-block;width:0;height:0;overflow:hidden;">Collapsed</a>
+      </body></html>
+    `);
+    const model = await extractDomModelFromPage(page, "https://example.com/");
+    expect(model?.pages[0]?.elements.find((e) => e.css === "#vis-hidden")?.visible).toBe(false);
+    expect(model?.pages[0]?.elements.find((e) => e.css === "#zero-size")?.visible).toBe(false);
+  });
+
+  it("leaves an element with no css selector untouched (still hardcoded true)", async () => {
+    // A link with no id/data-test/data-testid has no css selector at all — recheckVisibility
+    // has nothing to re-query, so the pre-existing (hardcoded) `visible: true` survives.
+    await page.setContent(`
+      <html><body>
+        <a href="#0" style="display:none;">No id at all</a>
+      </body></html>
+    `);
+    const model = await extractDomModelFromPage(page, "https://example.com/");
+    const el = model?.pages[0]?.elements.find((e) => e.name === "No id at all");
+    expect(el?.css).toBeFalsy();
+    expect(el?.visible).toBe(true);
+  });
+});

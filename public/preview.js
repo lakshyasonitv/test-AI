@@ -18,7 +18,7 @@
   const params = new URLSearchParams(location.search);
   if (params.get("preview") !== "states") return;
 
-  const RUN = "2026-07-30T17-01-59-013Z-979dbd01";
+  const RUN = "2026-08-02T18-24-02-358Z-20b0ba3d";
   const SHOT = `/runs/${RUN}/artifacts/step-7.png`;
 
   const suite = {

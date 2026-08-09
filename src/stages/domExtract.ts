@@ -50,6 +50,8 @@ export interface CrawlResponse {
     tag: string; role: string; name: string; text: string; href: string; id: string;
     css_classes: string[]; aria_label: string; aria_role: string; visible: boolean; enabled: boolean;
     test_id: string; css: string; derived_name: boolean;
+    /** `name` is visible text beside the control, not its accessible name — see proximityLabel. */
+    name_from_proximity?: boolean;
   }>;
   internal_urls: string[];
   external_urls: string[];
@@ -153,6 +155,36 @@ function extractHeadings($: CQ): CrawlResponse["headings"] {
   return out;
 }
 
+/**
+ * The visible text that labels a form control which has no PROGRAMMATIC label.
+ *
+ * `<div>Full Name</div><input>` is the standard React/Tailwind form shape: the field is
+ * labelled to a human, and completely anonymous to everything else — no `for`/`id` pair, no
+ * wrapping `<label>`, no `aria-label`, no placeholder, no name attribute. Before this existed
+ * such a control reached `deriveElementName`, found nothing there either (a styled-inline app
+ * has no usable class name), and was dropped from the model as "genuinely unaddressable".
+ * Confirmed on learnvibes' Add-New-user modal: its Full Name and Email inputs were absent from
+ * a 49-element page model, so no step could ever target them and the IR fell back to
+ * `{ text: "Name" }`, which resolves to the <label> itself and cannot be filled.
+ *
+ * Deliberately shallow — the immediately preceding sibling, then the wrapper's preceding
+ * sibling. Anything further away stops being a label and starts being unrelated page copy.
+ */
+function proximityLabel($: CQ, $el: cheerio.Cheerio<AnyNode>): string {
+  const candidates = [$el.prev(), $el.parent().prev()];
+  for (const $c of candidates) {
+    if (!$c.length) continue;
+    // A preceding control is a sibling FIELD, not this field's label.
+    if ($c.is("input, select, textarea, button, a, form")) continue;
+    const t = text($c);
+    // A label is short. Anything longer is a paragraph that happens to sit above the input.
+    if (t && t.length <= MAX_PROXIMITY_LABEL) return t;
+  }
+  return "";
+}
+
+const MAX_PROXIMITY_LABEL = 60;
+
 function extractForms($: CQ, baseUrl: string): CrawlResponse["forms"] {
   const forms: CrawlResponse["forms"] = [];
   $("form").each((_, formEl) => {
@@ -169,6 +201,15 @@ function extractForms($: CQ, baseUrl: string): CrawlResponse["forms"] {
       if (!labelText) {
         const parentLabel = $in.closest("label");
         if (parentLabel.length) labelText = text(parentLabel);
+      }
+      // Last resort, and ONLY for a field that would otherwise contribute no name at all:
+      // the visible text sitting next to it. Guarded on placeholder/aria-label because
+      // crawlResponseToAppModel ranks `label` ABOVE `placeholder` — inferring one for a field
+      // that already had a real accessible name emitted the same control twice, once as
+      // `textbox "you@thinkvibes.com"` and once as `textbox "Email"`, and the IR then targeted
+      // the name that is not in the DOM.
+      if (!labelText && !attr($in, "placeholder") && !attr($in, "aria-label")) {
+        labelText = proximityLabel($, $in);
       }
 
       const options: string[] = [];
@@ -351,13 +392,26 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
       const roleMap: Record<string, string> = {
         checkbox: "checkbox", radio: "radio", submit: "button", button: "button", search: "searchbox",
       };
-      role = role || roleMap[inputType] || "textbox";
+      // A <select> is a combobox, not a textbox. roleForField (domDiscovery.ts) has always
+      // said so for the same element arriving via forms[].fields[]; this loop disagreed, so
+      // the same control was emitted twice under two roles once both paths could name it.
+      role = role || (tag === "select" ? "combobox" : roleMap[inputType]) || "textbox";
     }
+
+    const isField = ["input", "select", "textarea"].includes(tag);
+    // `text()` is a real accessible name for an <a>/<button> and never for a form control:
+    // on a <select> it returns every option concatenated ("Select...LearnerTrainerManager"),
+    // which is not a name anyone — model or human — would ever target by. Seen in production.
+    const ownText = isField ? "" : text($el);
+    // The visible text labelling an otherwise-anonymous field. Sits after the real
+    // programmatic sources and before the attribute-derived guesses, because it is what a
+    // user actually sees and therefore what a test prompt will call the field.
+    const nearby = isField ? proximityLabel($, $el) : "";
 
     // Accessible name in accname precedence order — see roleForField's comment in
     // domDiscovery.ts for why the HTML `name` attribute must come last, not first.
     const name0 =
-      attr($el, "aria-label") || attr($el, "placeholder") || text($el)
+      attr($el, "aria-label") || attr($el, "placeholder") || ownText
       || attr($el, "value") || attr($el, "title") || attr($el, "name");
 
     const testId = attr($el, "data-test") || attr($el, "data-testid") || attr($el, "data-qa");
@@ -367,6 +421,14 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
 
     let name = name0;
     let derivedName = false;
+    // True when `name` is visible text next to the control rather than its accessible name.
+    // Load-bearing downstream: getByRole(role, { name }) can NEVER match an inferred name —
+    // the DOM has no such name — so the resolver has to reach the field another way.
+    let nameFromProximity = false;
+    if (!name && nearby) {
+      name = nearby;
+      nameFromProximity = true;
+    }
     if (!name) {
       name = deriveElementName({ dataTest: attr($el, "data-test"), dataTestid: attr($el, "data-testid"),
         dataQa: attr($el, "data-qa"), id, classes, href });
@@ -384,6 +446,7 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
       tag, role, name, text: text($el).slice(0, 100),
       href: tag === "a" ? absUrl(href, baseUrl) : "",
       id, css_classes: classes, test_id: testId, css: selector, derived_name: derivedName,
+      name_from_proximity: nameFromProximity,
       aria_label: attr($el, "aria-label"), aria_role: attr($el, "role"),
       visible: true, enabled: !has($el, "disabled"),
     });

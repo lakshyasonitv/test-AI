@@ -128,12 +128,23 @@ and corrected rather than silently producing a flaky test.
   structure via cheerio — no tokens spent — and now also follows the entry page's own
   same-origin links (bounded, `MAX_DISCOVERY_PAGES`) instead of modeling only the one URL you
   typed. Vision is only consulted when DOM extraction genuinely has nothing to work with.
-- **Deterministic grounding against the live app**, not LLM self-report. Every generated step's
-  target is checked against a real AppModel; a terminal pure-text assertion is replayed in an
-  actual browser and corrected against what the page really says, rather than trusting the
-  model's first guess. The model is also told a page's `title` field is `<title>`-tag metadata,
-  not visible content, and steered away from grounding a general visibility check on a
-  mobile-menu toggle — both root-caused from real failed runs, not hypothetical.
+- **Deterministic grounding against the live app**, not LLM self-report — and it now covers
+  *every* kind of target the model can invent, not just some of them. A **role+name** must match a
+  real discovered element (with a narrow `link`/`button`/`menuitem`/`tab` fallback, because SPA
+  navigation is routinely built from the "wrong" tag — a sidebar item as `<button onClick=...>`
+  rather than `<a href>` — with the real role written back onto the target). A **css selector**
+  must be one discovery actually captured. A **navigate URL** must be a discovered page or a
+  discovered link's href, never a route guessed from a feature's name ("go to the Admin section"
+  → `/admin`, which on a client-routed app quietly loads a blank page and takes every later step
+  down with it). An element recorded as **hidden** can't be the target of a `visible` assertion,
+  and element visibility is itself re-checked against real computed style in the live page rather
+  than assumed. A terminal pure-text assertion is replayed in an actual browser and corrected
+  against what the page really says. Every one of these was root-caused from a specific failed
+  run, not designed speculatively.
+- **Prompt instructions are never the only guard.** Three of these bugs recurred *after* being
+  "fixed" with a system-prompt rule alone. The prompt rules remain as cheap first-line steering,
+  but each now has a deterministic check behind it — an LLM instruction is a preference, not a
+  constraint, and the difference only shows up on the run where the model ignores it.
 - **A human can sit in the loop, opt-in.** The case-selection gate pauses a run after generating
   a batch so cases can be reviewed and a "not satisfied" refinement regenerated against the full
   history of what's already been accepted or rejected — enforced in code (`filterNovelCases`),
@@ -143,7 +154,11 @@ and corrected rather than silently producing a flaky test.
   "invalid password" case keeps its deliberately-wrong value; a real login gets the real one) —
   solid for the common single-login-attempt case. (A case that embeds *two* login attempts in one
   browser session is a known open edge — see next steps.) No site gets special-cased with
-  built-in demo credentials anymore — every login gate goes through the same general prompt flow.
+  built-in demo credentials anymore — credentials come from exactly two general sources: pulled
+  out of the prompt when the user typed them there, otherwise the same `askCredentials` UI flow
+  every login gate goes through. A prompt-derived case now always gets the verified real value
+  substituted rather than trusting the model copied it into the case text faithfully — it
+  routinely hadn't, inventing a placeholder instead.
 - **Self-healing locators**, bounded to one attempt: a drifted selector triggers a fresh page
   snapshot and IR regeneration rather than a hard failure.
 - **Isolated per-case execution.** Every case in a suite runs in its own Playwright `test()` —
@@ -159,7 +174,7 @@ and corrected rather than silently producing a flaky test.
   the LAST step captured, not the first — a "navigate to Services" case shows Services, not the
   homepage it started from.
 
-## Five Steps to Make the Backend Genuinely General-Purpose
+## Six Steps to Make the Backend Genuinely General-Purpose
 
 Not future features — structural gaps in the pipeline today that limit it to sites shaped like
 the ones it's been tuned against (login/e-commerce), rather than truly arbitrary sites.
@@ -204,3 +219,15 @@ the ones it's been tuned against (login/e-commerce), rather than truly arbitrary
    strictly, a required file upload. On any site whose critical flow needs a real, human-supplied
    non-login value mid-flow, the pipeline's only fallback is inventing a placeholder that fails
    validation.
+6. **The user's own instructions are paraphrased by an LLM before any deterministic stage sees
+   them.** The prompt goes through `planner.ts` and `testCases.ts`, both of which rewrite it as
+   free prose, and only then reaches IR generation. That paraphrase is lossy in ways that change
+   behavior: an explicit "click on Admin" came back as "Navigate to the Admin section via the
+   sidebar" — which the IR stage read literally and turned into a guessed URL — and explicit
+   "wait 3 sec" instructions were dropped entirely. The guessed-route case is now caught
+   deterministically downstream, but that's containment, not a fix: nothing carries the user's
+   *literal, verbatim* intent (a named control, an explicit wait, an exact value) through the
+   pipeline as structured data that later stages must honor. `promptSelectors.ts` does exactly
+   this for CSS selectors the user writes, and is the model worth generalizing — the same idea
+   applied to named controls, waits, and literal values would make every downstream stage
+   accountable to what was actually asked for rather than to a model's retelling of it.

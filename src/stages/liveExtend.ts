@@ -40,12 +40,12 @@ export async function runStepLive(
     }
     case "fill": {
       const val = (creds && isFinalCredentialAttempt ? credentialForTarget(step.target, creds, fieldMap, policy) : undefined) ?? step.value ?? "";
-      await (await resolveLive(page, step.target!)).fill(val);
+      await (await resolveLive(page, step.target!, "fill")).fill(val);
       return;
     }
     case "click": await (await resolveLive(page, step.target!)).click(); return;
-    case "select": await (await resolveLive(page, step.target!)).selectOption(step.value ?? ""); return;
-    case "check": await (await resolveLive(page, step.target!)).check(); return;
+    case "select": await (await resolveLive(page, step.target!, "select")).selectOption(step.value ?? ""); return;
+    case "check": await (await resolveLive(page, step.target!, "check")).check(); return;
     case "press": await (await resolveLive(page, step.target!)).press(step.value ?? "Enter"); return;
     case "wait": await page.waitForTimeout(Number(step.value ?? 1000)); return;
     case "assert": return; // state check only — skip during replay
@@ -134,6 +134,7 @@ async function replayAndSnapshot(
     const navigatedAway = page.url() !== urlBeforeLastStep;
     let dialogSeen = false;
     if (navigatedAway) {
+      await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
       await page.waitForTimeout(600);
     } else {
       await page.waitForSelector('[role="dialog"], [aria-modal="true"]', { state: "visible", timeout: 2500 })

@@ -29,6 +29,17 @@ import { cutAtBoundary } from "../text.js";
 // Concept labeling — the ONE remaining Gemini call in the primary path
 // ---------------------------------------------------------------------------
 
+// Module-level so the cache key can hash it: the key is built before the request is
+// assembled, and a prompt declared inside the function wouldn't exist yet.
+const LABEL_SYSTEM = `You analyze a web page's structured DOM data to identify concepts and label elements. Output ONLY JSON.
+Rules:
+- Identify 2-5 meaningful concepts from the elements (e.g. "Login", "Search", "Cart", "Navigation")
+- Label elements that clearly serve a concept — only when confident
+- Use the markdown content and DOM structure for context
+- Never invent elements or concepts not supported by the data
+- If two elements share the same name but are in different containers, they serve different concepts
+- Forms, navigation, and interactive elements provide strong concept signals`;
+
 /**
  * Use Gemini to label elements with concepts (Login, Search, Cart, etc.)
  * but now we send DOM structure + markdown instead of a screenshot.
@@ -55,19 +66,16 @@ async function labelConceptsWithDOM(
     pageTitle,
     truncatedMarkdown,
     elementsList,
-    screenshotBase64 ? "with-screenshot" : "no-screenshot"
+    screenshotBase64 ? "with-screenshot" : "no-screenshot",
+    // The prompt and model are real inputs too, and the disk cache never expires — leaving
+    // them out means a labeling-rule change never reaches a page already seen.
+    LABEL_SYSTEM,
+    process.env.GEMINI_MODEL_LITE ?? "default"
   );
   const cachedLabels = llmCacheGet<{ concepts: string[]; labeledElements: { index: number; concept: string }[] }>(cacheKey);
   if (cachedLabels) return cachedLabels;
 
-  const system = `You analyze a web page's structured DOM data to identify concepts and label elements. Output ONLY JSON.
-Rules:
-- Identify 2-5 meaningful concepts from the elements (e.g. "Login", "Search", "Cart", "Navigation")
-- Label elements that clearly serve a concept — only when confident
-- Use the markdown content and DOM structure for context
-- Never invent elements or concepts not supported by the data
-- If two elements share the same name but are in different containers, they serve different concepts
-- Forms, navigation, and interactive elements provide strong concept signals`;
+  const system = LABEL_SYSTEM;
 
   const user = `Page title: ${pageTitle}
 Page markdown (content summary):
@@ -431,13 +439,3 @@ export async function discoverSiteHybrid(url: string): Promise<AppModel> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Re-export for backward compatibility
-// ---------------------------------------------------------------------------
-
-/**
- * Discover a site — drop-in replacement for the old discover() function.
- * DOM-first, vision-fallback, and now follows the entry page's internal links.
- */
-export { discoverSiteHybrid as discover };
-export { discoverPagesHybrid as discoverPages };

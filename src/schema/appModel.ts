@@ -14,6 +14,11 @@ export const Element = z.object({
   // elements whose accessible name is empty or synthetic — an icon-only cart/close/search
   // control can only be located this way.
   css: z.string().optional(),
+  // True when `name` is the visible text sitting next to the control rather than its real
+  // accessible name — the `<div>Full Name</div><input>` shape, where the field is labelled
+  // to a human and anonymous to the DOM. getByRole(role, { name }) can never match such a
+  // name, so the resolver must reach it positionally instead. See domExtract's proximityLabel.
+  nameFromProximity: z.boolean().optional(),
   visible: z.boolean().optional(),
   enabled: z.boolean().optional(),
   containerRole: z.string().optional(),
@@ -221,14 +226,3 @@ export function toLiteModel(model: AppModel): AppModel {
   };
 }
 
-/** Keep only elements whose concept is in the given set (or has no concept — structural). */
-export function filterByConcepts(model: AppModel, concepts: string[]): AppModel {
-  const set = new Set(concepts);
-  return {
-    ...model,
-    pages: model.pages.map(p => ({
-      ...p,
-      elements: p.elements.filter(e => !e.concept || set.has(e.concept)),
-    })),
-  };
-}

@@ -98,7 +98,13 @@ prompt + url
 | Auth settle-wait | Working | Bounded wait after auth-triggering steps to handle SPA redirects |
 | Credential-policy substitution | Working for single-attempt cases | `credentialPolicyFor` distinguishes full / identifier-only / none per case from its own wording — a negative "invalid password" case keeps its deliberately-wrong value. A case with TWO login attempts in one browser session is a known open edge (see Known Limitations) |
 | Terminal text-assertion grounding | Working | The case's final pure-text assertion is replayed against the real page and corrected if the model guessed the wording wrong. The model is also told the page's `title` field is `<title>`-tag metadata, never visible body text, so it can't ground an assertion on something that can never render |
+| Grounding: guessed navigate routes rejected | Working | A `navigate` step's URL is checked against `knownNavigationTargets` (every discovered page URL + every discovered link's resolved href). A route the model invented from a feature's name — "go to the Admin section" -> `/admin` — is rejected with feedback telling it to click the control that leads there instead. Allowances: step 0's entry URL, off-origin URLs, and any path you typed in your own prompt |
+| Grounding: role mismatch tolerated | Working | A target's role is matched exactly first, then against a narrow clickable group (`link`/`button`/`menuitem`/`tab`) — so an SPA sidebar item built as `<button onClick=...>` still grounds when the IR guessed `link`. The real role is written back onto the target so the generated `getByRole` matches the live DOM. Deliberately not applied to `textbox`/`heading`/etc |
+| Grounding: hidden elements can't be asserted visible | Working | An element discovery recorded as not visible is refused as the target of a `visible` assertion (a responsive/mobile-only control can't pass one). Asserting the same element `hidden` stays legal — that direction is load-bearing elsewhere |
+| Discovery visibility accuracy | Working | Every element carrying a stable selector is re-checked for real computed visibility (geometry + `getComputedStyle`) in the live page, overwriting the `visible: true` that the static HTML parser has to assume |
+| Credentials typed into the prompt | Working | `extractCredentialsFromPrompt` pulls a real username/password straight out of the prompt text (`email: a@b.c and password is "..."`), so a prompt that already carries credentials doesn't fall back to a model-invented placeholder. Treated as `secret` — same env-reference path as credentials typed into the UI |
 | Secrets kept off disk | Working | User-supplied credentials become `${env:...}` references in the generated spec; the real value only reaches the test process's environment at execution time. Also scrubbed from `results.json`, `final-page.txt`, and error-context attachments — a page you're logged into routinely echoes the identifier back |
+| Multi-hop flows don't starve the attempt budget | Working | A live-extend hop re-grounds the same parsed IR without spending one of `MAX_IR_ATTEMPTS` — a flow needing several hops to reach the right page state no longer burns its whole LLM budget getting there |
 | Scope filtering | Working | Prompt can request smoke/functional/regression/security scope |
 | Suite result display | Working | Per-case cards with status, screenshots, download links for spec/IR/result |
 | Light/dark theme | Working | Toggle in the sidebar, persisted in `localStorage`; dark is the default |
@@ -112,21 +118,21 @@ prompt + url
 | Capability | Status | Known Issue |
 |-----------|--------|-------------|
 | Self-healing | Code verified | No end-to-end test against a real drifted site yet |
-| Flows needing 3+ page-hops | Works up to `MAX_LIVE_EXTENSIONS`, but can starve `MAX_IR_ATTEMPTS` | Every live-extend hop consumes one of only `MAX_IR_ATTEMPTS` (default 4) attempts, same as a fresh LLM generation — a flow needing several hops can burn its whole attempt budget just reaching the right page, leaving none to use it. Diagnosed and a fix was designed (decouple extension retries from the attempt budget) but not yet implemented |
-| A narrow test case's IR can absorb scope from the run's overall prompt | Diagnosed, not yet fixed | `buildUser` (ir.ts) sends the full original prompt alongside the specific case being converted with no rule saying the former is background context only — confirmed on a real run where a plain 3-step login case's IR referenced an unrelated product page from elsewhere in the prompt |
 | A case that logs in for real, then tries a second (wrong-credential) login attempt in the same case | Fragile | Substitution only guarantees the case's FINAL credential attempt gets the real value; if the model doesn't order the real attempt last, the wrong leg gets it. Most sites also redirect an already-authenticated session away from the login page, so "return to the login page" for a second attempt can find no form there at all. Diagnosed, not yet fixed — see `PROJECT_SUMMARY.md` |
-| A vague "the whole header/nav is visible" case | Improved, not guaranteed | IR-generation is now steered away from grounding that kind of check on a mobile-menu toggle specifically (frequently hidden by a CSS breakpoint discovery can't see), but any other viewport-conditional element discovery mis-reports as visible can still be picked |
+| Wording drift between your prompt and the generated case | Improved, not guaranteed | The case-generation step can reword "click on Admin" into "Navigate to the Admin section", and can drop explicit waits you asked for. The IR stage no longer acts on the misleading wording (a guessed route is now rejected deterministically), but the case text itself is still LLM-authored prose |
+| A vague "the whole header/nav is visible" case | Guarded, not eliminated | Elements with a stable selector now carry real computed visibility, and a hidden one can't be asserted visible. An element with no selector at all still falls back to the static parser's assumed `visible: true` |
 
 ### Known Limitations
 
 | Issue | Impact |
 |-------|--------|
 | No server authentication | Anyone with the URL can start runs and browse artifacts |
-| No built-in demo credentials | Every login-gated site pauses and asks for credentials via the UI prompt (or times out and continues without them, `CREDENTIAL_WAIT_MS`) — there is no per-site autofill list anymore, by design (general-purpose over site-specific) |
+| No built-in demo credentials | There is no per-site autofill list, by design (general-purpose over site-specific). Credentials are taken from your prompt when it carries them, otherwise the run pauses and asks via the UI prompt (or times out and continues without them, `CREDENTIAL_WAIT_MS`) |
 | Gemini key inconsistency | Different keys from different projects can have different model access |
 | Failure diagnosis step attribution | Confirmed against a real run: `analyzeFailure` can report a different `failingStepId` than the raw Playwright trace actually shows |
-| Assertion quality | Prompt-nudged, not code-level validated, beyond the terminal-step and title-metadata grounding above |
-| Discovery's `visible` field can lie for CSS-only visibility | `domExtract.ts` is a static HTML parser (cheerio) — it has no CSS engine, so an element hidden only by a media query (a common responsive pattern) gets recorded `visible: true`. Confirmed on a real run: a mobile hamburger toggle |
+| Assertion quality | Prompt-nudged, not code-level validated, beyond the terminal-step, title-metadata, and hidden-element grounding above |
+| Discovery's `visible` field is only accurate for selector-bearing elements | `domExtract.ts` is a static HTML parser (cheerio) with no CSS engine. Elements carrying a stable selector are re-checked live and corrected; an element with no `id`/`data-test`/`css` still gets the assumed `visible: true` |
+| A rejected step costs an LLM retry | Every deterministic grounding rejection (guessed route, hidden element, ungrounded target) feeds a correction back and re-generates. It's bounded by `MAX_IR_ATTEMPTS`, but a case the model keeps getting wrong will exhaust the budget and ship a truncated prefix |
 
 ## Architecture
 
@@ -279,6 +285,8 @@ result, trace + video retained on failure only.
 | `MAX_EXTENSIONS` | `ir.ts` (`MAX_LIVE_EXTENSIONS` env) | 5 | Max live-extend page hops per test case |
 | `MAX_ATTEMPTS` | `ir.ts` (`MAX_IR_ATTEMPTS` env) | 4 | IR generate/validate retries per case |
 | `MAX_DISCOVERY_PAGES` | `hybridDiscovery.ts` | 5 | Max pages collected by a single site crawl |
+| `CLICKABLE_ROLE_GROUP` | `ir.ts` | link, button, menuitem, tab | Roles grounding may swap between when the exact role isn't present |
+| `MAX_GENERIC_CLICKABLES` | `domDiscovery.ts` | 40 | Cap on non-semantic (`div`/`span`/`li`/`p`) clickables added per page |
 | Coverage budget | `testCases.ts` | 2 / 4 / 5 | Cases per run for minimal / standard / full coverage, capped by `MAX_CASES_PER_RUN` |
 | History limit | `runStore.ts` | 20 | Max runs shown in history (not env-configurable) |
 | LLM cache TTL | `llmCache.ts` | 30min | In-memory half only — the on-disk half has no expiry |

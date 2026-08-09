@@ -313,15 +313,21 @@ Rules, follow exactly:
 - "expected" is the concrete, observable outcome — an element becoming visible, a URL changing, specific text appearing — not a vague pass/fail statement.
 - When one case combines a deliberately-WRONG credential attempt with a genuinely-valid one (e.g. "verify invalid login shows an error, then verify valid login succeeds"), order the wrong attempt FIRST and the valid attempt LAST. Most sites redirect an already-authenticated session away from the login page, so a case that logs in for real and then tries to "return to the login page" for a second attempt will find no login form there. Ending on the successful, authenticated state also makes any later "session persists" check trivial — it's already true. For the rejected attempt's error check, prefer something structurally groundable over exact wording — e.g. "the 'Sign In' button is still visible" or "the URL still contains '/login'" — since a free-text error message in the MIDDLE of a case is never grounded against the live page (only a case's terminal step gets that treatment).
 
+The example below is a SHAPE reference only. Its element names, URLs and values belong to the
+example, never to your output: take every element name from the application model you were
+given, and take any credential or literal value from the plan/request. A positive case must
+carry the request's OWN values verbatim — never an address or password invented to look
+plausible, and never one copied from this example.
+
 Example of the exact shape required — note the first steps name real entry-page elements
 verbatim, steps after a navigating action describe intent for pages not yet in the model, category is populated,
 targetUrl points to the page being tested, and
 exactly one case (the plan's own literal ask) carries "fromPrompt": true:
 [ { "title": "Log in with the given credentials", "priority": "high", "feature": "Login", "fromPrompt": true, "category": "valid", "intent": "proves a real user can authenticate with the credentials given", "checklistTitle": "Valid credentials", "targetUrl": "https://example.com/login",
-    "steps": ["Navigate to /login", "Fill 'Email' with 'lakshya.soni@thinkvibes.com'", "Fill 'Password' with '123456'", "Click 'Sign In'"],
+    "steps": ["Navigate to /login", "Fill '<the model's own identifier field>' with '<the identifier from the request>'", "Fill '<the model's own password field>' with '<the password from the request>'", "Click '<the model's own submit button>'"],
     "expected": "Login succeeds and the authenticated area is shown" },
   { "title": "Login with invalid password", "priority": "high", "feature": "Login", "category": "invalid-input", "intent": "proves a wrong password is rejected rather than silently accepted", "checklistTitle": "Invalid password", "targetUrl": "https://example.com/login",
-    "steps": ["Navigate to /login", "Fill 'Email' with 'user@test.com'", "Fill 'Password' with 'wrongpass'", "Click 'Sign In'"],
+    "steps": ["Navigate to /login", "Fill '<the model's own identifier field>' with '<the identifier from the request>'", "Fill '<the model's own password field>' with 'an-incorrect-password'", "Click '<the model's own submit button>'"],
     "expected": "An 'invalid credentials' error is shown and the user stays on the login page" } ]`;
   const gapsLine = gaps.length
     ? `\nConcepts with NO checklist entry — apply the 5 reasoning dimensions above to these directly, do not just emit one generic case: ${gaps.join(", ")}\n`
@@ -331,10 +337,14 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
   // request) must NOT collide on a cached batch, or "customizing" silently returns yesterday's
   // suite. The round's refinement prompt joins too, so a new focus direction in a later gate
   // round forces a fresh generation instead of the previous batch.
+  // `system` joins for the same reason every other real input does: the disk cache never
+  // expires, so a rule this prompt gains or loses would otherwise never reach any plan+model
+  // combination already seen. Hashing the text means nobody has to remember to bump a version.
   const cacheKey = makeCacheKey(
     JSON.stringify(p), JSON.stringify(liteModel), scope.join(","),
     (extend?.existingTitles ?? []).join("|"), (extend?.rejectedTitles ?? []).join("|"),
-    opts.sourcePrompt ?? "", extend?.latestPrompt ?? "");
+    opts.sourcePrompt ?? "", extend?.latestPrompt ?? "",
+    system, process.env.GEMINI_MODEL ?? "default");
   const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
   if (cachedCases) return cachedCases;
 

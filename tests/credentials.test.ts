@@ -3,6 +3,7 @@ import {
   credentialFieldsNeeded, promptCarriesCredentials, applyCredentials, isEnvValueRef,
   credentialEnvVars, credentialKindForTarget, credentialForTarget, redactCredentials, REDACTED,
   wantsRealCredentials, credentialFieldMap, credentialPolicyFor, lastFillIndexByKind,
+  extractCredentialsFromPrompt,
 } from "../src/stages/credentials.js";
 import { generateSpec } from "../src/stages/generator.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -71,6 +72,49 @@ describe("promptCarriesCredentials", () => {
     expect(promptCarriesCredentials("check the password field is masked")).toBe(false);
     expect(promptCarriesCredentials("verify the password strength meter")).toBe(false);
     expect(promptCarriesCredentials("test the password-reset flow")).toBe(false);
+  });
+});
+
+// Regression: promptCarriesCredentials correctly detected that a prompt carried real
+// credentials — but detection alone was only ever used to SKIP the credential-prompt UI ask.
+// Nothing pulled the actual values out, so runCreds stayed undefined for the whole run and
+// applyCredentials had nothing to inject — the model's own (sometimes invented, e.g.
+// "admin@learnvibes.com") placeholder shipped untouched.
+describe("extractCredentialsFromPrompt", () => {
+  it("extracts the exact real-world example from the bug report (quoted password)", () => {
+    const creds = extractCredentialsFromPrompt(
+      `i want you to login to the website using the credentials email: vaibhav.parmar@thinkvibes.com and password is "123456" then verify the dashboard loads`
+    );
+    expect(creds?.username).toBe("vaibhav.parmar@thinkvibes.com");
+    // Regression for the non-greedy regex trap: `password is "123456"` must extract the WHOLE
+    // value, not just "1" (which is what `["']?(\S+?)["']?` — non-greedy capture followed by a
+    // fully optional closing-quote group — would produce: the engine is satisfied the moment
+    // the optional group matches zero width, and never backtracks to extend the capture).
+    expect(creds?.password).toBe("123456");
+    expect(creds?.secret).toBe(true);
+  });
+
+  it("extracts an unquoted, colon-separated form", () => {
+    const creds = extractCredentialsFromPrompt("login with user: alice password: hunter2");
+    expect(creds).toEqual({ username: "alice", password: "hunter2", secret: true });
+  });
+
+  it("extracts username via 'email is <value>' wording", () => {
+    const creds = extractCredentialsFromPrompt(`email is bob@example.com and password is "s3cret!"`);
+    expect(creds?.username).toBe("bob@example.com");
+    expect(creds?.password).toBe("s3cret!");
+  });
+
+  it("returns undefined when only one of the two is present", () => {
+    expect(extractCredentialsFromPrompt(`password is "hunter2"`)).toBeUndefined();
+    expect(extractCredentialsFromPrompt("email: alice@example.com")).toBeUndefined();
+  });
+
+  // Same false-positive shapes promptCarriesCredentials already guards against — a prompt that
+  // merely mentions the word "password" must never manufacture a fake credential out of it.
+  it("returns undefined for a prompt that only mentions password/email in passing", () => {
+    expect(extractCredentialsFromPrompt("check the password field is masked")).toBeUndefined();
+    expect(extractCredentialsFromPrompt("test the login and signup page")).toBeUndefined();
   });
 });
 
@@ -203,12 +247,14 @@ describe("credential substitution is opt-in, per step", () => {
     expect(isEnvValueRef(steps[0].value)).toBe("TEST_USERNAME");
   });
 
-  // The fromPrompt case is why credentials get supplied at all — it must use them, unless the
-  // prompt already carried its own literal values.
-  it("uses supplied credentials for the fromPrompt case, but not when the prompt had its own", () => {
+  // The fromPrompt case is why credentials get supplied at all — it must use them regardless of
+  // whether the prompt carried its own literal values (see the "intentional reversal" comment on
+  // credentialPolicyFor: extractCredentialsFromPrompt now supplies the real value as runCreds, so
+  // always substituting is strictly safer than trusting the model copied it faithfully).
+  it("uses supplied credentials for the fromPrompt case, whether or not the prompt had its own", () => {
     const p = tc({ title: "Log in as asked", fromPrompt: true, category: "functional-other" });
     expect(wantsRealCredentials(p, false)).toBe(true);
-    expect(wantsRealCredentials(p, true)).toBe(false);
+    expect(wantsRealCredentials(p, true)).toBe(true);
   });
 
   // These are the exact categories that let the old blocklist through.
@@ -429,9 +475,14 @@ describe("credentialPolicyFor", () => {
     }), false)).toBe("none");
   });
 
-  it("still respects credentials the user typed into the prompt", () => {
+  it("always substitutes for a prompt-derived case, regardless of promptHasCredentials", () => {
+    // Intentional reversal: this used to return "none" when promptHasCredentials was true, on
+    // the assumption the model had already copied the user's literal value into the case text.
+    // In practice the model routinely invents a placeholder instead — extractCredentialsFromPrompt
+    // now supplies the real verified value as runCreds, so always substituting is strictly safer
+    // (a no-op if the model was faithful, a fix if it wasn't).
     const p = tc({ title: "Log in as asked", fromPrompt: true, category: "functional-other" });
-    expect(credentialPolicyFor(p, true)).toBe("none");
+    expect(credentialPolicyFor(p, true)).toBe("full");
     expect(credentialPolicyFor(p, false)).toBe("full");
   });
 

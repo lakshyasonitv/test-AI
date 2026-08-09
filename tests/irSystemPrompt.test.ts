@@ -60,11 +60,30 @@ describe("toIR system prompt — page title guard", () => {
 // against a real run (2026-08-06T19-23-32-512Z-e3943abb, case-0): the toggle was recorded
 // visible:true by discovery but reported hidden by the actual browser at test time.
 describe("toIR system prompt — mobile-toggle grounding guard", () => {
-  it("tells the model to avoid a menu-toggle control as the sole representative of a header/nav check", async () => {
+  // Asserts the RULE is present, not one phrasing of it. The wording was generalised (it used
+  // to name "menu-toggle"/"hamburger" and "responsive CSS breakpoint" literally, which pinned
+  // the prompt to one site's vocabulary); what has to survive is that the model is steered off
+  // an open/collapse control and told the reason is viewport-dependent visibility.
+  it("tells the model to avoid a menu-toggle control as the sole representative of a nav check", async () => {
     groqMock.mockClear();
     await toIR(testCase, appModel, `check the header ${Date.now()}-${Math.random()}`, `${HOST}/`);
     const [, opts] = groqMock.mock.calls[0];
-    expect(opts.system).toContain("menu-toggle");
-    expect(opts.system).toContain("responsive CSS breakpoint");
+    expect(opts.system).toMatch(/OPEN or COLLAPSE|open\/collapse|menu-toggle/i);
+    expect(opts.system).toMatch(/viewport width|responsive CSS breakpoint/i);
+  });
+});
+
+// Regression: a plain 3-step login case's IR came back referencing an unrelated product page —
+// buildUser sends both the specific testCase AND the full original sourcePrompt in the same
+// message, with nothing telling the model the latter is background context only, not a second
+// source of steps. Confirmed against a real run this session (case-2 of a saucedemo suite,
+// title drifted to "...and add product to cart" despite its own testCase never mentioning one).
+describe("toIR system prompt — sourcePrompt scope-bleed guard", () => {
+  it("tells the model to build the IR from testCase alone, not the broader sourcePrompt", async () => {
+    groqMock.mockClear();
+    await toIR(testCase, appModel, `check just the login, nothing else ${Date.now()}-${Math.random()}`, `${HOST}/`);
+    const [, opts] = groqMock.mock.calls[0];
+    expect(opts.system).toContain("BUT ONLY THE CASE");
+    expect(opts.system).toContain("not a second source of steps");
   });
 });

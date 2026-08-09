@@ -551,6 +551,124 @@ function paintVerdict(v) {
     `${v.detail ? `<span class="verdict-detail">${escapeHtml(v.detail)}</span>` : ""}</span>`;
 }
 
+function formatIrStep(step) {
+  if (!step || typeof step !== "object") return String(step);
+  const action = step.action;
+  const target = step.target;
+  const targetDesc = target?.name
+    ? `${target.role ? target.role + " " : ""}"${target.name}"`
+    : target?.text
+    ? `text "${target.text}"`
+    : target?.url
+    ? `"${target.url}"`
+    : target?.role || "element";
+
+  switch (action) {
+    case "navigate":
+      return `Navigate to ${target?.url ? `"${target.url}"` : step.value ? `"${step.value}"` : '"/"'}`;
+    case "fill":
+      return `Fill ${targetDesc} with "${step.value ?? ""}"`;
+    case "click":
+      return `Click ${targetDesc}`;
+    case "select":
+      return `Select "${step.value ?? ""}" in ${targetDesc}`;
+    case "check":
+      return `Check ${targetDesc}`;
+    case "press":
+      return `Press "${step.value ?? ""}" on ${targetDesc}`;
+    case "wait":
+      return `Wait ${step.value ?? 500}ms`;
+    case "assert": {
+      const assertion = step.assertion || "visible";
+      if (assertion === "visible") return `Assert ${targetDesc} is visible`;
+      if (assertion === "hidden") return `Assert ${targetDesc} is hidden`;
+      if (assertion === "url_contains") return `Assert URL contains "${step.value || target?.url || ""}"`;
+      if (assertion === "text_contains") return `Assert text contains "${step.value || ""}"`;
+      if (assertion === "text_equals") return `Assert text equals "${step.value || ""}"`;
+      if (assertion === "enabled") return `Assert ${targetDesc} is enabled`;
+      if (assertion === "disabled") return `Assert ${targetDesc} is disabled`;
+      return `Assert ${assertion} on ${targetDesc}${step.value ? ` ("${step.value}")` : ""}`;
+    }
+    default:
+      return `${action} ${targetDesc}`;
+  }
+}
+
+function renderEnterpriseDiagnostic(data, stage, error) {
+  if (data?.passed && !data?.partial) {
+    diagnosisEl.innerHTML = "";
+    diagnosisEl.classList.add("hidden");
+    return;
+  }
+
+  const status = data?.status;
+  const note = data?.truncationNote || data?.ir?.meta?.truncationNote;
+  const diagnosis = data?.diagnosis;
+  const blockedBy = data?.blockedBy;
+
+  let headline = "Test Analysis";
+  let description = "";
+  let fixPrompt = "";
+  let techDetails = "";
+
+  if (status === "truncated_no_assertion" || status === "truncated" || note) {
+    headline = "Test Truncated Mid-Flow (Element Not Found)";
+    if (/admin|role|permission|authorized/i.test(note || "")) {
+      description = "The test signed in, but could not locate the Admin section on the page. This typically occurs if the account used lacks Admin privileges (e.g. standard 'Learner' user).";
+      fixPrompt = 'Specify Admin credentials in your prompt:\n"Log in with email: vaibhav.parmar@thinkvibes.com and password: 123456 then click Admin..."';
+    } else if (/hydration|dynamically|load/i.test(note || "")) {
+      description = "The element was not yet visible in the page DOM when the test attempted to interact with it.";
+      fixPrompt = 'Add a wait step in your prompt:\n"Log in, wait 2 seconds for the dashboard to load, then click Admin..."';
+    } else {
+      description = "The requested element could not be matched against the discovered page elements.";
+      fixPrompt = "Ensure the button or link text in your prompt matches what appears on the website.";
+    }
+    techDetails = note || "";
+  } else if (status === "blocked") {
+    headline = "Test Blocked by Site Constraint";
+    description = blockedBy || "The flow encountered an authentication barrier (such as 2FA, OTP, or CAPTCHA) that automation cannot bypass.";
+    fixPrompt = "Test on a staging environment where 2FA is disabled or provide pre-authenticated cookies.";
+    techDetails = blockedBy || "";
+  } else if (diagnosis) {
+    headline = `Execution Failure (${diagnosis.category || 'Error'})`;
+    description = diagnosis.explanation || "The Playwright test step failed during execution.";
+    fixPrompt = diagnosis.suggestedFix || "Verify the target element is visible and enabled on the page.";
+    techDetails = `Failing Step: ${diagnosis.failingStepId || 'unknown'}`;
+  } else if (error || stage === "error") {
+    headline = "Pipeline Execution Error";
+    description = error || "An error occurred while executing the test pipeline.";
+    fixPrompt = "Check network connectivity and verify the target URL is accessible.";
+    techDetails = error || "";
+  } else {
+    return;
+  }
+
+  diagnosisEl.innerHTML = `
+    <div class="diag-card">
+      <div class="diag-card-header">
+        <span class="diag-badge">Diagnostic Analysis</span>
+        <h4>${escapeHtml(headline)}</h4>
+      </div>
+      <div class="diag-card-body">
+        <div class="diag-item">
+          <span class="diag-label">What Went Wrong:</span>
+          <p class="diag-text">${escapeHtml(description)}</p>
+        </div>
+        ${fixPrompt ? `
+        <div class="diag-item diag-fix-box">
+          <span class="diag-label fix-label">💡 How to Fix This in Your Next Prompt:</span>
+          <pre class="diag-fix-code">${escapeHtml(fixPrompt)}</pre>
+        </div>` : ""}
+        ${techDetails ? `
+        <details class="diag-tech-details">
+          <summary>Technical Details</summary>
+          <code>${escapeHtml(techDetails)}</code>
+        </details>` : ""}
+      </div>
+    </div>`;
+  diagnosisEl.classList.remove("hidden");
+}
+
 function renderSingleTestResult(data, stage, error) {
   finalResult.classList.remove("hidden");
   const passed = data?.passed;
@@ -559,14 +677,20 @@ function renderSingleTestResult(data, stage, error) {
   paintVerdict(verdictFor(data, stage, error));
 
   const test = data?.test;
-  if (test) {
-    testTitleEl.textContent = test.title ?? "";
-    testStepsEl.innerHTML = (test.steps ?? []).map((s) => `<li>${escapeHtml(s)}</li>`).join("");
-    testExpectedEl.textContent = test.expected ? `Expected: ${test.expected}` : "";
+  const ir = data?.ir;
+  if (test || ir) {
+    testTitleEl.textContent = test?.title || ir?.meta?.title || "";
+    const stepsToRender = ir?.steps?.length
+      ? ir.steps.map(formatIrStep)
+      : (test?.steps ?? []);
+    testStepsEl.innerHTML = stepsToRender.map((s) => `<li>${escapeHtml(s)}</li>`).join("");
+    testExpectedEl.textContent = test?.expected ? `Expected: ${test.expected}` : "";
     testSummaryEl.classList.remove("hidden");
   } else {
     testSummaryEl.classList.add("hidden");
   }
+
+  renderEnterpriseDiagnostic(data, stage, error);
 
   const shot = data?.screenshotUrl;
   if (shot) {
@@ -888,16 +1012,18 @@ function applyEvent(event, runId) {
     const status = event.data?.status;
     paintVerdict(verdictFor(event.data, event.stage, event.error));
 
-    if (status === "truncated_no_assertion" && event.data?.truncationNote) {
-      diagnosisEl.textContent = event.data.truncationNote;
-    }
+    renderEnterpriseDiagnostic(event.data, event.stage, event.error);
 
     // Plain-English record of what actually ran, so the verdict isn't just a bare badge.
     const test = event.data?.test;
-    if (test) {
-      testTitleEl.textContent = test.title ?? "";
-      testStepsEl.innerHTML = (test.steps ?? []).map((s) => `<li>${escapeHtml(s)}</li>`).join("");
-      testExpectedEl.textContent = test.expected ? `Expected: ${test.expected}` : "";
+    const ir = event.data?.ir;
+    if (test || ir) {
+      testTitleEl.textContent = test?.title || ir?.meta?.title || "";
+      const stepsToRender = ir?.steps?.length
+        ? ir.steps.map(formatIrStep)
+        : (test?.steps ?? []);
+      testStepsEl.innerHTML = stepsToRender.map((s) => `<li>${escapeHtml(s)}</li>`).join("");
+      testExpectedEl.textContent = test?.expected ? `Expected: ${test.expected}` : "";
       testSummaryEl.classList.remove("hidden");
     } else {
       testSummaryEl.classList.add("hidden");

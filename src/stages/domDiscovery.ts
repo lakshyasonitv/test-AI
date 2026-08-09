@@ -48,6 +48,9 @@ function crawlResponseToAppModel(crawl: CrawlResponse): AppModel {
       // locate it — getByRole with a synthetic name matches nothing.
       ...(ie.test_id ? { testId: ie.test_id } : {}),
       ...(ie.css ? { css: ie.css } : {}),
+      // Same idea one step further: a proximity-inferred name isn't in the DOM at all, so
+      // the resolver has to locate the field by its position relative to that text.
+      ...(ie.name_from_proximity ? { nameFromProximity: true } : {}),
       order: order++,
     });
   }
@@ -388,6 +391,38 @@ async function detectGenericClickables(page: Page): Promise<GenericClickable[]> 
   }
 }
 
+/** Re-check real visibility for every element discovery gave a `css` selector — cheerio (the
+ *  primary extraction path) has no computed-style access, so `visible` arrives hardcoded true.
+ *  Only elements with a css selector are worth re-checking here: those are exactly the ones
+ *  eligible for ir.ts's grounding-time auto-css-attach (matched?.css && !t.css), so an
+ *  inaccurate `true` here is what lets a viewport-hidden control (a hamburger menu-toggle,
+ *  most commonly) become a raw-selector assertion target that times out at execution. One
+ *  batched page.evaluate() — not N locator round-trips — reusing the same
+ *  geometry+computed-style predicate already proven correct in discovery.ts's vision-fallback
+ *  scan (deliberately NOT offsetParent, which returns null for position:fixed and would wrongly
+ *  flag fixed headers as hidden). */
+async function recheckVisibility(page: Page, elements: Element[]): Promise<void> {
+  const selectors = [...new Set(elements.filter(e => e.css).map(e => e.css!))];
+  if (!selectors.length) return;
+  const results = await page.evaluate((sels: string[]) => {
+    const out: Record<string, boolean> = {};
+    for (const sel of sels) {
+      try {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (!el) { out[sel] = true; continue; } // can't disprove visibility, leave as-is
+        const cs = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        out[sel] = r.width > 0 && r.height > 0 &&
+          cs.display !== "none" && cs.visibility !== "hidden" && Number(cs.opacity) !== 0;
+      } catch { out[sel] = true; }
+    }
+    return out;
+  }, selectors).catch(() => ({} as Record<string, boolean>));
+  for (const e of elements) {
+    if (e.css && results[e.css] !== undefined) e.visible = results[e.css];
+  }
+}
+
 /**
  * Extract a page's DOM model from an ALREADY-OPEN Playwright page — no browser launch, no
  * navigation, no cache write. This is what live-extend uses to snapshot a replayed page, so
@@ -425,6 +460,8 @@ export async function extractDomModelFromPage(page: Page, url: string): Promise<
         });
       }
     }
+
+    if (model.pages[0]) await recheckVisibility(page, model.pages[0].elements);
 
     return model;
   } catch (err: any) {

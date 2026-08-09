@@ -31,6 +31,38 @@ function pick(t: Target) {
   return r;
 }
 
+/**
+ * Actions that can only ever act on a form control. `getByText` is not merely a weak choice
+ * for these — it is categorically wrong, because it matches the element CONTAINING the text,
+ * which for a labelled field is the label. Seen in production: `fill { text: "Name" }` became
+ * `getByText('Name')`, resolved to `<label>Full Name</label>`, and Playwright refused with
+ * "Element is not an <input>, <textarea>, <select> or [contenteditable]".
+ */
+const FIELD_ACTIONS = new Set(["fill", "select", "check"]);
+
+/** The human-facing string that identifies a field, whichever slot the IR put it in. */
+export function fieldHint(t: Target): string {
+  return t.label || t.name || t.placeholder || t.text || "";
+}
+
+export const isFieldAction = (action?: string) => !!action && FIELD_ACTIONS.has(action);
+
+/**
+ * Positional fallback for a field with no accessible name and no stable selector — the
+ * `<div>Full Name</div><input>` shape, where the only thing tying the control to its label is
+ * layout. `:near()` is Playwright's built-in layout engine, so this needs no extra dependency,
+ * and `:text()` matches on substring — which is exactly what lets a request that says "Name"
+ * reach a field labelled "Full Name".
+ *
+ * ponytail: one positional strategy, not four. `:near` covers a label above, beside, or before
+ * the input; if a layout ever needs strict direction, `:below(...)`/`:right-of(...)` are the
+ * upgrade path.
+ */
+export function nearFieldSelector(hint: string): string {
+  const anchor = `:text(${JSON.stringify(hint)})`;
+  return ["input", "textarea", "select"].map(tag => `${tag}:near(${anchor}, 120)`).join(", ");
+}
+
 // button<->link is the single most common real-world role mismatch (a styled <a> used as a
 // button, or vice versa) — the fallback chain covers exactly this, not an open-ended set.
 const ROLE_SWAP: Record<string, string> = { button: "link", link: "button" };
@@ -42,12 +74,18 @@ const ROLE_SWAP: Record<string, string> = { button: "link", link: "button" };
  * self-contained file (no deps beyond @playwright/test), so the algorithm can't be shared
  * as an import — only as the same logic written twice.
  */
-export function resolveCode(t: Target): string {
+export function resolveCode(t: Target, action?: string): string {
   // A verified selector beats role+name even when both are present — role+name may be a
   // name discovery derived (e.g. "shopping cart link"), which getByRole cannot match.
   if (t.css) {
     const base = `page.locator(${q(t.css)})`;
     return t.nth !== undefined && t.nth !== null ? `${base}.nth(${t.nth})` : `${base}.first()`;
+  }
+  // A field action routes through the field() helper regardless of which slot carried the
+  // hint, so a role+name whose name was inferred from an adjacent <div> still resolves —
+  // getByRole cannot match a name the DOM does not actually have.
+  if (isFieldAction(action) && fieldHint(t)) {
+    return `(await field(page, ${q(fieldHint(t))}))`;
   }
   if (t.role && t.name) {
     // If nth is specified, use it to disambiguate duplicate elements
@@ -77,11 +115,38 @@ async function resolveRoleWithFallback(page: Page, role: string, name: string): 
   return original.first();
 }
 
+/**
+ * Live counterpart of the generated spec's field() helper. Tries the ways a field can be
+ * named, in decreasing order of how much the DOM actually vouches for them, and takes the
+ * first that identifies exactly one element — same "count() === 1" shape
+ * resolveRoleWithFallback uses. Falls through to the positional match, so a control with no
+ * accessible name at all is still reachable.
+ */
+export async function resolveField(page: Page, hint: string): Promise<Locator> {
+  const candidates: Locator[] = [
+    page.getByLabel(hint),
+    page.getByPlaceholder(hint),
+    page.getByRole("textbox", { name: hint }),
+    page.getByRole("combobox", { name: hint }),
+    page.getByRole("checkbox", { name: hint }),
+    page.locator(nearFieldSelector(hint)),
+  ];
+  for (const c of candidates) {
+    if (await c.count() === 1) return c;
+  }
+  // Nothing was unique. The positional match is the only one that can't resolve to a
+  // non-fillable node, so prefer its closest hit over a label/text match that would.
+  return page.locator(nearFieldSelector(hint)).first();
+}
+
 /** Live Playwright Locator against a running page (for the replay runner). */
-export async function resolveLive(page: Page, t: Target): Promise<Locator> {
+export async function resolveLive(page: Page, t: Target, action?: string): Promise<Locator> {
   if (t.css) {
     const base = page.locator(t.css);
     return t.nth !== undefined && t.nth !== null ? base.nth(t.nth) : base.first();
+  }
+  if (isFieldAction(action) && fieldHint(t)) {
+    return resolveField(page, fieldHint(t));
   }
   if (t.role && t.name) {
     // If nth is specified, use it to disambiguate duplicate elements
