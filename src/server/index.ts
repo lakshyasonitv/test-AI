@@ -165,9 +165,41 @@ app.delete("/api/runs/:runId", (req, res) => {
   }
 });
 
+// Health-check / diagnostic endpoint — never exposes secret values, only reports
+// whether each critical env var is present so deployment problems surface fast.
+app.get("/api/health", (_req, res) => {
+  const check = (name: string) => {
+    const val = process.env[name];
+    return { set: !!val, length: val?.length ?? 0 };
+  };
+  res.json({
+    status: "ok",
+    env: {
+      GEMINI_API_KEYS: check("GEMINI_API_KEYS"),
+      GEMINI_API_KEY:  check("GEMINI_API_KEY"),
+      GROQ_API_KEYS:   check("GROQ_API_KEYS"),
+      GROQ_API_KEY:    check("GROQ_API_KEY"),
+      GEMINI_MODEL:    check("GEMINI_MODEL"),
+      GEMINI_MODEL_LITE: check("GEMINI_MODEL_LITE"),
+      GROQ_MODEL:      check("GROQ_MODEL"),
+      NODE_ENV:        check("NODE_ENV"),
+      PORT:            check("PORT"),
+    },
+  });
+});
+
 app.get("/", (_req, res) => {
   res.sendFile(path.resolve("public/index.html"));
 });
 
 const port = Number(process.env.PORT ?? 3000);
+
+// Startup diagnostic — log which key env vars are detected so Render's deploy
+// log immediately shows whether secrets were injected.
+console.log("[startup] Environment variable check:");
+for (const v of ["GEMINI_API_KEYS", "GEMINI_API_KEY", "GROQ_API_KEYS", "GROQ_API_KEY", "GEMINI_MODEL", "GROQ_MODEL", "NODE_ENV", "PORT"]) {
+  const val = process.env[v];
+  console.log(`  ${v}: ${val ? `SET (${val.length} chars)` : "NOT SET"}`);
+}
+
 app.listen(port, () => console.log(`AI Test Platform UI: http://localhost:${port}`));
