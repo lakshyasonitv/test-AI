@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: ai-test-platform
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: MAX_CONCURRENT_RUNS
+        value: "1"
+      - key: NODE_ENV
+        value: "production"
