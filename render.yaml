@@ -11,9 +11,9 @@ services:
       - key: GROQ_API_KEYS
         sync: false
       - key: GEMINI_MODEL
-        value: "gemini-1.5-flash"
+        value: "gemini-3-flash-preview"
       - key: GEMINI_MODEL_LITE
-        value: "gemini-1.5-flash"
+        value: "gemini-3.1-flash-lite"
       - key: GROQ_MODEL
         value: "openai/gpt-oss-120b"
       - key: MAX_CONCURRENT_RUNS
