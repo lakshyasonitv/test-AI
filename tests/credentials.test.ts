@@ -110,6 +110,16 @@ describe("extractCredentialsFromPrompt", () => {
     expect(extractCredentialsFromPrompt("email: alice@example.com")).toBeUndefined();
   });
 
+  it("extracts unquoted email when it appears before a quoted email in the prompt", () => {
+    const prompt = 'login with email vaibhav.parmar@thinkvibes.com and password 123456 then fill user email "test@thinkvibes.com"';
+    const creds = extractCredentialsFromPrompt(prompt);
+    expect(creds).toEqual({
+      username: "vaibhav.parmar@thinkvibes.com",
+      password: "123456",
+      secret: true,
+    });
+  });
+
   // Same false-positive shapes promptCarriesCredentials already guards against — a prompt that
   // merely mentions the word "password" must never manufacture a fake credential out of it.
   it("returns undefined for a prompt that only mentions password/email in passing", () => {
@@ -496,3 +506,5 @@ describe("credentialPolicyFor", () => {
     expect(steps[1].value).toBe("incorrectPassword123");   // the point of the whole test
   });
 });
+
+

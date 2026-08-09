@@ -12,10 +12,10 @@ finding is marked as such.
 
 | Part | What | Status |
 |---|---|---|
-| A | Defects — things that are wrong | ✅ A1, A2, A3, A4, A5, A8 done (2026-08-08) · rest ⬜, incl. new A11 (2026-08-09) |
-| B | Dead code — provably unreferenced | ✅ B1, B2, B3, B4, B5, B7, B8 done (2026-08-08) · B6 🔍 · new B9 ⬜ (2026-08-09) |
+| A | Defects — things that are wrong | ✅ A1, A2, A3, A4, A5, A8, A11 done · rest ⬜ |
+| B | Dead code — provably unreferenced | ✅ B1, B2, B3, B4, B5, B7, B8, B9 done · B6 🔍 |
 | C | System prompts made general-purpose | ✅ **done 2026-08-08** |
-| D | Findings from a second audit (2026-08-09) | ⬜ D1–D9 open, D10 folds into A7 |
+| D | Findings from a second audit (2026-08-09) | ✅ D1 done · D2–D9 open, D10 folds into A7 |
 
 ---
 
@@ -192,7 +192,7 @@ Confirm which before changing anything.
 - **No CI runs the 248 tests.** The only workflow, `.github/workflows/directory-tree.yml`,
   regenerates a directory tree and pushes to `main`.
 
-### ⬜ A11. `extractCredentialsFromPrompt` can silently substitute the wrong email/password when a
+### ✅ A11. `extractCredentialsFromPrompt` can silently substitute the wrong email/password when a (done 2026-08-09)
 prompt mentions the keyword more than once
 
 `extractValueAfter` (`stages/credentials.ts:203-210`) tries a "quoted value" regex first via
@@ -251,7 +251,7 @@ Every item was verified by a reference scan across `src/` and `tests/`.
 | B6 | `wantsRealCredentials` | `stages/credentials.ts` | 0 `src/` references, 6 in tests — test-only | 🔍 **Decide first.** Either it is the real policy entry point and `credentialPolicyFor` should call it, or the tests are pinning dead behaviour. Do not simply delete — that silently deletes 6 tests' subject | 🔍 Needs decision |
 | B7 | `preview.js` fixture points at a deleted run | `public/preview.js` | Fixture run `2026-07-30T17-01-59-013Z-979dbd01` no longer exists, so every preview screenshot 404s | Keep the tool, repoint the fixture at a surviving run | ✅ Done (2026-08-08) |
 | B8 | `GUNWANT_PORT_NOTES.md` | repo root | Its own status note says all nine items were ported and *"re-diff before acting on anything here"*. Purely historical now | Archive or delete | ✅ Deleted (2026-08-08) |
-| B9 | `findAuthBoundary` | `stages/credentials.ts:417-437` | 0 references anywhere in `src/` or `tests/` besides its own definition (confirmed by repo-wide grep). Not test-only like B6 — nothing calls it at all. Sits directly above `lastFillIndexByKind`, which is used throughout `credentials.ts`/`liveExtend.ts`/`ir.ts` and appears to have superseded it | Delete, or confirm it was meant to replace `lastFillIndexByKind`'s call sites | ⬜ Open |
+| B9 | `findAuthBoundary` | `stages/credentials.ts:417-437` | 0 references anywhere in `src/` or `tests/` besides its own definition (confirmed by repo-wide grep). Not test-only like B6 — nothing calls it at all. Sits directly above `lastFillIndexByKind`, which is used throughout `credentials.ts`/`liveExtend.ts`/`ir.ts` and appears to have superseded it | Delete, or confirm it was meant to replace `lastFillIndexByKind`'s call sites | ✅ Done (2026-08-09) |
 
 ---
 
@@ -262,7 +262,7 @@ read-only audit agents covered the rest of the codebase; every finding below was
 re-verified by direct code inspection — and for D3, by live reproduction — before being recorded
 here. All ⬜ open; documentation only, none of these have been fixed.
 
-### ⬜ D1. Arbitrary local file disclosure + SSRF via the entry URL — no scheme/host validation
+### ✅ D1. Arbitrary local file disclosure + SSRF via the entry URL — no scheme/host validation (done 2026-08-09)
 
 `POST /api/runs` (`server/index.ts:32-45`) validates only that `prompt` and `url`/`urls` are
 non-empty — no scheme, no private-IP check, no auth on the endpoint at all. `discoverSiteHybrid`
@@ -295,8 +295,25 @@ it was just never applied to the entry URL itself.
 → poll `GET /runs/<runId>/02-appmodel.json` → local file contents readable by anyone who can reach
 the server. Same path reaches internal-network SSRF via an `http://169.254.169.254/...`-style URL.
 
-**Fix.** Allow-list `http:`/`https:` on the incoming `url`/`urls` at the API boundary and again in
-`discoverSiteHybrid`; reject loopback/link-local/private-range hosts unless explicitly opted in.
+**Fix applied.** Shared `isAllowedEntryUrl()` / `isPrivateOrLoopbackHost()` in
+`stages/hybridDiscovery.ts`, called from both the API boundary (`server/index.ts`) and
+`discoverSiteHybrid` — one source of truth instead of two copies. Blocks non-http(s) schemes and
+the RFC1918/link-local ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`),
+verified directly against every address named above.
+
+**Follow-up fix applied the same day.** The first pass only blocked the exact string
+`"127.0.0.1"` and `"::1"` — but the whole `127.0.0.0/8` block is loopback (any other address in
+that range, e.g. `127.0.0.2`, is a classic SSRF-filter bypass), and Node's `URL.hostname` keeps
+the brackets on an IPv6 host (`"[::1]"`, not `"::1"`), so the IPv6 check never matched anything.
+Reproduced both directly (`http://127.0.0.2/` and `http://[::1]/` returned `{ ok: true }`), fixed
+with `h.startsWith("127.")` and matching both bracketed and unbracketed IPv6 loopback forms.
+Covered by `tests/strategy.test.ts`.
+
+**Known residual limitation, not fixed — architectural, out of scope for now.**
+`isPrivateOrLoopbackHost` is a hostname-*string* check performed before any DNS lookup. A
+hostname that resolves to a private/loopback IP only at request time (DNS rebinding) still gets
+through. Closing that fully means resolving DNS and checking the resolved IP rather than the
+literal hostname — a bigger change, not warranted at the current small-trusted-deployment scale.
 
 ### ⬜ D2. Generated spec's `safeClick` treats `javascript:`/`mailto:`/`tel:` links as real navigation
 

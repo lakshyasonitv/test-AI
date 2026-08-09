@@ -193,20 +193,12 @@ export function promptCarriesCredentials(prompt: string): boolean {
   return new RegExp(KEY + String.raw`\s+(?:is\s+)?["'\x60]?[^\s"'\x60]*[\d!@#$%^&*_.+-]`, "i").test(prompt);
 }
 
-/** The value following a "key: value" / "key is value" mention. Tries the quoted form first —
- *  greedy up to the actual closing quote, so a multi-character value between real quotes is
- *  captured whole — before falling back to a single bare (unquoted) token. Non-greedy + a fully
- *  optional closing-quote group would under-capture here (e.g. `password is "123456"` matching
- *  just "1"): the engine finds the pattern satisfied the moment the optional group matches zero
- *  width, and never backtracks to extend the capture. Greedy-bounded-by-the-real-quote avoids
- *  that trap entirely. */
 function extractValueAfter(prompt: string, keyPattern: string): string | undefined {
-  const quoted = new RegExp(`${keyPattern}\\s*(?:is\\s+)?[:=]?\\s*["'\`]([^"'\`]+)["'\`]`, "i");
-  const quotedMatch = prompt.match(quoted);
-  if (quotedMatch) return quotedMatch[1].trim();
-
-  const bare = new RegExp(`${keyPattern}\\s*(?:is\\s+)?[:=]?\\s*(\\S+)`, "i");
-  return prompt.match(bare)?.[1]?.replace(/[,.;:]+$/, ""); // drop trailing sentence punctuation
+  const re = new RegExp(`${keyPattern}\\s*(?:is\\s+)?[:=]?\\s*(?:["'\`]([^"'\`]+)["'\`]|(\\S+))`, "i");
+  const match = prompt.match(re);
+  if (!match) return undefined;
+  const val = match[1] ?? match[2];
+  return val?.trim()?.replace(/[,.;:]+$/, "");
 }
 
 /**
@@ -405,36 +397,6 @@ export function wantsRealCredentials(testCase: TestCase, promptHasCredentials: b
 }
 
 const REGISTRATION_URL = /register|signup|sign-up|create-account|join/i;
-
-/**
- * Find the index of the submit-click that ends the login form — the "auth boundary".
- * 
- * After this step, any email/password field is part of a DIFFERENT form (Add User, 
- * Checkout, Profile) and must NOT receive login credentials.
- *
- * Returns the step index of the submit click, or steps.length if no auth form is found.
- */
-export function findAuthBoundary(
-  steps: { action: string; target?: Target }[],
-  fieldMap?: Map<string, CredentialKind>,
-): number {
-  let sawCredentialFill = false;
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    if (step.action === "fill") {
-      const kind = credentialKindForTarget(step.target, fieldMap);
-      if (kind) sawCredentialFill = true;
-    } else if (step.action === "click" && sawCredentialFill) {
-      // This click follows credential fills — it's the form submit.
-      return i;
-    } else if (step.action === "navigate") {
-      // A navigate resets: if credentials haven't been submitted yet, this
-      // might be navigating TO the login page, not away from it.
-      sawCredentialFill = false;
-    }
-  }
-  return steps.length;
-}
 
 /** For each credential kind, the index of its fill step in this list that would actually
  *  be substituted.

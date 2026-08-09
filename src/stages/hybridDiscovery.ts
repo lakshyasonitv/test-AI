@@ -329,6 +329,36 @@ export function collectCrawlTargets(candidateUrls: string[], entryUrl: string, v
 // would let either function silently hand back the other's cached result.
 const siteCacheKey = (url: string) => `site:${url}`;
 
+export function isPrivateOrLoopbackHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().trim();
+  if (h === "localhost" || h === "0.0.0.0") return true;
+  if (h.startsWith("127.")) return true; // whole 127.0.0.0/8 is loopback, not just 127.0.0.1
+  if (h === "::1" || h === "[::1]") return true; // Node's URL keeps the brackets in .hostname
+  if (h.startsWith("169.254.")) return true; // IMDS / link-local
+  if (h.startsWith("10.") || h.startsWith("192.168.")) return true; // RFC1918 private
+  const m172 = h.match(/^172\.(\d+)\./);
+  if (m172) {
+    const octet = Number(m172[1]);
+    if (octet >= 16 && octet <= 31) return true;
+  }
+  return false;
+}
+
+export function isAllowedEntryUrl(urlStr: string): { ok: boolean; reason?: string } {
+  try {
+    const u = new URL(urlStr);
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      return { ok: false, reason: `URL scheme "${u.protocol}" is not allowed. Use http:// or https://` };
+    }
+    if (isPrivateOrLoopbackHost(u.hostname)) {
+      return { ok: false, reason: `Access to private/loopback host "${u.hostname}" is restricted` };
+    }
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, reason: `Invalid URL "${urlStr}": ${err?.message ?? err}` };
+  }
+}
+
 /**
  * Discover a whole site, not just the entry page: crawl the entry page's own
  * internal links (same origin, bounded by MAX_DISCOVERY_PAGES) and merge every
@@ -344,13 +374,13 @@ export async function discoverSiteHybrid(url: string): Promise<AppModel> {
   const cached = cacheGet(siteCacheKey(url));
   if (cached) return cached;
 
-  console.log(`[hybrid] discovering site ${url}`);
-  let entryOrigin = "";
-  try {
-    entryOrigin = new URL(url).origin;
-  } catch {
-    throw new Error(`Invalid entry URL: ${url}`);
+  const urlCheck = isAllowedEntryUrl(url);
+  if (!urlCheck.ok) {
+    throw new Error(urlCheck.reason);
   }
+
+  console.log(`[hybrid] discovering site ${url}`);
+  const entryOrigin = new URL(url).origin;
   const maxPages = Math.max(1, MAX_DISCOVERY_PAGES);
   const visited = new Set<string>([normUrl(url)]);
   // Object property (not a bare variable) so TS doesn't narrow it to `never` after the

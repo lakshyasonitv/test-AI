@@ -10,6 +10,8 @@ import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
 import { resolveCaseSelection, getPendingSelection } from "./pendingCaseSelection.js";
 import { getAllAcceptedCases, remainingCapacity } from "./caseAccumulator.js";
 
+import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
+
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
 
@@ -32,6 +34,17 @@ app.param("runId", (_req, res, next, runId) => {
 app.post("/api/runs", (req, res) => {
   const { prompt, url, urls, coverage } = req.body ?? {};
   if (!prompt || (!url && !urls?.length)) return res.status(400).json({ error: "prompt and url (or urls) are required" });
+
+  const checkUrls = (urls && Array.isArray(urls) && urls.length ? urls : [url]) as unknown[];
+  for (const u of checkUrls) {
+    if (typeof u !== "string") {
+      return res.status(400).json({ error: "URLs must be strings" });
+    }
+    const check = isAllowedEntryUrl(u);
+    if (!check.ok) {
+      return res.status(400).json({ error: check.reason });
+    }
+  }
 
   const VALID_COVERAGE = ["minimal", "standard", "full"];
   if (coverage && !VALID_COVERAGE.includes(coverage)) {

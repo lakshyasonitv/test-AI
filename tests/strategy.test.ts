@@ -238,3 +238,41 @@ describe("toTestCases — checklist obeys scope", () => {
     expect(userPrompt).toContain("SQL injection");
   });
 });
+
+describe("isAllowedEntryUrl & SSRF validation", () => {
+  it("rejects non-http/https schemes like file://", async () => {
+    const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
+    expect(isAllowedEntryUrl("file:///C:/Windows/win.ini").ok).toBe(false);
+    expect(isAllowedEntryUrl("ftp://example.com/file").ok).toBe(false);
+  });
+
+  it("rejects loopback and private network IP hosts (SSRF prevention)", async () => {
+    const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
+    expect(isAllowedEntryUrl("http://localhost:3000/").ok).toBe(false);
+    expect(isAllowedEntryUrl("http://127.0.0.1:8080/").ok).toBe(false);
+    expect(isAllowedEntryUrl("http://169.254.169.254/latest/meta-data/").ok).toBe(false);
+    expect(isAllowedEntryUrl("http://192.168.1.1/").ok).toBe(false);
+    expect(isAllowedEntryUrl("http://10.0.0.1/").ok).toBe(false);
+  });
+
+  it("allows valid public http/https URLs", async () => {
+    const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
+    expect(isAllowedEntryUrl("https://learnvibes.vercel.app").ok).toBe(true);
+    expect(isAllowedEntryUrl("http://example.com/page").ok).toBe(true);
+  });
+
+  // Regression: only the exact "127.0.0.1" was blocked, but the whole 127.0.0.0/8 block is
+  // loopback — a classic SSRF-filter bypass is using any OTHER address in that range.
+  it("rejects every address in the 127.0.0.0/8 loopback range, not just 127.0.0.1", async () => {
+    const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
+    expect(isAllowedEntryUrl("http://127.0.0.2/").ok).toBe(false);
+    expect(isAllowedEntryUrl("http://127.5.5.5/").ok).toBe(false);
+  });
+
+  // Regression: Node's URL keeps the brackets on an IPv6 host (hostname is "[::1]", not
+  // "::1"), so the bare "::1" comparison never matched and IPv6 loopback sailed through.
+  it("rejects IPv6 loopback", async () => {
+    const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
+    expect(isAllowedEntryUrl("http://[::1]/").ok).toBe(false);
+  });
+});
