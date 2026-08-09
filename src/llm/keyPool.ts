@@ -33,7 +33,8 @@ export class KeyPool {
 }
 
 export function poolFromEnv(varName: string): KeyPool {
-  const keys = (process.env[varName] ?? "")
-    .split(",").map(s => s.trim()).filter(Boolean);
+  const singularVar = varName.endsWith("S") ? varName.slice(0, -1) : varName;
+  const raw = process.env[varName] || process.env[singularVar] || "";
+  const keys = raw.split(",").map(s => s.trim()).filter(Boolean);
   return new KeyPool(keys);
 }
