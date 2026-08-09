@@ -16,7 +16,7 @@ export interface GeminiOpts {
 }
 
 export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<string> {
-  const model = opts.model ?? process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+  const model = opts.model ?? process.env.GEMINI_MODEL ?? "gemini-1.5-flash";
   console.log("[gemini] calling model:", model, "| prompt length:", prompt.length);
 
   return callWithPool(getPool(), async (apiKey, signal) => {
