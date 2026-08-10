@@ -173,6 +173,22 @@ and corrected rather than silently producing a flaky test.
 - **A case's screenshot actually shows what it tested.** The representative image per case is
   the LAST step captured, not the first — a "navigate to Services" case shows Services, not the
   homepage it started from.
+- **An IR that stops early is caught, not just one that's badly formed.** `missingActions` used to
+  only check that *some* `fill` and *some* `click` existed anywhere in the IR — an IR that logged
+  in and then stopped could still report a 5-step case "passed" with nothing after login ever
+  checked. It now counts the case's own named actions against what the IR actually carries out and
+  rejects when the IR falls meaningfully short.
+- **A prompt naming credentials twice no longer silently substitutes the wrong one.** The
+  extraction that pulls a real username/password out of prompt text used to prefer whichever
+  mention happened to be quoted — so a prompt whose real (unquoted) login email came before an
+  unrelated (quoted) email later in the same sentence would substitute the *wrong* one into the
+  login form, break authentication for the whole run, and surface only as a confusing downstream
+  "element not found" failure. Fixed to always take the earliest mention regardless of quoting.
+- **The entry URL is validated before anything touches it.** Discovery used to accept any string
+  that didn't fail `new URL()` — which a `file://` path or an internal-network address both
+  satisfy — so a crafted URL could make the server read a local file or reach an internal service,
+  with the result landing in a publicly-served run directory. Now allow-listed to `http`/`https`
+  with loopback/link-local/RFC1918 hosts rejected, at the API boundary and again in discovery.
 
 ## Six Steps to Make the Backend Genuinely General-Purpose
 

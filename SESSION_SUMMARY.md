@@ -231,15 +231,116 @@ refreshed file/line-count tables, the grounding-authority and prompt-nudges-are-
 design decisions, and a rewritten gaps table — several entries moved from "open, planned" to
 closed, and the stale ones removed rather than left to rot.
 
+## 15. `TECH_DEBT.md` audit, then closing the highest-value items
+
+Asked to list, not fix, everything wrong with the codebase and generalize every LLM system prompt
+away from site-specific wording. Produced `TECH_DEBT.md` (new file) — Part A (defects, ranked),
+Part B (provably dead code), Part C (prompt generalization). **Prerequisite discovered first:** no
+LLM cache key included its system prompt or model name, and the disk half of the cache never
+expires — so a prompt edit had zero effect on any input already cached, ever. Fixed across all five
+LLM-calling stages before touching any prompt wording, or every later fix would have looked like a
+no-op against a stale cache hit.
+
+Then closed, in order: real user credentials removed from `testCases.ts`'s few-shot example (the
+project owner's own live email/password had been baked into every test-case generation — the
+likely reason the model kept inventing placeholder credentials instead of using the ones actually
+supplied); demo-site credentials and one school site's navigation names generalized out of
+`ir.ts`'s prompt; layout-assuming rules (header-nav `nth` positions, hardcoded "Menu"/"Toggle"
+names) rewritten to reason from the application model instead of one site's shape; a grounding
+rejection now gets real retries instead of truncating immediately (`toIR`'s in-loop early return
+was intercepting the retry path `bestPartial` was supposed to own); a truncated IR no longer
+poisons the disk cache permanently; the results panel renders the IR steps that actually ran,
+not the LLM's case-text prose (which showed `Fill 'Password' with 'ValidAdminPassword123'` while
+the real, correct execution had substituted `${env:TEST_PASSWORD}` — a correct run that *looked*
+wrong at a glance); `missingActions` became a real coverage check (see PROJECT_SUMMARY.md); six
+items of confirmed-dead code deleted (`filterByConcepts`, `discoverInteractiveElements`, the
+`credentialsFor` demo-registry stub, a backward-compat alias layer in `hybridDiscovery.ts`, the
+planner asking the model for two fields it immediately overwrites, `findAuthBoundary` — superseded
+by `lastFillIndexByKind`, never called).
+
+## 16. Second audit prompted by a real user-reported bug, and closing the entry-URL security hole
+
+User report: "if i provide two emails and passwords then only the last one is considered." Root
+cause reproduced directly against the exact failing prompt: `extractCredentialsFromPrompt`'s
+value-extraction regex tried a quoted-value pattern before a bare-value one, so a prompt whose real
+login email appeared unquoted early and an unrelated email appeared quoted later matched the
+*decoy* — the quoted pattern skipped straight past the real, unquoted credential. Fixed by merging
+both patterns into one regex with a quoted/bare alternation, so a single match always finds the
+true leftmost occurrence regardless of which mention happens to be quoted.
+
+That fix prompted a second, broader read-only audit (two parallel sweeps: orchestration/server
+layer, and other instances of the same "sequential-pattern-match" failure shape + a frontend pass).
+Ten new findings recorded as `TECH_DEBT.md` Part D, every one independently re-verified against the
+actual code (and for the regex-shaped ones, by direct reproduction) before being written down —
+not relayed from the audit agents unchecked. Highest-severity, closed same day: `POST /api/runs`
+accepted any URL that didn't fail `new URL()` — which a `file://` path satisfies (`new
+URL("file:///...").origin` doesn't throw) — so a crafted request could make the server read a
+local file or reach an internal-network address (`169.254.169.254`, `127.x.x.x`, `localhost`),
+with the result landing in a run directory served with no authentication. Fixed with a shared
+`isAllowedEntryUrl`/`isPrivateOrLoopbackHost` (`hybridDiscovery.ts`), enforced at the API boundary
+and again inside discovery. Caught and fixed in a follow-up pass the same day: the first version of
+the private-host check only blocked the exact string `127.0.0.1`, not the whole `127.0.0.0/8`
+loopback range, and compared against `"::1"` when Node's `URL.hostname` actually returns `"[::1]"`
+for IPv6 — both reproduced directly, both closed. The other nine findings (D2–D9, plus one folded
+into the already-open locator-duplication gap) are documented, not yet fixed.
+
+## 17. Docker/Render deployment support, and a live lesson in dependency pinning
+
+Added `Dockerfile` (`mcr.microsoft.com/playwright:v1.49.0-jammy` base), `.dockerignore`, and
+`render.yaml` (a Render Blueprint) for a one-command container build / one-click free-tier deploy.
+Caught and fixed before it shipped: `package.json`'s `serve`/`generate` scripts used
+`--env-file=.env`, which throws if the file doesn't exist — fine locally, fatal in a container,
+since `.dockerignore` correctly excludes `.env` and Render injects secrets as real process env vars
+instead. Switched to `--env-file-if-exists=.env` (verified the distinction directly: `--env-file`
+exits non-zero on a missing file, `--env-file-if-exists` continues). Playwright's npm package was
+pinned to an exact version (`1.49.0`, no `^`) matching the base image's bundled Chromium build —
+a caret range lets `npm install` resolve a newer Playwright than the image's pre-installed browser,
+which then fails to launch (`browserType.launch: Executable doesn't exist`).
+
+That last point became a real, lengthy debugging episode: `package.json` acquired **uncommitted
+local edits** (likely manual, while trying different things) that silently reverted three fixes at
+once — the `--env-file-if-exists` change, the exact version pins (back to `^1.49.0`), and deleted
+the `postinstall: "playwright install chromium"` script entirely. With the pin gone, `npm install`
+resolved a much newer Playwright wanting a completely different Chromium build than the one already
+cached — and because a separate `npm run serve` kept getting restarted independently while browser
+installs were in progress, two different dependency states ended up racing to install two different
+browser builds into the same shared global cache, each one's "prune what's unused" step deleting
+the other's in-progress download. What looked like a flaky/hanging installer was actually two valid
+processes working correctly against two different, silently-diverged sources of truth. Fixed by
+restoring `package.json`'s committed (correct) state rather than continuing to chase the symptom.
+**Lesson for next time this shape recurs:** if a dependency install keeps alternating between two
+different target versions/builds across repeated attempts, check for a second process (or
+uncommitted local edit) working from a different `package.json` state before assuming the installer
+itself is broken.
+
+Also added this session: `GET /api/health` (reports which critical env vars are set — name and
+length only, never the value — for confirming a deploy's secrets actually landed); `poolFromEnv`
+accepts a singular `_KEY` env var as a fallback when the plural `_KEYS` var isn't set, for a
+single-key deploy. And a live lesson in not trusting a model name from memory: an earlier pass in
+this session "fixed" the Gemini model config by reverting it to `gemini-1.5-flash`, assuming it was
+the safe/known-good choice — verified empirically against the real API afterward and found that
+model now 404s ("not found for API version v1beta"), while `gemini-3-flash-preview` and
+`gemini-3.1-flash-lite` (what the config had been reverted *away* from) both return 200. Restored.
+Model names are worth a real API call to confirm, not an assumption from training data.
+
 ## What's still open
 
 Carried over, unaddressed (see `ARCHITECTURE.md`'s Current Gaps table for the full list with
-impact/status):
+impact/status, and `TECH_DEBT.md` Parts A/B/D for the full audited-defect list with evidence and
+severity):
 - Compound-login-case credential handling (§1) — still the largest known correctness gap
 - Case-generation reword drift: the LLM paraphrases the user's literal instructions ("click on
   Admin" → "Navigate to the Admin section", explicit waits dropped) before any deterministic
   stage sees them. Contained downstream now, not fixed at the source
-- No server authentication
+- No server authentication (the entry-URL validation added in §16 narrows what an unauthenticated
+  request can do, but anyone with the URL can still start runs and browse artifacts)
 - Failure-diagnosis step attribution can point at the wrong step
 - No end-to-end self-heal test against a real drifted site
 - Visibility for elements with no stable selector still falls back to an assumed `visible: true`
+- `runs/` grows without bound and is served with no auth (`TECH_DEBT.md` A6)
+- The generator's embedded locator helpers can drift from `targetResolver.ts`'s real
+  implementation — confirmed already diverged in one case, not just theoretical (A7 + D10)
+- `safeClick` in the generated spec treats `javascript:`/`mailto:`/`tel:` hrefs as real navigation
+  targets, unlike every other href check in the codebase (D2)
+- `credentialPolicyFor`'s veto regex can bridge unrelated fields when case text is joined before
+  matching — same root defect as §16's fix, one function over, reproduced but not yet fixed (D3)

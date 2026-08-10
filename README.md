@@ -102,7 +102,8 @@ prompt + url
 | Grounding: role mismatch tolerated | Working | A target's role is matched exactly first, then against a narrow clickable group (`link`/`button`/`menuitem`/`tab`) — so an SPA sidebar item built as `<button onClick=...>` still grounds when the IR guessed `link`. The real role is written back onto the target so the generated `getByRole` matches the live DOM. Deliberately not applied to `textbox`/`heading`/etc |
 | Grounding: hidden elements can't be asserted visible | Working | An element discovery recorded as not visible is refused as the target of a `visible` assertion (a responsive/mobile-only control can't pass one). Asserting the same element `hidden` stays legal — that direction is load-bearing elsewhere |
 | Discovery visibility accuracy | Working | Every element carrying a stable selector is re-checked for real computed visibility (geometry + `getComputedStyle`) in the live page, overwriting the `visible: true` that the static HTML parser has to assume |
-| Credentials typed into the prompt | Working | `extractCredentialsFromPrompt` pulls a real username/password straight out of the prompt text (`email: a@b.c and password is "..."`), so a prompt that already carries credentials doesn't fall back to a model-invented placeholder. Treated as `secret` — same env-reference path as credentials typed into the UI |
+| Credentials typed into the prompt | Working | `extractCredentialsFromPrompt` pulls a real username/password straight out of the prompt text (`email: a@b.c and password is "..."`), so a prompt that already carries credentials doesn't fall back to a model-invented placeholder. Treated as `secret` — same env-reference path as credentials typed into the UI. Picks the earliest keyword occurrence in the prompt regardless of which mention is quoted — a prompt naming a second, unrelated email later (e.g. for a "create user" step) no longer overrides the real login identifier |
+| IR completeness check | Working | `missingActions` compares the case's own action-bearing step lines against what the IR actually carries out (`click`/`press`/`fill`/`select`/`check`) and rejects an IR that stops early — an IR covering 2 of a case's 5 named actions no longer ships as a silent "passed" |
 | Secrets kept off disk | Working | User-supplied credentials become `${env:...}` references in the generated spec; the real value only reaches the test process's environment at execution time. Also scrubbed from `results.json`, `final-page.txt`, and error-context attachments — a page you're logged into routinely echoes the identifier back |
 | Multi-hop flows don't starve the attempt budget | Working | A live-extend hop re-grounds the same parsed IR without spending one of `MAX_IR_ATTEMPTS` — a flow needing several hops to reach the right page state no longer burns its whole LLM budget getting there |
 | Scope filtering | Working | Prompt can request smoke/functional/regression/security scope |
@@ -253,10 +254,10 @@ are in `.env.example`.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GEMINI_API_KEYS` | Yes | Comma-separated Gemini API keys (quota stacks across distinct projects) |
-| `GROQ_API_KEYS` | Yes | Comma-separated Groq API keys (failover only — Groq limits are per-org, not per-key) |
-| `GEMINI_MODEL` | No | Gemini model for discovery/test-cases/failure-analysis (default: `gemini-2.5-flash`) |
-| `GEMINI_MODEL_LITE` | No | Gemini model for labeling (default: `gemini-2.5-flash`) |
+| `GEMINI_API_KEYS` | Yes | Comma-separated Gemini API keys (quota stacks across distinct projects). `GEMINI_API_KEY` (singular) is accepted as a fallback if the plural var isn't set — convenient for a single-key deploy |
+| `GROQ_API_KEYS` | Yes | Comma-separated Groq API keys (failover only — Groq limits are per-org, not per-key). `GROQ_API_KEY` (singular) is accepted as a fallback the same way |
+| `GEMINI_MODEL` | No | Gemini model for discovery/test-cases/failure-analysis (default: `gemini-3-flash-preview`) |
+| `GEMINI_MODEL_LITE` | No | Gemini model for labeling (default: `gemini-3.1-flash-lite`) |
 | `GROQ_MODEL` | No | Groq model for IR generation (default: `openai/gpt-oss-120b`) |
 | `LLM_TIMEOUT_MS` | No | Per-attempt abort timeout for any Gemini/Groq call (default: 45000) |
 | `MAX_GROQ_CALLS_PER_RUN` | No | Hard cap on total Groq calls per run, recorded to `08-groq-usage.json` (default: 60) |
@@ -306,10 +307,24 @@ This prints a random `https://<words>.trycloudflare.com` URL. Ephemeral, free, n
 
 **Note:** Quick Tunnels buffer SSE responses, so the UI uses polling (`GET /api/runs/:id/state`) instead of streaming. Both routes exist; SSE works fine on localhost. Named tunnels don't have this limitation.
 
-**Security:** The server has no authentication. Anyone with the URL can start runs and browse artifacts. Fine for trusted audiences; know this before sharing widely.
+**Security:** The server has no authentication. Anyone with the URL can start runs and browse artifacts. Fine for trusted audiences; know this before sharing widely. The entry URL itself is validated — non-`http(s)` schemes and loopback/link-local/private-range hosts are rejected (`isAllowedEntryUrl`, `stages/hybridDiscovery.ts`) — but nothing gates who can submit a run at all.
+
+## Docker / Render Deployment
+
+`Dockerfile` (`mcr.microsoft.com/playwright:v1.49.0-jammy` base — Node, Chromium, and Linux deps
+pre-bundled), `.dockerignore`, and `render.yaml` (a Render Blueprint) are in the repo root for a
+one-`docker build` or one-click Render deploy. Playwright's own npm package is pinned to an exact
+version (`1.49.0`, no `^`) matching the base image's bundled browser build — a caret range here
+can let `npm install` pull a newer Playwright than the image's pre-installed Chromium, which then
+fails to launch. `MAX_CONCURRENT_RUNS=1` is recommended on a free-tier instance (512MB RAM) — each
+run launches its own Chromium instance.
+
+`GET /api/health` reports which critical env vars are set (name/length only, never the value) —
+useful for confirming a deploy's secrets actually landed without exposing them.
 
 ## Further Reading
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Technical reference: every file explained, schema contracts, design decisions, current gaps
 - [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md) — Concise project statement, detailed architecture diagram, what works, next steps toward enterprise readiness
 - [SESSION_SUMMARY.md](SESSION_SUMMARY.md) — What changed in the most recent working session, in detail
+- [TECH_DEBT.md](TECH_DEBT.md) — Audited defects, dead code, and prompt hygiene, with evidence and fix status

@@ -180,56 +180,56 @@ new accepted, same shape as the credential prompt's timeout.
 
 ## Source Files
 
-### `src/stages/` — Pipeline Stages (18 files, ~6,313 lines)
+### `src/stages/` — Pipeline Stages (18 files, ~6,642 lines)
 
 | File | Lines | LLM? | Purpose |
 |------|------:|:-----:|---------|
-| `authSettle.ts` | 43 | No | Post-auth SPA redirect handling |
-| `planner.ts` | 72 | Gemini | NL request -> structured Plan |
-| `targetResolver.ts` | 95 | No | IR Target -> Playwright Locator with fallbacks |
+| `authSettle.ts` | 42 | No | Post-auth SPA redirect handling |
+| `planner.ts` | 71 | Gemini | NL request -> structured Plan |
 | `promptSelectors.ts` | 98 | No | Honors selectors the user wrote directly into their prompt |
 | `classify.ts` | 158 | No | Deterministic failure classifier |
-| `failureAnalysis.ts` | 177 | Gemini + Vision | Failure diagnosis (fallback only) |
+| `targetResolver.ts` | 160 | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`) |
+| `failureAnalysis.ts` | 185 | Gemini + Vision | Failure diagnosis (fallback only) |
 | `caseSelectionGate.ts` | 254 | Gemini (via testCases) | Optional human-review loop over generated case batches, incl. reactive-case rounds |
 | `suiteRunner.ts` | 300 | No | Runs every case in its own browser context, per-case artifacts |
 | `executor.ts` | 313 | No | Runs spec, captures artifacts, redacts secrets from served output |
-| `discovery.ts` | 354 | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
-| `liveExtend.ts` | 364 | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding |
-| `generator.ts` | 424 | No | IR -> Playwright spec (pure code) |
-| `testCases.ts` | 428 | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist |
-| `hybridDiscovery.ts` | 443 | Gemini (text) | Discovery orchestrator: DOM first, same-origin site crawl, vision fallback |
-| `credentials.ts` | 477 | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry |
-| `domDiscovery.ts` | 531 | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility |
-| `domExtract.ts` | 613 | No | Cheerio DOM extraction — Node port of the deleted Python parser |
-| `ir.ts` | 1169 | Groq | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), credential policy, live-extend, truncation |
+| `discovery.ts` | 351 | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
+| `liveExtend.ts` | 365 | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding |
+| `testCases.ts` | 438 | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist |
+| `generator.ts` | 463 | No | IR -> Playwright spec (pure code) |
+| `hybridDiscovery.ts` | 471 | Gemini (text) | Discovery orchestrator: DOM first, same-origin site crawl, vision fallback; also owns `isAllowedEntryUrl`/`isPrivateOrLoopbackHost`, the entry-URL scheme + private-host allow-list |
+| `credentials.ts` | 480 | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry |
+| `domDiscovery.ts` | 534 | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility |
+| `domExtract.ts` | 676 | No | Cheerio DOM extraction — Node port of the deleted Python parser |
+| `ir.ts` | 1283 | Groq | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
 
-### `src/schema/` — Data Contracts (3 files, ~334 lines)
+### `src/schema/` — Data Contracts (3 files, ~328 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
 | `caseSelection.ts` | 39 | Case-selection decision schema + on-disk accepted-cases/history file shapes |
 | `ir.ts` | 61 | Target, Step (action/assertion enums), IR with truncation tracking |
-| `appModel.ts` | 234 | Element, PageModel, AppModel + DOM-structured types + `toLiteModel` |
+| `appModel.ts` | 228 | Element, PageModel, AppModel + DOM-structured types + `toLiteModel` |
 
-### `src/` Core (4 files, ~622 lines)
+### `src/` Core (4 files, ~654 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
 | `text.ts` | 16 | `cutAtBoundary` — cuts text at the last line/word boundary at or before a length cap, never mid-word |
-| `cli.ts` | 38 | CLI entry point: parses `--prompt`/`--url`/`--urls`/`--coverage`, calls `runPipeline` |
+| `cli.ts` | 42 | CLI entry point: parses `--prompt`/`--url`/`--urls`/`--coverage`, calls `runPipeline` |
 | `runStore.ts` | 216 | File-backed per-run NDJSON event log with SSE replay + fallback reconstruction + orphaned-run detection |
-| `orchestrator.ts` | 352 | Pipeline wiring: plan -> discovery -> test cases (-> optional gate) -> IR -> generate -> execute -> heal -> suite |
+| `orchestrator.ts` | 380 | Pipeline wiring: plan -> discovery -> test cases (-> optional gate) -> IR -> generate -> execute -> heal -> suite |
 
 Timeouts, retries, and other constants that used to live in a single `config.ts` are now inline
 per-stage (mostly env-overridable — see `README.md`'s Configuration section and `.env.example`).
 
-### `src/llm/` — LLM Layer (6 files, ~360 lines)
+### `src/llm/` — LLM Layer (6 files, ~361 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
 | `gemini.ts` | 59 | Google Gemini client (REST API, key-pool rotation, backoff) |
 | `groq.ts` | 65 | Groq client (OpenAI-compatible REST API, key-pool rotation, backoff) |
-| `keyPool.ts` | 39 | Round-robin API key pool with cooldown tracking |
+| `keyPool.ts` | 40 | Round-robin API key pool with cooldown tracking; `poolFromEnv` accepts a singular `_KEY` var as a fallback when the plural `_KEYS` var isn't set |
 | `groqBudget.ts` | 55 | Per-run hard cap on Groq calls; usage recorded to `08-groq-usage.json` |
 | `backoff.ts` | 133 | Exponential backoff, per-attempt timeout, rate-limit detection + key rotation |
 | `json.ts` | 9 | Strip markdown fences and parse JSON from LLM output |
@@ -239,10 +239,10 @@ per-stage (mostly env-overridable — see `README.md`'s Configuration section an
 | File | Lines | Purpose |
 |------|------:|---------|
 | `cache.ts` | 38 | SHA1-keyed file-based AppModel cache |
-| `llmCache.ts` | 42 | Two-tier LLM response cache (in-memory, 30-min TTL + disk, no expiry) |
+| `llmCache.ts` | 42 | Two-tier LLM response cache (in-memory, 30-min TTL + disk, no expiry); every stage's cache key now also hashes its system prompt + model name |
 | `testStrategy.ts` | 198 | Static QA knowledge: coverage taxonomy, scope classification, filtering |
 
-### `src/server/` — Web Server (7 files, ~522 lines)
+### `src/server/` — Web Server (7 files, ~580 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
@@ -251,18 +251,18 @@ per-stage (mostly env-overridable — see `README.md`'s Configuration section an
 | `pendingCredentials.ts` | 55 | Parks a paused run's credential prompt in memory; resolved by the UI's answer or `CREDENTIAL_WAIT_MS` timeout |
 | `pendingCaseSelection.ts` | 62 | Parks a paused run's case-review round in memory; resolved by the UI's decision or `CASE_SELECTION_WAIT_MS` timeout |
 | `caseAccumulator.ts` | 86 | File-backed pool of accepted cases across gate rounds, capped at `MAX_ACCUMULATED_CASES` |
-| `caseHistoryLedger.ts` | 92 | File-backed record of every case title ever shown and its outcome, so rejections never resurface |
-| `index.ts` | 154 | Express: `/api/runs` CRUD, credential-prompt + case-selection endpoints, SSE stream, polling, static files |
+| `caseHistoryLedger.ts` | 99 | File-backed record of every case title ever shown and its outcome, so rejections never resurface |
+| `index.ts` | 205 | Express: `/api/runs` CRUD, credential-prompt + case-selection endpoints, SSE stream, polling, static files, `/api/health` diagnostic endpoint, entry-URL validation |
 
-### `public/` — Frontend (5 files, ~2,343 lines)
+### `public/` — Frontend (5 files, ~2,598 lines)
 
 | File | Lines | Purpose |
 |------|------:|---------|
 | `icons.js` | 93 | Inline SVG icon set |
 | `preview.js` | 123 | Static preview/demo states for UI development |
 | `index.html` | 191 | Single-page HTML shell, case-selection panel, theme toggle |
-| `style.css` | 770 | Dark theme (default) + `[data-theme="light"]` override, responsive design |
-| `app.js` | 1166 | Single-page app: run form, phase UI, suite cards, history, case-selection panel, theme toggle |
+| `style.css` | 893 | Dark theme (default) + `[data-theme="light"]` override, responsive design |
+| `app.js` | 1298 | Single-page app: run form, phase UI, suite cards, history, case-selection panel, theme toggle, renders executed IR steps (not raw case prose) in the results panel |
 
 ---
 
@@ -339,12 +339,17 @@ CaseHistoryFile (runs/<id>/case-history.json)
 
 | Stage | Model | Input | Output | When Used |
 |-------|-------|-------|--------|-----------|
-| Planner | Gemini (`gemini-2.5-flash`) | Prompt + URL | Plan (steps, scope, coverage) | Every run, 1 call |
-| Concept labeling | Gemini (`gemini-2.5-flash`) | DOM element list | Labeled AppModel | DOM discovery path, 1 call per page (including each crawled page) |
-| Vision discovery | Gemini (`gemini-2.5-flash`) | ARIA snapshot + JPEG screenshot | AppModel | Fallback only, 1 call per page |
-| Test cases | Gemini (`gemini-2.5-flash`) | Plan + AppModel + strategy (scope-filtered) | TestCase[] | Every run, 1 call per round (1 round unless the gate is on and you ask for more) |
+| Planner | Gemini (`gemini-3.1-flash-lite`, `GEMINI_MODEL_LITE`) | Prompt + URL | Plan (steps, scope, coverage) | Every run, 1 call |
+| Concept labeling | Gemini (`gemini-3.1-flash-lite`, `GEMINI_MODEL_LITE`) | DOM element list | Labeled AppModel | DOM discovery path, 1 call per page (including each crawled page) |
+| Vision discovery | Gemini (`gemini-3.1-flash-lite`, `GEMINI_MODEL_LITE`) | ARIA snapshot + JPEG screenshot | AppModel | Fallback only, 1 call per page |
+| Test cases | Gemini (`gemini-3-flash-preview`, `GEMINI_MODEL`) | Plan + AppModel + strategy (scope-filtered) | TestCase[] | Every run, 1 call per round (1 round unless the gate is on and you ask for more) |
 | IR generation | Groq (`openai/gpt-oss-120b`) | TestCase + AppModel + sourcePrompt | IR (JSON) | Every run, up to `MAX_IR_ATTEMPTS` (default 4) calls per case, hard-capped run-wide by `MAX_GROQ_CALLS_PER_RUN` (default 60) |
-| Failure analysis | Gemini (`gemini-2.5-flash`) | Error + ARIA + screenshots | Diagnosis | Only on failure, and only when the deterministic classifier can't resolve it |
+| Failure analysis | Gemini (`gemini-3.1-flash-lite`, `GEMINI_MODEL_LITE`) | Error + ARIA + screenshots | Diagnosis | Only on failure, and only when the deterministic classifier can't resolve it |
+
+Model ids are overridable per-deploy and worth re-verifying directly against the API rather than
+trusted from memory — a model-list endpoint can report a name as available when it 404s on an
+actual `generateContent` call, and the reverse (an undocumented-looking id that works fine). Probe
+with a real request before assuming a name is wrong.
 
 **Key rotation:** Both Gemini and Groq clients use `keyPool.ts` for round-robin key selection with cooldown. `backoff.ts` handles rate-limit detection, exponential delay, key penalization, and a per-attempt abort (`LLM_TIMEOUT_MS`, default 45s) so a hung fetch can't stall a run indefinitely.
 
@@ -358,7 +363,10 @@ CaseHistoryFile (runs/<id>/case-history.json)
 
 ```
 Express (port 3000, PORT env)
-  POST   /api/runs                              -> starts pipeline (via concurrency semaphore)
+  POST   /api/runs                              -> starts pipeline (via concurrency semaphore).
+                                                     url/urls validated by isAllowedEntryUrl —
+                                                     http(s) only, loopback/link-local/RFC1918
+                                                     hosts rejected before discovery ever runs
   POST   /api/runs/:runId/credentials            -> answers a paused run's credential prompt
                                                      (never logged, never written to disk)
   POST   /api/runs/:runId/case-selection         -> answers a paused run's case-review round
@@ -368,8 +376,15 @@ Express (port 3000, PORT env)
   GET    /api/runs/:runId/events                 -> SSE event stream (for localhost)
   GET    /api/runs                               -> list all runs (newest first)
   DELETE /api/runs/:runId                        -> remove a run
+  GET    /api/health                             -> which critical env vars are set (name +
+                                                     length only, never the value) — a deploy
+                                                     diagnostic, not a load-balancer healthcheck
   /                                              -> static files (public/)
+  /runs                                          -> static files (runs/) — no auth; see Current Gaps
 ```
+
+Every route taking a `:runId` validates it against `RUN_ID` (`^[\dT-]+Z-[0-9a-f]{8}$`, `makeRunId()`'s
+own shape) via a single `app.param("runId", ...)` middleware, so a crafted id can't escape `runs/`.
 
 ### Frontend Architecture
 
@@ -415,6 +430,9 @@ Single-page HTML/JS/CSS app (`public/`):
 | **SSE + polling dual mode** | SSE for localhost (real-time), polling for Cloudflare tunnels (which buffer SSE). |
 | **Isolated per-case execution** | Every case in a suite gets its own Playwright `test()` — a fresh browser context, so one case's login session can't leak into the next case's assumptions. |
 | **A case's representative screenshot is its LAST step, not its first** | `findScreenshot` used to return the first `.png` a directory walk found, which was always the pre-action frame — every case in a run showed the same generic screenshot regardless of what it tested. Fixed by sorting `step-N.png` numerically and taking the last one. |
+| **Presence checks aren't coverage checks** | `missingActions` used to ask only "does *any* `fill` exist, does *any* `click` exist" — an IR covering 5 of a case's 9 named steps passed it, and a run that stopped after login could still report the whole case "passed". Now counts action-bearing lines in the case's own text against the IR's actual action-step count and rejects when the gap is more than one short (tolerating a single legitimate consolidation, e.g. "fill the login form" becoming two IR fills). |
+| **Leftmost keyword occurrence, not "first pattern to match anywhere"** | `extractCredentialsFromPrompt`'s value-extraction regex used to try a quoted-value pattern before a bare-value one — so when a prompt named the login email unquoted early and an unrelated email quoted later, the quoted pattern skipped the real credential and matched the decoy instead. Merged into one regex with a quoted/bare alternation so a single `.match()` finds the true leftmost occurrence regardless of which mention happens to be quoted. |
+| **Entry-URL allow-listing, not just malformed-string rejection** | `discoverSiteHybrid` used to validate the URL only by catching a `new URL()` parse exception — `new URL("file:///...")` doesn't throw, so a `file:` URL or an internal-network address reached `page.goto()` and the result landed in a publicly-served run directory. `isAllowedEntryUrl` requires `http:`/`https:` and rejects loopback/link-local/RFC1918 hosts, enforced at both the API boundary and inside discovery. |
 
 ---
 
@@ -423,6 +441,7 @@ Single-page HTML/JS/CSS app (`public/`):
 | Gap | Impact | Status |
 |-----|--------|--------|
 | No server authentication | Anyone with the URL can start runs and browse artifacts | Open |
+| Entry URL had no scheme/host validation | `POST /api/runs` accepted any string as a URL; a `file://` URL let discovery read local files, and an internal-network address (`169.254.169.254`, `127.x.x.x`, etc.) was reachable via `page.goto()` — both landing in a publicly-served run directory | Fixed — `isAllowedEntryUrl`/`isPrivateOrLoopbackHost` (`hybridDiscovery.ts`), enforced at the API boundary and again in discovery. Auth itself (the row above) is still open |
 | Cross-leg credential handling for multi-attempt cases | A case that logs in for real, then tries a second (wrong-credential) login in the same browser session, can substitute the real credential into the wrong attempt if the model doesn't order the real attempt last — confirmed in production | Open, diagnosed, fix not yet implemented |
 | Case-generation reword drift | The case-generation stage can reword an explicit "click on X" into "Navigate to the X section", and can silently drop waits the prompt asked for. The IR stage no longer *acts* on the misleading wording (guessed routes are rejected deterministically), so the blast radius is contained, but the case prose itself is still unconstrained | Open, contained downstream |
 | Failure diagnosis step attribution | `analyzeFailure` reported a different `failingStepId` than a run's raw Playwright trace actually showed, confirmed against a real run | Open, not yet investigated |
