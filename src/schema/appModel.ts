@@ -205,20 +205,83 @@ export const AppModel = z.object({
 });
 export type AppModel = z.infer<typeof AppModel>;
 
-/** Strip elements to role/name/concept only — reduces prompt size 70-90%. */
+/** Roles worth keeping when a page has more named elements than the lite-model budget allows.
+ *  Shared with ir.ts's own element-relevance filter — previously duplicated there. */
+export const INTERACTIVE_ROLES = new Set([
+  "link", "button", "menuitem", "textbox", "checkbox", "radio",
+  "combobox", "listbox", "option", "tab", "switch", "heading",
+  "searchbox", "spinbutton", "slider",
+]);
+
+// Read lazily, per call, NOT as module-level constants — a module-level `const X =
+// Number(process.env.X ?? d)` caches the value at first import, so a test that sets the env var
+// afterward would silently have no effect without vi.resetModules()+re-import. This mirrors
+// ir.ts's own MAX_ATTEMPTS/MAX_EXTENSIONS, which are read inside toIR() per call for the same
+// reason (tests/irExtensionBudget.test.ts sets process.env.MAX_IR_ATTEMPTS directly, no
+// resetModules needed, because of it).
+function liteCaps() {
+  return {
+    elements: Number(process.env.MAX_LITE_ELEMENTS_PER_PAGE ?? 150),
+    forms: Number(process.env.MAX_LITE_FORMS_PER_PAGE ?? 5),
+    formFields: Number(process.env.MAX_LITE_FORM_FIELDS ?? 20),
+    navNodes: Number(process.env.MAX_LITE_NAV_NODES_PER_PAGE ?? 60),
+    navDepth: Number(process.env.MAX_LITE_NAV_DEPTH ?? 3),
+    buttons: Number(process.env.MAX_LITE_BUTTONS_PER_PAGE ?? 40),
+    headings: Number(process.env.MAX_LITE_HEADINGS_PER_PAGE ?? 40),
+  };
+}
+
+/** Named, interactive-role elements first, then whatever's left fills the remaining budget — a
+ *  raw positional slice can silently drop the very login form a case needs to reference if a
+ *  large table or content block sits above it in DOM order. */
+function capElements(elements: Element[], max: number): Element[] {
+  if (elements.length <= max) return elements;
+  const isNamed = (e: Element) => !!e.name?.trim() && INTERACTIVE_ROLES.has(e.role?.toLowerCase() ?? "");
+  const named = elements.filter(isNamed);
+  if (named.length >= max) return named.slice(0, max);
+  return [...named, ...elements.filter((e) => !isNamed(e)).slice(0, max - named.length)];
+}
+
+/** Breadth AND depth capped via one shared node budget across the whole tree — a flat per-level
+ *  breadth cap alone still allows exponential blowup on a deep tree. */
+function capNavTree(
+  items: NavigationItem[], depth: number, maxDepth: number, budget: { remaining: number },
+): NavigationItem[] {
+  const out: NavigationItem[] = [];
+  for (const item of items) {
+    if (budget.remaining <= 0) break;
+    budget.remaining--;
+    out.push({
+      ...item,
+      children: depth < maxDepth ? capNavTree(item.children ?? [], depth + 1, maxDepth, budget) : [],
+    });
+  }
+  return out;
+}
+
+/** Strip elements to role/name/concept only — reduces prompt size 70-90%. Array-length caps on
+ *  elements/forms/navigation/buttons/headings keep a rich site (large tables, deep mega-menus)
+ *  from producing a 17,000+ line JSON that trips an LLM's context/payload limit — see
+ *  ARCHITECTURE.md's "AppModel context explosion" gap. Defaults are calibrated well above every
+ *  page observed in this project's own sampled runs, so an ordinary site is unaffected. */
 export function toLiteModel(model: AppModel): AppModel {
+  const caps = liteCaps();
   return {
     ...model,
     pages: model.pages.map(p => ({
       url: p.url,
       title: p.title,
       concepts: p.concepts,
-      elements: p.elements.map(({ role, name, concept }) => ({ role, name, concept })),
+      elements: capElements(p.elements, caps.elements).map(({ role, name, concept }) => ({ role, name, concept })),
       // Preserve DOM summary fields even in lite model — they're small and useful
-      ...(p.forms && p.forms.length > 0 ? { forms: p.forms } : {}),
-      ...(p.navigation && p.navigation.length > 0 ? { navigation: p.navigation } : {}),
-      ...(p.buttons && p.buttons.length > 0 ? { buttons: p.buttons } : {}),
-      ...(p.headings && p.headings.length > 0 ? { headings: p.headings } : {}),
+      ...(p.forms && p.forms.length > 0 ? {
+        forms: p.forms.slice(0, caps.forms).map((f) => ({ ...f, fields: f.fields.slice(0, caps.formFields) })),
+      } : {}),
+      ...(p.navigation && p.navigation.length > 0 ? {
+        navigation: capNavTree(p.navigation, 0, caps.navDepth, { remaining: caps.navNodes }),
+      } : {}),
+      ...(p.buttons && p.buttons.length > 0 ? { buttons: p.buttons.slice(0, caps.buttons) } : {}),
+      ...(p.headings && p.headings.length > 0 ? { headings: p.headings.slice(0, caps.headings) } : {}),
       ...(p.hasSearch !== undefined ? { hasSearch: p.hasSearch } : {}),
       ...(p.hasPagination !== undefined ? { hasPagination: p.hasPagination } : {}),
       ...(p.breadcrumbs && p.breadcrumbs.length > 0 ? { breadcrumbs: p.breadcrumbs } : {}),
