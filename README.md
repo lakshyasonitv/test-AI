@@ -122,6 +122,7 @@ prompt + url
 | A case that logs in for real, then tries a second (wrong-credential) login attempt in the same case | Fragile | Substitution only guarantees the case's FINAL credential attempt gets the real value; if the model doesn't order the real attempt last, the wrong leg gets it. Most sites also redirect an already-authenticated session away from the login page, so "return to the login page" for a second attempt can find no form there at all. Diagnosed, not yet fixed — see `PROJECT_SUMMARY.md` |
 | Wording drift between your prompt and the generated case | Improved, not guaranteed | The case-generation step can reword "click on Admin" into "Navigate to the Admin section", and can drop explicit waits you asked for. The IR stage no longer acts on the misleading wording (a guessed route is now rejected deterministically), but the case text itself is still LLM-authored prose |
 | A vague "the whole header/nav is visible" case | Guarded, not eliminated | Elements with a stable selector now carry real computed visibility, and a hidden one can't be asserted visible. An element with no selector at all still falls back to the static parser's assumed `visible: true` |
+| Filling fields inside a dynamic in-page modal (e.g. a "Raise a Ticket" popup) | Fails | Mechanism pinned: `liveExtend.ts`'s live re-snapshot only runs when `groundingError` reports a MISS, and a hallucinated field name can coincidentally match a real chrome element elsewhere on the same page (search box, status badge) — grounding then falsely "succeeds" and the modal is never captured. Reproduced against a real run, no code fix yet — see `PROBLEM_ANALYSIS.md` |
 
 ### Known Limitations
 
@@ -130,6 +131,7 @@ prompt + url
 | No server authentication | Anyone with the URL can start runs and browse artifacts |
 | No built-in demo credentials | There is no per-site autofill list, by design (general-purpose over site-specific). Credentials are taken from your prompt when it carries them, otherwise the run pauses and asks via the UI prompt (or times out and continues without them, `CREDENTIAL_WAIT_MS`) |
 | Gemini key inconsistency | Different keys from different projects can have different model access |
+| `AppModel` size has no ceiling | A complex site (large data tables, deeply nested menus) can produce a 17,000+ line `AppModel`; `toLiteModel()` keeps every crawled page's full structure in one payload, so `testCases.ts`/IR generation can hit the LLM's context/payload limit (`413`) instead of degrading gracefully |
 | Failure diagnosis step attribution | Confirmed against a real run: `analyzeFailure` can report a different `failingStepId` than the raw Playwright trace actually shows |
 | Assertion quality | Prompt-nudged, not code-level validated, beyond the terminal-step, title-metadata, and hidden-element grounding above |
 | Discovery's `visible` field is only accurate for selector-bearing elements | `domExtract.ts` is a static HTML parser (cheerio) with no CSS engine. Elements carrying a stable selector are re-checked live and corrected; an element with no `id`/`data-test`/`css` still gets the assumed `visible: true` |

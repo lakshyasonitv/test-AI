@@ -190,7 +190,7 @@ and corrected rather than silently producing a flaky test.
   with the result landing in a publicly-served run directory. Now allow-listed to `http`/`https`
   with loopback/link-local/RFC1918 hosts rejected, at the API boundary and again in discovery.
 
-## Six Steps to Make the Backend Genuinely General-Purpose
+## Eight Steps to Make the Backend Genuinely General-Purpose
 
 Not future features — structural gaps in the pipeline today that limit it to sites shaped like
 the ones it's been tuned against (login/e-commerce), rather than truly arbitrary sites.
@@ -247,3 +247,31 @@ the ones it's been tuned against (login/e-commerce), rather than truly arbitrary
    this for CSS selectors the user writes, and is the model worth generalizing — the same idea
    applied to named controls, waits, and literal values would make every downstream stage
    accountable to what was actually asked for rather than to a model's retelling of it.
+7. **Discovery has no general concept of "an element that only exists after an interaction."**
+   A dynamic in-page modal (e.g. a "Raise a Ticket" popup opened by a button click) has fields
+   absent from the initial `AppModel`, since discovery only ever models the page as loaded.
+   `liveExtend.ts` exists to re-snapshot and re-ground exactly this shape of gap, but its trigger
+   is reactive-only: `extendAppModel` runs only when `groundingError` reports a MISS. Reproduced
+   against a real run (`2026-08-10T11-15-46-262Z-1279794e`, `assettrack-web.onrender.com`'s
+   ticketing flow): the model's hallucinated field names for the never-seen Title field
+   coincidentally matched *real* chrome elements already on the `/tickets` page (the header's
+   asset search box, an existing ticket's "open" status badge), so grounding falsely succeeded
+   and the reactive extend never fired — with 3 of 5 extension-budget hops still unused.
+   Compounding gap: `pageSection`/`containerRole`/`containerName` already exist in the `AppModel`
+   Zod schema (`pageSection` even names `"dialog"` as a value) precisely for distinguishing modal
+   content from page chrome, but `domDiscovery.ts` — the live extraction path `liveExtend.ts`
+   actually uses — never populates them. Full writeup: `PROBLEM_ANALYSIS.md`. Diagnosed only, no
+   code fix yet.
+8. **`AppModel` size has no ceiling, and a rich site can exceed the LLM's context budget.** —
+   **Fixed.** `toLiteModel()` (`src/schema/appModel.ts`) used to keep every crawled page's full
+   `forms`/`navigation`/`buttons`/`headings`/`breadcrumbs` in one payload, and a complex app
+   (large data tables, deeply nested menus) could produce a 17,000+ line `AppModel` that tripped
+   `testCases.ts`/`ir.ts` LLM calls with a `413`. `capElements()` now keeps named/interactive-role
+   elements first and fills the rest of the budget positionally; `capNavTree()` caps the
+   navigation tree by a shared breadth+depth budget so a wide *and* deep mega-menu can't multiply
+   past it; forms/fields/buttons/headings are capped per page. All seven caps are env-overridable
+   (`MAX_LITE_ELEMENTS_PER_PAGE`, `MAX_LITE_FORMS_PER_PAGE`, `MAX_LITE_FORM_FIELDS`,
+   `MAX_LITE_NAV_NODES_PER_PAGE`, `MAX_LITE_NAV_DEPTH`, `MAX_LITE_BUTTONS_PER_PAGE`,
+   `MAX_LITE_HEADINGS_PER_PAGE` — see `.env.example`), defaulted above every page size observed in
+   this project's own sampled runs, so an ordinary site sees no change. Covered by
+   `tests/appModel.test.ts`. Full writeup: `PROBLEM_ANALYSIS.md`.
