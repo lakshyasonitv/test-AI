@@ -3,9 +3,11 @@
 This is the technical reference for the AI test automation platform. It covers every source file
 with its role, data contracts, LLM integration, and key design decisions.
 
-For a quick-read project statement, a detailed architecture diagram, and honest current-state
-bullets, see [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md). For what changed in the most recent
-working session specifically, see [SESSION_SUMMARY.md](SESSION_SUMMARY.md).
+**This file answers "how does it work".** For **what's broken and what's next**, see
+[PROBLEM_ANALYSIS.md](PROBLEM_ANALYSIS.md) — the single owner of that list. For a quick-read project
+statement and architecture diagram, see [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md); for what changed
+and when, [SESSION_SUMMARY.md](SESSION_SUMMARY.md). Full map in the
+[README](README.md#documentation-map).
 
 ---
 
@@ -438,23 +440,18 @@ Single-page HTML/JS/CSS app (`public/`):
 
 ## Current Gaps
 
-| Gap | Impact | Status |
-|-----|--------|--------|
-| No server authentication | Anyone with the URL can start runs and browse artifacts | Open |
-| Entry URL had no scheme/host validation | `POST /api/runs` accepted any string as a URL; a `file://` URL let discovery read local files, and an internal-network address (`169.254.169.254`, `127.x.x.x`, etc.) was reachable via `page.goto()` — both landing in a publicly-served run directory | Fixed — `isAllowedEntryUrl`/`isPrivateOrLoopbackHost` (`hybridDiscovery.ts`), enforced at the API boundary and again in discovery. Auth itself (the row above) is still open |
-| Cross-leg credential handling for multi-attempt cases | A case that logs in for real, then tries a second (wrong-credential) login in the same browser session, can substitute the real credential into the wrong attempt if the model doesn't order the real attempt last — confirmed in production | Open, diagnosed, fix not yet implemented |
-| Case-generation reword drift | The case-generation stage can reword an explicit "click on X" into "Navigate to the X section", and can silently drop waits the prompt asked for. The IR stage no longer *acts* on the misleading wording (guessed routes are rejected deterministically), so the blast radius is contained, but the case prose itself is still unconstrained | Open, contained downstream |
-| Failure diagnosis step attribution | `analyzeFailure` reported a different `failingStepId` than a run's raw Playwright trace actually showed, confirmed against a real run | Open, not yet investigated |
-| No end-to-end self-heal test | Self-heal is verified in code but not against a real drifted site | Pending manual verification |
-| No multi-user isolation | Single-process, shared run history, no per-user quotas | Open |
-| Visibility accuracy for selector-less elements | `domExtract.ts` has no CSS engine. `recheckVisibility` now re-checks every element carrying a stable selector against the live page's computed style, and a hidden element can't be asserted visible — but an element with no `id`/`data-test`/`css` still keeps the assumed `visible: true` | Mostly closed |
-| Assertion quality beyond the terminal step | The case's final pure-text assertion is grounded against the live page; a mid-case free-text assertion has no equivalent check yet | Open |
-| Deterministic rejections cost LLM attempts | Each grounding rejection (guessed route, hidden element, ungrounded target) re-generates with correction feedback. Bounded by `MAX_IR_ATTEMPTS`, but a case the model repeatedly gets wrong exhausts the budget and ships a truncated prefix. The navigate-URL rejection is marked `kind: "navigate-url"` so it at least doesn't also drain the live-extend budget | Open, bounded |
-| Playwright generator is pure code | No LLM used for spec generation (intentional) | Feature, not a gap |
-| Cloudflare tunnel buffering | SSE events delayed; UI uses polling as workaround | Works, not a blocker |
-| Dynamic in-page modal forms not filled | A modal that only appears after a click (e.g. "Raise a Ticket") has fields absent from the initial `AppModel`. Pinned mechanism (real run `2026-08-10T11-15-46-262Z-1279794e`): `extendAppModel` only fires when `groundingError` reports a MISS; the model's hallucinated field names (`"Search assets by serial or name..."`, `"open"`) coincidentally matched real chrome elements already on the `/tickets` page, so grounding falsely succeeded and the reactive live-extend trigger never ran. Compounding gap: `pageSection`/`containerRole`/`containerName` exist in the `AppModel` Zod schema for exactly this ("dialog" is a named `pageSection` value) but are never populated by `domDiscovery.ts` — see `PROBLEM_ANALYSIS.md` | Open, mechanism pinned with reproduction, no code fix yet |
-| `AppModel` context explosion on complex sites | `toLiteModel()` used to keep full `forms`/`navigation`/`buttons`/`headings`/`breadcrumbs` for every crawled page at once; a rich site (large tables, nested menus) could produce 17,000+ line JSON, hitting LLM context/payload limits (413) in `testCases.ts`/`ir.ts` | **Fixed** — `capElements()`/`capNavTree()` in `src/schema/appModel.ts` cap elements/forms/fields/nav/buttons/headings per page, all env-overridable (`MAX_LITE_*`, see `.env.example`). Covered by `tests/appModel.test.ts` |
-| `runs/` grows without bound | Served as static files with no auth (see "No server authentication" above) and never pruned — disk usage and exposure both grow with every run, forever | Open (`TECH_DEBT.md` A6) |
-| Generated spec's locator helpers can drift from `targetResolver.ts` | The generator embeds its own copy of locator-fallback logic instead of sharing `targetResolver.ts`'s; already confirmed diverged in one case, nothing pins the two in sync | Open (`TECH_DEBT.md` A7 + D10) |
-| `safeClick` treats non-navigation link schemes as real navigation | The generated spec's `safeClick` follows `javascript:`/`mailto:`/`tel:` hrefs as if they were page navigations, unlike every other href check in the codebase | Open, reproduced (`TECH_DEBT.md` D2) |
-| Credential-veto regex can bridge unrelated fields | `credentialPolicyFor`'s veto check can match across fields when case text is joined before matching, misclassifying policy for a case that mentions multiple fields — same root defect shape as the entry-URL/credential-extraction regex bugs fixed earlier this session, one function over | Open, reproduced (`TECH_DEBT.md` D3) |
+**The authoritative, ranked list of open issues lives in
+[PROBLEM_ANALYSIS.md](PROBLEM_ANALYSIS.md)** — with evidence, severity, and the fix plan for each.
+It is deliberately not duplicated here: this list previously existed in six documents at once and
+every copy drifted out of date.
+
+What belongs in *this* file is the architectural context behind those gaps:
+
+| Deliberate design choice, sometimes mistaken for a gap | Why it's this way |
+|---|---|
+| The Playwright generator uses no LLM | Spec generation is pure code, by design — the IR is the contract, and a deterministic generator is what makes the output reviewable and reproducible |
+| The generated spec restates locator logic instead of importing it | The spec must be standalone and runnable outside this repo. The cost is that `generator.ts`'s helpers can drift from `targetResolver.ts` — and they already have (`PROBLEM_ANALYSIS.md` W3) |
+| The UI polls instead of streaming | Cloudflare Quick Tunnels buffer SSE. Both routes exist; SSE works on localhost |
+| `domExtract.ts` assumes `visible: true` | It's a static cheerio parser with no CSS engine. `recheckVisibility` corrects this live for every element carrying a stable selector; selector-less elements keep the assumption |
+| A deterministic rejection costs an LLM attempt | Every grounding rejection re-generates with correction feedback, bounded by `MAX_IR_ATTEMPTS`. The navigate-URL rejection is marked `kind: "navigate-url"` so it at least doesn't also drain the live-extend budget |
+| Single-process, no multi-user isolation | Shared run history, no per-user quotas — the current deployment model is a single trusted operator |

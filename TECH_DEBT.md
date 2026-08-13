@@ -1,4 +1,12 @@
-# Tech Debt — defects, dead code, and prompt hygiene
+# Tech Debt — the evidence archive
+
+> **This file holds the *evidence* — reproductions, run ids, exact line references, and the reasoning
+> behind each finding. It is not the status board.**
+>
+> For **what is currently open, ranked, and what's being fixed next**, see
+> [PROBLEM_ANALYSIS.md](PROBLEM_ANALYSIS.md) — the single owner of that list. Come here when you
+> want to know *how a defect was proven* before acting on it. The ✅/⬜ marks below record what was
+> true when each item was written; treat `PROBLEM_ANALYSIS.md` as authoritative if they disagree.
 
 Audit of `ai-test-platform` (10,110 lines across `src/` + `public/`), produced 2026-08-08 from a
 read-only sweep plus evidence from real runs under `runs/`. Extended 2026-08-09 with a
@@ -15,7 +23,7 @@ finding is marked as such.
 | A | Defects — things that are wrong | ✅ A1, A2, A3, A4, A5, A8, A11 done · rest ⬜ |
 | B | Dead code — provably unreferenced | ✅ B1, B2, B3, B4, B5, B7, B8, B9 done · B6 🔍 |
 | C | System prompts made general-purpose | ✅ **done 2026-08-08** |
-| D | Findings from a second audit (2026-08-09) | ✅ D1 done · D2–D9 open, D10 folds into A7 |
+| D | Findings from a second audit (2026-08-09) | ✅ D1, D3 done · D2, D4–D9 open, D10 folds into A7 |
 
 ---
 
@@ -189,8 +197,8 @@ Confirm which before changing anything.
 - **85 `console.log` calls**, no levels, no run correlation — pipeline logs can't be filtered by
   run or severity.
 - **10 swallowed errors** (`catch {}` / `.catch(() => {})`).
-- **No CI runs the 248 tests.** The only workflow, `.github/workflows/directory-tree.yml`,
-  regenerates a directory tree and pushes to `main`.
+- **No CI runs the tests** (274 as of 2026-08-13). The only workflow,
+  `.github/workflows/directory-tree.yml`, regenerates a directory tree and pushes to `main`.
 
 ### ✅ A11. `extractCredentialsFromPrompt` can silently substitute the wrong email/password when a (done 2026-08-09)
 prompt mentions the keyword more than once
@@ -260,7 +268,7 @@ Every item was verified by a reference scan across `src/` and `tests/`.
 Ten items from a broader sweep prompted by the A11 bug above, plus B9 (Part B, dead code). Two
 read-only audit agents covered the rest of the codebase; every finding below was independently
 re-verified by direct code inspection — and for D3, by live reproduction — before being recorded
-here. All ⬜ open; documentation only, none of these have been fixed.
+here. They were all open when written; D1 and D3 have since been fixed (see their headings).
 
 ### ✅ D1. Arbitrary local file disclosure + SSRF via the entry URL — no scheme/host validation (done 2026-08-09)
 
@@ -333,7 +341,7 @@ does nothing and every later step runs against an unchanged page.
 **Fix.** Extend `SAFE_CLICK_HELPER`'s href check to match `NON_NAVIGATING_HREF`, ideally generated
 from one shared source instead of restated a fourth time (ties into A7).
 
-### ⬜ D3. `credentialPolicyFor`'s veto regex bridges unrelated fields in the joined case text — reproduced
+### ✅ D3. `credentialPolicyFor`'s veto regex bridges unrelated fields in the joined case text — reproduced (fixed 2026-08-13, `c456de9`)
 
 `credentials.ts:371-379` joins `title`, `expected`, `intent`, and every step into one string
 before testing `IDENTIFIER_AT_FAULT`/`PASSWORD_AT_FAULT` against it. The `[^.]{0,40}?`/`[^.]{0,25}?`
@@ -354,8 +362,10 @@ class as A11, one function over. Not yet observed in the 75 sampled real cases (
 wording tends to run long enough that the short lazy-match window rarely bridges fields by
 chance).
 
-**Fix.** Test `IDENTIFIER_AT_FAULT`/`PASSWORD_AT_FAULT` against each field (title, expected,
-intent, each step) independently rather than one joined string.
+**Fix applied** (`c456de9`). `credentialPolicyFor` now tests `IDENTIFIER_AT_FAULT`/`PASSWORD_AT_FAULT`
+against each field (title, expected, intent, each step) independently via a `matchesAny(re)` helper,
+rather than one joined string. A fault fully contained within one field is still caught; a trigger
+word in one field can no longer bridge to a fault word in an unrelated one.
 
 ### ⬜ D4. `store.read()` / `listRuns()` have no per-entry error isolation — one bad run 500s the shared run-history endpoint
 
@@ -509,7 +519,7 @@ drift." Fold into A7 as evidence when A7 is picked up.
 
 ## Verification baseline
 
-- `npx vitest run` → **253 passing** (24 files)
+- `npx vitest run` → **274 passing** (26 files), as of 2026-08-13
 - `npx tsc --noEmit` → clean
 
 For anything touching prompts or IR generation, **delete `runs/_cache/llm` before an end-to-end

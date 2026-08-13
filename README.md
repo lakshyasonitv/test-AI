@@ -2,6 +2,20 @@
 
 A pipeline that turns a natural-language testing request + a URL into **executed** Playwright tests — with a live progress UI, per-step screenshots, artifacts (trace, generated spec), per-case suite results, and plain-English failure diagnosis on failure. Discovers a site's own internal links (not just the entry page), handles multi-page flows by extending discovery on demand, and tries once to auto-repair broken locators before reporting failure.
 
+## Documentation Map
+
+Five documents, one job each. **Each topic has exactly one owner** — they link to each other rather
+than repeating, because six copies of the same list is how they drifted out of date before.
+
+| You want to know… | Read |
+|---|---|
+| What this is, how to run it, what it can do | **this file** |
+| How it works internally — every file, schema, design decision | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| **What's broken, what's being fixed next** | [PROBLEM_ANALYSIS.md](PROBLEM_ANALYSIS.md) |
+| The evidence and reproduction behind a known defect | [TECH_DEBT.md](TECH_DEBT.md) |
+| What changed, and when | [SESSION_SUMMARY.md](SESSION_SUMMARY.md) |
+| The project narrative and long-term design direction | [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md) |
+
 ## Quick Start
 
 ```bash
@@ -114,28 +128,24 @@ prompt + url
 | DOM-first discovery | Working | Node/cheerio extraction, vision-fallback, zero LLM tokens on the common path. No duplicate elements when a tag carries both a semantic HTML role and an explicit `role` attribute |
 | LLM response caching | Working | File + in-memory cache for repeated prompts, 30-min TTL |
 
-### What Partially Works
+### What Doesn't Work Yet
 
-| Capability | Status | Known Issue |
-|-----------|--------|-------------|
-| Self-healing | Code verified | No end-to-end test against a real drifted site yet |
-| A case that logs in for real, then tries a second (wrong-credential) login attempt in the same case | Fragile | Substitution only guarantees the case's FINAL credential attempt gets the real value; if the model doesn't order the real attempt last, the wrong leg gets it. Most sites also redirect an already-authenticated session away from the login page, so "return to the login page" for a second attempt can find no form there at all. Diagnosed, not yet fixed — see `PROJECT_SUMMARY.md` |
-| Wording drift between your prompt and the generated case | Improved, not guaranteed | The case-generation step can reword "click on Admin" into "Navigate to the Admin section", and can drop explicit waits you asked for. The IR stage no longer acts on the misleading wording (a guessed route is now rejected deterministically), but the case text itself is still LLM-authored prose |
-| A vague "the whole header/nav is visible" case | Guarded, not eliminated | Elements with a stable selector now carry real computed visibility, and a hidden one can't be asserted visible. An element with no selector at all still falls back to the static parser's assumed `visible: true` |
-| Filling fields inside a dynamic in-page modal (e.g. a "Raise a Ticket" popup) | Fails | Mechanism pinned: `liveExtend.ts`'s live re-snapshot only runs when `groundingError` reports a MISS, and a hallucinated field name can coincidentally match a real chrome element elsewhere on the same page (search box, status badge) — grounding then falsely "succeeds" and the modal is never captured. Reproduced against a real run, no code fix yet — see `PROBLEM_ANALYSIS.md` |
+**Tracked in one place: [PROBLEM_ANALYSIS.md](PROBLEM_ANALYSIS.md)** — every known gap, ranked, with
+evidence and the fix plan. Not repeated here, so it can't drift out of sync.
 
-### Known Limitations
+The headline items, for orientation:
 
-| Issue | Impact |
-|-------|--------|
+| Issue | Short version |
+|---|---|
+| Dynamic in-page modal forms (e.g. "Raise a Ticket") | Fails. Root cause pinned and reproduced; fix designed, not yet implemented |
 | No server authentication | Anyone with the URL can start runs and browse artifacts |
-| No built-in demo credentials | There is no per-site autofill list, by design (general-purpose over site-specific). Credentials are taken from your prompt when it carries them, otherwise the run pauses and asks via the UI prompt (or times out and continues without them, `CREDENTIAL_WAIT_MS`) |
-| Gemini key inconsistency | Different keys from different projects can have different model access |
-| `AppModel` size has no ceiling | A complex site (large data tables, deeply nested menus) can produce a 17,000+ line `AppModel`; `toLiteModel()` keeps every crawled page's full structure in one payload, so `testCases.ts`/IR generation can hit the LLM's context/payload limit (`413`) instead of degrading gracefully |
-| Failure diagnosis step attribution | Confirmed against a real run: `analyzeFailure` can report a different `failingStepId` than the raw Playwright trace actually shows |
-| Assertion quality | Prompt-nudged, not code-level validated, beyond the terminal-step, title-metadata, and hidden-element grounding above |
-| Discovery's `visible` field is only accurate for selector-bearing elements | `domExtract.ts` is a static HTML parser (cheerio) with no CSS engine. Elements carrying a stable selector are re-checked live and corrected; an element with no `id`/`data-test`/`css` still gets the assumed `visible: true` |
-| A rejected step costs an LLM retry | Every deterministic grounding rejection (guessed route, hidden element, ungrounded target) feeds a correction back and re-generates. It's bounded by `MAX_IR_ATTEMPTS`, but a case the model keeps getting wrong will exhaust the budget and ship a truncated prefix |
+| No CI | 274 tests exist; nothing runs them automatically |
+| Assertion quality beyond the guarded cases | Prompt-nudged, not code-validated, outside the terminal-step / title-metadata / hidden-element grounding |
+| Visibility for elements with no stable selector | Falls back to the static parser's assumed `visible: true` |
+
+By design, not a defect: **no built-in demo credentials.** There's no per-site autofill list —
+credentials come from your prompt when it carries them, otherwise the run pauses and asks via the UI
+(or times out and continues without them, `CREDENTIAL_WAIT_MS`).
 
 ## Architecture
 
@@ -311,22 +321,24 @@ This prints a random `https://<words>.trycloudflare.com` URL. Ephemeral, free, n
 
 **Security:** The server has no authentication. Anyone with the URL can start runs and browse artifacts. Fine for trusted audiences; know this before sharing widely. The entry URL itself is validated — non-`http(s)` schemes and loopback/link-local/private-range hosts are rejected (`isAllowedEntryUrl`, `stages/hybridDiscovery.ts`) — but nothing gates who can submit a run at all.
 
-## Docker / Render Deployment
+## Deployment
 
-`Dockerfile` (`mcr.microsoft.com/playwright:v1.49.0-jammy` base — Node, Chromium, and Linux deps
-pre-bundled), `.dockerignore`, and `render.yaml` (a Render Blueprint) are in the repo root for a
-one-`docker build` or one-click Render deploy. Playwright's own npm package is pinned to an exact
-version (`1.49.0`, no `^`) matching the base image's bundled browser build — a caret range here
-can let `npm install` pull a newer Playwright than the image's pre-installed Chromium, which then
-fails to launch. `MAX_CONCURRENT_RUNS=1` is recommended on a free-tier instance (512MB RAM) — each
-run launches its own Chromium instance.
+There is **no container or hosting config in this repo** — `Dockerfile`, `.dockerignore` and
+`render.yaml` were removed in `fbf44c0`. Run it directly with `npm run serve`.
 
-`GET /api/health` reports which critical env vars are set (name/length only, never the value) —
+Two things worth knowing if you re-add a deployment target:
+
+- **Pin Playwright to an exact version** (`1.49.0`, no `^`, as `package.json` does today) matching
+  whatever browser build the host image ships. A caret range lets `npm install` resolve a newer
+  Playwright than the pre-installed Chromium, which then fails to launch with
+  `browserType.launch: Executable doesn't exist`.
+- **`MAX_CONCURRENT_RUNS=1` on a small instance** (≤512 MB RAM) — every run launches its own
+  Chromium.
+
+`GET /api/health` reports which critical env vars are set (name and length only, never the value) —
 useful for confirming a deploy's secrets actually landed without exposing them.
 
 ## Further Reading
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Technical reference: every file explained, schema contracts, design decisions, current gaps
-- [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md) — Concise project statement, detailed architecture diagram, what works, next steps toward enterprise readiness
-- [SESSION_SUMMARY.md](SESSION_SUMMARY.md) — What changed in the most recent working session, in detail
-- [TECH_DEBT.md](TECH_DEBT.md) — Audited defects, dead code, and prompt hygiene, with evidence and fix status
+See the [Documentation Map](#documentation-map) at the top of this file — one line per document,
+one job each.

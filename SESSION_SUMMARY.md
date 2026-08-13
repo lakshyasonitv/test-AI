@@ -1,8 +1,10 @@
 # Session Summary
 
-What happened in this working session, in chronological order. For current project state see
-[PROJECT_SUMMARY.md](PROJECT_SUMMARY.md); for full technical detail see
-[ARCHITECTURE.md](ARCHITECTURE.md).
+**An append-only log of what changed and when.** Entries record what was true at the time they were
+written and are not retroactively corrected — for the *current* state of anything, see
+[PROBLEM_ANALYSIS.md](PROBLEM_ANALYSIS.md) (what's broken / what's next),
+[PROJECT_SUMMARY.md](PROJECT_SUMMARY.md) (narrative), or
+[ARCHITECTURE.md](ARCHITECTURE.md) (technical detail).
 
 ## 1. Compound-login-case investigation (diagnosed, not fixed)
 
@@ -323,24 +325,75 @@ model now 404s ("not found for API version v1beta"), while `gemini-3-flash-previ
 `gemini-3.1-flash-lite` (what the config had been reverted *away* from) both return 200. Restored.
 Model names are worth a real API call to confirm, not an assumption from training data.
 
-## What's still open
+---
 
-Carried over, unaddressed (see `ARCHITECTURE.md`'s Current Gaps table for the full list with
-impact/status, and `TECH_DEBT.md` Parts A/B/D for the full audited-defect list with evidence and
-severity):
-- Compound-login-case credential handling (§1) — still the largest known correctness gap
-- Case-generation reword drift: the LLM paraphrases the user's literal instructions ("click on
-  Admin" → "Navigate to the Admin section", explicit waits dropped) before any deterministic
-  stage sees them. Contained downstream now, not fixed at the source
-- No server authentication (the entry-URL validation added in §16 narrows what an unauthenticated
-  request can do, but anyone with the URL can still start runs and browse artifacts)
-- Failure-diagnosis step attribution can point at the wrong step
-- No end-to-end self-heal test against a real drifted site
-- Visibility for elements with no stable selector still falls back to an assumed `visible: true`
-- `runs/` grows without bound and is served with no auth (`TECH_DEBT.md` A6)
-- The generator's embedded locator helpers can drift from `targetResolver.ts`'s real
-  implementation — confirmed already diverged in one case, not just theoretical (A7 + D10)
-- `safeClick` in the generated spec treats `javascript:`/`mailto:`/`tel:` hrefs as real navigation
-  targets, unlike every other href check in the codebase (D2)
-- `credentialPolicyFor`'s veto regex can bridge unrelated fields when case text is joined before
-  matching — same root defect as §16's fix, one function over, reproduced but not yet fixed (D3)
+# Session — 2026-08-12 → 13
+
+## 18. Groq cost drain: root-caused and fixed
+
+Investigated why Groq credits were draining unexpectedly. Four compounding causes, all fixed:
+`GROQ_MODEL` was `llama-3.3-70b-versatile` (deprecated 2026-06-17, shutdown 2026-08-16) — migrated
+to `openai/gpt-oss-120b`, Groq's own recommended replacement and cheaper on both input and output;
+added `reasoning_effort: "low"` for GPT-OSS models; capped `callWithPool`'s retries at 2; made
+`MAX_IR_ATTEMPTS` env-configurable (was a hardcoded 8, which stacked with per-call retries to make
+one case's worst case 48 real requests); and added `GroqBudget` — a per-run hard ceiling
+(`MAX_GROQ_CALLS_PER_RUN`, default 60) threaded explicitly through `toIR`/`runSuite` rather than
+kept as a module singleton, since `MAX_CONCURRENT_RUNS` shares one process across runs. Real usage
+is now recorded to `runs/<id>/08-groq-usage.json` and reported on both the success and error paths.
+
+Verified in production: the next real run used exactly 9 Groq calls / 23,579 tokens, matching the
+expected `1 (primary) + 2 + 2 + 4` per-case breakdown.
+
+One process note worth keeping: a general-prompt `WebFetch` of Groq's deprecation page reported the
+model as *not* deprecated, contradicting `WebSearch`. Re-fetching with a precise extraction prompt
+("list every row in the deprecation table verbatim") produced the real table and resolved it. A
+planning agent also proposed `gpt-oss-20b` as the replacement, conflating it with a different
+model's deprecation row — caught by checking Groq's actual pricing/deprecation pages rather than
+trusting the recommendation.
+
+## 19. Two bugs found by analyzing the last three runs
+
+- **A pipeline could hang forever.** One run stopped dead at `"stage":"ir","status":"started"` with
+  zero further events for 50+ minutes. Both LLM clients called `fetch()` with no timeout, and
+  `callWithPool`'s retry logic only reacts to a promise that *settles* — a hung fetch never
+  triggers a retry, a budget check, or anything else. `callWithPool` now races every attempt
+  against an `AbortController` (`LLM_TIMEOUT_MS`, default 45 s), classifying a timeout as
+  retryable the same way a network error already was. The signal is a locally-owned `timedOut`
+  flag, not `err.name` sniffing — an aborted fetch surfaces as `TypeError: terminated` rather than
+  a clean `AbortError` if the abort lands mid-body-read.
+- **IR grounding validated against the whole app model, not the current page.** New `trackPages()`
+  walks the IR once and tracks which discovered page the flow is actually on, using `navigate`
+  steps and resolved `domLinks[].href` from clicked links. `groundingError` now scopes to that
+  page, and a new `urlAssertionError` catches a hallucinated `url_contains` value (a run asserted
+  `/signup` after clicking a link whose real destination was `/register`). Both fall back to
+  today's behavior whenever the cursor can't be confidently resolved, so no new false negatives.
+
+## 20. The three reported problems, and a documentation restructure
+
+Investigated three user-reported limitations. **Security-example leakage** was already fixed
+(`CategoryId`/`scope` taxonomy + `classifyScope`/`filterByScope`). **`AppModel` context explosion**
+was fixed here (`fb2ea96`): `capElements()`/`capNavTree()` bound every previously-unbounded per-page
+array, with seven `MAX_LITE_*` env knobs defaulted above every page size in this project's own
+sampled runs.
+
+**Dynamic modal forms** was diagnosed but deliberately left unfixed. The mechanism is now pinned:
+`extendAppModel` is reactive-on-miss only, and a hallucinated field name that coincidentally matches
+real page chrome makes grounding *falsely succeed*, so the capture never runs. Proven by a same-run
+A/B pair — one case guessed a name that missed and got the modal discovered correctly; its sibling
+guessed a name that collided with the header search box and shipped a broken test. A candidate fix
+was designed and its trigger validated by scanning all 43 IRs on disk (13 fire, all genuine
+post-click-revealed forms, zero logins), but not implemented: validating its cost profile needs a
+live run, and two of my own first instincts about it were measurably wrong (see
+`PROBLEM_ANALYSIS.md` §5).
+
+Also fixed here: the compound-login case shape, closed by avoidance rather than by solving the
+underlying limitation — `testCases.ts` now forbids it and `dropCompoundLoginCases` enforces that
+deterministically, splitting the two legs into separate cases with separate sessions (`c456de9`).
+Same commit closed `TECH_DEBT.md` D3 (the credential-veto regex bridging unrelated fields).
+
+**Documentation restructure.** "What is broken" had been duplicated across six documents, which is
+why they drifted — `c456de9` fixed the compound-login bug and touched zero `.md` files, leaving all
+six describing it as open. Each document now has one job, `PROBLEM_ANALYSIS.md` is the single owner
+of open-issue status, and the other five link to it instead of restating. Corrected along the way:
+a README section instructing readers to `docker build` files deleted in `fbf44c0`, a fixed
+limitation still listed as open, and a stale test-count baseline (253/24 → 274/26).

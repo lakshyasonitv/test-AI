@@ -1,5 +1,9 @@
 # AI Test Platform — Project Summary
 
+**This file is the project narrative and long-term design direction.** For what's broken and what's
+being fixed next, see [PROBLEM_ANALYSIS.md](PROBLEM_ANALYSIS.md) — the single owner of that list.
+Full map in the [README](README.md#documentation-map).
+
 ## What This Is
 
 Give it a URL and a plain-English testing request (e.g. *"check the login page and
@@ -192,8 +196,13 @@ and corrected rather than silently producing a flaky test.
 
 ## Eight Steps to Make the Backend Genuinely General-Purpose
 
-Not future features — structural gaps in the pipeline today that limit it to sites shaped like
-the ones it's been tuned against (login/e-commerce), rather than truly arbitrary sites.
+**This section is long-term design direction, not a bug list.** These are structural limits that
+keep the pipeline tuned to sites shaped like the ones it was built against (login/e-commerce)
+rather than truly arbitrary ones. Closing any of them is a design project, not a fix.
+
+> **Per-item status is deliberately not tracked here.** For what is actually open, ranked, with
+> evidence and a fix plan, see [PROBLEM_ANALYSIS.md](PROBLEM_ANALYSIS.md) — the single owner of
+> that list.
 
 1. **The only "handle a blocking form" mechanism is login-shaped, not general.**
    `credentials.ts` + `pendingCredentials.ts` + the server's pause/ask flow exist ONLY for
@@ -219,13 +228,16 @@ the ones it's been tuned against (login/e-commerce), rather than truly arbitrary
    the way the six named concepts get.
 4. **The IR/credential-policy system has no first-class notion of state within one flow.** A test
    case gets exactly one `CredentialPolicy` for its entire step list; `applyCredentials` decides
-   per-step only by pattern (registration-leg URL, last-occurrence-of-a-kind). This is why a
-   compound flow (real login, then a second attempt) is fragile — the pipeline doesn't model "this
-   flow transitions between states," only "this whole case gets one policy." Concretely open right
-   now, not just theoretical: a compound-login case shape currently fails roughly half the time in
-   production depending on whether the model happens to order its own steps favorably, and the
-   same class of bug will recur for any other stateful flow (an invalid coupon then a valid one, a
-   failed validation then a correction, a multi-step checkout).
+   per-step only by pattern (registration-leg URL, last-occurrence-of-a-kind). The pipeline doesn't
+   model "this flow transitions between states," only "this whole case gets one policy."
+
+   The *symptom* — a compound login case (deliberately-wrong attempt plus a real one in one browser
+   session) failing about half the time depending on step order — was closed in `c456de9`, but by
+   **avoidance, not by solving the underlying limitation**: `testCases.ts` now forbids that case
+   shape in its prompt and `dropCompoundLoginCases` enforces it deterministically, so the two legs
+   become two separate cases with their own sessions. The structural gap remains, and the same
+   class of bug will recur for any other stateful flow that can't simply be split (an invalid
+   coupon then a valid one, a failed validation then a correction, a multi-step checkout).
 5. **Pausing for a human is still purpose-built per case, not a general primitive.** Two
    pause-and-resume mechanisms exist now — `askCredentials`/`pendingCredentials.ts` for login
    details, and `pendingCaseSelection.ts` for reviewing/refining the generated case batch — and
