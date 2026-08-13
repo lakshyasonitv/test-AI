@@ -10,6 +10,7 @@ import {
   type ScopeFilter,
 } from "../kb/testStrategy.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
+import { looksLikeCompoundLoginCase } from "./credentials.js";
 
 // Models sometimes ignore case ("High") or return an array where a string was asked for
 // ("expected": [...]) — normalize before validating rather than rejecting valid content.
@@ -147,6 +148,37 @@ export function filterNovelCases(all: TestCase[], seenTitles: string[]): TestCas
   return all.filter((c) => !seenTitles.some((s) => titleOverlap(s, c.title) >= DUPLICATE_AT));
 }
 
+/**
+ * Deterministic backstop for the compound-login-case bug: applyCredentials (credentials.ts)
+ * only ever substitutes the LAST fill of each credential kind, so a case combining a wrong
+ * attempt with a valid one is broken whichever way the model orders the two. The system prompt
+ * above now forbids this shape outright — this is the code-level backstop the project's "prompt
+ * nudges are never the only guard" doctrine requires for whenever the model does it anyway.
+ */
+export function dropCompoundLoginCases(cases: TestCase[]): TestCase[] {
+  const kept: TestCase[] = [];
+  const dropped: TestCase[] = [];
+  for (const c of cases) (looksLikeCompoundLoginCase(c) ? dropped : kept).push(c);
+  if (!dropped.length) return cases;
+  for (const d of dropped) {
+    console.warn("[testCases] dropping compound login case (wrong+valid attempt in one case):", d.title);
+  }
+  // The dropped case may have carried the batch's only fromPrompt:true. caseSelectionGate.ts
+  // throws when no case is tagged fromPrompt once the user has already made selections — promote
+  // the best surviving "valid" case so a primary usually still exists after the drop.
+  if (dropped.some((d) => d.fromPrompt) && !kept.some((k) => k.fromPrompt)) {
+    const replacement = kept.filter((k) => k.category === "valid")
+      .sort((a, b) => (rank[a.priority] ?? 2) - (rank[b.priority] ?? 2))[0];
+    if (replacement) {
+      replacement.fromPrompt = true;
+      console.warn("[testCases] promoted", JSON.stringify(replacement.title), "to fromPrompt after dropping the compound primary case");
+    } else {
+      console.warn("[testCases] dropped the only fromPrompt case as compound and no 'valid' case survives to promote — batch has no primary");
+    }
+  }
+  return kept;
+}
+
 export const TestCase = z.object({
   title: z.string(),
   priority: Priority,
@@ -254,19 +286,29 @@ no payloads. A case whose point is an attack is out of scope and will be discard
 any of them again, and do NOT write a near-reworded copy of any of them. Rejected:
 ${extend!.rejectedTitles!.map((t) => `  - ${t}`).join("\n")}`
     : "";
+  // Appended only where a primary actually gets minted (never on the "extend, no mintPrimary"
+  // branch, which has no primary to carve anything out of) — see the "never combine" rule below
+  // for why a literal request describing both legs still can't become one compound case.
+  const compoundLoginCarveOut = `
+If the plan/request itself literally describes BOTH a deliberately-wrong login attempt and a
+genuinely-valid one, do not combine them into the fromPrompt case even though the request
+describes both. Split them: the fromPrompt case is ONLY the valid-login half, using the plan's own
+concrete values verbatim; write the wrong-attempt half as a separate, ordinary case with category
+"invalid-input" ("fromPrompt" omitted or false) — it may stand in for the checklist's own "Invalid
+password" item rather than duplicating it.`;
   const fromPromptRule = extend
     ? (extend.mintPrimary
         ? `These cases EXTEND an existing suite, but no primary case has been accepted yet.
 Exactly ONE case in this batch must be tagged "fromPrompt": true — the direct, literal translation
 of the plan itself, using the plan's own concrete values. Do NOT restate anything already covered
 below. Already covered:
-${extend.existingTitles.map(t => `  - ${t}`).join("\n")}${rejectedBlock}`
+${extend.existingTitles.map(t => `  - ${t}`).join("\n")}${rejectedBlock}${compoundLoginCarveOut}`
         : `These cases EXTEND an existing suite. Do NOT restate anything already covered — write
 only cases for behaviour the list below does not reach. Never set "fromPrompt"; the suite already
 has its primary case. Already covered:
 ${extend.existingTitles.map(t => `  - ${t}`).join("\n")}${rejectedBlock}`)
     : `Exactly ONE case — the direct, literal translation of the plan itself — must be tagged
-"fromPrompt": true.`;
+"fromPrompt": true.${compoundLoginCarveOut}`;
 
   const system =
     `You write concrete, human-readable QA test cases from a plan and an application model. Output ONLY a JSON array, no prose, no markdown fences.
@@ -311,7 +353,7 @@ Rules, follow exactly:
 - "checklistTitle" is the checklist item title when the case came from the checklist below, omitted otherwise.
 - "steps" are concrete, ordered, human-readable actions (e.g. "Click the 'Log in' button"), not vague ("Test the login").
 - "expected" is the concrete, observable outcome — an element becoming visible, a URL changing, specific text appearing — not a vague pass/fail statement.
-- When one case combines a deliberately-WRONG credential attempt with a genuinely-valid one (e.g. "verify invalid login shows an error, then verify valid login succeeds"), order the wrong attempt FIRST and the valid attempt LAST. Most sites redirect an already-authenticated session away from the login page, so a case that logs in for real and then tries to "return to the login page" for a second attempt will find no login form there. Ending on the successful, authenticated state also makes any later "session persists" check trivial — it's already true. For the rejected attempt's error check, prefer something structurally groundable over exact wording — e.g. "the 'Sign In' button is still visible" or "the URL still contains '/login'" — since a free-text error message in the MIDDLE of a case is never grounded against the live page (only a case's terminal step gets that treatment).
+- A case must never combine a deliberately-WRONG credential attempt with a genuinely-valid one in the same case/browser session (e.g. never "log in with the wrong password, verify the error, then log in again with the right password" as one case). Write these as two separate cases instead — the checklist below already lists them as two distinct items, "Valid credentials" (category "valid") and "Invalid password" (category "invalid-input"), each getting its own case and its own browser session. This is not a style preference: credentials are substituted once per case, matched to the LAST fill of each kind — a case that fills a password field twice (once wrong, once right) either overwrites the deliberately-wrong attempt with the real password (silently turning a negative test into a no-op) or leaves the valid attempt with an invented value that never authenticates. The case is broken either way it's ordered.
 
 The example below is a SHAPE reference only. Its element names, URLs and values belong to the
 example, never to your output: take every element name from the application model you were
@@ -369,6 +411,8 @@ ${strategyList}
 ${gapsLine}
 ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[],"expected","fromPrompt","category","intent","checklistTitle","targetUrl" } ]`;
 
+  console.log("[testCases] prompt chars:", user.length, "| approx tokens:", Math.round(user.length / 4), "| pages:", liteModel.pages.length);
+
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const raw = await gemini(user, { systemInstruction: system, json: true });
@@ -383,7 +427,8 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
         // Scope filtering stays as a backstop for a model that ignores the instruction above.
         // Case COUNT is no longer decided here — selectCases() is the single authority over the
         // merged upfront + reactive list, so this stage can't cap twice and produce 4-or-8.
-        const finalCases = filterByScope(stamped, scope);
+        const scoped = filterByScope(stamped, scope);
+        const finalCases = dropCompoundLoginCases(scoped);
         llmCacheSet(cacheKey, finalCases);
         return finalCases;
       }

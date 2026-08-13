@@ -3,7 +3,7 @@ import {
   credentialFieldsNeeded, promptCarriesCredentials, applyCredentials, isEnvValueRef,
   credentialEnvVars, credentialKindForTarget, credentialForTarget, redactCredentials, REDACTED,
   wantsRealCredentials, credentialFieldMap, credentialPolicyFor, lastFillIndexByKind,
-  extractCredentialsFromPrompt,
+  extractCredentialsFromPrompt, looksLikeCompoundLoginCase,
 } from "../src/stages/credentials.js";
 import { generateSpec } from "../src/stages/generator.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -504,6 +504,96 @@ describe("credentialPolicyFor", () => {
     applyCredentials(steps, { username: "me@real.com", password: "hunter2", secret: true }, "identifier-only");
     expect(isEnvValueRef(steps[0].value)).toBe("TEST_USERNAME");
     expect(steps[1].value).toBe("incorrectPassword123");   // the point of the whole test
+  });
+
+  // TECH_DEBT.md D3, reproduced directly: IDENTIFIER_AT_FAULT/PASSWORD_AT_FAULT used to test
+  // against title+expected+intent+steps joined into ONE string, so a trigger word in one field
+  // and a fault word in a different, unrelated field could bridge together and match.
+  it("does not bridge a trigger word in one field with a fault word in a different field (D3)", () => {
+    const c = tc({
+      title: "Log in with valid email and password", category: "valid",
+      steps: ["Verify no fields are missing before login"],
+    });
+    expect(credentialPolicyFor(c, false)).toBe("full");
+  });
+
+  it("still vetoes when the fault wording lives entirely within one field", () => {
+    const c = tc({ title: "Login test", category: "invalid-input", steps: ["Enter an invalid email address"] });
+    expect(credentialPolicyFor(c, false)).toBe("none");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// looksLikeCompoundLoginCase — deterministic backstop for the compound-login-case bug
+// ---------------------------------------------------------------------------
+//
+// Root cause: applyCredentials only ever substitutes the LAST fill of each credential kind, so a
+// case combining a deliberately-wrong login attempt with a genuinely-valid one is broken
+// whichever way the model orders the two legs. testCases.ts's system prompt now forbids the
+// shape outright; this is the code-level backstop for whenever the model does it anyway.
+describe("looksLikeCompoundLoginCase", () => {
+  // The real production repro (run 2026-08-02T18-34-28-317Z-9ef3c101, learnvibes.vercel.app).
+  // Its password field has no <label> — its accessible name is the masked placeholder
+  // '*********' — so a name-keyed ("password") check would miss this entirely.
+  const compoundCase = tc({
+    title: "Full login page verification flow", fromPrompt: true, category: "functional-other",
+    steps: [
+      "Navigate to https://learnvibes.vercel.app/login",
+      "Verify 'you@thinkvibes.com', '*********', and 'Sign In' are visible and interactive",
+      "Fill 'you@thinkvibes.com' with 'valid.user@example.com'",
+      "Fill '*********' with 'Password123!'",
+      "Click 'Sign In'",
+      "Verify successful redirection to the dashboard",
+      "Return to the login page",
+      "Fill 'you@thinkvibes.com' with 'invalid@example.com'",
+      "Fill '*********' with 'WrongPass'",
+      "Click 'Sign In'",
+      "Verify that an error message is displayed",
+      "Verify the user session persists after returning to the authenticated area",
+    ],
+    expected: "UI elements are present, valid credentials grant access, invalid credentials show errors, and session state is maintained.",
+  });
+
+  it("flags the exact production repro", () => {
+    expect(looksLikeCompoundLoginCase(compoundCase)).toBe(true);
+  });
+
+  it("does not flag a single clean login case", () => {
+    expect(looksLikeCompoundLoginCase(loginCase)).toBe(false);
+    expect(looksLikeCompoundLoginCase(tc({
+      title: "Log in with valid credentials", category: "valid",
+      steps: [
+        "Navigate to /login",
+        "Fill 'Email' with 'user@example.com'",
+        "Fill 'Password' with 'hunter2'",
+        "Click 'Sign In'",
+      ],
+      expected: "Login succeeds",
+    }))).toBe(false);
+  });
+
+  it("does not flag a legitimate change-password flow (two password fills, one submit)", () => {
+    expect(looksLikeCompoundLoginCase(tc({
+      title: "Change account password", category: "state-change",
+      steps: [
+        "Navigate to /account/security",
+        "Fill 'Current Password' with 'oldpass123'",
+        "Fill 'New Password' with 'newpass456'",
+        "Click 'Save'",
+      ],
+      expected: "The password is updated",
+    }))).toBe(false);
+  });
+
+  it("does not flag a non-auth case with two repeated fills/clicks", () => {
+    expect(looksLikeCompoundLoginCase(tc({
+      title: "Search for a product twice", category: "functional-other", feature: "Search",
+      steps: [
+        "Fill 'Search' with 'shoes'", "Click 'Search'",
+        "Fill 'Search' with 'boots'", "Click 'Search'",
+      ],
+      expected: "Results update each time",
+    }))).toBe(false);
   });
 });
 

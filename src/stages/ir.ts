@@ -3,7 +3,8 @@ import { GroqBudget } from "../llm/groqBudget.js";
 import { parseJson } from "../llm/json.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import { AppModel, PageModel, Element, toLiteModel } from "../schema/appModel.js";
+import { AppModel, PageModel, Element, toLiteModel, INTERACTIVE_ROLES } from "../schema/appModel.js";
+import { cutAtBoundary } from "../text.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
@@ -925,23 +926,23 @@ Example — handling duplicate selectors with nth:
     // Fallback: if filtering yielded nothing, use the entry page only
     const pagesToSend = relevantPages.length > 0 ? relevantPages : model.pages.slice(0, 1);
 
+    // Entry page always kept first and never dropped below — everything else drops
+    // lowest-relevance-last if the prompt is still over budget after toLiteModel's own
+    // per-page array caps (see appModel.ts).
+    const entryPage = pagesToSend.find(p => p.url.startsWith(entryOrigin) && entryPath && p.url.includes(entryPath));
+    const orderedPages = entryPage ? [entryPage, ...pagesToSend.filter(p => p !== entryPage)] : pagesToSend;
+
     // Filter elements: only named interactive elements (links, buttons, menuitems,
     // textboxes, checkboxes, headings). Drops thousands of anonymous list/div/container
     // nodes that bloat the prompt without helping the LLM generate better IR.
-    const INTERACTIVE_ROLES = new Set([
-      "link", "button", "menuitem", "textbox", "checkbox", "radio",
-      "combobox", "listbox", "option", "tab", "switch", "heading",
-      "searchbox", "spinbutton", "slider",
-    ]);
-    const filteredPages = pagesToSend.map(p => ({
+    const withFilteredElements = (pages: PageModel[]) => pages.map(p => ({
       ...p,
       elements: p.elements.filter(e =>
         e.name && e.name.trim() && INTERACTIVE_ROLES.has(e.role?.toLowerCase() ?? "")
       ),
     }));
-
-    const liteFiltered = toLiteModel({ ...model, pages: filteredPages });
-    const modelJson = JSON.stringify(liteFiltered);
+    const modelJsonFor = (pages: PageModel[]) =>
+      JSON.stringify(toLiteModel({ ...model, pages: withFilteredElements(pages) }));
 
     // Retries previously re-sent a byte-identical prompt and predictably got a
     // byte-identical answer back. Feeding the rejection reason in is what makes the
@@ -961,21 +962,43 @@ Example — handling duplicate selectors with nth:
       );
     }
 
-    const prompt = `Application model: ${modelJson}
+    const render = (modelJson: string) => `Application model: ${modelJson}
 Test case: ${JSON.stringify(testCase)}
 baseUrl (origin only): ${origin}
 entry path (where the page under test lives): ${entryPath}
 sourcePrompt: ${sourcePrompt}${promptSelectorHint(usable)}${correctionBlock}
 Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps":[{id,action,target,value,assertion}] }`;
 
-    console.log("[ir] prompt chars:", prompt.length, "| approx tokens:", Math.round(prompt.length / 4), "| pages sent:", filteredPages.length, "/", model.pages.length);
+    let pages = orderedPages;
+    let modelJson = modelJsonFor(pages);
+    let prompt = render(modelJson);
+    console.log("[ir] prompt chars:", prompt.length, "| approx tokens:", Math.round(prompt.length / 4), "| pages sent:", pages.length, "/", model.pages.length);
 
-    // Hard cap: if still over 30K chars, truncate the model JSON
     const MAX_CHARS = 30_000;
+    // toLiteModel's own per-page array caps should make this rare now — this is the fallback
+    // for when even capped pages, combined, are still too large. Drops lowest-relevance pages
+    // one at a time (entry page always kept) rather than blindly slicing the assembled prompt.
+    while (prompt.length > MAX_CHARS && pages.length > 1) {
+      pages = pages.slice(0, -1);
+      modelJson = modelJsonFor(pages);
+      prompt = render(modelJson);
+      console.warn("[ir] prompt still exceeds", MAX_CHARS, "chars — dropped to", pages.length, "page(s)");
+    }
     if (prompt.length > MAX_CHARS) {
-      console.warn("[ir] prompt exceeds", MAX_CHARS, "chars, truncating model JSON");
-      const truncated = prompt.slice(0, MAX_CHARS) + `\n... (truncated from ${prompt.length} chars)`;
-      return truncated;
+      // Last resort: cut the model JSON specifically, at a line boundary — never the whole
+      // assembled prompt. The old `prompt.slice(0, MAX_CHARS)` landed anywhere in the
+      // assembled string, including inside the testCase/sourcePrompt/instructions region that
+      // follows the model JSON in the template — silently shipping incomplete instructions, not
+      // just malformed JSON. cutAtBoundary cuts at the last "\n", falling back to the last " "
+      // only if no "\n" is found early enough (src/text.ts) — a COMPACT JSON.stringify() has
+      // neither, so it would degrade to the exact same mid-token blind slice this replaces.
+      // Pretty-print JUST for this cut so there's an actual line break to land on.
+      const prettyModelJson = JSON.stringify(
+        toLiteModel({ ...model, pages: withFilteredElements(pages) }), null, 2);
+      const overhead = prompt.length - modelJson.length;
+      modelJson = cutAtBoundary(prettyModelJson, Math.max(0, MAX_CHARS - overhead));
+      prompt = render(modelJson);
+      console.warn("[ir] prompt still exceeds", MAX_CHARS, "chars at 1 page — cut model JSON at a line boundary (pretty-printed) instead of the whole prompt");
     }
     return prompt;
   };

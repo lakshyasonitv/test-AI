@@ -360,15 +360,22 @@ const PASSWORD_AT_FAULT = /\b(?:invalid|incorrect|wrong|bad)\s+(?:password|crede
 export function credentialPolicyFor(
   testCase: TestCase, promptHasCredentials: boolean,
 ): CredentialPolicy {
-  const wording = [
+  // Tested per FIELD, not joined into one string (TECH_DEBT.md D3). A joined string let a
+  // trigger word in one field and a fault word in a different, unrelated field bridge together
+  // through IDENTIFIER_AT_FAULT/PASSWORD_AT_FAULT's "any character but a period" gaps —
+  // reproduced directly: title "Log in with valid email and password" + step "Verify no fields
+  // are missing before login" wrongly vetoed a genuine happy-path case. Testing each field on
+  // its own still catches a fault that's fully contained within one field.
+  const fields = [
     testCase.title, testCase.expected, testCase.intent ?? "", ...(testCase.steps ?? []),
-  ].join(" ");
+  ];
+  const matchesAny = (re: RegExp) => fields.some((f) => re.test(f));
 
   // Veto first, and deliberately before the password pattern below: a malformed-email case is
   // routinely worded "Login with invalid email and valid password", which matches BOTH. Getting
   // this order wrong would overwrite the deliberately-broken identifier with the real one —
   // the same class of bug, one category over.
-  if (IDENTIFIER_AT_FAULT.test(wording)) return "none";
+  if (matchesAny(IDENTIFIER_AT_FAULT)) return "none";
   const category = testCase.category ?? "";
   if (category === "empty-boundary" || category.startsWith("security-")) return "none";
 
@@ -376,7 +383,7 @@ export function credentialPolicyFor(
     // A real account with the wrong password is the stronger test: it proves an actual account
     // is protected, where a nonexistent user only proves unknown identifiers are rejected —
     // often an entirely different code path.
-    return PASSWORD_AT_FAULT.test(wording) ? "identifier-only" : "none";
+    return matchesAny(PASSWORD_AT_FAULT) ? "identifier-only" : "none";
   }
 
   // A prompt-derived case always gets "full" now — even when promptHasCredentials is true.
@@ -477,4 +484,42 @@ export function applyCredentials(
       ? ENV_VALUE_PREFIX + ENV_VAR[kind] + ENV_VALUE_SUFFIX
       : creds[kind];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Compound-login-case detection — deterministic backstop for testCases.ts's prompt rule
+// ---------------------------------------------------------------------------
+
+// Quote delimiter kept flexible — LLM output occasionally uses "double" or `backtick` quoting
+// instead of the 'single' quotes the testCases.ts system-prompt example models. Same flexible
+// class as extractValueAfter's own quote handling above, for the identical reason.
+const FILL_TARGET = /\bfill\b\s*["'`]([^"'`]+)["'`]/i;
+const CLICK_TARGET = /\bclick\b\s+(?:the\s+)?["'`]([^"'`]+)["'`]/i;
+
+/**
+ * Does this case combine a deliberately-wrong login attempt with a genuinely-valid one? The
+ * signal is structural, not name-based: a real production case (learnvibes.vercel.app) has an
+ * unlabelled password field whose accessible name is the masked placeholder '*********' — no
+ * literal word "password" anywhere in its steps, so a name-keyed check misses it entirely. The
+ * reliable signal is the SAME quoted fill-target filled twice and the SAME quoted click-target
+ * clicked twice in one case, gated by AUTH_WORDING so a legitimate two-fill "change password"
+ * flow (old password + new password, ONE submit) doesn't false-positive.
+ */
+export function looksLikeCompoundLoginCase(
+  testCase: Pick<TestCase, "title" | "expected" | "category" | "steps">,
+): boolean {
+  const text = [
+    testCase.title, testCase.expected, testCase.category ?? "", ...(testCase.steps ?? []),
+  ].join(" ");
+  if (!AUTH_WORDING.test(text)) return false;
+
+  const fillCounts = new Map<string, number>();
+  const clickCounts = new Map<string, number>();
+  for (const step of testCase.steps ?? []) {
+    const fill = step.match(FILL_TARGET);
+    if (fill) fillCounts.set(fill[1], (fillCounts.get(fill[1]) ?? 0) + 1);
+    const click = step.match(CLICK_TARGET);
+    if (click) clickCounts.set(click[1], (clickCounts.get(click[1]) ?? 0) + 1);
+  }
+  return [...fillCounts.values()].some((n) => n >= 2) && [...clickCounts.values()].some((n) => n >= 2);
 }
