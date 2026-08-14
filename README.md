@@ -1,20 +1,24 @@
 # AI Test Platform
 
-A pipeline that turns a natural-language testing request + a URL into **executed** Playwright tests — with a live progress UI, per-step screenshots, artifacts (trace, generated spec), per-case suite results, and plain-English failure diagnosis on failure. Discovers a site's own internal links (not just the entry page), handles multi-page flows by extending discovery on demand, and tries once to auto-repair broken locators before reporting failure.
+A pipeline that turns a natural-language testing request + a URL into **executed** Playwright
+tests — with a live progress UI, per-step screenshots, artifacts (trace, generated spec), per-case
+suite results, and plain-English failure diagnosis on failure. Discovers a site's own internal
+links (not just the entry page), handles multi-page flows by extending discovery on demand, and
+tries once to auto-repair broken locators before reporting failure.
 
 ## Documentation Map
 
-Five documents, one job each. **Each topic has exactly one owner** — they link to each other rather
-than repeating, because six copies of the same list is how they drifted out of date before.
+Five documents, one job each. **Each topic has exactly one owner** — they link to each other
+rather than repeating, because six copies of the same list is how they drifted out of date before
+(see `DECISIONS.md` D-01).
 
 | You want to know… | Read |
 |---|---|
 | What this is, how to run it, what it can do | **this file** |
-| How it works internally — every file, schema, design decision | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| **What's broken, what's being fixed next** | [PROBLEM_ANALYSIS.md](PROBLEM_ANALYSIS.md) |
-| The evidence and reproduction behind a known defect | [TECH_DEBT.md](TECH_DEBT.md) |
-| What changed, and when | [SESSION_SUMMARY.md](SESSION_SUMMARY.md) |
-| The project narrative and long-term design direction | [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md) |
+| How it works internally — every file, schema | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| **What's broken, ranked, with remediation** | [TECH_DEBT.md](TECH_DEBT.md) |
+| Why a design choice was made, what was rejected | [DECISIONS.md](DECISIONS.md) |
+| Working guidance for an agent editing this repo | [CLAUDE.md](CLAUDE.md) |
 
 ## Quick Start
 
@@ -45,20 +49,18 @@ primary path and is tried first for every page.
 
 By default, discovery doesn't stop at the entry page: `hybridDiscovery.ts`'s `discoverSiteHybrid`
 follows the entry page's own same-origin internal links (bounded by `MAX_DISCOVERY_PAGES`,
-default 5) and merges every reachable page into one AppModel — so a "not satisfied, focus on
-Checkout" refinement in the case-selection gate can actually ground on a page discovery already
-knows about, not just the page the user happened to type a URL for. A site whose entry page has
-no crawlable links (auth walls, single-page apps) behaves exactly as before: a one-page model.
+default 5) and merges every reachable page into one AppModel. A site whose entry page has no
+crawlable links (auth walls, single-page apps) behaves exactly as before: a one-page model.
 
 Gemini vision is the fallback, used only when DOM extraction returns nothing usable:
 
 - canvas/captcha/image-heavy pages, where there's no meaningful DOM to read
-- controls with no accessible name and no text (an icon-only cart link that's styled purely
-  with a CSS background image)
+- controls with no accessible name and no text (an icon-only cart link styled purely with a CSS
+  background image)
 
-There is nothing to start and no Python involved. Earlier versions shelled out to a
-Crawl4AI/FastAPI service on `localhost:8000`; that service is gone and its extraction logic
-was ported to Node (`domExtract.ts` is a 1:1 port of the old Python parser).
+**Not currently handled:** a bot-check/interstitial page (Amazon-style "click to continue"
+challenge) is not distinguished from the real page it's standing in front of — see
+`TECH_DEBT.md` TD-04.
 
 ## How It Works
 
@@ -91,170 +93,52 @@ prompt + url
        \_ Bounded self-heal (<=1x)    -> re-snapshot (policy-aware) + regenerate + re-run once
 ```
 
+Full technical detail, file by file: [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Current Capabilities
 
 ### What Works
 
-| Capability | Status | Details |
-|-----------|--------|---------|
-| Natural language to executed test | Working | Prompt + URL -> real Playwright test running in a browser |
-| Site-wide discovery | Working | Follows the entry page's own same-origin internal links (bounded, `MAX_DISCOVERY_PAGES`), not just the one page you typed |
-| Full coverage suite generation | Working | Up to 5 cases per run by default (`MAX_CASES_PER_RUN`): valid path, invalid input, empty fields, boundaries, security. The checklist itself is filtered by scope before it reaches the model — a functional-only run's prompt no longer lists security items it was just told not to write |
-| Case-selection gate (optional) | Working, off by default | `ENABLE_CASE_SELECTION_GATE=true` pauses a run after generating a batch so you can accept/reject cases and ask for a refined regeneration; a rejected or already-accepted title is hard-excluded from every later batch, not just prompt-discouraged |
-| All suite cases executed | Working | Every selected case runs in its own Playwright `test()` / browser context, with per-case artifacts |
-| Per-step screenshots | Working | Each IR step gets its own `test.step()` block and `step-N.png` screenshot; the case's representative screenshot is the LAST step, not the first, so it actually reflects what the case tested |
-| Per-step pass/fail status | Working | Individual step results in Playwright JSON output, not just overall test status |
-| Phase pipeline (live UI) | Working | 4 phases track aggregate status across sub-stages; no premature green/red |
-| Multi-page flows (live-extend) | Working | On-demand page discovery when steps target unseen pages (capped, `MAX_LIVE_EXTENSIONS`, default 5) |
-| Self-healing broken locators | Working | Re-snapshot (credential-policy-aware) + regenerate + re-run, bounded to 1 attempt, only for selector drift |
-| Truncated test handling | Working | Graceful degradation: partial real test instead of hard failure |
-| Terminal assertion guard | Working | Truncated tests without assertions marked as `truncated_no_assertion` |
-| Auth settle-wait | Working | Bounded wait after auth-triggering steps to handle SPA redirects |
-| Credential-policy substitution | Working for single-attempt cases | `credentialPolicyFor` distinguishes full / identifier-only / none per case from its own wording — a negative "invalid password" case keeps its deliberately-wrong value. A case with TWO login attempts in one browser session is a known open edge (see Known Limitations) |
-| Terminal text-assertion grounding | Working | The case's final pure-text assertion is replayed against the real page and corrected if the model guessed the wording wrong. The model is also told the page's `title` field is `<title>`-tag metadata, never visible body text, so it can't ground an assertion on something that can never render |
-| Grounding: guessed navigate routes rejected | Working | A `navigate` step's URL is checked against `knownNavigationTargets` (every discovered page URL + every discovered link's resolved href). A route the model invented from a feature's name — "go to the Admin section" -> `/admin` — is rejected with feedback telling it to click the control that leads there instead. Allowances: step 0's entry URL, off-origin URLs, and any path you typed in your own prompt |
-| Grounding: role mismatch tolerated | Working | A target's role is matched exactly first, then against a narrow clickable group (`link`/`button`/`menuitem`/`tab`) — so an SPA sidebar item built as `<button onClick=...>` still grounds when the IR guessed `link`. The real role is written back onto the target so the generated `getByRole` matches the live DOM. Deliberately not applied to `textbox`/`heading`/etc |
-| Grounding: hidden elements can't be asserted visible | Working | An element discovery recorded as not visible is refused as the target of a `visible` assertion (a responsive/mobile-only control can't pass one). Asserting the same element `hidden` stays legal — that direction is load-bearing elsewhere |
-| Discovery visibility accuracy | Working | Every element carrying a stable selector is re-checked for real computed visibility (geometry + `getComputedStyle`) in the live page, overwriting the `visible: true` that the static HTML parser has to assume |
-| Credentials typed into the prompt | Working | `extractCredentialsFromPrompt` pulls a real username/password straight out of the prompt text (`email: a@b.c and password is "..."`), so a prompt that already carries credentials doesn't fall back to a model-invented placeholder. Treated as `secret` — same env-reference path as credentials typed into the UI. Picks the earliest keyword occurrence in the prompt regardless of which mention is quoted — a prompt naming a second, unrelated email later (e.g. for a "create user" step) no longer overrides the real login identifier |
-| IR completeness check | Working | `missingActions` compares the case's own action-bearing step lines against what the IR actually carries out (`click`/`press`/`fill`/`select`/`check`) and rejects an IR that stops early — an IR covering 2 of a case's 5 named actions no longer ships as a silent "passed" |
-| Secrets kept off disk | Working | User-supplied credentials become `${env:...}` references in the generated spec; the real value only reaches the test process's environment at execution time. Also scrubbed from `results.json`, `final-page.txt`, and error-context attachments — a page you're logged into routinely echoes the identifier back |
-| Multi-hop flows don't starve the attempt budget | Working | A live-extend hop re-grounds the same parsed IR without spending one of `MAX_IR_ATTEMPTS` — a flow needing several hops to reach the right page state no longer burns its whole LLM budget getting there |
-| Scope filtering | Working | Prompt can request smoke/functional/regression/security scope |
-| Suite result display | Working | Per-case cards with status, screenshots, download links for spec/IR/result |
-| Light/dark theme | Working | Toggle in the sidebar, persisted in `localStorage`; dark is the default |
-| Run history | Working | Newest 20 runs persisted, each deletable, with suite summary. A run whose server process was killed mid-flight (restart, crash) closes itself out with a clear error instead of polling forever |
-| Deterministic failure classifier | Working | Pattern-matches Playwright errors before spending a Gemini call. Distinguishes a genuinely-missing element (`resolved to 0 elements`) from one that was found but never reached the expected state — the two used to be misclassified as the same thing |
-| DOM-first discovery | Working | Node/cheerio extraction, vision-fallback, zero LLM tokens on the common path. No duplicate elements when a tag carries both a semantic HTML role and an explicit `role` attribute |
-| LLM response caching | Working | File + in-memory cache for repeated prompts, 30-min TTL |
+| Capability | Details |
+|-----------|---------|
+| Natural language to executed test | Prompt + URL -> real Playwright test running in a browser |
+| Site-wide discovery | Follows the entry page's own same-origin internal links (bounded, `MAX_DISCOVERY_PAGES`), not just the one page you typed |
+| Full coverage suite generation | Up to 5 cases per run by default (`MAX_CASES_PER_RUN`): valid path, invalid input, empty fields, boundaries, security. The checklist itself is filtered by scope before it reaches the model |
+| Case-selection gate (optional) | `ENABLE_CASE_SELECTION_GATE=true` pauses a run after generating a batch so you can accept/reject cases and ask for a refined regeneration; a rejected or already-accepted title is hard-excluded from every later batch |
+| All suite cases executed | Every selected case runs in its own Playwright `test()` / browser context, with per-case artifacts |
+| Per-step screenshots | Each IR step gets its own `test.step()` block and `step-N.png` screenshot; the case's representative screenshot is the LAST step, not the first |
+| Multi-page flows (live-extend) | On-demand page discovery when steps target unseen pages (capped, `MAX_LIVE_EXTENSIONS`, default 5) |
+| Self-healing broken locators | Re-snapshot (credential-policy-aware) + regenerate + re-run, bounded to 1 attempt, only for selector drift |
+| Truncated test handling | Graceful degradation: partial real test instead of hard failure |
+| Credential-policy substitution | `credentialPolicyFor` distinguishes full / identifier-only / none per case from its own wording — a negative "invalid password" case keeps its deliberately-wrong value. A case with TWO login attempts in one browser session is a known limitation (`TECH_DEBT.md` TD-10) |
+| Terminal text-assertion grounding | The case's final pure-text assertion is replayed against the real page and corrected if the model guessed the wording wrong |
+| Grounding: guessed navigate routes rejected | A `navigate` step's URL is checked against every discovered page URL + link href. A route invented from a feature's name ("go to the Admin section" -> `/admin`) is rejected with feedback |
+| Grounding: role mismatch tolerated | An SPA control built as `<button onClick=...>` still grounds when the IR guessed `link` |
+| Grounding: hidden elements can't be asserted visible | An element recorded not visible can't be the target of a `visible` assertion |
+| Credentials typed into the prompt | `extractCredentialsFromPrompt` pulls a real username/password straight out of prompt text, treated as `secret` — same env-reference path as UI-entered credentials |
+| IR completeness check | `missingActions` compares the case's own action-bearing step lines against what the IR actually carries out — see `TECH_DEBT.md` TD-01 for its current false-positive failure mode |
+| Secrets kept off disk | Credentials become `${env:...}` references; scrubbed from `results.json`, `final-page.txt`, and error-context attachments too |
+| Scope filtering | Prompt can request smoke/functional/regression/security scope |
+| Deterministic failure classifier | Pattern-matches Playwright errors before spending a Gemini call |
+| LLM response caching | File + in-memory cache for repeated prompts, 30-min in-memory TTL, disk tier never expires |
 
-### What Doesn't Work Yet
+### What's Broken
 
-**Tracked in one place: [PROBLEM_ANALYSIS.md](PROBLEM_ANALYSIS.md)** — every known gap, ranked, with
-evidence and the fix plan. Not repeated here, so it can't drift out of sync.
+**Tracked in one place: [TECH_DEBT.md](TECH_DEBT.md)** — every known gap, ranked by severity, with
+remediation. Not repeated here so it can't drift out of sync (see `DECISIONS.md` D-01).
 
 The headline items, for orientation:
 
 | Issue | Short version |
 |---|---|
-| No server authentication | Anyone with the URL can start runs and browse artifacts |
-| No CI | 288 tests exist; nothing runs them automatically |
-| Assertion quality beyond the guarded cases | Prompt-nudged, not code-validated, outside the terminal-step / title-metadata / hidden-element grounding |
-| Visibility for elements with no stable selector | Falls back to the static parser's assumed `visible: true` |
+| A correct test can be rejected outright, killing the whole run | `TECH_DEBT.md` TD-01 |
+| A failing test's own report can be destroyed before diagnosis reads it | `TECH_DEBT.md` TD-02 |
+| No server authentication | Anyone with the URL can start runs and browse artifacts (`TECH_DEBT.md` TD-14) |
+| No CI | The test suite exists; nothing runs it automatically (`TECH_DEBT.md` TD-20) |
 
 By design, not a defect: **no built-in demo credentials.** There's no per-site autofill list —
-credentials come from your prompt when it carries them, otherwise the run pauses and asks via the UI
-(or times out and continues without them, `CREDENTIAL_WAIT_MS`).
-
-## Architecture
-
-### Pipeline Stages
-
-| Stage | File | LLM? | Description |
-|-------|------|------|-------------|
-| Planner | `src/stages/planner.ts` | Gemini | NL request -> structured test plan |
-| Hybrid Discovery | `src/stages/hybridDiscovery.ts` | Gemini (fallback only) | DOM-first, vision-fallback orchestrator; `discoverSiteHybrid` also crawls same-origin internal links |
-| DOM Discovery | `src/stages/domDiscovery.ts` | No | Drives Playwright, hands page HTML to `domExtract.ts`; `extractDomModelFromPage` snapshots an already-open page (used by live-extend and the site crawl) so an authenticated page is modeled from the real session, not a fresh session-less browser |
-| DOM Extraction | `src/stages/domExtract.ts` | No | Cheerio-based structured extraction (Node port of the old Python parser) |
-| Vision Discovery | `src/stages/discovery.ts` | Gemini | Accessibility snapshot + screenshot -> AppModel (fallback path) |
-| Prompt Selectors | `src/stages/promptSelectors.ts` | No | Honors selectors the user wrote directly into their prompt |
-| Test Cases | `src/stages/testCases.ts` | Gemini | Coverage suite (valid/invalid/boundary/security), capped by `MAX_CASES_PER_RUN` |
-| Case Selection Gate | `src/stages/caseSelectionGate.ts` | Gemini (via Test Cases) | Optional human-in-the-loop review loop over batches of generated cases |
-| IR Generation | `src/stages/ir.ts` | Groq | Test case -> strict JSON test model + grounding + credential-policy decision |
-| Live Extend | `src/stages/liveExtend.ts` | No | Policy-aware browser replay to discover new pages + ground terminal text assertions |
-| Generator | `src/stages/generator.ts` | No | IR -> Playwright spec with test.step() blocks |
-| Executor | `src/stages/executor.ts` | No | Runs spec, captures screenshots/traces, redacts secrets from served artifacts |
-| Failure Classifier | `src/stages/classify.ts` | No | Deterministic pattern matching on Playwright errors |
-| Failure Analysis | `src/stages/failureAnalysis.ts` | Gemini + Vision | Diagnoses failures with screenshots (fallback) |
-| Suite Runner | `src/stages/suiteRunner.ts` | No | Executes all cases in isolated browser contexts, per-case artifacts |
-| Target Resolver | `src/stages/targetResolver.ts` | No | IR Target -> locator with fallback chain |
-| Auth Settle | `src/stages/authSettle.ts` | No | Bounded wait after auth-triggering steps |
-| Credentials | `src/stages/credentials.ts` | No | Per-case/per-leg substitution policy — no built-in demo-site registry |
-
-### Shared Infrastructure
-
-| Module | File | Description |
-|--------|------|-------------|
-| Orchestrator | `src/orchestrator.ts` | Wires stages, manages primary case, suite execution, self-heal, the optional case-selection gate |
-| Run Store | `src/runStore.ts` | Durable per-run NDJSON event log; closes out a run orphaned by a server restart with a synthetic error instead of leaving the frontend polling forever |
-| Text | `src/text.ts` | `cutAtBoundary` — line/word-boundary-safe truncation, used anywhere a prompt or captured text needs a length cap without risking a mid-word (or mid-comment) cut |
-| LLM - Gemini | `src/llm/gemini.ts` | Gemini API client with key rotation |
-| LLM - Groq | `src/llm/groq.ts` | Groq API client with key rotation |
-| Groq Budget | `src/llm/groqBudget.ts` | Per-run hard cap on Groq calls (`MAX_GROQ_CALLS_PER_RUN`), usage recorded to `08-groq-usage.json` |
-| Key Pool | `src/llm/keyPool.ts` | API key rotation + 429 handling |
-| Backoff | `src/llm/backoff.ts` | Exponential backoff + per-attempt timeout (`LLM_TIMEOUT_MS`) for retries |
-| JSON Parse | `src/llm/json.ts` | Robust JSON extraction from LLM output |
-| App Model Cache | `src/kb/cache.ts` | Per-URL AppModel cache |
-| LLM Cache | `src/kb/llmCache.ts` | LLM response cache (in-memory + disk; in-memory half honors a 30-min TTL, the disk half does not expire) |
-| Test Strategy | `src/kb/testStrategy.ts` | Coverage taxonomy (floor, not ceiling), scope classification/filtering |
-
-### Schemas
-
-| Schema | File | Description |
-|--------|------|-------------|
-| AppModel | `src/schema/appModel.ts` | Elements by accessibility role + name |
-| IR | `src/schema/ir.ts` | Step, Target, Assertion — the contract |
-| Case Selection | `src/schema/caseSelection.ts` | The gate's decision payload + on-disk accepted-cases/history file shapes |
-
-### Server
-
-| Module | File | Description |
-|--------|------|-------------|
-| Routes | `src/server/index.ts` | Express server, run CRUD, credential-prompt endpoint, case-selection endpoints, API endpoints |
-| Run Registry | `src/server/runRegistry.ts` | SSE fan-out for live progress |
-| Concurrency | `src/server/concurrency.ts` | Run cap enforcement |
-| Pending Credentials | `src/server/pendingCredentials.ts` | Parks a paused run's credential prompt in memory (never written to disk); resolved by the UI's answer or a timeout (`CREDENTIAL_WAIT_MS`) |
-| Pending Case Selection | `src/server/pendingCaseSelection.ts` | Parks a paused run's case-review round in memory; resolved by the UI's decision or a timeout (`CASE_SELECTION_WAIT_MS`) |
-| Case Accumulator | `src/server/caseAccumulator.ts` | File-backed pool of accepted cases across gate rounds, capped at `MAX_ACCUMULATED_CASES` |
-| Case History Ledger | `src/server/caseHistoryLedger.ts` | File-backed record of every case ever shown and what you did with it, so a rejected title never resurfaces |
-
-### Frontend
-
-| File | Description |
-|------|-------------|
-| `public/index.html` | Single-page HTML with phase pipeline, form, results, case-selection panel |
-| `public/app.js` | Event processing, polling, phase tracking, suite rendering, theme toggle, case-selection panel |
-| `public/preview.js` | Static preview/demo states, used for UI development |
-| `public/icons.js` | Inline SVG icon set |
-| `public/style.css` | Dark theme (default) + a light theme override, responsive design, phase badges, case cards, download buttons |
-
-## Project Structure
-
-```
-ai-test-platform/
-  src/
-    stages/              # Pipeline stages (18 files, ~5,903 lines)
-      hybridDiscovery.ts # Discovery orchestrator (DOM-first, vision-fallback, site crawl)
-      domDiscovery.ts    # Drives Playwright, hands page HTML to domExtract.ts
-      domExtract.ts      # Cheerio DOM extraction (Node port of the old Python parser, 613 lines)
-      discovery.ts       # Playwright + Gemini vision discovery (fallback path)
-      promptSelectors.ts # Honors selectors the user wrote directly into their prompt
-      planner.ts         # NL request -> structured plan
-      testCases.ts       # Coverage suite generation, capped by MAX_CASES_PER_RUN
-      caseSelectionGate.ts # Optional human-in-the-loop review loop over generated case batches
-      ir.ts              # IR generation: grounding, credential policy, live-extend, truncation
-      liveExtend.ts      # Policy-aware browser replay: new pages + terminal-assertion grounding
-      targetResolver.ts  # IR Target -> locator with fallback chain
-      generator.ts       # IR -> Playwright spec (pure code, zero LLM)
-      executor.ts        # Runs spec, captures artifacts, redacts secrets from served output
-      classify.ts        # Deterministic failure classifier (zero LLM)
-      failureAnalysis.ts # Gemini vision failure diagnosis (fallback)
-      suiteRunner.ts      # Executes all cases in isolated browser contexts
-      authSettle.ts       # Bounded wait after auth-triggering steps
-      credentials.ts      # Per-case/per-leg substitution policy — no demo-site registry
-    schema/              # Zod contracts (3 files: AppModel, IR, Case Selection)
-    llm/                 # LLM layer with key rotation + budget (6 files)
-    kb/                  # Knowledge base + caching (3 files)
-    server/              # Express server + SSE + pause/resume gates (7 files)
-    orchestrator.ts      # Pipeline wiring + self-heal + optional case-selection gate
-    runStore.ts          # Durable event log
-    text.ts              # cutAtBoundary — boundary-safe text truncation
-    cli.ts               # CLI entry point
-  public/                # Frontend (5 files)
-  runs/                  # Runtime artifacts (gitignored)
-  ARCHITECTURE.md        # Technical reference: every file, schemas, design decisions
-  PROJECT_SUMMARY.md     # Concise project statement, architecture diagram, current state
-```
+credentials come from your prompt when it carries them, otherwise the run pauses and asks via the
+UI (or times out and continues without them, `CREDENTIAL_WAIT_MS`). See `DECISIONS.md` D-08.
 
 ## Configuration
 
@@ -265,44 +149,29 @@ are in `.env.example`.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GEMINI_API_KEYS` | Yes | Comma-separated Gemini API keys (quota stacks across distinct projects). `GEMINI_API_KEY` (singular) is accepted as a fallback if the plural var isn't set — convenient for a single-key deploy |
-| `GROQ_API_KEYS` | Yes | Comma-separated Groq API keys (failover only — Groq limits are per-org, not per-key). `GROQ_API_KEY` (singular) is accepted as a fallback the same way |
-| `GEMINI_MODEL` | No | Gemini model for discovery/test-cases/failure-analysis (default: `gemini-3-flash-preview`) |
-| `GEMINI_MODEL_LITE` | No | Gemini model for labeling (default: `gemini-3.1-flash-lite`) |
-| `GROQ_MODEL` | No | Groq model for IR generation (default: `openai/gpt-oss-120b`) |
+| `GEMINI_API_KEYS` | Yes | Comma-separated Gemini API keys (quota stacks across distinct projects). `GEMINI_API_KEY` (singular) is accepted as a fallback |
+| `GROQ_API_KEYS` | Yes | Comma-separated Groq API keys (failover only — Groq limits are per-org, not per-key). `GROQ_API_KEY` (singular) is accepted as a fallback |
+| `GEMINI_MODEL` | No | Gemini model for discovery/test-cases/failure-analysis |
+| `GEMINI_MODEL_LITE` | No | Gemini model for labeling |
+| `GROQ_MODEL` | No | Groq model for IR generation — verify against your deployed `.env`, not this table (`TECH_DEBT.md` TD-03's context) |
 | `LLM_TIMEOUT_MS` | No | Per-attempt abort timeout for any Gemini/Groq call (default: 45000) |
-| `MAX_GROQ_CALLS_PER_RUN` | No | Hard cap on total Groq calls per run, recorded to `08-groq-usage.json` (default: 60) |
+| `MAX_GROQ_CALLS_PER_RUN` | No | Hard cap on total Groq calls per run (default: 60) |
 | `MAX_IR_ATTEMPTS` | No | Max IR generate/validate retries per test case (default: 4) |
 | `MAX_LIVE_EXTENSIONS` | No | Max browser replays per case to discover pages behind a login/click (default: 5) |
-| `MAX_DISCOVERY_PAGES` | No | Max pages a single site crawl may collect (entry page + followed links) (default: 5) |
+| `MAX_DISCOVERY_PAGES` | No | Max pages a single site crawl may collect (default: 5) |
 | `MAX_CASES_PER_RUN` | No | Hard ceiling on cases turned into runnable scripts (default: 5) |
 | `MAX_CONCURRENT_RUNS` | No | Max parallel pipeline runs (default: 3) |
-| `CREDENTIAL_WAIT_MS` | No | How long a paused run waits for you to supply credentials before continuing without them (default: 300000 / 5 min) |
-| `ENABLE_CASE_SELECTION_GATE` | No | Set `true` to pause a run after generating each batch of cases for your review (default: off) |
-| `MAX_CASE_REGEN_ATTEMPTS` | No | "Not satisfied" regeneration rounds allowed before the gate runs with whatever's accepted (default: 3) |
+| `CREDENTIAL_WAIT_MS` | No | How long a paused run waits for credentials before continuing without them (default: 300000 / 5 min) |
+| `ENABLE_CASE_SELECTION_GATE` | No | Set `true` to pause a run after generating each batch of cases for review (default: off) |
+| `MAX_CASE_REGEN_ATTEMPTS` | No | "Not satisfied" regeneration rounds allowed (default: 3) |
 | `MAX_ACCUMULATED_CASES` | No | Cap on cases accepted into the gate's pool across all rounds (default: 5) |
-| `CASE_SELECTION_WAIT_MS` | No | How long a gate round waits for your pick before timing out as "done" (default: 600000 / 10 min) |
-| `SCREENSHOT_SETTLE_MS` / `SCREENSHOT_MAX_SAMPLES` | No | Animation-settle detection before a screenshot (defaults: 150ms / 10 samples) |
+| `CASE_SELECTION_WAIT_MS` | No | How long a gate round waits for your pick before timing out (default: 600000 / 10 min) |
 | `PORT` | No | Web UI port (default: 3000) |
 
 ### Playwright Config
 
 `playwright.config.ts` — Chromium headless, 50s per-test timeout, 0 retries, screenshot on every
-result, trace + video retained on failure only.
-
-### Key Constants
-
-| Constant | Location | Default | Description |
-|----------|----------|---------|-------------|
-| `MAX_EXTENSIONS` | `ir.ts` (`MAX_LIVE_EXTENSIONS` env) | 5 | Max live-extend page hops per test case |
-| `MAX_ATTEMPTS` | `ir.ts` (`MAX_IR_ATTEMPTS` env) | 4 | IR generate/validate retries per case |
-| `MAX_DISCOVERY_PAGES` | `hybridDiscovery.ts` | 5 | Max pages collected by a single site crawl |
-| `CLICKABLE_ROLE_GROUP` | `ir.ts` | link, button, menuitem, tab | Roles grounding may swap between when the exact role isn't present |
-| `MAX_GENERIC_CLICKABLES` | `domDiscovery.ts` | 40 | Cap on non-semantic (`div`/`span`/`li`/`p`) clickables added per page |
-| Coverage budget | `testCases.ts` | 2 / 4 / 5 | Cases per run for minimal / standard / full coverage, capped by `MAX_CASES_PER_RUN` |
-| History limit | `runStore.ts` | 20 | Max runs shown in history (not env-configurable) |
-| LLM cache TTL | `llmCache.ts` | 30min | In-memory half only — the on-disk half has no expiry |
-| AppModel cache TTL | `cache.ts` (`APPMODEL_CACHE_TTL_MS` env) | 30min | Per-URL discovery cache |
+result, trace + video retained on failure only (`DECISIONS.md` D-16).
 
 ## Sharing Over the Internet
 
@@ -316,26 +185,27 @@ cloudflared tunnel --url http://localhost:3000
 
 This prints a random `https://<words>.trycloudflare.com` URL. Ephemeral, free, no sign-up.
 
-**Note:** Quick Tunnels buffer SSE responses, so the UI uses polling (`GET /api/runs/:id/state`) instead of streaming. Both routes exist; SSE works fine on localhost. Named tunnels don't have this limitation.
+**Note:** Quick Tunnels buffer SSE responses, so the UI uses polling (`GET /api/runs/:id/state`)
+instead of streaming. Both routes exist; SSE works fine on localhost.
 
-**Security:** The server has no authentication. Anyone with the URL can start runs and browse artifacts. Fine for trusted audiences; know this before sharing widely. The entry URL itself is validated — non-`http(s)` schemes and loopback/link-local/private-range hosts are rejected (`isAllowedEntryUrl`, `stages/hybridDiscovery.ts`) — but nothing gates who can submit a run at all.
+**Security:** The server has no authentication (`TECH_DEBT.md` TD-14). Anyone with the URL can
+start runs and browse artifacts. Fine for trusted audiences; know this before sharing widely. The
+entry URL itself is validated — non-`http(s)` schemes and loopback/link-local/private-range hosts
+are rejected — but nothing gates who can submit a run at all.
 
 ## Deployment
 
-There is **no container or hosting config in this repo** — `Dockerfile`, `.dockerignore` and
-`render.yaml` were removed in `fbf44c0`. Run it directly with `npm run serve`.
+There is no container or hosting config in this repo — run it directly with `npm run serve`.
 
 Two things worth knowing if you re-add a deployment target:
 
-- **Pin Playwright to an exact version** (`1.49.0`, no `^`, as `package.json` does today) matching
-  whatever browser build the host image ships. A caret range lets `npm install` resolve a newer
-  Playwright than the pre-installed Chromium, which then fails to launch with
-  `browserType.launch: Executable doesn't exist`.
+- **Pin Playwright to an exact version** matching whatever browser build the host image ships. A
+  caret range lets `npm install` resolve a newer Playwright than the pre-installed Chromium, which
+  then fails to launch with `browserType.launch: Executable doesn't exist`.
 - **`MAX_CONCURRENT_RUNS=1` on a small instance** (≤512 MB RAM) — every run launches its own
   Chromium.
 
-`GET /api/health` reports which critical env vars are set (name and length only, never the value) —
-useful for confirming a deploy's secrets actually landed without exposing them.
+`GET /api/health` reports which critical env vars are set (name and length only, never the value).
 
 ## Further Reading
 
