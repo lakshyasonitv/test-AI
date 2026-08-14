@@ -137,9 +137,8 @@ The headline items, for orientation:
 
 | Issue | Short version |
 |---|---|
-| Dynamic in-page modal forms (e.g. "Raise a Ticket") | Fails. Root cause pinned and reproduced; fix designed, not yet implemented |
 | No server authentication | Anyone with the URL can start runs and browse artifacts |
-| No CI | 274 tests exist; nothing runs them automatically |
+| No CI | 288 tests exist; nothing runs them automatically |
 | Assertion quality beyond the guarded cases | Prompt-nudged, not code-validated, outside the terminal-step / title-metadata / hidden-element grounding |
 | Visibility for elements with no stable selector | Falls back to the static parser's assumed `visible: true` |
 

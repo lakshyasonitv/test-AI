@@ -272,6 +272,11 @@ export function legUrls(ir: IR, appModel: AppModel, entryUrl: string): (string |
 const ACTION_STEPS = new Set(["click", "fill", "select", "check", "press"]);
 /** Of those, the ones that can only ever act on a form control. */
 const FIELD_ACTIONS = new Set(["fill", "select", "check"]);
+/** The roles a fill/select/check can legitimately land on. Kept separate from the clickable
+ *  group inside groundingError so a `fill` can never be grounded onto a link, and a `click`
+ *  never onto a textbox. Module-scope because toIR's post-click reveal check needs it too, to
+ *  decide whether a re-snapshot actually revealed anything FILLABLE. */
+const FIELD_ROLE_GROUP = new Set(["textbox", "combobox", "searchbox", "checkbox", "radio", "spinbutton"]);
 
 export function groundingError(
   ir: IR, appModel: AppModel,
@@ -313,9 +318,6 @@ export function groundingError(
   // runtime (their own css/text fallback chain), so this only stops grounding from being
   // stricter than the code it's protecting.
   const CLICKABLE_ROLE_GROUP = new Set(["link", "button", "menuitem", "tab"]);
-  // The roles a fill/select/check can legitimately land on. Kept separate from the clickable
-  // group so a `fill` can never be grounded onto a link, and a `click` never onto a textbox.
-  const FIELD_ROLE_GROUP = new Set(["textbox", "combobox", "searchbox", "checkbox", "radio", "spinbutton"]);
   // Best name-tiered match among `elements` whose role satisfies `roleOk`. Factored out so the
   // exact-role pass and the compatible-role fallback pass share identical ranking logic.
   const bestNameMatch = (elements: Element[], name: string, sn: string, roleOk: (r: string) => boolean): Element | null => {
@@ -660,6 +662,40 @@ export function urlAssertionError(ir: IR, appModel: AppModel): { index: number; 
     };
   }
   return null;
+}
+
+/**
+ * Index of the first form-field step that fills something REVEALED BY A PRECEDING CLICK — a
+ * modal/drawer/expanding panel — or -1.
+ *
+ * Why this shape and not something smarter: `groundingError` only asks "does an element with this
+ * role and name exist", never "is it the RIGHT one". A modal opened by a button click never
+ * changes the URL, so its fields are absent from the AppModel, and the model invents names for
+ * them. When an invented name coincidentally collides with real page chrome, the step grounds and
+ * a broken test ships. Confirmed against run 2026-08-10T11-15-46-262Z-1279794e, whose "fill the
+ * ticket Title" step ground onto the page header's asset-search box, and whose "submit" step
+ * ground onto an unrelated existing ticket's "open" status badge.
+ *
+ * The trigger is deliberately STRUCTURAL, not name-based — no reading of the click's wording for
+ * "add"/"new"/"open" (this codebase has repeatedly regretted English-wording detection; see
+ * PROJECT_SUMMARY's "wording-based detection, not structural"). Measured across all 43 IRs saved
+ * under runs/ at the time this was written: fires on 13, all 13 genuine post-click-revealed forms
+ * across two different sites, and on zero logins — in a login the fills come BEFORE the click, so
+ * the shape simply never matches.
+ *
+ * Waits are transparent (a modal replay routinely has one). A `navigate` resets it: that's a page
+ * load, not an in-page reveal, and live-extend's existing on-miss path already covers it. Links
+ * are excluded for the same reason — a link click that goes somewhere is a navigation.
+ */
+export function postClickRevealIndex(ir: IR): number {
+  let precedingClick = false;
+  for (let index = 0; index < ir.steps.length; index++) {
+    const step = ir.steps[index];
+    if (step.action === "wait") continue;                       // transparent
+    if (FIELD_ACTIONS.has(step.action) && precedingClick) return index;
+    precedingClick = step.action === "click" && norm(step.target?.role ?? "") !== "link";
+  }
+  return -1;
 }
 
 /**
@@ -1043,6 +1079,12 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   /** Longest grounded prefix seen across all attempts — the fallback that keeps a run alive
    *  when the attempt budget is spent extending the model rather than converging. */
   let bestPartial: { ir: IR; steps: Step[]; note: string } | undefined;
+  /** The post-click reveal check (see postClickRevealIndex) runs at most ONCE per toIR call.
+   *  It costs a browser launch, and — more importantly — it is the mitigation for its own only
+   *  real false-positive risk: a flow where a click reveals new fields but the step legitimately
+   *  targets a pre-existing one. Bounding it to one firing caps that mistake at a single wasted
+   *  attempt, after which the next IR is accepted on its own merits. */
+  let postClickRefreshed = false;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (budget && !budget.hasBudget) {
@@ -1175,6 +1217,81 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         lastErr = incomplete.message;
         correction = incomplete.message;
         continue;
+      }
+
+      // Everything above is free. This one costs a browser launch, so it goes last among the
+      // rejection checks — no point paying for a replay that a string comparison would have
+      // rejected anyway.
+      //
+      // The gap it closes: live-extend only ever fires when grounding MISSES, so a step whose
+      // invented target happens to COLLIDE with real page chrome is accepted and the modal it
+      // meant to fill is never discovered. Proven by two cases of one real run (a5d729b1):
+      // case-1 guessed a name that missed, live-extend fired, and its IR correctly targets the
+      // modal's own fields; case-0 guessed a name matching the page header's search box, ground
+      // clean, and shipped a test that filled the wrong control entirely.
+      const revealIndex = postClickRevealIndex(parsed.data);
+      if (revealIndex > 0 && !postClickRefreshed && extensions < MAX_EXTENSIONS) {
+        postClickRefreshed = true;
+        const revealStep = parsed.data.steps[revealIndex];
+        // slice(0, revealIndex) is the same prefix convention the live-extend path uses: every
+        // step BEFORE this one, which includes the click that opens the modal and any wait after
+        // it. replayAndSnapshot's dialog branch (waitForSelector on [role="dialog"], plus the
+        // vision merge for dialogs built without semantic HTML) engages on exactly this shape.
+        const prefix = parsed.data.steps.slice(0, revealIndex);
+        const pageBefore = trackPages(parsed.data, currentModel).pageAt[revealIndex];
+        const beforeKeys = new Set(
+          (pageBefore?.elements ?? currentModel.pages.flatMap(p => p.elements))
+            .map(e => `${norm(e.role)}|${norm(e.name)}`)
+        );
+        try {
+          console.log(`[ir] post-click reveal check: re-snapshotting after step ${parsed.data.steps[revealIndex - 1]?.id}`);
+          const refreshed = await refreshPageModel(currentModel, prefix, creds, credPolicy);
+          extensions++;
+          // Unconditional, on the accept path as much as the reject path. The retry prompt is
+          // built from currentModel, so a correction naming fields this model doesn't contain
+          // would send the model straight into a grounding MISS and spend a live-extend hop
+          // rediscovering what was just discovered. On the accept path it's plain profit: the
+          // modal is now modelled for every later step.
+          currentModel = refreshed;
+
+          const revealed = refreshed.pages
+            .flatMap(p => p.elements)
+            .filter(e => !beforeKeys.has(`${norm(e.role)}|${norm(e.name)}`));
+          const fillable = revealed.filter(e => FIELD_ROLE_GROUP.has(norm(e.role)));
+          // Nothing fillable appeared — either no modal opened, or its fields share a name with
+          // something already modelled (in which case the diff hides them and there is nothing
+          // to redirect to). Either way a correction would name nothing useful, so accept.
+          //
+          // No "unless the target IS one of the revealed fields" escape hatch is needed here,
+          // and one written earlier turned out to be unreachable: groundingError rewrites
+          // t.name to the matched element's literal name, so by this point the target always
+          // carries a name from the PRE-refresh model. The case it was meant to protect — the
+          // model correctly naming a field it couldn't see — can't reach this code at all,
+          // because such a name MISSES grounding and the live-extend path above owns it. That
+          // is exactly what separates case-1 from case-0 in the run this fixes.
+          if (fillable.length) {
+            const names = fillable.map(e => `${e.role} "${e.name}"`).join(", ");
+            const message =
+              `Step ${revealStep.id} targets ${revealStep.target?.role ?? "an element"} ` +
+              `"${revealStep.target?.name ?? revealStep.target?.text ?? ""}", which already existed on the ` +
+              `page BEFORE the preceding click. Clicking ` +
+              `"${parsed.data.steps[revealIndex - 1]?.target?.name ?? "that control"}" revealed a form that ` +
+              `was not in the application model until now, so that target is almost certainly the wrong ` +
+              `control (a page header, sidebar or list item that happens to share the name). Use one of the ` +
+              `fields the click actually revealed: ${names}.`;
+            console.log("[ir] post-click reveal rejected:", message);
+            lastErr = message;
+            correction = message;
+            lastContradiction = { ir: parsed.data, stepIds: [revealStep.id], message };
+            continue;
+          }
+        } catch (err: any) {
+          // Best-effort, exactly like groundTerminalTextAssertion: a replay can fail for reasons
+          // that have nothing to do with this step (site flakiness, a login that needs different
+          // credentials this time). Leave the IR alone rather than failing the run.
+          console.log("[ir] post-click reveal check: replay failed, leaving the step as-is:",
+            err?.message ?? err);
+        }
       }
 
       // A pure-text terminal assertion (the one kind groundingError can't check — no

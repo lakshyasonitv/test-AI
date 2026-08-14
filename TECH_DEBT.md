@@ -519,7 +519,7 @@ drift." Fold into A7 as evidence when A7 is picked up.
 
 ## Verification baseline
 
-- `npx vitest run` → **274 passing** (26 files), as of 2026-08-13
+- `npx vitest run` → **288 passing** (27 files), as of 2026-08-14
 - `npx tsc --noEmit` → clean
 
 For anything touching prompts or IR generation, **delete `runs/_cache/llm` before an end-to-end

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   groundingError, hasTerminalAssertion, normalizeIR,
   assertionContradictsCase, vacuousAssertion, urlAssertionError, missingActions,
-  clickedElementHiddenAssertion,
+  clickedElementHiddenAssertion, postClickRevealIndex,
 } from "../src/stages/ir.js";
 import { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -802,5 +802,86 @@ describe("clickedElementHiddenAssertion", () => {
       { id: "s2", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
     ] } as any;
     expect(clickedElementHiddenAssertion(other)).toBeNull();
+  });
+});
+
+// Regression: a modal opened by a button click never changes the URL, so its fields are absent
+// from the AppModel and the model invents names for them. When an invented name coincidentally
+// COLLIDES with real page chrome, groundingError reports the step grounded, live-extend (which
+// only fires on a MISS) never runs, and a test that fills the wrong control ships. Confirmed
+// against run 2026-08-10T11-15-46-262Z-1279794e: "fill the ticket Title" ground onto the page
+// header's asset-search box. postClickRevealIndex is the structural trigger that spots the shape.
+describe("postClickRevealIndex", () => {
+  // The exact step list of the failing run's primary case.
+  const raiseTicket = ir([
+    { id: "s1", action: "navigate", target: { url: "/login" } },
+    { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "a@b.c" },
+    { id: "s3", action: "fill", target: { role: "textbox", name: "Password" }, value: "p" },
+    { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+    { id: "s5", action: "wait", value: "3000" },
+    { id: "s6", action: "click", target: { role: "link", name: "TicketsTickets" } },
+    { id: "s7", action: "wait", value: "3000" },
+    { id: "s8", action: "click", target: { role: "button", name: "Raise Ticket" } },
+    { id: "s9", action: "wait", value: "3000" },
+    { id: "s10", action: "fill", target: { role: "textbox", name: "Search assets by serial or name..." }, value: "test data" },
+    { id: "s11", action: "click", target: { role: "button", name: "open" } },
+  ]);
+
+  it("flags the fill that follows a modal-opening button click", () => {
+    // s10 (index 9) — the step that ground onto the header search box in the real run.
+    expect(postClickRevealIndex(raiseTicket)).toBe(9);
+  });
+
+  // The whole reason this trigger is safe to run at all: it must never fire on a login, which is
+  // the single most common step shape in the project. In a login the fills come BEFORE the click.
+  it("does not fire on a login flow", () => {
+    const login = ir([
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "a@b.c" },
+      { id: "s3", action: "fill", target: { role: "textbox", name: "Password" }, value: "p" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+      { id: "s5", action: "assert", target: { role: "heading", name: "Dashboard" }, assertion: "visible" },
+    ]);
+    expect(postClickRevealIndex(login)).toBe(-1);
+  });
+
+  // A navigate is a page load, not an in-page reveal — live-extend's existing on-miss path
+  // already covers that, and firing here would pay for a browser launch to learn nothing.
+  it("does not fire when a navigate intervenes", () => {
+    const navigated = ir([
+      { id: "s1", action: "click", target: { role: "button", name: "Continue" } },
+      { id: "s2", action: "navigate", target: { url: "/form" } },
+      { id: "s3", action: "fill", target: { role: "textbox", name: "Email" }, value: "a@b.c" },
+    ]);
+    expect(postClickRevealIndex(navigated)).toBe(-1);
+  });
+
+  // A link click that goes somewhere is a navigation, not a reveal.
+  it("does not fire after a link click", () => {
+    const viaLink = ir([
+      { id: "s1", action: "click", target: { role: "link", name: "Sign up" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "a@b.c" },
+    ]);
+    expect(postClickRevealIndex(viaLink)).toBe(-1);
+  });
+
+  // Waits are transparent — a modal replay routinely has one between the click and the fill,
+  // and the real failing run had exactly that (s9).
+  it("sees through an intervening wait", () => {
+    const withWait = ir([
+      { id: "s1", action: "click", target: { role: "button", name: "Add New" } },
+      { id: "s2", action: "wait", value: "1000" },
+      { id: "s3", action: "fill", target: { role: "textbox", name: "Title" }, value: "t" },
+    ]);
+    expect(postClickRevealIndex(withWait)).toBe(2);
+  });
+
+  // select/check are form-field actions too — a revealed <select> is the same bug shape.
+  it("covers select as well as fill", () => {
+    const withSelect = ir([
+      { id: "s1", action: "click", target: { role: "button", name: "Raise Ticket" } },
+      { id: "s2", action: "select", target: { role: "combobox", name: "Department" }, value: "IT" },
+    ]);
+    expect(postClickRevealIndex(withSelect)).toBe(1);
   });
 });

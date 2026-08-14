@@ -26,7 +26,7 @@
 
 | # | Problem | Status |
 |---|---|---|
-| 1 | Dynamic in-page modal forms (e.g. "Raise a Ticket") don't get filled | ⬜ **Diagnosed, not fixed.** Mechanism pinned and reproduced against real runs. Fix designed — see [§3](#3-what-to-solve-next) |
+| 1 | Dynamic in-page modal forms (e.g. "Raise a Ticket") don't get filled | ✅ **Fixed** — `postClickRevealIndex` + a forced re-snapshot in `toIR`. Verified against the saved artifacts of the runs that failed; **one live run still outstanding** as end-to-end confirmation |
 | 2 | Hardcoded security examples leak into functional-only test prompts | ✅ **Fixed** (predates this analysis; verified still in place) |
 | 3 | `AppModel` context explosion (17,000+ line JSON → `413`) | ✅ **Fixed**, commit `fb2ea96` |
 
@@ -42,10 +42,13 @@ are inherited from a doc claim.
 ### Tier 1 — actively misleading or unprotected
 
 **W1. No CI runs the test suite.**
-274 tests across 26 files exist, and **nothing executes them automatically**. The only workflow,
+288 tests across 27 files exist, and **nothing executes them automatically**. The only workflow,
 `.github/workflows/directory-tree.yml`, regenerates a directory tree and pushes to `main`. Every
 deterministic guard this project has built — grounding, credential policy, scope filtering — is
 unenforced on any change. *Highest leverage-per-effort item in the repo: one workflow file.*
+One prerequisite: `tests/strategy.test.ts`'s `file://` case flakes about 1 run in 6 (a 5 s timeout
+on a dynamic Playwright-pulling import under parallel load, reproduced at `HEAD`) — fix it in the
+same change, or CI starts life intermittently red.
 
 **W2. Documentation drifted into being wrong** *(being fixed in this pass)*.
 The docs are the project's interface, and they had begun to actively mislead:
@@ -125,9 +128,10 @@ The full audited list, with reproductions and evidence, lives in [TECH_DEBT.md](
 
 ## 3. What to solve next
 
-### Next up — the modal-form bug (Problem 1)
+### Just shipped — the modal-form fix (Problem 1)
 
-Two findings turn this from a speculative heuristic into a validated design.
+Kept here because the reasoning is the useful part; the mechanism it closes is subtle enough to be
+worth re-reading before touching `groundingError` again.
 
 **Finding 1 — the trigger shape is empirically precise.** Scanning all 43 IRs on disk for *"a
 `fill`/`select`/`check` whose nearest preceding non-`wait` step is a `click`, with no intervening
@@ -141,10 +145,10 @@ runs\...374c3253\case-1 click[1] button "Let's Connect"   -> fill[3] textbox 'Em
 ```
 
 It fires on **zero** login flows — in a login the fills come *before* the click, so the shape never
-matches. (Honest framing: 12 of the 13 are one site's modal across 6 runs × primary + cases; the
+matches. (Honest framing: 12 of the 13 are one site's modal across 6 runs x primary + cases; the
 independent second site is thinkvibes' "Let's Connect". Two distinct sites, corpus concentrated.)
 
-**Finding 2 — a same-run A/B pair proves the capture mechanism already works.** In run
+**Finding 2 — a same-run A/B pair proved the capture mechanism already worked.** In run
 `2026-08-10T10-18-49-077Z-a5d729b1`:
 
 | | `case-0` | `case-1` |
@@ -154,61 +158,85 @@ independent second site is thinkvibes' "Let's Connect". Two distinct sites, corp
 | So capture… | never ran | fired, discovered the modal, re-grounded correctly |
 
 Same run, same site, same modal. The one that guessed *wrong enough to miss* got a correct test; the
-one that guessed *wrong but coincidentally matching* shipped a broken one.
+one that guessed *wrong but coincidentally matching* shipped a broken one. **The capture mechanism
+was never broken — its trigger was.** `extendAppModel` is reactive-on-miss only.
 
-**Conclusion: the capture mechanism is not broken — its trigger is.** `extendAppModel` is
-reactive-on-miss only.
+#### What shipped
 
-#### The fix
+A forced refresh alone would **not** have been enough: `refreshPageModel` replaces the page with a
+full live snapshot that *still contains the header chrome* — page furniture doesn't disappear when a
+modal opens — so re-grounding the same IR would still have passed the bad target. The fix therefore
+rejects and **re-generates**, on the `lastContradiction`/`correction`/`continue` path (spending one
+`MAX_IR_ATTEMPTS`), not the attempt-free re-ground loop.
 
-**Verified design point:** a forced refresh alone is *not* enough. `refreshPageModel` replaces the
-page with a full live snapshot that **still contains the header chrome** — page furniture doesn't
-disappear when a modal opens — so re-grounding the same IR would still pass the bad target. The fix
-must **reject and re-generate**, which means it belongs on the
-`lastContradiction`/`correction`/`continue` path (spending one `MAX_IR_ATTEMPTS`), *not* the
-attempt-free `while (ungrounded && ...)` re-ground loop.
+In `src/stages/ir.ts`:
 
-In `src/stages/ir.ts`, reusing the existing `trackPages()` helper:
+- **`postClickRevealIndex(ir)`** — pure and exported: the first `fill`/`select`/`check` whose
+  nearest preceding non-`wait` step is a `click` on a non-`link` role, no intervening `navigate`.
+  Structural, deliberately *not* name-based — this codebase has repeatedly regretted English-wording
+  detection (see `PROJECT_SUMMARY.md` step 2).
+- In `toIR`'s no-live-extend branch, placed **after** every zero-cost check so nothing pays for a
+  browser launch a string comparison would have pre-empted:
+  1. One `refreshPageModel(...)` through the triggering click, costing one `MAX_LIVE_EXTENSIONS`
+     slot (the failing run used 2 of 5).
+  2. **`currentModel = refreshed`, unconditionally, on accept and reject alike.** Load-bearing: the
+     retry prompt is built from `currentModel`, so discarding the refresh would name fields the
+     model cannot see, send it into a grounding miss, and spend a live-extend hop rediscovering
+     what was just found.
+  3. Diff refreshed vs pre-refresh elements — **the delta is the provenance signal**, no schema
+     change needed.
+  4. Nothing fillable revealed → accept (no modal opened; unchanged behavior).
+  5. Otherwise reject with a correction naming the revealed fields, and `continue`.
+- Fires **at most once per `toIR` call**. That bound is also the mitigation for its only real
+  false-positive risk — a click that reveals fields where the step legitimately targets a
+  pre-existing one — capping the mistake at a single wasted attempt.
 
-- **`postClickRevealIndex(ir)`** — the first `fill`/`select`/`check` whose nearest preceding
-  non-`wait` step is a `click` on a non-`link` role, with no intervening `navigate`.
-- Wire into `toIR`'s no-live-extend branch (beside `vacuousAssertion`/`urlAssertionError`), and only
-  when the step **did** ground — a miss already routes to the existing extend path, which is exactly
-  what made `case-1` work:
-  1. Force one `refreshPageModel(...)` through the triggering click. Costs one
-     `MAX_LIVE_EXTENSIONS` slot; the failing run used only 2 of 5, so there is headroom.
-  2. Diff the refreshed page's elements against the pre-refresh set. **The delta is the provenance
-     signal** — no schema change required.
-  3. Refresh added nothing → accept. No modal opened; identical to today's behavior, no regression.
-  4. Refresh added elements but the target still matches only a **pre-existing** one → reject with a
-     correction naming the newly-revealed fields, and `continue` so the model re-generates with the
-     modal actually in context.
-- Fire at most once per `toIR` call, so a stubborn model can't loop on it.
+**One guard was written and then deleted as unreachable**, worth recording so it isn't
+re-added: an "accept if the target matches a revealed field" escape hatch. `groundingError` rewrites
+`t.name` to the matched element's literal name, so by the time this check runs the target always
+carries a *pre-refresh* name. The case it was meant to protect — the model correctly naming a field
+it couldn't see — can never reach the check, because such a name misses grounding and the
+live-extend path owns it. That is exactly what separated `case-1` from `case-0`.
 
-**Out of scope for v1:** populating `pageSection`/`containerRole`/`containerName` in
-`domDiscovery.ts`. They exist in the `AppModel` schema for exactly this purpose (`pageSection` even
-names `"dialog"`) but are never written. They'd make the correction message better; the element
-delta already supplies the signal, so v1 stays minimal.
+**Still out of scope:** populating `pageSection`/`containerRole`/`containerName` in
+`domDiscovery.ts`. They exist in the `AppModel` schema for this purpose (`pageSection` even names
+`"dialog"`) but are never written. They would improve the correction message; the element delta
+already supplies the signal.
 
-#### How to verify it without spending API credit
+#### How it was verified — no API credit spent
 
-This repo already has precedent for replaying a guard against a failing run's own saved artifacts
-(the navigate-URL guard was verified that way):
+1. **Pure unit tests** (`tests/grounding.test.ts`, 6): right index for `case-0`'s real step list;
+   `-1` for a login-shaped IR, for an intervening `navigate`, and after a link click; waits
+   transparent; `select` covered alongside `fill`.
+2. **`toIR`-level behavior** (`tests/irPostClickReveal.test.ts`, 6): reject-and-re-prompt with the
+   revealed names in the second prompt; the refreshed model surviving into `updatedAppModel`;
+   accept-unchanged when nothing fillable appears; a correctly-named field left to the live-extend
+   path; a thrown replay leaving the IR alone; fires exactly once.
+3. **Artifact replay against the real runs** (2 tests, reading the saved JSON off disk so they
+   cannot drift): flags `s10` of `2026-08-10T11-15-46-262Z-1279794e`, and points at the real Title
+   field in `a5d729b1` `case-1`.
+4. **Regression discipline** (repo standard): with the trigger neutered, the 5 tests that should
+   fail did — with the real error shapes ("expected 2 calls, got 1"; the modal absent from the
+   model) — then passed on restore.
+5. `npx tsc --noEmit` clean; **288/288 tests across 27 files** (274 before).
 
-1. **Unit** (`tests/grounding.test.ts`): `postClickRevealIndex` returns the right index for
-   `case-0`'s step list, and **none** for a login-shaped IR.
-2. **Artifact replay, zero cost:** flag `s10` in `runs/2026-08-10T11-15-46-262Z-1279794e`'s saved
-   `04-ir.json` + `updatedAppModel`; do **not** reject `a5d729b1` `case-1`'s known-good IR.
-3. **Regression discipline** (repo standard): disable the fix, confirm the test fails with the real
-   error shape, restore, confirm it passes.
-4. `npx tsc --noEmit` clean; all 274 existing tests still green.
-5. **Live run — final confirmation only.** Real Groq/Gemini + browser spend against
-   `assettrack-web.onrender.com`'s ticketing prompt.
+**Outstanding: one live end-to-end run**, needing real Groq/Gemini + browser spend against
+`assettrack-web.onrender.com`'s ticketing prompt, to confirm in production what the artifacts
+confirm offline.
 
-### Then — CI (W1)
+> **Unrelated flake found while verifying**, recorded so it isn't mistaken for a new break:
+> `tests/strategy.test.ts > rejects non-http/https schemes like file://` times out at 5 s on its
+> dynamic `await import("../src/stages/hybridDiscovery.js")` (which pulls in Playwright) under
+> parallel load — roughly 1 run in 6. Reproduced at `HEAD` **without** any of this change. It will
+> make CI (W1) red intermittently, so fix it as part of that work: hoist the import to module
+> scope, or raise that test's timeout.
 
-One workflow: `npm ci`, `npx tsc --noEmit`, `npx vitest run`. Permanently protects every fix in the
-repo, including the modal fix above. Cheapest high-value change available.
+### Next up — CI (W1)
+
+One workflow: `npm ci`, `npx tsc --noEmit`, `npx vitest run`. 288 tests exist and nothing runs them
+automatically; this permanently protects every fix in the repo, including the modal fix above.
+Cheapest high-value change available. **Fix the `strategy.test.ts` flake noted above as part of it**
+— landing CI on top of a test that fails 1 run in 6 just teaches everyone to ignore red.
 
 ### Then — the ranked backlog
 
@@ -286,7 +314,7 @@ while (ungrounded && extensions < MAX_EXTENSIONS) { ... }
 used, both spent reaching `/` and `/tickets` past the login wall (`02-appmodel.json` confirms
 pre-auth discovery saw only `/login`). Three slots sat unused.
 
-**The A/B proof.** See [§3](#next-up--the-modal-form-bug-problem-1) — `case-1` of run `a5d729b1`
+**The A/B proof.** See [§3](#just-shipped--the-modal-form-fix-problem-1) — `case-1` of run `a5d729b1`
 targets the modal's real fields because its guess *missed*, triggering the capture that `case-0`
 never got. Same run, same modal, opposite outcomes, and the difference is entirely whether the
 hallucinated name happened to collide with real chrome.
@@ -305,7 +333,9 @@ Grepping `src/stages/domDiscovery.ts` — the live extraction path `liveExtend.t
 any of the three returns **zero matches**. The schema anticipated modal-awareness; the extraction
 code to fill it was never written.
 
-**Fix status:** designed, not implemented. See [§3](#the-fix).
+**Fix status:** ✅ shipped — `postClickRevealIndex` plus a forced re-snapshot in `toIR`. Design,
+rationale, and how it was verified without spending API credit: [§3](#what-shipped). One live
+end-to-end run is still outstanding as production confirmation.
 
 ---
 
@@ -377,7 +407,7 @@ elements/page, 2 forms/page, 9 fields/form, 18 nav nodes, 3 buttons/page, 28 hea
 ordinary site is untouched — the caps only engage on a genuinely richer one.
 
 **Verification:** `tests/appModel.test.ts` (`describe("toLiteModel — caps")`) covers each cap and the
-named-over-anonymous priority rule; `npx tsc --noEmit` clean; full suite 274/274 across 26 files.
+named-over-anonymous priority rule; `npx tsc --noEmit` clean; full suite green (274/274 across 26 files at the time it landed).
 
 ---
 
@@ -393,8 +423,8 @@ Every claim above traces to one of three kinds of evidence, and each finding sta
   hand against the real data, and the candidate fix's trigger was scanned across all 43 IRs on disk
   before being proposed.
 
-Two conclusions were **reversed** by this discipline, and both are worth recording because the first
-instinct was wrong in each case:
+**Three conclusions were reversed by this discipline.** All three were confident first instincts,
+and all three were wrong — which is the argument for the discipline rather than for the instincts:
 
 1. *"A post-click re-snapshot heuristic would fire on every login."* False — measured, not assumed.
    In a login the fills precede the click, so the trigger shape never matches. 13/43 fired, all
@@ -402,10 +432,16 @@ instinct was wrong in each case:
 2. *"Forcing a refresh is enough to fix it."* False — the refreshed page still contains the header
    chrome the bad target matched, so re-grounding would still pass. The fix has to reject and
    re-generate.
+3. *"The fix needs an 'accept if the target is a revealed field' guard."* False, and it was written
+   before being caught: `groundingError` rewrites `t.name` to the matched element's literal name, so
+   the guard compared a pre-refresh name against a set that by construction excludes pre-refresh
+   names — it could never fire. Deleted rather than left in as reassuring dead code. The case it was
+   meant to cover is handled structurally, one layer up, by live-extend.
 
-No code was written for Problem 1: the investigation deliberately stopped at "pinned, reproduced,
-and designed" rather than shipping a fix whose cost profile hadn't been validated against a live
-run — in a project whose most recent crisis was runaway API spend.
+A fourth belief was **not** reversed but was narrowed: the fix was held back one session on the
+grounds that its cost profile needed a live run to validate. That turned out to be true of the
+*production confirmation* only — the behavior itself was fully verifiable against saved artifacts,
+which is how it was ultimately landed without spending API credit.
 
 ---
 
@@ -413,6 +449,6 @@ run — in a project whose most recent crisis was runaway API spend.
 
 | # | Problem | Root cause | Fix | Verified how |
 |---|---|---|---|---|
-| 1 | Modal forms not filled | `extendAppModel` triggers only on a grounding **miss**; a hallucinated name that coincidentally matches real chrome makes grounding falsely succeed, so the modal is never captured | **Designed, not implemented** — see [§3](#the-fix) | Static code reading + real artifacts + hand-reproduction + a 43-IR trigger scan + a same-run A/B pair |
+| 1 | Modal forms not filled | `extendAppModel` triggers only on a grounding **miss**; a hallucinated name that coincidentally matches real chrome makes grounding falsely succeed, so the modal is never captured | `postClickRevealIndex` + a forced re-snapshot that rejects and re-generates — see [§3](#what-shipped) | 14 new tests (pure trigger, `toIR` behavior, artifact replay against both real runs) + regression discipline; 288/288. Live run still outstanding |
 | 2 | Security cases in functional runs | Checklist mixed scopes with no way to filter by request | `CategoryId`/`scope` taxonomy + `classifyScope()` + `filterByScope()` | `git diff` empty; `tests/strategy.test.ts` |
-| 3 | AppModel context explosion | `toLiteModel()` had no size ceiling | `capElements()`/`capNavTree()` + per-page caps, env-configurable | `tests/appModel.test.ts`, `tsc --noEmit`, 274/274, commit `fb2ea96` |
+| 3 | AppModel context explosion | `toLiteModel()` had no size ceiling | `capElements()`/`capNavTree()` + per-page caps, env-configurable | `tests/appModel.test.ts`, `tsc --noEmit`, full suite green, commit `fb2ea96` |

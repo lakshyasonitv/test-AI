@@ -397,3 +397,28 @@ six describing it as open. Each document now has one job, `PROBLEM_ANALYSIS.md` 
 of open-issue status, and the other five link to it instead of restating. Corrected along the way:
 a README section instructing readers to `docker build` files deleted in `fbf44c0`, a fixed
 limitation still listed as open, and a stale test-count baseline (253/24 → 274/26).
+
+## 21. The modal-form fix, landed without spending API credit
+
+Implemented the fix §20 had designed but held back. `postClickRevealIndex` (`ir.ts`) spots the
+structural shape — a `fill`/`select`/`check` whose nearest preceding non-`wait` step is a non-link
+`click` — and `toIR` forces one `refreshPageModel` through that click, diffs the revealed elements,
+and **rejects and re-generates** naming the newly-revealed fields. A forced refresh alone would not
+have worked: the refreshed page still contains the header chrome the bad target matched, so
+re-grounding would still have passed it. The refreshed model is kept unconditionally — the retry
+prompt is built from it, so discarding it would name fields the model can't see.
+
+Held back last session on the grounds that its cost profile needed a live run. That was true of the
+production confirmation only: the behavior itself verified fully against saved run artifacts —
+14 new tests including two that read the real `04-ir.json` files off disk, plus the repo's
+disable-and-confirm-the-real-error-shape discipline. 274 → 288 tests, `tsc` clean. One live
+end-to-end run remains outstanding.
+
+Two things caught by verifying rather than assuming. **A guard I wrote was unreachable**:
+"accept if the target matches a revealed field" compared a name `groundingError` had already
+rewritten to a pre-refresh value against a set that by construction excludes pre-refresh names.
+Deleted rather than left as reassuring dead code — the case it covered is handled one layer up,
+which is exactly what separated the two cases of run `a5d729b1`. And **a test failure that looked
+like mine wasn't**: `tests/strategy.test.ts`'s `file://` case flakes ~1 run in 6 on a 5 s timeout
+importing Playwright under parallel load. Reproduced at `HEAD` with the change reverted before
+attributing it. It needs fixing alongside CI, or CI starts life intermittently red.

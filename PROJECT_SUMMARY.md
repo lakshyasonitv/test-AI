@@ -269,11 +269,18 @@ rather than truly arbitrary ones. Closing any of them is a design project, not a
    coincidentally matched *real* chrome elements already on the `/tickets` page (the header's
    asset search box, an existing ticket's "open" status badge), so grounding falsely succeeded
    and the reactive extend never fired — with 3 of 5 extension-budget hops still unused.
-   Compounding gap: `pageSection`/`containerRole`/`containerName` already exist in the `AppModel`
-   Zod schema (`pageSection` even names `"dialog"` as a value) precisely for distinguishing modal
-   content from page chrome, but `domDiscovery.ts` — the live extraction path `liveExtend.ts`
-   actually uses — never populates them. Full writeup: `PROBLEM_ANALYSIS.md`. Diagnosed only, no
-   code fix yet.
+   **The specific symptom is now fixed**: `postClickRevealIndex` (`ir.ts`) spots the structural
+   shape — a `fill`/`select`/`check` whose nearest preceding non-`wait` step is a non-link `click` —
+   and forces one re-snapshot through that click, rejecting the step and re-generating when the
+   click turns out to have revealed fields the target isn't one of.
+
+   **The general gap remains**, which is why this step stays on the list: the trigger recognises one
+   interaction shape, not the concept of "an element that only exists after an interaction". A
+   reveal driven by hover, scroll, keyboard, or a sequence of clicks is still invisible to
+   discovery. And `pageSection`/`containerRole`/`containerName` still exist in the `AppModel` Zod
+   schema (`pageSection` even names `"dialog"`) for exactly this purpose while `domDiscovery.ts` —
+   the live extraction path `liveExtend.ts` uses — never populates them, so even a captured modal's
+   fields stay indistinguishable from page chrome. Full writeup: `PROBLEM_ANALYSIS.md`.
 8. **`AppModel` size has no ceiling, and a rich site can exceed the LLM's context budget.** —
    **Fixed.** `toLiteModel()` (`src/schema/appModel.ts`) used to keep every crawled page's full
    `forms`/`navigation`/`buttons`/`headings`/`breadcrumbs` in one payload, and a complex app
