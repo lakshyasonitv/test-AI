@@ -51,6 +51,7 @@ function crawlResponseToAppModel(crawl: CrawlResponse): AppModel {
       // Same idea one step further: a proximity-inferred name isn't in the DOM at all, so
       // the resolver has to locate the field by its position relative to that text.
       ...(ie.name_from_proximity ? { nameFromProximity: true } : {}),
+      ...(ie.generic_path ? { genericPath: ie.generic_path } : {}),
       order: order++,
     });
   }
@@ -165,11 +166,33 @@ function crawlResponseToAppModel(crawl: CrawlResponse): AppModel {
     });
   }
 
+  // Landmark tagging from genericPath (since we don't have Cheerio here)
+  const landmarkCounts = new Map<string, number>();
+  const LANDMARKS = new Set(["main", "nav", "header", "footer", "aside", "form"]);
+  for (const el of elements) {
+    if (!el.genericPath) continue;
+    const parts = el.genericPath.split(">");
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (LANDMARKS.has(parts[i])) {
+        el.landmark = parts[i];
+        landmarkCounts.set(parts[i], (landmarkCounts.get(parts[i]) || 0) + 1);
+        break;
+      }
+    }
+  }
+
+  const landmarkSections = Array.from(landmarkCounts.entries()).map(([landmark, count]) => ({
+    landmark,
+    label: "",
+    elementCount: count,
+  }));
+
   const pageModel: PageModel = {
     url: crawl.url,
     title: crawl.title,
     concepts: [], // Will be populated by the LLM labeling step
     elements,
+    ...(landmarkSections.length > 0 ? { landmarkSections } : {}),
 
     // Structured DOM fields
     markdown: crawl.markdown,

@@ -25,6 +25,10 @@ export const Element = z.object({
   containerName: z.string().optional(),
   pageSection: z.string().optional(), // "main", "nav", "header", "footer", "dialog"
   path: z.array(z.string()).optional(), // ["body", "main", "form", "button"]
+  genericPath: z.string().optional(),
+  compressed: z.boolean().optional(),
+  count: z.number().optional(),
+  landmark: z.string().optional(),
   order: z.number().optional(),
 });
 export type Element = z.infer<typeof Element>;
@@ -167,6 +171,11 @@ export const PageModel = z.object({
   elements: z.array(Element),
 
   // --- New DOM-extracted fields (all optional for backward compat) ---
+  landmarkSections: z.array(z.object({
+    landmark: z.string(),
+    label: z.string().default(""),
+    elementCount: z.number(),
+  })).optional(),
   markdown: z.string().optional(),
   cleanedHtml: z.string().optional(),
   metadata: DomMetadata.optional(),
@@ -286,6 +295,81 @@ export function toLiteModel(model: AppModel): AppModel {
       ...(p.hasPagination !== undefined ? { hasPagination: p.hasPagination } : {}),
       ...(p.breadcrumbs && p.breadcrumbs.length > 0 ? { breadcrumbs: p.breadcrumbs } : {}),
     })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// MicroModel — strictly compressed context for zero-temperature generation
+// ---------------------------------------------------------------------------
+
+export function compressRepetitiveSiblings(elements: Element[]): Element[] {
+  const groups = new Map<string, Element[]>();
+  const ungrouped: Element[] = [];
+
+  for (const el of elements) {
+    if (!el.genericPath) { ungrouped.push(el); continue; }
+    // Include name so "Nike Air Max" and "Adidas Ultraboost" stay separate
+    const key = `${(el.role ?? "").toLowerCase()}|${el.genericPath}|${(el.name ?? "").toLowerCase().trim()}`;
+    const g = groups.get(key);
+    if (g) g.push(el); else groups.set(key, [el]);
+  }
+
+  const result: Element[] = [...ungrouped];
+  for (const [, group] of groups) {
+    if (group.length > 5) {
+      result.push({
+        role: group[0].role,
+        name: group[0].name || "items",
+        count: group.length,
+        compressed: true,
+        genericPath: group[0].genericPath,
+        pageSection: group[0].pageSection,
+      });
+    } else {
+      result.push(...group);
+    }
+  }
+  return result;
+}
+
+/** Origin + path, ignoring query/hash — same as ir.ts pageKey */
+function pageKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.origin + (u.pathname.replace(/\/+$/, "") || "/");
+  } catch { return url; }
+}
+
+export function toMicroModel(
+  model: AppModel,
+  opts: { currentPageUrl?: string } = {}
+): AppModel {
+  const targetPage = opts.currentPageUrl
+    ? model.pages.find(p => pageKey(p.url) === pageKey(opts.currentPageUrl!)) ?? model.pages[0]
+    : model.pages[0];
+  if (!targetPage) return { ...model, pages: [] };
+
+  const compressed = compressRepetitiveSiblings(targetPage.elements);
+  const capped = capElements(compressed, 30);
+
+  return {
+    baseUrl: model.baseUrl,
+    pages: [{
+      url: targetPage.url,
+      title: targetPage.title,
+      concepts: targetPage.concepts,
+      elements: capped.map(({ role, name, concept, compressed: c, count }) =>
+        ({ role, name, concept, ...(c ? { compressed: c, count } : {}) })),
+      ...(targetPage.forms && targetPage.forms.length > 0 ? {
+        forms: targetPage.forms.slice(0, 2).map(f => ({
+          ...f, fields: f.fields.slice(0, 20),
+        })),
+      } : {}),
+      ...(targetPage.navigation && targetPage.navigation.length > 0 ? {
+        navigation: capNavTree(targetPage.navigation, 0, 2, { remaining: 10 }),
+      } : {}),
+      ...(targetPage.hasSearch !== undefined ? { hasSearch: targetPage.hasSearch } : {}),
+    }],
   };
 }
 

@@ -5,7 +5,7 @@ import { callWithPool } from "./backoff.js";
 let pool: ReturnType<typeof poolFromEnv> | undefined;
 const getPool = () => (pool ??= poolFromEnv("GROQ_API_KEYS"));
 
-export interface GroqOpts { model?: string; json?: boolean; system?: string; }
+export interface GroqOpts { model?: string; json?: boolean; system?: string; temperature?: number; }
 
 export interface GroqUsage { promptTokens: number; completionTokens: number; totalTokens: number; }
 export interface GroqResult { content: string; usage: GroqUsage; }
@@ -32,7 +32,7 @@ export async function groq(prompt: string, opts: GroqOpts = {}): Promise<GroqRes
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
-        temperature: 0.2,
+        temperature: opts.temperature ?? 0.2,
         messages: [
           ...(opts.system ? [{ role: "system", content: opts.system }] : []),
           { role: "user", content: prompt },

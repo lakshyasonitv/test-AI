@@ -3,7 +3,7 @@ import { GroqBudget } from "../llm/groqBudget.js";
 import { parseJson } from "../llm/json.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import { AppModel, PageModel, Element, toLiteModel, INTERACTIVE_ROLES } from "../schema/appModel.js";
+import { AppModel, PageModel, Element, toLiteModel, toMicroModel, INTERACTIVE_ROLES } from "../schema/appModel.js";
 import { cutAtBoundary } from "../text.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import {
@@ -978,7 +978,10 @@ Example — handling duplicate selectors with nth:
       ),
     }));
     const modelJsonFor = (pages: PageModel[]) =>
-      JSON.stringify(toLiteModel({ ...model, pages: withFilteredElements(pages) }));
+      JSON.stringify(toMicroModel(
+        { ...model, pages: withFilteredElements(pages) },
+        { currentPageUrl: entryUrl }
+      ));
 
     // Retries previously re-sent a byte-identical prompt and predictably got a
     // byte-identical answer back. Feeding the rejection reason in is what makes the

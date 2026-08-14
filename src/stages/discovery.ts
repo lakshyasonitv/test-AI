@@ -17,6 +17,8 @@ export interface DetectedElement {
   /** data-test / data-testid / data-qa value, if present. */
   testId: string;
   id: string;
+  /** Pure structural DOM path (e.g. "body>main>ul>li>a") for sibling compression. */
+  genericPath: string;
 }
 
 /** Raw per-element facts read out of the DOM. Deliberately dumb — see detectInteractiveElements. */
@@ -25,6 +27,7 @@ interface RawInteractive {
   alt: string; placeholder: string; value: string; type: string;
   dataTest: string; dataTestid: string; dataQa: string;
   id: string; classes: string[]; href: string; hasIcon: boolean;
+  genericPath: string;
 }
 
 /** "shopping-cart-link" / "shopping_cart_container" / "btnAddToCart" -> "shopping cart link" */
@@ -148,7 +151,7 @@ export async function detectInteractiveElements(page: Page): Promise<DetectedEle
       const isControl = el.matches(CONTROLS);
       if (!isControl && el.querySelector(CONTROLS) !== null) continue;
 
-      out.push({
+      const obj: any = {
         tag: el.tagName.toLowerCase(),
         role: el.getAttribute('role') || '',
         ariaLabel: (el.getAttribute('aria-label') || '').trim(),
@@ -166,7 +169,18 @@ export async function detectInteractiveElements(page: Page): Promise<DetectedEle
         classes: Array.from(h.classList),
         href: el.getAttribute('href') || '',
         hasIcon,
-      });
+      };
+
+      const pathParts: string[] = [];
+      let ancestor: HTMLElement | null = h;
+      while (ancestor && ancestor !== document.body) {
+        pathParts.unshift(ancestor.tagName.toLowerCase());
+        ancestor = ancestor.parentElement;
+      }
+      pathParts.unshift("body");
+      obj.genericPath = pathParts.join(">");
+
+      out.push(obj);
     }
     return out;
   });
@@ -200,7 +214,7 @@ export async function detectInteractiveElements(page: Page): Promise<DetectedEle
     if (seen.has(key)) continue;
     seen.add(key);
 
-    results.push({ role, name, derived, tag: r.tag, hasIcon: r.hasIcon, css, testId, id: r.id });
+    results.push({ role, name, derived, tag: r.tag, hasIcon: r.hasIcon, css, testId, id: r.id, genericPath: r.genericPath });
   }
 
   return results;
@@ -279,6 +293,7 @@ export function attachElementIdentity(model: AppModel, detected: DetectedElement
           ...(hit.testId && !e.testId ? { testId: hit.testId } : {}),
           ...(hit.id && !e.id ? { id: hit.id } : {}),
           ...(hit.css ? { css: hit.css } : {}),
+          ...(hit.genericPath && !e.genericPath ? { genericPath: hit.genericPath } : {}),
         };
       }),
     })),

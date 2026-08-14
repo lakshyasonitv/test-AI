@@ -52,6 +52,7 @@ export interface CrawlResponse {
     test_id: string; css: string; derived_name: boolean;
     /** `name` is visible text beside the control, not its accessible name — see proximityLabel. */
     name_from_proximity?: boolean;
+    generic_path: string;
   }>;
   internal_urls: string[];
   external_urls: string[];
@@ -98,12 +99,24 @@ function absUrl(href: string, base: string): string {
 
 function isExternal(url: string, baseOrigin: string): boolean {
   try {
-    const u = new URL(url);
-    if (!u.host) return false;
-    return u.host !== new URL(baseOrigin).host;
+    const origin = new URL(url).origin;
+    return origin !== baseOrigin;
   } catch {
     return false;
   }
+}
+
+/** Walk up from an element to <body>, recording only tag names.
+ *  Result: "body>main>div>ul>li>button" — no IDs, no classes, no indices.
+ *  Identical for all 48 product cards in a grid. */
+function computeGenericPath($: CQ, el: AnyNode): string {
+  const parts: string[] = [];
+  let node: AnyNode | null = el;
+  while (node && (node as DomElement).tagName) {
+    parts.unshift((node as DomElement).tagName.toLowerCase());
+    node = (node as any).parent ?? null;
+  }
+  return parts.join(">");
 }
 
 const classesOf = ($el: cheerio.Cheerio<AnyNode>): string[] => attr($el, "class").split(/\s+/).filter(Boolean);
@@ -449,6 +462,7 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
       name_from_proximity: nameFromProximity,
       aria_label: attr($el, "aria-label"), aria_role: attr($el, "role"),
       visible: true, enabled: !has($el, "disabled"),
+      generic_path: computeGenericPath($, el),
     });
   });
 
@@ -472,6 +486,7 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
       id: attr($el, "id"), css_classes: classesOf($el), test_id: "", css: "", derived_name: false,
       aria_label: attr($el, "aria-label"), aria_role: role,
       visible: true, enabled: !has($el, "aria-disabled"),
+      generic_path: computeGenericPath($, el),
     });
   });
 
