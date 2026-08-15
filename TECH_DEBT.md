@@ -74,8 +74,8 @@ actually making that call.
 | TD-27 | `caseAccumulator.appendAcceptedCases` doesn't dedup near-duplicate titles within one batch | Low | Accidental | Lakshya |
 | TD-28 | `wantsRealCredentials` — dead code, or the policy entry point that was never wired in? | Low | ? | ? |
 | TD-29 | A username was once observed reaching disk unreferenced — never root-caused | Low | ? | ? |
-| TD-30 | A role target with an empty-string name bypasses grounding entirely and crashes spec generation | High | Accidental | Lakshya |
-| TD-31 | A not-yet-hydrated page (0 extracted elements) is accepted as a valid, cacheable AppModel with no vision fallback | High | Strategic (root) / Accidental (in effect) | ? |
+| TD-30 | A role target with no name (empty-string OR absent) bypasses grounding entirely and crashes spec generation — **fixed** | High | Accidental | Lakshya |
+| TD-31 | A not-yet-hydrated page (0 extracted elements) is accepted as a valid AppModel with no retry — **fixed** (polls before accepting) | High | Strategic (root) / Accidental (in effect) | Lakshya |
 | TD-32 | `locate()`/`resolveRoleWithFallback` matched names by substring, not exactly — **fixed** | High | Accidental | Lakshya |
 | TD-33 | `classify.ts` didn't recognize the "Timed out ... waiting for expect(...)" assertion-timeout wording — **fixed** | Medium | Accidental | Lakshya |
 | TD-34 | A `visible` assertion's locator could resolve to a hidden same-named candidate ahead of a visible one — **fixed** | High | Accidental | Lakshya |
@@ -626,7 +626,7 @@ Found while verifying TD-01/02/03 against `runs/2026-08-14T19-24-27…0413c4c8`,
 those fixes landed. Neither is caused by that work — both are pre-existing gaps the run happened
 to exercise — but neither was on this register before.
 
-### TD-30. A role target with an empty-string name bypasses grounding entirely and crashes spec generation — High / Accidental
+### TD-30. A role target with no name (empty-string OR absent) bypasses grounding entirely and crashes spec generation — High / Accidental — Fixed
 
 **What it is.** `groundingError` (`src/stages/ir.ts:438`) reads `if (!t?.role || !t?.name) continue;`
 — skip grounding this step, nothing to check. An empty string is falsy in JS, so a target shaped
@@ -656,16 +656,31 @@ express "press a key with no specific target" (a keyboard-only step shape, or an
 so the model isn't forced to fabricate a role+empty-name target just to say what it actually means.
 (1) alone stops the crash; (2) fixes the underlying reason the model reached for this shape.
 
-**Recurred, unfixed, in a later run:** `runs/2026-08-14T21-04-16…2b2858b9`, case-3 ("Verify
-keyboard accessibility of navigation") — same shape again, `s2: { action: "press", target: {
-role: "textbox", name: "" } }`, `s3: { role: "link", name: "" }`. No `generated.spec.ts` or
-`results.json` exists for this case (spec generation crashed before either could be written) —
-same signature as before. Confirms this isn't a one-off; "test keyboard accessibility" is a
-recurring case shape the model reaches for on exactly this kind of prompt, and every time it does,
-this bug fires. Bumping priority accordingly — still not fixed, but no longer a single
-observation.
+**Recurred twice more before being fixed**, confirming it wasn't a one-off:
+`runs/2026-08-14T21-04-16…2b2858b9` case-3 (same "keyboard accessibility" shape, `s2`/`s3` both
+`{role, name: ""}`), then `runs/2026-08-15T05-25-38…901f5358` — this one **took down the entire
+run**, not just one case: a thin AppModel (see TD-31, its root cause here) left the model nothing
+specific to name for "confirm the nav landmark is visible," so it emitted `{role: "heading"}`,
+`{role: "navigation"}`, `{role: "main"}` — role present, **`name` key absent entirely**, the same
+crash site via a slightly different trigger shape. Because this hit the *primary* case (before
+the suite fans out into isolated per-case execution), there was no per-case isolation to catch it:
+`generate failed: No semantic locator for target: {"role":"heading"}`, the run terminated as
+`stage: "error"` at 71.4s, and zero cases, zero screenshots, zero artifacts were ever produced —
+the worst blast radius any bug in this register has caused.
 
-### TD-31. A not-yet-hydrated page (0 extracted elements) is accepted as a valid, cacheable AppModel with no vision fallback — High / Strategic (root) / Accidental (in effect)
+**Fix applied.** Option (1) from the original remediation, exactly as scoped: `groundingError`
+(`ir.ts`) now explicitly checks `t?.role && !t?.name` *before* the existing skip condition and
+returns a rejection — routed through the same correction/retry/truncate path every other
+grounding failure already uses, so the model gets a chance to correct itself, and if it can't,
+the case degrades to a truncated-but-real IR instead of crashing spec generation outright. Option
+(2) (a first-class "no specific target" step shape) is still open — recorded as a real,
+independent improvement, not required to close the crash. Verified by replaying the exact IR that
+killed the `901f5358` run directly through `groundingError`: rejected at `s3` (the first
+role-only target) instead of ever reaching `generateSpec`. Covered by `tests/grounding.test.ts`
+(both the empty-string and absent-name shapes, plus a check that a step with no role at all is
+still correctly skipped); regression-verified.
+
+### TD-31. A not-yet-hydrated page (0 extracted elements) is accepted as a valid, cacheable AppModel with no vision fallback — High / Strategic (root) / Accidental (in effect) — Fixed
 
 **What it is.** `domDiscovery.ts:515` navigates with `waitUntil: "domcontentloaded"` and
 `extractDomModelFromPage` calls `page.content()` immediately after with no settle wait —
@@ -688,16 +703,40 @@ assertion (`s2`) was guaranteed to fail. Discovery itself took only 5.2s (vs. 42
 recent runs against the same site), consistent with returning almost immediately after an
 under-loaded snapshot rather than actually crawling anything.
 
-**Remediation.** Two changes, independently useful: (1) treat a zero-element extraction as a
-signal to retry once with a real settle wait (e.g. `waitUntil: "networkidle"` or a bounded
-`page.waitForTimeout` + re-check) before accepting it as final — the "auth wall" case the existing
-comment names would still correctly resolve to zero elements after a proper wait, so this doesn't
-regress that case, it only catches the "was too early" case the comment didn't distinguish from
-it. (2) Route a zero-element result through the vision fallback rather than around it, at least
-once, before caching it as authoritative — vision's ARIA-snapshot-based extraction doesn't depend
-on `page.content()` timing the same way. Flagged `?` on owner: whether to spend the extra
-navigation wait on every discovery (cost) or only after a zero-element result (safer, cheaper) is
-a real design choice, not just an obvious fix.
+**Fix applied.** Option (1) from the original remediation. `extractDomModelFromPage`
+(`domDiscovery.ts`, the one function every discovery path shares) now polls rather than accepting
+the first zero-element read as final: when both the semantic extraction AND
+`detectGenericClickables` return nothing, it re-extracts every second, up to
+`DISCOVERY_HYDRATION_POLL_MS` (default 6000ms), and keeps whichever result stops being empty
+first. Placed in this one shared function rather than duplicated at each of the three call sites
+in `hybridDiscovery.ts`/`domDiscovery.ts` that invoke it.
+
+**How the threshold was chosen — measured, not guessed.** Ran the real extraction pipeline
+against the real site at increasing waits past `domcontentloaded`: **0 elements at +800ms** (the
+wait every call site already had — confirms the bug directly), **347 at +2.8s**, **576 (stable)
+by +4s**. The default budget (6s) sits comfortably above the measured convergence point.
+
+**The "auth wall" case is provably not regressed**, not just assumed: `detectGenericClickables`
+is now also part of the exit condition (an earlier version of this fix checked only semantic
+elements, which made a real page whose *only* interactive content is a non-ARIA
+`cursor:pointer`/`onclick` div poll for the full budget every time, since generic clickables are
+normally detected *after* this check — caught by `tests/genericClickables.test.ts`'s existing
+negative-case tests going from passing to timing out, fixed before landing). A page that
+genuinely never renders anything — the true auth-wall case — still correctly resolves to 0 after
+the poll window, verified directly (a static `page.setContent()` page with nothing ever added:
+resolves to 0 elements, bounded by the poll budget, not longer).
+
+Option (2) (route a zero-element result through the vision fallback too) is not applied — the
+poll fix addressed the measured root cause directly and more cheaply; vision remains available as
+a fallback for the cases the poll genuinely can't resolve, unchanged.
+
+**Verified against the exact original failure**: replayed `extractDomModelFromPage` against the
+live site at the exact reproduction conditions (the pre-existing 800ms wait, nothing else
+changed) — 0 elements before this fix (matching the real run), 102 elements and the real page
+title after it, in 1.55s total. Covered by `tests/genericClickables.test.ts` (a delayed-render
+page picked up within the poll window; a truly-empty page still correctly resolves to 0);
+regression-verified. `npx tsc --noEmit` clean, `npx vitest run` 301 tests (299 passing — the 2
+failures are unrelated deleted-fixture data, not this change).
 
 ### TD-32. `locate()`/`resolveRoleWithFallback` matched names by substring, not exactly — High / Accidental — Fixed
 

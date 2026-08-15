@@ -280,8 +280,16 @@ these two cases apart, and it resolves the ambiguity the same way for both — a
 which is right for the first case and silently wrong for the second. Reproduced directly
 (`TECH_DEBT.md` TD-31): a real run's entry page had 32.8KB of real `<head>` content and **no
 `<body>` at all**, cached as a valid zero-element `AppModel`, which forced test-case generation to
-invent untestable generic assertions with a guaranteed failure. TD-31 tracks the fix; this record
-exists so the original tradeoff (cache to avoid re-crawl cost) isn't lost when it's revisited.
+invent untestable generic assertions with a guaranteed failure — and, in a later run, crashed spec
+generation entirely (`TECH_DEBT.md` TD-30) and took down the whole run with zero cases produced.
+
+**Fixed, superseding the "accept immediately" half of this decision, not the caching half.**
+`extractDomModelFromPage` now polls briefly (measured against the real site: 0 elements at
++800ms, 347 by +2.8s — the fixed wait was nowhere near enough) before accepting zero as final.
+The auth-wall case this decision was originally protecting is unaffected — it still resolves to
+zero, correctly, just after the poll window instead of immediately — and the cache-to-avoid-
+re-crawl-cost tradeoff this record describes is untouched; only *when* a zero-element result is
+trusted enough to cache changed.
 
 ## D-18. Live locator resolution requires an exact name match; grounding's own name matching stays fuzzy
 

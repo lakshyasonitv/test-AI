@@ -2,6 +2,12 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { chromium, type Browser, type Page } from "playwright";
 import { extractDomModelFromPage } from "../src/stages/domDiscovery.js";
 
+// extractDomModelFromPage polls for up to DISCOVERY_HYDRATION_POLL_MS when it finds zero
+// elements, to give a real JS-hydrated page time to render (TECH_DEBT.md TD-31). Every test in
+// this file uses page.setContent() — static from the instant it's set, nothing to wait for — so
+// disable the poll for the whole file rather than pay it on every negative-result test.
+process.env.DISCOVERY_HYDRATION_POLL_MS = "0";
+
 // Regression: a <div onClick={...}>Submit</div> built with no semantic tag and no role
 // attribute — the common shape of an early-stage React/Vue/Tailwind "button" component — was
 // invisible to discovery entirely. extractCrawlResponse (domExtract.ts) parses an HTML STRING
@@ -78,6 +84,57 @@ describe("extractDomModelFromPage — generic clickable detection", () => {
     const model = await extractDomModelFromPage(page, "https://example.com/");
     const found = model?.pages[0]?.elements.find((e) => e.name === "Hidden action");
     expect(found).toBeUndefined();
+  });
+});
+
+// Regression (TECH_DEBT.md TD-31): discovery snapshotted amazon.in before it had rendered a
+// <body> at all — 0 elements, empty title — and the resulting empty AppModel forced test-case
+// generation into role-only assertions with no name to ground against, which then crashed spec
+// generation and killed the whole run with zero cases. Measured directly against the real site:
+// 0 elements at +800ms post-domcontentloaded (the wait every call site already had), 347 by
+// +2.8s. extractDomModelFromPage must poll rather than accept the first zero-element read.
+describe("extractDomModelFromPage — hydration poll", () => {
+  let browser: Browser;
+  let page: Page;
+  let prevPollMs: string | undefined;
+
+  beforeAll(async () => {
+    browser = await chromium.launch();
+    page = await browser.newPage();
+    prevPollMs = process.env.DISCOVERY_HYDRATION_POLL_MS;
+    // Short but real: long enough for the delayed-render test below to land inside it (content
+    // appears at 500ms, poll interval is a fixed 1000ms — one cycle is enough), short enough
+    // this test doesn't itself become the slow one in the suite.
+    process.env.DISCOVERY_HYDRATION_POLL_MS = "2500";
+  });
+
+  afterAll(async () => {
+    await browser.close();
+    if (prevPollMs === undefined) delete process.env.DISCOVERY_HYDRATION_POLL_MS;
+    else process.env.DISCOVERY_HYDRATION_POLL_MS = prevPollMs;
+  });
+
+  it("picks up content that renders shortly after the first (empty) read", async () => {
+    await page.setContent("<html><body></body></html>");
+    // Simulate JS hydration finishing just after the initial snapshot — exactly the shape of
+    // the real bug (Amazon's body is empty at domcontentloaded, populated ~2s later).
+    page.evaluate(() => {
+      setTimeout(() => {
+        const btn = document.createElement("button");
+        btn.textContent = "Hydrated Button";
+        document.body.appendChild(btn);
+      }, 500);
+    });
+
+    const model = await extractDomModelFromPage(page, "https://example.com/hydrating");
+    const names = model?.pages[0]?.elements.map((e) => e.name) ?? [];
+    expect(names).toContain("Hydrated Button");
+  });
+
+  it("still correctly resolves to zero elements for a page that never renders any (auth wall)", async () => {
+    await page.setContent("<html><body></body></html>");
+    const model = await extractDomModelFromPage(page, "https://example.com/truly-empty");
+    expect(model?.pages[0]?.elements.length ?? 0).toBe(0);
   });
 });
 

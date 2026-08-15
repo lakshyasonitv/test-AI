@@ -132,7 +132,6 @@ The headline items, for orientation:
 
 | Issue | Short version |
 |---|---|
-| A not-yet-loaded page can be cached as a valid, empty AppModel | `TECH_DEBT.md` TD-31 |
 | Duplicate-named elements can still make a locator ambiguous | Partial mitigation shipped, real fix (page-scoping) still open — `TECH_DEBT.md` TD-05 |
 | No blocking-interstitial detection (CAPTCHA/bot walls) at discovery time | `TECH_DEBT.md` TD-04 |
 | No server authentication | Anyone with the URL can start runs and browse artifacts (`TECH_DEBT.md` TD-14) |
@@ -140,7 +139,10 @@ The headline items, for orientation:
 
 Fixed since first written up, kept here only so the fix isn't re-discovered as new: a correct test
 could be rejected outright (TD-01), a failing test's report could be destroyed before diagnosis
-ever read it (TD-02), a Groq rate limit could kill a run instead of backing off (TD-03), a page
+ever read it (TD-02), a Groq rate limit could kill a run instead of backing off (TD-03), a
+role target with no name could crash spec generation and take down an entire run with zero cases
+produced (TD-30), a not-yet-hydrated page could be cached as a valid empty AppModel with nothing
+to ground against (TD-31), a page
 title could only be asserted as body text where it can never appear (TD-06), live locator
 resolution matched by substring instead of exact name (TD-32), the deterministic failure
 classifier missed one common Playwright timeout wording (TD-33), a `visible` assertion could lock
@@ -170,6 +172,7 @@ are in `.env.example`.
 | `MAX_IR_ATTEMPTS` | No | Max IR generate/validate retries per test case (default: 4) |
 | `MAX_LIVE_EXTENSIONS` | No | Max browser replays per case to discover pages behind a login/click (default: 5) |
 | `MAX_DISCOVERY_PAGES` | No | Max pages a single site crawl may collect (default: 5) |
+| `DISCOVERY_HYDRATION_POLL_MS` | No | Max time a zero-element page extraction keeps re-checking before being accepted as final (default: 6000) |
 | `MAX_CASES_PER_RUN` | No | Hard ceiling on cases turned into runnable scripts (default: 5) |
 | `MAX_CONCURRENT_RUNS` | No | Max parallel pipeline runs (default: 3) |
 | `CREDENTIAL_WAIT_MS` | No | How long a paused run waits for credentials before continuing without them (default: 300000 / 5 min) |

@@ -453,6 +453,29 @@ export function groundingError(
       };
     }
 
+    // A role WITH no name (undefined or "") took the same silent-skip path as a step with no
+    // target at all — `!t?.name` is true for both. It reaches generation completely unchecked,
+    // where resolveCode()'s `if (t.role && t.name)` gate is also false, falls through to
+    // pick(t), finds no css/label/placeholder/text/testId, and throws — crashing spec
+    // generation with no recovery. When this happens for the PRIMARY case (not a suite case),
+    // there's no per-case isolation to catch it: the whole run dies with zero cases and zero
+    // artifacts. Reproduced twice: an empty-string name on a `press` step (a keyboard-only
+    // intent with nothing to anchor to), and a fully-absent name on a `heading`/`navigation`/
+    // `main` landmark assertion (a thin AppModel left the model nothing specific to name).
+    // Reject it the same way every other grounding failure is rejected — through the existing
+    // correction/retry/truncate path — instead of letting it reach generation at all. See
+    // TECH_DEBT.md TD-30.
+    if (t?.role && !t?.name) {
+      return {
+        index,
+        message: `Step ${step.id} targets role="${t.role}" with no name to identify which ` +
+          `element it means. Every role target must name a specific element from the ` +
+          `application model — if you meant "any element with this role", that isn't ` +
+          `supported; pick the specific one you want by its accessible name instead, or use ` +
+          `{ "text": "..." } for content that only appears after an action.`,
+      };
+    }
+
     if (!t?.role || !t?.name) continue; // navigate / text-only / wait steps
     const role = norm(t.role);
     const name = norm(t.name);

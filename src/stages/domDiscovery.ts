@@ -455,11 +455,35 @@ async function recheckVisibility(page: Page, elements: Element[]): Promise<void>
  */
 export async function extractDomModelFromPage(page: Page, url: string): Promise<AppModel | null> {
   try {
-    const html = await page.content();
-    const crawlResult = extractCrawlResponse(html, url, 200);
-    const model = crawlResponseToAppModel(crawlResult);
+    let html = await page.content();
+    let crawlResult = extractCrawlResponse(html, url, 200);
+    let model = crawlResponseToAppModel(crawlResult);
 
-    const generic = await detectGenericClickables(page);
+    // Zero elements here is ambiguous — a genuine auth wall (nothing to extract, ever) and a
+    // not-yet-hydrated JS-rendered page (elements exist, just not painted into the DOM this
+    // `page.content()` call caught) produce an identical result at this point. The caller's
+    // own settle wait before invoking this function (800ms, at every call site) was measured
+    // directly against a real heavy page and found nowhere near enough: 0 elements at +800ms,
+    // 347 at +2.8s, 576 (stable) by +4s. Poll briefly rather than accept 0 outright — an auth
+    // wall costs nothing extra, since it's still correctly 0 after polling; a page that only
+    // needed more time now gets it. See TECH_DEBT.md TD-31.
+    //
+    // MUST also check generic (non-semantic) clickables here, not just role-bearing elements —
+    // a page whose only interactive content is a cursor:pointer <div> (no ARIA role at all)
+    // would otherwise show 0 "real" elements forever and poll for the full budget on every
+    // single call, despite having real, immediately-available content the whole time.
+    let generic = await detectGenericClickables(page);
+    const pollBudgetMs = Number(process.env.DISCOVERY_HYDRATION_POLL_MS ?? 6000);
+    const pollIntervalMs = 1000;
+    const deadline = Date.now() + pollBudgetMs;
+    while ((model.pages[0]?.elements.length ?? 0) === 0 && generic.length === 0 && Date.now() < deadline) {
+      await page.waitForTimeout(pollIntervalMs);
+      html = await page.content();
+      crawlResult = extractCrawlResponse(html, url, 200);
+      model = crawlResponseToAppModel(crawlResult);
+      generic = await detectGenericClickables(page);
+    }
+
     if (generic.length && model.pages[0]) {
       const seen = new Set(model.pages[0].elements.map(e => `${e.role}:${e.name}`.toLowerCase()));
       let order = model.pages[0].elements.length;

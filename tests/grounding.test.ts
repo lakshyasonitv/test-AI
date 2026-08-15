@@ -87,6 +87,28 @@ describe("groundingError", () => {
     expect(groundingError(t, shop)?.index).toBe(0);
   });
 
+  // Regression: a role with no name (undefined OR "") took the same silent-skip path as a step
+  // with no target at all, reached generation completely unchecked, and crashed generateSpec
+  // with "No semantic locator for target". For the PRIMARY case that isn't isolated the way a
+  // suite case is — the whole run died with zero cases and zero artifacts. Reproduced verbatim
+  // from a real run (2026-08-15T05-25-38…901f5358): a thin AppModel left the model nothing
+  // specific to name for "confirm the nav landmark is visible", so it emitted role-only
+  // landmark targets. Must be REJECTED (routed through the normal retry/truncate path), not
+  // silently skipped past grounding.
+  it("rejects a role target with no name instead of silently skipping it", () => {
+    const empty = model([]);
+    const noNameKey = ir([{ id: "s1", action: "assert", target: { role: "heading" }, assertion: "visible" }]);
+    expect(groundingError(noNameKey, empty)?.index).toBe(0);
+
+    const emptyStringName = ir([{ id: "s1", action: "press", target: { role: "textbox", name: "" } }]);
+    expect(groundingError(emptyStringName, empty)?.index).toBe(0);
+  });
+
+  it("still skips grounding for steps with no role at all (navigate/wait/text-only)", () => {
+    const t = ir([{ id: "s1", action: "wait", value: "1000" }]);
+    expect(groundingError(t, shop)).toBeNull();
+  });
+
   it("accepts a target whose css discovery verified, without a name match", () => {
     const t = ir([{ id: "s1", action: "click", target: { css: '[data-test="checkout"]' } }]);
     expect(groundingError(t, shop)).toBeNull();
