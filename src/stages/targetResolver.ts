@@ -104,11 +104,16 @@ export function resolveCode(t: Target, action?: string): string {
  * unchanged; this only adds chances to succeed, never removes the existing path.
  */
 async function resolveRoleWithFallback(page: Page, role: string, name: string): Promise<Locator> {
-  const original = page.getByRole(role as any, { name });
+  // exact: true throughout — kept deliberately in step with generator.ts's LOCATE_HELPER,
+  // which needs the same thing for the same reason (TECH_DEBT.md TD-32: getByRole's default
+  // substring matching picked an unrelated video-player button over the real target). TD-07
+  // already flags that these two implementations can drift; this is one of the places they
+  // must not.
+  const original = page.getByRole(role as any, { name, exact: true });
   const candidates: Locator[] = [original];
   const alt = ROLE_SWAP[role.toLowerCase()];
-  if (alt) candidates.push(page.getByRole(alt as any, { name }));
-  candidates.push(page.getByText(name));
+  if (alt) candidates.push(page.getByRole(alt as any, { name, exact: true }));
+  candidates.push(page.getByText(name, { exact: true }));
   for (const c of candidates) {
     if (await c.count() === 1) return c;
   }
@@ -149,9 +154,12 @@ export async function resolveLive(page: Page, t: Target, action?: string): Promi
     return resolveField(page, fieldHint(t));
   }
   if (t.role && t.name) {
-    // If nth is specified, use it to disambiguate duplicate elements
+    // If nth is specified, use it to disambiguate duplicate elements. exact: true for the same
+    // reason resolveRoleWithFallback uses it — and it matters MORE here, not less: an nth index
+    // is only meaningful against the element set it was computed for, so letting substring
+    // matches widen that set silently shifts which element nth points at.
     if (t.nth !== undefined && t.nth !== null) {
-      const locator = page.getByRole(t.role as any, { name: t.name });
+      const locator = page.getByRole(t.role as any, { name: t.name, exact: true });
       return locator.nth(t.nth);
     }
     return resolveRoleWithFallback(page, t.role, t.name);

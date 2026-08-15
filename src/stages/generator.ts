@@ -31,7 +31,9 @@ function emitAssert(step: Step): string {
   // `toContainText("")` — assertions that match anything and therefore verify nothing.
   // A test that always passes is worse than one that fails: it reports a green verdict
   // the user has no reason to doubt. Fail loudly instead of lying quietly.
-  if (step.assertion === "url_contains" || step.assertion === "text_contains" || step.assertion === "text_equals") {
+  if (step.assertion === "url_contains" || step.assertion === "text_contains" ||
+      step.assertion === "text_equals" || step.assertion === "title_contains" ||
+      step.assertion === "title_equals") {
     if (!comparisonValue(step).trim()) {
       throw new Error(
         `Step ${step.id}: "${step.assertion}" has no comparison value, which would assert ` +
@@ -41,8 +43,45 @@ function emitAssert(step: Step): string {
   }
 
   switch (step.assertion) {
-    case "visible":
-      return `  await expect(${locator(t)}).toBeVisible({ timeout: 10000 });`;
+    case "visible": {
+      // .and(page.locator(':visible')) narrows to elements Playwright considers visible RIGHT
+      // NOW, evaluated at query time, before toBeVisible()'s own poll starts. Without it, a
+      // locator that matches more than one same-named element (a real page's <option> inside a
+      // collapsed dropdown, alongside the intended visible one) can resolve to a hidden
+      // candidate and poll forever waiting for something it never asked to become visible.
+      // Reproduced directly: getByText("Amazon") matched a hidden <option> in a dropdown menu
+      // instead of the real, visible "Amazon" text elsewhere on the page. Scoped to "visible"
+      // only — hidden/enabled/disabled/click/fill all depend on matching the SAME element the
+      // step already resolved, not filtering it out.
+      //
+      // NOT .filter({ visible: true }) — that reads like the obvious API but isn't real:
+      // Locator.filter() in this project's pinned Playwright (1.49.0) only accepts
+      // has/hasNot/hasText/hasNotText. Passing `visible` is silently ignored, not an error —
+      // verified directly against the type declarations AND with a real headless-browser run
+      // (a hidden and a visible "Amazon" both still matched with `.filter({visible:true})`,
+      // count stayed 3 either way). `.and(page.locator(':visible'))` — Playwright's `:visible`
+      // pseudo-class intersected via `.and()` — is the real, verified mechanism: the same test
+      // dropped the hidden match and kept the one visible "Amazon".
+      //
+      // Order matters and resolveCode()'s own output already narrows to one candidate for two
+      // of its three shapes: text/label/placeholder/testId targets end in a hardcoded
+      // `.first()`, and a css target ends in `.first()`/`.nth(N)`. Appending .and() AFTER that
+      // narrowing doesn't exclude a hidden element in favor of a visible one — it locks onto
+      // whichever candidate DOM order put first, and if THAT one is hidden, intersecting it
+      // with :visible afterward just empties the locator (a confusing "resolved to 0" instead
+      // of correctly finding the visible sibling) — verified directly: the hidden-option-first
+      // test case above resolves to 0 with .and() after .first(), and to the real visible match
+      // with .and() before .first(). Inserting it BEFORE the trailing .first()/.nth() — so the
+      // visible subset is chosen from first, and only then narrowed — is the only order that
+      // works. The role+name path via locate() has no such trailing modifier (it already
+      // resolves to one specific element internally), so .and() is simply appended there.
+      const raw = locator(t);
+      const narrowed = raw.match(/^(.*)(\.first\(\)|\.nth\(\d+\))$/);
+      const withFilter = narrowed
+        ? `${narrowed[1]}.and(page.locator(':visible'))${narrowed[2]}`
+        : `${raw}.and(page.locator(':visible'))`;
+      return `  await expect(${withFilter}).toBeVisible({ timeout: 10000 });`;
+    }
 
     case "hidden":
       return `  await expect(${locator(t)}).toBeHidden({ timeout: 10000 });`;
@@ -63,6 +102,17 @@ function emitAssert(step: Step): string {
       return `  await expect(page).toHaveURL(new RegExp(${q(
         escapeRe(comparisonValue(step))
       )}), { timeout: 10000 });`;
+
+    // Page-level, like url_contains — asserts against <title> metadata, never body text.
+    // Exists so "verify the page title is X" has a correct compilation target at all; without
+    // it the step degraded to a body-text search for a string that only lives in <title>.
+    case "title_contains":
+      return `  await expect(page).toHaveTitle(new RegExp(${q(
+        escapeRe(comparisonValue(step))
+      )}), { timeout: 10000 });`;
+
+    case "title_equals":
+      return `  await expect(page).toHaveTitle(${q(comparisonValue(step))}, { timeout: 10000 });`;
 
     default:
       throw new Error(`Unknown assertion: ${step.assertion}`);
@@ -101,37 +151,77 @@ async function waitForAuthSettle(page) {
  * Screenshots taken immediately after an action came out solid white or ghost-faded, which is
  * what a user sees as "blank and blurry".
  *
- * The cause is NOT paint timing, which was the obvious guess and is wrong: measured against the
- * real site, the DOM is fully populated within a few milliseconds of `domcontentloaded`
- * (233 characters of text, 751px of layout height) while the captured frame is still blank. The
- * app fades its content in with JS-driven animation, so the pixels are near-transparent long
- * after the DOM is complete. Waiting on load/fonts/DOM signals returns in 20-70ms and still
- * captures the faded frame.
+ * TWO distinct causes, found a session apart. Both are handled below, and the second one
+ * invalidates the original diagnosis of the first, so both are recorded here.
  *
- * `page.screenshot({ animations: "disabled" })` does not save us either — it freezes CSS
- * animations and transitions, not animation driven from JavaScript.
+ * 1. FADE-IN (the original finding, still true). On the site this helper was written against,
+ *    the DOM is fully populated within a few milliseconds of `domcontentloaded` (233 characters
+ *    of text, 751px of layout height) while the captured frame is still blank, because the app
+ *    fades content in with JS-driven animation — the pixels are near-transparent long after the
+ *    DOM is complete. `page.screenshot({ animations: "disabled" })` does not help: it freezes
+ *    CSS animations and transitions, not animation driven from JavaScript. So the only signal
+ *    that means "this page has stopped moving" is the pixels themselves: sample until two
+ *    consecutive frames are identical.
  *
- * So the only signal that actually means "this page has stopped moving" is the pixels
- * themselves: sample until two consecutive frames are identical. Measured cost — an animated
- * page settles in ~750-950ms (4 samples), a static one in ~500ms (2 samples), versus a blind
+ * 2. NOT-YET-PAINTED (found later; the original comment explicitly ruled paint timing out, and
+ *    was wrong to). The stillness test in (1) cannot distinguish "finished painting" from
+ *    "hasn't started painting" — two identical BLANK frames pass it just as well. Measured on
+ *    a heavy real page: `load` fired 5ms in, samples 0 and 1 were the same empty 4331-byte
+ *    frame 150ms apart, the loop exited immediately and wrote it; the same page four seconds
+ *    later screenshotted at 547817 bytes. Across the runs on disk this made `step-1.png` (the
+ *    post-navigate frame) blank in 23 of 38 cases — a constant 4331 bytes, the same empty
+ *    image every time. Fixed by waiting for real rendered content BEFORE sampling, and by
+ *    requiring one observed change before the identical-frames rule may exit.
+ *
+ * Measured cost — an animated page settles in ~750-950ms (4 samples), a static one in ~650ms
+ * (3 samples: one extra versus before, to prove the picture was ever drawn), versus a blind
  * 2-3s delay that would be paid on every step of every case regardless.
  */
 const SHOT_HELPER = `
 async function shot(page, path) {
   const step = Number(process.env.SCREENSHOT_SETTLE_MS ?? 150);
   const maxSamples = Number(process.env.SCREENSHOT_MAX_SAMPLES ?? 10);
+  const paintTimeout = Number(process.env.SCREENSHOT_PAINT_TIMEOUT_MS ?? 8000);
   await page.waitForLoadState("load", { timeout: 5000 }).catch(() => {});
   await page.evaluate(() => document.fonts && document.fonts.ready.then(() => true)).catch(() => {});
 
+  // Wait for the page to have actually RENDERED something before sampling for stillness.
+  // Without this the settle loop below cannot tell "finished painting" from "hasn't started
+  // painting" — two identical BLANK frames satisfy its exit condition just as well as two
+  // identical finished ones. Measured on amazon.in: load fired 5ms in, samples 0 and 1 were
+  // both the same empty 4331-byte frame 150ms apart, the loop exited immediately and wrote
+  // that; four seconds later the same page screenshotted at 547817 bytes. Polls cheap DOM
+  // facts (rendered text + laid-out height), never pixels, and is best-effort throughout —
+  // a page that legitimately has no content still proceeds once the timeout lapses.
+  await page.waitForFunction(
+    () => {
+      const b = document.body;
+      if (!b) return false;
+      return (b.innerText || "").trim().length > 0 || b.scrollHeight > 200;
+    },
+    undefined,
+    { timeout: paintTimeout }
+  ).catch(() => {});
+
   let prev = null;
   let buf = null;
+  let changed = false;
   for (let i = 0; i < maxSamples; i++) {
     try {
       buf = await page.screenshot({ animations: "disabled", caret: "hide" });
     } catch {
       break;   // page closed/navigating — keep whatever we already have
     }
-    if (prev && buf.equals(prev)) break;
+    // Two identical frames mean "settled" ONLY once we've seen the picture change at least
+    // once; before that they equally mean "nothing has been drawn yet". Requiring one observed
+    // change first is what separates the two cases. A genuinely static page costs one extra
+    // sample (~150ms) and no more, because the second pair of identical frames does exit.
+    if (prev && buf.equals(prev)) {
+      if (changed) break;
+      changed = true;   // treat the first stable pair as the baseline, sample once more
+    } else if (prev) {
+      changed = true;
+    }
     prev = buf;
     await page.waitForTimeout(step);
   }
@@ -146,21 +236,33 @@ async function shot(page, path) {
 
 const LOCATE_HELPER = `
 async function locate(page, role, name, nth) {
-  const original = page.getByRole(role, { name });
-  
+  // exact: true is load-bearing. getByRole's name match defaults to case-insensitive
+  // SUBSTRING, so asserting the real, discovered button "All" also matched an embedded video
+  // player's hidden "restore all settings to the default" button and a "Open All Categories
+  // Menu" hamburger — elements discovery never modelled, so grounding had no way to rule them
+  // out. The name here is never a guess: groundingError already rewrites it to the exact
+  // accessible name of a specific verified element, so demanding an exact match costs nothing
+  // and stops unrelated substring collisions from being picked. See TECH_DEBT.md TD-32.
+  const original = page.getByRole(role, { name, exact: true });
+
   // If nth is specified, use it to disambiguate duplicate elements
   if (nth !== undefined && nth !== null) {
     return original.nth(nth);
   }
-  
-  if (await original.count() === 1) return original;
+
+  const count = await original.count();
+  if (count === 1) return original;
 
   // CSS fallback: covers dropdown items, menu entries, and off-screen links
   // that ARIA role matching misses due to shadow DOM or collapsed state.
+  // :text-is() not :has-text() — same exact-match reasoning as above; :has-text() is a
+  // substring match on the element's whole subtree, which is how a video player's settings
+  // button won a lookup for "All".
+  const q = JSON.stringify(name);
   const cssFallbacks = [
-    'a:has-text("' + name + '")',
-    'button:has-text("' + name + '")',
-    '[role="menuitem"]:has-text("' + name + '")',
+    'a:text-is(' + q + ')',
+    'button:text-is(' + q + ')',
+    '[role="menuitem"]:text-is(' + q + ')',
   ];
   for (const sel of cssFallbacks) {
     const el = page.locator(sel);
@@ -171,8 +273,20 @@ async function locate(page, role, name, nth) {
   const text = page.getByText(name, { exact: true });
   if (await text.count() === 1) return text;
 
-  // Return original so Playwright gives a clear "strict mode" error
-  // instead of silently returning null.
+  // count > 1: genuinely ambiguous — every fallback above requires an exact match of 1, so
+  // real duplicate-named elements (same name repeated in a header/footer, or a compressed
+  // "N items" group the model targeted) fall through all of them. Prefer the first real match
+  // over an unresolvable locator: for most assertions ("is X visible/enabled") any one real
+  // instance proves the same thing, and a Playwright strict-mode crash was never a better
+  // outcome than a possibly-wrong-instance pass. Not a full fix — page-scoping the application
+  // model so nth can be assigned correctly is the real one — see TECH_DEBT.md TD-05.
+  if (count > 1) {
+    console.warn('[locate] ambiguous match for', role, JSON.stringify(name), '—', count, 'elements, using .first()');
+    return original.first();
+  }
+
+  // count === 0: genuinely missing — return original so Playwright reports "resolved to 0
+  // elements", the correct signal for a truly absent element.
   return original;
 }
 `;
@@ -234,14 +348,24 @@ async function safeClick(page, role, name, nth) {
   }
 
   // Fallback: non-link elements (buttons, menuitems, etc.)
-  await el.scrollIntoViewIfNeeded().catch(() => {});
-  await el.waitFor({ state: "visible", timeout: 5000 }).catch(async () => {
-    await el.hover({ force: true }).catch(() => {});
-    await el.waitFor({ state: "visible", timeout: 3000 });
+  //
+  // EVERY call here carries an explicit timeout. scrollIntoViewIfNeeded() and hover() have
+  // none by default, so they inherit Playwright's 30s action default — and both wait for the
+  // element to become actionable, which a genuinely hidden element never does. The worst-case
+  // ladder was 30 + 5 + 30 + 3 + 30 + 10 + 5 ≈ 113s for a single click step, which blew the
+  // executor's own 100s kill timer: the process was SIGKILLed mid-artifact-finalization, so no
+  // results.json was ever written and the failure could not be diagnosed at all (TECH_DEBT.md
+  // TD-02/TD-36). Reproduced on a hidden "Show/Hide shortcuts" control: 249s of wall clock,
+  // two SIGKILLed attempts, zero report. Bounded here to ~13s worst case — a hidden element
+  // now fails FAST and reports honestly, which is the outcome that was wanted all along.
+  await el.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+  await el.waitFor({ state: "visible", timeout: 3000 }).catch(async () => {
+    await el.hover({ force: true, timeout: 2000 }).catch(() => {});
+    await el.waitFor({ state: "visible", timeout: 2000 });
   });
-  await el.hover().catch(() => {});
-  await el.click({ timeout: 10000 }).catch(async () => {
-    await el.click({ force: true, timeout: 5000 });
+  await el.hover({ timeout: 2000 }).catch(() => {});
+  await el.click({ timeout: 5000 }).catch(async () => {
+    await el.click({ force: true, timeout: 3000 });
   });
 }
 `;
@@ -363,6 +487,8 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
       if (assertion === "text_contains") return `Assert${name} contains${val}`;
       if (assertion === "text_equals") return `Assert${name} text is${val}`;
       if (assertion === "url_contains") return `Assert URL contains${val}`;
+      if (assertion === "title_contains") return `Assert page title contains${val}`;
+      if (assertion === "title_equals") return `Assert page title is${val}`;
       return `Assert${name} is ${assertion}`;
     }
     default: return `Step ${index + 1}: ${step.action}`;

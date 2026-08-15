@@ -21,9 +21,14 @@ export async function groq(prompt: string, opts: GroqOpts = {}): Promise<GroqRes
 
   // Tighter than backoff.ts's shared default of 6: Groq has a single non-rotating key
   // here (org-level rate limit), so a retry doesn't get a fresh key — it just waits on
-  // the same wall. ir.ts's own MAX_ATTEMPTS loop is the outer retry; this is only for
-  // genuine network/429 blips on top of that, and 6x8 was compounding into a 48-request
-  // worst case per test case.
+  // the same wall. ir.ts's own MAX_ATTEMPTS loop is the outer retry, but that outer loop
+  // re-sends the FULL prompt (costing more tokens against the very TPM budget that just
+  // rejected it) with no delay — so a real TPM squeeze should be absorbed here, inside a
+  // single logical IR attempt, whenever the wait is short. 4, not 2: now that
+  // parseRetryDelay (backoff.ts) actually recognizes Groq's real "try again in Nms" wording
+  // instead of silently discarding it, a short wait (seen in practice: 495ms) gets honored
+  // correctly and is worth one or two extra local retries before giving up and paying the
+  // much larger cost of a whole new IR attempt. See TECH_DEBT.md TD-03.
   return callWithPool(getPool(), async (apiKey, signal) => {
     console.log("[groq] sending request...");
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -61,5 +66,5 @@ export async function groq(prompt: string, opts: GroqOpts = {}): Promise<GroqRes
         totalTokens: data.usage?.total_tokens ?? 0,
       },
     };
-  }, { maxRetries: 2 });
+  }, { maxRetries: 4 });
 }

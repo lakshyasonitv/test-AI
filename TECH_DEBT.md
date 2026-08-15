@@ -23,6 +23,24 @@ drifted from its own stated intent, a bug slipped through, or a gap nobody chose
 but "nobody has yet judged whether this is worth fixing, or how." Don't clear a `?` without
 actually making that call.
 
+## Status of fixes landed this session
+
+- **TD-01 (`missingActions` false-positive), TD-02 (SIGKILL destroys the report), TD-03 (Groq 429
+  feedback loop): fixed and confirmed working against a real post-restart run**
+  (`runs/2026-08-14T20-25-38…70279845`) — `execute` completed in 79.9s (no SIGKILL), `raw` was a
+  real parsed Playwright report (not `null`), and the failure diagnosis had actual error text to
+  work from for the first time. (Initial verification of TD-02/TD-03 was blocked by a stale,
+  pre-fix `npm run serve` process — `tsx` has no watch/reload, so a running server keeps
+  executing whatever was on disk when it started. Restarting the server was the missing step;
+  see `CLAUDE.md`'s sharp-edges list.)
+- **TD-05 (duplicate-locator ambiguity): partial mitigation shipped**, not the full fix. See
+  TD-05's own entry — `.first()` on a genuinely-ambiguous match landed as a stopgap; the real
+  fix (page-scoping the merged AppModel) is still open.
+- **TD-21 (`strategy.test.ts` flake): fixed** — the dynamic `hybridDiscovery.js` import is now a
+  single module-level `await import`, not five inline re-imports.
+- **TD-32, TD-33: new, found and fixed while diagnosing the confirmation run above** — see their
+  entries below.
+
 ## Summary
 
 | ID | Item | Severity | Type | Owner |
@@ -31,8 +49,8 @@ actually making that call.
 | TD-02 | Executor's SIGKILL destroys the report needed to diagnose the failure it just caused | Critical | Accidental | Lakshya |
 | TD-03 | Groq 429 handling burns IR-attempt budget instead of backing off | High | Accidental | Lakshya |
 | TD-04 | No general mechanism for a blocking interstitial (CAPTCHA, cookie wall, OTP, age gate) | High | Strategic | ? |
-| TD-05 | Duplicate element names in a merged multi-page AppModel produce ambiguous locators | High | Accidental | Lakshya |
-| TD-06 | IR assertion vocabulary has no title assertion | Medium | Accidental | Lakshya |
+| TD-05 | Duplicate element names in a merged multi-page AppModel produce ambiguous locators — *partial mitigation shipped, `.first()` fallback on genuine ambiguity; page-scoping fix still open* | High | Accidental | Lakshya |
+| TD-06 | IR assertion vocabulary has no title assertion — **fixed** (`title_contains`/`title_equals`) | Medium | Accidental | Lakshya |
 | TD-07 | Generated spec's locator helpers have already diverged from `targetResolver.ts` | Medium | Strategic (root) / Accidental (drift) | Lakshya |
 | TD-08 | `safeClick` treats `javascript:`/`mailto:`/`tel:` hrefs as real navigation | Medium | Accidental | Lakshya |
 | TD-09 | `safeClick` swallows a strict-mode error on duplicate-named links | Medium | Accidental | Lakshya |
@@ -47,7 +65,7 @@ actually making that call.
 | TD-18 | Entry-URL allow-list is a pre-DNS-lookup hostname check (DNS-rebinding residual) | Low | Strategic | Lakshya |
 | TD-19 | Single-process, no multi-user isolation or per-user quotas | Low | Strategic | Lakshya |
 | TD-20 | No CI runs the test suite | High | Strategic | Lakshya |
-| TD-21 | `tests/strategy.test.ts` flakes ~1 run in 6 under parallel load | Medium | Accidental | Lakshya |
+| TD-21 | `tests/strategy.test.ts` flakes ~1 run in 6 under parallel load — **fixed**, import hoisted to module scope | Medium | Accidental | Lakshya |
 | TD-22 | LLM disk cache never expires; a key missing an input dimension serves stale results forever | Medium | Strategic | Lakshya |
 | TD-23 | Case-selection-gate progress events briefly corrupt the phase summary text | Low | Accidental | Lakshya |
 | TD-24 | `PLAYWRIGHT_TIMEOUT` env var is set but never read; comment implies otherwise | Low | Accidental | Lakshya |
@@ -56,6 +74,12 @@ actually making that call.
 | TD-27 | `caseAccumulator.appendAcceptedCases` doesn't dedup near-duplicate titles within one batch | Low | Accidental | Lakshya |
 | TD-28 | `wantsRealCredentials` — dead code, or the policy entry point that was never wired in? | Low | ? | ? |
 | TD-29 | A username was once observed reaching disk unreferenced — never root-caused | Low | ? | ? |
+| TD-30 | A role target with an empty-string name bypasses grounding entirely and crashes spec generation | High | Accidental | Lakshya |
+| TD-31 | A not-yet-hydrated page (0 extracted elements) is accepted as a valid, cacheable AppModel with no vision fallback | High | Strategic (root) / Accidental (in effect) | ? |
+| TD-32 | `locate()`/`resolveRoleWithFallback` matched names by substring, not exactly — **fixed** | High | Accidental | Lakshya |
+| TD-33 | `classify.ts` didn't recognize the "Timed out ... waiting for expect(...)" assertion-timeout wording — **fixed** | Medium | Accidental | Lakshya |
+| TD-34 | A `visible` assertion's locator could resolve to a hidden same-named candidate ahead of a visible one — **fixed** | High | Accidental | Lakshya |
+| TD-36 | `safeClick`'s ladder had unbounded calls (~113s worst case), blowing the executor kill timer — **fixed** | High | Accidental | Lakshya |
 
 ---
 
@@ -188,28 +212,49 @@ Related, found investigating this: `safeClick`'s `href` lookup (`generator.ts`'s
 `SAFE_CLICK_HELPER`) swallows the same strict-mode error via `.catch(() => null)` and silently
 falls through — see TD-09.
 
-### TD-06. IR assertion vocabulary has no title assertion — Medium / Accidental
+### TD-06. IR assertion vocabulary has no title assertion — Medium / Accidental — Fixed
 
-**What it is.** `src/schema/ir.ts`'s assertion enum is
-`visible | hidden | text_equals | text_contains | url_contains | enabled | disabled`. There is no
-page-title assertion; `url_contains` is the only page-level (non-locator) assertion available.
-When a test case says "verify the page title is X," the IR degrades it to a `text_contains`
-against a `{text: X}` target, which `generator.ts`'s `emitAssert` compiles to
-`expect(page.getByText(X).first()).toContainText(X)` — a body-text search for a string that, on
-most sites, only ever exists in `<title>`.
+**What it is.** `src/schema/ir.ts`'s assertion enum was
+`visible | hidden | text_equals | text_contains | url_contains | enabled | disabled` — no
+page-title assertion, with `url_contains` the only page-level (non-locator) option available.
+When a test case said "verify the page title is X," the IR degraded it to a `text_contains`/
+`text_equals` against a `{text: X}` target, which `generator.ts`'s `emitAssert` compiled to a
+body-text search for a string that, on most sites, only ever exists in `<title>`.
 
-**Why it hurts.** Reproduced directly against `2026-08-14T10-46-05…667f7f76`: the string
-"Online Shopping site in India" occurs **0** times in the case's own captured `final-page.txt`,
-guaranteeing a 10-second timeout. `README.md` previously claimed a prompt-level guard existed for
-exactly this ("the model is told the page's `title` field is `<title>`-tag metadata, never visible
-body text") — the guard is prompt-only, and this run is direct proof it doesn't hold when the model
-doesn't follow it. Consistent with this project's own established pattern (`DECISIONS.md` D-04):
-prompt rules without a structural backstop eventually get ignored.
+**Why it hurts.** Reproduced across **three separate runs** before being fixed —
+`2026-08-14T10-46-05…667f7f76`, and again at `2026-08-14T21-45-47…4a2261b4` case-0, whose raw
+Playwright error is unambiguous:
+```
+Locator: getByText('Online Shopping site in India: Shop Online for Mobiles, ... - Amazon.in').first()
+Received: <element(s) not found>
+```
+The string occurs **0** times in the rendered body (confirmed directly against the live page).
+Because it was step `s2`, every later assertion in that case never ran at all. `README.md` had
+claimed a prompt-level guard for exactly this ("the model is told the page's `title` field is
+`<title>`-tag metadata, never visible body text") — prompt-only, and these runs are direct proof
+it doesn't hold. Textbook instance of this project's own established pattern (`DECISIONS.md`
+D-03/D-04): a prompt rule without a structural backstop eventually gets ignored.
 
-**Remediation.** Add `title_contains`/`title_equals` to the IR assertion enum; compile it in
-`generator.ts` to `await expect(page).toHaveTitle(...)`; ground it in `ir.ts` against the
-AppModel's own `title` field per page, the same way `url_contains` is grounded today. Removes the
-failure mode by construction instead of by prompt instruction.
+**Fix applied.** Made the correct thing *expressible* rather than merely requested:
+- `title_contains` / `title_equals` added to the IR assertion enum (`src/schema/ir.ts`).
+- `generator.ts` compiles them to `await expect(page).toHaveTitle(...)` — regex for `_contains`,
+  exact string for `_equals` — and both are page-level, taking no target (like `url_contains`).
+- `PAGE_LEVEL_ASSERTIONS` in `ir.ts` marks the no-target set; `normalizeIR` folds a
+  model-attached `{ text: ... }` target into `value` and drops the target, so a title assertion
+  the model *meant* correctly can't silently compile as a body-text one — the exact bug this
+  eliminates.
+- `vacuousAssertion`'s `NEEDS_VALUE` set extended, so a valueless title assertion is rejected
+  rather than emitted as something that matches anything.
+- The system prompt now lists the new assertions and states explicitly that they are the ONLY
+  correct way to express a title check (the old "never assert the title as body text" rule stays
+  as first-line steering, but is no longer the only guard).
+
+**Verified**: `normalizeIR` + schema round-trip on a model-shaped title step (target folded into
+value, target dropped); emitted line is `await expect(page).toHaveTitle(new RegExp("..."))`, no
+`getByText`; and against the **live** amazon.in page, `toHaveTitle` polling passes on the real
+title while the old body-text approach finds 0 matches. Covered by `tests/generator.test.ts`
+(both variants, plus the vacuous-value rejection). `npx tsc --noEmit` clean, `npx vitest run`
+297/297.
 
 ### TD-07. Generated spec's locator helpers have already diverged from `targetResolver.ts` — Medium / Strategic (root) / Accidental (drift)
 
@@ -423,17 +468,17 @@ model changes.
 
 ### TD-20. No CI runs the test suite — High / Strategic
 
-**What it is.** 288 tests across 27 files exist and nothing executes them automatically. The only
-GitHub Actions workflow, `.github/workflows/directory-tree.yml`, regenerates a directory tree and
-pushes to `main`.
+**What it is.** 293 tests across 27 files exist (a moving number — re-check with `npx vitest run`
+rather than trusting this doc) and nothing executes them automatically. The only GitHub Actions
+workflow, `.github/workflows/directory-tree.yml`, regenerates a directory tree and pushes to
+`main`.
 
 **Why it hurts.** Every deterministic guard this project has built — grounding, credential policy,
 scope filtering — is unenforced on any change. Highest leverage-per-effort item in this whole
 register: one workflow file protects every other fix listed here.
 
-**Remediation.** One workflow: `npm ci`, `npx tsc --noEmit`, `npx vitest run`. Fix TD-21 first or
-in the same change — landing CI on top of a test that fails 1 run in 6 just teaches everyone to
-ignore red.
+**Remediation.** One workflow: `npm ci`, `npx tsc --noEmit`, `npx vitest run`. TD-21 (the flake
+that would have made this intermittently red) is now fixed, so nothing else blocks landing this.
 
 ### TD-21. `tests/strategy.test.ts` flakes ~1 run in 6 under parallel load — Medium / Accidental
 
@@ -572,3 +617,259 @@ fix may have already resolved it), rather than a substitution bug that's still l
 
 **Remediation.** Confirm which case it is against a current run before deciding this needs code
 changes at all.
+
+---
+
+## Newly discovered — checking the fixes above against a real run
+
+Found while verifying TD-01/02/03 against `runs/2026-08-14T19-24-27…0413c4c8`, the first run after
+those fixes landed. Neither is caused by that work — both are pre-existing gaps the run happened
+to exercise — but neither was on this register before.
+
+### TD-30. A role target with an empty-string name bypasses grounding entirely and crashes spec generation — High / Accidental
+
+**What it is.** `groundingError` (`src/stages/ir.ts:438`) reads `if (!t?.role || !t?.name) continue;`
+— skip grounding this step, nothing to check. An empty string is falsy in JS, so a target shaped
+`{ role: "textbox", name: "" }` takes the exact same path as a step with no role/name at all
+(navigate/wait/text-only), even though it plainly has a role and *almost* has a name. It reaches
+spec generation completely unchecked. `targetResolver.ts`'s `resolveCode` also treats `t.role &&
+t.name` as the role+name branch's gate (line 90) — same falsy-empty-string behavior — so it falls
+through to `pick(t)`, which has no css/label/placeholder/text/testId to resolve either, and throws
+`No semantic locator for target: {"role":"textbox","name":""}`.
+
+**Why it hurts.** Reproduced directly: `runs/2026-08-14T19-24-27…0413c4c8`, case-3 ("Verify
+keyboard accessibility of navigation"), `s2` is `{ action: "press", target: { role: "textbox",
+name: "" } }` — the model wanted to press a key (plausibly Tab, to test keyboard navigation)
+without a specific named element to anchor it to, and the IR schema gave it no other way to
+express that intent, so it emitted a role with no name rather than omit the target. The thrown
+error isn't caught inside `generator.ts`'s own step-emission loop, so it propagates out of spec
+generation entirely — the suite runner catches it one layer up and reports the case as `"failed"`
+with none of the normal failure fields (`resultPath` present, but no `screenshotUrl`, `intent`, or
+`expected` the way every other failure in the same run's `07-suite-summary.json` has) — materially
+less diagnostic information than an ordinary Playwright failure gets.
+
+**Remediation.** Two independent angles: (1) `groundingError`'s skip condition should treat an
+explicitly-empty name as absent-and-invalid when a role IS present, not as "nothing to check" —
+`if (t?.role && !t?.name) return { index, message: "... has a role but no name to target it
+with" }`, forcing a correction instead of silent pass-through. (2) Give the IR schema a real way to
+express "press a key with no specific target" (a keyboard-only step shape, or an optional target)
+so the model isn't forced to fabricate a role+empty-name target just to say what it actually means.
+(1) alone stops the crash; (2) fixes the underlying reason the model reached for this shape.
+
+**Recurred, unfixed, in a later run:** `runs/2026-08-14T21-04-16…2b2858b9`, case-3 ("Verify
+keyboard accessibility of navigation") — same shape again, `s2: { action: "press", target: {
+role: "textbox", name: "" } }`, `s3: { role: "link", name: "" }`. No `generated.spec.ts` or
+`results.json` exists for this case (spec generation crashed before either could be written) —
+same signature as before. Confirms this isn't a one-off; "test keyboard accessibility" is a
+recurring case shape the model reaches for on exactly this kind of prompt, and every time it does,
+this bug fires. Bumping priority accordingly — still not fixed, but no longer a single
+observation.
+
+### TD-31. A not-yet-hydrated page (0 extracted elements) is accepted as a valid, cacheable AppModel with no vision fallback — High / Strategic (root) / Accidental (in effect)
+
+**What it is.** `domDiscovery.ts:515` navigates with `waitUntil: "domcontentloaded"` and
+`extractDomModelFromPage` calls `page.content()` immediately after with no settle wait —
+`domcontentloaded` fires once the initial HTML document is parsed, before deferred/async scripts
+that inject a JS-rendered `<body>` have necessarily run. `hybridDiscovery.ts` explicitly treats a
+zero-element extraction as acceptable, not a failure — the comment at line ~436 names the exact
+case: *"DOM succeeded but found no elements (auth wall, not-yet-hydrated) — still a valid,
+cacheable result."* Both the single-page path (line ~173) and the site-crawl path (line ~435) take
+this branch, and neither falls back to Gemini Vision the way a genuinely-failed extraction would
+(`README.md`/`ARCHITECTURE.md`'s stated fallback trigger is "DOM extraction finds nothing usable" —
+in practice this IS that case, but it's routed to "valid, cache it" instead).
+
+**Why it hurts.** Reproduced directly: `runs/2026-08-14T19-24-27…0413c4c8`'s entry-page
+`cleanedHtml` is 32.8KB of real `<head>` content (meta tags, Amazon's own bootstrap scripts) and
+ends at `</head></html>` — **there is no `<body>` at all** in the captured HTML. `elements: []`,
+`title: ""`, `discoveryMethod: "dom"`. Test-case generation had nothing structural to work from
+and fell back to the plan's own generic wording — `{text: "header"}`, `{text: "navigation"}`,
+`{text: "main content"}` — none of which are real page text, so the primary case's very first
+assertion (`s2`) was guaranteed to fail. Discovery itself took only 5.2s (vs. 42–53s in other
+recent runs against the same site), consistent with returning almost immediately after an
+under-loaded snapshot rather than actually crawling anything.
+
+**Remediation.** Two changes, independently useful: (1) treat a zero-element extraction as a
+signal to retry once with a real settle wait (e.g. `waitUntil: "networkidle"` or a bounded
+`page.waitForTimeout` + re-check) before accepting it as final — the "auth wall" case the existing
+comment names would still correctly resolve to zero elements after a proper wait, so this doesn't
+regress that case, it only catches the "was too early" case the comment didn't distinguish from
+it. (2) Route a zero-element result through the vision fallback rather than around it, at least
+once, before caching it as authoritative — vision's ARIA-snapshot-based extraction doesn't depend
+on `page.content()` timing the same way. Flagged `?` on owner: whether to spend the extra
+navigation wait on every discovery (cost) or only after a zero-element result (safer, cheaper) is
+a real design choice, not just an obvious fix.
+
+### TD-32. `locate()`/`resolveRoleWithFallback` matched names by substring, not exactly — High / Accidental — Fixed
+
+**What it is.** Playwright's `getByRole(role, { name })` defaults to a case-insensitive
+**substring** match on the accessible name, not an exact one — and the CSS fallback chain in
+`generator.ts`'s `LOCATE_HELPER` used `:has-text()`, which is the same kind of substring match
+over an element's whole subtree. Neither ever passed `exact: true`, in either implementation
+(`generator.ts`'s generated-spec helper or `targetResolver.ts`'s live-replay
+`resolveRoleWithFallback`).
+
+**Why it hurts.** Reproduced directly, twice, in one run (`runs/2026-08-14T20-25-38…70279845`)
+against a target that grounding had correctly resolved to exactly one real, discovered element
+(`{role: "button", name: "All"}`, Amazon's "All Categories" control):
+- **case-0** (`assert visible button "All"`): the CSS fallback `button:has-text("All")` resolved
+  to exactly one match — but the wrong one, an embedded video player's hidden "restore **all**
+  settings to the default" button, which discovery never modeled and grounding had no way to rule
+  out. Accepted confidently (count was 1), then timed out because that element genuinely is
+  hidden.
+- **case-1** (`click button "All"`): a real Playwright strict-mode violation, 4 elements —
+  including a hamburger menu labeled "Open **All** Categories Menu" and a lazy-loaded product
+  tile. This one is also a time-of-check-to-time-of-use race worth naming precisely:
+  `locate()`'s uniqueness check runs once; `safeClick`'s non-link branch then does
+  `scrollIntoViewIfNeeded()` → `waitFor()` → `hover()` before the actual `.click()` — real
+  wall-clock time on a still-hydrating page, long enough for more substring-matching elements to
+  mount between the check and the click. The locator Playwright ultimately called `.click()` on
+  is lazy and re-queries live, so a uniqueness check that passed at `locate()`-time doesn't hold
+  by click-time.
+
+Since `groundingError` already rewrites a target's name to the exact, verified accessible name of
+a real discovered element before the IR ever reaches generation (never a guess by this point),
+requiring an exact match at resolution time costs nothing for a correctly-grounded target — it
+only stops unrelated page furniture discovery never modeled from winning a lookup.
+
+**Fix applied.** `exact: true` added to every `getByRole`/`getByText` name match in both
+`generator.ts`'s `LOCATE_HELPER` and `targetResolver.ts`'s `resolveRoleWithFallback` (and the
+`resolveLive`/`nth` path, where an index computed against one element set silently pointing at a
+different element if the set widens is arguably worse than the non-nth case). The CSS fallback
+chain switched from `:has-text()` to `:text-is()` for the same reason. Covered by
+`tests/generator.test.ts` ("injects a locate() helper that matches names exactly, not by
+substring") — regression-verified: fails with the exact real error shape when the fix is
+reverted, passes on restore.
+
+**Known residual:** this closes the false-positive-match half of the problem; it doesn't
+independently close TD-05 (genuine duplicate real elements with the identical exact name still
+need the `.first()` mitigation or the page-scoping fix). It does shrink TD-05's practical surface
+area, since far fewer unrelated elements now qualify as "matching" at all.
+
+### TD-33. `classify.ts` didn't recognize the "Timed out ... waiting for expect(...)" assertion-timeout wording — Medium / Accidental — Fixed
+
+**What it is.** Playwright reports an assertion timeout two different ways depending on whether
+the awaited condition ever becomes true: `"expect(locator).toBeVisible() failed"` (an immediate
+failure) vs. `"Timed out Nms waiting for expect(locator).toBeVisible()"` (the retry window closed
+first, without the condition ever being met). `classify.ts`'s `element_hidden` check
+(`/toBeVisible\(\)\s*failed/i`) matched only the first wording — the second, at least as common
+for a genuine visibility timeout, matched nothing in the file and fell through to `return null`.
+
+**Why it hurts.** Reproduced directly: the real error text for `runs/2026-08-14T20-25-38…70279845`
+case-0 read *"Timed out 10000ms waiting for expect(locator).toBeVisible()... Received: hidden...
+locator resolved to \<button class="vjs-default-button"\>"* — a single, cleanly-resolved element,
+correctly reported as hidden. This should have classified deterministically and for free as
+`element_hidden`. Instead it fell through every branch in `classify.ts` to the Gemini fallback,
+which was given the same information and **still got it wrong** — it reported category
+`multiple_matches`, "matched multiple elements," a claim the raw log it was handed directly
+contradicts (it names exactly one resolved element). Two independent problems stacked: TD-32
+picked the wrong element, and this bug meant the explanation of *why* was fabricated on top of it,
+even with `raw` populated (TD-02's fix already confirmed working in this same run).
+
+**Fix applied.** Broadened both the `element_hidden` (`toBeVisible`) and its mirror
+`assertion_failed` (`toBeHidden`) checks to match either wording — `/\bfailed\b/` or
+`/Timed out\s+\d+m?s\s+waiting for/`, both required alongside the existing `Received:` check.
+Covered by `tests/strategy.test.ts` with the real (ANSI-stripped) error text from the run as the
+test fixture, plus a symmetric `toBeHidden` case; regression-verified both ways.
+
+### TD-34. A `visible` assertion's locator could resolve to a hidden same-named candidate ahead of a visible one — High / Accidental — Fixed
+
+**What it is.** `emitAssert`'s `"visible"` case (`generator.ts`) called `toBeVisible()` directly
+on whatever `resolveCode()`/`locate()` returned, with no way to prefer a visible candidate over a
+hidden same-named one when more than one exists. TD-32's `exact: true` fix stops *unrelated*
+elements (a video player, a hamburger menu) from winning a name lookup, but does nothing when the
+duplicate really does share the exact same accessible name and role — a real, semantically
+different element (a page's visible brand text vs. a hidden `<option>` inside a collapsed
+dropdown, both legitimately named "Amazon") still collides.
+
+**Why it hurts.** Reproduced directly: `runs/2026-08-14T21-04-16…2b2858b9`, case-0, `s2` —
+`assert visible {text: "Amazon"}` — the deterministic classifier (now fixed, TD-33) correctly
+explained it: *"getByText('Amazon') incorrectly matched a hidden `<option>` element within a
+dropdown menu instead of the visible text expected on the page."* The assertion polled the wrong,
+hidden element for the full timeout instead of finding the real, visible one elsewhere on the
+page.
+
+**First fix attempt was wrong, and shipped believing it was verified — recorded because the
+discipline that caught it is the useful part.** `.filter({ visible: true })` was added to the
+assertion's locator and confirmed via `npx vitest run` and a string-level replay of the real
+failing IR through `generateSpec` — both passed, because both only checked the *emitted source
+text*, never executed it. **`Locator.filter()` doesn't have a `visible` option in this project's
+pinned Playwright (1.49.0)** — only `has`/`hasNot`/`hasText`/`hasNotText` — so
+`.filter({ visible: true })` silently no-ops instead of erroring. Caught only when a live run
+against the real site failed with the exact same error a second time, at which point reading
+Playwright's own `types.d.ts` and running a real headless-browser check against synthetic HTML
+(hidden `<option>` + visible `<span>`, both named "Amazon") confirmed it directly: `.filter()`
+left the match count at 3 (all three "Amazon"-named elements), unchanged from no filter at all.
+**Lesson, stated plainly for next time:** verifying a generated *string* is not the same as
+verifying the *behavior* — a plausible-looking Playwright API call needs to be run once for real
+before being called fixed, not just type-checked and pattern-matched.
+
+**Fix applied.** `.and(page.locator(':visible'))` — Playwright's `:visible` pseudo-class,
+intersected via the real `Locator.and()` method (confirmed present in this Playwright version) —
+on the assertion's locator, `"visible"` case only. Verified against the same synthetic-HTML
+browser test: correctly narrows the 3-element match down to the 1 genuinely visible one. **Order
+is still the whole fix, not a detail, and this got re-verified too**: `resolveCode()`'s output
+already ends in a narrowing `.first()` (text/label/placeholder/testId targets) or `.first()`/
+`.nth(N)` (a css target) for two of its three output shapes. Applying `.and()` *after* that
+narrowing doesn't help — it locks onto whichever candidate DOM order put first, and if that one
+happens to be the hidden one, intersecting it with `:visible` afterward just empties the locator
+(a confusing "resolved to 0" instead of correctly finding the visible sibling) rather than
+falling through to the visible match — confirmed directly with a browser test where the hidden
+element is deliberately placed first in DOM order: 0 matches with `.and()` applied after
+`.first()`, 1 correct match with `.and()` applied before it. The fix inserts it *before* any
+trailing `.first()`/`.nth()` so the visible subset is chosen from first, then narrowed. The
+role+name path via `locate()` has no such trailing modifier (it already resolves to one specific
+element internally), so `.and()` is simply appended there. Scoped to `"visible"` only —
+`hidden`/`enabled`/`disabled`/click/fill all need the *same* element the step already resolved,
+not a narrowed candidate set.
+
+**Verified three ways this time, not one:** (1) replayed the same real failing `04-ir.json`
+through `generateSpec` and confirmed the emitted line is
+`expect(page.getByText("Amazon").and(page.locator(':visible')).first()).toBeVisible(...)`;
+(2) ran the *actual generated locator expressions* — old and new — against the real, live
+`amazon.in` page in a real headless browser: the old one resolves to
+`<option value="search-alias=amazon-devices">Amazon Devices</option>`, `isVisible() === false`
+(the exact bug, reproduced); the new one resolves to a real visible nav link,
+`isVisible() === true`; (3) `tests/generator.test.ts` covers all three `resolveCode()` output
+shapes plus a check that `hidden` does *not* gain the narrowing, and regression-verified (fails
+with the fix reverted, passes restored). `npx tsc --noEmit` clean, `npx vitest run` 294/294.
+
+### TD-36. `safeClick`'s ladder had unbounded calls (~113s worst case), blowing the executor kill timer — High / Accidental — Fixed
+
+**What it is.** `SAFE_CLICK_HELPER`'s non-link path (`generator.ts`) ran a fallback ladder —
+`scrollIntoViewIfNeeded()` → `waitFor` → `hover({force:true})` → `waitFor` → `hover()` →
+`click()` → `click({force:true})` — in which **`scrollIntoViewIfNeeded()` and `hover()` carried
+no explicit timeout**, so each inherited Playwright's 30s action default. Both wait for the
+element to become *actionable*, which a genuinely hidden element never does. Worst case:
+30 + 5 + 30 + 3 + 30 + 10 + 5 ≈ **113 seconds for a single click step**.
+
+**Why it hurts.** This is what makes TD-02 keep recurring even after its kill timer was raised.
+Reproduced at `2026-08-14T21-45-47…4a2261b4` case-2, whose `s2` clicks a hidden
+"Show/Hide shortcuts shift + alt + Z" keyboard control: the case ran **249.3s** — 100s (raised
+`TEST_RUN`) + 2s retry delay + 100s + overhead — meaning *both* attempts were SIGKILLed. The
+physical signature is unmistakable: `artifacts/.playwright-artifacts-0/` still present with **397
+un-swept files and 36MB** of trace resources, versus 7 files / 1.1MB for the passing case in the
+same run. `raw: null`, no `results.json`, so the failure could not be diagnosed at all. Raising
+the executor's ceiling can never fix this — a single step could always outlast whatever ceiling
+is chosen; the step itself has to be bounded.
+
+**Fix applied.** Every call in the ladder now carries an explicit timeout
+(`scrollIntoViewIfNeeded({timeout:2000})`, `waitFor({timeout:3000})`,
+`hover({force:true,timeout:2000})`, `waitFor({timeout:2000})`, `hover({timeout:2000})`,
+`click({timeout:5000})`, `click({force:true,timeout:3000})`) — worst case ~13s instead of ~113s.
+A hidden element now fails fast and **reports honestly**, which is the outcome that was wanted:
+the diagnosis pipeline gets a real Playwright error instead of a SIGKILL and an empty report.
+
+**Verified**: the timeout options were confirmed real and actually binding by running them
+against a hidden element in a real headless browser (each returned in ~2010ms, not 30s) — this
+project has already shipped one plausible-looking-but-nonexistent Playwright option
+(`.filter({visible:true})`, TD-34), so an API-surface change gets executed now, not assumed.
+Covered by `tests/generator.test.ts` (asserts no bare `scrollIntoViewIfNeeded()`/`hover()`
+survives and that every ladder call carries a `timeout:`), comment lines stripped before matching
+so the test checks the code rather than its own explanation; regression-verified (fails with the
+bare calls restored). `npx tsc --noEmit` clean, `npx vitest run` 297/297.
+
+**Related, observed but deliberately not changed here:** `liveExtend.ts`'s replay actions
+(`click()`/`fill()`/`press()`/`check()` at ~lines 43-49) have the same no-explicit-timeout shape.
+They sit on a different path (browser replay during IR generation, not the generated spec), and
+weren't implicated in this failure, so they're left alone rather than scope-creeping this fix —
+but they are the same defect class and worth bounding if IR-stage hangs ever show up.

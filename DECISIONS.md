@@ -257,3 +257,99 @@ unconditional (tiny, and the UI shows one per case regardless of outcome).
 shows up in `TECH_DEBT.md` TD-02: a *failing* case's trace/video finalization is plausibly part of
 why some failing runs take long enough to hit the executor's kill timer — cheaper trace settings
 (e.g. `"on-first-retry"`) are one of that item's candidate mitigations.
+
+## D-17. A zero-element DOM extraction is accepted as a valid, cacheable result
+
+**Context.** `domExtract`/`extractDomModelFromPage` sometimes returns a page with zero elements —
+most commonly an auth wall that redirected before anything meaningful loaded. Treating that as a
+hard failure would re-run discovery (a fresh browser launch) every time the same auth-walled URL
+is requested again.
+
+**Decision.** A zero-element extraction is accepted as a legitimate, cacheable `AppModel` entry
+(`hybridDiscovery.ts`, both the single-page and site-crawl paths) rather than triggering the
+Gemini Vision fallback or a retry. The comment recording this explicitly names two cases it's
+meant to cover: *"auth wall, not-yet-hydrated."*
+
+**Consequences — the second named case doesn't actually get the outcome the comment implies.** An
+auth wall genuinely has nothing to extract, so caching "zero elements" for it is correct and
+cheap. A **not-yet-hydrated** JS-rendered page is a different situation entirely: elements exist,
+the extraction just ran before they were rendered (`domDiscovery.ts` navigates with
+`waitUntil: "domcontentloaded"`, which fires before deferred/async hydration scripts necessarily
+finish, with no settle wait before `page.content()` is called). The decision as shipped can't tell
+these two cases apart, and it resolves the ambiguity the same way for both — accept and cache —
+which is right for the first case and silently wrong for the second. Reproduced directly
+(`TECH_DEBT.md` TD-31): a real run's entry page had 32.8KB of real `<head>` content and **no
+`<body>` at all**, cached as a valid zero-element `AppModel`, which forced test-case generation to
+invent untestable generic assertions with a guaranteed failure. TD-31 tracks the fix; this record
+exists so the original tradeoff (cache to avoid re-crawl cost) isn't lost when it's revisited.
+
+## D-18. Live locator resolution requires an exact name match; grounding's own name matching stays fuzzy
+
+**Context.** Two different layers of this pipeline match an element by name, for two different
+reasons. `groundingError` (`ir.ts`) matches a *model-proposed* name against the AppModel to decide
+whether a step is real at all — here, fuzzy/tiered matching (exact → glyph-stripped → prefix/
+suffix → substring) is deliberate and load-bearing: it's what lets "Continue" ground against a
+real "Continue Shopping" button, or tolerates the model dropping a decorative `+`. Separately,
+`locate()` (`generator.ts`) and `resolveRoleWithFallback` (`targetResolver.ts`) resolve an
+*already-grounded, already-verified* name against the **live page** at execution/replay time —
+here, `getByRole`'s default (case-insensitive substring) and the CSS `:has-text()` fallback used
+to be just as loose.
+
+**Decision.** Keep grounding's matching fuzzy (unchanged); make live resolution exact
+(`{ name, exact: true }`, `:text-is()` instead of `:has-text()`) everywhere a role+name target is
+resolved against the real DOM. By the time a name reaches this layer, `groundingError` has already
+rewritten it to a specific real element's literal accessible name — it is never a guess at this
+point, so exactness costs nothing for a correctly-grounded target.
+
+**Consequences.** Reproduced directly (`TECH_DEBT.md` TD-32) before this decision: a discovered,
+correctly-grounded `{role: "button", name: "All"}` target — Amazon's own "All Categories" control
+— matched an embedded video player's unrelated "restore all settings" button (loose `getByRole`)
+and, on the click path, a 4-way strict-mode violation including a "Open All Categories Menu"
+hamburger (loose `:has-text()`) — none of which discovery ever modeled, so grounding had no way to
+rule any of them out. Exact matching closes that class of false-positive entirely. The tradeoff:
+a target whose live accessible name has drifted even slightly from what was grounded (trailing
+whitespace, a dynamic suffix) now fails closed — an honest "not found" — rather than loosely
+matching something plausible. Judged the right direction: a confident wrong match (TD-32's actual
+failure mode) is worse than a clear miss that at least reports honestly.
+
+## D-19. A `visible` assertion narrows to visible candidates before any locator narrows to one
+
+**Context.** D-18 makes name matching exact, which stops an *unrelated* element from winning a
+lookup — but it does nothing when two elements genuinely share the same exact accessible name and
+role, one visible and one not (a page's real brand text vs. a hidden `<option>` inside a collapsed
+dropdown, both legitimately "Amazon"). `toBeVisible()` on a locator that could resolve to either
+has no way to prefer the visible one.
+
+**Decision, corrected once already.** `emitAssert`'s `"visible"` case narrows the locator to
+visible-only candidates before applying it. The first version of this decision used
+`.filter({ visible: true })` — plausible-looking, confirmed via a passing test suite and a
+string-level replay, and **wrong**: `Locator.filter()` has no `visible` option in this project's
+pinned Playwright (1.49.0), so the call silently no-oped. Both verifications had checked the
+*generated source text*, never actually run it; a second live run against the real site
+reproduced the identical failure before this was caught, then confirmed directly by reading
+Playwright's own type declarations and running a real headless-browser check. The corrected
+mechanism is `.and(page.locator(':visible'))` — Playwright's real `:visible` pseudo-class,
+intersected via the real `Locator.and()` method — verified the same way the bug was found: a
+real browser run, not just a string check.
+
+Order is still the entire *shape* of this decision, and was re-verified with the corrected
+mechanism too: `resolveCode()`'s own output already carries a trailing `.first()`/`.nth(N)` for
+two of its three shapes, and narrowing to visible-only candidates AFTER that trailing modifier
+doesn't exclude a hidden candidate in favor of a visible one — it just empties the locator if the
+one candidate DOM order picked first happens to be hidden. Narrowing the full candidate set down
+to only-visible ones, then applying `.first()`/`.nth()`, is the only order that does what the fix
+is for.
+
+**Consequences.** Scoped deliberately narrow — `"visible"` only. `hidden`/`enabled`/`disabled` and
+the click/fill paths all need to act on the *same* element the step resolved (asserting hidden
+requires seeing the specific hidden element, not filtering it away); only `"visible"` has a
+legitimate reason to prefer a different candidate than whichever one resolution found first. Not
+yet extended to `text_equals`/`text_contains` — those already scope to the resolved locator's own
+text content rather than picking among candidates, so the same failure mode doesn't apply there
+today, but worth re-checking if a similar false match is ever reported against them.
+
+**The lesson worth generalizing beyond this one fix:** a generated Playwright expression that
+*looks* right and passes `tsc`/a unit test that only inspects the emitted string is not verified
+— it's untested. Anything touching the generated spec's actual Playwright API surface needs at
+least one real execution (a synthetic-HTML browser check is enough; it doesn't need to be the
+live target site) before being called done.

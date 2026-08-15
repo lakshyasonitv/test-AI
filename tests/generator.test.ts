@@ -24,6 +24,100 @@ describe("generateSpec", () => {
     expect(out).toContain('safeClick(page, "button", "Login")');
   });
 
+  // Regression: getByText("Amazon") matched a hidden <option> inside a dropdown menu ahead of
+  // the real, visible "Amazon" text elsewhere on the page — toBeVisible() then polled a hidden
+  // element for the full timeout. `.and(page.locator(':visible'))` is the real fix — verified
+  // directly against Playwright's own type declarations AND with a real headless-browser run
+  // that `.filter({ visible: true })` does NOT work (it's not a real filter() option in this
+  // Playwright version — silently ignored, not an error) while `.and(locator(':visible'))`
+  // correctly drops the hidden match. Must come BEFORE any trailing .first()/.nth() that
+  // resolveCode() already appends: applying it AFTER narrowing locks onto whichever candidate
+  // happened to be first in DOM order, and if THAT one is hidden, intersecting it with :visible
+  // afterward just empties the locator instead of finding the visible sibling — also verified
+  // directly with a real browser (0 matches with the wrong order, 1 correct match with the
+  // right one). Three target shapes, three different trailing modifiers (or none) — all three
+  // must put .and() first.
+  it("narrows visible assertions to visible-only candidates, before any trailing .first()/.nth()", () => {
+    const visibleOf = (t: any) =>
+      spec([{ id: "s1", action: "assert", assertion: "visible", target: t }])
+        .split("\n").find(l => l.includes("toBeVisible"))!;
+
+    const text = visibleOf({ text: "Amazon" });
+    expect(text).toContain("page.getByText(\"Amazon\").and(page.locator(':visible')).first()");
+    expect(text).not.toMatch(/\.first\(\)\.and/);
+    expect(text).not.toContain("filter({ visible: true })"); // not a real Playwright option
+
+    const css = visibleOf({ css: "#logo" });
+    expect(css).toContain("page.locator(\"#logo\").and(page.locator(':visible')).first()");
+    expect(css).not.toMatch(/\.first\(\)\.and/);
+
+    const role = visibleOf({ role: "button", name: "All" });
+    expect(role).toContain("(await locate(page, \"button\", \"All\")).and(page.locator(':visible'))");
+
+    // hidden/enabled/disabled must NOT gain the narrowing — they need the SAME element the step
+    // resolved, not a visibility-narrowed candidate set.
+    const hidden = spec([{ id: "s1", action: "assert", assertion: "hidden", target: { text: "Amazon" } }]);
+    expect(hidden).not.toContain(":visible");
+  });
+
+  // Regression: "verify the page title is X" had no correct compilation target — the IR
+  // assertion enum had no title option, so the step degraded to text_equals/text_contains
+  // against a { text } target, i.e. a body-text search for a string that (on most sites)
+  // exists only inside <title>. Reproduced repeatedly against amazon.in, whose title appears
+  // zero times in the rendered body — a guaranteed timeout, by construction.
+  it("compiles title assertions against page title metadata, not body text", () => {
+    const contains = spec([{ id: "s1", action: "assert", assertion: "title_contains", value: "Amazon.in" }]);
+    expect(contains).toContain('await expect(page).toHaveTitle(new RegExp("Amazon\\\\.in")');
+    expect(contains).not.toContain("getByText");
+
+    const equals = spec([{ id: "s1", action: "assert", assertion: "title_equals", value: "Amazon.in" }]);
+    expect(equals).toContain('await expect(page).toHaveTitle("Amazon.in"');
+    expect(equals).not.toContain("getByText");
+  });
+
+  it("refuses a title assertion with no comparison value, like every other comparison", () => {
+    expect(() => spec([{ id: "s1", action: "assert", assertion: "title_contains" }]))
+      .toThrow(/no comparison value/);
+  });
+
+  // Regression: safeClick's ladder had two calls with NO explicit timeout
+  // (scrollIntoViewIfNeeded, hover), each inheriting Playwright's 30s action default. On a
+  // genuinely hidden element none of them ever become actionable, so worst case was
+  // 30+5+30+3+30+10+5 ≈ 113s for ONE click step — over the executor's own kill timer, so the
+  // process was SIGKILLed before any report could be written and the failure was undiagnosable.
+  // Every call in the ladder must carry its own bound.
+  it("bounds every call in safeClick's ladder with an explicit timeout", () => {
+    const out = spec([{ id: "s1", action: "click", target: { role: "button", name: "Login" } }]);
+    const ladder = out.slice(out.indexOf("async function safeClick"));
+    // Comments only, stripped — the explanation inside this helper naturally mentions the very
+    // bare calls being asserted against, so matching raw source would test the prose, not the code.
+    const body = ladder.slice(0, ladder.indexOf("\n}"))
+      .split("\n").filter(l => !l.trim().startsWith("//")).join("\n");
+
+    // No bare scrollIntoViewIfNeeded()/hover() — those inherit the 30s default.
+    expect(body).not.toMatch(/scrollIntoViewIfNeeded\(\)/);
+    expect(body).not.toMatch(/\.hover\(\)/);
+    // Every waitFor/click/hover/scroll call carries a timeout.
+    const calls = body.match(/\.(scrollIntoViewIfNeeded|waitFor|hover|click)\([^)]*\)/g) ?? [];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls) expect(c).toMatch(/timeout:\s*\d+/);
+  });
+
+  // Regression: getByRole's `name` defaults to a case-insensitive SUBSTRING match, so asserting
+  // the real discovered button "All" also matched a video player's hidden "restore all settings
+  // to the default" button (picked confidently — count was 1) and, on the click path, a
+  // 4-element strict-mode violation including an "Open All Categories Menu" hamburger. The name
+  // is never a guess by this point (groundingError rewrites it to a verified element's exact
+  // accessible name), so the injected helper must demand an exact match.
+  it("injects a locate() helper that matches names exactly, not by substring", () => {
+    const out = spec([{ id: "s1", action: "assert", target: { role: "button", name: "All" }, assertion: "visible" }]);
+    expect(out).toContain("getByRole(role, { name, exact: true })");
+    // :has-text() is a substring match over the whole subtree — the other half of the same bug.
+    expect(out).not.toContain(':has-text("');
+    expect(out).toContain(":text-is(");
+    expect(out).toContain("getByText(name, { exact: true })");
+  });
+
   // Regression: a derived name cannot be matched by getByRole, so a verified selector has
   // to win even when role+name are both present.
   it("prefers a verified css selector over role+name", () => {

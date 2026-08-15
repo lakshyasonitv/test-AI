@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { toLiteModel, type AppModel, type NavigationItem, type Element } from "../src/schema/appModel.js";
+import { toLiteModel, compressRepetitiveSiblings, type AppModel, type NavigationItem, type Element } from "../src/schema/appModel.js";
 
 // Caps are read lazily from process.env per call (not module-level) — mirrors ir.ts's own
 // MAX_ATTEMPTS/MAX_EXTENSIONS, which are read inside toIR() per call for the same reason. Tests
@@ -96,8 +96,10 @@ describe("toLiteModel — caps", () => {
     // 87 elements, 2 forms, 9 fields/form, 18 nav nodes, 3 buttons, 28 headings — every default
     // cap sits above all of these.
     const elements: Element[] = Array.from({ length: 87 }, (_, i) => ({ role: "button", name: `e${i}` }) as Element);
-    const form = { action: "", method: "GET", ariaLabel: "",
-      fields: Array.from({ length: 9 }, (_, i) => ({ inputType: "text", name: `f${i}` })) };
+    const form = {
+      action: "", method: "GET", ariaLabel: "",
+      fields: Array.from({ length: 9 }, (_, i) => ({ inputType: "text", name: `f${i}` }))
+    };
     const nav: NavigationItem[] = Array.from({ length: 18 }, (_, i) =>
       ({ text: `n${i}`, href: "", children: [], isDropdown: false, ariaLabel: "", role: "link" }));
     const buttons = Array.from({ length: 3 }, (_, i) => ({ text: `b${i}`, ariaLabel: "" }));
@@ -111,5 +113,48 @@ describe("toLiteModel — caps", () => {
     expect(JSON.parse(before).pages[0].elements.length).toBe(87);
     expect(JSON.parse(before).pages[0].forms.length).toBe(2);
     expect(JSON.parse(before).pages[0].navigation.length).toBe(18);
+  });
+});
+
+describe("compressRepetitiveSiblings", () => {
+  it("compresses identical siblings and preserves unique ones", () => {
+    const elements = [
+      { role: "button", name: "Add to cart", genericPath: "body>div>ul>li>button" },
+      { role: "button", name: "Add to cart", genericPath: "body>div>ul>li>button" },
+      { role: "button", name: "Add to cart", genericPath: "body>div>ul>li>button" },
+      { role: "button", name: "Add to cart", genericPath: "body>div>ul>li>button" },
+      { role: "button", name: "Add to cart", genericPath: "body>div>ul>li>button" },
+      { role: "button", name: "Add to cart", genericPath: "body>div>ul>li>button" },
+      { role: "button", name: "Add to cart", genericPath: "body>div>ul>li>button" },
+      { role: "button", name: "Add to cart", genericPath: "body>div>ul>li>button" },
+      { role: "button", name: "Add to cart", genericPath: "body>div>ul>li>button" },
+      { role: "button", name: "Add to cart", genericPath: "body>div>ul>li>button" },
+      { role: "link", name: "Nike Air Max", genericPath: "body>div>ul>li>a" },
+      { role: "link", name: "Sony Headphones", genericPath: "body>div>ul>li>a" },
+      { role: "link", name: "Adidas Ultraboost", genericPath: "body>div>ul>li>a" },
+    ] as Element[];
+
+    const result = compressRepetitiveSiblings(elements);
+
+    const compressed = result.filter(e => e.compressed);
+    const normal = result.filter(e => !e.compressed);
+
+    expect(compressed).toHaveLength(1);
+    expect(compressed[0].name).toBe("Add to cart");
+    expect(compressed[0].count).toBe(10);
+
+    expect(normal).toHaveLength(3);
+    expect(normal.map(e => e.name)).toContain("Nike Air Max");
+    expect(normal.map(e => e.name)).toContain("Sony Headphones");
+    expect(normal.map(e => e.name)).toContain("Adidas Ultraboost");
+  });
+
+  it("does not compress groups of 5 or fewer", () => {
+    const elements = Array.from({ length: 5 }, () => ({
+      role: "button", name: "Save", genericPath: "body>form>button"
+    })) as Element[];
+    const result = compressRepetitiveSiblings(elements);
+    expect(result.every(e => !e.compressed)).toBe(true);
+    expect(result).toHaveLength(5);
   });
 });

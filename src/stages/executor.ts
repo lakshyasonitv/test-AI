@@ -17,7 +17,16 @@ export interface ExecResult {
 // Configuration
 const CONFIG = {
   TIMEOUTS: {
-    TEST_RUN: 60_000, // Increased from 30s to 60s
+    // This is a hard backstop, not the real per-test budget — Playwright's OWN per-test
+    // timeout (playwright.config.ts, currently 50s) is what should end a hung test and let its
+    // JSON reporter's onEnd() write results.json. This value only needs to be comfortably
+    // ABOVE that, with enough slack for trace/video finalization on a failing test (observed
+    // 7-20MB of trace resources to zip) plus cold-start overhead. It previously sat at 60s —
+    // barely 10s above Playwright's own 50s timeout, no finalization slack at all — and two
+    // real runs (see TECH_DEBT.md TD-02) measured this SIGKILLing the child before it could
+    // write a report, on BOTH the initial attempt and its retry, so the failure diagnosis that
+    // follows had no error text to work from and guessed the wrong step every time.
+    TEST_RUN: 100_000,
     ELEMENT_WAIT: 10_000,
     RETRY_DELAY: 2_000,
   },

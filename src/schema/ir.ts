@@ -22,9 +22,18 @@ export const Step = z.object({
   action: z.enum(["navigate", "click", "fill", "select", "check", "press", "wait", "assert"]),
   target: Target.optional(),
   value: z.string().optional(),
+  // title_contains/title_equals assert against the page's <title> metadata, NOT body text.
+  // Added because there was no way to express "verify the page title is X" at all: the model
+  // degraded such a step to text_equals/text_contains against a {text} target, which compiles
+  // to a body-text search for a string that (on most sites) only ever exists in <title> — an
+  // assertion that can never pass. Reproduced repeatedly against amazon.in, whose title
+  // ("Online Shopping site in India: ...") appears zero times in the rendered body. A
+  // prompt rule telling the model not to do this already existed and was ignored; this makes
+  // the correct thing expressible instead of merely requested. Like url_contains, these are
+  // PAGE-level — they take no target.
   assertion: z.enum([
     "visible", "hidden", "text_equals", "text_contains",
-    "url_contains", "enabled", "disabled",
+    "url_contains", "title_contains", "title_equals", "enabled", "disabled",
   ]).optional(),
   preAction: z.object({
     action: z.enum(["hover", "click"]),

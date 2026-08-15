@@ -9,6 +9,11 @@ import type { IR } from "../src/schema/ir.js";
 const { geminiMock } = vi.hoisted(() => ({ geminiMock: vi.fn().mockResolvedValue("[]") }));
 vi.mock("../src/llm/gemini.js", () => ({ gemini: geminiMock }));
 const { toTestCases } = await import("../src/stages/testCases.js");
+// Hoisted to module scope, not re-imported per `it()`: hybridDiscovery.ts pulls in Playwright,
+// and re-triggering that dynamic import 5x under parallel test load is what produced a real,
+// reproduced-at-HEAD flake (TECH_DEBT.md TD-21) — a 5s timeout on the import itself roughly 1
+// run in 6. One import, done once, at the same top-level-await point testCases.js already uses.
+const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
 
 // --- converted from the inline `if (process.argv[1]...)` self-check in testStrategy.ts ---
 describe("testStrategy", () => {
@@ -89,10 +94,14 @@ describe("promptSelectors", () => {
   });
 
   it("keeps only selectors discovery actually saw", () => {
-    const model = { baseUrl: "https://x", pages: [{ url: "https://x", concepts: [], elements: [
-      { role: "link", name: "cart", css: '[data-test="shopping-cart-link"]', id: "shopping_cart_container" },
-      { role: "button", name: "Checkout", testId: "checkout" },
-    ]}]} as unknown as AppModel;
+    const model = {
+      baseUrl: "https://x", pages: [{
+        url: "https://x", concepts: [], elements: [
+          { role: "link", name: "cart", css: '[data-test="shopping-cart-link"]', id: "shopping_cart_container" },
+          { role: "button", name: "Checkout", testId: "checkout" },
+        ]
+      }]
+    } as unknown as AppModel;
 
     const { usable, unknown } = verifyAgainstModel(
       extractPromptSelectors('id="shopping_cart_container" and [data-test="checkout"] and #nope_not_here'),
@@ -117,6 +126,32 @@ describe("classify", () => {
     expect(classify("toBeVisible() failed\nReceived: hidden")?.category).toBe("element_hidden");
     expect(classify('Timeout 10000ms exceeded.\nwaiting for getByRole("button")')?.category)
       .toBe("element_missing");
+  });
+
+  // Regression: Playwright words an assertion timeout two ways — "expect(locator).toBeVisible()
+  // failed" and "Timed out Nms waiting for expect(locator).toBeVisible()". Only the first was
+  // matched, so this (verbatim from run 2026-08-14T20-25-38-925Z-70279845's results.json, minus
+  // ANSI codes) fell through the whole deterministic classifier to the Gemini fallback, which
+  // invented a "multiple_matches" diagnosis for an error that plainly says one element resolved
+  // and was hidden.
+  it("classifies the 'Timed out ... waiting for expect(...).toBeVisible()' wording too", () => {
+    const real = [
+      "Error: Timed out 10000ms waiting for expect(locator).toBeVisible()",
+      "",
+      "Locator: locator('button:has-text(\"All\")')",
+      "Expected: visible",
+      "Received: hidden",
+      "Call log:",
+      "  - expect.toBeVisible with timeout 10000ms",
+      "  - waiting for locator('button:has-text(\"All\")')",
+      '    13 x locator resolved to <button type="button" class="vjs-default-button">',
+    ].join("\n");
+    expect(classify(real)?.category).toBe("element_hidden");
+  });
+
+  it("classifies the same alternate wording for toBeHidden", () => {
+    expect(classify("Timed out 5000ms waiting for expect(locator).toBeHidden()\nReceived: visible")?.category)
+      .toBe("assertion_failed");
   });
 
   it("recognises a network failure", () => {
@@ -213,7 +248,7 @@ describe("toTestCases — checklist obeys scope", () => {
     pages: [{
       url: "https://example.com/login", title: "Login", concepts: ["Login"],
       elements: [{ role: "textbox", name: "Username" }, { role: "textbox", name: "Password" },
-                 { role: "button", name: "Log in" }],
+      { role: "button", name: "Log in" }],
     }],
   } as unknown as AppModel;
 
@@ -240,14 +275,12 @@ describe("toTestCases — checklist obeys scope", () => {
 });
 
 describe("isAllowedEntryUrl & SSRF validation", () => {
-  it("rejects non-http/https schemes like file://", async () => {
-    const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
+  it("rejects non-http/https schemes like file://", () => {
     expect(isAllowedEntryUrl("file:///C:/Windows/win.ini").ok).toBe(false);
     expect(isAllowedEntryUrl("ftp://example.com/file").ok).toBe(false);
   });
 
-  it("rejects loopback and private network IP hosts (SSRF prevention)", async () => {
-    const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
+  it("rejects loopback and private network IP hosts (SSRF prevention)", () => {
     expect(isAllowedEntryUrl("http://localhost:3000/").ok).toBe(false);
     expect(isAllowedEntryUrl("http://127.0.0.1:8080/").ok).toBe(false);
     expect(isAllowedEntryUrl("http://169.254.169.254/latest/meta-data/").ok).toBe(false);
@@ -255,24 +288,21 @@ describe("isAllowedEntryUrl & SSRF validation", () => {
     expect(isAllowedEntryUrl("http://10.0.0.1/").ok).toBe(false);
   });
 
-  it("allows valid public http/https URLs", async () => {
-    const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
+  it("allows valid public http/https URLs", () => {
     expect(isAllowedEntryUrl("https://learnvibes.vercel.app").ok).toBe(true);
     expect(isAllowedEntryUrl("http://example.com/page").ok).toBe(true);
   });
 
   // Regression: only the exact "127.0.0.1" was blocked, but the whole 127.0.0.0/8 block is
   // loopback — a classic SSRF-filter bypass is using any OTHER address in that range.
-  it("rejects every address in the 127.0.0.0/8 loopback range, not just 127.0.0.1", async () => {
-    const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
+  it("rejects every address in the 127.0.0.0/8 loopback range, not just 127.0.0.1", () => {
     expect(isAllowedEntryUrl("http://127.0.0.2/").ok).toBe(false);
     expect(isAllowedEntryUrl("http://127.5.5.5/").ok).toBe(false);
   });
 
   // Regression: Node's URL keeps the brackets on an IPv6 host (hostname is "[::1]", not
   // "::1"), so the bare "::1" comparison never matched and IPv6 loopback sailed through.
-  it("rejects IPv6 loopback", async () => {
-    const { isAllowedEntryUrl } = await import("../src/stages/hybridDiscovery.js");
+  it("rejects IPv6 loopback", () => {
     expect(isAllowedEntryUrl("http://[::1]/").ok).toBe(false);
   });
 });

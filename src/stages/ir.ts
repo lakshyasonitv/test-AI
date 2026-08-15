@@ -21,9 +21,14 @@ export interface IRResult {
 }
 
 const ASSERTION_KEYS = [
-  "text_contains", "text_equals", "url_contains",
+  "text_contains", "text_equals", "url_contains", "title_contains", "title_equals",
   "visible", "hidden", "enabled", "disabled",
 ] as const;
+
+/** Assertions that check the PAGE, not an element — they take no target, and grounding must
+ *  not try to resolve one for them (url_contains has always been in this class; the title
+ *  pair joins it). See TECH_DEBT.md TD-06. */
+const PAGE_LEVEL_ASSERTIONS = new Set(["url_contains", "title_contains", "title_equals"]);
 
 // Common ARIA roles the model might legitimately target. Anything outside this set
 // (seen in practice: role: "text" for a plain message div) is almost always the model
@@ -87,6 +92,20 @@ export function normalizeIR(raw: any): any {
     if (step.action === "assert" && step.assertion === "url_contains"
       && !step.value && typeof step.target?.url === "string" && step.target.url) {
       step.value = step.target.url;
+    }
+
+    // Same shape for the title pair: they're page-level and take no target, but a model that
+    // has spent the whole IR attaching a target to every assert routinely attaches one here
+    // too (usually { text: "<the title>" }). Fold that into `value` and drop the target, so a
+    // title assertion the model *meant* correctly doesn't get rejected as vacuous — and, more
+    // importantly, so it never silently compiles as if it were a body-text assertion, which is
+    // the exact bug title_contains exists to eliminate. See TECH_DEBT.md TD-06.
+    if (step.action === "assert" && PAGE_LEVEL_ASSERTIONS.has(step.assertion as string)
+      && step.assertion !== "url_contains") {
+      if (!step.value && typeof step.target?.text === "string" && step.target.text) {
+        step.value = step.target.text;
+      }
+      delete step.target;
     }
   }
   return raw;
@@ -564,7 +583,9 @@ export function assertionContradictsCase(
  * failure nobody goes and looks at it.
  */
 export function vacuousAssertion(ir: IR, appModel?: AppModel): { stepIds: string[]; message: string } | null {
-  const NEEDS_VALUE = new Set(["url_contains", "text_contains", "text_equals"]);
+  const NEEDS_VALUE = new Set([
+    "url_contains", "text_contains", "text_equals", "title_contains", "title_equals",
+  ]);
   const offending = ir.steps.filter(s =>
     s.action === "assert" && s.assertion && NEEDS_VALUE.has(s.assertion) &&
     !(s.value ?? (s.assertion === "url_contains" ? s.target?.url : undefined) ?? "").trim()
@@ -840,7 +861,7 @@ export async function toIR(
     `Convert ONE human-readable test case into a strict JSON test model (IR).
 Address elements only by accessibility role + name taken from the application model.
 Allowed actions: navigate, click, fill, select, check, press, wait, assert.
-Allowed assertions: visible, hidden, text_equals, text_contains, url_contains, enabled, disabled.
+Allowed assertions: visible, hidden, text_equals, text_contains, url_contains, title_contains, title_equals, enabled, disabled.
 
 Rules, follow exactly:
 - CARRY OUT THE WHOLE CASE. Every action the test case describes — each field it says to fill, each button it says to click — must appear as a step, in order, before the assertion. An IR that skips the fill steps and jumps to an assertion verifies nothing even when it passes, and will be rejected.
@@ -848,7 +869,7 @@ Rules, follow exactly:
 - "id" is always a string like "s1", "s2", never a number.
 - "assertion" is a single string from the allowed list above — NEVER an object. Omit "assertion" entirely on steps whose action is not "assert".
 - Omit "target" entirely for steps that don't need one (e.g. a "wait" step); never set it to an empty string.
-- For an "assert" step needing a comparison value (text_equals, text_contains, url_contains), put that value in the step's "value" field, not inside "assertion".
+- For an "assert" step needing a comparison value (text_equals, text_contains, url_contains, title_contains, title_equals), put that value in the step's "value" field, not inside "assertion".
 - Never invent CSS selectors. The only exception is a selector explicitly listed as verified in the user's request section below — those may be used as "target.css" exactly as given.
 - "meta.baseUrl" must be exactly the origin, with no path: ${origin}
 - A "navigate" step's target.url is a path RELATIVE to that origin (it gets concatenated onto baseUrl) — for the page under test here, that path is exactly "${entryPath}". Do not repeat the origin inside it.
@@ -856,6 +877,7 @@ Rules, follow exactly:
 - "role" must be a real ARIA role (button, textbox, link, heading, checkbox, ...) for an element actually present in the application model. For asserting on plain visible text that ISN'T in the application model — e.g. an error/flash message that only appears after an action, so discovery never saw it — use target: { "text": "..." } instead. Never invent a role like "text" or "message".
 - target: { "text": "..." } is for ASSERT steps ONLY. Never use it to choose what to click, fill, select, check or press — those must name a real element from the application model by role + name. A text target on an action step matches whatever element CONTAINS that text, which for a form field is its label, and a label cannot be filled. If the element you need isn't in the application model yet, still address it by the role + name you expect: it will be discovered and checked, and you'll be told if it isn't there.
 - A page's "title" field is the browser tab / <title> tag — it is never rendered in the page body and can NEVER be the target of a visible-text assertion, no matter how relevant it looks. Only use target: { "text": "..." } for text that actually appears in the page's rendered content (the elements/markdown), never the page title.
+- To verify a page TITLE, use assertion "title_contains" (or "title_equals" for an exact whole-title match) with the expected text in "value" and NO target at all — these check the <title> tag directly. This is the ONLY correct way to express "verify the page title is X". Do not express it as text_equals/text_contains with a { "text": ... } target: that searches the rendered body for a string that lives only in the tab title, and can never pass.
 - When a case describes a navigation region by listing several of its items and only ONE element can be picked to ground a "visible" check for the whole thing, do NOT pick a control whose only job is to OPEN or COLLAPSE that region — a menu/drawer toggle, however it is named, including an icon-only one. Such controls are routinely shown at one viewport width and hidden at another, so the assertion can fail while the region itself is perfectly fine. Prefer a content-bearing item from the region — one that names a real destination or action.
 - A success assertion must be FALSE before the action and TRUE only after it — otherwise it verifies nothing. Never assert on a persistent, site-wide element (a header, logo, or nav bar that appears on every page regardless of state) as proof an action succeeded; it was already visible before the action too. In the application model, a decorative/structural element like this typically has no "concept" (empty or absent) — treat that as a signal to avoid it as a success assertion.
 - The application model only covers the page you start on, so you usually can't see the page an action like login navigates to. When you can't ground a success assertion on the destination page, assert instead that the FORM'S OWN SUBMIT BUTTON goes "hidden" after you submit it — e.g. the "Sign In" button once login succeeds. That element is already in the model, and is a real discriminator: visible before, gone after.

@@ -24,16 +24,32 @@ function isQuotaExhausted(err: any): boolean {
   return false;
 }
 
-/** Parse server-suggested retry delay from header or error body. */
-function parseRetryDelay(err: any): number | null {
+/** Parse server-suggested retry delay from header or error body.
+ *
+ *  Previously only matched a whole-second "retry in Ns" shape. Groq's own TPM rate-limit body
+ *  actually reads "Please try again in 495ms." — different wording ("try again", not "retry")
+ *  AND a different unit (ms, not s) — so that message was never matched, the server's own
+ *  short, accurate wait was silently discarded, and every Groq 429 fell through to a generic
+ *  ~1s+ exponential guess instead. See TECH_DEBT.md TD-03. */
+export function parseRetryDelay(err: any): number | null {
   if (err?.retryAfter) {
     const sec = Number(err.retryAfter);
     if (!isNaN(sec) && sec > 0) return sec * 1000;
   }
   const msg = String(err?.message ?? "");
-  const m = msg.match(/retry\s+in\s+(\d+)s/i);
-  if (m) return parseInt(m[1], 10) * 1000;
+  const m = msg.match(/(?:retry|try again)\s+in\s+(\d+(?:\.\d+)?)\s*(ms|s)\b/i);
+  if (m) {
+    const value = parseFloat(m[1]);
+    return m[2].toLowerCase() === "ms" ? value : value * 1000;
+  }
   return null;
+}
+
+/** Exported so callers outside this module's own retry loop (ir.ts's outer attempt loop, in
+ *  particular) can tell a rate-limit failure apart from a genuine schema/parse failure, rather
+ *  than treating every thrown error identically. */
+export function isRateLimitError(err: any): boolean {
+  return rateLimited(err) !== null;
 }
 
 /**

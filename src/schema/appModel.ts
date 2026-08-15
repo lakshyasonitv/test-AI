@@ -350,7 +350,16 @@ export function toMicroModel(
   if (!targetPage) return { ...model, pages: [] };
 
   const compressed = compressRepetitiveSiblings(targetPage.elements);
+  const preCap = compressed.length;
   const capped = capElements(compressed, 30);
+  // compressRepetitiveSiblings already leaves a `count` marker when it collapses true
+  // duplicates — capElements has no equivalent signal, so a page with >30 distinct, real
+  // elements silently loses everything past the 30th with nothing telling the LLM (or anyone
+  // reading logs) that content was cut. Log it, the same way the MAX_CHARS fallback below
+  // already logs when it drops a whole page.
+  if (capped.length < preCap) {
+    console.log(`[toMicroModel] capped ${preCap} -> ${capped.length} elements on ${targetPage.url}`);
+  }
 
   return {
     baseUrl: model.baseUrl,

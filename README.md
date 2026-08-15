@@ -112,11 +112,12 @@ Full technical detail, file by file: [ARCHITECTURE.md](ARCHITECTURE.md).
 | Truncated test handling | Graceful degradation: partial real test instead of hard failure |
 | Credential-policy substitution | `credentialPolicyFor` distinguishes full / identifier-only / none per case from its own wording — a negative "invalid password" case keeps its deliberately-wrong value. A case with TWO login attempts in one browser session is a known limitation (`TECH_DEBT.md` TD-10) |
 | Terminal text-assertion grounding | The case's final pure-text assertion is replayed against the real page and corrected if the model guessed the wording wrong |
+| Page-title assertions | `title_contains`/`title_equals` compile to `expect(page).toHaveTitle(...)` — a title check is verified against `<title>` metadata, not searched for in body text where it can never appear |
 | Grounding: guessed navigate routes rejected | A `navigate` step's URL is checked against every discovered page URL + link href. A route invented from a feature's name ("go to the Admin section" -> `/admin`) is rejected with feedback |
 | Grounding: role mismatch tolerated | An SPA control built as `<button onClick=...>` still grounds when the IR guessed `link` |
 | Grounding: hidden elements can't be asserted visible | An element recorded not visible can't be the target of a `visible` assertion |
 | Credentials typed into the prompt | `extractCredentialsFromPrompt` pulls a real username/password straight out of prompt text, treated as `secret` — same env-reference path as UI-entered credentials |
-| IR completeness check | `missingActions` compares the case's own action-bearing step lines against what the IR actually carries out — see `TECH_DEBT.md` TD-01 for its current false-positive failure mode |
+| IR completeness check | `missingActions` compares the case's own action-bearing step lines against what the IR actually carries out — a false-positive failure mode here (`TECH_DEBT.md` TD-01) is fixed |
 | Secrets kept off disk | Credentials become `${env:...}` references; scrubbed from `results.json`, `final-page.txt`, and error-context attachments too |
 | Scope filtering | Prompt can request smoke/functional/regression/security scope |
 | Deterministic failure classifier | Pattern-matches Playwright errors before spending a Gemini call |
@@ -131,10 +132,20 @@ The headline items, for orientation:
 
 | Issue | Short version |
 |---|---|
-| A correct test can be rejected outright, killing the whole run | `TECH_DEBT.md` TD-01 |
-| A failing test's own report can be destroyed before diagnosis reads it | `TECH_DEBT.md` TD-02 |
+| A not-yet-loaded page can be cached as a valid, empty AppModel | `TECH_DEBT.md` TD-31 |
+| Duplicate-named elements can still make a locator ambiguous | Partial mitigation shipped, real fix (page-scoping) still open — `TECH_DEBT.md` TD-05 |
+| No blocking-interstitial detection (CAPTCHA/bot walls) at discovery time | `TECH_DEBT.md` TD-04 |
 | No server authentication | Anyone with the URL can start runs and browse artifacts (`TECH_DEBT.md` TD-14) |
 | No CI | The test suite exists; nothing runs it automatically (`TECH_DEBT.md` TD-20) |
+
+Fixed since first written up, kept here only so the fix isn't re-discovered as new: a correct test
+could be rejected outright (TD-01), a failing test's report could be destroyed before diagnosis
+ever read it (TD-02), a Groq rate limit could kill a run instead of backing off (TD-03), a page
+title could only be asserted as body text where it can never appear (TD-06), live locator
+resolution matched by substring instead of exact name (TD-32), the deterministic failure
+classifier missed one common Playwright timeout wording (TD-33), a `visible` assertion could lock
+onto a hidden same-named element (TD-34), and one hidden-element click could burn ~113s and blow
+the executor's kill timer (TD-36).
 
 By design, not a defect: **no built-in demo credentials.** There's no per-site autofill list —
 credentials come from your prompt when it carries them, otherwise the run pauses and asks via the

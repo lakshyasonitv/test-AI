@@ -286,14 +286,21 @@ IR
                  element), never produced by the LLM directly
     value?: string
     assertion?: "visible" | "hidden" | "text_equals" | "text_contains" |
-                "url_contains" | "enabled" | "disabled"
+                "url_contains" | "title_contains" | "title_equals" |
+                "enabled" | "disabled"
     preAction?: { action: "hover" | "click", target: Target }
 ```
 
 The Generator reads this contract and emits Playwright code (one `test.step()` per Step). The
 Executor runs it. Failure analysis inspects it step-by-step. `truncated`/`hasTerminalAssertion`
 are what let a partially-grounded IR ship as a real, honest partial test instead of a hard failure.
-There is no page-level title assertion — `TECH_DEBT.md` TD-06.
+
+**Page-level vs. element-level assertions.** `url_contains`, `title_contains` and `title_equals`
+check the *page* and take **no target** — `normalizeIR` strips one if the model attaches it, and
+`PAGE_LEVEL_ASSERTIONS` (`ir.ts`) is the set. Everything else is locator-bound. The title pair
+exists specifically so "verify the page title is X" has a correct compilation target
+(`expect(page).toHaveTitle(...)`) instead of degrading into a body-text search for a string that
+only lives in `<title>` — see `TECH_DEBT.md` TD-06.
 
 ### Case Selection (the gate's contract)
 

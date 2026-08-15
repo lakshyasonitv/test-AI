@@ -64,6 +64,13 @@ back later; the fix that stuck was always the structural one.
 - **Cache keys must include every real input dimension.** The LLM disk cache never expires; a key
   missing a dimension (credential policy, system prompt, model name) serves a wrong answer forever.
   This has bitten the project more than once — `TECH_DEBT.md` TD-22, `DECISIONS.md` D-10.
+- **A generated Playwright expression that looks right isn't verified until it's run once.**
+  `.filter({ visible: true })` shipped as a fix, passed `tsc`, passed a unit test — and was a
+  silent no-op, because `Locator.filter()` has no `visible` option in this project's pinned
+  Playwright version. Both checks only inspected the *emitted string*; neither executed it. If a
+  change touches the generated spec's actual Playwright API surface, run it for real (a
+  synthetic-HTML headless-browser check is enough, doesn't need the live target site) before
+  calling it done — see `DECISIONS.md` D-19.
 
 ## Verification
 
@@ -90,6 +97,12 @@ end-to-end confirmation, and say so before doing it, since it costs the user mon
   there before assuming a constant is hardcoded.
 - Windows dev environment: this session's tools include both a POSIX-style Bash tool and a native
   PowerShell tool — they take different syntax; don't mix them in one command.
+- **`npm run serve` has no watch/reload — it runs `tsx` directly, once.** A running server keeps
+  executing whatever code was in memory when it started; editing `src/` does nothing to it until
+  it's restarted. Caught directly: a `TECH_DEBT.md` fix (TD-02) was verified offline, then a real
+  run afterward still showed the exact pre-fix timing signature, because the server process
+  predated the fix by over an hour. Before judging any source change against a live run, check
+  whether the server process actually started after the edit.
 
 ## Don't
 

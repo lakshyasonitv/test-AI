@@ -48,7 +48,16 @@ export function classify(errorText: string): ClassifiedFailure | null {
     };
   }
 
-  if (/toBeVisible\(\)\s*failed/i.test(t) && /Received:\s*hidden/i.test(t)) {
+  // Playwright reports an assertion timeout two different ways depending on whether the
+  // promise ever settles: "expect(locator).toBeVisible() failed" (immediate) vs. "Timed out
+  // Nms waiting for expect(locator).toBeVisible()" (the retry window closed first) — these are
+  // NOT the same string shape, and only the first was matched here. A real, easily-explained
+  // visibility timeout (Received: hidden) with the second wording fell through this entire
+  // classifier to the Gemini fallback, which then had to guess at a category from scratch —
+  // producing a wrong "multiple_matches" diagnosis for a run whose real error, read directly
+  // off results.json, showed one cleanly-resolved, correctly-hidden element. Both wordings
+  // matched now, for both directions.
+  if (/toBeVisible\(\)/i.test(t) && /(\bfailed\b|Timed out\s+\d+m?s\s+waiting for)/i.test(t) && /Received:\s*hidden/i.test(t)) {
     return {
       category: "element_hidden",
       explanation: "The element resolved in the DOM but was not visible (display:none, zero dimensions, or a hidden ancestor) for the entire assertion timeout.",
@@ -56,7 +65,7 @@ export function classify(errorText: string): ClassifiedFailure | null {
     };
   }
 
-  if (/toBeHidden\(\)\s*failed/i.test(t) && /Received:\s*visible/i.test(t)) {
+  if (/toBeHidden\(\)/i.test(t) && /(\bfailed\b|Timed out\s+\d+m?s\s+waiting for)/i.test(t) && /Received:\s*visible/i.test(t)) {
     return {
       category: "assertion_failed",
       explanation: "The element was expected to become hidden but was still visible — most often because the preceding action didn't actually complete, or didn't have the intended effect.",

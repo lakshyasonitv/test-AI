@@ -443,14 +443,18 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
       nameFromProximity = true;
     }
     if (!name) {
-      name = deriveElementName({ dataTest: attr($el, "data-test"), dataTestid: attr($el, "data-testid"),
-        dataQa: attr($el, "data-qa"), id, classes, href });
+      name = deriveElementName({
+        dataTest: attr($el, "data-test"), dataTestid: attr($el, "data-testid"),
+        dataQa: attr($el, "data-qa"), id, classes, href
+      });
       if (!name) return;   // genuinely unaddressable, matches Python's `continue`
       derivedName = true;
     }
 
-    const selector = stableSelector({ dataTest: attr($el, "data-test"), dataTestid: attr($el, "data-testid"),
-      dataQa: attr($el, "data-qa"), id });
+    const selector = stableSelector({
+      dataTest: attr($el, "data-test"), dataTestid: attr($el, "data-testid"),
+      dataQa: attr($el, "data-qa"), id
+    });
     const key = selector || `${role}:${name}:${elements.length}`;
     if (seen.has(key)) return;
     seen.add(key);
