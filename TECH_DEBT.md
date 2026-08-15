@@ -468,7 +468,7 @@ model changes.
 
 ### TD-20. No CI runs the test suite — High / Strategic
 
-**What it is.** 293 tests across 27 files exist (a moving number — re-check with `npx vitest run`
+**What it is.** 301 tests across 27 files exist (a moving number — re-check with `npx vitest run`
 rather than trusting this doc) and nothing executes them automatically. The only GitHub Actions
 workflow, `.github/workflows/directory-tree.yml`, regenerates a directory tree and pushes to
 `main`.
