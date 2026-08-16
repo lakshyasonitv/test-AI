@@ -6,15 +6,15 @@ import { discoverSiteHybrid, discoverPagesHybrid } from "./stages/hybridDiscover
 import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
 import { GroqBudget } from "./llm/groqBudget.js";
-import { refreshPageModel } from "./stages/liveExtend.js";
 import {
-  credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, credentialPolicyFor,
+  credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars,
   extractCredentialsFromPrompt,
   type Credentials, type CredentialKind,
 } from "./stages/credentials.js";
 import { generateSpec } from "./stages/generator.js";
-import { runSpec, findScreenshot, detectBlocked } from "./stages/executor.js";
+import { runSpec, findScreenshot, findVideo, detectBlocked } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
+import { attemptHeal, isHealable } from "./stages/heal.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 import { ALL_SCOPES } from "./kb/testStrategy.js";
@@ -196,44 +196,28 @@ export async function runPipeline(
     if (!result.passed) {
       diagnosis = await step("failure_analysis", "06-diagnosis.json", () => analyzeFailure(ir, result as any));
 
-      const healable = diagnosis.category === "selector_changed" || diagnosis.category === "element_missing";
-      const failIdx = diagnosis.failingStepId ? ir.steps.findIndex((s) => s.id === diagnosis!.failingStepId) : -1;
-
-      // A step with no real prefix (first step, or an id toIR never emitted) has nothing to
-      // replay from — skip healing. Capped at exactly one attempt total, no loop: this only
-      // runs once, only on an already-failed run with a matching diagnosis category.
-      if (healable && failIdx > 0) {
+      // Capped at exactly one attempt total, no loop: attemptHeal only runs once, only on an
+      // already-failed run with a matching diagnosis category. Logic lives in stages/heal.ts —
+      // shared with suiteRunner.ts's non-primary cases, see that module's own doc comment.
+      // isHealable is the same gate attemptHeal applies internally — checked here too only so
+      // "heal started" isn't emitted for a category that was never going to attempt anything.
+      if (isHealable(diagnosis, ir)) {
         try {
           emit("heal", "started");
-          const prefix = ir.steps.slice(0, failIdx);
-          const primaryCredPolicy = credentialPolicyFor(primary, promptCarriesCredentials(prompt));
-          const freshModel = await refreshPageModel(appModel, prefix, runCreds, primaryCredPolicy);
-          console.log("Calling toIR (heal)...");
-          const { ir: healedIr } = await toIR(primary, freshModel, prompt, resolvedUrls[0], groqBudget, runCreds);
-          console.log("Returned from toIR (heal)");
-
-          // A heal that truncates isn't a heal: it means the failing step still can't be
-          // grounded even against a fresh snapshot (genuinely gone, not just renamed), and
-          // toIR silently fell back to the safe prefix. Running just that prefix would
-          // "pass" without ever exercising the thing that broke — a false positive of
-          // exactly the kind this project has hit before. Only accept a heal that still
-          // covers the full, originally-intended test case.
-          if (!healedIr.meta.truncated) {
-            const healedDir = path.join(runDir, "healed");
-            mkdirSync(healedDir, { recursive: true });
-            const healedSpec = generateSpec(healedIr, path.join(healedDir, "artifacts"));
-            const healedRun = await runSpec(healedSpec, healedDir, credentialEnvVars(runCreds));
-            if (healedRun.passed) {
-              writeFileSync(path.join(healedDir, "generated.spec.ts"), healedSpec);
-              writeFileSync(path.join(healedDir, "ir.json"), JSON.stringify(healedIr, null, 2));
-              finalResult = {
-                passed: true, exitCode: healedRun.exitCode,
-                artifactsDir: healedRun.artifactsDir, resultsJsonPath: healedRun.resultsJsonPath, raw: healedRun.raw,
-              };
-              finalIr = healedIr;
-              finalSpecCode = healedSpec;
-              healed = true;
-            }
+          const healedOutcome = await attemptHeal({
+            testCase: primary, ir, appModel, diagnosis,
+            sourcePrompt: prompt, entryUrl: resolvedUrls[0], groqBudget, runCreds,
+            outDir: runDir,
+          });
+          if (healedOutcome) {
+            finalResult = {
+              passed: true, exitCode: healedOutcome.result.exitCode,
+              artifactsDir: healedOutcome.result.artifactsDir, resultsJsonPath: healedOutcome.result.resultsJsonPath,
+              raw: healedOutcome.result.raw,
+            };
+            finalIr = healedOutcome.ir;
+            finalSpecCode = healedOutcome.specCode;
+            healed = true;
           }
           emit("heal", "completed", { healed });
         } catch (err: any) {
@@ -321,6 +305,12 @@ export async function runPipeline(
     const shot = findScreenshot(finalResult.artifactsDir);
     const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
 
+    // video: "retain-on-failure" in playwright.config.ts — a video only exists for a run that
+    // actually failed, so check the ORIGINAL attempt's directory (`result`, not `finalResult`):
+    // a heal only "counts" once its retry passes, and a passing Playwright run never keeps one.
+    const video = findVideo(result.artifactsDir);
+    const videoUrl = video ? "/" + path.relative(".", video).replace(/\\/g, "/") : undefined;
+
     // Read suite summary if it exists (produced by runSuite)
     let suite = undefined;
     const summaryPath = path.join(runDir, "07-suite-summary.json");
@@ -344,6 +334,7 @@ export async function runPipeline(
     emit("done", "completed", {
       passed: blocked ? false : finalResult.passed,
       screenshotUrl: blockedScreenshotUrl ?? screenshotUrl,
+      videoUrl,
       partial: finalIr.meta.truncated ?? false, healed,
       status: blocked ? "blocked" : (finalResult as any).status,
       blockedBy: blocked?.reason,

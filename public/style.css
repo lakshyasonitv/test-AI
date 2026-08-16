@@ -22,6 +22,11 @@
   --muted: #7d8492;
   --faint: #5c6270;
 
+  /* Brand accent — the SAME hue in both themes (see the light-theme block below). A
+     product's accent is its identity; it used to switch from blue to green depending on
+     theme, and the light-theme green happened to collide with --done (also green), so a
+     primary button and a "passed" badge were nearly indistinguishable. One blue accent
+     everywhere means green is free to mean exactly one thing: passed. */
   --accent: #6d8cff;
   --accent-hover: #8aa2ff;
   --accent-rgb: 109, 140, 255;
@@ -31,13 +36,20 @@
   --surface-hover: #232830;
   --line-hover: #2e333d;
 
-  /* Status. Names are referenced by app.js-driven classes below — keep them. */
+  /* Status. Names are referenced by app.js-driven classes below — keep them.
+     Four semantic families, not seven near-distinct hues: success (--done), failure
+     (--failed), attention/in-progress (--running, active + pulsing) and
+     attention/incomplete (--truncated and --partial share ONE hue now — both mean "we
+     couldn't fully confirm this," and used to be yellow vs. blue for no semantic reason,
+     which read as two different severities when they're the same one). --blocked keeps
+     its own hue on purpose: "the site stopped us" is a genuinely different situation from
+     "the test failed" and must never be visually confusable with it. */
   --pending: #3a3f4a;
   --running: #e5a943;
   --running-rgb: 229, 169, 67;
   --done: #46c46d;
   --failed: #f2635a;
-  --truncated: #d9a12b;
+  --truncated: #5fa8ff;
   --partial: #5fa8ff;
   --blocked: #b37ada;
 
@@ -79,20 +91,25 @@
   --muted: #757575;
   --faint: #9b9b9b;
 
-  --accent: #1a8917;
-  --accent-hover: #0f730c;
-  --accent-rgb: 26, 137, 23;
+  /* Same brand hue as dark mode (indigo-blue), re-tuned for contrast on a white surface —
+     not a different color. See the dark-theme block for why this matters. */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-rgb: 79, 70, 229;
   --accent-soft: rgba(var(--accent-rgb), .1);
 
   --surface-hover: #f0f0ee;
   --line-hover: #d8d8d6;
 
   --pending: #c9c9c7;
-  --running: #b8720f;
-  --running-rgb: 184, 114, 15;
-  --done: #1e8e3e;
+  /* running/done darkened from #b8720f/#1e8e3e — the original shades sat at 3.44/3.75:1
+     against --surface-3, under the 4.5:1 WCAG AA floor for the small badge text that
+     renders in this color (case-badge is .66rem, not "large text," so 3:1 doesn't apply). */
+  --running: #986009;
+  --running-rgb: 152, 96, 9;
+  --done: #1a7a35;
   --failed: #c5221f;
-  --truncated: #a1670c;
+  --truncated: #1a56c4;
   --partial: #1a56c4;
   --blocked: #8944ab;
 
@@ -462,6 +479,12 @@ li.failed .summary-text { color: var(--failed); }
 .case-selection-list .case-label-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
 .case-selection-list .case-title { font-size: .88rem; font-weight: 600; line-height: 1.4; }
 .case-selection-list .case-intent { font-size: .76rem; color: var(--muted); line-height: 1.55; }
+.case-selection-list .case-expected {
+  /* --muted, not --faint: this is real informational text ("what should happen"), and
+     --faint drops below the 4.5:1 WCAG AA floor at this font size (2.78:1 in light mode). */
+  display: block; font-size: .72rem; color: var(--muted); line-height: 1.5; margin-top: 2px;
+}
+.case-selection-list .case-expected b { font-weight: 600; color: var(--text-2); }
 .case-primary-badge {
   font-size: .62rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
   color: var(--accent); background: var(--accent-soft);
@@ -587,7 +610,7 @@ figcaption { font-size: .74rem; color: var(--faint); margin-top: 6px; }
 }
 .suite-stat-passed { color: var(--done); border-color: rgba(70,196,109,.3); background: rgba(70,196,109,.08); }
 .suite-stat-failed { color: var(--failed); border-color: rgba(242,99,90,.3); background: rgba(242,99,90,.08); }
-.suite-stat-truncated { color: var(--truncated); border-color: rgba(217,161,43,.3); background: rgba(217,161,43,.08); }
+.suite-stat-truncated { color: var(--truncated); border-color: rgba(95,168,255,.3); background: rgba(95,168,255,.08); }
 .suite-stat-partial { color: var(--partial); border-color: rgba(95,168,255,.3); background: rgba(95,168,255,.08); }
 .suite-stat-blocked { color: var(--blocked); border-color: rgba(179,122,218,.3); background: rgba(179,122,218,.08); }
 
@@ -615,6 +638,33 @@ figcaption { font-size: .74rem; color: var(--faint); margin-top: 6px; }
   border-top: 1px solid var(--line-soft);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* ---------------------------------------------------------------------------
+   Screenshot zoom modal — a scrim over the whole viewport, so it's deliberately opaque black
+   regardless of theme (rgba(0,0,0,.9)), not a design-token color: its entire job is to
+   suppress whatever's behind it, light or dark theme alike, which is the one place in this
+   file a hardcoded color is correct rather than a token gap.
+   --------------------------------------------------------------------------- */
+
+.screenshot-modal {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .9);
+  padding: var(--sp-6, 32px);
+}
+.screenshot-modal.hidden { display: none; }
+.screenshot-modal-img {
+  max-width: 90vw; max-height: 90vh; object-fit: contain;
+  border-radius: var(--r-sm); box-shadow: var(--shadow-lg);
+}
+.screenshot-modal-close {
+  position: fixed; top: var(--sp-4); right: var(--sp-4);
+  width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+  font-size: 1.6rem; line-height: 1; color: #fff; background: rgba(255, 255, 255, .12);
+  border: 1px solid rgba(255, 255, 255, .25); border-radius: 50%; cursor: pointer;
+  transition: background .15s var(--ease);
+}
+.screenshot-modal-close:hover { background: rgba(255, 255, 255, .22); }
 
 /* ---------------------------------------------------------------------------
    Case cards — plain summary up front, technical detail behind a drawer
@@ -648,6 +698,9 @@ figcaption { font-size: .74rem; color: var(--faint); margin-top: 6px; }
 .case-title { font-size: .88rem; font-weight: 550; display: block; }
 /* The plain-English line: what this check actually proves. */
 .case-intent { font-size: .78rem; color: var(--muted); margin: 3px 0 0; line-height: 1.5; }
+/* --muted, not --faint — same WCAG AA reasoning as .case-selection-list .case-expected above. */
+.case-expected { font-size: .74rem; color: var(--muted); margin: 3px 0 0; line-height: 1.5; }
+.case-expected span { font-weight: 600; color: var(--text-2); }
 
 .case-expand-icon { color: var(--faint); display: inline-flex; margin-top: 2px; transition: transform .2s var(--ease); }
 .case-card.open .case-expand-icon { transform: rotate(180deg); }
@@ -659,13 +712,54 @@ figcaption { font-size: .74rem; color: var(--faint); margin-top: 6px; }
 }
 .badge-passed { color: var(--done); background: rgba(70,196,109,.12); border-color: rgba(70,196,109,.3); }
 .badge-failed { color: var(--failed); background: rgba(242,99,90,.12); border-color: rgba(242,99,90,.3); }
-.badge-truncated { color: var(--truncated); background: rgba(217,161,43,.12); border-color: rgba(217,161,43,.3); }
+.badge-truncated { color: var(--truncated); background: rgba(95,168,255,.12); border-color: rgba(95,168,255,.3); }
 .badge-partial { color: var(--partial); background: rgba(95,168,255,.12); border-color: rgba(95,168,255,.3); }
 .badge-blocked { color: var(--blocked); background: rgba(179,122,218,.12); border-color: rgba(179,122,218,.3); }
 .badge-pending { color: var(--muted); background: var(--surface-3); border-color: var(--line); }
+/* Uses the accent (not --done green) — this badge isn't a status, it's a note about HOW a
+   passed result was reached, sitting next to the real PASSED badge rather than replacing it. */
+.case-badge-healed {
+  color: var(--accent); background: var(--accent-soft); border-color: rgba(var(--accent-rgb), .3);
+  display: inline-flex; align-items: center; gap: 4px;
+}
 
-.case-card-body { padding: var(--sp-4); border-top: 1px solid var(--line-soft); }
+/* Animated expand/collapse: box-sizing is border-box (see the reset near the top of this
+   file), so max-height:0 on the closed state crushes the padding and border-top along with
+   the content — no separate "hide the border too" rule needed. The 5000px open-state ceiling
+   is just a value comfortably larger than any real card's content (screenshot + narrative/
+   diagnosis + the collapsed technical-details toggle); browsers only animate the actual
+   height delta, so an oversized ceiling costs nothing. prefers-reduced-motion is handled
+   globally (see the media query near the top of this file), not repeated here. */
+.case-card-body {
+  padding: var(--sp-4); border-top: 1px solid var(--line-soft);
+  max-height: 0; opacity: 0; overflow: hidden;
+  transition: max-height .2s ease-out, opacity .2s ease-out;
+}
+.case-card.open .case-card-body { max-height: 5000px; opacity: 1; }
+
 .case-screenshot { margin: 0 0 var(--sp-3); }
+.case-screenshot img { cursor: zoom-in; border-radius: var(--r-sm); }
+.case-screenshot figcaption { font-size: .72rem; color: var(--faint); margin-top: 4px; }
+
+/* Same width/border treatment as the screenshot it sits next to — a video is just another
+   "what actually happened" artifact, not a visually distinct element. `background: #000` on
+   the video itself (not a token) is standard practice for a media player's letterbox area,
+   the same class of deliberate exception as the screenshot zoom modal's backdrop. */
+.case-video { margin: 0 0 var(--sp-3); }
+.case-video video {
+  width: 100%; display: block; background: #000;
+  border: 1px solid var(--line); border-radius: var(--r);
+}
+.case-video figcaption { font-size: .72rem; color: var(--faint); margin-top: 4px; }
+
+/* The plain-language "what happened" / "what the image shows" block for passed cases, and the
+   container renderCaseDiagnosisBlock fills in for failed ones — both start empty/hidden and
+   are populated by loadCaseDetails once the card is expanded (see app.js). */
+.case-narrative { margin-bottom: var(--sp-3); font-size: .82rem; }
+.case-narrative-line { margin: 0 0 6px; line-height: 1.5; color: var(--text-2); }
+.case-narrative-line:last-child { margin-bottom: 0; }
+.case-narrative-line b { color: var(--text); font-weight: 600; }
+.case-diagnosis-block:empty { display: none; }
 
 .case-downloads { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-3); }
 .dl-btn {
@@ -676,6 +770,13 @@ figcaption { font-size: .74rem; color: var(--faint); margin-top: 6px; }
   transition: color .15s var(--ease), border-color .15s var(--ease);
 }
 .dl-btn:hover { color: var(--text); border-color: var(--line-hover); }
+
+/* Smaller, inline variant sitting next to a technical-details heading (e.g. "Full test code
+   [download]") rather than in the main action row. */
+.dl-btn-inline {
+  padding: 2px 8px; font-size: .68rem; background: transparent; border-color: var(--line-soft);
+  margin-left: var(--sp-2); vertical-align: middle;
+}
 
 .case-details { margin-top: var(--sp-2); }
 .case-details summary {
@@ -861,6 +962,12 @@ figcaption { font-size: .74rem; color: var(--faint); margin-top: 6px; }
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Bulleted "what you can do" list — the case-card diagnosis block's version of .diag-fix-code,
+   which is a single pre-formatted snippet; this one holds 1-2 short plain-language bullets. */
+.diag-fix-list { margin: var(--sp-1) 0 0 0; padding-left: 1.1em; }
+.diag-fix-list li { color: var(--text); line-height: 1.5; margin: 0 0 4px; }
+.diag-fix-list li:last-child { margin-bottom: 0; }
 
 .diag-tech-details {
   margin-top: var(--sp-2);

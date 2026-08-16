@@ -27,8 +27,59 @@ export const Diagnosis = z.object({
   category: Category,
   explanation: z.string(),
   suggestedFix: z.string(),
+  /** Set only when verifyDiagnosisText() independently confirmed a quoted string from
+   *  explanation/suggestedFix actually appears in the page's own captured accessibility
+   *  snapshot at the moment of failure — deterministic, structural confirmation, not the LLM's
+   *  self-report. Deliberately kept separate from `suggestedFix`/`explanation` rather than
+   *  edited in place, so "the model's guess" and "independently confirmed against real
+   *  captured DOM state" stay visibly distinct wherever a Diagnosis is read or rendered. See
+   *  TECH_DEBT.md TD-38 for why this isn't (yet) fed back into toIR or heal's eligibility. */
+  verifiedText: z.string().optional(),
 });
 export type Diagnosis = z.infer<typeof Diagnosis>;
+
+// A short-ish quoted substring inside a diagnosis sentence — "the real text is 'X'" — is
+// almost always where a diagnosis states the actual page text it observed, distinct from the
+// narrative padding around it (which never matches the snapshot verbatim, so checking the
+// WHOLE sentence would essentially never confirm anything). Length-bounded to skip both
+// trivial single-character quotes and implausibly long "quotes" that are really just prose
+// that happened to be wrapped in stray quote characters.
+function extractQuotedCandidates(text: string): string[] {
+  const out: string[] = [];
+  const re = /['"“”]([^'"“”]{3,120})['"“”]/g; // fresh instance per call — a shared regex with
+  let m: RegExpExecArray | null;              // the "g" flag carries lastIndex across calls,
+  while ((m = re.exec(text))) out.push(m[1]); // a real bug if this were module-level.
+  return out;
+}
+
+/**
+ * Independently confirms (or doesn't) a diagnosis's claimed replacement text against the
+ * page's own captured accessibility snapshot — Playwright's auto-captured `error-context`
+ * output, deterministic ground truth about what was actually rendered, not an LLM's report
+ * about it. `Diagnosis.suggestedFix`/`explanation` are free text from a Gemini call (the
+ * deterministic classify() path never reaches here); trusting them at face value for anything
+ * downstream (like feeding a "corrected" assertion back into IR generation) risks over-firing
+ * on a plausible-sounding but wrong guess. This function is the deterministic check that
+ * decides whether a claim is trustworthy enough to act on — see CLAUDE.md's central rule that
+ * every model claim needs a structural verifier, not a trust-and-hope.
+ *
+ * Returns the first confirmed quoted candidate, or undefined if none of them appear in the
+ * snapshot (including when there's no snapshot to check against at all).
+ */
+export function verifyDiagnosisText(diagnosis: Diagnosis, result: ExecResult): string | undefined {
+  const snapshot = result.accessibilitySnapshot;
+  if (!snapshot) return undefined;
+  const normSnapshot = snapshot.toLowerCase().replace(/\s+/g, " ");
+  const candidates = [
+    ...extractQuotedCandidates(diagnosis.suggestedFix),
+    ...extractQuotedCandidates(diagnosis.explanation),
+  ];
+  for (const candidate of candidates) {
+    const normCandidate = candidate.toLowerCase().replace(/\s+/g, " ").trim();
+    if (normCandidate.length >= 3 && normSnapshot.includes(normCandidate)) return candidate.trim();
+  }
+  return undefined;
+}
 
 // Module-level so the cache key can hash it before the call is built — the key is computed
 // early, and a prompt defined inside the function would be unavailable at that point.
@@ -173,8 +224,10 @@ Return JSON: { "failingStepId", "category", "explanation", "suggestedFix" }`;
     try {
       const parsed = Diagnosis.safeParse(parseJson(raw));
       if (parsed.success) {
-        llmCacheSet(cacheKey, parsed.data);
-        return parsed.data;
+        const verifiedText = verifyDiagnosisText(parsed.data, result);
+        const diagnosis = verifiedText ? { ...parsed.data, verifiedText } : parsed.data;
+        llmCacheSet(cacheKey, diagnosis);
+        return diagnosis;
       }
       lastErr = parsed.error.message;
     } catch (err: any) {

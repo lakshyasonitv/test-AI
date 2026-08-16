@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   groundingError, hasTerminalAssertion, normalizeIR,
   assertionContradictsCase, vacuousAssertion, urlAssertionError, missingActions,
-  clickedElementHiddenAssertion, postClickRevealIndex,
+  clickedElementHiddenAssertion, postClickRevealIndex, crossFormBleedError,
 } from "../src/stages/ir.js";
 import { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -11,6 +11,11 @@ import { selectCases } from "../src/stages/testCases.js";
 
 const model = (elements: any[]): AppModel =>
   ({ baseUrl: "https://x", pages: [{ url: "https://x", concepts: [], elements }] }) as AppModel;
+
+// Same shape as `model`, plus page.forms — needed for credentialFieldMap/credentialFieldsNeeded,
+// which read DOM-derived form field inputType, not the elements array.
+const modelWithForms = (elements: any[], forms: any[]): AppModel =>
+  ({ baseUrl: "https://x", pages: [{ url: "https://x", concepts: [], elements, forms }] }) as AppModel;
 
 // Homepage + the two destinations a "Sign up"/"Dashboard" click can actually reach, wired
 // with domLinks so trackPages can resolve real click destinations — mirrors the shape
@@ -781,6 +786,9 @@ describe("selectCases — one suite, capped and deduplicated", () => {
 });
 
 describe("clickedElementHiddenAssertion", () => {
+  const noForms = model([]);
+  const notAuthCase = tc({ title: "t", expected: "e" }); // no auth wording anywhere
+
   // The real case-2: "Navigate to registration page" compiled to click Sign Up, then assert
   // Sign Up is hidden. Nothing was typed, so this is a navigation click — whether that button
   // disappears is incidental and proves nothing about the app.
@@ -790,12 +798,20 @@ describe("clickedElementHiddenAssertion", () => {
       { id: "s2", action: "click", target: { role: "button", name: "Sign Up" } },
       { id: "s3", action: "assert", target: { role: "button", name: "Sign Up" }, assertion: "hidden" },
     ] } as any;
-    expect(clickedElementHiddenAssertion(nav)?.stepIds).toEqual(["s3"]);
+    expect(clickedElementHiddenAssertion(nav, noForms, notAuthCase)?.stepIds).toEqual(["s3"]);
   });
 
   // The real case-1, which passed and must stay legal: this is the pattern ir.ts's own prompt
-  // recommends for a submit button. It differs from the above ONLY in having fills first.
-  it("allows it after a form submission", () => {
+  // recommends for a submit button. It differs from the above ONLY in having fills first, one
+  // of which the AppModel confirms is a real password field.
+  it("allows it after a login form submission with a discovered password field", () => {
+    const loginModel = modelWithForms(
+      [{ role: "textbox", name: "Email" }, { role: "textbox", name: "Password" }, { role: "button", name: "Sign In" }],
+      [{ fields: [
+        { tag: "input", inputType: "email", name: "Email", label: "Email" },
+        { tag: "input", inputType: "password", name: "Password", label: "Password" },
+      ] }],
+    );
     const login = { meta: {}, steps: [
       { id: "s1", action: "navigate", target: { url: "/login" } },
       { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "a@b.c" },
@@ -803,19 +819,43 @@ describe("clickedElementHiddenAssertion", () => {
       { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
       { id: "s5", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
     ] } as any;
-    expect(clickedElementHiddenAssertion(login)).toBeNull();
+    expect(clickedElementHiddenAssertion(login, loginModel, notAuthCase)).toBeNull();
   });
 
   // Zero fills is the threshold, not "fewer than two" — one field then Continue is a real
-  // submission and must stay legal.
-  it("allows a single-field submission", () => {
+  // submission and must stay legal, via the progressive-login INTENT fallback (the password
+  // field isn't revealed yet, but the case is explicitly about signing in).
+  it("allows a single-field progressive-login submission", () => {
+    const wayIn = model([{ role: "textbox", name: "Email" }, { role: "link", name: "Sign in" }]);
+    const signInCase = tc({ title: "Sign in with a valid account", expected: "e" });
     const oneField = { meta: {}, steps: [
       { id: "s1", action: "navigate", target: { url: "/login" } },
       { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "a@b.c" },
       { id: "s3", action: "click", target: { role: "button", name: "Continue" } },
       { id: "s4", action: "assert", target: { role: "button", name: "Continue" }, assertion: "hidden" },
     ] } as any;
-    expect(clickedElementHiddenAssertion(oneField)).toBeNull();
+    expect(clickedElementHiddenAssertion(oneField, wayIn, signInCase)).toBeNull();
+  });
+
+  // The real case-4 (this session's original bug report): fill an email field, click
+  // "Subscribe", assert Subscribe hidden. No password field anywhere, and the case isn't about
+  // authentication — a Mailchimp-style newsletter form, not a login. Must now be REJECTED; the
+  // old fillsBefore>0-only check let this through, which is exactly what broke in production.
+  it("rejects a non-authentication submission (the real Subscribe-button bug)", () => {
+    const newsletterModel = modelWithForms(
+      [{ role: "textbox", name: "Email *" }, { role: "button", name: "Subscribe" }],
+      [{ fields: [{ tag: "input", inputType: "email", name: "EMAIL", label: "Email *" }] }],
+    );
+    const subscribeCase = tc({ title: "Newsletter subscription with valid email", expected: "e" });
+    const subscribe = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Email *" }, value: "subscriber@example.com" },
+      { id: "s3", action: "click", target: { role: "button", name: "Subscribe" } },
+      { id: "s4", action: "assert", target: { role: "button", name: "Subscribe" }, assertion: "hidden" },
+    ] } as any;
+    const result = clickedElementHiddenAssertion(subscribe, newsletterModel, subscribeCase);
+    expect(result?.stepIds).toEqual(["s4"]);
+    expect(result?.message).toMatch(/non-authentication|authentication field/i);
   });
 
   it("ignores an assert-hidden on a different element", () => {
@@ -823,7 +863,108 @@ describe("clickedElementHiddenAssertion", () => {
       { id: "s1", action: "click", target: { role: "button", name: "Sign Up" } },
       { id: "s2", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
     ] } as any;
-    expect(clickedElementHiddenAssertion(other)).toBeNull();
+    expect(clickedElementHiddenAssertion(other, noForms, notAuthCase)).toBeNull();
+  });
+});
+
+describe("crossFormBleedError", () => {
+  // Two forms on one page: a contact form and an unrelated newsletter signup — real shape from
+  // the thinkvibes.com run this check was written to catch.
+  const twoForms = (): AppModel => ({
+    baseUrl: "https://x",
+    pages: [{
+      url: "https://x", concepts: [],
+      elements: [
+        { role: "textbox", name: "Name" }, { role: "textbox", name: "Email *" },
+        { role: "textbox", name: "Comment or Message" }, { role: "button", name: "Submit" },
+        { role: "textbox", name: "Email *" }, { role: "button", name: "Subscribe" },
+      ],
+      forms: [
+        // Realistic WPForms shape: generated field `name` attributes, human-readable `label`s
+        // — matching on name attribute alone would miss these, which is why label is checked too.
+        { id: "contact", fields: [
+          { tag: "input", inputType: "text", name: "wpforms[fields][0]", label: "Name" },
+          { tag: "input", inputType: "email", name: "wpforms[fields][1]", label: "Email *" },
+          { tag: "textarea", inputType: "text", name: "wpforms[fields][2]", label: "Comment or Message" },
+        ] },
+        { id: "newsletter", fields: [
+          { tag: "input", inputType: "text", name: "EMAIL", label: "" },
+          // Real recorded shape: the field's own `name` attribute matched the click target's
+          // accessible name ("Subscribe") even though its extracted `label` said something else
+          // entirely ("Join our Newsletter") — a different DOM-extraction path for the same
+          // physical control. Matching on name as well as label is what catches this.
+          { tag: "input", inputType: "submit", name: "subscribe", label: "Join our Newsletter" },
+        ] },
+      ],
+    }],
+  }) as AppModel;
+
+  // The real case-2 shape: fill three contact-form fields, then click the OTHER form's submit
+  // control (whose accessible name the model picked was "Join our Newsletter" — the newsletter
+  // form's field label). Must reject.
+  it("rejects a click that lands on a different form than the preceding fills", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Name" }, value: "Test User" },
+      { id: "s3", action: "fill", target: { role: "textbox", name: "Email *" }, value: "test@example.com" },
+      { id: "s4", action: "fill", target: { role: "textbox", name: "Comment or Message" }, value: "Hi" },
+      { id: "s5", action: "click", target: { role: "button", name: "Join our Newsletter" } },
+      { id: "s6", action: "assert", target: { text: "Message sent successfully" }, assertion: "visible" },
+    ] } as any;
+    const result = crossFormBleedError(ir, twoForms());
+    expect(result?.stepIds).toEqual(["s5"]);
+    expect(result?.message).toMatch(/different form/i);
+  });
+
+  // Fail open: the click target ("Submit") isn't itself a FIELD in fields[] (real <button>
+  // elements aren't extracted into forms[].fields — only inputs/textareas/selects are), so
+  // there's no match to compare against. Correct clicks routinely hit this path.
+  it("allows a click that matches no form field at all (the correct button)", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Name" }, value: "Test User" },
+      { id: "s3", action: "click", target: { role: "button", name: "Submit" } },
+      { id: "s4", action: "assert", target: { text: "Message sent successfully" }, assertion: "visible" },
+    ] } as any;
+    expect(crossFormBleedError(ir, twoForms())).toBeNull();
+  });
+
+  // Fail open: an ambiguous name shared across forms — don't guess which one is right.
+  it("allows a click whose target name is ambiguous across forms", () => {
+    const ambiguous = (): AppModel => ({
+      baseUrl: "https://x",
+      pages: [{
+        url: "https://x", concepts: [],
+        elements: [],
+        forms: [
+          { id: "a", fields: [
+            { tag: "input", inputType: "text", name: "Name", label: "Name" },
+            { tag: "input", inputType: "submit", name: "go", label: "Continue" },
+          ] },
+          { id: "b", fields: [{ tag: "input", inputType: "submit", name: "go2", label: "Continue" }] },
+        ],
+      }],
+    }) as AppModel;
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Name" }, value: "Test" },
+      { id: "s3", action: "click", target: { role: "button", name: "Continue" } },
+    ] } as any;
+    expect(crossFormBleedError(ir, ambiguous())).toBeNull();
+  });
+
+  it("allows a click that matches the SAME form as the preceding fills", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      // "EMAIL" matches only the newsletter form's field (its `name` attribute) — the contact
+      // form's own email field is labelled differently ("Email *"), so this fill resolves
+      // unambiguously to the newsletter form.
+      { id: "s2", action: "fill", target: { role: "textbox", name: "EMAIL" }, value: "subscriber@example.com" },
+      { id: "s3", action: "click", target: { role: "button", name: "Subscribe" } },
+    ] } as any;
+    // Fills the newsletter form's own field, then clicks the newsletter form's own submit
+    // (matched via its `name` attribute "subscribe") — same form both times.
+    expect(crossFormBleedError(ir, twoForms())).toBeNull();
   });
 });
 

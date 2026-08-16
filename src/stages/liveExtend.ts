@@ -276,6 +276,62 @@ function candidateMessageLines(pageText: string): string[] {
     .filter(l => l.length >= 4 && l.length <= 200 && MESSAGE_LIKE.test(l));
 }
 
+// A diff genuinely found nothing worth trusting once it needs to reject more than this many
+// candidates as chrome — a real navigation between two structurally different pages (a new
+// template, not just a form replaced by its own confirmation) can differ in dozens of lines,
+// and picking among that many "new" lines is closer to guessing than grounding.
+const MAX_DIFF_CANDIDATES = 15;
+
+/**
+ * Fallback candidate source for when `candidateMessageLines` (the keyword scan) finds nothing —
+ * real confirmation copy doesn't always contain a MESSAGE_LIKE word. Caught in practice: a
+ * WPForms "thank you" page reading "Thanks for contacting us! We will be in touch with you
+ * shortly." contains none of MESSAGE_LIKE's vocabulary, so the keyword scan came up empty and
+ * the wrong guess ("Message sent successfully") was left in place.
+ *
+ * Structural instead of another wording guess: whatever text is genuinely NEW on the page after
+ * the triggering action — present in `afterText`, absent from `beforeText` — is a much stronger
+ * signal than "does it contain one of these words," and doesn't need updating every time a site
+ * phrases its confirmation differently.
+ *
+ * Two noise guards, since a real page navigation (this exact case: contact page -> a
+ * DIFFERENT, undiscovered "thank you" page) can change more than just the confirmation line —
+ * a different template's header/footer, a rotating "recent posts" widget, session-specific
+ * chrome:
+ *  - a candidate that appears verbatim as text on some OTHER page this run already discovered
+ *    (via `page.markdown`, the rendered-text snapshot discovery already captured) is dropped —
+ *    the same "persistent site-wide chrome isn't proof of anything" principle ir.ts's own
+ *    prompt already states for assertion targets, applied here to candidate SOURCES instead.
+ *  - if more than MAX_DIFF_CANDIDATES survive that filter, the diff is too noisy to trust —
+ *    bail out entirely rather than guess among many plausible-looking new lines.
+ */
+function diffNewMessageLines(beforeText: string, afterText: string, appModel: AppModel): string[] {
+  const beforeLines = new Set(beforeText.split("\n").map(l => norm(l.trim())).filter(Boolean));
+  const seen = new Set<string>();
+  const fresh: string[] = [];
+  for (const raw of afterText.split("\n")) {
+    const trimmed = raw.trim();
+    if (trimmed.length < 4 || trimmed.length > 200) continue;
+    const key = norm(trimmed);
+    if (!key || seen.has(key) || beforeLines.has(key)) continue;
+    seen.add(key);
+    fresh.push(trimmed);
+  }
+  if (!fresh.length) return [];
+
+  const chromeCorpus = new Set<string>();
+  for (const page of appModel.pages) {
+    if (!page.markdown) continue;
+    for (const line of page.markdown.split("\n")) {
+      const key = norm(line.trim());
+      if (key) chromeCorpus.add(key);
+    }
+  }
+  const candidates = fresh.filter(l => !chromeCorpus.has(norm(l)));
+  if (candidates.length > MAX_DIFF_CANDIDATES) return [];
+  return candidates;
+}
+
 /** True when the step is a terminal-style pure-text assertion: exactly the kind
  *  groundingError exempts (no role/name to check against the AppModel), and therefore the
  *  one kind whose asserted text is never verified against anything real. */
@@ -342,15 +398,47 @@ export async function groundTerminalTextAssertion(
   // real message-shaped line to correct it to, closest in length to the original guess
   // (the closest proxy available, without reintroducing a general string-similarity
   // matcher, for "probably the same message, differently worded").
-  const candidates = candidateMessageLines(pageText);
+  let candidates = candidateMessageLines(pageText);
+  let viaDiff = false;
+
+  // The keyword scan found nothing — real confirmation copy doesn't always contain a
+  // MESSAGE_LIKE word (see diffNewMessageLines' doc comment for the real example this was
+  // written for). Fall back to a structural diff before giving up: replay one step earlier
+  // (before whatever triggered this page state) and see what's genuinely new.
+  if (!candidates.length && prefix.length > 1) {
+    try {
+      const { pageText: beforeText = "" } = await replayAndSnapshot(model, prefix.slice(0, -1), creds, policy);
+      candidates = diffNewMessageLines(beforeText, pageText, model);
+      if (candidates.length) {
+        viaDiff = true;
+        console.log(`[liveExtend] text-assertion grounding: keyword scan found nothing, structural diff found ${candidates.length} new line(s)`);
+      }
+    } catch (err: any) {
+      console.log("[liveExtend] text-assertion grounding: before-state replay for structural diff failed, leaving assertion as-is:", err?.message ?? err);
+    }
+  }
+
   if (!candidates.length) {
     console.log("[liveExtend] text-assertion grounding: no message-shaped text found on the replayed page, leaving assertion as-is");
     return { ir, grounded: false, corrected: false };
   }
   const targetLen = last.target!.text!.length;
-  const best = candidates.reduce((a, b) =>
-    Math.abs(b.length - targetLen) < Math.abs(a.length - targetLen) ? b : a
-  );
+  // Diff candidates need a different tie-break than keyword candidates. The keyword path's
+  // "closest to the original guess's length" is a reasonable proxy when every candidate is
+  // already message-shaped (contains an error/success/etc. word) — but a diff candidate set
+  // can legitimately contain more than one genuinely-new line (a real confirmation page often
+  // has BOTH its message AND an incidental short link, e.g. "Click here to re-submit the
+  // form"), and the wrong guess's length has no real relationship to either when the keyword
+  // scan already came up empty. Prefer the LONGEST candidate instead: a confirmation sentence
+  // is reliably the more substantial new content; a nav-adjacent action link is reliably
+  // shorter. Caught in practice: length-to-guess picked "Click here to re-submit the form"
+  // (34 chars, coincidentally close to a 26-char wrong guess) over the real 65-char
+  // confirmation sentence.
+  const best = viaDiff
+    ? candidates.reduce((a, b) => (b.length > a.length ? b : a))
+    : candidates.reduce((a, b) =>
+        Math.abs(b.length - targetLen) < Math.abs(a.length - targetLen) ? b : a
+      );
 
   console.log(`[liveExtend] text-assertion grounding: corrected "${last.target!.text}" -> "${best}"`);
   const corrected: IR = {

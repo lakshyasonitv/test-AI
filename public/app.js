@@ -17,14 +17,14 @@ const PHASES = [
   },
   {
     key: "build_run",
-    label: "3. Building & Executing Tests",
-    desc: "Generating automated test scripts & running them in a real browser.",
+    label: "3. Building & Running Tests",
+    desc: "Writing the test steps and running them in a real browser, just like a person would.",
     stages: ["testcases", "ir", "generate", "execute"]
   },
   {
     key: "results",
-    label: "4. Evaluating Results & Verdict",
-    desc: "Checking pass/fail state, verifying assertions, and capturing screenshots.",
+    label: "4. Checking the Results",
+    desc: "Working out what passed, what didn't, and taking screenshots along the way.",
     stages: ["failure_analysis", "heal"]
   },
 ];
@@ -78,6 +78,8 @@ const testStepsEl = document.getElementById("testSteps");
 const testExpectedEl = document.getElementById("testExpected");
 const screenshotFigureEl = document.getElementById("screenshotFigure");
 const screenshotEl = document.getElementById("screenshot");
+const videoFigureEl = document.getElementById("videoFigure");
+const resultVideoEl = document.getElementById("resultVideo");
 const diagnosisEl = document.getElementById("diagnosis");
 const traceLinkEl = document.getElementById("traceLink");
 const suiteProgressEl = document.getElementById("suiteProgress");
@@ -87,6 +89,9 @@ const suiteSummaryHeaderEl = document.getElementById("suiteSummaryHeader");
 const suiteCaseListEl = document.getElementById("suiteCaseList");
 const screenshotToggleEl = document.getElementById("screenshotToggle");
 const screenshotGridEl = document.getElementById("screenshotGrid");
+const screenshotModalEl = document.getElementById("screenshotModal");
+const screenshotModalImgEl = document.getElementById("screenshotModalImg");
+const screenshotModalCloseEl = document.getElementById("screenshotModalClose");
 const credPromptEl = document.getElementById("credentialPrompt");
 const credFormEl = document.getElementById("credForm");
 const credWhyEl = document.getElementById("credWhy");
@@ -187,12 +192,16 @@ function summarize(stage, data) {
           return `Generated ${data.generated} scenarios → selected ${data.selected} to run${reason}`;
         }
         // Runs recorded before this event carried the counts (history is on disk forever).
+        // Skip the count-based fallback when this is a case-selection gate event — those
+        // events carry data.action but no generated/selected counts, so showing
+        // "Generated 0 test scenarios" here is always a flicker, not real information.
+        if (data.action) return "Reviewing test cases...";
         const count = data.total ?? data.length ?? 0;
         const extra = data.reactive ? ` (${data.reactive} reactive)` : "";
         return `Generated ${count} test scenarios${extra}`;
       }
-      case "ir": return `Test Plan Model: ${data.meta?.title ?? ""}`;
-      case "generate": return "Playwright test script generated successfully";
+      case "ir": return `Worked out the exact steps: ${data.meta?.title ?? ""}`;
+      case "generate": return "Test script ready";
       case "execute": return data.passed ? "The test ran and everything it checked was correct" : "The test ran and something didn’t match what was expected";
       case "heal": return data.healed
         ? "An element had moved on the page — the test found it again and carried on"
@@ -382,9 +391,14 @@ function renderCaseCard(c, runId, index) {
   const statusBadge = BADGE[c.status] ?? "badge-pending";
   const statusIcon = icon(STATUS_ICON[c.status] ?? "circle", { size: 16 });
 
-  // Plain-English line: what this check actually proves. `intent` is the model's own words
-  // and is optional in the schema; `expected` is required, so it's the guaranteed fallback.
-  const whatItChecks = c.intent || c.expected || "";
+  // `whyItMatters` (required in the schema since this redesign) is the headline: a plain,
+  // real-world consequence sentence with no QA vocabulary, meant for someone who's never
+  // written a test in their life. `expected` (always present) is the concrete, technical
+  // "what should happen" detail — real but secondary, so it's a smaller line underneath
+  // rather than the thing a non-technical user reads first. `intent` (QA reasoning, e.g.
+  // "Proves that...") moves into the technical-details panel instead of the card body.
+  const whyItMatters = c.whyItMatters || c.intent || c.expected || "";
+  const expected = c.expected || "";
 
   const caseDir = `/runs/${runId}/${c.resultPath}`;
   const screenshotUrl = c.screenshotUrl || "";
@@ -393,78 +407,140 @@ function renderCaseCard(c, runId, index) {
   const resultUrl = `${caseDir}/05-result.json`;
   const traceUrl = `${caseDir}/artifacts`;
 
+  // Failed/blocked cases open already-expanded, so the diagnosis a user came for is the first
+  // thing they see rather than something they must know to click for.
+  const autoExpand = c.status === "failed" || c.status === "blocked";
+
   return `
-    <div class="case-card" data-case-id="${escapeHtml(c.caseId)}">
-      <div class="case-card-header" role="button" tabindex="0">
+    <div class="case-card${autoExpand ? " open" : ""}" data-case-id="${escapeHtml(c.caseId)}" data-status="${escapeHtml(c.status)}">
+      <div class="case-card-header" role="button" tabindex="0" aria-expanded="${autoExpand}">
         <span class="case-status-icon ${statusBadge}">${statusIcon}</span>
         <span class="case-heading">
           <span class="case-title">${escapeHtml(c.title)}</span>
-          ${whatItChecks ? `<p class="case-intent">${escapeHtml(whatItChecks)}</p>` : ""}
+          ${whyItMatters ? `<p class="case-intent">${escapeHtml(whyItMatters)}</p>` : ""}
+          ${expected && expected !== whyItMatters ? `<p class="case-expected"><span>What should happen:</span> ${escapeHtml(expected)}</p>` : ""}
         </span>
         <span class="case-badge ${statusBadge}">${escapeHtml(STATUS_LABEL[c.status] ?? c.status)}</span>
+        ${c.healed && c.status === "passed" ? `<span class="case-badge case-badge-healed" title="This failed on the first attempt; the system automatically found a fix and re-ran it, and it passed.">${icon("refresh", { size: 11 })} Fixed automatically</span>` : ""}
         <span class="case-expand-icon">${icon("chevron-down", { size: 14 })}</span>
       </div>
-      <div class="case-card-body hidden">
+      <div class="case-card-body">
         ${c.blockedBy ? `<p class="blocked-note">Couldn't finish: ${escapeHtml(c.blockedBy)}. The screenshot below is where it stopped.</p>` : ""}
+        <div class="case-narrative hidden"></div>
+        <div class="case-diagnosis-block hidden"></div>
         ${screenshotUrl ? `
         <figure class="case-screenshot">
           <img src="${escapeHtml(screenshotUrl)}" alt="screenshot for case ${index + 1}" loading="lazy"
+               tabindex="0" role="button" aria-label="View full-size screenshot"
                onerror="this.parentElement.classList.add('hidden')" />
-          <figcaption>Final state</figcaption>
+          <figcaption>Final state — click to zoom in</figcaption>
+        </figure>` : ""}
+        ${c.videoUrl ? `
+        <figure class="case-video">
+          <video controls preload="none" ${screenshotUrl ? `poster="${escapeHtml(screenshotUrl)}"` : ""}
+                 onerror="this.parentElement.classList.add('hidden')">
+            <source src="${escapeHtml(c.videoUrl)}" type="video/webm" />
+          </video>
+          <figcaption>Recording of the run — nothing downloads until you press play</figcaption>
         </figure>` : ""}
         <div class="case-downloads">
-          <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">${icon("file-text", { size: 13 })} Test script</a>
-          <a href="${escapeHtml(irUrl)}" download="ir.json" class="dl-btn">${icon("braces", { size: 13 })} Test model (IR)</a>
-          <a href="${escapeHtml(resultUrl)}" download="result.json" class="dl-btn">${icon("download", { size: 13 })} Raw result</a>
-          <a href="${escapeHtml(traceUrl)}" class="dl-btn" target="_blank">${icon("external-link", { size: 13 })} Artifacts</a>
+          <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">${icon("file-text", { size: 13 })} Download test script</a>
+          <a href="${escapeHtml(resultUrl)}" download="result.json" class="dl-btn">${icon("download", { size: 13 })} Download full result</a>
         </div>
         <details class="case-details">
-          <summary>${icon("code", { size: 13 })} Technical details</summary>
+          <summary>${icon("code", { size: 13 })} Technical details (for developers)</summary>
           <div class="case-details-content">
-            ${c.groqCalls ? `<h4>Cost</h4><pre>${c.groqCalls} model call(s), ${c.groqTokens ?? 0} tokens</pre>` : ""}
-            <h4>Test model (IR)</h4>
+            ${c.intent ? `<h4>QA reasoning</h4><pre>${escapeHtml(c.intent)}</pre>` : ""}
+            ${c.groqCalls ? `<h4>Cost</h4><pre>${c.groqCalls} AI call(s), ${c.groqTokens ?? 0} tokens</pre>` : ""}
+            <h4>Step-by-step test plan (JSON) <a href="${escapeHtml(irUrl)}" download="ir.json" class="dl-btn dl-btn-inline">${icon("download", { size: 12 })} download</a></h4>
             <pre class="case-ir">Loading…</pre>
-            <h4>Generated Playwright spec</h4>
+            <h4>Full test code <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn dl-btn-inline">${icon("download", { size: 12 })} download</a></h4>
             <pre class="case-spec">Loading…</pre>
+            <h4>All files (screenshots, trace, video) <a href="${escapeHtml(traceUrl)}" class="dl-btn dl-btn-inline" target="_blank">${icon("external-link", { size: 12 })} open</a></h4>
           </div>
         </details>
       </div>
     </div>`;
 }
 
+function toggleCaseCard(card, open) {
+  const header = card.querySelector(".case-card-header");
+  card.classList.toggle("open", open);
+  header.setAttribute("aria-expanded", String(open));
+  if (open && !card.dataset.loaded) {
+    card.dataset.loaded = "true";
+    loadCaseDetails(card);
+  }
+}
+
 // Load technical details on demand (lazy fetch)
 function setupCaseCardListeners() {
   suiteCaseListEl.querySelectorAll(".case-card-header").forEach((header) => {
-    header.addEventListener("click", () => {
-      const card = header.closest(".case-card");
-      const body = card.querySelector(".case-card-body");
-      const isHidden = body.classList.contains("hidden");
-      body.classList.toggle("hidden");
-      // The chevron is rotated by CSS via .case-card.open, so only the class needs to change.
-      header.closest(".case-card").classList.toggle("open", isHidden);
-
-      // Lazy-load technical details on first expand
-      if (isHidden && !card.dataset.loaded) {
-        card.dataset.loaded = "true";
-        loadCaseDetails(card);
-      }
+    const card = header.closest(".case-card");
+    const activate = () => toggleCaseCard(card, !card.classList.contains("open"));
+    header.addEventListener("click", activate);
+    // role="button" on a <div> gets no native Enter/Space activation — wire it by hand.
+    header.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(); }
     });
   });
+
+  suiteCaseListEl.querySelectorAll(".case-screenshot img").forEach((img) => {
+    const open = () => openScreenshotModal(img.src, img.alt);
+    img.addEventListener("click", open);
+    img.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    });
+  });
+
+  // Cards that rendered already-expanded (failed/blocked) never fire the click/keydown
+  // handler above, so their detail fetch — including the diagnosis block — has to be kicked
+  // off here instead. Loading them from the click listener alone would leave every
+  // auto-expanded card stuck on "Loading…" forever.
+  const preExpanded = suiteCaseListEl.querySelectorAll(".case-card.open");
+  preExpanded.forEach((card) => {
+    if (!card.dataset.loaded) {
+      card.dataset.loaded = "true";
+      loadCaseDetails(card);
+    }
+  });
+  // Scroll only the first one into view — the point is "notice this," not a scroll fight
+  // between several failed cards.
+  if (preExpanded.length) {
+    preExpanded[0].scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 async function loadCaseDetails(card) {
   const runId = card.closest(".suite-results")?.dataset?.runId;
   if (!runId) return;
   const caseId = card.dataset.caseId;
+  const status = card.dataset.status;
   const caseDir = `/runs/${runId}/cases/${caseId}`;
 
   try {
-    const [irRes, specRes] = await Promise.all([
-      fetch(`${caseDir}/04-ir.json`).then(r => r.ok ? r.text() : "Not found"),
+    const [irRes, specRes, diagnosis] = await Promise.all([
+      fetch(`${caseDir}/04-ir.json`).then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(`${caseDir}/generated.spec.ts`).then(r => r.ok ? r.text() : "Not found"),
+      // diagnosisPath is only ever written when the case actually failed — don't ask for a
+      // file that was never produced for a passed/blocked case.
+      status === "failed"
+        ? fetch(`${caseDir}/06-diagnosis.json`).then(r => r.ok ? r.json() : null).catch(() => null)
+        : Promise.resolve(null),
     ]);
-    card.querySelector(".case-ir").textContent = irRes;
+    // Run-level 04-ir.json wraps { ir, updatedAt }; the per-case copy is the raw IR itself.
+    // Handle both shapes rather than assume one — same defensive pattern as
+    // tests/irPostClickReveal.test.ts's loader.
+    const ir = irRes?.ir ?? irRes;
+    card.querySelector(".case-ir").textContent = ir ? JSON.stringify(ir, null, 2) : "Not found";
     card.querySelector(".case-spec").textContent = specRes;
+
+    const suite = currentSuite;
+    const c = suite?.cases?.find((x) => x.caseId === caseId);
+    const narrativeEl = card.querySelector(".case-narrative");
+    const diagEl = card.querySelector(".case-diagnosis-block");
+    if (status === "passed" && c) renderCaseNarrative(narrativeEl, c, ir);
+    if (status === "failed") renderCaseDiagnosisBlock(diagEl, diagnosis);
   } catch {
     // Details stay as "Loading..." — non-critical
   }
@@ -474,8 +550,13 @@ async function loadCaseDetails(card) {
 // Full suite results rendering
 // -----------------------------------------------------------------------------
 
+// Tracks the suite currently on screen so loadCaseDetails (fired later, on expand) can look
+// up a case's whyItMatters/intent for the passed-case narrative without re-fetching it.
+let currentSuite = null;
+
 function renderSuiteResults(suite, runId) {
   if (!suite || !suite.cases) return;
+  currentSuite = suite;
   suiteResultsEl.classList.remove("hidden");
   suiteResultsEl.dataset.runId = runId;
   suiteSummaryHeaderEl.innerHTML = renderSuiteSummaryHeader(suite);
@@ -485,6 +566,7 @@ function renderSuiteResults(suite, runId) {
 }
 
 function hideSuiteResults() {
+  currentSuite = null;
   suiteResultsEl.classList.add("hidden");
   suiteResultsEl.removeAttribute("data-run-id");
   suiteSummaryHeaderEl.innerHTML = "";
@@ -565,34 +647,174 @@ function formatIrStep(step) {
 
   switch (action) {
     case "navigate":
-      return `Navigate to ${target?.url ? `"${target.url}"` : step.value ? `"${step.value}"` : '"/"'}`;
+      return `Go to ${target?.url ? target.url : step.value ? step.value : '"/"'}`;
     case "fill":
-      return `Fill ${targetDesc} with "${step.value ?? ""}"`;
+      return `Type "${step.value ?? ""}" into ${targetDesc}`;
     case "click":
-      return `Click ${targetDesc}`;
+      return `Click on ${targetDesc}`;
     case "select":
-      return `Select "${step.value ?? ""}" in ${targetDesc}`;
+      return `Choose "${step.value ?? ""}" from ${targetDesc}`;
     case "check":
       return `Check ${targetDesc}`;
     case "press":
-      return `Press "${step.value ?? ""}" on ${targetDesc}`;
+      return `Press the ${step.value ?? ""} key`;
     case "wait":
-      return `Wait ${step.value ?? 500}ms`;
+      return `Wait briefly`;
     case "assert": {
       const assertion = step.assertion || "visible";
-      if (assertion === "visible") return `Assert ${targetDesc} is visible`;
-      if (assertion === "hidden") return `Assert ${targetDesc} is hidden`;
-      if (assertion === "url_contains") return `Assert URL contains "${step.value || target?.url || ""}"`;
-      if (assertion === "text_contains") return `Assert text contains "${step.value || ""}"`;
-      if (assertion === "text_equals") return `Assert text equals "${step.value || ""}"`;
-      if (assertion === "enabled") return `Assert ${targetDesc} is enabled`;
-      if (assertion === "disabled") return `Assert ${targetDesc} is disabled`;
-      return `Assert ${assertion} on ${targetDesc}${step.value ? ` ("${step.value}")` : ""}`;
+      if (assertion === "visible") return `Check that ${targetDesc} appears on the page`;
+      if (assertion === "hidden") return `Check that ${targetDesc} is not shown`;
+      if (assertion === "url_contains") return `Check the page address contains "${step.value || target?.url || ""}"`;
+      if (assertion === "text_contains") return `Check that the text "${step.value || ""}" is displayed`;
+      if (assertion === "text_equals") return `Check that the text "${step.value || ""}" is displayed`;
+      if (assertion === "enabled") return `Check that ${targetDesc} is enabled`;
+      if (assertion === "disabled") return `Check that ${targetDesc} is disabled`;
+      return `Check ${assertion} on ${targetDesc}${step.value ? ` ("${step.value}")` : ""}`;
     }
     default:
       return `${action} ${targetDesc}`;
   }
 }
+
+// Plain-language reason per failure category (src/stages/classify.ts's KNOWN_CATEGORIES —
+// the real, closed set the classifier and analyzeFailure() actually produce; "other" is the
+// deliberate fallback for anything outside it, never left blank).
+const CATEGORY_REASON = {
+  selector_changed: "The page's layout changed since this test was written, so the element could no longer be found the same way.",
+  element_missing: "The button, link, or field the test needed never appeared on the page.",
+  element_not_interactable: "The element was there, but something (like being covered or disabled) stopped the test from using it.",
+  element_hidden: "The element was on the page but stayed hidden, so the test couldn't do what it needed with it.",
+  multiple_matches: "More than one element matched the description, and the test likely used the wrong one.",
+  detached: "The element disappeared from the page while the test was still trying to use it.",
+  timeout: "The page took longer to respond than the test was willing to wait.",
+  assertion_failed: "The page did something different from what the test expected to see.",
+  navigation_error: "The page failed to load, or went somewhere the test didn't expect.",
+  network: "A network request the page needed failed or was blocked.",
+  other: "This doesn't match a common failure pattern — see the technical details below.",
+};
+
+// Grounded in the IR's own last step, not an invented image description — there's no vision
+// call in this path (adding one would be a new backend cost this change deliberately avoids),
+// so the caption only ever states what the last recorded step actually asserted or did.
+function describeScreenshot(steps) {
+  if (!steps || !steps.length) return "The page as it looked when the test finished.";
+  const last = steps[steps.length - 1];
+  if (last.action !== "assert") return `The page right after the last step: ${formatIrStep(last).toLowerCase()}.`;
+  const target = last.target;
+  const targetDesc = target?.name ? `"${target.name}"` : target?.text ? `"${target.text}"` : "the expected element";
+  const assertion = last.assertion || "visible";
+  if (assertion === "visible") return `The page showing ${targetDesc}, confirming it appeared as expected.`;
+  if (assertion === "hidden") return `The page after confirming ${targetDesc} was not shown.`;
+  if (assertion === "url_contains") return "The page at the address the test expected to land on.";
+  if (assertion === "text_contains" || assertion === "text_equals") return "The page showing the text the test was checking for.";
+  return "The page in its final, confirmed state.";
+}
+
+// "join them into a coherent sentence" per the design brief — a flowing run-on of the plain-
+// English step descriptions already produced by formatIrStep, not a second LLM summarization
+// pass (this path makes no new API calls; see the file header on public/preview.js for why
+// that constraint is deliberate here).
+function buildStepNarrative(steps) {
+  if (!steps || !steps.length) return "";
+  // formatIrStep returns imperative fragments ("Go to X", "Click on Y") — gluing them after a
+  // subject like "The test ___" needs verb conjugation ("go" -> "goes") this function doesn't
+  // have (an early version read "The test go to /, check heading..." for exactly this reason).
+  // A colon-introduced list sidesteps conjugation entirely: each fragment stays grammatical on
+  // its own, the way steps in an instruction list normally read.
+  const parts = steps.map((s) => {
+    const d = formatIrStep(s);
+    return d.charAt(0).toLowerCase() + d.slice(1);
+  });
+  const sentence = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")}, then ${parts[parts.length - 1]}`;
+  return `Here's what happened: ${sentence}.`;
+}
+
+function renderCaseNarrative(container, c, ir) {
+  const steps = ir?.steps;
+  const whatHappened = steps?.length ? buildStepNarrative(steps) : (c.whyItMatters || c.intent || "");
+  if (!whatHappened) { container.classList.add("hidden"); return; }
+  const whatImage = c.screenshotUrl ? describeScreenshot(steps) : "";
+  container.innerHTML = `
+    <p class="case-narrative-line"><b>What happened:</b> ${escapeHtml(whatHappened)}</p>
+    ${whatImage ? `<p class="case-narrative-line"><b>What the image shows:</b> ${escapeHtml(whatImage)}</p>` : ""}`;
+  container.classList.remove("hidden");
+}
+
+function renderCaseDiagnosisBlock(container, diagnosis) {
+  if (!diagnosis) { container.classList.add("hidden"); return; }
+  const whatWrong = diagnosis.explanation || "The test hit a problem it couldn't get past.";
+  const why = CATEGORY_REASON[diagnosis.category] || CATEGORY_REASON.other;
+  const bullets = [];
+  if (diagnosis.suggestedFix) {
+    bullets.push(diagnosis.suggestedFix);
+    // Honest, not a self-heal claim: suite cases (unlike the primary case) don't get an
+    // automatic heal retry, so "re-run and it may auto-correct" would be false here. A full
+    // re-run genuinely can help with transient causes, so that's the true fallback offered.
+    bullets.push("Run the whole test again — if this was a timing hiccup (a slow page, a flaky request), it may pass next time.");
+  } else {
+    bullets.push("Try re-running with a more specific prompt, or check if the site has changed since the last discovery.");
+  }
+  container.innerHTML = `
+    <div class="diag-card">
+      <div class="diag-card-header">
+        <span class="diag-badge">What happened</span>
+        <h4>${escapeHtml(whatWrong)}</h4>
+      </div>
+      <div class="diag-card-body">
+        <div class="diag-item"><p class="diag-text"><b>Why it happened:</b> ${escapeHtml(why)}</p></div>
+        <div class="diag-item diag-fix-box">
+          <span class="diag-label fix-label">💡 What you can do</span>
+          <ul class="diag-fix-list">${bullets.map((b) => `<li>${escapeHtml(b)}</li>`).join("")}</ul>
+        </div>
+        <details class="diag-tech-details">
+          <summary>Technical details (for developers)</summary>
+          <code>Category: ${escapeHtml(diagnosis.category || "unknown")} · Failing step: ${escapeHtml(diagnosis.failingStepId || "unknown")}</code>
+        </details>
+      </div>
+    </div>`;
+  container.classList.remove("hidden");
+}
+
+// -----------------------------------------------------------------------------
+// Screenshot zoom modal — pure JS/CSS, no external libraries. Only one focusable element
+// lives inside the modal (the close button; the image itself isn't a tab stop), so the focus
+// trap is just "Tab/Shift+Tab always lands back on that button" rather than a full cycle.
+// -----------------------------------------------------------------------------
+
+let modalPreviouslyFocused = null;
+
+function openScreenshotModal(src, alt) {
+  modalPreviouslyFocused = document.activeElement;
+  screenshotModalImgEl.src = src;
+  screenshotModalImgEl.alt = alt || "Screenshot, full size";
+  screenshotModalEl.classList.remove("hidden");
+  document.addEventListener("keydown", handleScreenshotModalKeydown);
+  screenshotModalCloseEl.focus();
+}
+
+function closeScreenshotModal() {
+  screenshotModalEl.classList.add("hidden");
+  screenshotModalImgEl.src = "";
+  document.removeEventListener("keydown", handleScreenshotModalKeydown);
+  // Return focus to whatever opened the modal (the screenshot thumbnail), so a keyboard user
+  // isn't dropped back at the top of the page.
+  if (modalPreviouslyFocused && typeof modalPreviouslyFocused.focus === "function") {
+    modalPreviouslyFocused.focus();
+  }
+  modalPreviouslyFocused = null;
+}
+
+function handleScreenshotModalKeydown(e) {
+  if (e.key === "Escape") { closeScreenshotModal(); return; }
+  if (e.key === "Tab") { e.preventDefault(); screenshotModalCloseEl.focus(); }
+}
+
+screenshotModalCloseEl.addEventListener("click", closeScreenshotModal);
+screenshotModalEl.addEventListener("click", (e) => {
+  // Only the backdrop itself closes on click — a click that lands on the image (a child
+  // element, so a different e.target) must not.
+  if (e.target === screenshotModalEl) closeScreenshotModal();
+});
 
 function renderEnterpriseDiagnostic(data, stage, error) {
   if (data?.passed && !data?.partial) {
@@ -612,32 +834,32 @@ function renderEnterpriseDiagnostic(data, stage, error) {
   let techDetails = "";
 
   if (status === "truncated_no_assertion" || status === "truncated" || note) {
-    headline = "Test Truncated Mid-Flow (Element Not Found)";
+    headline = "The test stopped partway through";
     if (/admin|role|permission|authorized/i.test(note || "")) {
-      description = "The test signed in, but could not locate the Admin section on the page. This typically occurs if the account used lacks Admin privileges (e.g. standard 'Learner' user).";
-      fixPrompt = 'Specify Admin credentials in your prompt:\n"Log in with email: vaibhav.parmar@thinkvibes.com and password: 123456 then click Admin..."';
+      description = "It signed in successfully, but couldn't find the Admin section on the page. This usually means the account it used doesn't have Admin access.";
+      fixPrompt = 'Tell it which account to use:\n"Log in with email: user@example.com and password: yourpassword then click Admin..."';
     } else if (/hydration|dynamically|load/i.test(note || "")) {
-      description = "The element was not yet visible in the page DOM when the test attempted to interact with it.";
-      fixPrompt = 'Add a wait step in your prompt:\n"Log in, wait 2 seconds for the dashboard to load, then click Admin..."';
+      description = "It tried to interact with part of the page before that part had finished loading.";
+      fixPrompt = 'Give the page a moment to catch up:\n"Log in, wait 2 seconds for the dashboard to load, then click Admin..."';
     } else {
-      description = "The requested element could not be matched against the discovered page elements.";
-      fixPrompt = "Ensure the button or link text in your prompt matches what appears on the website.";
+      description = "It couldn't find a button, link, or field it needed on the page.";
+      fixPrompt = "Check that the wording in your request (button or link names) matches what actually appears on the website.";
     }
     techDetails = note || "";
   } else if (status === "blocked") {
-    headline = "Test Blocked by Site Constraint";
-    description = blockedBy || "The flow encountered an authentication barrier (such as 2FA, OTP, or CAPTCHA) that automation cannot bypass.";
-    fixPrompt = "Test on a staging environment where 2FA is disabled or provide pre-authenticated cookies.";
+    headline = "The site stopped the test";
+    description = blockedBy || "The test hit something automation can't get past on its own — like a code sent to a phone or email, or a \"prove you're not a robot\" check.";
+    fixPrompt = "Try a test version of the site with that extra step turned off, or point the test at a page that's already logged in.";
     techDetails = blockedBy || "";
   } else if (diagnosis) {
-    headline = `Execution Failure (${diagnosis.category || 'Error'})`;
-    description = diagnosis.explanation || "The Playwright test step failed during execution.";
-    fixPrompt = diagnosis.suggestedFix || "Verify the target element is visible and enabled on the page.";
-    techDetails = `Failing Step: ${diagnosis.failingStepId || 'unknown'}`;
+    headline = "Something didn't work as expected";
+    description = diagnosis.explanation || "The test hit a problem partway through and couldn't continue.";
+    fixPrompt = diagnosis.suggestedFix || "Check that the button or field the test needs is visible and available on the page.";
+    techDetails = `Category: ${diagnosis.category || 'unknown'} · Failing step: ${diagnosis.failingStepId || 'unknown'}`;
   } else if (error || stage === "error") {
-    headline = "Pipeline Execution Error";
-    description = error || "An error occurred while executing the test pipeline.";
-    fixPrompt = "Check network connectivity and verify the target URL is accessible.";
+    headline = "Something went wrong on our end";
+    description = error || "We hit an unexpected problem while running this test.";
+    fixPrompt = "Check that the website address is correct and reachable, then try again.";
     techDetails = error || "";
   } else {
     return;
@@ -646,22 +868,21 @@ function renderEnterpriseDiagnostic(data, stage, error) {
   diagnosisEl.innerHTML = `
     <div class="diag-card">
       <div class="diag-card-header">
-        <span class="diag-badge">Diagnostic Analysis</span>
+        <span class="diag-badge">What happened</span>
         <h4>${escapeHtml(headline)}</h4>
       </div>
       <div class="diag-card-body">
         <div class="diag-item">
-          <span class="diag-label">What Went Wrong:</span>
           <p class="diag-text">${escapeHtml(description)}</p>
         </div>
         ${fixPrompt ? `
         <div class="diag-item diag-fix-box">
-          <span class="diag-label fix-label">💡 How to Fix This in Your Next Prompt:</span>
+          <span class="diag-label fix-label">💡 Try this next time</span>
           <pre class="diag-fix-code">${escapeHtml(fixPrompt)}</pre>
         </div>` : ""}
         ${techDetails ? `
         <details class="diag-tech-details">
-          <summary>Technical Details</summary>
+          <summary>Technical details (for developers)</summary>
           <code>${escapeHtml(techDetails)}</code>
         </details>` : ""}
       </div>
@@ -699,11 +920,24 @@ function renderSingleTestResult(data, stage, error) {
   } else {
     screenshotFigureEl.classList.add("hidden");
   }
+
+  const vid = data?.videoUrl;
+  if (vid) {
+    resultVideoEl.innerHTML = `<source src="${escapeHtml(vid)}" type="video/webm" />`;
+    if (shot) resultVideoEl.poster = shot;
+    videoFigureEl.classList.remove("hidden");
+  } else {
+    videoFigureEl.classList.add("hidden");
+    resultVideoEl.removeAttribute("src");
+    resultVideoEl.innerHTML = "";
+  }
 }
 
 function hideSingleTestResult() {
   finalResult.classList.add("hidden");
   testSummaryEl.classList.add("hidden");
+  videoFigureEl.classList.add("hidden");
+  resultVideoEl.innerHTML = "";
   diagnosisEl.textContent = "";
   screenshotFigureEl.classList.add("hidden");
   screenshotEl.removeAttribute("src");
@@ -748,6 +982,9 @@ function renderHistory(runs) {
       const runId = btn.closest(".history-item").dataset.runId;
       if (!confirm("Delete this run permanently?")) return;
       await fetch(`/api/runs/${runId}`, { method: "DELETE" });
+      if (currentRunId === runId) {
+        pollGeneration++;
+      }
       loadHistory();
     });
   });
@@ -847,7 +1084,12 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount) {
   caseSelectionListEl.innerHTML = currentBatch.map((c, i) => {
     const primary = c.fromPrompt ? `<span class="case-primary-badge">Primary</span>` : "";
     const title = escapeHtml(c.title || `Case ${i + 1}`);
-    const intent = c.intent || c.expected || "";
+    // whyItMatters (required since this redesign) is what a person picking cases actually
+    // needs to judge one: a plain consequence, not QA phrasing. `expected` — the concrete,
+    // technical outcome — sits underneath as a second, smaller line, still visible because
+    // it IS useful, just not the thing to read first.
+    const whyItMatters = c.whyItMatters || c.intent || c.expected || "";
+    const expected = c.expected || "";
     const checked = c.fromPrompt ? "checked" : "";
     return `
       <li>
@@ -856,7 +1098,8 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount) {
           <span class="case-label-row">
             <span class="case-title">${title}</span>${primary}
           </span>
-          ${intent ? `<span class="case-intent">${escapeHtml(intent)}</span>` : ""}
+          ${whyItMatters ? `<span class="case-intent">${escapeHtml(whyItMatters)}</span>` : ""}
+          ${expected && expected !== whyItMatters ? `<span class="case-expected"><b>What should happen:</b> ${escapeHtml(expected)}</span>` : ""}
         </label>
       </li>`;
   }).join("");

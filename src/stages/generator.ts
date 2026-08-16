@@ -340,7 +340,7 @@ async function safeClick(page, role, name, nth) {
   // hover/visibility/viewport issues from collapsed dropdown menus.
   if (role.toLowerCase() === "link") {
     const href = await el.getAttribute("href").catch(() => null);
-    if (href && href !== "#" && href !== "") {
+    if (href && !/^\s*(#|javascript:|mailto:|tel:)/i.test(href)) {
       const target = new URL(href, page.url()).toString();
       await page.goto(target, { waitUntil: "domcontentloaded", timeout: 15000 });
       return;

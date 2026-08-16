@@ -80,6 +80,9 @@ actually making that call.
 | TD-33 | `classify.ts` didn't recognize the "Timed out ... waiting for expect(...)" assertion-timeout wording — **fixed** | Medium | Accidental | Lakshya |
 | TD-34 | A `visible` assertion's locator could resolve to a hidden same-named candidate ahead of a visible one — **fixed** | High | Accidental | Lakshya |
 | TD-36 | `safeClick`'s ladder had unbounded calls (~113s worst case), blowing the executor kill timer — **fixed** | High | Accidental | Lakshya |
+| TD-37 | "Assert submit button hidden" generalized from login to any form with a preceding fill — **fixed** | High | Accidental | Lakshya |
+| TD-38 | `Diagnosis.suggestedFix`/`explanation` are untrusted free text with no deterministic verification fed back into IR generation or heal | Medium | Accidental | ? |
+| TD-39 | `MESSAGE_LIKE` keyword scan missed gratitude-phrased confirmation copy, leaving a wrong guessed assertion uncorrected — **fixed** | High | Accidental | Lakshya |
 
 ---
 
@@ -912,3 +915,122 @@ bare calls restored). `npx tsc --noEmit` clean, `npx vitest run` 297/297.
 They sit on a different path (browser replay during IR generation, not the generated spec), and
 weren't implicated in this failure, so they're left alone rather than scope-creeping this fix —
 but they are the same defect class and worth bounding if IR-stage hangs ever show up.
+
+### TD-37. "Assert submit button hidden" generalized from login to any form with a preceding fill — High / Accidental — Fixed
+
+**What it is.** `ir.ts`'s system prompt taught: "when you can't ground a success assertion on
+the destination page, assert instead that the form's own submit button goes hidden after you
+submit it" — written for login, where the "Sign In" button really does vanish once auth
+succeeds, but the prompt text never scoped it to authentication forms specifically. The one
+structural guard against misuse, `clickedElementHiddenAssertion()`, only asked "was there at
+least one `fill` step before the click" (`fillsBefore > 0` ⇒ allowed) — a contact form, a
+newsletter signup, or any other form with at least one field satisfies that exactly as well as a
+real login form, so the guard let all of them through indistinguishably.
+
+**Why it hurts.** Reproduced twice in one session against `thinkvibes.com`: a "Join our
+Newsletter" case and, word-for-word matching a user's own bug report, a "Subscribe" case
+(`2026-08-15T17-57-40…0b385264` case-4) — fill an email field, click Subscribe, assert Subscribe
+hidden. The button is a Mailchimp `<input type="submit">` that stays in the DOM regardless of
+outcome (the real confirmation renders into `#mce-success-response`, which discovery never sees
+— it's hidden until an AJAX submit unhides it via JS, long after the crawl). The assertion times
+out against a perfectly working site, and no AppModel element existed for the generator to
+target instead.
+
+**Fix applied.** Prompt tightened to name authentication specifically, not "a submit button."
+`clickedElementHiddenAssertion(ir, appModel, testCase)` (signature grew two params) now requires
+a real structural signal the flow is actually a login before allowing the pattern: a preceding
+fill resolves to `"password"` via `credentials.ts`'s DOM-derived `credentialFieldMap`/
+`credentialKindForTarget` (the same signal credential injection itself already relies on — not
+a new, second guess at what "looks like a password field"), or — for a progressive login whose
+password field isn't revealed yet — `credentialFieldsNeeded`'s existing INTENT fallback (the
+case is auth-worded and the page offers a way in). Neither a contact form nor a newsletter form
+trips either signal, so both are now rejected at IR-generation time, before a single Playwright
+run is spent.
+
+**Verified**: replayed directly against the real failing run's saved `02-appmodel.json` and IR
+(artifact replay, no live run) — `clickedElementHiddenAssertion` now rejects case-4's exact
+shape. `tests/grounding.test.ts` covers the rejection, a real password-field submission still
+being allowed, and the progressive-login fallback; regression-verified (reverting the check to
+the old `fillsBefore > 0` logic makes the new rejection test fail with the exact "would have
+allowed it" signature). `npx tsc --noEmit` clean, `npx vitest run` 303/305 (2 pre-existing
+unrelated fixture failures, unchanged baseline).
+
+### TD-38. `Diagnosis.suggestedFix`/`explanation` are untrusted free text with no deterministic verification fed back into IR generation or heal — Medium / Accidental
+
+**What it is.** `analyzeFailure`'s Gemini-fallback path (the deterministic `classify.ts` path
+never reaches this) produces `suggestedFix`/`explanation` as ordinary LLM free text. A real
+example (`2026-08-15T17-57-40…0b385264` case-3): the diagnosis correctly identified the real
+validation text ("Please enter a valid email address.") as a quoted substring inside its
+explanation — but nothing in the pipeline ever confirms that claim against anything real, or
+acts on it. The case still just reports "failed"; a correct, already-known fix sits unused in
+`06-diagnosis.json`.
+
+**Why it hurts.** Per this project's central rule (an LLM instruction/claim needs a deterministic
+check behind it, not a trust-and-hope), feeding a diagnosis's free text straight into a retry —
+either as a `toIR` correction hint or as a heal-eligibility signal — would risk over-firing on a
+plausible-sounding but wrong guess, burning a Groq call and a Playwright run for nothing, or
+worse, "fixing" a case that was correctly failing for a real reason.
+
+**Remediation (partially landed).** `verifyDiagnosisText()` (`failureAnalysis.ts`) is the
+deterministic check: it extracts quoted substrings from `suggestedFix`/`explanation` and
+confirms whether any of them actually appear in `ExecResult.accessibilitySnapshot` — Playwright's
+own auto-captured `error-context` output, real captured DOM state, not an LLM's report about it.
+`Diagnosis.verifiedText` is set only when confirmed, kept deliberately separate from the raw free
+text so "the model's guess" and "independently confirmed" stay visibly distinct. **Landed now:**
+the field and the verification function, wired into `analyzeFailure`'s Gemini-fallback return.
+**Deliberately not landed yet:** feeding `verifiedText` into `toIR` as a correction hint (a
+`toIR` signature change, pre-seeding its internal correction loop before the first attempt) and
+extending heal's category gate to `assertion_failed && verifiedText` — real plumbing, left for a
+follow-up once there's evidence `accessibilitySnapshot` is populated and matches often enough in
+practice to be worth it, rather than building it blind.
+
+**Verified**: `tests/diagnosisVerify.test.ts` covers a confirmed quote, an unconfirmed (wrong)
+quote, no snapshot to check against, whitespace/case-insensitivity, and a diagnosis with no
+quoted text at all; regression-verified (neutering the function to always return `undefined`
+makes the two positive-confirmation tests fail). Real diagnosis text used as the test fixture
+(case-3's actual `explanation`/`suggestedFix`), not an invented example. `npx tsc --noEmit`
+clean, `npx vitest run` 325/327 (same 2 pre-existing unrelated fixture failures).
+
+### TD-39. `MESSAGE_LIKE` keyword scan missed gratitude-phrased confirmation copy, leaving a wrong guessed assertion uncorrected — High / Accidental — Fixed
+
+**What it is.** `groundTerminalTextAssertion()` (`liveExtend.ts`) exists specifically to catch a
+wrong-guessed terminal-text assertion and correct it to whatever the live page actually shows —
+but its only candidate source, `candidateMessageLines()`, filters every line through a keyword
+regex (`invalid|error|success|welcome|confirmed|complete|please|...`). A confirmation phrased as
+plain gratitude, with none of those words, produces zero candidates, and the function silently
+leaves the wrong guess in place rather than correcting it.
+
+**Why it hurts.** Reported directly by a user watching the failure video for
+`runs/2026-08-16T16-07-28-094Z-261d4022/cases/case-0`: the contact form filled correctly, the
+right submit button was clicked, and the site's real WPForms "thank you" page loaded —
+"Thanks for contacting us! We will be in touch with you shortly." None of that sentence matches
+`MESSAGE_LIKE`, so the case was reported failed over an assertion checking for invented text
+("Message sent successfully") that the site never had any intention of showing. This is the same
+"the model can't know the real wording" problem TD-38 documents for diagnosis text, one layer
+earlier in the pipeline — here it's the grounding net meant to catch it that has the gap.
+
+**Fix applied.** `diffNewMessageLines()`: when the keyword scan finds nothing, replay the page
+one step earlier (before the triggering action) and diff its text against the already-captured
+after-state — whatever's genuinely new is a structural signal, not another wording guess. Two
+noise guards, since a real page navigation can change more than the confirmation line: a
+candidate is dropped if it also appears verbatim on some *other* already-discovered page
+(`page.markdown`, reusing the same "persistent chrome proves nothing" principle `ir.ts`'s prompt
+already states for assertion targets); if more than 15 candidates survive that filter, the diff
+bails out entirely rather than guess among many plausible lines. Diff-sourced candidates use a
+different tie-break than keyword-sourced ones — longest, not closest-to-the-wrong-guess'-length —
+caught directly while writing the test for it: a real WPForms confirmation page has both its
+message AND a short "Click here to re-submit the form" link, and length-to-guess picked the link
+(34 chars, coincidentally close to a 26-char wrong guess) over the real 65-char message. The
+original guess's length has no relationship to the truth once the keyword scan already came up
+empty, so closest-to-guess is exactly the wrong heuristic there.
+
+**Verified**: `tests/liveExtend.test.ts`'s new describe block covers the diff correcting a real
+gratitude-phrased confirmation (the exact case-0 shape), the chrome filter dropping a candidate
+that also appears on another known page (constructed deliberately *longer* than the real message
+so the test actually depends on the filter — dropping only a short chrome line first passed even
+with the filter disabled, since "longest wins" dodged it either way), the noise cap bailing out
+on 20 candidates, and the keyword path still winning outright when it finds something (diff is a
+fallback, not a replacement). All three guards individually regression-verified (reverting each
+one in turn makes its specific test fail with the exact wrong-candidate signature, restored
+after). `npx tsc --noEmit` clean, `npx vitest run` 329/331 (same 2 pre-existing unrelated
+fixture failures).

@@ -3,12 +3,12 @@ import { GroqBudget } from "../llm/groqBudget.js";
 import { parseJson } from "../llm/json.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import { AppModel, PageModel, Element, toLiteModel, toMicroModel, INTERACTIVE_ROLES } from "../schema/appModel.js";
+import { AppModel, PageModel, DomForm, Element, toLiteModel, toMicroModel, INTERACTIVE_ROLES } from "../schema/appModel.js";
 import { cutAtBoundary } from "../text.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
-  credentialFieldMap,
+  credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded,
   NEGATIVE_CATEGORIES, type Credentials,
 } from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
@@ -803,22 +803,36 @@ export function missingActions(ir: IR, testCase: TestCase): { message: string } 
 }
 
 /**
- * Reject "click X, then assert X is hidden" when the click wasn't a form submission.
+ * Reject "click X, then assert X is hidden" unless X is an authentication form's own submit
+ * button.
  *
- * The pattern is legitimate — and this file's own prompt recommends it — for a SUBMIT button:
- * fill the form, press Sign In, and the button really is gone once login succeeds. It is
- * meaningless for a navigation control. Caught in practice: a case titled "Navigate to
- * registration page" compiled to `click button "Sign Up"` then `assert button "Sign Up" hidden`,
- * which asserts nothing about the app — only whether that particular click happened to navigate.
+ * The pattern is legitimate — and this file's own prompt recommends it — for a LOGIN submit
+ * button: fill the form, press Sign In, and the button really is gone once auth succeeds. It is
+ * meaningless for a navigation control (caught in practice: "Navigate to registration page"
+ * compiled to `click "Sign Up"` then `assert "Sign Up" hidden`, which asserts nothing about the
+ * app — only whether that click happened to navigate).
  *
- * The discriminator is whether anything was typed first. Compare two real IRs that differ in
- * nothing else: the login case had two fills before its click (legitimate, passed); the
- * navigation case had none (meaningless, failed).
+ * It is ALSO wrong for any other kind of form submission — a contact form, a newsletter
+ * signup, a search box. Caught in practice: a "Subscribe" button on a Mailchimp newsletter form
+ * stayed visible after a successful subscription (the confirmation renders elsewhere, or
+ * nothing about the button changes), and the assertion timed out against a perfectly working
+ * site. The earlier version of this check only asked "was anything filled in first" — a
+ * newsletter form satisfies that exactly as well as a login form, so it let both through.
  *
- * The threshold is ZERO fills, not "fewer than two" — a single-field flow (one fill, then a
- * "Continue" button) is a genuine submission and must stay legal.
+ * The discriminator now is not just "was anything filled," but "was a REAL AUTHENTICATION
+ * field filled" — a password field the AppModel actually discovered (credentialFieldMap, the
+ * same DOM-derived signal credential injection itself relies on), or, for a progressive login
+ * where the password field isn't revealed yet, credentialFieldsNeeded's INTENT signal (the
+ * case is about authentication and the page offers a way in). Neither a contact form nor a
+ * newsletter form trips either signal.
+ *
+ * The zero-fills threshold from the original check is unchanged: a single-field flow (one
+ * fill, then a "Continue" button) still needs at least one fill to be a submission at all.
  */
-export function clickedElementHiddenAssertion(ir: IR): { stepIds: string[]; message: string } | null {
+export function clickedElementHiddenAssertion(
+  ir: IR, appModel: AppModel, testCase: TestCase,
+): { stepIds: string[]; message: string } | null {
+  const fieldMap = credentialFieldMap(appModel);
   for (let i = 1; i < ir.steps.length; i++) {
     const assertStep = ir.steps[i];
     if (assertStep.action !== "assert" || assertStep.assertion !== "hidden") continue;
@@ -830,20 +844,137 @@ export function clickedElementHiddenAssertion(ir: IR): { stepIds: string[]; mess
     if (norm(a.role) !== norm(c.role) || norm(a.name ?? "") !== norm(c.name ?? "")) continue;
 
     let fillsBefore = 0;
+    let hasPasswordFill = false;
     for (let j = i - 2; j >= 0; j--) {
       if (ir.steps[j].action === "navigate") break;   // a new page starts a new form
-      if (ir.steps[j].action === "fill") fillsBefore++;
+      if (ir.steps[j].action === "fill") {
+        fillsBefore++;
+        if (credentialKindForTarget(ir.steps[j].target, fieldMap) === "password") hasPasswordFill = true;
+      }
     }
-    if (fillsBefore > 0) continue;                     // a real submission — allowed
+
+    if (fillsBefore === 0) {
+      return {
+        stepIds: [assertStep.id],
+        message:
+          `Step ${assertStep.id} asserts that "${c.name}" is hidden immediately after clicking it, ` +
+          `but nothing was filled in first, so this is a navigation click and not a form ` +
+          `submission. Whether that control disappears is incidental and proves nothing. Assert ` +
+          `something about the DESTINATION instead — a heading or unique element on the page the ` +
+          `click leads to, or the URL changing to that page's specific path.`,
+      };
+    }
+
+    // A real submission needs filling — but only an AUTHENTICATION submit reliably makes its
+    // own button disappear. Require a structural signal this is actually a login, not just
+    // "something was filled."
+    if (hasPasswordFill || credentialFieldsNeeded(appModel, [testCase]).length > 0) continue;
 
     return {
       stepIds: [assertStep.id],
       message:
-        `Step ${assertStep.id} asserts that "${c.name}" is hidden immediately after clicking it, ` +
-        `but nothing was filled in first, so this is a navigation click and not a form ` +
-        `submission. Whether that control disappears is incidental and proves nothing. Assert ` +
-        `something about the DESTINATION instead — a heading or unique element on the page the ` +
-        `click leads to, or the URL changing to that page's specific path.`,
+        `Step ${assertStep.id} asserts that "${c.name}" is hidden after clicking it, but nothing ` +
+        `filled before it was an authentication field (no discovered password field was filled, ` +
+        `and this case isn't about signing in), so this looks like a contact, newsletter, or ` +
+        `other non-authentication submission. Those buttons routinely stay visible even after a ` +
+        `successful submit — a confirmation message appears elsewhere, or nothing about the ` +
+        `button itself changes — so asserting it hidden fails a correctly-working site. Assert ` +
+        `something that actually confirms the submission worked instead: a success/confirmation ` +
+        `message near the form, or the URL changing.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Reject a click step whose target belongs to a DIFFERENT form on the page than the fields
+ * filled just before it in the same flow.
+ *
+ * Caught in practice: a contact-form case filled Name/Email/Comment (WPForms), then clicked
+ * "Join our Newsletter" — the accessible name of a completely different Mailchimp signup
+ * form's submit control, sitting in the page footer — instead of the contact form's own
+ * "Submit" button. The model picked a plausible-sounding, existing button; `groundingError`
+ * passed it (the element genuinely exists), and the case never actually submitted the form it
+ * was testing.
+ *
+ * The discriminator is `page.forms[].fields[]` — deterministic, DOM-extracted data (not LLM
+ * output) that's the only structural signal spanning both plain fill targets (inputs/textareas,
+ * which never get a `genericPath` — see discovery.ts's CONTROLS selector list, which only
+ * covers button/link-shaped elements) and a form's own submit control. A fill or click target's
+ * accessible NAME can come from a different extraction path than the form field's own
+ * label/name attribute for the same physical element (confirmed on a real page: one field's
+ * accessible name was "Subscribe", the same physical input's form-field `name` attribute was
+ * "subscribe") — so this matches liberally across label/name/placeholder, not just one.
+ *
+ * Fails open, deliberately, whenever the signal is inconclusive rather than contradictory:
+ *  - the click target matches NO field in ANY form (most correct clicks land here — a real
+ *    <button>Submit</button> isn't itself a form FIELD, so "no match" means "can't tell",
+ *    not "wrong")
+ *  - the click target matches fields in MORE than one form (an ambiguous name shared across
+ *    forms — guessing which one is right would be worse than not checking at all)
+ *
+ * Deliberately does NOT reuse trackPages' page cursor: trackPages marks the cursor "unknown"
+ * after any click that isn't a resolvable link (a JS-handled reveal, an anchor scroll, a modal
+ * trigger) — the right call for a DESTINATION assertion, where a click really might have
+ * navigated somewhere trackPages can't see. It is the wrong call here: a "click to reveal the
+ * form" step (a real, common shape — `click "Let's Connect"` to scroll a contact form into
+ * view before filling it) would blank the page cursor and make this check silently fail open
+ * for every step after it, defeating the check on exactly the kind of flow it exists to catch.
+ * This function only cares "which page's form set applies," which changes on a `navigate`, not
+ * on an arbitrary click — so it tracks that itself, deliberately simpler and less conservative.
+ */
+export function crossFormBleedError(ir: IR, appModel: AppModel): { stepIds: string[]; message: string } | null {
+  let currentPage: PageModel | null = null;
+
+  const formIndicesForName = (forms: DomForm[], name: string | undefined): Set<number> => {
+    const target = norm(name ?? "");
+    const hits = new Set<number>();
+    if (!target) return hits;
+    forms.forEach((f, idx) => {
+      const fields = f.fields ?? [];
+      if (fields.some((fld) =>
+        norm(fld.label ?? "") === target || norm(fld.name ?? "") === target || norm(fld.placeholder ?? "") === target
+      )) hits.add(idx);
+    });
+    return hits;
+  };
+
+  let fillFormIndices = new Set<number>();
+
+  for (let i = 0; i < ir.steps.length; i++) {
+    const step = ir.steps[i];
+    if (step.action === "navigate") {
+      fillFormIndices = new Set();
+      const resolved = step.target?.url ? resolveHref(appModel.baseUrl, step.target.url) : null;
+      currentPage = resolved ? findPageByUrl(appModel, resolved) : currentPage;
+      continue;
+    }
+
+    const forms = currentPage?.forms ?? [];
+    if (!forms.length) continue; // no forms discovered on this page — nothing to check against
+
+    if (step.action === "fill") {
+      const hits = formIndicesForName(forms, step.target?.name);
+      if (hits.size === 1) for (const h of hits) fillFormIndices.add(h);
+      continue;
+    }
+
+    if (step.action !== "click") continue;
+    if (fillFormIndices.size === 0) continue; // nothing filled yet this segment — nothing to bleed from
+
+    const hits = formIndicesForName(forms, step.target?.name);
+    if (hits.size !== 1) continue; // fail open: no field match, or ambiguous across forms
+    const [formIdx] = hits;
+    if (fillFormIndices.has(formIdx)) continue; // same form as the preceding fills — fine
+
+    return {
+      stepIds: [step.id],
+      message:
+        `Step ${step.id} clicks "${step.target?.name}", which belongs to a different form on ` +
+        `this page than the field(s) filled just before it. Two different forms on the same ` +
+        `page can each have a submit-shaped control — a contact form and a newsletter/subscribe ` +
+        `form are a common pair — and this click targets the WRONG one. Pick the click target ` +
+        `that actually belongs to the same form as the preceding fills.`,
     };
   }
   return null;
@@ -903,8 +1034,8 @@ Rules, follow exactly:
 - To verify a page TITLE, use assertion "title_contains" (or "title_equals" for an exact whole-title match) with the expected text in "value" and NO target at all — these check the <title> tag directly. This is the ONLY correct way to express "verify the page title is X". Do not express it as text_equals/text_contains with a { "text": ... } target: that searches the rendered body for a string that lives only in the tab title, and can never pass.
 - When a case describes a navigation region by listing several of its items and only ONE element can be picked to ground a "visible" check for the whole thing, do NOT pick a control whose only job is to OPEN or COLLAPSE that region — a menu/drawer toggle, however it is named, including an icon-only one. Such controls are routinely shown at one viewport width and hidden at another, so the assertion can fail while the region itself is perfectly fine. Prefer a content-bearing item from the region — one that names a real destination or action.
 - A success assertion must be FALSE before the action and TRUE only after it — otherwise it verifies nothing. Never assert on a persistent, site-wide element (a header, logo, or nav bar that appears on every page regardless of state) as proof an action succeeded; it was already visible before the action too. In the application model, a decorative/structural element like this typically has no "concept" (empty or absent) — treat that as a signal to avoid it as a success assertion.
-- The application model only covers the page you start on, so you usually can't see the page an action like login navigates to. When you can't ground a success assertion on the destination page, assert instead that the FORM'S OWN SUBMIT BUTTON goes "hidden" after you submit it — e.g. the "Sign In" button once login succeeds. That element is already in the model, and is a real discriminator: visible before, gone after.
-- This applies ONLY to a submit button after an actual submission. Do NOT assert that a navigation link goes hidden after clicking it, and never use it as a substitute for performing the test: "click the Log in link, then assert the Log in link is hidden" carries out none of the case and verifies nothing.
+- The application model only covers the page you start on, so you usually can't see the page a LOGIN action navigates to. When you can't ground a login success assertion on the destination page, assert instead that the LOGIN FORM'S OWN SUBMIT BUTTON goes "hidden" after you submit it — e.g. the "Sign In" button once login succeeds. That element is already in the model, and is a real discriminator: visible before, gone after.
+- This applies ONLY to an authentication form's submit button (the form has a password field) after an actual submission. It does NOT apply to a contact form, a newsletter/subscribe form, a search box, or any other non-authentication submission — those buttons routinely stay on the page (a success message appears elsewhere, or nothing about the button changes) even when the submission worked, so asserting them hidden fails a correctly-working site. For a non-authentication form, ground success on the destination page or on text that appears near the form instead. Do NOT assert that a navigation link goes hidden after clicking it either, and never use this pattern as a substitute for performing the test: "click the Log in link, then assert the Log in link is hidden" carries out none of the case and verifies nothing.
 
 Negative-path rules (CRITICAL — read the test case's own "expected" field first):
 - Some test cases exist to prove an action FAILS: invalid password, empty required field, malformed email, SQL injection, unauthorized access. For these, the PASS condition is that the app REJECTED the input.
@@ -1250,12 +1381,21 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         continue;
       }
 
-      const clickedHidden = clickedElementHiddenAssertion(parsed.data);
+      const clickedHidden = clickedElementHiddenAssertion(parsed.data, currentModel, testCase);
       if (clickedHidden) {
         console.log("[ir] assert-hidden on a merely-clicked element rejected:", clickedHidden.message);
         lastErr = clickedHidden.message;
         correction = clickedHidden.message;
         lastContradiction = { ir: parsed.data, ...clickedHidden };
+        continue;
+      }
+
+      const crossForm = crossFormBleedError(parsed.data, currentModel);
+      if (crossForm) {
+        console.log("[ir] cross-form target bleed rejected:", crossForm.message);
+        lastErr = crossForm.message;
+        correction = crossForm.message;
+        lastContradiction = { ir: parsed.data, ...crossForm };
         continue;
       }
 

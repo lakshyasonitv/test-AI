@@ -8,7 +8,8 @@ const { toTestCases, dropCompoundLoginCases } = await import("../src/stages/test
 
 const tc = (o: Partial<TestCase>): TestCase =>
   ({ priority: "high", feature: "Login", steps: ["step"], generatedFrom: "upfront", fromPrompt: false,
-     title: "t", expected: "e", category: "functional-other", ...o }) as TestCase;
+     title: "t", expected: "e", category: "functional-other",
+     intent: "test intent", whyItMatters: "test consequence", ...o }) as TestCase;
 
 // The real production repro (run 2026-08-02T18-34-28-317Z-9ef3c101, learnvibes.vercel.app).
 const COMPOUND_CASE = tc({

@@ -149,7 +149,6 @@ async function executePlaywright(
           ...secretEnv,
           PLAYWRIGHT_JSON_OUTPUT_NAME: resultsJson,
           PLAYWRIGHT_HEADLESS: 'true',
-          PLAYWRIGHT_TIMEOUT: String(CONFIG.TIMEOUTS.TEST_RUN),
         },
         stdio: ["pipe", "pipe", "pipe"],
       }
@@ -316,6 +315,31 @@ export function findScreenshot(dir: string): string | null {
       const full = path.join(d, entry.name);
       if (entry.isDirectory()) stack.push(full);
       else if (/\.png$/i.test(entry.name)) return full;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find a case's recorded video, if one exists. Mirrors findScreenshot's recursive-walk
+ * fallback exactly — videos live nested under a Playwright-generated test-output subfolder
+ * (e.g. `artifacts/<test-name-hash>/video.webm`), never at a predictable top-level name the
+ * way `step-N.png` is, so there's no fast-path equivalent to check first.
+ *
+ * playwright.config.ts sets `video: "retain-on-failure"` — a video only exists for a case that
+ * actually failed or was blocked (deliberate: a full trace per PASSING run made up ~80% of the
+ * runs/ folder's size for no diagnostic value, see that config's own comment). A passed case
+ * naturally returns null here, no separate status check needed.
+ */
+export function findVideo(dir: string): string | null {
+  if (!existsSync(dir)) return null;
+  const stack = [dir];
+  while (stack.length) {
+    const d = stack.pop()!;
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (/\.webm$/i.test(entry.name)) return full;
     }
   }
   return null;

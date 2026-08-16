@@ -201,7 +201,21 @@ export const TestCase = z.object({
     z.enum(CATEGORY_IDS)),
   // The model's own words for what this case is testing. The label above is constrained; the
   // reasoning is not — the checklist stays a floor, not a ceiling.
-  intent: z.string().optional(),
+  //
+  // Required, not optional (was optional — the UI's case cards fell back to `expected` when
+  // it was missing, which reads like tester notes rather than plain language: "The form is
+  // not submitted and a validation error is displayed for the Email field." vs. intent's own
+  // "Proves that the contact form enforces its required Email field." Making this required
+  // means the review gate and results cards never silently degrade to the more technical text.
+  intent: z.string(),
+  // One plain sentence, no QA vocabulary, about what a REAL PERSON loses if this breaks —
+  // not what the test proves. Added because a title + one line of "intent" (already terse
+  // QA-reasoning prose) was the entire content a non-technical user had to judge a case by
+  // at the review gate. "Proves that the contact form enforces its required Email field
+  // constraint" tells a developer what's being checked; it doesn't tell anyone why they
+  // should care. This field answers that: "If this breaks, someone trying to contact you
+  // gets a silent failure and you never hear from them."
+  whyItMatters: z.string(),
   /** Checklist item this case came from, when it came from one. Display only. */
   checklistTitle: z.string().optional(),
   // The specific page URL this case targets. Set when the application model contains
@@ -349,9 +363,10 @@ Rules, follow exactly:
 - "targetUrl" must be the URL of the page this case tests, taken verbatim from the application model's pages array. When the model has multiple pages, this tells the later stage which page to start from. When there is only one page, set it to that page's URL.
 - "feature" must be one of the application model's concepts.
 - "category" MUST be exactly one of: ${CATEGORY_IDS.join(" | ")} — the QA dimension this case exercises. Pick the closest one; never invent a value.
-- "intent" is one short free-text sentence in your own words describing what this case proves. The category is a fixed label; the intent is your reasoning.
+- "intent" is one short free-text sentence, in QA terms, describing what this case proves. The category is a fixed label; the intent is your reasoning. Required on every case.
+- "whyItMatters" is a SEPARATE sentence, for someone who has never written or read a test before. No QA vocabulary (never use the words "proves", "verifies", "validates", "constraint", "enforces"). Describe the real consequence for a real person if this breaks — what a visitor experiences, or what the site owner loses — not what gets checked. Bad: "Proves that the contact form enforces its required Email field constraint." Good: "If this breaks, someone trying to contact you gets a silent failure and you never hear from them." Required on every case.
 - "checklistTitle" is the checklist item title when the case came from the checklist below, omitted otherwise.
-- "steps" are concrete, ordered, human-readable actions (e.g. "Click the 'Log in' button"), not vague ("Test the login").
+- "steps" are concrete, ordered actions written as full sentences describing what a person does, not terse imperatives echoing raw element names. Bad: "Fill 'Email *' with 'a@b.c'". Good: "Type an email address into the 'Email' field." Bad: "Click 'Submit'". Good: "Click the 'Submit' button to send the form." Always keep the real element's name in quotes exactly as the application model gives it, wherever it falls in the sentence — later stages match against that literal quoted name, so it must never be paraphrased, only the sentence AROUND it.
 - "expected" is the concrete, observable outcome — an element becoming visible, a URL changing, specific text appearing — not a vague pass/fail statement.
 - A case must never combine a deliberately-WRONG credential attempt with a genuinely-valid one in the same case/browser session (e.g. never "log in with the wrong password, verify the error, then log in again with the right password" as one case). Write these as two separate cases instead — the checklist below already lists them as two distinct items, "Valid credentials" (category "valid") and "Invalid password" (category "invalid-input"), each getting its own case and its own browser session. This is not a style preference: credentials are substituted once per case, matched to the LAST fill of each kind — a case that fills a password field twice (once wrong, once right) either overwrites the deliberately-wrong attempt with the real password (silently turning a negative test into a no-op) or leaves the valid attempt with an invented value that never authenticates. The case is broken either way it's ordered.
 
@@ -365,11 +380,11 @@ Example of the exact shape required — note the first steps name real entry-pag
 verbatim, steps after a navigating action describe intent for pages not yet in the model, category is populated,
 targetUrl points to the page being tested, and
 exactly one case (the plan's own literal ask) carries "fromPrompt": true:
-[ { "title": "Log in with the given credentials", "priority": "high", "feature": "Login", "fromPrompt": true, "category": "valid", "intent": "proves a real user can authenticate with the credentials given", "checklistTitle": "Valid credentials", "targetUrl": "https://example.com/login",
-    "steps": ["Navigate to /login", "Fill '<the model's own identifier field>' with '<the identifier from the request>'", "Fill '<the model's own password field>' with '<the password from the request>'", "Click '<the model's own submit button>'"],
+[ { "title": "Log in with the given credentials", "priority": "high", "feature": "Login", "fromPrompt": true, "category": "valid", "intent": "proves a real user can authenticate with the credentials given", "whyItMatters": "If this breaks, real customers can't get into their accounts at all — the site is effectively unusable for anyone already signed up.", "checklistTitle": "Valid credentials", "targetUrl": "https://example.com/login",
+    "steps": ["Go to the '/login' page.", "Type the given identifier into the '<the model's own identifier field>' field.", "Type the given password into the '<the model's own password field>' field.", "Click the '<the model's own submit button>' button to sign in."],
     "expected": "Login succeeds and the authenticated area is shown" },
-  { "title": "Login with invalid password", "priority": "high", "feature": "Login", "category": "invalid-input", "intent": "proves a wrong password is rejected rather than silently accepted", "checklistTitle": "Invalid password", "targetUrl": "https://example.com/login",
-    "steps": ["Navigate to /login", "Fill '<the model's own identifier field>' with '<the identifier from the request>'", "Fill '<the model's own password field>' with 'an-incorrect-password'", "Click '<the model's own submit button>'"],
+  { "title": "Login with invalid password", "priority": "high", "feature": "Login", "category": "invalid-input", "intent": "proves a wrong password is rejected rather than silently accepted", "whyItMatters": "If this breaks, someone else's guess at a password could get into an account it doesn't belong to — a real security hole, not just a bug.", "checklistTitle": "Invalid password", "targetUrl": "https://example.com/login",
+    "steps": ["Go to the '/login' page.", "Type the given identifier into the '<the model's own identifier field>' field.", "Type an incorrect password into the '<the model's own password field>' field.", "Click the '<the model's own submit button>' button."],
     "expected": "An 'invalid credentials' error is shown and the user stays on the login page" } ]`;
   const gapsLine = gaps.length
     ? `\nConcepts with NO checklist entry — apply the 5 reasoning dimensions above to these directly, do not just emit one generic case: ${gaps.join(", ")}\n`
@@ -409,7 +424,7 @@ Application model: ${JSON.stringify(liteModel)}
 Coverage checklist floor (produce one grounded case per applicable item):
 ${strategyList}
 ${gapsLine}
-${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[],"expected","fromPrompt","category","intent","checklistTitle","targetUrl" } ]`;
+${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[],"expected","fromPrompt","category","intent","whyItMatters","checklistTitle","targetUrl" } ]`;
 
   console.log("[testCases] prompt chars:", user.length, "| approx tokens:", Math.round(user.length / 4), "| pages:", liteModel.pages.length);
 

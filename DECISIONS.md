@@ -361,3 +361,41 @@ today, but worth re-checking if a similar false match is ever reported against t
 — it's untested. Anything touching the generated spec's actual Playwright API surface needs at
 least one real execution (a synthetic-HTML browser check is enough; it doesn't need to be the
 live target site) before being called done.
+
+## D-20. Self-heal is one shared function, called by both the primary case and suite cases
+
+**Context.** `orchestrator.ts` has always retried a failed primary case once — re-snapshot the
+live page, regenerate IR fresh, accept only if the retry both still covers the whole case and
+actually passes — gated to `selector_changed`/`element_missing` diagnoses. `suiteRunner.ts`'s
+non-primary cases had no equivalent at all: a suite case got exactly one attempt, even for the
+identical, already-solved category of failure. Two real failures in one saved run
+(`2026-08-15T17-57-40-434Z-0b385264`, cases 1 and 2) were both `element_missing` — the exact
+category heal already exists for — but neither got a retry, purely because neither happened to
+be the case orchestrator.ts executes directly.
+
+**Decision.** Extract the heal sequence into `src/stages/heal.ts` as `attemptHeal()`, unchanged
+in logic, called by both `orchestrator.ts` and `suiteRunner.ts` — one implementation, not a
+second one restated for the suite path. This codebase has already paid for that mistake once
+(`TECH_DEBT.md` TD-07, `generator.ts`/`targetResolver.ts` restating the same locator logic and
+drifting apart); extracting a shared function was cheaper than repeating it a second time.
+`attemptHeal` is deliberately **emit-agnostic** — it takes no `onEvent`/`emit` callback and does
+none of its own progress reporting. Each caller emits in its own stage idiom instead:
+`orchestrator.ts` keeps emitting its `"heal"` `StageName`, which drives `public/app.js`'s
+primary-case-only phase-4 progress tracker (`STAGE_TO_PHASE`); `suiteRunner.ts` folds
+`healed: true` into the `"suite"`-stage event data it already emits per case, alongside the
+existing `reused` convention. The two must never emit the same `"heal"` `StageName` — a suite
+case doing so would corrupt a tracker built to represent exactly one case's progress.
+
+**Consequences.** Capped per suite via `MAX_SUITE_HEALS` (default 3, env-overridable) — a suite
+with several `element_missing` cases in one pass would otherwise spend an uncapped number of
+extra Groq calls and Playwright runs. A suite case's original (pre-heal) files are kept in
+place under `caseDir/`, with the healed IR/spec additionally written to `caseDir/healed/` — but
+unlike the primary case, whose "done" event carries the healed IR/spec directly, a suite case's
+*only* channel to the frontend is fetching `04-ir.json`/`generated.spec.ts` from `caseDir/`
+itself (`loadCaseDetails` in `public/app.js`). Left un-overwritten, a healed-and-passing suite
+card would show a spec that doesn't match its own reported status, so `caseDir/04-ir.json` and
+`caseDir/generated.spec.ts` are deliberately overwritten with the healed version once a heal
+succeeds — a documented divergence from the primary case's convention, not an inconsistency.
+`buildSuiteSummary`'s screenshot resolution checks `caseDir/healed/artifacts` before
+`caseDir/artifacts` when `healed` is set, for the same reason: the original directory still
+holds the failure frame, not the passing one.

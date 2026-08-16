@@ -161,3 +161,97 @@ describe("groundTerminalTextAssertion", () => {
     expect(identifierOnly.ir.steps.at(-1)!.target!.text).toBe("Invalid login credentials");
   });
 });
+
+// The real bug this fallback closes, reproduced from runs/2026-08-16T16-07-28-094Z-261d4022/
+// cases/case-0: fill a WPForms contact form, click its real Submit button, the site genuinely
+// navigates to its own "thank you" page reading "Thanks for contacting us! We will be in touch
+// with you shortly." — none of MESSAGE_LIKE's vocabulary, so the keyword scan alone finds
+// nothing and the wrong guessed text ("Message sent successfully") was left uncorrected.
+describe("groundTerminalTextAssertion — structural diff fallback", () => {
+  const guess = "Message sent successfully";
+  const navChrome = "[Skip to content]\nMenu\nWho We Are\nServices\nContact Us";
+
+  const fixture = (host: string) => {
+    const baseUrl = `https://${host}.example`;
+    const ir = {
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/" } },
+        { id: "s2", action: "fill", target: { role: "textbox", name: "Name" }, value: "Jane Doe" },
+        { id: "s3", action: "fill", target: { role: "textbox", name: "Email *" }, value: "jane@example.com" },
+        { id: "s4", action: "click", target: { role: "button", name: "Submit" } },
+        { id: "s5", action: "assert", target: { text: guess }, assertion: "visible" },
+      ],
+    } as unknown as IR;
+    const page = { url: `${baseUrl}/`, title: "Home", concepts: [], elements: [] };
+    const model = { baseUrl, pages: [page] } as unknown as AppModel;
+    const seedAfter = (pageText: string, policy: string = "full") =>
+      llmCacheSet(makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), policy), {
+        reachedUrl: page.url, pageModel: page, pageText,
+      });
+    const seedBefore = (pageText: string, policy: string = "full") =>
+      llmCacheSet(makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -2)), policy), {
+        reachedUrl: page.url, pageModel: page, pageText,
+      });
+    return { ir, model, seedAfter, seedBefore };
+  };
+
+  it("corrects via the diff when the keyword scan finds nothing", async () => {
+    const { ir, model, seedAfter, seedBefore } = fixture("diff-corrects");
+    seedBefore(`${navChrome}\nContact Us\nName\nEmail *\nComment or Message`);
+    seedAfter(`${navChrome}\nThanks for contacting us! We will be in touch with you shortly.\nClick here to re-submit the form`);
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(true);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("Thanks for contacting us! We will be in touch with you shortly.");
+  });
+
+  it("drops a diff candidate that also appears on another already-discovered page (chrome)", async () => {
+    const { ir, model, seedAfter, seedBefore } = fixture("diff-chrome");
+    // Deliberately LONGER than the real confirmation line below — the "prefer longest" diff
+    // tie-break would pick this one instead if the chrome filter didn't exclude it first, so
+    // this test actually depends on the filter (an earlier draft used a short chrome line and
+    // passed even with the filter disabled, because "longest wins" happened to dodge it anyway
+    // regardless). Also deliberately avoids every MESSAGE_LIKE keyword (no "please", "success",
+    // etc.) — an earlier draft included "please" and the KEYWORD scan grabbed this line
+    // directly before the diff path ever ran, testing nothing about the chrome filter at all.
+    const cookieBanner = "We use cookies on this site to improve your browsing experience and show you relevant content across our pages";
+    (model.pages as any[]).push({
+      url: `${model.baseUrl}/blog`, concepts: [],
+      markdown: `Recent Posts\nHow to migrate your CRM\n${cookieBanner}`,
+    });
+    seedBefore(`${navChrome}\nContact Us\nName\nEmail *`);
+    // cookieBanner is new relative to beforeText but is chrome (appears on the /blog page
+    // too) — it must be excluded, leaving only the real, shorter confirmation line.
+    seedAfter(`${navChrome}\n${cookieBanner}\nThanks for contacting us! We will be in touch with you shortly.`);
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(true);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("Thanks for contacting us! We will be in touch with you shortly.");
+  });
+
+  it("bails out (leaves the assertion as-is) when too many diff candidates survive", async () => {
+    const { ir, model, seedAfter, seedBefore } = fixture("diff-noisy");
+    seedBefore(navChrome);
+    // A wholesale template change — 20 "new" lines, none of them chrome, too noisy to pick
+    // among confidently.
+    const manyNewLines = Array.from({ length: 20 }, (_, i) => `New unrelated line number ${i}`).join("\n");
+    seedAfter(`${navChrome}\n${manyNewLines}`);
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(false);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe(guess);
+  });
+
+  it("still uses the keyword scan first when it finds something (diff is a fallback, not a replacement)", async () => {
+    const { ir, model, seedAfter, seedBefore } = fixture("diff-not-needed");
+    seedBefore(navChrome);
+    // Contains a MESSAGE_LIKE word ("success") — the keyword path should win without ever
+    // needing the before-state replay.
+    seedAfter(`${navChrome}\nYour message was a success!`);
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(true);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("Your message was a success!");
+  });
+});
