@@ -16,13 +16,13 @@ const GROUNDED_IR = {
   ],
 };
 
-const { groqMock } = vi.hoisted(() => ({
-  groqMock: vi.fn(async () => ({
+const { geminiMock } = vi.hoisted(() => ({
+  geminiMock: vi.fn(async () => ({
     content: JSON.stringify(GROUNDED_IR),
     usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
   })),
 }));
-vi.mock("../src/llm/groq.js", () => ({ groq: groqMock }));
+vi.mock("../src/llm/gemini.js", () => ({ gemini: geminiMock }));
 
 const { toIR } = await import("../src/stages/ir.js");
 
@@ -43,14 +43,14 @@ const testCase: any = {
 
 describe("toIR system prompt — page title guard", () => {
   it("tells the model the page title field is never assertable as visible text", async () => {
-    groqMock.mockClear();
+    geminiMock.mockClear();
     // toIR disk-caches by a hash of (testCase, sourcePrompt, appModel, creds) — a static
-    // fixture would hit a previous run's cache entry and never call groq() again, silently
+    // fixture would hit a previous run's cache entry and never call gemini() again, silently
     // making this assertion vacuous. A unique sourcePrompt per invocation forces a cache miss.
     await toIR(testCase, appModel, `check the homepage ${Date.now()}-${Math.random()}`, `${HOST}/`);
-    const [, opts] = groqMock.mock.calls[0];
-    expect(opts.system).toContain("never rendered in the page body");
-    expect(opts.system).toContain("<title>");
+    const [, opts] = geminiMock.mock.calls[0];
+    expect(opts.systemInstruction).toContain("never rendered in the page body");
+    expect(opts.systemInstruction).toContain("<title>");
   });
 });
 
@@ -65,11 +65,11 @@ describe("toIR system prompt — mobile-toggle grounding guard", () => {
   // the prompt to one site's vocabulary); what has to survive is that the model is steered off
   // an open/collapse control and told the reason is viewport-dependent visibility.
   it("tells the model to avoid a menu-toggle control as the sole representative of a nav check", async () => {
-    groqMock.mockClear();
+    geminiMock.mockClear();
     await toIR(testCase, appModel, `check the header ${Date.now()}-${Math.random()}`, `${HOST}/`);
-    const [, opts] = groqMock.mock.calls[0];
-    expect(opts.system).toMatch(/OPEN or COLLAPSE|open\/collapse|menu-toggle/i);
-    expect(opts.system).toMatch(/viewport width|responsive CSS breakpoint/i);
+    const [, opts] = geminiMock.mock.calls[0];
+    expect(opts.systemInstruction).toMatch(/OPEN or COLLAPSE|open\/collapse|menu-toggle/i);
+    expect(opts.systemInstruction).toMatch(/viewport width|responsive CSS breakpoint/i);
   });
 });
 
@@ -80,10 +80,10 @@ describe("toIR system prompt — mobile-toggle grounding guard", () => {
 // title drifted to "...and add product to cart" despite its own testCase never mentioning one).
 describe("toIR system prompt — sourcePrompt scope-bleed guard", () => {
   it("tells the model to build the IR from testCase alone, not the broader sourcePrompt", async () => {
-    groqMock.mockClear();
+    geminiMock.mockClear();
     await toIR(testCase, appModel, `check just the login, nothing else ${Date.now()}-${Math.random()}`, `${HOST}/`);
-    const [, opts] = groqMock.mock.calls[0];
-    expect(opts.system).toContain("BUT ONLY THE CASE");
-    expect(opts.system).toContain("not a second source of steps");
+    const [, opts] = geminiMock.mock.calls[0];
+    expect(opts.systemInstruction).toContain("BUT ONLY THE CASE");
+    expect(opts.systemInstruction).toContain("not a second source of steps");
   });
 });

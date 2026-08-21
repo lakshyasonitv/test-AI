@@ -37,7 +37,7 @@ prompt + url
   -> Test Cases (Gemini)              -> full coverage suite (valid/invalid/boundary/security)
        \_ case-selection gate (opt.)   -> pauses for human review/regeneration, feature-flagged
   -> Primary-case selection           -> fromPrompt case, else highest priority
-  -> IR generation (Groq) + grounding -> strict JSON test model (the contract)
+  -> IR generation (Gemini) + grounding -> strict JSON test model (the contract)
        \_ groundingError(ir, model)    -> the deterministic authority over EVERY target kind:
                                           role+name (with a narrow clickable-role fallback),
                                           css selector, navigate URL, and hidden-vs-visible.
@@ -182,7 +182,7 @@ timeout.
 | `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry |
 | `domDiscovery.ts` | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility |
 | `domExtract.ts` | No | Cheerio DOM extraction — Node port of the deleted Python parser |
-| `ir.ts` | Groq | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
+| `ir.ts` | Gemini | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
 
 ### `src/schema/` — Data Contracts (3 files)
 
@@ -201,14 +201,13 @@ timeout.
 | `runStore.ts` | File-backed per-run NDJSON event log with SSE replay + fallback reconstruction + orphaned-run detection |
 | `orchestrator.ts` | Pipeline wiring: plan -> discovery -> test cases (-> optional gate) -> IR -> generate -> execute -> heal -> suite |
 
-### `src/llm/` — LLM Layer (6 files)
+### `src/llm/` — LLM Layer (5 files)
 
 | File | Purpose |
 |------|---------|
-| `gemini.ts` | Google Gemini client (REST API, key-pool rotation, backoff) |
-| `groq.ts` | Groq client (OpenAI-compatible REST API, key-pool rotation, backoff) |
+| `gemini.ts` | Google Gemini client (REST API, key-pool rotation, backoff); returns `{content, usage}` and records ambient per-stage spend via `llmBudget.ts` |
 | `keyPool.ts` | Round-robin API key pool with cooldown tracking; `poolFromEnv` accepts a singular `_KEY` var as a fallback when the plural `_KEYS` var isn't set |
-| `groqBudget.ts` | Per-run hard cap on Groq calls; usage recorded to `08-groq-usage.json` |
+| `llmBudget.ts` | Per-run hard cap on LLM calls across every stage (plan, discovery, testcases, ir, failure-analysis, heal), not just IR; usage recorded to `08-llm-usage.json`, broken down per stage. See `DECISIONS.md` D-21 |
 | `backoff.ts` | Exponential backoff, per-attempt timeout, rate-limit detection + key rotation |
 | `json.ts` | Strip markdown fences and parse JSON from LLM output |
 
@@ -330,17 +329,18 @@ CaseHistoryFile (runs/<id>/case-history.json)
 | Concept labeling | Gemini (`GEMINI_MODEL_LITE`) | DOM element list | Labeled AppModel | DOM discovery path, 1 call per page (incl. each crawled page) |
 | Vision discovery | Gemini (`GEMINI_MODEL_LITE`) | ARIA snapshot + JPEG screenshot | AppModel | Fallback only, 1 call per page |
 | Test cases | Gemini (`GEMINI_MODEL`) | Plan + AppModel + strategy (scope-filtered) | TestCase[] | Every run, 1 call per round |
-| IR generation | Groq (`GROQ_MODEL`) | TestCase + AppModel + sourcePrompt | IR (JSON) | Every run, up to `MAX_IR_ATTEMPTS` (default 4) calls per case, hard-capped run-wide by `MAX_GROQ_CALLS_PER_RUN` (default 60) |
+| IR generation | Gemini (`GEMINI_MODEL`) | TestCase + AppModel + sourcePrompt | IR (JSON) | Every run, up to `MAX_IR_ATTEMPTS` (default 4) calls per case, plus up to 3 free rate-limit retries that don't cost an attempt; hard-capped run-wide by `MAX_LLM_CALLS_PER_RUN` (default 60), shared across every stage |
 | Failure analysis | Gemini (`GEMINI_MODEL_LITE`) | Error + ARIA + screenshots | Diagnosis | Only on failure, and only when the deterministic classifier can't resolve it |
 
 Model ids and their real rate limits are worth re-verifying directly against the deployed `.env`
-rather than trusted from this table — `GROQ_MODEL` in particular has drifted from this table's
-default before (`TECH_DEBT.md` TD-03's context). Probe with a real request before assuming a name
-or a limit is current.
+rather than trusted from this table — `GEMINI_MODEL` in particular has drifted from this table's
+default before (a preview id deprecated after this project's own use of it; see `DECISIONS.md`
+D-21). Probe with a real request before assuming a name or a limit is current.
 
-**Key rotation:** Both Gemini and Groq clients use `keyPool.ts` for round-robin key selection with
-cooldown. `backoff.ts` handles rate-limit detection, exponential delay, key penalization, and a
-per-attempt abort (`LLM_TIMEOUT_MS`, default 45s).
+**Key rotation:** The Gemini client uses `keyPool.ts` for round-robin key selection with cooldown.
+`backoff.ts` handles rate-limit detection, exponential delay, key penalization, and a per-attempt
+abort (`LLM_TIMEOUT_MS`, default 45s). Single-provider since `DECISIONS.md` D-21 — Groq was
+removed entirely (`TECH_DEBT.md` TD-03's history).
 
 **Caching:** `llmCache.ts` — see D-10, D-22 in `DECISIONS.md`/`TECH_DEBT.md`.
 

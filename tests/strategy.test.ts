@@ -6,7 +6,7 @@ import { classify, findFailingStepId } from "../src/stages/classify.js";
 import type { AppModel } from "../src/schema/appModel.js";
 import type { IR } from "../src/schema/ir.js";
 
-const { geminiMock } = vi.hoisted(() => ({ geminiMock: vi.fn().mockResolvedValue("[]") }));
+const { geminiMock } = vi.hoisted(() => ({ geminiMock: vi.fn().mockResolvedValue({ content: "[]", usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }) }));
 vi.mock("../src/llm/gemini.js", () => ({ gemini: geminiMock }));
 const { toTestCases } = await import("../src/stages/testCases.js");
 // Hoisted to module scope, not re-imported per `it()`: hybridDiscovery.ts pulls in Playwright,

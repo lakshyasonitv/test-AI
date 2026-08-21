@@ -388,7 +388,7 @@ case doing so would corrupt a tracker built to represent exactly one case's prog
 
 **Consequences.** Capped per suite via `MAX_SUITE_HEALS` (default 3, env-overridable) — a suite
 with several `element_missing` cases in one pass would otherwise spend an uncapped number of
-extra Groq calls and Playwright runs. A suite case's original (pre-heal) files are kept in
+extra LLM calls and Playwright runs. A suite case's original (pre-heal) files are kept in
 place under `caseDir/`, with the healed IR/spec additionally written to `caseDir/healed/` — but
 unlike the primary case, whose "done" event carries the healed IR/spec directly, a suite case's
 *only* channel to the frontend is fetching `04-ir.json`/`generated.spec.ts` from `caseDir/`
@@ -399,3 +399,98 @@ succeeds — a documented divergence from the primary case's convention, not an 
 `buildSuiteSummary`'s screenshot resolution checks `caseDir/healed/artifacts` before
 `caseDir/artifacts` when `healed` is set, for the same reason: the original directory still
 holds the failure frame, not the passing one.
+
+## D-21. Single LLM provider (Gemini) — Groq removed, no rationale for it was ever on record
+
+**Context.** Every stage but one already ran on Gemini (plan, discovery, test cases,
+failure-analysis, heal's re-snapshot). IR compilation alone ran on Groq — and nothing in this
+project's docs or commit history recorded *why* that one stage used a different provider than
+everything around it. Investigating it turned up three independent problems, not one:
+
+1. **Groq's rate limit is per-org, not per-key.** Teammates adding their own Groq keys to the
+   pool added zero extra quota — `keyPool.ts` rotates keys for *failover*, but Groq enforces the
+   TPM ceiling account-wide, so every key still drew from the same shared budget. Gemini keys, by
+   contrast, DO stack quota when each comes from a distinct Google Cloud project — four
+   teammates' own-account keys is a legitimate ~4x, not a Groq-ToS violation waiting to happen.
+2. **Groq was already sitting at that TPM ceiling in practice**, not just in theory — the
+   original motivation for even asking "should Groq stay" was recurring 429s on real runs.
+3. **The Gemini model id this project WAS using elsewhere (`gemini-3-flash-preview`) was itself
+   a preview id, per Google's own model-deprecation docs (checked in the plan-mode session that
+   proposed this change, not re-verified against a live "deprecated" field here — the metadata
+   endpoint doesn't expose one; a direct GET returned 200 with no such flag either before or
+   after the switch)** — a separate defect, but one that made "just point IR at Gemini too"
+   require picking a new, correct id rather than reusing what was already configured. Fixed
+   alongside this decision: `GEMINI_MODEL` moved to `gemini-3.6-flash` — confirmed live, this
+   session, via a direct model-metadata probe (`generateContent` present in
+   `supportedGenerationMethods`) and one real `gemini()` call before the switch was relied on.
+   `GEMINI_MODEL_LITE` (`gemini-3.1-flash-lite`) was left alone — per the same deprecation-docs
+   check, stable until 2027-05-07 as of when that check was made; re-verify the date before
+   trusting it, per this file's own `.env.example` comment.
+
+A fourth problem was structural rather than a provider defect: `GroqBudget` (now `LlmBudget`,
+`src/llm/llmBudget.ts`) was the only per-run cost-tracking mechanism in the codebase, and it only
+existed because IR happened to be the one stage on Groq. Every other stage's real Gemini spend
+was invisible — `runs/<id>/08-groq-usage.json` reported one-fifth of a run's actual LLM cost and
+nobody had cause to notice, because nothing else was ever instrumented.
+
+**Decision.** Consolidate on Gemini for every stage, and delete `src/llm/groq.ts` outright rather
+than keep it as a second, unused code path. Concretely:
+
+- IR generation now calls `gemini()` with the FULL `GEMINI_MODEL` (not `_LITE` — IR is the
+  hardest structured-output task in the pipeline, DOM + test case combined into strict JSON, the
+  same reason it needed Groq's larger context window before) and an explicit `temperature: 0.2`,
+  matching the value this call ran at under Groq — `GeminiOpts` has no built-in provider default
+  the way `groq.ts` did, so it has to be set at the call site or IR would silently move to
+  whatever Gemini's own default temperature is.
+- `gemini()` itself was given a usage-bearing return shape (`{content, usage}`, reading
+  `usageMetadata.promptTokenCount`/`candidatesTokenCount`/`totalTokenCount` — NOT prompt+
+  completion summed, since Gemini's total separately includes `thoughtsTokenCount` reasoning
+  tokens a naive sum would silently drop) so cost tracking has real numbers to record.
+- `GroqBudget` generalized to `LlmBudget`, recording spend from every LLM-calling stage, not just
+  IR. Two propagation paths, chosen per call depth: IR threads an explicit `budget?: LlmBudget`
+  parameter (its call site is shallow — `orchestrator.ts` -> `ir.ts` -> `gemini()`); every other
+  stage records via `AsyncLocalStorage` (`enterWithBudget()`/`recordAmbient()`), because their
+  `gemini()` calls sit several layers inside internal helpers (e.g. discovery's
+  `labelConceptsWithDOM`) that would otherwise need a budget parameter threaded through every
+  intermediate function just to reach one call site. `AsyncLocalStorage.enterWith()` (not `.run()`)
+  was used specifically so `orchestrator.ts`'s existing 300+ line `runPipeline` didn't need
+  re-indenting into a callback. Verified concurrency-safe across `MAX_CONCURRENT_RUNS` — two
+  simultaneous runs each get their own isolated budget — via a dedicated interleaved-async test
+  (`tests/llmBudget.test.ts`), confirmed load-bearing by neutering `AsyncLocalStorage` down to a
+  shared module-level variable and watching that exact test fail.
+- The deterministic grounding gate an IR must pass to be accepted — `groundingError`,
+  `crossFormBleedError`, `clickedElementHiddenAssertion`, `missingActions`, all in `ir.ts` — is
+  pure code with no provider dependency, and was not touched by this migration. Confirmed, at
+  zero API cost, by replaying two real Groq-era accepted IRs (saved before this migration, copied
+  into `tests/fixtures/irGroqToGeminiReplay/` since `runs/` itself is gitignored and ages off
+  disk) through the current versions of those four functions
+  (`tests/irGroqToGeminiReplay.test.ts`) — both still ground clean. This proves the acceptance
+  gate didn't regress; it does not, and cannot, prove a *freshly Gemini-generated* IR for the same
+  case would be equally good — that needs a live model call regenerating IR for those specific
+  cases, which was not spent as part of this change. (A separate, smaller live call WAS made: one
+  real `gemini()` round-trip confirming the new model id, the rewritten `{content, usage}` return
+  shape, and `temperature` all work end-to-end — not a Groq-vs-Gemini IR quality comparison.)
+
+Fixed as an adjacent bug found while doing this work, not a planned part of it: a 401/403/404
+from the LLM provider (bad key, decommissioned/mistyped model) was previously retried through
+`toIR`'s entire `MAX_IR_ATTEMPTS` budget and then reported as "IR failed schema validation after
+retry" — indistinguishable from the site under test actually being broken. Two real runs paid for
+this before it was caught: `7bcbf4de` burned 8 calls on a 401, `4f582417` burned 4 on a 404, both
+with zero usable tokens. Such an error now fails fast on the first attempt and is marked
+structurally (`err.isInfrastructureError = true`, `err.status`) rather than by matching its
+message text — the class of check this project's own CLAUDE.md central rule asks for. TD-03's
+originally-unimplemented clause — a 429 surviving `callWithPool`'s own backoff shouldn't cost one
+of `MAX_IR_ATTEMPTS` either, since it isn't the same kind of failure as a genuine schema error —
+was implemented alongside it: up to 3 separately-bounded free retries
+(`isRateLimitError`, exported from `backoff.ts` for exactly this cross-module use) before falling
+through to the normal attempt-costing retry path.
+
+**Consequences.** One provider to reason about, one rate limit to manage, one place cost is
+recorded (`runs/<id>/08-llm-usage.json`, broken down per stage instead of IR-only). Teammates'
+own Gemini keys now legitimately add quota project-for-project, which Groq's org-level limit
+structurally could not offer no matter how many keys were added. The real tradeoff: no more
+cross-provider redundancy — if Gemini itself is ever fully rate-limited or down, there is no
+second provider to fail over to, where before a Groq outage/limit at least left the rest of the
+pipeline running on a different vendor. Nothing in this decision required migrating faster than
+one stage at a time or kept Groq around as a silent fallback path; `src/llm/groq.ts` is gone,
+not dormant.

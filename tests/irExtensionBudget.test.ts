@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const HOST = "https://ir-extension-budget.example";
 
 // Fixed IR: s3 targets an element only reachable after extending once; s4 targets an element
-// only reachable after extending a SECOND time from there. Two hops, one parsed IR, one groq call.
+// only reachable after extending a SECOND time from there. Two hops, one parsed IR, one gemini call.
 const MULTI_HOP_IR = {
   meta: { feature: "Shopping", title: "Add item and view cart", priority: "high", sourcePrompt: "p", baseUrl: HOST },
   steps: [
@@ -23,8 +23,8 @@ const MULTI_HOP_IR = {
   ],
 };
 
-vi.mock("../src/llm/groq.js", () => ({
-  groq: vi.fn(async () => ({
+vi.mock("../src/llm/gemini.js", () => ({
+  gemini: vi.fn(async () => ({
     content: JSON.stringify(MULTI_HOP_IR),
     usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
   })),

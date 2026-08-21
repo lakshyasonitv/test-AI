@@ -451,7 +451,7 @@ function renderCaseCard(c, runId, index) {
           <summary>${icon("code", { size: 13 })} Technical details (for developers)</summary>
           <div class="case-details-content">
             ${c.intent ? `<h4>QA reasoning</h4><pre>${escapeHtml(c.intent)}</pre>` : ""}
-            ${c.groqCalls ? `<h4>Cost</h4><pre>${c.groqCalls} AI call(s), ${c.groqTokens ?? 0} tokens</pre>` : ""}
+            ${c.llmCalls ? `<h4>Cost</h4><pre>${c.llmCalls} AI call(s), ${c.llmTokens ?? 0} tokens</pre>` : ""}
             <h4>Step-by-step test plan (JSON) <a href="${escapeHtml(irUrl)}" download="ir.json" class="dl-btn dl-btn-inline">${icon("download", { size: 12 })} download</a></h4>
             <pre class="case-ir">Loading…</pre>
             <h4>Full test code <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn dl-btn-inline">${icon("download", { size: 12 })} download</a></h4>

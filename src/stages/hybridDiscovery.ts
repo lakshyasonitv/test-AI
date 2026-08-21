@@ -89,12 +89,13 @@ Return JSON: { "concepts": string[], "labeledElements": { "index": number, "conc
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const raw = await gemini(user, {
+    const { content: raw } = await gemini(user, {
       systemInstruction: system,
       json: true,
       model: process.env.GEMINI_MODEL_LITE,
       imageBase64: screenshotBase64,
       imageMime: screenshotBase64 ? "image/jpeg" : undefined,
+      stage: "discovery",
     });
     try {
       const parsed = parseJson(raw);

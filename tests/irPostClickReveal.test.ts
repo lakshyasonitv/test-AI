@@ -54,12 +54,12 @@ const COLLIDING_IR = irWith({ role: "textbox", name: "Search assets by serial or
 // What the model should produce once it can actually see the modal.
 const CORRECT_IR = irWith({ role: "textbox", name: "E.g., Laptop screen flickering" });
 
-const { groqMock, refreshMock, extendMock } = vi.hoisted(() => ({
-  groqMock: vi.fn(),
+const { geminiMock, refreshMock, extendMock } = vi.hoisted(() => ({
+  geminiMock: vi.fn(),
   refreshMock: vi.fn(),
   extendMock: vi.fn(),
 }));
-vi.mock("../src/llm/groq.js", () => ({ groq: groqMock }));
+vi.mock("../src/llm/gemini.js", () => ({ gemini: geminiMock }));
 vi.mock("../src/stages/liveExtend.js", () => ({
   extendAppModel: extendMock,
   refreshPageModel: refreshMock,
@@ -75,7 +75,7 @@ const testCase: any = {
   expected: "The ticket form is filled", category: "valid", generatedFrom: "upfront",
 };
 // toIR disk-caches on a hash of (testCase, sourcePrompt, appModel, creds). A static prompt would
-// hit a previous run's entry and never call groq at all, making every assertion below vacuous —
+// hit a previous run's entry and never call gemini at all, making every assertion below vacuous —
 // same discipline irSystemPrompt.test.ts documents.
 const uniquePrompt = () => `raise a ticket ${Date.now()}-${Math.random()}`;
 
@@ -85,7 +85,7 @@ const reply = (ir: any) => ({
 });
 
 beforeEach(() => {
-  groqMock.mockReset();
+  geminiMock.mockReset();
   refreshMock.mockReset();
   extendMock.mockReset();
   // Default: live-extend learns nothing new, so a grounding MISS stays a miss. Tests that care
@@ -95,7 +95,7 @@ beforeEach(() => {
 
 describe("toIR — post-click reveal check", () => {
   it("rejects a fill that ground onto pre-existing chrome, and re-prompts naming the revealed fields", async () => {
-    groqMock
+    geminiMock
       .mockResolvedValueOnce(reply(COLLIDING_IR))
       .mockResolvedValueOnce(reply(CORRECT_IR));
     refreshMock.mockResolvedValue(refreshedModel);
@@ -103,9 +103,9 @@ describe("toIR — post-click reveal check", () => {
     const { ir } = await toIR(testCase, appModel, uniquePrompt(), `${HOST}/tickets`);
 
     // The first IR ground clean against the model — without this check it would have shipped.
-    expect(groqMock).toHaveBeenCalledTimes(2);
+    expect(geminiMock).toHaveBeenCalledTimes(2);
     // The correction must NAME the fields the click revealed, or the model has nothing to act on.
-    const secondPrompt = groqMock.mock.calls[1][0] as string;
+    const secondPrompt = geminiMock.mock.calls[1][0] as string;
     expect(secondPrompt).toContain("E.g., Laptop screen flickering");
     expect(secondPrompt).toContain("Provide more details...");
     // And the run ends on the modal's real field, not the header search box.
@@ -117,7 +117,7 @@ describe("toIR — post-click reveal check", () => {
   // model would target one anyway, grounding would MISS, and a live-extend hop would be spent
   // rediscovering what had just been discovered.
   it("keeps the refreshed model, so the revealed fields are in scope for later steps", async () => {
-    groqMock
+    geminiMock
       .mockResolvedValueOnce(reply(COLLIDING_IR))
       .mockResolvedValueOnce(reply(CORRECT_IR));
     refreshMock.mockResolvedValue(refreshedModel);
@@ -131,12 +131,12 @@ describe("toIR — post-click reveal check", () => {
   // No modal opened — the re-snapshot reveals nothing fillable, so there is nothing to redirect
   // the step to and a correction would name nothing. Must accept, unchanged, in ONE attempt.
   it("accepts the IR unchanged when the click reveals nothing fillable", async () => {
-    groqMock.mockResolvedValue(reply(COLLIDING_IR));
+    geminiMock.mockResolvedValue(reply(COLLIDING_IR));
     refreshMock.mockResolvedValue(appModel); // identical — nothing new appeared
 
     const { ir } = await toIR(testCase, appModel, uniquePrompt(), `${HOST}/tickets`);
 
-    expect(groqMock).toHaveBeenCalledTimes(1);
+    expect(geminiMock).toHaveBeenCalledTimes(1);
     expect(ir.steps[2].target!.name).toBe("Search assets by serial or name...");
   });
 
@@ -147,14 +147,14 @@ describe("toIR — post-click reveal check", () => {
   // see. (It also means no "unless the target is a revealed field" guard is needed inside the
   // check: such a target can never reach it.)
   it("leaves a correctly-named revealed field to the existing live-extend path", async () => {
-    groqMock.mockResolvedValue(reply(CORRECT_IR));
+    geminiMock.mockResolvedValue(reply(CORRECT_IR));
     extendMock.mockResolvedValue(refreshedModel); // live-extend discovers the modal, as it did for case-1
     refreshMock.mockResolvedValue(refreshedModel);
 
     const { ir } = await toIR(testCase, appModel, uniquePrompt(), `${HOST}/tickets`);
 
     // One generation: grounding missed, live-extend fixed the model, the SAME IR re-ground.
-    expect(groqMock).toHaveBeenCalledTimes(1);
+    expect(geminiMock).toHaveBeenCalledTimes(1);
     expect(extendMock).toHaveBeenCalled();
     expect(ir.steps[2].target!.name).toBe("E.g., Laptop screen flickering");
   });
@@ -163,12 +163,12 @@ describe("toIR — post-click reveal check", () => {
   // different credentials). Best-effort, exactly like groundTerminalTextAssertion: leave the IR
   // alone rather than failing the whole run.
   it("leaves the IR alone when the replay throws", async () => {
-    groqMock.mockResolvedValue(reply(COLLIDING_IR));
+    geminiMock.mockResolvedValue(reply(COLLIDING_IR));
     refreshMock.mockRejectedValue(new Error("browser launch failed"));
 
     const { ir } = await toIR(testCase, appModel, uniquePrompt(), `${HOST}/tickets`);
 
-    expect(groqMock).toHaveBeenCalledTimes(1);
+    expect(geminiMock).toHaveBeenCalledTimes(1);
     expect(ir.steps[2].target!.name).toBe("Search assets by serial or name...");
   });
 
@@ -176,7 +176,7 @@ describe("toIR — post-click reveal check", () => {
   // real false-positive risk (a click that reveals fields where the step legitimately targets a
   // pre-existing one) at a single wasted attempt.
   it("fires at most once per toIR call", async () => {
-    groqMock.mockResolvedValue(reply(COLLIDING_IR)); // never corrects — would loop if unbounded
+    geminiMock.mockResolvedValue(reply(COLLIDING_IR)); // never corrects — would loop if unbounded
     refreshMock.mockResolvedValue(refreshedModel);
 
     await toIR(testCase, appModel, uniquePrompt(), `${HOST}/tickets`);

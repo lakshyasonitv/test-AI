@@ -29,7 +29,7 @@
         whyItMatters: "If this breaks, real customers can't get into their accounts at all.",
         intent: "proves a real user can sign in and reach their account",
         expected: "The account page is shown after signing in",
-        groqCalls: 2, groqTokens: 6790 },
+        llmCalls: 2, llmTokens: 6790 },
       { caseId: "case-1", title: "Log in with the wrong password", status: "passed",
         resultPath: "cases/case-1", screenshotUrl: SHOT,
         whyItMatters: "If this breaks, someone else's guess at a password could get into an account it doesn't belong to.",
