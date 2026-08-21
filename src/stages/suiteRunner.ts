@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync, cpSync } from "node:fs";
 import path from "node:path";
 import { toIR } from "./ir.js";
-import type { GroqBudget } from "../llm/groqBudget.js";
+import type { LlmBudget } from "../llm/llmBudget.js";
 import { generateSpec } from "./generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked } from "./executor.js";
 import { credentialEnvVars, type Credentials } from "./credentials.js";
@@ -37,10 +37,10 @@ export interface CaseRunResult {
   irPath: string;
   resultPath: string;
   diagnosisPath?: string;
-  /** Groq calls/tokens spent generating this case's IR. Omitted for the reused primary
-   *  case, whose usage is already counted in the run's top-level groq-usage.json. */
-  groqCalls?: number;
-  groqTokens?: number;
+  /** LLM calls/tokens spent generating this case's IR. Omitted for the reused primary
+   *  case, whose usage is already counted in the run's top-level llm-usage.json. */
+  llmCalls?: number;
+  llmTokens?: number;
   /** Plain-English "what this check proves", for the UI. `whyItMatters` (required in the
    *  TestCase schema) is the primary headline — a real-world consequence sentence with no QA
    *  vocabulary. `intent` is the model's QA-toned reasoning, kept for the technical-details
@@ -64,7 +64,7 @@ export interface SuiteSummary {
   blocked: number;
   cases: {
     caseId: string; title: string; status: string; resultPath: string;
-    groqCalls?: number; groqTokens?: number; blockedBy?: string;
+    llmCalls?: number; llmTokens?: number; blockedBy?: string;
     whyItMatters?: string; intent?: string; expected?: string; healed?: boolean;
     // Already returned by buildSuiteSummary below but never declared here — the same silent
     // interface/implementation drift that let whyItMatters go missing once. Declared now so a
@@ -129,8 +129,8 @@ export function buildSuiteSummary(results: CaseRunResult[], runDir: string): Sui
         resultPath: `cases/${r.caseId}`,
         screenshotUrl,
         videoUrl,
-        groqCalls: r.groqCalls,
-        groqTokens: r.groqTokens,
+        llmCalls: r.llmCalls,
+        llmTokens: r.llmTokens,
         blockedBy: r.blockedBy,
         whyItMatters: r.whyItMatters,
         intent: r.intent,
@@ -158,7 +158,7 @@ export async function runSuite(
   entryUrl: string,
   onEvent?: OnEvent,
   primaryResult?: PrimaryCaseResult,
-  groqBudget?: GroqBudget,
+  llmBudget?: LlmBudget,
   /** Credentials the user supplied for this run, shared by every case. */
   runCreds?: Credentials
 ): Promise<CaseRunResult[]> {
@@ -260,11 +260,11 @@ export async function runSuite(
         console.log("Running:", tc.title);
 
         console.log("Generating IR...");
-        const usageBefore = groqBudget?.snapshot();
-        let { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl, groqBudget, runCreds);
-        const usageAfter = groqBudget?.snapshot();
-        const groqCalls = usageAfter && usageBefore ? usageAfter.calls - usageBefore.calls : undefined;
-        const groqTokens = usageAfter && usageBefore ? usageAfter.totalTokens - usageBefore.totalTokens : undefined;
+        const usageBefore = llmBudget?.snapshot();
+        let { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl, llmBudget, runCreds);
+        const usageAfter = llmBudget?.snapshot();
+        const llmCalls = usageAfter && usageBefore ? usageAfter.calls - usageBefore.calls : undefined;
+        const llmTokens = usageAfter && usageBefore ? usageAfter.totalTokens - usageBefore.totalTokens : undefined;
         console.log("IR generated");
         const irPath = path.join(caseDir, "04-ir.json");
         writeFileSync(irPath, JSON.stringify(ir, null, 2));
@@ -310,7 +310,7 @@ export async function runSuite(
             healsUsed++;
             try {
               const healedOutcome = await attemptHeal({
-                testCase: tc, ir, appModel, diagnosis, sourcePrompt, entryUrl, groqBudget,
+                testCase: tc, ir, appModel, diagnosis, sourcePrompt, entryUrl, llmBudget,
                 runCreds, outDir: caseDir,
               });
               if (healedOutcome) {
@@ -352,7 +352,7 @@ export async function runSuite(
         }, null, 2));
 
         results.push({
-          caseId, title: tc.title, status, irPath, resultPath, diagnosisPath, groqCalls, groqTokens, healed,
+          caseId, title: tc.title, status, irPath, resultPath, diagnosisPath, llmCalls, llmTokens, healed,
           whyItMatters: tc.whyItMatters, intent: tc.intent, expected: tc.expected,
           blockedBy: blocked?.reason, blockedScreenshot: blocked?.screenshot ?? undefined,
         });

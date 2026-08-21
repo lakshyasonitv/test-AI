@@ -50,7 +50,7 @@ Example of the exact shape required:
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const raw = await gemini(user, { systemInstruction: system, json: true, model: process.env.GEMINI_MODEL_LITE });
+    const { content: raw } = await gemini(user, { systemInstruction: system, json: true, model: process.env.GEMINI_MODEL_LITE, stage: "plan" });
     try {
       const parsed = parseJson(raw);
       // Override the LLM's scope with our heuristic — the heuristic is authoritative.

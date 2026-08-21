@@ -1,0 +1,74 @@
+[
+  {
+    "title": "Verify navigation and successful contact form submission",
+    "priority": "high",
+    "feature": "Contact Form",
+    "steps": [
+      "Go to the homepage at 'https://thinkvibes.com/'.",
+      "Click the 'Who We Are' link in the navigation menu.",
+      "Click the 'Contact Us' link to scroll to the form section.",
+      "Type 'Jane Doe' into the 'Name' field.",
+      "Type 'jane.doe@example.com' into the 'Email *' field.",
+      "Type 'Interested in Salesforce consulting.' into the 'Comment or Message' field.",
+      "Click the 'Submit' button to send the contact request."
+    ],
+    "expected": "The form is submitted successfully and a confirmation message or redirection occurs.",
+    "fromPrompt": true,
+    "category": "valid",
+    "intent": "proves the main navigation works and the primary contact form accepts valid data",
+    "whyItMatters": "If this breaks, visitors cannot explore the site or reach out to start a project, which is the primary goal of the website.",
+    "targetUrl": "https://thinkvibes.com/",
+    "generatedFrom": "upfront"
+  },
+  {
+    "title": "Submit contact form with required email empty",
+    "priority": "medium",
+    "feature": "Contact Form",
+    "steps": [
+      "Go to the 'https://thinkvibes.com/' page.",
+      "Leave the 'Email *' field completely blank.",
+      "Click the 'Submit' button."
+    ],
+    "expected": "A validation error message appears and the form does not submit.",
+    "fromPrompt": false,
+    "category": "empty-boundary",
+    "intent": "proves the form cannot be sent without the required email address",
+    "whyItMatters": "If this breaks, someone could send you a message but you would have no way to contact them back, losing the lead entirely.",
+    "checklistTitle": "Submit with all required fields empty",
+    "targetUrl": "https://thinkvibes.com/",
+    "generatedFrom": "upfront"
+  },
+  {
+    "title": "Internal page navigation to Partners",
+    "priority": "low",
+    "feature": "Navigation",
+    "steps": [
+      "Go to the 'https://thinkvibes.com/' page.",
+      "Click the 'Partners' link in the navigation menu."
+    ],
+    "expected": "The browser navigates to the 'https://thinkvibes.com/home-3/partners/' page.",
+    "fromPrompt": false,
+    "category": "state-change",
+    "intent": "proves the Partners link correctly navigates away from the home page",
+    "whyItMatters": "If these links fail, the website feels broken and untrustworthy to anyone looking for more detailed information.",
+    "targetUrl": "https://thinkvibes.com/",
+    "generatedFrom": "upfront"
+  },
+  {
+    "title": "Newsletter subscription with blank input",
+    "priority": "low",
+    "feature": "Newsletter Subscription",
+    "steps": [
+      "Go to the 'https://thinkvibes.com/' page.",
+      "Ensure the 'Enter your e-mail address' field is empty.",
+      "Click the 'Subscribe' button."
+    ],
+    "expected": "The application prevents submission and prompts for an email address.",
+    "fromPrompt": false,
+    "category": "empty-boundary",
+    "intent": "proves the newsletter form does not attempt to subscribe an empty string",
+    "whyItMatters": "If this breaks, your mailing list will be cluttered with empty entries, wasting your money on storage for non-existent users.",
+    "targetUrl": "https://thinkvibes.com/",
+    "generatedFrom": "upfront"
+  }
+]

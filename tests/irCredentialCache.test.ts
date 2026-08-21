@@ -21,8 +21,8 @@ const LOGIN_IR = {
   ],
 };
 
-vi.mock("../src/llm/groq.js", () => ({
-  groq: vi.fn(async () => ({
+vi.mock("../src/llm/gemini.js", () => ({
+  gemini: vi.fn(async () => ({
     content: JSON.stringify(LOGIN_IR),
     usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
   })),

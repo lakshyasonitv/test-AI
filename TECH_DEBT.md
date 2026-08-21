@@ -47,7 +47,7 @@ actually making that call.
 |---|---|---|---|---|
 | TD-01 | `missingActions` can hard-fail a run over a *correct* IR | Critical | Accidental | Lakshya |
 | TD-02 | Executor's SIGKILL destroys the report needed to diagnose the failure it just caused | Critical | Accidental | Lakshya |
-| TD-03 | Groq 429 handling burns IR-attempt budget instead of backing off | High | Accidental | Lakshya |
+| TD-03 | Rate-limit handling burned IR-attempt budget instead of backing off — **fixed** (backoff wording + free rate-limit retries; the whole provider it was filed against, Groq, is also gone — `DECISIONS.md` D-21) | High | Accidental | Lakshya |
 | TD-04 | No general mechanism for a blocking interstitial (CAPTCHA, cookie wall, OTP, age gate) | High | Strategic | ? |
 | TD-05 | Duplicate element names in a merged multi-page AppModel produce ambiguous locators — *partial mitigation shipped, `.first()` fallback on genuine ambiguity; page-scoping fix still open* | High | Accidental | Lakshya |
 | TD-06 | IR assertion vocabulary has no title assertion — **fixed** (`title_contains`/`title_equals`) | Medium | Accidental | Lakshya |
@@ -141,27 +141,39 @@ timed out. Consider `trace: "on-first-retry"` (cheaper than `retain-on-failure`)
 finalization on a large failing case turns out to be what's pushing total time past 60s — worth
 confirming with a timed instrumented run before assuming it's the whole story.
 
-### TD-03. Groq 429 handling burns IR-attempt budget instead of backing off — High / Accidental
+### TD-03. Rate-limit handling burned IR-attempt budget instead of backing off — High / Accidental — Fixed
 
-**What it is.** `groq.ts:64` passes `maxRetries: 2` to `callWithPool` on the grounds that
-`ir.ts`'s own `MAX_ATTEMPTS` loop is the outer retry (comment at `groq.ts:22-26`). But
-`backoff.ts`'s `parseRetryDelay` (`backoff.ts:28-37`) only matches the literal string
-`retry in Ns` — Groq's actual 429 body says `"Please try again in 495ms"`, which the regex
-doesn't match, so the server's own hint is discarded and a generic exponential backoff is used
-instead. When retries are exhausted, `ir.ts:1106-1111` catches, burns one of `MAX_IR_ATTEMPTS`,
-and immediately re-sends the same multi-thousand-token prompt — adding load to the very
-per-minute-token budget that just rejected it.
+**What it is.** Originally filed against Groq: `groq.ts:64` passed `maxRetries: 2` to
+`callWithPool` on the grounds that `ir.ts`'s own `MAX_ATTEMPTS` loop was the outer retry (comment
+at `groq.ts:22-26`). But `backoff.ts`'s `parseRetryDelay` only matched the literal string
+`retry in Ns` — Groq's actual 429 body says `"Please try again in 495ms"`, which the regex didn't
+match, so the server's own hint was discarded and a generic exponential backoff was used instead.
+Separately, and worse: when retries were exhausted, `ir.ts` caught, burned one of
+`MAX_IR_ATTEMPTS`, and immediately re-sent the same multi-thousand-token prompt — adding load to
+the very per-minute-token budget that had just rejected it. Two distinct bugs under one filing:
+a backoff-wording mismatch, and a rate-limit failure being charged like a genuine schema error.
 
-**Why it hurts.** Reproduced directly: run `2026-08-14T13-29-09…a1677304` died after a **495ms**
+**Why it hurt.** Reproduced directly: run `2026-08-14T13-29-09…a1677304` died after a **495ms**
 rate-limit wait turned into a dead run within 18 seconds, at `TPM: Limit 12000` against measured
-per-run spend of 11.6k-46.5k tokens (`08-groq-usage.json` across the last 5 runs) — this isn't
-edge-case token usage, it's routine.
+per-run spend of 11.6k-46.5k tokens (`08-groq-usage.json` across the last 5 runs) — this wasn't
+edge-case token usage, it was routine.
 
-**Remediation.** Extend `parseRetryDelay` to also match a millisecond form (`retry in Nms`), or
-just switch to `Math.max` against the server-suggested wait when it's shorter than the computed
-backoff — the server's number is more accurate than a guess either way. Separately: `ir.ts`
-shouldn't treat a rate-limit failure identically to a genuine schema-validation failure for the
-purpose of spending an attempt — a 429 backoff succeeding should not cost one of `MAX_ATTEMPTS`.
+**Fix applied.** In two parts, on different timelines:
+- The backoff-wording clause was fixed first: `parseRetryDelay` (`backoff.ts`) now also matches a
+  millisecond form (`retry in Nms`), and `maxRetries` was raised 2 → 4.
+- The attempt-budget clause — "a rate-limit failure shouldn't cost one of `MAX_ATTEMPTS` the way a
+  genuine schema failure does" — was the part this filing left unimplemented; `isRateLimitError`
+  (`backoff.ts`) existed as a dead export, defined but never imported, until it was wired into
+  `ir.ts`'s retry loop: up to 3 separately-bounded free retries (`rateLimitRetries`,
+  `MAX_RATE_LIMIT_RETRIES`) for a rate-limit error, decrementing the loop counter so the retry
+  doesn't also cost an `MAX_ATTEMPTS` slot, before falling through to the normal (attempt-costing)
+  path for a permanently rate-limited key. Verified via `tests/irAuthError.test.ts`'s 429 case.
+- Overtaken by a bigger change in the same pass: the provider this was filed against is gone.
+  IR generation moved from Groq to Gemini entirely (`DECISIONS.md` D-21) — partly *because of*
+  this class of pressure (Groq's per-org, not per-key, rate limit meant adding keys couldn't
+  relieve it the way it can for Gemini). The fix above is written provider-agnostically
+  (`isRateLimitError` takes any `err`, not a Groq-shaped one) and was verified against the
+  now-live Gemini call path, not against Groq.
 
 ### TD-04. No general mechanism for a blocking interstitial (CAPTCHA, cookie wall, OTP, age gate) — High / Strategic
 

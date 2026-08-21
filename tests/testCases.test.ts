@@ -79,7 +79,7 @@ const plan: any = { steps: ["log in"], testTypeScope: ["functional"], coverage: 
 
 describe("toTestCases — compound-login backstop end-to-end", () => {
   it("never returns a compound case even if the model still produces one", async () => {
-    geminiMock.mockResolvedValueOnce(JSON.stringify([COMPOUND_CASE, INVALID_PASSWORD_CASE]));
+    geminiMock.mockResolvedValueOnce({ content: JSON.stringify([COMPOUND_CASE, INVALID_PASSWORD_CASE]), usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } });
     // toTestCases returns from the disk cache before gemini() is even called — a static
     // sourcePrompt would silently hit a prior test's cache entry and make this assertion
     // vacuous (same discipline irSystemPrompt.test.ts documents for toIR).

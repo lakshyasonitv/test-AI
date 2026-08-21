@@ -5,7 +5,7 @@ import { plan } from "./stages/planner.js";
 import { discoverSiteHybrid, discoverPagesHybrid } from "./stages/hybridDiscovery.js";
 import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
-import { GroqBudget } from "./llm/groqBudget.js";
+import { LlmBudget, enterWithBudget } from "./llm/llmBudget.js";
 import {
   credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars,
   extractCredentialsFromPrompt,
@@ -61,10 +61,16 @@ export async function runPipeline(
   const runDir = path.join("runs", runId);
   mkdirSync(runDir, { recursive: true });
 
-  // One budget per run, shared across the primary case, self-heal, and every suite case
-  // below — never a module-level singleton (MAX_CONCURRENT_RUNS lets several runs share
-  // one process).
-  const groqBudget = new GroqBudget();
+  // One budget per run, shared across every LLM-calling stage (plan, discovery, test-case
+  // generation, IR, failure diagnosis, self-heal, and every suite case) — never a
+  // module-level singleton (MAX_CONCURRENT_RUNS lets several runs share one process).
+  const llmBudget = new LlmBudget();
+  // Makes llmBudget ambiently available to every gemini() call for the rest of this run,
+  // however many layers deep (discovery's labelConceptsWithDOM in particular) — see
+  // llmBudget.ts's own doc comment for why this is `enterWith`, not a wrapping callback, and
+  // why it's still safe across MAX_CONCURRENT_RUNS. ir.ts/heal.ts/suiteRunner.ts still take
+  // `llmBudget` as an explicit parameter below — this is additive, not a replacement.
+  enterWithBudget(llmBudget);
 
   const save = (name: string, data: unknown) =>
     writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));
@@ -121,12 +127,12 @@ export async function runPipeline(
     // produced" a few lines below, which would surface as a scary generic crash instead of
     // "nothing was selected."
     if (cases.length === 0) {
-      const groqUsage = groqBudget.snapshot();
-      save("08-groq-usage.json", groqUsage);
+      const llmUsage = llmBudget.snapshot();
+      save("08-llm-usage.json", llmUsage);
       emit("done", "completed", {
         passed: false,
         status: "no_cases_selected",
-        groqUsage,
+        llmUsage,
       });
       return { runId, runDir, result: null, diagnosis: null };
     }
@@ -162,7 +168,7 @@ export async function runPipeline(
     }
 
     console.log("Generating IR for primary case:", primary.title);
-    const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0], groqBudget, runCreds));
+    const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0], llmBudget, runCreds));
     console.log("IR generated");
 
     console.log("Generating spec...");
@@ -206,7 +212,7 @@ export async function runPipeline(
           emit("heal", "started");
           const healedOutcome = await attemptHeal({
             testCase: primary, ir, appModel, diagnosis,
-            sourcePrompt: prompt, entryUrl: resolvedUrls[0], groqBudget, runCreds,
+            sourcePrompt: prompt, entryUrl: resolvedUrls[0], llmBudget, runCreds,
             outDir: runDir,
           });
           if (healedOutcome) {
@@ -294,7 +300,7 @@ export async function runPipeline(
       healed,
     };
     console.log("3. Running suite...");
-    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, groqBudget, runCreds);
+    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, llmBudget, runCreds);
     console.log("✓ Suite finished");
 
     console.log("Pipeline finished");
@@ -318,11 +324,11 @@ export async function runPipeline(
       try { suite = JSON.parse(readFileSync(summaryPath, "utf8")); } catch { }
     }
 
-    // Real Groq spend for this run — visible on disk and in the completion event so a
-    // regression (retry storm, model change) shows up immediately instead of being
+    // Real LLM spend for this run, across every stage — visible on disk and in the completion
+    // event so a regression (retry storm, model change) shows up immediately instead of being
     // discovered later via a drained account.
-    const groqUsage = groqBudget.snapshot();
-    save("08-groq-usage.json", groqUsage);
+    const llmUsage = llmBudget.snapshot();
+    save("08-llm-usage.json", llmUsage);
 
     // Did the primary case end at a wall automation can't pass? That outranks pass/fail: the
     // app isn't broken and the test didn't succeed, and the user needs to see the proof frame.
@@ -344,15 +350,15 @@ export async function runPipeline(
       test: { title: primary.title, steps: primary.steps, expected: primary.expected },
       ir: finalIr,
       suite,
-      groqUsage,
+      llmUsage,
     });
     return { runId, runDir, result: finalResult, diagnosis };
   } catch (err: any) {
     // Failed/truncated runs are exactly the ones most likely to have burned the most
     // budget retrying — record usage here too instead of only on the happy path.
-    const groqUsage = groqBudget.snapshot();
-    try { save("08-groq-usage.json", groqUsage); } catch { }
-    emit("error", "failed", { groqUsage }, err?.message ?? String(err));
+    const llmUsage = llmBudget.snapshot();
+    try { save("08-llm-usage.json", llmUsage); } catch { }
+    emit("error", "failed", { llmUsage }, err?.message ?? String(err));
     throw err;
   }
 }

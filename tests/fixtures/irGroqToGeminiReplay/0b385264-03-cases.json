@@ -1,0 +1,96 @@
+[
+  {
+    "title": "Verify homepage load and primary navigation",
+    "priority": "high",
+    "feature": "Navigation",
+    "steps": [
+      "Go to the 'https://thinkvibes.com/' page.",
+      "Verify that the 'custom logo link' is visible in the header.",
+      "Click the 'Who We Are' link in the navigation menu.",
+      "Click the 'Services' link in the navigation menu.",
+      "Click the 'Contact Us' link in the navigation menu."
+    ],
+    "expected": "The page navigates or scrolls to the respective sections for 'Who We Are', 'Services', and 'Contact Us'.",
+    "fromPrompt": true,
+    "category": "valid",
+    "intent": "Ensures the homepage is accessible and core navigation links direct the user to the correct sections.",
+    "whyItMatters": "If the main navigation fails, visitors cannot find information about your services or team, making the site a dead end.",
+    "targetUrl": "https://thinkvibes.com/",
+    "generatedFrom": "upfront"
+  },
+  {
+    "title": "Submit contact form with all required fields empty",
+    "priority": "medium",
+    "feature": "Contact Form",
+    "steps": [
+      "Go to the 'https://thinkvibes.com/' page.",
+      "Scroll to the 'Let's Connect' section.",
+      "Leave the 'Email *' field blank.",
+      "Click the 'Submit' button to send the form."
+    ],
+    "expected": "The form is not submitted and a validation error appears near the 'Email *' field.",
+    "fromPrompt": false,
+    "category": "empty-boundary",
+    "intent": "Proves that the contact form requires an email address before allowing a submission.",
+    "whyItMatters": "If this fails, you might receive empty inquiries with no way to reply to the potential client.",
+    "checklistTitle": "Submit with all required fields empty",
+    "targetUrl": "https://thinkvibes.com/",
+    "generatedFrom": "upfront"
+  },
+  {
+    "title": "Successful contact form submission",
+    "priority": "high",
+    "feature": "Contact Form",
+    "steps": [
+      "Go to the 'https://thinkvibes.com/' page.",
+      "Scroll to the 'Let's Connect' section.",
+      "Type 'Test User' into the 'Name' field.",
+      "Type 'test@example.com' into the 'Email *' field.",
+      "Type 'Interested in Salesforce consulting.' into the 'Comment or Message' field.",
+      "Click the 'Submit' button."
+    ],
+    "expected": "The form displays a success message confirming the message was sent.",
+    "fromPrompt": false,
+    "category": "state-change",
+    "intent": "Validates that a complete form submission triggers a success state.",
+    "whyItMatters": "This is the primary way new business reaches you; if it breaks, you lose leads and revenue.",
+    "targetUrl": "https://thinkvibes.com/",
+    "generatedFrom": "upfront"
+  },
+  {
+    "title": "Contact form with malformed email address",
+    "priority": "medium",
+    "feature": "Contact Form",
+    "steps": [
+      "Go to the 'https://thinkvibes.com/' page.",
+      "Scroll to the 'Let's Connect' section.",
+      "Type 'not-an-email' into the 'Email *' field.",
+      "Click the 'Submit' button."
+    ],
+    "expected": "The browser or the site displays an error message indicating the email format is invalid.",
+    "fromPrompt": false,
+    "category": "invalid-input",
+    "intent": "Ensures the email field only accepts valid email formats.",
+    "whyItMatters": "If people enter typos in their email addresses and the site accepts them, you won't be able to reach them back.",
+    "targetUrl": "https://thinkvibes.com/",
+    "generatedFrom": "upfront"
+  },
+  {
+    "title": "Newsletter subscription with valid email",
+    "priority": "medium",
+    "feature": "Newsletter Subscription",
+    "steps": [
+      "Go to the 'https://thinkvibes.com/' page.",
+      "Scroll to the 'Join our Newsletter' section in the footer.",
+      "Type 'subscriber@example.com' into the 'Enter your e-mail address' field.",
+      "Click the 'Subscribe' button."
+    ],
+    "expected": "The user is redirected or shown a confirmation that they have subscribed.",
+    "fromPrompt": false,
+    "category": "valid",
+    "intent": "Verifies the newsletter sign-up process works for marketing purposes.",
+    "whyItMatters": "Newsletters help you stay in touch with your audience; if this breaks, your marketing list stops growing.",
+    "targetUrl": "https://thinkvibes.com/",
+    "generatedFrom": "upfront"
+  }
+]

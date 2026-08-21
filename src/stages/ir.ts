@@ -1,6 +1,7 @@
-import { groq } from "../llm/groq.js";
-import { GroqBudget } from "../llm/groqBudget.js";
+import { gemini } from "../llm/gemini.js";
+import { LlmBudget } from "../llm/llmBudget.js";
 import { parseJson } from "../llm/json.js";
+import { isRateLimitError } from "../llm/backoff.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, toLiteModel, toMicroModel, INTERACTIVE_ROLES } from "../schema/appModel.js";
@@ -44,11 +45,16 @@ const KNOWN_ROLES = new Set([
 ]);
 
 /**
- * Groq/Llama reliably gets the IR's shape *close* but not exact: numeric ids,
+ * The model reliably gets the IR's shape *close* but not exact: numeric ids,
  * empty-string targets instead of omitted ones, and — worst — an assertion
  * object like { text_contains: "...", visible: "" } instead of the single
  * enum string our schema (and the generator) require. Fold those into the
  * expected shape before validating; only the truly malformed still fails.
+ *
+ * Originally written against Groq/Llama's specific output quirks (IR generation moved to
+ * Gemini — see DECISIONS.md D-21). Left in place rather than assumed unnecessary: it's a
+ * defensive, idempotent correction that costs nothing when the shape is already right, whether
+ * or not Gemini turns out to need the same corrections.
  */
 export function normalizeIR(raw: any): any {
   if (!raw || typeof raw !== "object" || !Array.isArray(raw.steps)) return raw;
@@ -987,7 +993,7 @@ export function hasTerminalAssertion(steps: Step[]): boolean {
 
 export async function toIR(
   testCase: TestCase, appModel: AppModel, sourcePrompt: string, entryUrl: string,
-  budget?: GroqBudget,
+  budget?: LlmBudget,
   /** Credentials for this run — user-supplied ones take precedence over the built-in demo
    *  map. Undefined falls back to credentialsFor(entryUrl), i.e. today's behaviour. */
   runCreds?: Credentials
@@ -1117,7 +1123,7 @@ Example — handling duplicate selectors with nth:
   // key, with nobody having to remember. The model name is in for the same reason.
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
-    system, process.env.GROQ_MODEL ?? "default");
+    system, process.env.GEMINI_MODEL ?? "default");
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -1246,9 +1252,10 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // model`. replayAndSnapshot() caches by step prefix, so re-reaching an already-seen state
   // is cheap; only genuinely new pages cost a launch.
   const MAX_EXTENSIONS = Number(process.env.MAX_LIVE_EXTENSIONS ?? 5);
-  // Bound total groq calls so a broken app/prompt still fails fast. Was a hardcoded 8;
+  // Bound total LLM calls so a broken app/prompt still fails fast. Was a hardcoded 8;
   // stacked with backoff.ts's per-call retries that made a single case's worst case 48
-  // real Groq requests. Now env-overridable like MAX_LIVE_EXTENSIONS above.
+  // real requests (originally against Groq; the same shape applies to Gemini now — see
+  // DECISIONS.md D-21). Now env-overridable like MAX_LIVE_EXTENSIONS above.
   const MAX_ATTEMPTS = Number(process.env.MAX_IR_ATTEMPTS ?? 4);
   let lastErr = "";
   // Feedback for the NEXT attempt's prompt. Separate from lastErr, which also carries
@@ -1265,24 +1272,68 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
    *  attempt, after which the next IR is accepted on its own merits. */
   let postClickRefreshed = false;
 
+  // Extra, separately-bounded retries for a rate-limit error that survived callWithPool's own
+  // internal backoff (a persistent TPM squeeze, not a one-off spike). TD-03's originally
+  // unimplemented clause: "a 429 backoff succeeding should not cost one of MAX_ATTEMPTS" — a
+  // rate-limit failure isn't the same kind of failure as a genuine schema error, so it
+  // shouldn't compete with real correction attempts for the same small budget. Bounded on its
+  // own so a permanently rate-limited key still eventually gives up.
+  let rateLimitRetries = 0;
+  const MAX_RATE_LIMIT_RETRIES = 3;
+
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (budget && !budget.hasBudget) {
-      lastErr = `Groq per-run budget exhausted (${budget.snapshot().calls} calls)`;
+      lastErr = `LLM per-run budget exhausted (${budget.snapshot().calls} calls)`;
       console.warn("[ir]", lastErr, "— stopping retries early");
       break;
     }
     console.log("[ir] attempt", attempt + 1, "/", MAX_ATTEMPTS);
     let parsed;
     try {
-      const { content, usage } = await groq(buildUser(currentModel, correction), { system, json: true });
-      budget?.record(usage);
-      console.log("[ir] groq returned, length:", content.length);
+      // temperature: 0.2, not Gemini's provider default — matches the value this call ran at
+      // under Groq for this schema-constrained task; GeminiOpts has no built-in default the
+      // way groq.ts did, so it has to be set explicitly here or IR would silently move to
+      // whatever Gemini's own default is. model: GEMINI_MODEL (the full model, not LITE) —
+      // IR is the hardest structured-output task in the pipeline (DOM + test case combined
+      // into strict JSON), the same reason it needed a bigger context window under Groq.
+      const { content, usage } = await gemini(buildUser(currentModel, correction), {
+        systemInstruction: system, json: true, temperature: 0.2,
+        model: process.env.GEMINI_MODEL, stage: "ir",
+      });
+      budget?.record("ir", usage);
+      console.log("[ir] gemini returned, length:", content.length);
       parsed = IR.safeParse(normalizeIR(parseJson(content)));
       console.log("[ir] parsed:", parsed.success ? "valid" : "INVALID");
     } catch (err: any) {
-      budget?.record();
+      budget?.record("ir");
       lastErr = err?.message ?? String(err);
-      console.error("[ir] groq/parse error:", lastErr);
+
+      // A definitively non-retryable infrastructure error (bad API key, a decommissioned/
+      // mistyped model id) will never succeed by re-sending the same request — burning the
+      // rest of MAX_ATTEMPTS on it just wastes budget, and worse, previously reported "IR
+      // failed schema validation after retry" for what was actually an API-key/model problem
+      // (problems.md Cross-cutting #1 — a user reading that message has no way to tell "your
+      // site is broken" apart from "your credentials are wrong"). Fail fast, and mark the
+      // thrown error structurally (`.isInfrastructureError`), not just in its message text, so
+      // a caller can route it differently without string-matching — this is exactly the class
+      // of check CLAUDE.md's central rule asks for: a structural signal, not a text guess.
+      const status = err?.status;
+      if (!isRateLimitError(err) && (status === 401 || status === 403 || status === 404)) {
+        console.error("[ir] non-retryable infrastructure error, failing fast:", lastErr);
+        const infraErr: any = new Error(`LLM infrastructure error, not a test failure (status ${status}): ${lastErr}`);
+        infraErr.isInfrastructureError = true;
+        infraErr.status = status;
+        throw infraErr;
+      }
+
+      if (isRateLimitError(err) && rateLimitRetries < MAX_RATE_LIMIT_RETRIES) {
+        rateLimitRetries++;
+        console.warn(`[ir] rate-limited (${rateLimitRetries}/${MAX_RATE_LIMIT_RETRIES} extra retries, not spending an attempt):`, lastErr);
+        attempt--; // cancels this iteration's attempt++ below — a rate-limit retry is free
+        continue;
+      }
+
+      console.error("[ir] gemini/parse error:", lastErr);
       continue;
     }
     if (!parsed.success) {

@@ -9,7 +9,7 @@ import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
 import type { IR } from "../schema/ir.js";
 import type { Diagnosis } from "./failureAnalysis.js";
-import type { GroqBudget } from "../llm/groqBudget.js";
+import type { LlmBudget } from "../llm/llmBudget.js";
 
 export interface HealArgs {
   testCase: TestCase;
@@ -20,7 +20,7 @@ export interface HealArgs {
   entryUrl: string;
   // Optional, matching toIR's own signature — a heal attempt still works without one, it just
   // isn't budget-tracked (the same behavior an untracked toIR call already has).
-  groqBudget?: GroqBudget;
+  llmBudget?: LlmBudget;
   runCreds?: Credentials;
   /** Caller-owned output directory — a "healed" subdirectory is created inside it. Pass the
    *  run's own directory for the primary case, or a case's own directory for a suite case. */
@@ -67,7 +67,7 @@ export function isHealable(diagnosis: Diagnosis, ir: IR): boolean {
  * never masks the original failure with a different, unrelated error.
  */
 export async function attemptHeal(args: HealArgs): Promise<HealResult | null> {
-  const { testCase, ir, appModel, diagnosis, sourcePrompt, entryUrl, groqBudget, runCreds, outDir } = args;
+  const { testCase, ir, appModel, diagnosis, sourcePrompt, entryUrl, llmBudget, runCreds, outDir } = args;
 
   // A step with no real prefix (first step, or an id toIR never emitted) has nothing to
   // replay from — skip healing, same guard orchestrator.ts's original inline version used.
@@ -77,7 +77,7 @@ export async function attemptHeal(args: HealArgs): Promise<HealResult | null> {
   const prefix = ir.steps.slice(0, failIdx);
   const credPolicy = credentialPolicyFor(testCase, promptCarriesCredentials(sourcePrompt));
   const freshModel = await refreshPageModel(appModel, prefix, runCreds, credPolicy);
-  const { ir: healedIr } = await toIR(testCase, freshModel, sourcePrompt, entryUrl, groqBudget, runCreds);
+  const { ir: healedIr } = await toIR(testCase, freshModel, sourcePrompt, entryUrl, llmBudget, runCreds);
 
   // A heal that truncates isn't a heal: it means the failing step still can't be grounded even
   // against a fresh snapshot (genuinely gone, not just renamed), and toIR silently fell back to

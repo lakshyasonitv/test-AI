@@ -75,7 +75,7 @@ prompt + url
        \_ case-selection gate (opt.)   -> pauses for you to review/accept/reject a batch and
                                           ask for a refined regeneration, ENABLE_CASE_SELECTION_GATE
   -> Primary-case selection           -> fromPrompt case, else highest priority
-  -> IR generation (Groq) + grounding -> strict JSON test model (the contract)
+  -> IR generation (Gemini) + grounding -> strict JSON test model (the contract)
        \_ credentialPolicyFor(case)    -> full / identifier-only / none, decided from case
                                           wording before any substitution happens
        \_ live-extend (on demand)      -> reaches + models pages beyond the entry page,
@@ -157,18 +157,16 @@ UI (or times out and continues without them, `CREDENTIAL_WAIT_MS`). See `DECISIO
 
 ### Environment Variables
 
-All optional except the two API key variables. Full descriptions and cost/reliability tradeoffs
+All optional except the API key variable. Full descriptions and cost/reliability tradeoffs
 are in `.env.example`.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GEMINI_API_KEYS` | Yes | Comma-separated Gemini API keys (quota stacks across distinct projects). `GEMINI_API_KEY` (singular) is accepted as a fallback |
-| `GROQ_API_KEYS` | Yes | Comma-separated Groq API keys (failover only — Groq limits are per-org, not per-key). `GROQ_API_KEY` (singular) is accepted as a fallback |
-| `GEMINI_MODEL` | No | Gemini model for discovery/test-cases/failure-analysis |
+| `GEMINI_MODEL` | No | Gemini model for IR generation/discovery/test-cases/failure-analysis — verify against your deployed `.env`, not this table |
 | `GEMINI_MODEL_LITE` | No | Gemini model for labeling |
-| `GROQ_MODEL` | No | Groq model for IR generation — verify against your deployed `.env`, not this table (`TECH_DEBT.md` TD-03's context) |
-| `LLM_TIMEOUT_MS` | No | Per-attempt abort timeout for any Gemini/Groq call (default: 45000) |
-| `MAX_GROQ_CALLS_PER_RUN` | No | Hard cap on total Groq calls per run (default: 60) |
+| `LLM_TIMEOUT_MS` | No | Per-attempt abort timeout for any Gemini call (default: 45000) |
+| `MAX_LLM_CALLS_PER_RUN` | No | Hard cap on total LLM calls per run, across every stage (default: 60) |
 | `MAX_IR_ATTEMPTS` | No | Max IR generate/validate retries per test case (default: 4) |
 | `MAX_LIVE_EXTENSIONS` | No | Max browser replays per case to discover pages behind a login/click (default: 5) |
 | `MAX_DISCOVERY_PAGES` | No | Max pages a single site crawl may collect (default: 5) |

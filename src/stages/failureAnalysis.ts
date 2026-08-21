@@ -214,12 +214,13 @@ Return JSON: { "failingStepId", "category", "explanation", "suggestedFix" }`;
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const raw = await gemini(user, {
+    const { content: raw } = await gemini(user, {
       systemInstruction: system,
       json: true,
       model: process.env.GEMINI_MODEL_LITE,
       imageBase64: shot ? readFileSync(shot).toString("base64") : undefined,
       imageMime: "image/png",
+      stage: "failure_analysis",
     });
     try {
       const parsed = Diagnosis.safeParse(parseJson(raw));

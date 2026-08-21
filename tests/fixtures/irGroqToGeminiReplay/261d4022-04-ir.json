@@ -1,0 +1,1773 @@
+{
+  "ir": {
+    "meta": {
+      "feature": "Contact Form",
+      "title": "Verify navigation and successful contact form submission",
+      "priority": "high",
+      "sourcePrompt": "i want you to test this website like all the links and check if the forms are working or not",
+      "baseUrl": "https://thinkvibes.com",
+      "hasTerminalAssertion": true
+    },
+    "steps": [
+      {
+        "id": "s1",
+        "action": "navigate",
+        "target": {
+          "url": "/"
+        }
+      },
+      {
+        "id": "s2",
+        "action": "click",
+        "target": {
+          "role": "link",
+          "name": "Who We Are"
+        }
+      },
+      {
+        "id": "s3",
+        "action": "click",
+        "target": {
+          "role": "link",
+          "name": "Contact Us"
+        }
+      },
+      {
+        "id": "s4",
+        "action": "fill",
+        "target": {
+          "role": "textbox",
+          "name": "Name"
+        },
+        "value": "Jane Doe"
+      },
+      {
+        "id": "s5",
+        "action": "fill",
+        "target": {
+          "role": "textbox",
+          "name": "Email *"
+        },
+        "value": "jane.doe@example.com"
+      },
+      {
+        "id": "s6",
+        "action": "fill",
+        "target": {
+          "role": "textbox",
+          "name": "Comment or Message"
+        },
+        "value": "Interested in Salesforce consulting."
+      },
+      {
+        "id": "s7",
+        "action": "click",
+        "target": {
+          "role": "button",
+          "name": "Submit",
+          "css": "#wpforms-submit-266"
+        }
+      },
+      {
+        "id": "s8",
+        "action": "assert",
+        "target": {
+          "text": "Message sent successfully"
+        },
+        "assertion": "visible"
+      }
+    ]
+  },
+  "updatedAppModel": {
+    "baseUrl": "https://thinkvibes.com",
+    "pages": [
+      {
+        "url": "https://thinkvibes.com/",
+        "title": "Thinkvibes – from vision to reality",
+        "concepts": [
+          "Navigation",
+          "Contact Form",
+          "Newsletter Subscription"
+        ],
+        "elements": [
+          {
+            "role": "link",
+            "name": "Skip to content",
+            "id": "link_0",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>a",
+            "order": 0
+          },
+          {
+            "role": "link",
+            "name": "custom logo link",
+            "id": "link_1",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>div>div>a",
+            "landmark": "header",
+            "order": 1
+          },
+          {
+            "role": "link",
+            "name": "Menu",
+            "id": "nav-toggle",
+            "css": "#nav-toggle",
+            "visible": false,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>a",
+            "landmark": "header",
+            "order": 2
+          },
+          {
+            "role": "link",
+            "name": "Who We Are",
+            "id": "link_3",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>nav>ul>li>a",
+            "landmark": "nav",
+            "order": 3
+          },
+          {
+            "role": "link",
+            "name": "Why Choose Us",
+            "id": "link_4",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>nav>ul>li>a",
+            "landmark": "nav",
+            "order": 4
+          },
+          {
+            "role": "link",
+            "name": "Services",
+            "id": "link_5",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>nav>ul>li>a",
+            "landmark": "nav",
+            "order": 5
+          },
+          {
+            "role": "link",
+            "name": "Gallery",
+            "id": "link_6",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>nav>ul>li>a",
+            "landmark": "nav",
+            "order": 6
+          },
+          {
+            "role": "link",
+            "name": "Process",
+            "id": "link_7",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>nav>ul>li>a",
+            "landmark": "nav",
+            "order": 7
+          },
+          {
+            "role": "link",
+            "name": "Industry Expertise",
+            "id": "link_8",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>nav>ul>li>a",
+            "landmark": "nav",
+            "order": 8
+          },
+          {
+            "role": "link",
+            "name": "Partners",
+            "id": "link_9",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>nav>ul>li>a",
+            "landmark": "nav",
+            "order": 9
+          },
+          {
+            "role": "link",
+            "name": "Blog",
+            "id": "link_10",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>nav>ul>li>a",
+            "landmark": "nav",
+            "order": 10
+          },
+          {
+            "role": "link",
+            "name": "Contact Us",
+            "id": "link_11",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>nav>ul>li>a",
+            "landmark": "nav",
+            "order": 11
+          },
+          {
+            "role": "link",
+            "name": "About Us",
+            "id": "link_12",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>section>div>div>a",
+            "order": 12
+          },
+          {
+            "role": "link",
+            "name": "Schedule Free Consultation",
+            "id": "link_13",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>section>div>div>a",
+            "order": 13
+          },
+          {
+            "role": "link",
+            "name": "g item",
+            "id": "link_14",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>a",
+            "landmark": "main",
+            "order": 14
+          },
+          {
+            "role": "link",
+            "name": "g item",
+            "id": "link_15",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>a",
+            "landmark": "main",
+            "order": 15
+          },
+          {
+            "role": "link",
+            "name": "g item",
+            "id": "link_16",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>a",
+            "landmark": "main",
+            "order": 16
+          },
+          {
+            "role": "link",
+            "name": "g item",
+            "id": "link_17",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>a",
+            "landmark": "main",
+            "order": 17
+          },
+          {
+            "role": "link",
+            "name": "g item",
+            "id": "link_18",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>a",
+            "landmark": "main",
+            "order": 18
+          },
+          {
+            "role": "link",
+            "name": "g item",
+            "id": "link_19",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>a",
+            "landmark": "main",
+            "order": 19
+          },
+          {
+            "role": "link",
+            "name": "g item",
+            "id": "link_20",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>a",
+            "landmark": "main",
+            "order": 20
+          },
+          {
+            "role": "link",
+            "name": "g item",
+            "id": "link_21",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>a",
+            "landmark": "main",
+            "order": 21
+          },
+          {
+            "role": "link",
+            "name": "g item",
+            "id": "link_22",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>a",
+            "landmark": "main",
+            "order": 22
+          },
+          {
+            "role": "link",
+            "name": "g item",
+            "id": "link_23",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>a",
+            "landmark": "main",
+            "order": 23
+          },
+          {
+            "role": "textbox",
+            "name": "wpforms[fields][4]",
+            "concept": "Contact Form",
+            "id": "wpforms-266-field_4",
+            "css": "#wpforms-266-field_4",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>form>div>div>input",
+            "landmark": "form",
+            "order": 24
+          },
+          {
+            "role": "textbox",
+            "name": "wpforms[fields][1]",
+            "concept": "Contact Form",
+            "id": "wpforms-266-field_1",
+            "css": "#wpforms-266-field_1",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>form>div>div>input",
+            "landmark": "form",
+            "order": 25
+          },
+          {
+            "role": "textbox",
+            "name": "wpforms[fields][2]",
+            "concept": "Contact Form",
+            "id": "wpforms-266-field_2",
+            "css": "#wpforms-266-field_2",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>form>div>div>textarea",
+            "landmark": "form",
+            "order": 26
+          },
+          {
+            "role": "textbox",
+            "name": "266",
+            "id": "textbox_27",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>form>div>input",
+            "landmark": "form",
+            "order": 27
+          },
+          {
+            "role": "textbox",
+            "name": "Home",
+            "id": "textbox_28",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>form>div>input",
+            "landmark": "form",
+            "order": 28
+          },
+          {
+            "role": "textbox",
+            "name": "https://thinkvibes.com/",
+            "id": "textbox_29",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>form>div>input",
+            "landmark": "form",
+            "order": 29
+          },
+          {
+            "role": "textbox",
+            "name": "url_referer",
+            "id": "textbox_30",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>form>div>input",
+            "landmark": "form",
+            "order": 30
+          },
+          {
+            "role": "textbox",
+            "name": "4",
+            "id": "textbox_31",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>form>div>input",
+            "landmark": "form",
+            "order": 31
+          },
+          {
+            "role": "textbox",
+            "name": "4",
+            "id": "textbox_32",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>form>div>input",
+            "landmark": "form",
+            "order": 32
+          },
+          {
+            "role": "button",
+            "name": "Submit",
+            "concept": "Contact Form",
+            "id": "wpforms-submit-266",
+            "css": "#wpforms-submit-266",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>form>div>button",
+            "landmark": "form",
+            "order": 33
+          },
+          {
+            "role": "link",
+            "name": "Jaipur, RJ, IN",
+            "id": "link_34",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>div>div>a",
+            "landmark": "main",
+            "order": 34
+          },
+          {
+            "role": "link",
+            "name": "+91-967.278.4237",
+            "id": "link_35",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>div>div>a",
+            "landmark": "main",
+            "order": 35
+          },
+          {
+            "role": "link",
+            "name": "info@thinkvibes.com",
+            "id": "link_36",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main>section>div>div>div>div>div>div>a",
+            "landmark": "main",
+            "order": 36
+          },
+          {
+            "role": "textbox",
+            "name": "Enter your e-mail address",
+            "concept": "Newsletter Subscription",
+            "id": "mce-EMAIL",
+            "css": "#mce-EMAIL",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>footer>div>div>div>div>div>form>input",
+            "landmark": "form",
+            "order": 37
+          },
+          {
+            "role": "button",
+            "name": "Subscribe",
+            "concept": "Newsletter Subscription",
+            "id": "button_38",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>footer>div>div>div>div>div>form>input",
+            "landmark": "form",
+            "order": 38
+          },
+          {
+            "role": "link",
+            "name": "Instagram",
+            "id": "link_39",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>footer>div>div>div>div>div>div>a",
+            "landmark": "footer",
+            "order": 39
+          },
+          {
+            "role": "link",
+            "name": "Facebook",
+            "id": "link_40",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>footer>div>div>div>div>div>div>a",
+            "landmark": "footer",
+            "order": 40
+          },
+          {
+            "role": "link",
+            "name": "Linkedin",
+            "id": "link_41",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>footer>div>div>div>div>div>div>a",
+            "landmark": "footer",
+            "order": 41
+          },
+          {
+            "role": "link",
+            "name": "Twitter",
+            "id": "link_42",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>footer>div>div>div>div>div>div>a",
+            "landmark": "footer",
+            "order": 42
+          },
+          {
+            "role": "link",
+            "name": "Back To Top",
+            "id": "link_43",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>footer>div>div>div>a",
+            "landmark": "footer",
+            "order": 43
+          },
+          {
+            "role": "link",
+            "name": "OnePress",
+            "id": "link_44",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>footer>div>div>a",
+            "landmark": "footer",
+            "order": 44
+          },
+          {
+            "role": "banner",
+            "name": "Menu Who We Are Why Choose Us Services Gallery Process Industry Expertise Partners Blog Contact Us",
+            "id": "masthead",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header",
+            "landmark": "header",
+            "order": 45
+          },
+          {
+            "role": "navigation",
+            "name": "Who We Are Why Choose Us Services Gallery Process Industry Expertise Partners Blog Contact Us",
+            "concept": "Navigation",
+            "id": "site-navigation",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>div>header>div>div>nav",
+            "landmark": "nav",
+            "order": 46
+          },
+          {
+            "role": "main",
+            "name": "WHY CHOOSE US Client Language Over the years, we have learnt not to use geek language, but converse with our customers in the no-nonsense easy to understand business language, thus making the communication most effective. Attitude Our customers are our highest priority, and we do everything possible to deliver what the customer needs, even if that means going above and beyond. We do not have a Sales team, yet we grow because our customers are our brand advocates. Fair & Honest An organization thrives when it is transparent in its working, and treats it’s people with fairness and honesty. A happy and satisfied employee translates to a happy client, which is what we aim for. Robust Dev Processes We follow Agile principles to adjust dynamically changing priorities, backed by strong DevOps processes for scalable and stable deployments through continuous integration. Who We Are We are a small yet very focused group of highly skilled professionals developing software applications on the Salesforce platform since 2007.Our aim is for our customers to see us as their reliable and trusted partners, and convert them into our customer advocates or brand evangelists. Our Mission We provide software development and consulting services to our clients. We aim for our customers to see us as their reliable and trusted partners, and convert them into our customer advocates or brand evangelists, as there is no better marketing than word of mouth. We achieve this by realizing the full potential of the Salesforce platform by delivering high-performing and scalable applications that can stand the test of time Our Vision To become one of the most trusted Salesforce implementation partner for global clients in less than 10 years; and to provide exponential growth to those who trusted and joined us in our initial years, who we expect in turn will help create career and growth opportunities for others Our Values Working with highest levels of commitment, ethics, honesty, integrity, and transparency; develop culture of owning the mistakes made, learning from it, and ensuring to not repeat them in future; delivering exceptional quality work with the help of multi-skilled teams, helping individuals learn new skills and make them reach their full potential. What We Do Salesforce Consulting With the help of our prior CRM experience, we help organizations overcome specific CRM challenges like low sales productivity, CRM performance issues. With our expertise, we help our customers draw the maximum out of the OOTB features and leverage the platform to the fullest. We provide guidance both strategic and technical in your Salesforce implementation journey. Salesforce Customization We offer customization services that help in improving the overall internal and external business processes of our clients’ business, and cater to business needs that can’t be addressed through the standard out-of-the-box platform features or other normal CRM applications. These applications are usually complex, and used in managing errands, like delivery planning, personnel and performance management, etc. Salesforce Application Development We help organizations in managing their internal business processes and operations by providing custom application development services on the Salesforce platform. We address business needs in all industry domains including but not limited to healthcare, manufacturing, retail, professional services, supplier relationship, warranty, finance, and technology. Salesforce Integration We offer reliable, secure, scalable, and seamless Salesforce integration with your other internal business apps. We also help organizations expose their business processes through API development that they can utilize in their other internal business applications. We also help you develop AppExchange published adaptors that can be used to connect your solutions with the Salesforce. Glimpses of workplace People rarely succeed unless they have fun in what they are doing How We Work Agile is in our DNA and we live and breathe it on a day to day basis, and so the final version of the application that we develop and deliver has all the requirements captured and developed as per the end vision of business stakeholders, and takes care of the evolving requirements and real time feedback during the application development journey. 0 Industry Expertise Healthcare Finance Education Automotive, Let's Connect Please enable JavaScript in your browser to complete this form.NameEmail *Comment or MessageSubmit WE ARE ACCEPTING NEW PROJECTS. From startups to enterprises, we provide a wide range of end-to-end Salesforce development services for the evolving business requirements of our clients – from discovery, planning and prioritizing, design, implementation, deployment and up to the ongoing maintenance. Our main focus is to build the app with bare essential code to ease the future system maintenance. Jaipur, RJ, IN +91-967.278.4237 info@thinkvibes.com",
+            "id": "main",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>div>main",
+            "landmark": "main",
+            "order": 47
+          },
+          {
+            "role": "contentinfo",
+            "name": "Join our Newsletter Keep Updated Copyright © 2026 Thinkvibes – OnePress theme by FameThemes",
+            "id": "colophon",
+            "visible": true,
+            "enabled": true,
+            "genericPath": "html>body>div>footer",
+            "landmark": "footer",
+            "order": 48
+          },
+          {
+            "role": "textbox",
+            "name": "Name",
+            "concept": "Contact Form",
+            "id": "wpforms-266-field_4",
+            "visible": true,
+            "enabled": true,
+            "order": 49
+          },
+          {
+            "role": "textbox",
+            "name": "Email *",
+            "concept": "Contact Form",
+            "id": "wpforms-266-field_1",
+            "visible": true,
+            "enabled": true,
+            "order": 50
+          },
+          {
+            "role": "textbox",
+            "name": "Comment or Message",
+            "concept": "Contact Form",
+            "id": "wpforms-266-field_2",
+            "visible": true,
+            "enabled": true,
+            "order": 51
+          },
+          {
+            "role": "button",
+            "name": "Join our Newsletter",
+            "id": "field_52",
+            "visible": true,
+            "enabled": true,
+            "order": 52
+          },
+          {
+            "role": "heading",
+            "name": "",
+            "visible": true,
+            "enabled": true,
+            "order": 53
+          },
+          {
+            "role": "heading",
+            "name": "YOUR TRUSTED SALESFORCE PARTNER",
+            "visible": true,
+            "enabled": true,
+            "order": 54
+          },
+          {
+            "role": "heading",
+            "name": "WHY CHOOSE US",
+            "visible": true,
+            "enabled": true,
+            "order": 55
+          },
+          {
+            "role": "heading",
+            "name": "Who We Are",
+            "visible": true,
+            "enabled": true,
+            "order": 56
+          },
+          {
+            "role": "heading",
+            "name": "What We Do",
+            "visible": true,
+            "enabled": true,
+            "order": 57
+          },
+          {
+            "role": "heading",
+            "name": "Glimpses of workplace",
+            "visible": true,
+            "enabled": true,
+            "order": 58
+          },
+          {
+            "role": "heading",
+            "name": "How We Work",
+            "visible": true,
+            "enabled": true,
+            "order": 59
+          },
+          {
+            "role": "heading",
+            "name": "Industry Expertise",
+            "visible": true,
+            "enabled": true,
+            "order": 60
+          },
+          {
+            "role": "heading",
+            "name": "Let's Connect",
+            "visible": true,
+            "enabled": true,
+            "order": 61
+          },
+          {
+            "role": "heading",
+            "name": "Our Mission",
+            "visible": true,
+            "enabled": true,
+            "order": 62
+          },
+          {
+            "role": "heading",
+            "name": "Our Vision",
+            "visible": true,
+            "enabled": true,
+            "order": 63
+          },
+          {
+            "role": "heading",
+            "name": "Our Values",
+            "visible": true,
+            "enabled": true,
+            "order": 64
+          },
+          {
+            "role": "heading",
+            "name": "Client Language",
+            "visible": true,
+            "enabled": true,
+            "order": 65
+          },
+          {
+            "role": "heading",
+            "name": "Attitude",
+            "visible": true,
+            "enabled": true,
+            "order": 66
+          },
+          {
+            "role": "heading",
+            "name": "Fair & Honest",
+            "visible": true,
+            "enabled": true,
+            "order": 67
+          },
+          {
+            "role": "heading",
+            "name": "Robust Dev Processes",
+            "visible": true,
+            "enabled": true,
+            "order": 68
+          },
+          {
+            "role": "heading",
+            "name": "Salesforce Consulting",
+            "visible": true,
+            "enabled": true,
+            "order": 69
+          },
+          {
+            "role": "heading",
+            "name": "Salesforce Customization",
+            "visible": true,
+            "enabled": true,
+            "order": 70
+          },
+          {
+            "role": "heading",
+            "name": "Salesforce Application Development",
+            "visible": true,
+            "enabled": true,
+            "order": 71
+          },
+          {
+            "role": "heading",
+            "name": "Salesforce Integration",
+            "visible": true,
+            "enabled": true,
+            "order": 72
+          },
+          {
+            "role": "heading",
+            "name": "WE ARE ACCEPTING NEW PROJECTS.",
+            "visible": true,
+            "enabled": true,
+            "order": 73
+          },
+          {
+            "role": "heading",
+            "name": "Healthcare",
+            "visible": true,
+            "enabled": true,
+            "order": 74
+          },
+          {
+            "role": "heading",
+            "name": "Finance",
+            "visible": true,
+            "enabled": true,
+            "order": 75
+          },
+          {
+            "role": "heading",
+            "name": "Education",
+            "visible": true,
+            "enabled": true,
+            "order": 76
+          },
+          {
+            "role": "heading",
+            "name": "Automotive,",
+            "visible": true,
+            "enabled": true,
+            "order": 77
+          },
+          {
+            "role": "heading",
+            "name": "Join our Newsletter",
+            "visible": true,
+            "enabled": true,
+            "order": 78
+          },
+          {
+            "role": "heading",
+            "name": "Keep Updated",
+            "visible": true,
+            "enabled": true,
+            "order": 79
+          },
+          {
+            "role": "button",
+            "name": "Main",
+            "css": "#bully__hero",
+            "visible": true,
+            "enabled": true,
+            "order": 80
+          },
+          {
+            "role": "button",
+            "name": "WHY CHOOSE US",
+            "css": "#bully__features",
+            "visible": true,
+            "enabled": true,
+            "order": 81
+          },
+          {
+            "role": "button",
+            "name": "Who We Are",
+            "css": "#bully__about",
+            "visible": true,
+            "enabled": true,
+            "order": 82
+          },
+          {
+            "role": "button",
+            "name": "What We Do",
+            "css": "#bully__services",
+            "visible": true,
+            "enabled": true,
+            "order": 83
+          },
+          {
+            "role": "button",
+            "name": "Glimpses of workplace",
+            "css": "#bully__gallery",
+            "visible": true,
+            "enabled": true,
+            "order": 84
+          },
+          {
+            "role": "button",
+            "name": "Industry Expertise",
+            "css": "#bully__team",
+            "visible": true,
+            "enabled": true,
+            "order": 85
+          },
+          {
+            "role": "button",
+            "name": "Let's Connect",
+            "css": "#bully__contact",
+            "visible": true,
+            "enabled": true,
+            "order": 86
+          }
+        ],
+        "landmarkSections": [
+          {
+            "landmark": "header",
+            "label": "",
+            "elementCount": 3
+          },
+          {
+            "landmark": "nav",
+            "label": "",
+            "elementCount": 10
+          },
+          {
+            "landmark": "main",
+            "label": "",
+            "elementCount": 14
+          },
+          {
+            "landmark": "form",
+            "label": "",
+            "elementCount": 12
+          },
+          {
+            "landmark": "footer",
+            "label": "",
+            "elementCount": 7
+          }
+        ],
+        "markdown": "[Skip to content](#content)\n[Menu](#0)\n  - Who We Are\n  - Why Choose Us\n  - Services\n  - Gallery\n  - Process\n  - Industry Expertise\n  - Partners\n  - Blog\n  - Contact Us\n\n## \n\n\n## YOUR TRUSTED SALESFORCE PARTNER\n\n\nWith years of expertise in crafting high-performance Salesforce business applications, we seamlessly transition from being your offshore IT vendor to becoming your trusted partner. We specialize in designing, developing, and maintaining Salesforce business applications and AppExchange products. Partner with us for assured success and a risk-free journey.\n\n[About Us](https://thinkvibes.com/#about)\n[Schedule Free Consultation](https://thinkvibes.com/#contact)\n\n## WHY CHOOSE US\n\n\n#### Client Language\n\n\nOver the years, we have learnt not to use geek language, but converse with our customers in the no-nonsense easy to understand business language, thus making the communication most effective.\n\n\n#### Attitude\n\n\nOur customers are our highest priority, and we do everything possible to deliver what the customer needs, even if that means going above and beyond. We do not have a Sales team, yet we grow because our customers are our brand advocates.\n\n\n#### Fair & Honest\n\n\nAn organization thrives when it is transparent in its working, and treats it’s people with fairness and honesty. A happy and satisfied employee translates to a happy client, which is what we aim for.\n\n\n#### Robust Dev Processes\n\n\nWe follow Agile principles to adjust dynamically changing priorities, backed by strong DevOps processes for scalable and stable deployments through continuous integration.\n\n\n## Who We Are\n\n\nWe are a small yet very focused group of highly skilled professionals developing software applications on the Salesforce platform since 2007.Our aim is for our customers to see us as their reliable and trusted partners, and convert them into our customer advocates or brand evangelists.\n\n\n### Our Mission\n\n\nWe provide software development and consulting services to our clients. We aim for our customers to see us as their reliable and trusted partners, and convert them into our customer advocates or brand evangelists, as there is no better marketing than word of mouth. We achieve this by realizing the full potential of the Salesforce platform by delivering high-performing and scalable applications that can stand the test of time\n\n\n### Our Vision\n\nTo become one of the most trusted Salesforce implementation partner for global clients in less than 10 years; and to provide exponential growth to those who trusted and joined us in our initial years, who we expect in turn will help create career and growth opportunities for others\n\n### Our Values\n\nWorking with highest levels of commitment, ethics, honesty, integrity, and transparency; develop culture of owning the mistakes made, learning from it, and ensuring to not repeat them in future; delivering exceptional quality work with the help of multi-skilled teams, helping individuals learn new skills and make them reach their full potential.\n\n## What We Do\n\n\n#### Salesforce Consulting\n\n\nWith the help of our prior CRM experience, we help organizations overcome specific CRM challenges like low sales productivity, CRM performance issues. With our expertise, we help our customers draw the maximum out of the OOTB features and leverage the platform to the fullest. We provide guidance both strategic and technical in your Salesforce implementation journey.\n\n\n#### Salesforce Customization\n\n\nWe offer customization services that help in improving the overall internal and external business processes of our clients’ business, and cater to business needs that can’t be addressed through the standard out-of-the-box platform features or other normal CRM applications. These applications are usually complex, and used in managing errands, like delivery planning, personnel and performance management, etc.\n\n\n#### Salesforce Application Development\n\n\nWe help organizations in managing their internal business processes and operations by providing custom application development services on the Salesforce platform. We address business needs in all industry domains including but not limited to healthcare, manufacturing, retail, professional services, supplier relationship, warranty, finance, and technology.\n\n\n#### Salesforce Integration\n\n\nWe offer reliable, secure, scalable, and seamless Salesforce integration with your other internal business apps. We also help organizations expose their business processes through API development that they can utilize in their other internal business applications. We also help you develop AppExchange published adaptors that can be used to connect your solutions with the Salesforce.\n\n\n## Glimpses of workplace\n\n\nPeople rarely succeed unless they have fun in what they are doing\n\n\n## How We Work\n\n\nAgile is in our DNA and we live and breathe it on a day to day basis, and so the final version of the application that we develop and deliver has all the requirements captured and developed as per the end vision of business stakeholders, and takes care of the evolving requirements and real time feedback during the application development journey.\n\n0\n\n## Industry Expertise\n\n![](https://thinkvibes.com/wp-content/uploads/2023/04/cardiogram.png)\n\n##### Healthcare\n\n![](https://thinkvibes.com/wp-content/uploads/2023/04/help-call.png)\n\n##### Finance\n\n![](https://thinkvibes.com/wp-content/uploads/2023/04/presentation.png)\n\n##### Education\n\n![](https://thinkvibes.com/wp-content/uploads/2023/04/remote-control.png)\n\n##### Automotive,\n\n\n## Let's Connect\n\nName\nEmail\n*\nComment or Message\nSubmit\n![Loading](https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/images/submit-spin.svg)\n\n#### WE ARE ACCEPTING NEW PROJECTS.\n\n\nFrom startups to enterprises, we provide a wide range of end-to-end Salesforce development services for the evolving business requirements of our clients – from discovery, planning and prioritizing, design, implementation, deployment and up to the ongoing maintenance. Our main focus is to build the app with bare essential code to ease the future system maintenance.\n\n\n\n\n### \n\n[Jaipur, RJ, IN](https://maps.app.goo.gl/xrx7dJsEDuJtsKUq6)\n[+91-967.278.4237](tel:+91-9672784237)\n[info@thinkvibes.com](mailto:info@thinkvibes.com)\n\n##### Join our Newsletter\n\n\n##### Keep Updated\n\nCopyright © 2026 Thinkvibes\n–\n[OnePress](https://www.famethemes.com/themes/onepress)\ntheme by FameThemes\nMain\nWHY CHOOSE US\nWho We Are\nWhat We Do\nGlimpses of workplace\nIndustry Expertise\nLet's Connect\n![](https://thinkvibes.com/wp-content/uploads/2024/08/CloudGlow1.png)\n![](https://thinkvibes.com/wp-content/uploads/2024/08/MultiCloud.png)",
+        "cleanedHtml": "<!DOCTYPE html><html lang=\"en-US\" class=\"fontawesome-i2svg-active fontawesome-i2svg-complete\"><head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<style type=\"text/css\">:host,:root{--fa-font-solid:normal 900 1em/1 \"Font Awesome 6 Solid\";--fa-font-regular:normal 400 1em/1 \"Font Awesome 6 Regular\";--fa-font-light:normal 300 1em/1 \"Font Awesome 6 Light\";--fa-font-thin:normal 100 1em/1 \"Font Awesome 6 Thin\";--fa-font-duotone:normal 900 1em/1 \"Font Awesome 6 Duotone\";--fa-font-sharp-solid:normal 900 1em/1 \"Font Awesome 6 Sharp\";--fa-font-sharp-regular:normal 400 1em/1 \"Font Awesome 6 Sharp\";--fa-font-sharp-light:normal 300 1em/1 \"Font Awesome 6 Sharp\";--fa-font-sharp-thin:normal 100 1em/1 \"Font Awesome 6 Sharp\";--fa-font-brands:normal 400 1em/1 \"Font Awesome 6 Brands\"}svg:not(:host).svg-inline--fa,svg:not(:root).svg-inline--fa{overflow:visible;box-sizing:content-box}.svg-inline--fa{display:var(--fa-display,inline-block);height:1em;overflow:visible;vertical-align:-.125em}.svg-inline--fa.fa-2xs{vertical-align:.1em}.svg-inline--fa.fa-xs{vertical-align:0}.svg-inline--fa.fa-sm{vertical-align:-.0714285705em}.svg-inline--fa.fa-lg{vertical-align:-.2em}.svg-inline--fa.fa-xl{vertical-align:-.25em}.svg-inline--fa.fa-2xl{vertical-align:-.3125em}.svg-inline--fa.fa-pull-left{margin-right:var(--fa-pull-margin,.3em);width:auto}.svg-inline--fa.fa-pull-right{margin-left:var(--fa-pull-margin,.3em);width:auto}.svg-inline--fa.fa-li{width:var(--fa-li-width,2em);top:.25em}.svg-inline--fa.fa-fw{width:var(--fa-fw-width,1.25em)}.fa-layers svg.svg-inline--fa{bottom:0;left:0;margin:auto;position:absolute;right:0;top:0}.fa-layers-counter,.fa-layers-text{display:inline-block;position:absolute;text-align:center}.fa-layers{display:inline-block;height:1em;position:relative;text-align:center;vertical-align:-.125em;width:1em}.fa-layers svg.svg-inline--fa{-webkit-transform-origin:center center;transform-origin:center center}.fa-layers-text{left:50%;top:50%;-webkit-transform:translate(-50%,-50%);transform:translate(-50%,-50%);-webkit-transform-origin:center center;transform-origin:center center}.fa-layers-counter{background-color:var(--fa-counter-background-color,#ff253a);border-radius:var(--fa-counter-border-radius,1em);box-sizing:border-box;color:var(--fa-inverse,#fff);line-height:var(--fa-counter-line-height,1);max-width:var(--fa-counter-max-width,5em);min-width:var(--fa-counter-min-width,1.5em);overflow:hidden;padding:var(--fa-counter-padding,.25em .5em);right:var(--fa-right,0);text-overflow:ellipsis;top:var(--fa-top,0);-webkit-transform:scale(var(--fa-counter-scale,.25));transform:scale(var(--fa-counter-scale,.25));-webkit-transform-origin:top right;transform-origin:top right}.fa-layers-bottom-right{bottom:var(--fa-bottom,0);right:var(--fa-right,0);top:auto;-webkit-transform:scale(var(--fa-layers-scale,.25));transform:scale(var(--fa-layers-scale,.25));-webkit-transform-origin:bottom right;transform-origin:bottom right}.fa-layers-bottom-left{bottom:var(--fa-bottom,0);left:var(--fa-left,0);right:auto;top:auto;-webkit-transform:scale(var(--fa-layers-scale,.25));transform:scale(var(--fa-layers-scale,.25));-webkit-transform-origin:bottom left;transform-origin:bottom left}.fa-layers-top-right{top:var(--fa-top,0);right:var(--fa-right,0);-webkit-transform:scale(var(--fa-layers-scale,.25));transform:scale(var(--fa-layers-scale,.25));-webkit-transform-origin:top right;transform-origin:top right}.fa-layers-top-left{left:var(--fa-left,0);right:auto;top:var(--fa-top,0);-webkit-transform:scale(var(--fa-layers-scale,.25));transform:scale(var(--fa-layers-scale,.25));-webkit-transform-origin:top left;transform-origin:top left}.fa-1x{font-size:1em}.fa-2x{font-size:2em}.fa-3x{font-size:3em}.fa-4x{font-size:4em}.fa-5x{font-size:5em}.fa-6x{font-size:6em}.fa-7x{font-size:7em}.fa-8x{font-size:8em}.fa-9x{font-size:9em}.fa-10x{font-size:10em}.fa-2xs{font-size:.625em;line-height:.1em;vertical-align:.225em}.fa-xs{font-size:.75em;line-height:.0833333337em;vertical-align:.125em}.fa-sm{font-size:.875em;line-height:.0714285718em;vertical-align:.0535714295em}.fa-lg{font-size:1.25em;line-height:.05em;vertical-align:-.075em}.fa-xl{font-size:1.5em;line-height:.0416666682em;vertical-align:-.125em}.fa-2xl{font-size:2em;line-height:.03125em;vertical-align:-.1875em}.fa-fw{text-align:center;width:1.25em}.fa-ul{list-style-type:none;margin-left:var(--fa-li-margin,2.5em);padding-left:0}.fa-ul>li{position:relative}.fa-li{left:calc(var(--fa-li-width,2em) * -1);position:absolute;text-align:center;width:var(--fa-li-width,2em);line-height:inherit}.fa-border{border-color:var(--fa-border-color,#eee);border-radius:var(--fa-border-radius,.1em);border-style:var(--fa-border-style,solid);border-width:var(--fa-border-width,.08em);padding:var(--fa-border-padding,.2em .25em .15em)}.fa-pull-left{float:left;margin-right:var(--fa-pull-margin,.3em)}.fa-pull-right{float:right;margin-left:var(--fa-pull-margin,.3em)}.fa-beat{-webkit-animation-name:fa-beat;animation-name:fa-beat;-webkit-animation-delay:var(--fa-animation-delay,0s);animation-delay:var(--fa-animation-delay,0s);-webkit-animation-direction:var(--fa-animation-direction,normal);animation-direction:var(--fa-animation-direction,normal);-webkit-animation-duration:var(--fa-animation-duration,1s);animation-duration:var(--fa-animation-duration,1s);-webkit-animation-iteration-count:var(--fa-animation-iteration-count,infinite);animation-iteration-count:var(--fa-animation-iteration-count,infinite);-webkit-animation-timing-function:var(--fa-animation-timing,ease-in-out);animation-timing-function:var(--fa-animation-timing,ease-in-out)}.fa-bounce{-webkit-animation-name:fa-bounce;animation-name:fa-bounce;-webkit-animation-delay:var(--fa-animation-delay,0s);animation-delay:var(--fa-animation-delay,0s);-webkit-animation-direction:var(--fa-animation-direction,normal);animation-direction:var(--fa-animation-direction,normal);-webkit-animation-duration:var(--fa-animation-duration,1s);animation-duration:var(--fa-animation-duration,1s);-webkit-animation-iteration-count:var(--fa-animation-iteration-count,infinite);animation-iteration-count:var(--fa-animation-iteration-count,infinite);-webkit-animation-timing-function:var(--fa-animation-timing,cubic-bezier(.28,.84,.42,1));animation-timing-function:var(--fa-animation-timing,cubic-bezier(.28,.84,.42,1))}.fa-fade{-webkit-animation-name:fa-fade;animation-name:fa-fade;-webkit-animation-delay:var(--fa-animation-delay,0s);animation-delay:var(--fa-animation-delay,0s);-webkit-animation-direction:var(--fa-animation-direction,normal);animation-direction:var(--fa-animation-direction,normal);-webkit-animation-duration:var(--fa-animation-duration,1s);animation-duration:var(--fa-animation-duration,1s);-webkit-animation-iteration-count:var(--fa-animation-iteration-count,infinite);animation-iteration-count:var(--fa-animation-iteration-count,infinite);-webkit-animation-timing-function:var(--fa-animation-timing,cubic-bezier(.4,0,.6,1));animation-timing-function:var(--fa-animation-timing,cubic-bezier(.4,0,.6,1))}.fa-beat-fade{-webkit-animation-name:fa-beat-fade;animation-name:fa-beat-fade;-webkit-animation-delay:var(--fa-animation-delay,0s);animation-delay:var(--fa-animation-delay,0s);-webkit-animation-direction:var(--fa-animation-direction,normal);animation-direction:var(--fa-animation-direction,normal);-webkit-animation-duration:var(--fa-animation-duration,1s);animation-duration:var(--fa-animation-duration,1s);-webkit-animation-iteration-count:var(--fa-animation-iteration-count,infinite);animation-iteration-count:var(--fa-animation-iteration-count,infinite);-webkit-animation-timing-function:var(--fa-animation-timing,cubic-bezier(.4,0,.6,1));animation-timing-function:var(--fa-animation-timing,cubic-bezier(.4,0,.6,1))}.fa-flip{-webkit-animation-name:fa-flip;animation-name:fa-flip;-webkit-animation-delay:var(--fa-animation-delay,0s);animation-delay:var(--fa-animation-delay,0s);-webkit-animation-direction:var(--fa-animation-direction,normal);animation-direction:var(--fa-animation-direction,normal);-webkit-animation-duration:var(--fa-animation-duration,1s);animation-duration:var(--fa-animation-duration,1s);-webkit-animation-iteration-count:var(--fa-animation-iteration-count,infinite);animation-iteration-count:var(--fa-animation-iteration-count,infinite);-webkit-animation-timing-function:var(--fa-animation-timing,ease-in-out);animation-timing-function:var(--fa-animation-timing,ease-in-out)}.fa-shake{-webkit-animation-name:fa-shake;animation-name:fa-shake;-webkit-animation-delay:var(--fa-animation-delay,0s);animation-delay:var(--fa-animation-delay,0s);-webkit-animation-direction:var(--fa-animation-direction,normal);animation-direction:var(--fa-animation-direction,normal);-webkit-animation-duration:var(--fa-animation-duration,1s);animation-duration:var(--fa-animation-duration,1s);-webkit-animation-iteration-count:var(--fa-animation-iteration-count,infinite);animation-iteration-count:var(--fa-animation-iteration-count,infinite);-webkit-animation-timing-function:var(--fa-animation-timing,linear);animation-timing-function:var(--fa-animation-timing,linear)}.fa-spin{-webkit-animation-name:fa-spin;animation-name:fa-spin;-webkit-animation-delay:var(--fa-animation-delay,0s);animation-delay:var(--fa-animation-delay,0s);-webkit-animation-direction:var(--fa-animation-direction,normal);animation-direction:var(--fa-animation-direction,normal);-webkit-animation-duration:var(--fa-animation-duration,2s);animation-duration:var(--fa-animation-duration,2s);-webkit-animation-iteration-count:var(--fa-animation-iteration-count,infinite);animation-iteration-count:var(--fa-animation-iteration-count,infinite);-webkit-animation-timing-function:var(--fa-animation-timing,linear);animation-timing-function:var(--fa-animation-timing,linear)}.fa-spin-reverse{--fa-animation-direction:reverse}.fa-pulse,.fa-spin-pulse{-webkit-animation-name:fa-spin;animation-name:fa-spin;-webkit-animation-direction:var(--fa-animation-direction,normal);animation-direction:var(--fa-animation-direction,normal);-webkit-animation-duration:var(--fa-animation-duration,1s);animation-duration:var(--fa-animation-duration,1s);-webkit-animation-iteration-count:var(--fa-animation-iteration-count,infinite);animation-iteration-count:var(--fa-animation-iteration-count,infinite);-webkit-animation-timing-function:var(--fa-animation-timing,steps(8));animation-timing-function:var(--fa-animation-timing,steps(8))}@media (prefers-reduced-motion:reduce){.fa-beat,.fa-beat-fade,.fa-bounce,.fa-fade,.fa-flip,.fa-pulse,.fa-shake,.fa-spin,.fa-spin-pulse{-webkit-animation-delay:-1ms;animation-delay:-1ms;-webkit-animation-duration:1ms;animation-duration:1ms;-webkit-animation-iteration-count:1;animation-iteration-count:1;-webkit-transition-delay:0s;transition-delay:0s;-webkit-transition-duration:0s;transition-duration:0s}}@-webkit-keyframes fa-beat{0%,90%{-webkit-transform:scale(1);transform:scale(1)}45%{-webkit-transform:scale(var(--fa-beat-scale,1.25));transform:scale(var(--fa-beat-scale,1.25))}}@keyframes fa-beat{0%,90%{-webkit-transform:scale(1);transform:scale(1)}45%{-webkit-transform:scale(var(--fa-beat-scale,1.25));transform:scale(var(--fa-beat-scale,1.25))}}@-webkit-keyframes fa-bounce{0%{-webkit-transform:scale(1,1) translateY(0);transform:scale(1,1) translateY(0)}10%{-webkit-transform:scale(var(--fa-bounce-start-scale-x,1.1),var(--fa-bounce-start-scale-y,.9)) translateY(0);transform:scale(var(--fa-bounce-start-scale-x,1.1),var(--fa-bounce-start-scale-y,.9)) translateY(0)}30%{-webkit-transform:scale(var(--fa-bounce-jump-scale-x,.9),var(--fa-bounce-jump-scale-y,1.1)) translateY(var(--fa-bounce-height,-.5em));transform:scale(var(--fa-bounce-jump-scale-x,.9),var(--fa-bounce-jump-scale-y,1.1)) translateY(var(--fa-bounce-height,-.5em))}50%{-webkit-transform:scale(var(--fa-bounce-land-scale-x,1.05),var(--fa-bounce-land-scale-y,.95)) translateY(0);transform:scale(var(--fa-bounce-land-scale-x,1.05),var(--fa-bounce-land-scale-y,.95)) translateY(0)}57%{-webkit-transform:scale(1,1) translateY(var(--fa-bounce-rebound,-.125em));transform:scale(1,1) translateY(var(--fa-bounce-rebound,-.125em))}64%{-webkit-transform:scale(1,1) translateY(0);transform:scale(1,1) translateY(0)}100%{-webkit-transform:scale(1,1) translateY(0);transform:scale(1,1) translateY(0)}}@keyframes fa-bounce{0%{-webkit-transform:scale(1,1) translateY(0);transform:scale(1,1) translateY(0)}10%{-webkit-transform:scale(var(--fa-bounce-start-scale-x,1.1),var(--fa-bounce-start-scale-y,.9)) translateY(0);transform:scale(var(--fa-bounce-start-scale-x,1.1),var(--fa-bounce-start-scale-y,.9)) translateY(0)}30%{-webkit-transform:scale(var(--fa-bounce-jump-scale-x,.9),var(--fa-bounce-jump-scale-y,1.1)) translateY(var(--fa-bounce-height,-.5em));transform:scale(var(--fa-bounce-jump-scale-x,.9),var(--fa-bounce-jump-scale-y,1.1)) translateY(var(--fa-bounce-height,-.5em))}50%{-webkit-transform:scale(var(--fa-bounce-land-scale-x,1.05),var(--fa-bounce-land-scale-y,.95)) translateY(0);transform:scale(var(--fa-bounce-land-scale-x,1.05),var(--fa-bounce-land-scale-y,.95)) translateY(0)}57%{-webkit-transform:scale(1,1) translateY(var(--fa-bounce-rebound,-.125em));transform:scale(1,1) translateY(var(--fa-bounce-rebound,-.125em))}64%{-webkit-transform:scale(1,1) translateY(0);transform:scale(1,1) translateY(0)}100%{-webkit-transform:scale(1,1) translateY(0);transform:scale(1,1) translateY(0)}}@-webkit-keyframes fa-fade{50%{opacity:var(--fa-fade-opacity,.4)}}@keyframes fa-fade{50%{opacity:var(--fa-fade-opacity,.4)}}@-webkit-keyframes fa-beat-fade{0%,100%{opacity:var(--fa-beat-fade-opacity,.4);-webkit-transform:scale(1);transform:scale(1)}50%{opacity:1;-webkit-transform:scale(var(--fa-beat-fade-scale,1.125));transform:scale(var(--fa-beat-fade-scale,1.125))}}@keyframes fa-beat-fade{0%,100%{opacity:var(--fa-beat-fade-opacity,.4);-webkit-transform:scale(1);transform:scale(1)}50%{opacity:1;-webkit-transform:scale(var(--fa-beat-fade-scale,1.125));transform:scale(var(--fa-beat-fade-scale,1.125))}}@-webkit-keyframes fa-flip{50%{-webkit-transform:rotate3d(var(--fa-flip-x,0),var(--fa-flip-y,1),var(--fa-flip-z,0),var(--fa-flip-angle,-180deg));transform:rotate3d(var(--fa-flip-x,0),var(--fa-flip-y,1),var(--fa-flip-z,0),var(--fa-flip-angle,-180deg))}}@keyframes fa-flip{50%{-webkit-transform:rotate3d(var(--fa-flip-x,0),var(--fa-flip-y,1),var(--fa-flip-z,0),var(--fa-flip-angle,-180deg));transform:rotate3d(var(--fa-flip-x,0),var(--fa-flip-y,1),var(--fa-flip-z,0),var(--fa-flip-angle,-180deg))}}@-webkit-keyframes fa-shake{0%{-webkit-transform:rotate(-15deg);transform:rotate(-15deg)}4%{-webkit-transform:rotate(15deg);transform:rotate(15deg)}24%,8%{-webkit-transform:rotate(-18deg);transform:rotate(-18deg)}12%,28%{-webkit-transform:rotate(18deg);transform:rotate(18deg)}16%{-webkit-transform:rotate(-22deg);transform:rotate(-22deg)}20%{-webkit-transform:rotate(22deg);transform:rotate(22deg)}32%{-webkit-transform:rotate(-12deg);transform:rotate(-12deg)}36%{-webkit-transform:rotate(12deg);transform:rotate(12deg)}100%,40%{-webkit-transform:rotate(0);transform:rotate(0)}}@keyframes fa-shake{0%{-webkit-transform:rotate(-15deg);transform:rotate(-15deg)}4%{-webkit-transform:rotate(15deg);transform:rotate(15deg)}24%,8%{-webkit-transform:rotate(-18deg);transform:rotate(-18deg)}12%,28%{-webkit-transform:rotate(18deg);transform:rotate(18deg)}16%{-webkit-transform:rotate(-22deg);transform:rotate(-22deg)}20%{-webkit-transform:rotate(22deg);transform:rotate(22deg)}32%{-webkit-transform:rotate(-12deg);transform:rotate(-12deg)}36%{-webkit-transform:rotate(12deg);transform:rotate(12deg)}100%,40%{-webkit-transform:rotate(0);transform:rotate(0)}}@-webkit-keyframes fa-spin{0%{-webkit-transform:rotate(0);transform:rotate(0)}100%{-webkit-transform:rotate(360deg);transform:rotate(360deg)}}@keyframes fa-spin{0%{-webkit-transform:rotate(0);transform:rotate(0)}100%{-webkit-transform:rotate(360deg);transform:rotate(360deg)}}.fa-rotate-90{-webkit-transform:rotate(90deg);transform:rotate(90deg)}.fa-rotate-180{-webkit-transform:rotate(180deg);transform:rotate(180deg)}.fa-rotate-270{-webkit-transform:rotate(270deg);transform:rotate(270deg)}.fa-flip-horizontal{-webkit-transform:scale(-1,1);transform:scale(-1,1)}.fa-flip-vertical{-webkit-transform:scale(1,-1);transform:scale(1,-1)}.fa-flip-both,.fa-flip-horizontal.fa-flip-vertical{-webkit-transform:scale(-1,-1);transform:scale(-1,-1)}.fa-rotate-by{-webkit-transform:rotate(var(--fa-rotate-angle,none));transform:rotate(var(--fa-rotate-angle,none))}.fa-stack{display:inline-block;vertical-align:middle;height:2em;position:relative;width:2.5em}.fa-stack-1x,.fa-stack-2x{bottom:0;left:0;margin:auto;position:absolute;right:0;top:0;z-index:var(--fa-stack-z-index,auto)}.svg-inline--fa.fa-stack-1x{height:1em;width:1.25em}.svg-inline--fa.fa-stack-2x{height:2em;width:2.5em}.fa-inverse{color:var(--fa-inverse,#fff)}.fa-sr-only,.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}.fa-sr-only-focusable:not(:focus),.sr-only-focusable:not(:focus){position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}.svg-inline--fa .fa-primary{fill:var(--fa-primary-color,currentColor);opacity:var(--fa-primary-opacity,1)}.svg-inline--fa .fa-secondary{fill:var(--fa-secondary-color,currentColor);opacity:var(--fa-secondary-opacity,.4)}.svg-inline--fa.fa-swap-opacity .fa-primary{opacity:var(--fa-secondary-opacity,.4)}.svg-inline--fa.fa-swap-opacity .fa-secondary{opacity:var(--fa-primary-opacity,1)}.svg-inline--fa mask .fa-primary,.svg-inline--fa mask .fa-secondary{fill:#000}.fa-duotone.fa-inverse,.fad.fa-inverse{color:var(--fa-inverse,#fff)}</style><link rel=\"profile\" href=\"http://gmpg.org/xfn/11\">\n<title>Thinkvibes – from vision to reality</title>\n<meta name=\"robots\" content=\"max-image-preview:large\">\n<link rel=\"dns-prefetch\" href=\"//fonts.googleapis.com\">\n<link rel=\"alternate\" type=\"application/rss+xml\" title=\"Thinkvibes » Feed\" href=\"https://thinkvibes.com/feed/\">\n<link rel=\"alternate\" type=\"application/rss+xml\" title=\"Thinkvibes » Comments Feed\" href=\"https://thinkvibes.com/comments/feed/\">\n<link rel=\"alternate\" title=\"oEmbed (JSON)\" type=\"application/json+oembed\" href=\"https://thinkvibes.com/wp-json/oembed/1.0/embed?url=https%3A%2F%2Fthinkvibes.com%2F\">\n<link rel=\"alternate\" title=\"oEmbed (XML)\" type=\"text/xml+oembed\" href=\"https://thinkvibes.com/wp-json/oembed/1.0/embed?url=https%3A%2F%2Fthinkvibes.com%2F&amp;format=xml\">\n<style id=\"wp-img-auto-sizes-contain-inline-css\">\nimg:is([sizes=auto i],[sizes^=\"auto,\" i]){contain-intrinsic-size:3000px 1500px}\n/*# sourceURL=wp-img-auto-sizes-contain-inline-css */\n</style>\n<style id=\"wp-emoji-styles-inline-css\">\n\n\timg.wp-smiley, img.emoji {\n\t\tdisplay: inline !important;\n\t\tborder: none !important;\n\t\tbox-shadow: none !important;\n\t\theight: 1em !important;\n\t\twidth: 1em !important;\n\t\tmargin: 0 0.07em !important;\n\t\tvertical-align: -0.1em !important;\n\t\tbackground: none !important;\n\t\tpadding: 0 !important;\n\t}\n/*# sourceURL=wp-emoji-styles-inline-css */\n</style>\n<style id=\"wp-block-library-inline-css\">\n:root{--wp-block-synced-color:#7a00df;--wp-block-synced-color--rgb:122,0,223;--wp-bound-block-color:var(--wp-block-synced-color);--wp-editor-canvas-background:#ddd;--wp-admin-theme-color:#007cba;--wp-admin-theme-color--rgb:0,124,186;--wp-admin-theme-color-darker-10:#006ba1;--wp-admin-theme-color-darker-10--rgb:0,107,160.5;--wp-admin-theme-color-darker-20:#005a87;--wp-admin-theme-color-darker-20--rgb:0,90,135;--wp-admin-border-width-focus:2px}@media (min-resolution:192dpi){:root{--wp-admin-border-width-focus:1.5px}}.wp-element-button{cursor:pointer}:root .has-very-light-gray-background-color{background-color:#eee}:root .has-very-dark-gray-background-color{background-color:#313131}:root .has-very-light-gray-color{color:#eee}:root .has-very-dark-gray-color{color:#313131}:root .has-vivid-green-cyan-to-vivid-cyan-blue-gradient-background{background:linear-gradient(135deg,#00d084,#0693e3)}:root .has-purple-crush-gradient-background{background:linear-gradient(135deg,#34e2e4,#4721fb 50%,#ab1dfe)}:root .has-hazy-dawn-gradient-background{background:linear-gradient(135deg,#faaca8,#dad0ec)}:root .has-subdued-olive-gradient-background{background:linear-gradient(135deg,#fafae1,#67a671)}:root .has-atomic-cream-gradient-background{background:linear-gradient(135deg,#fdd79a,#004a59)}:root .has-nightshade-gradient-background{background:linear-gradient(135deg,#330968,#31cdcf)}:root .has-midnight-gradient-background{background:linear-gradient(135deg,#020381,#2874fc)}:root{--wp--preset--font-size--normal:16px;--wp--preset--font-size--huge:42px}.has-regular-font-size{font-size:1em}.has-larger-font-size{font-size:2.625em}.has-normal-font-size{font-size:var(--wp--preset--font-size--normal)}.has-huge-font-size{font-size:var(--wp--preset--font-size--huge)}:root .has-text-align-center{text-align:center}:root .has-text-align-left{text-align:left}:root .has-text-align-right{text-align:right}.has-fit-text{white-space:nowrap!important}#end-resizable-editor-section{display:none}.aligncenter{clear:both}.items-justified-left{justify-content:flex-start}.items-justified-center{justify-content:center}.items-justified-right{justify-content:flex-end}.items-justified-space-between{justify-content:space-between}.screen-reader-text{word-wrap:normal!important;border:0;clip-path:inset(50%);height:1px;margin:-1px;overflow:hidden;padding:0;position:absolute;width:1px}.screen-reader-text:focus{background-color:#ddd;clip-path:none;color:#444;display:block;font-size:1em;height:auto;left:5px;line-height:normal;padding:15px 23px 14px;text-decoration:none;top:5px;width:auto;z-index:100000}html :where(.has-border-color){border-style:solid}html :where([style*=border-color]){border-style:solid}html :where([style*=border-top-color]){border-top-style:solid}html :where([style*=border-right-color]){border-right-style:solid}html :where([style*=border-bottom-color]){border-bottom-style:solid}html :where([style*=border-left-color]){border-left-style:solid}html :where([style*=border-width]){border-style:solid}html :where([style*=border-top-width]){border-top-style:solid}html :where([style*=border-right-width]){border-right-style:solid}html :where([style*=border-bottom-width]){border-bottom-style:solid}html :where([style*=border-left-width]){border-left-style:solid}html :where(img[class*=wp-image-]){height:auto;max-width:100%}:where(figure){margin:0 0 1em}html :where(.is-position-sticky){--wp-admin--admin-bar--position-offset:var(--wp-admin--admin-bar--height,0px)}@media screen and (max-width:600px){html :where(.is-position-sticky){--wp-admin--admin-bar--position-offset:0px}}\n\n/*# sourceURL=/wp-includes/css/dist/block-library/common.min.css */\n</style>\n\n<style id=\"global-styles-inline-css\">\n:root{--wp--preset--aspect-ratio--square: 1;--wp--preset--aspect-ratio--4-3: 4/3;--wp--preset--aspect-ratio--3-4: 3/4;--wp--preset--aspect-ratio--3-2: 3/2;--wp--preset--aspect-ratio--2-3: 2/3;--wp--preset--aspect-ratio--16-9: 16/9;--wp--preset--aspect-ratio--9-16: 9/16;--wp--preset--color--black: #000000;--wp--preset--color--cyan-bluish-gray: #abb8c3;--wp--preset--color--white: #ffffff;--wp--preset--color--pale-pink: #f78da7;--wp--preset--color--vivid-red: #cf2e2e;--wp--preset--color--luminous-vivid-orange: #ff6900;--wp--preset--color--luminous-vivid-amber: #fcb900;--wp--preset--color--light-green-cyan: #7bdcb5;--wp--preset--color--vivid-green-cyan: #00d084;--wp--preset--color--pale-cyan-blue: #8ed1fc;--wp--preset--color--vivid-cyan-blue: #0693e3;--wp--preset--color--vivid-purple: #9b51e0;--wp--preset--color--primary: #03c4eb;--wp--preset--color--secondary: #333333;--wp--preset--color--heading: #333333;--wp--preset--color--body-text: #777777;--wp--preset--color--border: #e9e9e9;--wp--preset--color--light: #f8f9f9;--wp--preset--gradient--vivid-cyan-blue-to-vivid-purple: linear-gradient(135deg,rgb(6,147,227) 0%,rgb(155,81,224) 100%);--wp--preset--gradient--light-green-cyan-to-vivid-green-cyan: linear-gradient(135deg,rgb(122,220,180) 0%,rgb(0,208,130) 100%);--wp--preset--gradient--luminous-vivid-amber-to-luminous-vivid-orange: linear-gradient(135deg,rgb(252,185,0) 0%,rgb(255,105,0) 100%);--wp--preset--gradient--luminous-vivid-orange-to-vivid-red: linear-gradient(135deg,rgb(255,105,0) 0%,rgb(207,46,46) 100%);--wp--preset--gradient--very-light-gray-to-cyan-bluish-gray: linear-gradient(135deg,rgb(238,238,238) 0%,rgb(169,184,195) 100%);--wp--preset--gradient--cool-to-warm-spectrum: linear-gradient(135deg,rgb(74,234,220) 0%,rgb(151,120,209) 20%,rgb(207,42,186) 40%,rgb(238,44,130) 60%,rgb(251,105,98) 80%,rgb(254,248,76) 100%);--wp--preset--gradient--blush-light-purple: linear-gradient(135deg,rgb(255,206,236) 0%,rgb(152,150,240) 100%);--wp--preset--gradient--blush-bordeaux: linear-gradient(135deg,rgb(254,205,165) 0%,rgb(254,45,45) 50%,rgb(107,0,62) 100%);--wp--preset--gradient--luminous-dusk: linear-gradient(135deg,rgb(255,203,112) 0%,rgb(199,81,192) 50%,rgb(65,88,208) 100%);--wp--preset--gradient--pale-ocean: linear-gradient(135deg,rgb(255,245,203) 0%,rgb(182,227,212) 50%,rgb(51,167,181) 100%);--wp--preset--gradient--electric-grass: linear-gradient(135deg,rgb(202,248,128) 0%,rgb(113,206,126) 100%);--wp--preset--gradient--midnight: linear-gradient(135deg,rgb(2,3,129) 0%,rgb(40,116,252) 100%);--wp--preset--font-size--small: clamp(11px, 0.688rem + ((1vw - 3.2px) * 0.11), 12px);--wp--preset--font-size--medium: clamp(16px, 1rem + ((1vw - 3.2px) * 0.44), 20px);--wp--preset--font-size--large: clamp(20px, 1.25rem + ((1vw - 3.2px) * 0.879), 28px);--wp--preset--font-size--x-large: clamp(28px, 1.75rem + ((1vw - 3.2px) * 1.319), 40px);--wp--preset--font-size--normal: clamp(14px, 0.875rem + ((1vw - 3.2px) * 0.22), 16px);--wp--preset--font-size--xx-large: clamp(32px, 2rem + ((1vw - 3.2px) * 1.758), 48px);--wp--preset--font-family--open-sans: \"Open Sans\", Helvetica, Arial, sans-serif;--wp--preset--font-family--raleway: Raleway, Helvetica, Arial, sans-serif;--wp--preset--font-family--system: system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;--wp--preset--font-family--monospace: Monaco, Consolas, \"Andale Mono\", \"DejaVu Sans Mono\", monospace;--wp--preset--spacing--20: 0.44rem;--wp--preset--spacing--30: 0.67rem;--wp--preset--spacing--40: 1rem;--wp--preset--spacing--50: 1.5rem;--wp--preset--spacing--60: 2.25rem;--wp--preset--spacing--70: 3.38rem;--wp--preset--spacing--80: 5.06rem;--wp--preset--shadow--natural: 6px 6px 9px rgba(0, 0, 0, 0.2);--wp--preset--shadow--deep: 12px 12px 50px rgba(0, 0, 0, 0.4);--wp--preset--shadow--sharp: 6px 6px 0px rgba(0, 0, 0, 0.2);--wp--preset--shadow--outlined: 6px 6px 0px -3px rgb(255, 255, 255), 6px 6px rgb(0, 0, 0);--wp--preset--shadow--crisp: 6px 6px 0px rgb(0, 0, 0);--wp--custom--sidebar-content-size: 790px;}:root { --wp--style--global--content-size: 1110px;--wp--style--global--wide-size: 1230px; }:where(body) { margin: 0; }.wp-site-blocks { padding-top: var(--wp--style--root--padding-top); padding-bottom: var(--wp--style--root--padding-bottom); }.has-global-padding { padding-right: var(--wp--style--root--padding-right); padding-left: var(--wp--style--root--padding-left); }.has-global-padding > .alignfull { margin-right: calc(var(--wp--style--root--padding-right) * -1); margin-left: calc(var(--wp--style--root--padding-left) * -1); }.has-global-padding :where(:not(.alignfull.is-layout-flow) > .has-global-padding:not(.wp-block-block, .alignfull)) { padding-right: 0; padding-left: 0; }.has-global-padding :where(:not(.alignfull.is-layout-flow) > .has-global-padding:not(.wp-block-block, .alignfull)) > .alignfull { margin-left: 0; margin-right: 0; }.wp-site-blocks > .alignleft { float: left; margin-right: 2em; }.wp-site-blocks > .alignright { float: right; margin-left: 2em; }.wp-site-blocks > .aligncenter { justify-content: center; margin-left: auto; margin-right: auto; }:where(.wp-site-blocks) > * { margin-block-start: 24px; margin-block-end: 0; }:where(.wp-site-blocks) > :first-child { margin-block-start: 0; }:where(.wp-site-blocks) > :last-child { margin-block-end: 0; }:root { --wp--style--block-gap: 24px; }:root :where(.is-layout-flow) > :first-child{margin-block-start: 0;}:root :where(.is-layout-flow) > :last-child{margin-block-end: 0;}:root :where(.is-layout-flow) > *{margin-block-start: 24px;margin-block-end: 0;}:root :where(.is-layout-constrained) > :first-child{margin-block-start: 0;}:root :where(.is-layout-constrained) > :last-child{margin-block-end: 0;}:root :where(.is-layout-constrained) > *{margin-block-start: 24px;margin-block-end: 0;}:root :where(.is-layout-flex){gap: 24px;}:root :where(.is-layout-grid){gap: 24px;}.is-layout-flow > .alignleft{float: left;margin-inline-start: 0;margin-inline-end: 2em;}.is-layout-flow > .alignright{float: right;margin-inline-start: 2em;margin-inline-end: 0;}.is-layout-flow > .aligncenter{margin-left: auto !important;margin-right: auto !important;}.is-layout-constrained > .alignleft{float: left;margin-inline-start: 0;margin-inline-end: 2em;}.is-layout-constrained > .alignright{float: right;margin-inline-start: 2em;margin-inline-end: 0;}.is-layout-constrained > .aligncenter{margin-left: auto !important;margin-right: auto !important;}.is-layout-constrained > :where(:not(.alignleft):not(.alignright):not(.alignfull)){max-width: var(--wp--style--global--content-size);margin-left: auto !important;margin-right: auto !important;}.is-layout-constrained > .alignwide{max-width: var(--wp--style--global--wide-size);}body .is-layout-flex{display: flex;}.is-layout-flex{flex-wrap: wrap;align-items: center;}.is-layout-flex > :is(*, div){margin: 0;}body .is-layout-grid{display: grid;}.is-layout-grid > :is(*, div){margin: 0;}body{background-color: var(--wp--preset--color--white);color: var(--wp--preset--color--body-text);font-family: var(--wp--preset--font-family--body);font-size: var(--wp--preset--font-size--normal);line-height: 1.7;--wp--style--root--padding-top: 0px;--wp--style--root--padding-right: 0px;--wp--style--root--padding-bottom: 0px;--wp--style--root--padding-left: 0px;}a:where(:not(.wp-element-button)){color: var(--wp--preset--color--primary);}:root :where(a:where(:not(.wp-element-button)):hover){color: var(--wp--preset--color--body-text);text-decoration: underline;}h1, h2, h3, h4, h5, h6{color: var(--wp--preset--color--heading);font-family: var(--wp--preset--font-family--heading);font-weight: 600;}h1{font-size: var(--wp--preset--font-size--x-large);line-height: 1.2;}h2{font-size: var(--wp--preset--font-size--large);line-height: 1.3;}h3{font-size: clamp(14px, 0.875rem + ((1vw - 3.2px) * 0.659), 20px);line-height: 1.3;}h4{font-size: clamp(14px, 0.875rem + ((1vw - 3.2px) * 0.33), 17px);}h5{font-size: clamp(14px, 0.875rem + ((1vw - 3.2px) * 0.11), 15px);text-transform: uppercase;}h6{font-size: 12px;text-transform: uppercase;}:root :where(.wp-element-button, .wp-block-button__link){background-color: var(--wp--preset--color--primary);border-width: 0;color: var(--wp--preset--color--white);font-family: var(--wp--preset--font-family--heading);font-size: inherit;font-style: inherit;font-weight: 600;letter-spacing: inherit;line-height: inherit;padding-top: calc(0.667em + 2px);padding-right: calc(1.333em + 2px);padding-bottom: calc(0.667em + 2px);padding-left: calc(1.333em + 2px);text-decoration: none;text-transform: uppercase;}:root :where(.wp-element-button:hover, .wp-block-button__link:hover){background-color: var(--wp--preset--color--secondary);color: var(--wp--preset--color--white);}.has-black-color{color: var(--wp--preset--color--black) !important;}.has-cyan-bluish-gray-color{color: var(--wp--preset--color--cyan-bluish-gray) !important;}.has-white-color{color: var(--wp--preset--color--white) !important;}.has-pale-pink-color{color: var(--wp--preset--color--pale-pink) !important;}.has-vivid-red-color{color: var(--wp--preset--color--vivid-red) !important;}.has-luminous-vivid-orange-color{color: var(--wp--preset--color--luminous-vivid-orange) !important;}.has-luminous-vivid-amber-color{color: var(--wp--preset--color--luminous-vivid-amber) !important;}.has-light-green-cyan-color{color: var(--wp--preset--color--light-green-cyan) !important;}.has-vivid-green-cyan-color{color: var(--wp--preset--color--vivid-green-cyan) !important;}.has-pale-cyan-blue-color{color: var(--wp--preset--color--pale-cyan-blue) !important;}.has-vivid-cyan-blue-color{color: var(--wp--preset--color--vivid-cyan-blue) !important;}.has-vivid-purple-color{color: var(--wp--preset--color--vivid-purple) !important;}.has-primary-color{color: var(--wp--preset--color--primary) !important;}.has-secondary-color{color: var(--wp--preset--color--secondary) !important;}.has-heading-color{color: var(--wp--preset--color--heading) !important;}.has-body-text-color{color: var(--wp--preset--color--body-text) !important;}.has-border-color{color: var(--wp--preset--color--border) !important;}.has-light-color{color: var(--wp--preset--color--light) !important;}.has-black-background-color{background-color: var(--wp--preset--color--black) !important;}.has-cyan-bluish-gray-background-color{background-color: var(--wp--preset--color--cyan-bluish-gray) !important;}.has-white-background-color{background-color: var(--wp--preset--color--white) !important;}.has-pale-pink-background-color{background-color: var(--wp--preset--color--pale-pink) !important;}.has-vivid-red-background-color{background-color: var(--wp--preset--color--vivid-red) !important;}.has-luminous-vivid-orange-background-color{background-color: var(--wp--preset--color--luminous-vivid-orange) !important;}.has-luminous-vivid-amber-background-color{background-color: var(--wp--preset--color--luminous-vivid-amber) !important;}.has-light-green-cyan-background-color{background-color: var(--wp--preset--color--light-green-cyan) !important;}.has-vivid-green-cyan-background-color{background-color: var(--wp--preset--color--vivid-green-cyan) !important;}.has-pale-cyan-blue-background-color{background-color: var(--wp--preset--color--pale-cyan-blue) !important;}.has-vivid-cyan-blue-background-color{background-color: var(--wp--preset--color--vivid-cyan-blue) !important;}.has-vivid-purple-background-color{background-color: var(--wp--preset--color--vivid-purple) !important;}.has-primary-background-color{background-color: var(--wp--preset--color--primary) !important;}.has-secondary-background-color{background-color: var(--wp--preset--color--secondary) !important;}.has-heading-background-color{background-color: var(--wp--preset--color--heading) !important;}.has-body-text-background-color{background-color: var(--wp--preset--color--body-text) !important;}.has-border-background-color{background-color: var(--wp--preset--color--border) !important;}.has-light-background-color{background-color: var(--wp--preset--color--light) !important;}.has-black-border-color{border-color: var(--wp--preset--color--black) !important;}.has-cyan-bluish-gray-border-color{border-color: var(--wp--preset--color--cyan-bluish-gray) !important;}.has-white-border-color{border-color: var(--wp--preset--color--white) !important;}.has-pale-pink-border-color{border-color: var(--wp--preset--color--pale-pink) !important;}.has-vivid-red-border-color{border-color: var(--wp--preset--color--vivid-red) !important;}.has-luminous-vivid-orange-border-color{border-color: var(--wp--preset--color--luminous-vivid-orange) !important;}.has-luminous-vivid-amber-border-color{border-color: var(--wp--preset--color--luminous-vivid-amber) !important;}.has-light-green-cyan-border-color{border-color: var(--wp--preset--color--light-green-cyan) !important;}.has-vivid-green-cyan-border-color{border-color: var(--wp--preset--color--vivid-green-cyan) !important;}.has-pale-cyan-blue-border-color{border-color: var(--wp--preset--color--pale-cyan-blue) !important;}.has-vivid-cyan-blue-border-color{border-color: var(--wp--preset--color--vivid-cyan-blue) !important;}.has-vivid-purple-border-color{border-color: var(--wp--preset--color--vivid-purple) !important;}.has-primary-border-color{border-color: var(--wp--preset--color--primary) !important;}.has-secondary-border-color{border-color: var(--wp--preset--color--secondary) !important;}.has-heading-border-color{border-color: var(--wp--preset--color--heading) !important;}.has-body-text-border-color{border-color: var(--wp--preset--color--body-text) !important;}.has-border-border-color{border-color: var(--wp--preset--color--border) !important;}.has-light-border-color{border-color: var(--wp--preset--color--light) !important;}.has-vivid-cyan-blue-to-vivid-purple-gradient-background{background: var(--wp--preset--gradient--vivid-cyan-blue-to-vivid-purple) !important;}.has-light-green-cyan-to-vivid-green-cyan-gradient-background{background: var(--wp--preset--gradient--light-green-cyan-to-vivid-green-cyan) !important;}.has-luminous-vivid-amber-to-luminous-vivid-orange-gradient-background{background: var(--wp--preset--gradient--luminous-vivid-amber-to-luminous-vivid-orange) !important;}.has-luminous-vivid-orange-to-vivid-red-gradient-background{background: var(--wp--preset--gradient--luminous-vivid-orange-to-vivid-red) !important;}.has-very-light-gray-to-cyan-bluish-gray-gradient-background{background: var(--wp--preset--gradient--very-light-gray-to-cyan-bluish-gray) !important;}.has-cool-to-warm-spectrum-gradient-background{background: var(--wp--preset--gradient--cool-to-warm-spectrum) !important;}.has-blush-light-purple-gradient-background{background: var(--wp--preset--gradient--blush-light-purple) !important;}.has-blush-bordeaux-gradient-background{background: var(--wp--preset--gradient--blush-bordeaux) !important;}.has-luminous-dusk-gradient-background{background: var(--wp--preset--gradient--luminous-dusk) !important;}.has-pale-ocean-gradient-background{background: var(--wp--preset--gradient--pale-ocean) !important;}.has-electric-grass-gradient-background{background: var(--wp--preset--gradient--electric-grass) !important;}.has-midnight-gradient-background{background: var(--wp--preset--gradient--midnight) !important;}.has-small-font-size{font-size: var(--wp--preset--font-size--small) !important;}.has-medium-font-size{font-size: var(--wp--preset--font-size--medium) !important;}.has-large-font-size{font-size: var(--wp--preset--font-size--large) !important;}.has-x-large-font-size{font-size: var(--wp--preset--font-size--x-large) !important;}.has-normal-font-size{font-size: var(--wp--preset--font-size--normal) !important;}.has-xx-large-font-size{font-size: var(--wp--preset--font-size--xx-large) !important;}.has-open-sans-font-family{font-family: var(--wp--preset--font-family--open-sans) !important;}.has-raleway-font-family{font-family: var(--wp--preset--font-family--raleway) !important;}.has-system-font-family{font-family: var(--wp--preset--font-family--system) !important;}.has-monospace-font-family{font-family: var(--wp--preset--font-family--monospace) !important;}\n/*# sourceURL=global-styles-inline-css */\n</style>\n\n<link rel=\"stylesheet\" id=\"raratheme-companion-css\" href=\"https://thinkvibes.com/wp-content/plugins/raratheme-companion/public/css/raratheme-companion-public.min.css?ver=1.4.4\" media=\"all\">\n<link rel=\"stylesheet\" id=\"onepress-fonts-css\" href=\"https://fonts.googleapis.com/css?family=Raleway%3A400%2C500%2C600%2C700%2C300%2C100%2C800%2C900%7COpen+Sans%3A400%2C300%2C300italic%2C400italic%2C600%2C600italic%2C700%2C700italic&amp;subset=latin%2Clatin-ext&amp;display=swap&amp;ver=2.3.21\" media=\"all\">\n<link rel=\"stylesheet\" id=\"onepress-lightgallery-css\" href=\"https://thinkvibes.com/wp-content/themes/onepress/assets/frontend/lightgallery.css?ver=bf7c61378f839a6c2348\" media=\"all\">\n<link rel=\"stylesheet\" id=\"onepress-style-css\" href=\"https://thinkvibes.com/wp-content/themes/onepress/assets/frontend/theme.css?ver=b7efae94b44455f36531\" media=\"all\">\n<style id=\"onepress-style-inline-css\">\n#main .video-section section.hero-slideshow-wrapper{background:transparent}.hero-slideshow-wrapper:after{position:absolute;top:0px;left:0px;width:100%;height:100%;background-color:rgba(0,0,0,0.3);display:block;content:\"\"}#parallax-hero .jarallax-container .parallax-bg:before{background-color:rgba(0,0,0,0.3)}.body-desktop .parallax-hero .hero-slideshow-wrapper:after{display:none!important}#parallax-hero>.parallax-bg::before{background-color:rgba(0,0,0,0.3);opacity:1}.body-desktop .parallax-hero .hero-slideshow-wrapper:after{display:none!important}#footer-widgets{}.gallery-carousel .g-item{padding:0px 1px}.gallery-carousel-wrap{margin-left:-1px;margin-right:-1px}.gallery-grid .g-item,.gallery-masonry .g-item .inner{padding:1px}.gallery-grid-wrap,.gallery-masonry-wrap{margin-left:-1px;margin-right:-1px}.gallery-justified-wrap{margin-left:-2px;margin-right:-2px}:root{--wp--style--global--content-size:790px}\n/*# sourceURL=onepress-style-inline-css */\n</style>\n<link rel=\"stylesheet\" id=\"onepress-plus-style-css\" href=\"https://thinkvibes.com/wp-content/plugins/onepress-plus/onepress-plus.css?ver=2.3.8\" media=\"all\">\n<script id=\"jquery-core-js\" src=\"https://thinkvibes.com/wp-includes/js/jquery/jquery.min.js?ver=3.7.1\"></script>\n<script id=\"jquery-migrate-js\" src=\"https://thinkvibes.com/wp-includes/js/jquery/jquery-migrate.min.js?ver=3.4.1\"></script>\n<link rel=\"https://api.w.org/\" href=\"https://thinkvibes.com/wp-json/\"><link rel=\"alternate\" title=\"JSON\" type=\"application/json\" href=\"https://thinkvibes.com/wp-json/wp/v2/pages/4\"><link rel=\"EditURI\" type=\"application/rsd+xml\" title=\"RSD\" href=\"https://thinkvibes.com/xmlrpc.php?rsd\">\n<meta name=\"generator\" content=\"WordPress 7.0.4\">\n<link rel=\"canonical\" href=\"https://thinkvibes.com/\">\n<link rel=\"shortlink\" href=\"https://thinkvibes.com/\">\n<style>\n.svg-inline--fa.fa-stack-2x{height:unset;width:unset;\n}\n.counter__number{\ndisplay:none;\n\n}\n\n#about > div > div.row > div > h3{text-align:center;}\n</style><style>.recentcomments a{display:inline !important;padding:0 !important;margin:0 !important;}</style><link rel=\"icon\" href=\"https://thinkvibes.com/wp-content/uploads/2021/04/cropped-TVTranspBGLogo-150x120-1-32x32.png\" sizes=\"32x32\">\n<link rel=\"icon\" href=\"https://thinkvibes.com/wp-content/uploads/2021/04/cropped-TVTranspBGLogo-150x120-1-192x192.png\" sizes=\"192x192\">\n<link rel=\"apple-touch-icon\" href=\"https://thinkvibes.com/wp-content/uploads/2021/04/cropped-TVTranspBGLogo-150x120-1-180x180.png\">\n<meta name=\"msapplication-TileImage\" content=\"https://thinkvibes.com/wp-content/uploads/2021/04/cropped-TVTranspBGLogo-150x120-1-270x270.png\">\n<style id=\"wp-custom-css\">\n.feature-icon i {\n  font-size: 30px; /* Adjust this value to change the size of the icon */\n  height: 50px; /* Adjust this value to change the height of the icon background */\n  width: 50px; /* Adjust this value to change the width of the icon background */\n  line-height: 50px; /* Adjust this value to vertically center the icon within the background */\n}\n.btn-danger {\n    color: #000;\n    background-color: #fff;\n    border-color: #fff;\n}\n.btn-danger:hover{\n\tcolor: #000;\n    background-color: #fff;\n    border-color: #fff;\n}\n\n/* ===============================\n   PARTNER GRID\n================================ */\n\n/* ========================================\n   PARTNER DIRECTORY\n======================================== */\n\n.partner-directory{\n\n    display:grid;\n    grid-template-columns:1fr;\n    gap:30px;\n\n}\n\n/* ========================================\n   CARD\n======================================== */\n\n.partner-directory a.partner-card{\n\n    display:block;\n\n    width:100%;\n\n    min-height:260px;\n\n    padding:40px;\n\n    background:#fff;\n\n    border:1px solid #e5e5e5;\n\n    border-radius:18px;\n\n    text-decoration:none;\n\n    transition:.3s;\n\n    box-shadow:0 5px 18px rgba(0,0,0,.05);\n\n}\n\n.partner-directory a.partner-card:hover{\n\n    transform:translateY(-5px);\n\n    box-shadow:0 15px 35px rgba(0,0,0,.12);\n\n    border-color:#0b63ce;\n\n}\n\n/* ========================================\n   CONTENT\n======================================== */\n\n.partner-content{\n\n    display:flex;\n\n    justify-content:space-between;\n\n    align-items:center;\n\n    gap:50px;\n\n}\n\n/* ========================================\n   TEXT\n======================================== */\n\n.partner-text{\n\n    flex:1;\n\n}\n\n.partner-text h3{\n\n    font-size:32px;\n\n    color:#111;\n\n    margin-bottom:18px;\n\n    font-weight:700;\n\n}\n\n.partner-text p{\n    color:#666;\n    font-size:18px;\n    line-height:1.8;\n    margin-bottom:35px;\n    max-width:100%;\n}\n\n/* ========================================\n   BUTTON\n======================================== */\n\n.btn-button{\n    display: inline-flex !important;\n    align-items: center !important;\n    justify-content: center !important;\n\n    width: 180px;\n    height: 52px;\n\n    padding: 5 !important;\n    margin: 0 !important;\n\n    background: #0b63ce !important;\n    color: #fff !important;\n\n    font-size: 14px;\n    font-weight: 600;\n    line-height: 0 !important;\n    text-align: center !important;\n    white-space: nowrap;\n\n    border-radius: 10px;\n    text-decoration: none !important;\n\n    box-sizing: border-box;\n}\n.partner-card:hover .btn-button{\n\n    background:#084fa6;\n\n}\n\n/* ========================================\n   LOGO\n======================================== */\n\n.partner-logo{\n\n    flex:0 0 420px;\n\n    display:flex;\n\n    justify-content:center;\n\n    align-items:center;\n\n}\n\n.partner-logo img{\n\n    display:block !important;\n\n    width:360px;\n\n    max-width:100%;\n\n    height:auto;\n\n    object-fit:contain;\n\n}\n\n/* ========================================\n   MOBILE\n======================================== */\n\n@media(max-width:768px){\n\n.partner-content{\n\n    flex-direction:column;\n\n    text-align:center;\n\n}\n\n.partner-text p{\n\n    margin:auto auto 30px;\n\n}\n\n.partner-logo{\n\n    margin-top:20px;\n\n}\n\n.partner-logo img{\n\n    width:220px;\n\n}\n\n}\n\n/* ===============================\n   Stacksync Page 15/07/2026\n================================ */\n\n.stacksync-page{font-family:Inter,Arial,sans-serif;color:#1f2937}\n.stacksync-page *{box-sizing:border-box}\n.ss-container{max-width:1180px;margin:auto;padding:0 24px}\n.ss-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:60px;align-items:center}\n.ss-hero{padding:90px 0;background:#fff}\n.ss-badge{display:inline-block;background:#eaf3ff;color:#0b63ce;padding:8px 16px;border-radius:50px;font-weight:600}\n.ss-content h1{font-size:54px;margin:18px 0 8px;color:#0b63ce}\n.ss-content h2{font-size:30px;margin-bottom:20px}\n.ss-content p{font-size:18px;line-height:1.8}\n.ss-logo img{max-width:100%;height:auto}\n.ss-buttons{margin-top:32px;display:flex;gap:15px;flex-wrap:wrap}\n.btn{text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600}\n.btn-primary{background:#0b63ce;color:#fff}\n.btn-outline{border:2px solid #0b63ce;color:#0b63ce}\n.btn-light{background:#fff;color:#0b63ce}\n.ss-section{padding:80px 0}\n.gray{background:#f7f9fc}\n.ss-section h2{text-align:center;font-size:38px;color:#0b63ce;margin-bottom:45px}\n.compare{display:grid;grid-template-columns:1fr 100px 1fr;align-items:center;gap:20px}\n.panel{background:#fff;padding:35px;border-radius:14px;box-shadow:0 8px 24px rgba(0,0,0,.08)}\n.plus{text-align:center;font-size:52px;color:#0b63ce;font-weight:700}\n.panel ul{padding-left:20px}\n.cards{\n    display:grid;\n    grid-template-columns:repeat(3, 1fr);\n    gap:25px;\n    max-width:1200px;\n    margin:0 auto;\n}\n.card{background:#fff;padding:30px;border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.08);transition:.3s}\n.card:hover{transform:translateY(-8px)}\n.card h3{color:#0b63ce;margin-bottom:10px}\n.benefits{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px}\n.benefits div{background:#fff;padding:25px;border-left:5px solid #0b63ce;border-radius:10px;box-shadow:0 5px 15px rgba(0,0,0,.05)}\n.ss-cta{background:#0b63ce;color:#fff;text-align:center;padding:90px 20px}\n.ss-cta h2{font-size:40px;color:#fff}\n.ss-cta p{margin:15px 0 30px}\n@media(max-width:900px){\n\n.ss-grid,\n.compare{\n    grid-template-columns:1fr;\n}\n\n.cards{\n    grid-template-columns:repeat(2,1fr);\n}\n\n.plus{\n    display:none;\n}\n\n.ss-content h1{\n    font-size:40px;\n}\n\n.ss-content h2{\n    font-size:24px;\n}\n\n}\n\n@media(max-width:600px){\n\n.cards{\n    grid-template-columns:1fr;\n}\n\n}\n\n.partner-logo {\n    text-align: center;\n    margin-bottom: 20px;\n}\n\n.partner-logo img {\n    max-width: 180px;\n    width: 100%;\n    height: auto;\n    object-fit: contain;\n}\n</style>\n<style class=\"wp-typography-print-styles\" type=\"text/css\">\n \n  \n  \n .onepress-menu a { \n\tfont-style: normal;\n\tfont-size: 14px;\n\tletter-spacing: 0px;\n\ttext-transform: capitalize;\n\tfont-size: 0.875rem;\n } \n  \n  \n  \n \n</style><link rel=\"stylesheet\" id=\"wpforms-classic-full-css\" href=\"https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/css/frontend/classic/wpforms-full.min.css?ver=2.0.0.4\" media=\"all\">\n\n<style id=\"fit-vids-style\">.fluid-width-video-wrapper{width:100%;position:relative;padding:0;}.fluid-width-video-wrapper iframe,.fluid-width-video-wrapper object,.fluid-width-video-wrapper embed {position:absolute;top:0;left:0;width:100%;height:100%;}</style><script src=\"https://thinkvibes.com/wp-includes/js/wp-emoji-release.min.js?ver=7.0.4\" defer=\"\"></script></head>\n\n<body class=\"home wp-singular page-template page-template-template-frontpage page-template-template-frontpage-php page page-id-4 page-parent wp-custom-logo wp-embed-responsive wp-theme-onepress site-header-sticky body-desktop\">\n<div id=\"page\" class=\"hfeed site\">\n\t<a class=\"skip-link screen-reader-text\" href=\"#content\">Skip to content</a>\n\t<div id=\"header-section\" class=\"h-on-top no-transparent\">\t\t<div class=\"followWrap\" style=\"height: 85px;\"><header id=\"masthead\" class=\"site-header header-contained is-sticky no-scroll no-t h-on-top header-fixed\" role=\"banner\" style=\"top: 0px;\">\n\t\t\t<div class=\"container\">\n\t\t\t\t<div class=\"site-branding\">\n\t\t\t\t\t<div class=\"site-brand-inner has-logo-img no-desc\"><div class=\"site-logo-div\"><a href=\"https://thinkvibes.com/\" class=\"custom-logo-link  no-t-logo\" rel=\"home\" itemprop=\"url\"><img width=\"160\" height=\"85\" src=\"https://thinkvibes.com/wp-content/uploads/2024/08/Thinkvibes-Transparent-Logo-160x85-1.png\" class=\"custom-logo\" alt=\"Thinkvibes\" itemprop=\"logo\" decoding=\"async\" loading=\"lazy\"></a></div></div>\t\t\t\t</div>\n\t\t\t\t<div class=\"header-right-wrapper\">\n\t\t\t\t\t<a href=\"#0\" id=\"nav-toggle\">Menu<span></span></a>\n\t\t\t\t\t<nav id=\"site-navigation\" class=\"main-navigation\" role=\"navigation\">\n\t\t\t\t\t\t<ul class=\"onepress-menu\">\n\t\t\t\t\t\t\t<li id=\"menu-item-1421\" class=\"menu-item menu-item-type-custom menu-item-object-custom current-menu-item current_page_item menu-item-home menu-item-1421\"><a href=\"https://thinkvibes.com/#about\" aria-current=\"page\">Who We Are</a></li>\n<li id=\"menu-item-27\" class=\"menu-item menu-item-type-custom menu-item-object-custom current-menu-item current_page_item menu-item-home menu-item-27\"><a href=\"https://thinkvibes.com/#features\" aria-current=\"page\">Why Choose Us</a></li>\n<li id=\"menu-item-28\" class=\"menu-item menu-item-type-custom menu-item-object-custom current-menu-item current_page_item menu-item-home menu-item-28\"><a href=\"https://thinkvibes.com/#services\" aria-current=\"page\">Services</a></li>\n<li id=\"menu-item-1251\" class=\"menu-item menu-item-type-custom menu-item-object-custom current-menu-item current_page_item menu-item-home menu-item-1251\"><a href=\"https://thinkvibes.com/#gallery\" aria-current=\"page\">Gallery</a></li>\n<li id=\"menu-item-1420\" class=\"menu-item menu-item-type-custom menu-item-object-custom current-menu-item current_page_item menu-item-home menu-item-1420\"><a href=\"https://thinkvibes.com/#counter\" aria-current=\"page\">Process</a></li>\n<li id=\"menu-item-31\" class=\"menu-item menu-item-type-custom menu-item-object-custom current-menu-item current_page_item menu-item-home menu-item-31\"><a href=\"https://thinkvibes.com/#team\" aria-current=\"page\">Industry Expertise</a></li>\n<li id=\"menu-item-1926\" class=\"menu-item menu-item-type-post_type menu-item-object-page menu-item-1926\"><a href=\"https://thinkvibes.com/home-3/partners/\">Partners</a></li>\n<li id=\"menu-item-1747\" class=\"menu-item menu-item-type-post_type menu-item-object-page menu-item-1747\"><a href=\"https://thinkvibes.com/blog/\">Blog</a></li>\n<li id=\"menu-item-1520\" class=\"menu-item menu-item-type-custom menu-item-object-custom current-menu-item current_page_item menu-item-home menu-item-1520\"><a href=\"https://thinkvibes.com/#contact\" aria-current=\"page\">Contact Us</a></li>\n\t\t\t\t\t\t</ul>\n\t\t\t\t\t</nav>\n\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</header></div>\n\t\t<section id=\"hero\" data-images=\"[&quot;https:\\/\\/thinkvibes.com\\/wp-content\\/uploads\\/2024\\/08\\/CloudGlow1.png&quot;,&quot;https:\\/\\/thinkvibes.com\\/wp-content\\/uploads\\/2024\\/08\\/MultiCloud.png&quot;]\" class=\"hero-slideshow-wrapper  hero-slideshow-normal\">\n\n                    <div class=\"slider-spinner\">\n                <div class=\"double-bounce1\"></div>\n                <div class=\"double-bounce2\"></div>\n            </div>\n                        <div class=\"container\" style=\"padding-top: 10%; padding-bottom: 10%;\">\n                <div class=\"hero__content hero-content-style1\">\n                    <h2 class=\"hero-large-text\"></h2><h2 style=\"font-size: 40px\">YOUR TRUSTED SALESFORCE PARTNER</h2>                    <div class=\"hero-small-text\"> <p><strong><br>\nWith years of expertise in crafting high-performance Salesforce business applications, we seamlessly transition from being your offshore IT vendor to becoming your trusted partner. We specialize in designing, developing, and maintaining Salesforce business applications and AppExchange products. Partner with us for assured success and a risk-free journey.<br>\n</strong></p>\n</div>                    <a href=\"https://thinkvibes.com/#about\" class=\"btn btn-theme-primary btn-lg\">About Us</a>                    <a href=\"https://thinkvibes.com/#contact\" class=\"btn btn-danger btn-lg\">Schedule Free Consultation</a>                </div>\n            </div>\n            \t</section>\n</div>\n\t<div id=\"content\" class=\"site-content\">\n\t\t<main id=\"main\" class=\"site-main\" role=\"main\">\n            <section id=\"features\" class=\"section-features section-padding section-meta onepage-section\">\n        <div class=\"container\">\n                <div class=\"section-title-area\">\n                        <h2 class=\"section-title\">WHY CHOOSE US</h2>                    </div>\n                <div class=\"section-content\">\n            <div class=\"row\">\n                            <div class=\"feature-item col-lg-3 col-sm-6 wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n                    <div class=\"feature-media\">\n                                                <span class=\"fa-stack fa-5x\"><svg class=\"svg-inline--fa fa-circle fa-stack-2x icon-background-default transiton\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"circle\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512z\"></path></svg><!-- <i class=\"fa fa-circle fa-stack-2x icon-background-default transiton\"></i> Font Awesome fontawesome.com --> <svg class=\"svg-inline--fa fa-users feature-icon fa-stack-1x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"users\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M144 0a80 80 0 1 1 0 160A80 80 0 1 1 144 0zM512 0a80 80 0 1 1 0 160A80 80 0 1 1 512 0zM0 298.7C0 239.8 47.8 192 106.7 192h42.7c15.9 0 31 3.5 44.6 9.7c-1.3 7.2-1.9 14.7-1.9 22.3c0 38.2 16.8 72.5 43.3 96c-.2 0-.4 0-.7 0H21.3C9.6 320 0 310.4 0 298.7zM405.3 320c-.2 0-.4 0-.7 0c26.6-23.5 43.3-57.8 43.3-96c0-7.6-.7-15-1.9-22.3c13.6-6.3 28.7-9.7 44.6-9.7h42.7C592.2 192 640 239.8 640 298.7c0 11.8-9.6 21.3-21.3 21.3H405.3zM224 224a96 96 0 1 1 192 0 96 96 0 1 1 -192 0zM128 485.3C128 411.7 187.7 352 261.3 352H378.7C452.3 352 512 411.7 512 485.3c0 14.7-11.9 26.7-26.7 26.7H154.7c-14.7 0-26.7-11.9-26.7-26.7z\"></path></svg><!-- <i class=\"feature-icon fa fa fa-users fa-stack-1x\"></i> Font Awesome fontawesome.com --></span>                                            </div>\n                    <h4>Client Language</h4>\n                    <div class=\"feature-item-content\"><p>Over the years, we have learnt not to use geek language, but converse with our customers in the no-nonsense easy to understand business language, thus making the communication most effective.</p>\n</div> \n                </div>\n                            <div class=\"feature-item col-lg-3 col-sm-6 wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n                    <div class=\"feature-media\">\n                                                <span class=\"fa-stack fa-5x\"><svg class=\"svg-inline--fa fa-circle fa-stack-2x icon-background-default transiton\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"circle\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512z\"></path></svg><!-- <i class=\"fa fa-circle fa-stack-2x icon-background-default transiton\"></i> Font Awesome fontawesome.com --> <svg class=\"svg-inline--fa fa-thumbs-up feature-icon fa-stack-1x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"far\" data-icon=\"thumbs-up\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M323.8 34.8c-38.2-10.9-78.1 11.2-89 49.4l-5.7 20c-3.7 13-10.4 25-19.5 35l-51.3 56.4c-8.9 9.8-8.2 25 1.6 33.9s25 8.2 33.9-1.6l51.3-56.4c14.1-15.5 24.4-34 30.1-54.1l5.7-20c3.6-12.7 16.9-20.1 29.7-16.5s20.1 16.9 16.5 29.7l-5.7 20c-5.7 19.9-14.7 38.7-26.6 55.5c-5.2 7.3-5.8 16.9-1.7 24.9s12.3 13 21.3 13L448 224c8.8 0 16 7.2 16 16c0 6.8-4.3 12.7-10.4 15c-7.4 2.8-13 9-14.9 16.7s.1 15.8 5.3 21.7c2.5 2.8 4 6.5 4 10.6c0 7.8-5.6 14.3-13 15.7c-8.2 1.6-15.1 7.3-18 15.2s-1.6 16.7 3.6 23.3c2.1 2.7 3.4 6.1 3.4 9.9c0 6.7-4.2 12.6-10.2 14.9c-11.5 4.5-17.7 16.9-14.4 28.8c.4 1.3 .6 2.8 .6 4.3c0 8.8-7.2 16-16 16H286.5c-12.6 0-25-3.7-35.5-10.7l-61.7-41.1c-11-7.4-25.9-4.4-33.3 6.7s-4.4 25.9 6.7 33.3l61.7 41.1c18.4 12.3 40 18.8 62.1 18.8H384c34.7 0 62.9-27.6 64-62c14.6-11.7 24-29.7 24-50c0-4.5-.5-8.8-1.3-13c15.4-11.7 25.3-30.2 25.3-51c0-6.5-1-12.8-2.8-18.7C504.8 273.7 512 257.7 512 240c0-35.3-28.6-64-64-64l-92.3 0c4.7-10.4 8.7-21.2 11.8-32.2l5.7-20c10.9-38.2-11.2-78.1-49.4-89zM32 192c-17.7 0-32 14.3-32 32V448c0 17.7 14.3 32 32 32H96c17.7 0 32-14.3 32-32V224c0-17.7-14.3-32-32-32H32z\"></path></svg><!-- <i class=\"feature-icon fa fa fa-thumbs-o-up fa-stack-1x\"></i> Font Awesome fontawesome.com --></span>                                            </div>\n                    <h4>Attitude</h4>\n                    <div class=\"feature-item-content\"><p>Our customers are our highest priority, and we do everything possible to deliver what the customer needs, even if that means going above and beyond. We do not have a Sales team, yet we grow because our customers are our brand advocates.</p>\n</div> \n                </div>\n                            <div class=\"feature-item col-lg-3 col-sm-6 wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n                    <div class=\"feature-media\">\n                                                <span class=\"fa-stack fa-5x\"><svg class=\"svg-inline--fa fa-circle fa-stack-2x icon-background-default transiton\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"circle\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512z\"></path></svg><!-- <i class=\"fa fa-circle fa-stack-2x icon-background-default transiton\"></i> Font Awesome fontawesome.com --> <svg class=\"svg-inline--fa fa-scale-balanced feature-icon fa-stack-1x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"scale-balanced\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M384 32H512c17.7 0 32 14.3 32 32s-14.3 32-32 32H398.4c-5.2 25.8-22.9 47.1-46.4 57.3V448H512c17.7 0 32 14.3 32 32s-14.3 32-32 32H320 128c-17.7 0-32-14.3-32-32s14.3-32 32-32H288V153.3c-23.5-10.3-41.2-31.6-46.4-57.3H128c-17.7 0-32-14.3-32-32s14.3-32 32-32H256c14.6-19.4 37.8-32 64-32s49.4 12.6 64 32zm55.6 288H584.4L512 195.8 439.6 320zM512 416c-62.9 0-115.2-34-126-78.9c-2.6-11 1-22.3 6.7-32.1l95.2-163.2c5-8.6 14.2-13.8 24.1-13.8s19.1 5.3 24.1 13.8l95.2 163.2c5.7 9.8 9.3 21.1 6.7 32.1C627.2 382 574.9 416 512 416zM126.8 195.8L54.4 320H199.3L126.8 195.8zM.9 337.1c-2.6-11 1-22.3 6.7-32.1l95.2-163.2c5-8.6 14.2-13.8 24.1-13.8s19.1 5.3 24.1 13.8l95.2 163.2c5.7 9.8 9.3 21.1 6.7 32.1C242 382 189.7 416 126.8 416S11.7 382 .9 337.1z\"></path></svg><!-- <i class=\"feature-icon fa fa fa-balance-scale fa-stack-1x\"></i> Font Awesome fontawesome.com --></span>                                            </div>\n                    <h4>Fair &amp; Honest</h4>\n                    <div class=\"feature-item-content\"><p>An organization thrives when it is transparent in its working, and treats it’s people with fairness and honesty. A happy and satisfied employee translates to a happy client, which is what we aim for.</p>\n</div> \n                </div>\n                            <div class=\"feature-item col-lg-3 col-sm-6 wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n                    <div class=\"feature-media\">\n                                                <span class=\"fa-stack fa-5x\"><svg class=\"svg-inline--fa fa-circle fa-stack-2x icon-background-default transiton\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"circle\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512z\"></path></svg><!-- <i class=\"fa fa-circle fa-stack-2x icon-background-default transiton\"></i> Font Awesome fontawesome.com --> <svg class=\"svg-inline--fa fa-sun feature-icon fa-stack-1x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"far\" data-icon=\"sun\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M375.7 19.7c-1.5-8-6.9-14.7-14.4-17.8s-16.1-2.2-22.8 2.4L256 61.1 173.5 4.2c-6.7-4.6-15.3-5.5-22.8-2.4s-12.9 9.8-14.4 17.8l-18.1 98.5L19.7 136.3c-8 1.5-14.7 6.9-17.8 14.4s-2.2 16.1 2.4 22.8L61.1 256 4.2 338.5c-4.6 6.7-5.5 15.3-2.4 22.8s9.8 13 17.8 14.4l98.5 18.1 18.1 98.5c1.5 8 6.9 14.7 14.4 17.8s16.1 2.2 22.8-2.4L256 450.9l82.5 56.9c6.7 4.6 15.3 5.5 22.8 2.4s12.9-9.8 14.4-17.8l18.1-98.5 98.5-18.1c8-1.5 14.7-6.9 17.8-14.4s2.2-16.1-2.4-22.8L450.9 256l56.9-82.5c4.6-6.7 5.5-15.3 2.4-22.8s-9.8-12.9-17.8-14.4l-98.5-18.1L375.7 19.7zM269.6 110l65.6-45.2 14.4 78.3c1.8 9.8 9.5 17.5 19.3 19.3l78.3 14.4L402 242.4c-5.7 8.2-5.7 19 0 27.2l45.2 65.6-78.3 14.4c-9.8 1.8-17.5 9.5-19.3 19.3l-14.4 78.3L269.6 402c-8.2-5.7-19-5.7-27.2 0l-65.6 45.2-14.4-78.3c-1.8-9.8-9.5-17.5-19.3-19.3L64.8 335.2 110 269.6c5.7-8.2 5.7-19 0-27.2L64.8 176.8l78.3-14.4c9.8-1.8 17.5-9.5 19.3-19.3l14.4-78.3L242.4 110c8.2 5.7 19 5.7 27.2 0zM256 368a112 112 0 1 0 0-224 112 112 0 1 0 0 224zM192 256a64 64 0 1 1 128 0 64 64 0 1 1 -128 0z\"></path></svg><!-- <i class=\"feature-icon fa fa fa-sun-o fa-stack-1x\"></i> Font Awesome fontawesome.com --></span>                                            </div>\n                    <h4>Robust Dev Processes</h4>\n                    <div class=\"feature-item-content\"><p>We follow Agile principles to adjust dynamically changing priorities, backed by strong DevOps processes for scalable and stable deployments through continuous integration.</p>\n</div> \n                </div>\n                        </div>\n        </div>\n    </div>\n    \n</section>\n\t\t\t\t\t<section id=\"about\" class=\"section-about section-padding onepage-section\">\n\t\t\n\t\t\t\t\t\t<div class=\"container\">\n\t\t\t\t\t\t\t\t<div class=\"section-title-area\">\n\t\t\t\t\t\t\t\t\t\t<h2 class=\"section-title\">Who We Are</h2>\t\t\t\t\t<div class=\"section-desc\"><p>We are a small yet very focused group of highly skilled professionals developing software applications on the Salesforce platform since 2007.Our aim is for our customers to see us as their reliable and trusted partners, and convert them into our customer advocates or brand evangelists.</p>\n</div>\t\t\t\t</div>\n\t\t\t\t\t\t\t\t<div class=\"row\">\n\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"col-lg-4 col-sm-6  wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<h3>Our Mission</h3>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div style=\"text-align: justify\">\n<p>We provide software development and consulting services to our clients. We aim for our customers to see us as their reliable and trusted partners, and convert them into our customer advocates or brand evangelists, as there is no better marketing than word of mouth. We achieve this by realizing the full potential of the Salesforce platform by delivering high-performing and scalable applications that can stand the test of time</p>\n</div>\n\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"col-lg-4 col-sm-6  wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<h3>Our Vision</h3>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div style=\"text-align: justify\">To become one of the most trusted Salesforce implementation partner for global clients in less than 10 years; and to provide exponential growth to those who trusted and joined us in our initial years, who we expect in turn will help create career and growth opportunities for others</div>\n\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"col-lg-4 col-sm-6  wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<h3>Our Values</h3>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div style=\"text-align: justify\">Working with highest levels of commitment, ethics, honesty, integrity, and transparency; develop culture of owning the mistakes made, learning from it, and ensuring to not repeat them in future; delivering exceptional quality work with the help of multi-skilled teams, helping individuals learn new skills and make them reach their full potential.</div>\n\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t</div>\n\t\t\t</div>\n\t\t\t\t\t\t\t</section>\n\t\t\t\t\t\t\t\t<section id=\"services\" class=\"section-services section-padding section-meta onepage-section\">\t\t\t\t\t\t<div class=\"container\">\n\t\t\t\t\t\t\t\t<div class=\"section-title-area\">\n\t\t\t\t\t\t\t\t\t\t<h2 class=\"section-title\">What We Do</h2>\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t<div class=\"row\">\n\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"col-sm-6 col-lg-6 wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n\t\t\t\t\t\t\t\t<div class=\"service-item \">\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"service-image\"><svg class=\"svg-inline--fa fa-user fa-5x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"user\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 448 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M224 256A128 128 0 1 0 224 0a128 128 0 1 0 0 256zm-45.7 48C79.8 304 0 383.8 0 482.3C0 498.7 13.3 512 29.7 512H418.3c16.4 0 29.7-13.3 29.7-29.7C448 383.8 368.2 304 269.7 304H178.3z\"></path></svg><!-- <i class=\"fa fa fa-user fa-5x\"></i> Font Awesome fontawesome.com --></div>\t\t\t\t\t\t\t\t\t<div class=\"service-content\">\n\t\t\t\t\t\t\t\t\t\t<h4 class=\"service-title\">Salesforce Consulting</h4>\n\t\t\t\t\t\t\t\t\t\t<p>With the help of our prior CRM experience, we help organizations overcome specific CRM challenges like low sales productivity, CRM performance issues. With our expertise, we help our customers draw the maximum out of the OOTB features and leverage the platform to the fullest. We provide guidance both<br>\nstrategic and technical in your Salesforce implementation journey.</p>\n\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"col-sm-6 col-lg-6 wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n\t\t\t\t\t\t\t\t<div class=\"service-item \">\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"service-image\"><svg class=\"svg-inline--fa fa-gg fa-5x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fab\" data-icon=\"gg\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M179.2 230.4l102.4 102.4-102.4 102.4L0 256 179.2 76.8l44.8 44.8-25.6 25.6-19.2-19.2-128 128 128 128 51.5-51.5-77.1-76.5 25.6-25.6zM332.8 76.8L230.4 179.2l102.4 102.4 25.6-25.6-77.1-76.5 51.5-51.5 128 128-128 128-19.2-19.2-25.6 25.6 44.8 44.8L512 256 332.8 76.8z\"></path></svg><!-- <i class=\"fa fa-gg fa-5x\"></i> Font Awesome fontawesome.com --></div>\t\t\t\t\t\t\t\t\t<div class=\"service-content\">\n\t\t\t\t\t\t\t\t\t\t<h4 class=\"service-title\">Salesforce Customization</h4>\n\t\t\t\t\t\t\t\t\t\t<p>We offer customization services that help in improving the overall internal and external business processes of our clients’ business, and cater to business needs that can’t be addressed through the standard out-of-the-box platform features or other normal CRM applications. These applications are usually complex, and used in managing errands, like delivery planning, personnel and performance management, etc.</p>\n\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"col-sm-6 col-lg-6 clearleft wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n\t\t\t\t\t\t\t\t<div class=\"service-item \">\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"service-image\"><svg class=\"svg-inline--fa fa-connectdevelop fa-5x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fab\" data-icon=\"connectdevelop\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 576 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M550.5 241l-50.089-86.786c1.071-2.142 1.875-4.553 1.875-7.232 0-8.036-6.696-14.733-14.732-15.001l-55.447-95.893c.536-1.607 1.071-3.214 1.071-4.821 0-8.571-6.964-15.268-15.268-15.268-4.821 0-8.839 2.143-11.786 5.625H299.518C296.839 18.143 292.821 16 288 16s-8.839 2.143-11.518 5.625H170.411C167.464 18.143 163.447 16 158.625 16c-8.303 0-15.268 6.696-15.268 15.268 0 1.607.536 3.482 1.072 4.821l-55.983 97.233c-5.356 2.41-9.107 7.5-9.107 13.661 0 .535.268 1.071.268 1.607l-53.304 92.143c-7.232 1.339-12.59 7.5-12.59 15 0 7.232 5.089 13.393 12.054 15l55.179 95.358c-.536 1.607-.804 2.946-.804 4.821 0 7.232 5.089 13.393 12.054 14.732l51.697 89.732c-.536 1.607-1.071 3.482-1.071 5.357 0 8.571 6.964 15.268 15.268 15.268 4.821 0 8.839-2.143 11.518-5.357h106.875C279.161 493.857 283.447 496 288 496s8.839-2.143 11.518-5.357h107.143c2.678 2.946 6.696 4.821 10.982 4.821 8.571 0 15.268-6.964 15.268-15.268 0-1.607-.267-2.946-.803-4.285l51.697-90.268c6.964-1.339 12.054-7.5 12.054-14.732 0-1.607-.268-3.214-.804-4.821l54.911-95.358c6.964-1.339 12.322-7.5 12.322-15-.002-7.232-5.092-13.393-11.788-14.732zM153.535 450.732l-43.66-75.803h43.66v75.803zm0-83.839h-43.66c-.268-1.071-.804-2.142-1.339-3.214l44.999-47.41v50.624zm0-62.411l-50.357 53.304c-1.339-.536-2.679-1.34-4.018-1.607L43.447 259.75c.535-1.339.535-2.679.535-4.018s0-2.41-.268-3.482l51.965-90c2.679-.268 5.357-1.072 7.768-2.679l50.089 51.965v92.946zm0-102.322l-45.803-47.41c1.339-2.143 2.143-4.821 2.143-7.767 0-.268-.268-.804-.268-1.072l43.928-15.804v72.053zm0-80.625l-43.66 15.804 43.66-75.536v59.732zm326.519 39.108l.804 1.339L445.5 329.125l-63.75-67.232 98.036-101.518.268.268zM291.75 355.107l11.518 11.786H280.5l11.25-11.786zm-.268-11.25l-83.303-85.446 79.553-84.375 83.036 87.589-79.286 82.232zm5.357 5.893l79.286-82.232 67.5 71.25-5.892 28.125H313.714l-16.875-17.143zM410.411 44.393c1.071.536 2.142 1.072 3.482 1.34l57.857 100.714v.536c0 2.946.803 5.624 2.143 7.767L376.393 256l-83.035-87.589L410.411 44.393zm-9.107-2.143L287.732 162.518l-57.054-60.268 166.339-60h4.287zm-123.483 0c2.678 2.678 6.16 4.285 10.179 4.285s7.5-1.607 10.179-4.285h75L224.786 95.821 173.893 42.25h103.928zm-116.249 5.625l1.071-2.142a33.834 33.834 0 0 0 2.679-.804l51.161 53.84-54.911 19.821V47.875zm0 79.286l60.803-21.964 59.732 63.214-79.553 84.107-40.982-42.053v-83.304zm0 92.678L198 257.607l-36.428 38.304v-76.072zm0 87.858l42.053-44.464 82.768 85.982-17.143 17.678H161.572v-59.196zm6.964 162.053c-1.607-1.607-3.482-2.678-5.893-3.482l-1.071-1.607v-89.732h99.91l-91.607 94.821h-1.339zm129.911 0c-2.679-2.41-6.428-4.285-10.447-4.285s-7.767 1.875-10.447 4.285h-96.429l91.607-94.821h38.304l91.607 94.821H298.447zm120-11.786l-4.286 7.5c-1.339.268-2.41.803-3.482 1.339l-89.196-91.875h114.376l-17.412 83.036zm12.856-22.232l12.858-60.803h21.964l-34.822 60.803zm34.822-68.839h-20.357l4.553-21.16 17.143 18.214c-.535.803-1.071 1.874-1.339 2.946zm66.161-107.411l-55.447 96.697c-1.339.535-2.679 1.071-4.018 1.874l-20.625-21.964 34.554-163.928 45.803 79.286c-.267 1.339-.803 2.678-.803 4.285 0 1.339.268 2.411.536 3.75z\"></path></svg><!-- <i class=\"fa fa fa-connectdevelop fa-5x\"></i> Font Awesome fontawesome.com --></div>\t\t\t\t\t\t\t\t\t<div class=\"service-content\">\n\t\t\t\t\t\t\t\t\t\t<h4 class=\"service-title\">Salesforce Application Development</h4>\n\t\t\t\t\t\t\t\t\t\t<p>We help organizations in managing their internal business processes and operations by providing custom application development services on the Salesforce platform. We address business needs in all industry domains including but not limited to healthcare, manufacturing, retail, professional services, supplier relationship, warranty, finance, and technology.</p>\n\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"col-sm-6 col-lg-6 wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n\t\t\t\t\t\t\t\t<div class=\"service-item \">\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"service-image\"><svg class=\"svg-inline--fa fa-object-group fa-5x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"far\" data-icon=\"object-group\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 576 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M48 115.8C38.2 107 32 94.2 32 80c0-26.5 21.5-48 48-48c14.2 0 27 6.2 35.8 16H460.2c8.8-9.8 21.6-16 35.8-16c26.5 0 48 21.5 48 48c0 14.2-6.2 27-16 35.8V396.2c9.8 8.8 16 21.6 16 35.8c0 26.5-21.5 48-48 48c-14.2 0-27-6.2-35.8-16H115.8c-8.8 9.8-21.6 16-35.8 16c-26.5 0-48-21.5-48-48c0-14.2 6.2-27 16-35.8V115.8zM125.3 96c-4.8 13.6-15.6 24.4-29.3 29.3V386.7c13.6 4.8 24.4 15.6 29.3 29.3H450.7c4.8-13.6 15.6-24.4 29.3-29.3V125.3c-13.6-4.8-24.4-15.6-29.3-29.3H125.3zm2.7 64c0-17.7 14.3-32 32-32H288c17.7 0 32 14.3 32 32v96c0 17.7-14.3 32-32 32H160c-17.7 0-32-14.3-32-32V160zM256 320h32c35.3 0 64-28.7 64-64V224h64c17.7 0 32 14.3 32 32v96c0 17.7-14.3 32-32 32H288c-17.7 0-32-14.3-32-32V320z\"></path></svg><!-- <i class=\"fa fa-object-group fa-5x\"></i> Font Awesome fontawesome.com --></div>\t\t\t\t\t\t\t\t\t<div class=\"service-content\">\n\t\t\t\t\t\t\t\t\t\t<h4 class=\"service-title\">Salesforce Integration</h4>\n\t\t\t\t\t\t\t\t\t\t<p>We offer reliable, secure, scalable, and seamless Salesforce integration with your other internal business apps. We also help organizations expose their business processes through API development that they can utilize in their other internal business applications. We also help you develop AppExchange published adaptors that can be used to connect your solutions with the Salesforce.</p>\n\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t</div>\n\t\t\t</div>\n\t\t\t\t\t\t\t</section>\n\t\t\t            <section id=\"gallery\" class=\"section-gallery section-padding section-meta onepage-section\">\n        \n    <div class=\"g-layout-full-width container\">\n                    <div class=\"section-title-area\">\n                                <h2 class=\"section-title\">Glimpses of workplace</h2>                <div class=\"section-desc\"><p>People rarely succeed unless they have fun in what they are doing</p>\n</div>            </div>\n                <div class=\"gallery-content\">\n            <div class=\"gallery-grid-wrap\"><div class=\"gallery-grid g-zoom-in  enable-lightbox  g-col-5\"><a href=\"https://thinkvibes.com/wp-content/uploads/2023/04/DSC_0903-scaled.jpg\" class=\"g-item\" title=\"\"><span class=\"inner\"><span class=\"inner-content\"><img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/DSC_0903-scaled.jpg\" alt=\"\"></span></span></a><a href=\"https://thinkvibes.com/wp-content/uploads/2023/04/DSC_0802-scaled.jpg\" class=\"g-item\" title=\"\"><span class=\"inner\"><span class=\"inner-content\"><img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/DSC_0802-scaled.jpg\" alt=\"\"></span></span></a><a href=\"https://thinkvibes.com/wp-content/uploads/2023/04/20221021_171537-scaled.jpg\" class=\"g-item\" title=\"\"><span class=\"inner\"><span class=\"inner-content\"><img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/20221021_171537-480x300.jpg\" alt=\"\"></span></span></a><a href=\"https://thinkvibes.com/wp-content/uploads/2023/04/IMG-20230412-WA0067.jpg\" class=\"g-item\" title=\"\"><span class=\"inner\"><span class=\"inner-content\"><img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/IMG-20230412-WA0067-480x300.jpg\" alt=\"\"></span></span></a><a href=\"https://thinkvibes.com/wp-content/uploads/2023/04/IMG-20230412-WA0075.jpg\" class=\"g-item\" title=\"\"><span class=\"inner\"><span class=\"inner-content\"><img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/IMG-20230412-WA0075-480x300.jpg\" alt=\"\"></span></span></a><a href=\"https://thinkvibes.com/wp-content/uploads/2023/04/VideoCapture_20230414-200228.jpg\" class=\"g-item\" title=\"\"><span class=\"inner\"><span class=\"inner-content\"><img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/VideoCapture_20230414-200228-480x300.jpg\" alt=\"\"></span></span></a><a href=\"https://thinkvibes.com/wp-content/uploads/2023/04/20221021_165131-scaled.jpg\" class=\"g-item\" title=\"\"><span class=\"inner\"><span class=\"inner-content\"><img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/20221021_165131-480x300.jpg\" alt=\"\"></span></span></a><a href=\"https://thinkvibes.com/wp-content/uploads/2023/04/20221021_171550-scaled.jpg\" class=\"g-item\" title=\"\"><span class=\"inner\"><span class=\"inner-content\"><img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/20221021_171550-480x300.jpg\" alt=\"\"></span></span></a><a href=\"https://thinkvibes.com/wp-content/uploads/2023/04/20221021_174233-scaled.jpg\" class=\"g-item\" title=\"\"><span class=\"inner\"><span class=\"inner-content\"><img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/20221021_174233-480x300.jpg\" alt=\"\"></span></span></a><a href=\"https://thinkvibes.com/wp-content/uploads/2023/04/20230113_150558.jpg\" class=\"g-item\" title=\"\"><span class=\"inner\"><span class=\"inner-content\"><img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/20230113_150558-480x300.jpg\" alt=\"\"></span></span></a></div></div>        </div>\n        \n    </div>\n                </section>\n    \t\t\t\t\t<section id=\"counter\" class=\"section-counter section-padding onepage-section\">\n\t\t\t\t\t\t\t\t<div class=\"container\">\n\t\t\t\t\t\t\t\t<div class=\"section-title-area\">\n\t\t\t\t\t\t\t\t\t\t<h2 class=\"section-title\">How We Work</h2>\t\t\t\t\t<div class=\"section-desc\"><p>Agile is in our DNA and we live and breathe it on a day to day basis, and so the final version of the application that we develop and deliver has all the requirements captured and developed as per the end vision of business stakeholders, and takes care of the evolving requirements and real time feedback during the application development journey.</p>\n</div>\t\t\t\t</div>\n\t\t\t\t\t\t\t\t<div class=\"row\">\n\t\t\t\t\t\t\t\t\t\t\t<div class=\"col-sm-6 col-md-12\">\n\t\t\t\t\t\t\t<div class=\"counter_item\">\n\t\t\t\t\t\t\t\t<div class=\"counter__number\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<span class=\"n counter\">0</span>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t<div class=\"counter_title\"></div>\n\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t</div>\n\t\t\t</div>\n\t\t\t\t\t\t\t</section>\n\t\t\t                    <section id=\"team\" class=\"section-team section-padding section-meta onepage-section\">\n                                <div class=\"container\">\n                                <div class=\"section-title-area\">\n                                        <h2 class=\"section-title\">Industry Expertise</h2>                                    </div>\n                                <div class=\"team-members row team-layout-4\">\n                                                    <div class=\"team-member wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n                                    <div class=\"member-thumb\">\n                                                                                <img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/cardiogram.png\" alt=\"\" width=\"64\" height=\"64\">\n                                                                                \t<div class=\"member-profile\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t</div>\n                                    </div>\n                                    <div class=\"member-info\">\n                                        <h5 class=\"member-name\">Healthcare</h5>\n                                        <span class=\"member-position\"></span>\n                                    </div>\n                                </div>\n                                                                <div class=\"team-member wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n                                    <div class=\"member-thumb\">\n                                                                                <img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/help-call.png\" alt=\"\" width=\"64\" height=\"64\">\n                                                                                \t<div class=\"member-profile\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t</div>\n                                    </div>\n                                    <div class=\"member-info\">\n                                        <h5 class=\"member-name\">Finance</h5>\n                                        <span class=\"member-position\"></span>\n                                    </div>\n                                </div>\n                                                                <div class=\"team-member wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n                                    <div class=\"member-thumb\">\n                                                                                <img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/presentation.png\" alt=\"\" width=\"64\" height=\"64\">\n                                                                                \t<div class=\"member-profile\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t</div>\n                                    </div>\n                                    <div class=\"member-info\">\n                                        <h5 class=\"member-name\">Education</h5>\n                                        <span class=\"member-position\"></span>\n                                    </div>\n                                </div>\n                                                                <div class=\"team-member wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n                                    <div class=\"member-thumb\">\n                                                                                <img src=\"https://thinkvibes.com/wp-content/uploads/2023/04/remote-control.png\" alt=\"\" width=\"64\" height=\"64\">\n                                                                                \t<div class=\"member-profile\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t</div>\n                                    </div>\n                                    <div class=\"member-info\">\n                                        <h5 class=\"member-name\">Automotive,</h5>\n                                        <span class=\"member-position\"></span>\n                                    </div>\n                                </div>\n                                                </div>\n            </div>\n                            </section>\n            \t\t\t\t\t\t<section id=\"contact\" class=\"section-contact section-padding  section-meta onepage-section\">\n\t\t\t\t\t\t\t\t\t<div class=\"container\">\n\t\t\t\t\t\t\t\t\t<div class=\"section-title-area\">\n\t\t\t\t\t\t\t\t\t\t\t\t<h2 class=\"section-title\">Let's Connect</h2>\t\t\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t<div class=\"row\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"contact-form col-sm-6 wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n\t\t\t\t\t\t\t\t<div class=\"wpforms-container wpforms-container-full\" id=\"wpforms-266\"><form id=\"wpforms-form-266\" class=\"wpforms-validate wpforms-form wpforms-ajax-form\" data-formid=\"266\" method=\"post\" enctype=\"multipart/form-data\" action=\"/\" data-token=\"a19f5c641c2b0086f91f2fbc2256d4b8\" data-token-time=\"1786896459\" novalidate=\"novalidate\"><noscript class=\"wpforms-error-noscript\">Please enable JavaScript in your browser to complete this form.</noscript><div class=\"wpforms-field-container\"><div id=\"wpforms-266-field_4-container\" class=\"wpforms-field wpforms-field-text\" data-field-id=\"4\"><label class=\"wpforms-field-label\" for=\"wpforms-266-field_4\">Name</label><input type=\"text\" id=\"wpforms-266-field_4\" class=\"wpforms-field-medium\" name=\"wpforms[fields][4]\"></div><div id=\"wpforms-266-field_1-container\" class=\"wpforms-field wpforms-field-email\" data-field-id=\"1\"><label class=\"wpforms-field-label\" for=\"wpforms-266-field_1\">Email <span class=\"wpforms-required-label\">*</span></label><input type=\"email\" id=\"wpforms-266-field_1\" class=\"wpforms-field-medium wpforms-field-required\" name=\"wpforms[fields][1]\" spellcheck=\"false\" required=\"\"></div><div id=\"wpforms-266-field_2-container\" class=\"wpforms-field wpforms-field-textarea\" data-field-id=\"2\"><label class=\"wpforms-field-label\" for=\"wpforms-266-field_2\">Comment or Message</label><textarea id=\"wpforms-266-field_2\" class=\"wpforms-field-medium\" name=\"wpforms[fields][2]\"></textarea></div></div><!-- .wpforms-field-container --><div class=\"wpforms-submit-container\"><input type=\"hidden\" name=\"wpforms[id]\" value=\"266\"><input type=\"hidden\" name=\"page_title\" value=\"Home\"><input type=\"hidden\" name=\"page_url\" value=\"https://thinkvibes.com/\"><input type=\"hidden\" name=\"url_referer\" value=\"\"><input type=\"hidden\" name=\"page_id\" value=\"4\"><input type=\"hidden\" name=\"wpforms[post_id]\" value=\"4\"><button type=\"submit\" name=\"wpforms[submit]\" id=\"wpforms-submit-266\" class=\"wpforms-submit\" data-alt-text=\"Sending...\" data-submit-text=\"Submit\" aria-live=\"assertive\" value=\"wpforms-submit\">Submit</button><img src=\"https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/images/submit-spin.svg\" class=\"wpforms-submit-spinner\" style=\"display: none;\" width=\"26\" height=\"26\" alt=\"Loading\"></div></form></div>  <!-- .wpforms-container -->\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t\n\t\t\t\t\t<div class=\"col-sm-6 wow slideInUp\" style=\"visibility: hidden; animation-name: none;\">\n\t\t\t\t\t\t<h4>WE ARE ACCEPTING NEW PROJECTS.</h4>\n<p>From startups to enterprises, we provide a wide range of end-to-end Salesforce development services for the evolving business requirements of our clients – from<br>\ndiscovery, planning and prioritizing, design, implementation, deployment and up to the ongoing maintenance. Our main focus is to build the app with bare essential<br>\ncode to ease the future system maintenance.</p>\n\t\t\t\t\t\t<br><br>\n\t\t\t\t\t\t<div class=\"address-box\">\n\n\t\t\t\t\t\t\t<h3></h3>\n\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"address-contact\">\n\t\t\t\t\t\t\t\t\t<span class=\"fa-stack\"><svg class=\"svg-inline--fa fa-circle fa-stack-2x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"circle\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512z\"></path></svg><!-- <i class=\"fa fa-circle fa-stack-2x\"></i> Font Awesome fontawesome.com --><svg class=\"svg-inline--fa fa-location-dot fa-stack-1x fa-inverse\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"location-dot\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 384 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M215.7 499.2C267 435 384 279.4 384 192C384 86 298 0 192 0S0 86 0 192c0 87.4 117 243 168.3 307.2c12.3 15.3 35.1 15.3 47.4 0zM192 128a64 64 0 1 1 0 128 64 64 0 1 1 0-128z\"></path></svg><!-- <i class=\"fa fa-map-marker fa-stack-1x fa-inverse\"></i> Font Awesome fontawesome.com --></span>\n\n\t\t\t\t\t\t\t\t\t<div class=\"address-content\"><a href=\"https://maps.app.goo.gl/xrx7dJsEDuJtsKUq6\">Jaipur, RJ, IN</a></div>\n\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"address-contact\">\n\t\t\t\t\t\t\t\t\t\t<span class=\"fa-stack\"><svg class=\"svg-inline--fa fa-circle fa-stack-2x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"circle\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512z\"></path></svg><!-- <i class=\"fa fa-circle fa-stack-2x\"></i> Font Awesome fontawesome.com --><svg class=\"svg-inline--fa fa-phone fa-stack-1x fa-inverse\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"phone\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M164.9 24.6c-7.7-18.6-28-28.5-47.4-23.2l-88 24C12.1 30.2 0 46 0 64C0 311.4 200.6 512 448 512c18 0 33.8-12.1 38.6-29.5l24-88c5.3-19.4-4.6-39.7-23.2-47.4l-96-40c-16.3-6.8-35.2-2.1-46.3 11.6L304.7 368C234.3 334.7 177.3 277.7 144 207.3L193.3 167c13.7-11.2 18.4-30 11.6-46.3l-40-96z\"></path></svg><!-- <i class=\"fa fa-phone fa-stack-1x fa-inverse\"></i> Font Awesome fontawesome.com --></span>\n\t\t\t\t\t\t\t\t\t\t<div class=\"address-content\"><a href=\"tel:+91-9672784237\">+91-967.278.4237</a></div>\n\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"address-contact\">\n\t\t\t\t\t\t\t\t\t\t<span class=\"fa-stack\"><svg class=\"svg-inline--fa fa-circle fa-stack-2x\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"circle\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512z\"></path></svg><!-- <i class=\"fa fa-circle fa-stack-2x\"></i> Font Awesome fontawesome.com --><svg class=\"svg-inline--fa fa-envelope fa-stack-1x fa-inverse\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"far\" data-icon=\"envelope\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M64 112c-8.8 0-16 7.2-16 16v22.1L220.5 291.7c20.7 17 50.4 17 71.1 0L464 150.1V128c0-8.8-7.2-16-16-16H64zM48 212.2V384c0 8.8 7.2 16 16 16H448c8.8 0 16-7.2 16-16V212.2L322 328.8c-38.4 31.5-93.7 31.5-132 0L48 212.2zM0 128C0 92.7 28.7 64 64 64H448c35.3 0 64 28.7 64 64V384c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V128z\"></path></svg><!-- <i class=\"fa fa-envelope-o fa-stack-1x fa-inverse\"></i> Font Awesome fontawesome.com --></span>\n\t\t\t\t\t\t\t\t\t\t<div class=\"address-content\"><a href=\"mailto:info@thinkvibes.com\">info@thinkvibes.com</a></div>\n\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t\t\t\t\t\t\t\t</section>\n\t\t\t\t</main>\n\t</div>\n\n\t<footer id=\"colophon\" class=\"site-footer\" role=\"contentinfo\">\n\t\t\t\t\t\t\t<div class=\"footer-connect\">\n\t\t\t\t<div class=\"container\">\n\t\t\t\t\t<div class=\"row\">\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"col-md-4 offset-md-2 col-sm-6 offset-md-0\">\n\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"footer-subscribe\">\n\t\t\t\t<h5 class=\"follow-heading\">Join our Newsletter</h5>\t\t\t\t<form novalidate=\"\" target=\"_blank\" class=\"\" name=\"mc-embedded-subscribe-form\" id=\"mc-embedded-subscribe-form\" method=\"post\" action=\"//famethemes.us8.list-manage.com/subscribe/post?u=521c400d049a59a4b9c0550c2&amp;id=83187e0006\">\n\t\t\t\t\t<input type=\"text\" placeholder=\"Enter your e-mail address\" id=\"mce-EMAIL\" class=\"subs_input\" name=\"EMAIL\" value=\"\">\n\t\t\t\t\t<input type=\"submit\" class=\"subs-button\" value=\"Subscribe\" name=\"subscribe\">\n\t\t\t\t</form>\n\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"col-md-4 col-sm-6\">\n\t\t\t\t\t\t\t\t\t\t\t\t<div class=\"footer-social\">\n\t\t\t\t<h5 class=\"follow-heading\">Keep Updated</h5><div class=\"footer-social-icons\"><a target=\"_blank\" href=\"https://www.instagram.com/itsthinkvibes/\" title=\"Instagram\"><svg class=\"svg-inline--fa fa-instagram\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fab\" data-icon=\"instagram\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 448 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M224.1 141c-63.6 0-114.9 51.3-114.9 114.9s51.3 114.9 114.9 114.9S339 319.5 339 255.9 287.7 141 224.1 141zm0 189.6c-41.1 0-74.7-33.5-74.7-74.7s33.5-74.7 74.7-74.7 74.7 33.5 74.7 74.7-33.6 74.7-74.7 74.7zm146.4-194.3c0 14.9-12 26.8-26.8 26.8-14.9 0-26.8-12-26.8-26.8s12-26.8 26.8-26.8 26.8 12 26.8 26.8zm76.1 27.2c-1.7-35.9-9.9-67.7-36.2-93.9-26.2-26.2-58-34.4-93.9-36.2-37-2.1-147.9-2.1-184.9 0-35.8 1.7-67.6 9.9-93.9 36.1s-34.4 58-36.2 93.9c-2.1 37-2.1 147.9 0 184.9 1.7 35.9 9.9 67.7 36.2 93.9s58 34.4 93.9 36.2c37 2.1 147.9 2.1 184.9 0 35.9-1.7 67.7-9.9 93.9-36.2 26.2-26.2 34.4-58 36.2-93.9 2.1-37 2.1-147.8 0-184.8zM398.8 388c-7.8 19.6-22.9 34.7-42.6 42.6-29.5 11.7-99.5 9-132.1 9s-102.7 2.6-132.1-9c-19.6-7.8-34.7-22.9-42.6-42.6-11.7-29.5-9-99.5-9-132.1s-2.6-102.7 9-132.1c7.8-19.6 22.9-34.7 42.6-42.6 29.5-11.7 99.5-9 132.1-9s102.7-2.6 132.1 9c19.6 7.8 34.7 22.9 42.6 42.6 11.7 29.5 9 99.5 9 132.1s2.7 102.7-9 132.1z\"></path></svg><!-- <i class=\"fa  fa-instagram\"></i> Font Awesome fontawesome.com --></a><a target=\"_blank\" href=\"https://www.facebook.com/itsthinkvibes\" title=\"Facebook\"><svg class=\"svg-inline--fa fa-facebook-f\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fab\" data-icon=\"facebook-f\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M80 299.3V512H196V299.3h86.5l18-97.8H196V166.9c0-51.7 20.3-71.5 72.7-71.5c16.3 0 29.4 .4 37 1.2V7.9C291.4 4 256.4 0 236.2 0C129.3 0 80 50.5 80 159.4v42.1H14v97.8H80z\"></path></svg><!-- <i class=\"fa  fa-facebook\"></i> Font Awesome fontawesome.com --></a><a target=\"_blank\" href=\"https://www.linkedin.com/company/thinkvibes/\" title=\"Linkedin\"><svg class=\"svg-inline--fa fa-linkedin-in\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fab\" data-icon=\"linkedin-in\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 448 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M100.28 448H7.4V148.9h92.88zM53.79 108.1C24.09 108.1 0 83.5 0 53.8a53.79 53.79 0 0 1 107.58 0c0 29.7-24.1 54.3-53.79 54.3zM447.9 448h-92.68V302.4c0-34.7-.7-79.2-48.29-79.2-48.29 0-55.69 37.7-55.69 76.7V448h-92.78V148.9h89.08v40.8h1.3c12.4-23.5 42.69-48.3 87.88-48.3 94 0 111.28 61.9 111.28 142.3V448z\"></path></svg><!-- <i class=\"fa  fa-linkedin\"></i> Font Awesome fontawesome.com --></a><a target=\"_blank\" href=\"https://twitter.com/itsthinkvibes\" title=\"Twitter\"><svg class=\"svg-inline--fa fa-twitter\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fab\" data-icon=\"twitter\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" data-fa-i2svg=\"\"><path fill=\"currentColor\" d=\"M459.37 151.716c.325 4.548.325 9.097.325 13.645 0 138.72-105.583 298.558-298.558 298.558-59.452 0-114.68-17.219-161.137-47.106 8.447.974 16.568 1.299 25.34 1.299 49.055 0 94.213-16.568 130.274-44.832-46.132-.975-84.792-31.188-98.112-72.772 6.498.974 12.995 1.624 19.818 1.624 9.421 0 18.843-1.3 27.614-3.573-48.081-9.747-84.143-51.98-84.143-102.985v-1.299c13.969 7.797 30.214 12.67 47.431 13.319-28.264-18.843-46.781-51.005-46.781-87.391 0-19.492 5.197-37.36 14.294-52.954 51.655 63.675 129.3 105.258 216.365 109.807-1.624-7.797-2.599-15.918-2.599-24.04 0-57.828 46.782-104.934 104.934-104.934 30.213 0 57.502 12.67 76.67 33.137 23.715-4.548 46.456-13.32 66.599-25.34-7.798 24.366-24.366 44.833-46.132 57.827 21.117-2.273 41.584-8.122 60.426-16.243-14.292 20.791-32.161 39.308-52.628 54.253z\"></path></svg><!-- <i class=\"fa  fa-twitter\"></i> Font Awesome fontawesome.com --></a></div>\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\t\t\t\t</div>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\n\t\t<div class=\"site-info\">\n\t\t\t<div class=\"container\">\n\t\t\t\t\t\t\t\t\t<div class=\"btt\">\n\t\t\t\t\t\t<a class=\"back-to-top\" href=\"#page\" title=\"Back To Top\"><svg class=\"svg-inline--fa fa-angles-up wow flash\" data-wow-duration=\"2s\" aria-hidden=\"true\" focusable=\"false\" data-prefix=\"fas\" data-icon=\"angles-up\" role=\"img\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 448 512\" data-fa-i2svg=\"\" style=\"visibility: hidden; animation-duration: 2s; animation-name: none;\"><path fill=\"currentColor\" d=\"M246.6 41.4c-12.5-12.5-32.8-12.5-45.3 0l-160 160c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L224 109.3 361.4 246.6c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3l-160-160zm160 352l-160-160c-12.5-12.5-32.8-12.5-45.3 0l-160 160c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L224 301.3 361.4 438.6c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3z\"></path></svg><!-- <i class=\"fa fa-angle-double-up wow flash\" data-wow-duration=\"2s\"></i> Font Awesome fontawesome.com --></a>\n\t\t\t\t\t</div>\n\t\t\t\t\t\t\t\tCopyright © 2026 Thinkvibes<span class=\"sep\"> – </span><a href=\"https://www.famethemes.com/themes/onepress\">OnePress</a> theme by FameThemes\t\t\t</div>\n\t\t</div>\n\n\t</footer>\n\t</div>\n\n\n<script type=\"speculationrules\">\n{\"prefetch\":[{\"source\":\"document\",\"where\":{\"and\":[{\"href_matches\":\"/*\"},{\"not\":{\"href_matches\":[\"/wp-*.php\",\"/wp-admin/*\",\"/wp-content/uploads/*\",\"/wp-content/*\",\"/wp-content/plugins/*\",\"/wp-content/themes/onepress/*\",\"/*\\\\?(.+)\"]}},{\"not\":{\"selector_matches\":\"a[rel~=\\\"nofollow\\\"]\"}},{\"not\":{\"selector_matches\":\".no-prefetch, .no-prefetch a\"}}]},\"eagerness\":\"conservative\"}]}\n</script>\n<!-- Enter your scripts here --><script id=\"isotope-pkgd-js\" src=\"https://thinkvibes.com/wp-content/plugins/raratheme-companion/public/js/isotope.pkgd.min.js?ver=3.0.5\"></script>\n<script id=\"imagesloaded-js\" src=\"https://thinkvibes.com/wp-includes/js/imagesloaded.min.js?ver=5.0.0\"></script>\n<script id=\"masonry-js\" src=\"https://thinkvibes.com/wp-includes/js/masonry.min.js?ver=4.2.2\"></script>\n<script id=\"raratheme-companion-js\" src=\"https://thinkvibes.com/wp-content/plugins/raratheme-companion/public/js/raratheme-companion-public.min.js?ver=1.4.4\"></script>\n<script id=\"all-js\" src=\"https://thinkvibes.com/wp-content/plugins/raratheme-companion/public/js/fontawesome/all.min.js?ver=6.1.1\"></script>\n<script id=\"v4-shims-js\" src=\"https://thinkvibes.com/wp-content/plugins/raratheme-companion/public/js/fontawesome/v4-shims.min.js?ver=6.1.1\"></script>\n<script id=\"nfd-performance-lazy-loader-js-before\">\nwindow.nfdPerformance = window.nfdPerformance || {};\n        window.nfdPerformance.imageOptimization = window.nfdPerformance.imageOptimization || {};\n        window.nfdPerformance.imageOptimization.lazyLoading = {\"classes\":[\"nfd-performance-not-lazy\",\"a3-notlazy\",\"disable-lazyload\",\"no-lazy\",\"no-lazyload\",\"skip-lazy\"],\"attributes\":[\"data-lazy-src\",\"data-crazy-lazy=\\\"exclude\\\"\",\"data-no-lazy\",\"data-no-lazy=\\\"1\\\"\"]};\n//# sourceURL=nfd-performance-lazy-loader-js-before\n</script>\n<script id=\"nfd-performance-lazy-loader-js\" src=\"https://thinkvibes.com/wp-content/plugins/mojo-marketplace-wp-plugin//vendor/newfold-labs/wp-module-performance/build/image-lazy-loader.min.js?ver=1738169648\"></script>\n<script id=\"onepress-lightgallery-js\" src=\"https://thinkvibes.com/wp-content/themes/onepress/assets/frontend/lightgallery.minified.js?ver=bf7c61378f839a6c2348\"></script>\n<script id=\"onepress-gallery-carousel-js\" src=\"https://thinkvibes.com/wp-content/themes/onepress/assets/frontend/gallery-carousel.minified.js?ver=6194ad820732fc734e04\"></script>\n<script id=\"onepress-theme-js-extra\">\nvar onepress_js_settings = {\"onepress_disable_animation\":\"\",\"onepress_disable_sticky_header\":\"\",\"onepress_vertical_align_menu\":\"\",\"hero_animation\":\"flipInX\",\"hero_speed\":\"5000\",\"hero_fade\":\"750\",\"submenu_width\":\"0\",\"hero_duration\":\"5000\",\"hero_disable_preload\":\"\",\"disabled_google_font\":\"\",\"is_home\":\"\",\"gallery_enable\":\"1\",\"is_rtl\":\"\",\"parallax_speed\":\"0.5\"};\nvar Onepress_Bully = {\"enable_label\":\"1\",\"disable_mobile\":\"\",\"sections\":{\"hero\":{\"id\":\"hero\",\"_id\":\"hero\",\"inverse\":1,\"enable\":true,\"title\":\"Main\"},\"clients\":{\"id\":\"clients\",\"_id\":\"clients\",\"inverse\":false,\"enable\":false,\"title\":\"Our Clients\"},\"features\":{\"id\":\"features\",\"_id\":\"features\",\"inverse\":false,\"enable\":true,\"title\":\"WHY CHOOSE US\"},\"about\":{\"id\":\"about\",\"_id\":\"about\",\"inverse\":false,\"enable\":true,\"title\":\"Who We Are\"},\"services\":{\"id\":\"services\",\"_id\":\"services\",\"inverse\":false,\"enable\":true,\"title\":\"What We Do\"},\"videolightbox\":{\"id\":\"videolightbox\",\"_id\":\"videolightbox\",\"inverse\":1,\"enable\":true,\"title\":\"Parallax Effect - \\u003Cstrong\\u003EPerfected\\u003C/strong\\u003E\"},\"gallery\":{\"id\":\"gallery\",\"_id\":\"gallery\",\"inverse\":false,\"enable\":true,\"title\":\"Glimpses of workplace\"},\"projects\":{\"id\":\"projects\",\"_id\":\"projects\",\"inverse\":false,\"enable\":false,\"title\":\"Highlight Projects\"},\"counter\":{\"id\":\"counter\",\"_id\":\"counter\",\"inverse\":false,\"enable\":false,\"title\":\"How We Work\"},\"testimonials\":{\"id\":\"testimonials\",\"_id\":\"testimonials\",\"inverse\":false,\"enable\":false,\"title\":\"Testimonials\"},\"pricing\":{\"id\":\"pricing\",\"_id\":\"pricing\",\"inverse\":false,\"enable\":false,\"title\":\"Pricing Table\"},\"cta\":{\"id\":\"cta\",\"_id\":\"cta\",\"inverse\":false,\"enable\":false,\"title\":\"\"},\"team\":{\"id\":\"team\",\"_id\":\"team\",\"inverse\":false,\"enable\":true,\"title\":\"Industry Expertise\"},\"news\":{\"id\":\"news\",\"_id\":\"news\",\"inverse\":false,\"enable\":true,\"title\":\"Latest News\"},\"contact\":{\"id\":\"contact\",\"_id\":\"contact\",\"inverse\":false,\"enable\":true,\"title\":\"Let's Connect\"},\"map\":{\"id\":\"map\",\"_id\":\"map\",\"inverse\":false,\"enable\":false,\"title\":\"Map\"}}};\n//# sourceURL=onepress-theme-js-extra\n</script>\n<script id=\"onepress-theme-js\" src=\"https://thinkvibes.com/wp-content/themes/onepress/assets/frontend/theme.minified.js?ver=b7efae94b44455f36531\"></script><div class=\"c-bully c-bully--inversed\"><div class=\"c-bully__bullet c-bully__bullet--active c-bully__bullet--squash\" style=\"top: 0px;\"></div><div id=\"bully__hero\" class=\"c-bully__bullet c-bully__bullet--pop c-bully__current\"><div class=\"c-bully__title\">Main</div></div><div id=\"bully__features\" class=\"c-bully__bullet c-bully__bullet--pop\"><div class=\"c-bully__title\">WHY CHOOSE US</div></div><div id=\"bully__about\" class=\"c-bully__bullet c-bully__bullet--pop\"><div class=\"c-bully__title\">Who We Are</div></div><div id=\"bully__services\" class=\"c-bully__bullet c-bully__bullet--pop\"><div class=\"c-bully__title\">What We Do</div></div><div id=\"bully__gallery\" class=\"c-bully__bullet c-bully__bullet--pop\"><div class=\"c-bully__title\">Glimpses of workplace</div></div><div id=\"bully__team\" class=\"c-bully__bullet c-bully__bullet--pop\"><div class=\"c-bully__title\">Industry Expertise</div></div><div id=\"bully__contact\" class=\"c-bully__bullet c-bully__bullet--pop\"><div class=\"c-bully__title\">Let's Connect</div></div></div>\n<script id=\"onepress-plus-slider-js\" src=\"https://thinkvibes.com/wp-content/plugins/onepress-plus/assets/js/slider.js?ver=7.0.4\"></script>\n<script id=\"onepress-plus-js-extra\">\nvar OnePress_Plus = {\"ajax_url\":\"https://thinkvibes.com/wp-admin/admin-ajax.php\",\"browser_warning\":\" Your browser does not support the video tag. I suggest you upgrade your browser.\"};\n//# sourceURL=onepress-plus-js-extra\n</script>\n<script id=\"onepress-plus-js\" src=\"https://thinkvibes.com/wp-content/plugins/onepress-plus/assets/js/onepress-plus.js?ver=2.3.8\"></script>\n<script id=\"wpforms-validation-js\" src=\"https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/lib/jquery.validate.min.js?ver=1.21.0\"></script>\n<script id=\"wpforms-mailcheck-js\" src=\"https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/lib/mailcheck.min.js?ver=1.1.2\"></script>\n<script id=\"wpforms-punycode-js\" src=\"https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/lib/punycode.min.js?ver=1.0.0\"></script>\n<script id=\"wpforms-generic-utils-js\" src=\"https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/js/share/utils.min.js?ver=2.0.0.4\"></script>\n<script id=\"wpforms-js\" src=\"https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/js/frontend/wpforms.min.js?ver=2.0.0.4\"></script>\n<script id=\"wpforms-analytics-js\" src=\"https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/js/frontend/analytics.min.js?ver=2.0.0.4\"></script>\n<script id=\"wpforms-address-field-js\" src=\"https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/js/frontend/fields/address.min.js?ver=2.0.0.4\"></script>\n<script id=\"wp-emoji-settings\" type=\"application/json\">\n{\"baseUrl\":\"https://s.w.org/images/core/emoji/17.0.2/72x72/\",\"ext\":\".png\",\"svgUrl\":\"https://s.w.org/images/core/emoji/17.0.2/svg/\",\"svgExt\":\".svg\",\"source\":{\"concatemoji\":\"https://thinkvibes.com/wp-includes/js/wp-emoji-release.min.js?ver=7.0.4\"}}\n</script>\n<script type=\"module\">\n/*! This file is auto-generated */\nvar e=\"script#wp-emoji-settings\",t=document.querySelector(e);if(!(t instanceof HTMLScriptElement))throw new Error(\"Element missing: \"+e);const r=JSON.parse(t.text),s=(window._wpemojiSettings=r,\"wpEmojiSettingsSupports\"),o=[\"flag\",\"emoji\"];function i(e){try{var t={supportTests:e,timestamp:(new Date).valueOf()};sessionStorage.setItem(s,JSON.stringify(t))}catch(e){}}function c(e,t,n){e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(t,0,0);t=new Uint32Array(e.getImageData(0,0,e.canvas.width,e.canvas.height).data);e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(n,0,0);const r=new Uint32Array(e.getImageData(0,0,e.canvas.width,e.canvas.height).data);return t.every((e,t)=>e===r[t])}function p(e,t){e.clearRect(0,0,e.canvas.width,e.canvas.height),e.fillText(t,0,0);var n=e.getImageData(16,16,1,1);for(let e=0;e<n.data.length;e++)if(0!==n.data[e])return!1;return!0}function u(e,t,n,r){switch(t){case\"flag\":return n(e,\"\\ud83c\\udff3\\ufe0f\\u200d\\u26a7\\ufe0f\",\"\\ud83c\\udff3\\ufe0f\\u200b\\u26a7\\ufe0f\")?!1:!n(e,\"\\ud83c\\udde8\\ud83c\\uddf6\",\"\\ud83c\\udde8\\u200b\\ud83c\\uddf6\")&&!n(e,\"\\ud83c\\udff4\\udb40\\udc67\\udb40\\udc62\\udb40\\udc65\\udb40\\udc6e\\udb40\\udc67\\udb40\\udc7f\",\"\\ud83c\\udff4\\u200b\\udb40\\udc67\\u200b\\udb40\\udc62\\u200b\\udb40\\udc65\\u200b\\udb40\\udc6e\\u200b\\udb40\\udc67\\u200b\\udb40\\udc7f\");case\"emoji\":return!r(e,\"\\ud83e\\u1fac8\")}return!1}function f(e,t,n,r){let a;const s=(a=\"undefined\"!=typeof WorkerGlobalScope&&self instanceof WorkerGlobalScope?new OffscreenCanvas(300,150):document.createElement(\"canvas\")).getContext(\"2d\",{willReadFrequently:!0}),o=(s.textBaseline=\"top\",s.font=\"600 32px Arial\",{});return e.forEach(e=>{o[e]=t(s,e,n,r)}),o}function a(e){var t=document.createElement(\"script\");t.src=e,t.defer=!0,document.head.appendChild(t)}r.supports={everything:!0,everythingExceptFlag:!0},new Promise(t=>{let n=function(){try{var e=JSON.parse(sessionStorage.getItem(s));if(\"object\"==typeof e&&\"number\"==typeof e.timestamp&&(new Date).valueOf()<e.timestamp+604800&&\"object\"==typeof e.supportTests)return e.supportTests}catch(e){}return null}();if(!n){if(\"undefined\"!=typeof Worker&&\"undefined\"!=typeof OffscreenCanvas&&\"undefined\"!=typeof URL&&URL.createObjectURL&&\"undefined\"!=typeof Blob)try{var e=\"postMessage(\"+f.toString()+\"(\"+[JSON.stringify(o),u.toString(),c.toString(),p.toString()].join(\",\")+\"));\",r=new Blob([e],{type:\"text/javascript\"});const a=new Worker(URL.createObjectURL(r),{name:\"wpTestEmojiSupports\"});return void(a.onmessage=e=>{i(n=e.data),a.terminate(),t(n)})}catch(e){}i(n=f(o,u,c,p))}t(n)}).then(e=>{for(const n in e)r.supports[n]=e[n],r.supports.everything=r.supports.everything&&r.supports[n],\"flag\"!==n&&(r.supports.everythingExceptFlag=r.supports.everythingExceptFlag&&r.supports[n]);var t;r.supports.everythingExceptFlag=r.supports.everythingExceptFlag&&!r.supports.flag,r.supports.everything||((t=r.source||{}).concatemoji?a(t.concatemoji):t.wpemoji&&t.twemoji&&(a(t.twemoji),a(t.wpemoji)))});\n//# sourceURL=https://thinkvibes.com/wp-includes/js/wp-emoji-loader.min.js\n</script>\n<script type=\"text/javascript\">\n/* <![CDATA[ */\nvar wpforms_settings = {\"val_required\":\"This field is required.\",\"val_email\":\"Please enter a valid email address.\",\"val_email_suggestion\":\"Did you mean {suggestion}?\",\"val_email_suggestion_title\":\"Click to accept this suggestion.\",\"val_email_restricted\":\"This email address is not allowed.\",\"val_number\":\"Please enter a valid number.\",\"val_number_positive\":\"Please enter a valid positive number.\",\"val_minimum_price\":\"Amount entered is less than the required minimum.\",\"val_confirm\":\"Field values do not match.\",\"val_checklimit\":\"You have exceeded the number of allowed selections: {#}.\",\"val_limit_characters\":\"{count} of {limit} max characters.\",\"val_limit_words\":\"{count} of {limit} max words.\",\"val_min\":\"Please enter a value greater than or equal to {0}.\",\"val_max\":\"Please enter a value less than or equal to {0}.\",\"val_recaptcha_fail_msg\":\"Google reCAPTCHA verification failed, please try again later.\",\"val_turnstile_fail_msg\":\"Cloudflare Turnstile verification failed, please try again later.\",\"val_inputmask_incomplete\":\"Please fill out the field in required format.\",\"uuid_cookie\":\"\",\"locale\":\"en\",\"country\":\"\",\"country_list_label\":\"Country list\",\"wpforms_plugin_url\":\"https:\\/\\/thinkvibes.com\\/wp-content\\/plugins\\/wpforms-lite\\/\",\"gdpr\":\"\",\"ajaxurl\":\"https:\\/\\/thinkvibes.com\\/wp-admin\\/admin-ajax.php\",\"mailcheck_enabled\":\"1\",\"mailcheck_domains\":[],\"mailcheck_toplevel_domains\":[\"dev\"],\"is_ssl\":\"1\",\"nonce\":\"c84546a905\",\"currency_code\":\"USD\",\"currency_thousands\":\",\",\"currency_decimals\":\"2\",\"currency_decimal\":\".\",\"currency_symbol\":\"$\",\"currency_symbol_pos\":\"left\",\"val_requiredpayment\":\"Payment is required.\",\"val_creditcard\":\"Please enter a valid credit card number.\",\"readOnlyDisallowedFields\":[\"captcha\",\"map\",\"content\",\"divider\",\"hidden\",\"html\",\"entry-preview\",\"pagebreak\",\"payment-total\"],\"error_updating_token\":\"Error updating token. Please try again or contact support if the issue persists.\",\"network_error\":\"Network error or server is unreachable. Check your connection or try again later.\",\"token_cache_lifetime\":\"86400\",\"hn_data\":[],\"analytics_composite_field_types\":[\"name\",\"address\",\"date-time\",\"email\",\"password\",\"paypal-commerce\"],\"analytics_base64\":\"1\",\"address_field\":{\"list_countries_without_states\":[\"GB\",\"DE\",\"CH\",\"NL\"]}}\n/* ]]> */\n</script>\n\n\n\n<div id=\"_img_loading_1786896460578\"><img alt=\"\" class=\"image__preload\" src=\"https://thinkvibes.com/wp-content/uploads/2024/08/CloudGlow1.png\" loading=\"lazy\" style=\"display: none;\"><img alt=\"\" class=\"image__preload\" src=\"https://thinkvibes.com/wp-content/uploads/2024/08/MultiCloud.png\" loading=\"lazy\" style=\"display: none;\"></div></body></html>",
+        "metadata": {
+          "title": "Thinkvibes – from vision to reality",
+          "description": "",
+          "keywords": "",
+          "author": "",
+          "ogTitle": "",
+          "ogDescription": "",
+          "ogImage": "",
+          "canonical": "https://thinkvibes.com/",
+          "charset": "",
+          "viewport": "",
+          "favicon": "https://thinkvibes.com/wp-content/uploads/2021/04/cropped-TVTranspBGLogo-150x120-1-32x32.png"
+        },
+        "forms": [
+          {
+            "action": "https://thinkvibes.com/",
+            "method": "POST",
+            "id": "wpforms-form-266",
+            "name": "",
+            "fields": [
+              {
+                "tag": "input",
+                "inputType": "text",
+                "name": "wpforms[fields][4]",
+                "placeholder": "",
+                "label": "Name",
+                "required": false,
+                "value": "",
+                "options": [],
+                "id": "wpforms-266-field_4",
+                "ariaLabel": ""
+              },
+              {
+                "tag": "input",
+                "inputType": "email",
+                "name": "wpforms[fields][1]",
+                "placeholder": "",
+                "label": "Email *",
+                "required": true,
+                "value": "",
+                "options": [],
+                "id": "wpforms-266-field_1",
+                "ariaLabel": ""
+              },
+              {
+                "tag": "textarea",
+                "inputType": "",
+                "name": "wpforms[fields][2]",
+                "placeholder": "",
+                "label": "Comment or Message",
+                "required": false,
+                "value": "",
+                "options": [],
+                "id": "wpforms-266-field_2",
+                "ariaLabel": ""
+              },
+              {
+                "tag": "input",
+                "inputType": "hidden",
+                "name": "wpforms[id]",
+                "placeholder": "",
+                "label": "NameEmail *Comment or Message",
+                "required": false,
+                "value": "266",
+                "options": [],
+                "id": "",
+                "ariaLabel": ""
+              },
+              {
+                "tag": "input",
+                "inputType": "hidden",
+                "name": "page_title",
+                "placeholder": "",
+                "label": "NameEmail *Comment or Message",
+                "required": false,
+                "value": "Home",
+                "options": [],
+                "id": "",
+                "ariaLabel": ""
+              },
+              {
+                "tag": "input",
+                "inputType": "hidden",
+                "name": "page_url",
+                "placeholder": "",
+                "label": "NameEmail *Comment or Message",
+                "required": false,
+                "value": "https://thinkvibes.com/",
+                "options": [],
+                "id": "",
+                "ariaLabel": ""
+              },
+              {
+                "tag": "input",
+                "inputType": "hidden",
+                "name": "url_referer",
+                "placeholder": "",
+                "label": "NameEmail *Comment or Message",
+                "required": false,
+                "value": "",
+                "options": [],
+                "id": "",
+                "ariaLabel": ""
+              },
+              {
+                "tag": "input",
+                "inputType": "hidden",
+                "name": "page_id",
+                "placeholder": "",
+                "label": "NameEmail *Comment or Message",
+                "required": false,
+                "value": "4",
+                "options": [],
+                "id": "",
+                "ariaLabel": ""
+              },
+              {
+                "tag": "input",
+                "inputType": "hidden",
+                "name": "wpforms[post_id]",
+                "placeholder": "",
+                "label": "NameEmail *Comment or Message",
+                "required": false,
+                "value": "4",
+                "options": [],
+                "id": "",
+                "ariaLabel": ""
+              }
+            ],
+            "ariaLabel": ""
+          },
+          {
+            "action": "https://famethemes.us8.list-manage.com/subscribe/post?u=521c400d049a59a4b9c0550c2&id=83187e0006",
+            "method": "POST",
+            "id": "mc-embedded-subscribe-form",
+            "name": "mc-embedded-subscribe-form",
+            "fields": [
+              {
+                "tag": "input",
+                "inputType": "text",
+                "name": "EMAIL",
+                "placeholder": "Enter your e-mail address",
+                "label": "",
+                "required": false,
+                "value": "",
+                "options": [],
+                "id": "mce-EMAIL",
+                "ariaLabel": ""
+              },
+              {
+                "tag": "input",
+                "inputType": "submit",
+                "name": "subscribe",
+                "placeholder": "",
+                "label": "Join our Newsletter",
+                "required": false,
+                "value": "Subscribe",
+                "options": [],
+                "id": "",
+                "ariaLabel": ""
+              }
+            ],
+            "ariaLabel": ""
+          }
+        ],
+        "navigation": [
+          {
+            "text": "Who We Are",
+            "href": "https://thinkvibes.com/#about",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Why Choose Us",
+            "href": "https://thinkvibes.com/#features",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Services",
+            "href": "https://thinkvibes.com/#services",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Gallery",
+            "href": "https://thinkvibes.com/#gallery",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Process",
+            "href": "https://thinkvibes.com/#counter",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Industry Expertise",
+            "href": "https://thinkvibes.com/#team",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Partners",
+            "href": "https://thinkvibes.com/home-3/partners/",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Blog",
+            "href": "https://thinkvibes.com/blog/",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Contact Us",
+            "href": "https://thinkvibes.com/#contact",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Who We Are",
+            "href": "https://thinkvibes.com/#about",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Why Choose Us",
+            "href": "https://thinkvibes.com/#features",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Services",
+            "href": "https://thinkvibes.com/#services",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Gallery",
+            "href": "https://thinkvibes.com/#gallery",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Process",
+            "href": "https://thinkvibes.com/#counter",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Industry Expertise",
+            "href": "https://thinkvibes.com/#team",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Partners",
+            "href": "https://thinkvibes.com/home-3/partners/",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Blog",
+            "href": "https://thinkvibes.com/blog/",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          },
+          {
+            "text": "Contact Us",
+            "href": "https://thinkvibes.com/#contact",
+            "children": [],
+            "isDropdown": false,
+            "ariaLabel": "",
+            "role": "link"
+          }
+        ],
+        "domLinks": [
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "Who We Are",
+            "href": "https://thinkvibes.com/#about",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "Why Choose Us",
+            "href": "https://thinkvibes.com/#features",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "Services",
+            "href": "https://thinkvibes.com/#services",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "Gallery",
+            "href": "https://thinkvibes.com/#gallery",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "Process",
+            "href": "https://thinkvibes.com/#counter",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "Industry Expertise",
+            "href": "https://thinkvibes.com/#team",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "Partners",
+            "href": "https://thinkvibes.com/home-3/partners/",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "Blog",
+            "href": "https://thinkvibes.com/blog/",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "Contact Us",
+            "href": "https://thinkvibes.com/#contact",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/wp-content/uploads/2023/04/DSC_0903-scaled.jpg",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/wp-content/uploads/2023/04/DSC_0802-scaled.jpg",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_171537-scaled.jpg",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/wp-content/uploads/2023/04/IMG-20230412-WA0067.jpg",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/wp-content/uploads/2023/04/IMG-20230412-WA0075.jpg",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/wp-content/uploads/2023/04/VideoCapture_20230414-200228.jpg",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_165131-scaled.jpg",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_171550-scaled.jpg",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_174233-scaled.jpg",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          },
+          {
+            "text": "",
+            "href": "https://thinkvibes.com/wp-content/uploads/2023/04/20230113_150558.jpg",
+            "title": "",
+            "ariaLabel": "",
+            "isExternal": false,
+            "role": "link"
+          }
+        ],
+        "buttons": [
+          {
+            "text": "Submit",
+            "buttonType": "submit",
+            "ariaLabel": "",
+            "disabled": false,
+            "id": "wpforms-submit-266",
+            "role": "button"
+          },
+          {
+            "text": "Subscribe",
+            "buttonType": "submit",
+            "ariaLabel": "",
+            "disabled": false,
+            "id": "",
+            "role": "button"
+          }
+        ],
+        "headings": [
+          {
+            "level": 2,
+            "text": "",
+            "id": ""
+          },
+          {
+            "level": 2,
+            "text": "YOUR TRUSTED SALESFORCE PARTNER",
+            "id": ""
+          },
+          {
+            "level": 2,
+            "text": "WHY CHOOSE US",
+            "id": ""
+          },
+          {
+            "level": 2,
+            "text": "Who We Are",
+            "id": ""
+          },
+          {
+            "level": 2,
+            "text": "What We Do",
+            "id": ""
+          },
+          {
+            "level": 2,
+            "text": "Glimpses of workplace",
+            "id": ""
+          },
+          {
+            "level": 2,
+            "text": "How We Work",
+            "id": ""
+          },
+          {
+            "level": 2,
+            "text": "Industry Expertise",
+            "id": ""
+          },
+          {
+            "level": 2,
+            "text": "Let's Connect",
+            "id": ""
+          },
+          {
+            "level": 3,
+            "text": "Our Mission",
+            "id": ""
+          },
+          {
+            "level": 3,
+            "text": "Our Vision",
+            "id": ""
+          },
+          {
+            "level": 3,
+            "text": "Our Values",
+            "id": ""
+          },
+          {
+            "level": 3,
+            "text": "",
+            "id": ""
+          },
+          {
+            "level": 4,
+            "text": "Client Language",
+            "id": ""
+          },
+          {
+            "level": 4,
+            "text": "Attitude",
+            "id": ""
+          },
+          {
+            "level": 4,
+            "text": "Fair & Honest",
+            "id": ""
+          },
+          {
+            "level": 4,
+            "text": "Robust Dev Processes",
+            "id": ""
+          },
+          {
+            "level": 4,
+            "text": "Salesforce Consulting",
+            "id": ""
+          },
+          {
+            "level": 4,
+            "text": "Salesforce Customization",
+            "id": ""
+          },
+          {
+            "level": 4,
+            "text": "Salesforce Application Development",
+            "id": ""
+          },
+          {
+            "level": 4,
+            "text": "Salesforce Integration",
+            "id": ""
+          },
+          {
+            "level": 4,
+            "text": "WE ARE ACCEPTING NEW PROJECTS.",
+            "id": ""
+          },
+          {
+            "level": 5,
+            "text": "Healthcare",
+            "id": ""
+          },
+          {
+            "level": 5,
+            "text": "Finance",
+            "id": ""
+          },
+          {
+            "level": 5,
+            "text": "Education",
+            "id": ""
+          },
+          {
+            "level": 5,
+            "text": "Automotive,",
+            "id": ""
+          },
+          {
+            "level": 5,
+            "text": "Join our Newsletter",
+            "id": ""
+          },
+          {
+            "level": 5,
+            "text": "Keep Updated",
+            "id": ""
+          }
+        ],
+        "tables": [],
+        "images": [
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2024/08/Thinkvibes-Transparent-Logo-160x85-1.png",
+            "alt": "Thinkvibes",
+            "title": "",
+            "width": 160,
+            "height": 85
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/DSC_0903-scaled.jpg",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/DSC_0802-scaled.jpg",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_171537-480x300.jpg",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/IMG-20230412-WA0067-480x300.jpg",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/IMG-20230412-WA0075-480x300.jpg",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/VideoCapture_20230414-200228-480x300.jpg",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_165131-480x300.jpg",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_171550-480x300.jpg",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_174233-480x300.jpg",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/20230113_150558-480x300.jpg",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/cardiogram.png",
+            "alt": "",
+            "title": "",
+            "width": 64,
+            "height": 64
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/help-call.png",
+            "alt": "",
+            "title": "",
+            "width": 64,
+            "height": 64
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/presentation.png",
+            "alt": "",
+            "title": "",
+            "width": 64,
+            "height": 64
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2023/04/remote-control.png",
+            "alt": "",
+            "title": "",
+            "width": 64,
+            "height": 64
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/plugins/wpforms-lite/assets/images/submit-spin.svg",
+            "alt": "Loading",
+            "title": "",
+            "width": 26,
+            "height": 26
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2024/08/CloudGlow1.png",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          },
+          {
+            "src": "https://thinkvibes.com/wp-content/uploads/2024/08/MultiCloud.png",
+            "alt": "",
+            "title": "",
+            "width": 0,
+            "height": 0
+          }
+        ],
+        "internalUrls": [
+          "https://thinkvibes.com/",
+          "https://thinkvibes.com/#about",
+          "https://thinkvibes.com/#features",
+          "https://thinkvibes.com/#services",
+          "https://thinkvibes.com/#gallery",
+          "https://thinkvibes.com/#counter",
+          "https://thinkvibes.com/#team",
+          "https://thinkvibes.com/home-3/partners/",
+          "https://thinkvibes.com/blog/",
+          "https://thinkvibes.com/#contact",
+          "https://thinkvibes.com/wp-content/uploads/2023/04/DSC_0903-scaled.jpg",
+          "https://thinkvibes.com/wp-content/uploads/2023/04/DSC_0802-scaled.jpg",
+          "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_171537-scaled.jpg",
+          "https://thinkvibes.com/wp-content/uploads/2023/04/IMG-20230412-WA0067.jpg",
+          "https://thinkvibes.com/wp-content/uploads/2023/04/IMG-20230412-WA0075.jpg",
+          "https://thinkvibes.com/wp-content/uploads/2023/04/VideoCapture_20230414-200228.jpg",
+          "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_165131-scaled.jpg",
+          "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_171550-scaled.jpg",
+          "https://thinkvibes.com/wp-content/uploads/2023/04/20221021_174233-scaled.jpg",
+          "https://thinkvibes.com/wp-content/uploads/2023/04/20230113_150558.jpg"
+        ],
+        "externalUrls": [
+          "https://maps.app.goo.gl/xrx7dJsEDuJtsKUq6",
+          "https://www.instagram.com/itsthinkvibes/",
+          "https://www.facebook.com/itsthinkvibes",
+          "https://www.linkedin.com/company/thinkvibes/",
+          "https://twitter.com/itsthinkvibes",
+          "https://www.famethemes.com/themes/onepress"
+        ],
+        "breadcrumbs": [],
+        "hasSearch": false,
+        "hasPagination": false,
+        "hasModal": false,
+        "hasTabs": false,
+        "hasAccordion": false,
+        "domDepth": 13,
+        "accessibility": {
+          "lang": "en-US",
+          "title": "Thinkvibes – from vision to reality",
+          "landmarkRoles": [
+            "banner",
+            "contentinfo",
+            "main",
+            "navigation"
+          ],
+          "ariaLandmarks": [
+            {
+              "role": "banner",
+              "label": ""
+            },
+            {
+              "role": "navigation",
+              "label": ""
+            },
+            {
+              "role": "main",
+              "label": ""
+            },
+            {
+              "role": "contentinfo",
+              "label": ""
+            }
+          ],
+          "skipLinks": [
+            "Skip to content"
+          ],
+          "formsWithLabels": 0,
+          "imagesWithAlt": 2,
+          "imagesTotal": 18,
+          "headingOrder": [
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            3,
+            3,
+            3,
+            3,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            5,
+            5,
+            5,
+            5,
+            5,
+            5
+          ]
+        },
+        "needsVision": true,
+        "visionReason": "CAPTCHA detected",
+        "crawlTimeMs": 108,
+        "discoveryMethod": "dom"
+      }
+    ]
+  }
+}

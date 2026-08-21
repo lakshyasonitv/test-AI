@@ -430,7 +430,7 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const raw = await gemini(user, { systemInstruction: system, json: true });
+    const { content: raw } = await gemini(user, { systemInstruction: system, json: true, stage: "testcases" });
     try {
       const parsed: any = parseJson(raw);
       const arr = Array.isArray(parsed) ? parsed : parsed.testCases ?? [];

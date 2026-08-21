@@ -350,9 +350,10 @@ Return ONLY JSON:
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const raw = await gemini(user, {
+    const { content: raw } = await gemini(user, {
       systemInstruction: system, json: true, model: process.env.GEMINI_MODEL_LITE,
       imageBase64: screenshotBase64, imageMime: "image/png",
+      stage: "discovery",
     });
     try {
       const result = AppModel.safeParse(parseJson(raw));

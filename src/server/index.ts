@@ -177,11 +177,8 @@ app.get("/api/health", (_req, res) => {
     env: {
       GEMINI_API_KEYS: check("GEMINI_API_KEYS"),
       GEMINI_API_KEY:  check("GEMINI_API_KEY"),
-      GROQ_API_KEYS:   check("GROQ_API_KEYS"),
-      GROQ_API_KEY:    check("GROQ_API_KEY"),
       GEMINI_MODEL:    check("GEMINI_MODEL"),
       GEMINI_MODEL_LITE: check("GEMINI_MODEL_LITE"),
-      GROQ_MODEL:      check("GROQ_MODEL"),
       NODE_ENV:        check("NODE_ENV"),
       PORT:            check("PORT"),
     },
@@ -197,7 +194,7 @@ const port = Number(process.env.PORT ?? 3000);
 // Startup diagnostic — log which key env vars are detected so Render's deploy
 // log immediately shows whether secrets were injected.
 console.log("[startup] Environment variable check:");
-for (const v of ["GEMINI_API_KEYS", "GEMINI_API_KEY", "GROQ_API_KEYS", "GROQ_API_KEY", "GEMINI_MODEL", "GROQ_MODEL", "NODE_ENV", "PORT"]) {
+for (const v of ["GEMINI_API_KEYS", "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_MODEL_LITE", "NODE_ENV", "PORT"]) {
   const val = process.env[v];
   console.log(`  ${v}: ${val ? `SET (${val.length} chars)` : "NOT SET"}`);
 }
