@@ -4,7 +4,7 @@ import { parseJson } from "../llm/json.js";
 import type { Plan } from "./planner.js";
 import type { Coverage } from "./planner.js";
 import type { AppModel } from "../schema/appModel.js";
-import { toLiteModel } from "../schema/appModel.js";
+import { toLiteModel, pageKey } from "../schema/appModel.js";
 import {
   strategyFor, unmatchedConcepts, filterByScope, ALL_SCOPES, CATEGORY_IDS, normalizeCategory,
   type ScopeFilter,
@@ -65,6 +65,20 @@ function titleOverlap(a: string, b: string): number {
 const DUPLICATE_AT = 0.7;
 
 /**
+ * How many cases may target the login page itself.
+ *
+ * Discovery signs in now, so the login page is only in the AppModel to keep login steps
+ * groundable and login testing possible — the tests are supposed to be about the app behind it.
+ * Without a cap the suite fills up with login cases again: `selectCases` diversifies by
+ * CATEGORY, and four login cases in four different categories (valid / invalid-input /
+ * empty-boundary / security-injection) all survive that pass untouched.
+ *
+ * Matched on `targetUrl` against the known gate URL — structural, not a regex over case titles,
+ * which is CLAUDE.md's recorded TD-01 failure mode.
+ */
+const MAX_LOGIN_CASES = Number(process.env.MAX_LOGIN_CASES ?? 1);
+
+/**
  * Reduce every case the run produced to the handful that will actually be turned into
  * scripts.
  *
@@ -75,8 +89,19 @@ const DUPLICATE_AT = 0.7;
  * it re-ran "produce the literal translation of the plan" against the same plan. Selection has
  * to be one authority over the merged list.
  */
-export function selectCases(all: TestCase[], budget: number = maxCases()): TestCase[] {
+export function selectCases(
+  all: TestCase[], budget: number = maxCases(),
+  /** The login page's URL, from `AppModel.auth.loginUrl`. Omitted (CLI, no auth) disables the cap. */
+  loginUrl?: string,
+): TestCase[] {
   const byPriority = (a: TestCase, b: TestCase) => (rank[a.priority] ?? 2) - (rank[b.priority] ?? 2);
+
+  // The user's own request always wins — `fromPrompt` is the anchor selection never drops, so
+  // "test the login page" still gets its login cases. `pageKey` is the same comparison ir.ts
+  // uses to decide whether a case needs a login prefix; one definition, so the two can't
+  // disagree about which cases are login cases.
+  const isLoginCase = (c: TestCase) =>
+    !c.fromPrompt && !!loginUrl && !!c.targetUrl && pageKey(c.targetUrl) === pageKey(loginUrl);
 
   // 1. Dedup. The fromPrompt case is the anchor — it's what the user literally asked for —
   //    then the highest-priority survivor of each remaining cluster.
@@ -88,8 +113,16 @@ export function selectCases(all: TestCase[], budget: number = maxCases()): TestC
   // tests share a category all the time — that's what the diversity pass below is for, not
   // dedup.
   const kept: TestCase[] = [];
+  let loginCases = 0;
   for (const c of ordered) {
-    if (!kept.some(k => titleOverlap(k.title, c.title) >= DUPLICATE_AT)) kept.push(c);
+    if (kept.some(k => titleOverlap(k.title, c.title) >= DUPLICATE_AT)) continue;
+    // Cap login-page cases here rather than in the diversity pass below: dropping them before
+    // dedup/diversity means the freed slots go to real app coverage instead of being lost.
+    if (isLoginCase(c)) {
+      if (loginCases >= MAX_LOGIN_CASES) continue;
+      loginCases++;
+    }
+    kept.push(c);
   }
 
   // 2. Diversity before depth. Filling the budget by raw priority produces five flavours of
@@ -129,10 +162,12 @@ export function selectCases(all: TestCase[], budget: number = maxCases()): TestC
  * budget-capped, category-diverse subset of the raw generated batch.
  */
 export function finalizeCaseSelection(
-  allCases: TestCase[], scope: ScopeFilter[], coverage: Coverage, gateUsed: boolean
+  allCases: TestCase[], scope: ScopeFilter[], coverage: Coverage, gateUsed: boolean,
+  /** `AppModel.auth.loginUrl` — lets selectCases cap login-page cases. Omitted disables the cap. */
+  loginUrl?: string,
 ): TestCase[] {
   const scoped = filterByScope(allCases, scope);
-  return gateUsed ? scoped : selectCases(scoped, budgetFor(coverage));
+  return gateUsed ? scoped : selectCases(scoped, budgetFor(coverage), loginUrl);
 }
 
 /**

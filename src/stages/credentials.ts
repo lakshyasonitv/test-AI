@@ -193,12 +193,45 @@ export function promptCarriesCredentials(prompt: string): boolean {
   return new RegExp(KEY + String.raw`\s+(?:is\s+)?["'\x60]?[^\s"'\x60]*[\d!@#$%^&*_.+-]`, "i").test(prompt);
 }
 
+/**
+ * What can sit between a key and its value. A dash is included because people write
+ * "email - 'a@b.com'" constantly, and `[:=]?` silently captured the dash ITSELF as the value.
+ * A dash must be surrounded by whitespace so a hyphenated word ("email-address") isn't read as
+ * a key/value pair.
+ */
+const KEY_VALUE_SEP = String.raw`\s*[:=]\s*|\s+is\s+|\s+[-–—]\s+`;
+
+/**
+ * The value that follows `keyPattern`, chosen from EVERY occurrence rather than the first.
+ *
+ * Taking the first match is the bug this replaced. `.match()` is leftmost-first, so a trigger
+ * word appearing in ordinary prose wins over the real labelled value later in the sentence:
+ * "check the add user flow, email: 'a@b.com'" extracted username "flow", because "user" in
+ * "add user flow" matched before "email:" was ever reached. That is the same failure already
+ * recorded for the word "login" (see extractCredentialsFromPrompt below) — dropping the
+ * trigger word fixed it there, but "user" cannot be dropped: it is how people write usernames.
+ *
+ * So rank instead of dropping. A quoted value is the strongest signal that this is a real
+ * key/value pair, an explicit separator the next strongest, a bare space the weakest — and
+ * prose almost never carries either marker. First occurrence wins ties, so behaviour is
+ * unchanged whenever only one candidate exists.
+ */
 function extractValueAfter(prompt: string, keyPattern: string): string | undefined {
-  const re = new RegExp(`${keyPattern}\\s*(?:is\\s+)?[:=]?\\s*(?:["'\`]([^"'\`]+)["'\`]|(\\S+))`, "i");
-  const match = prompt.match(re);
-  if (!match) return undefined;
-  const val = match[1] ?? match[2];
-  return val?.trim()?.replace(/[,.;:]+$/, "");
+  const re = new RegExp(
+    `${keyPattern}(?:(${KEY_VALUE_SEP})|\\s+)(?:["'\`]([^"'\`]+)["'\`]|(\\S+))`,
+    "gi",
+  );
+
+  let best: string | undefined;
+  let bestScore = -1;
+  for (const m of prompt.matchAll(re)) {
+    const [, sep, quoted, bare] = m;
+    const val = (quoted ?? bare)?.trim()?.replace(/[,.;:]+$/, "");
+    if (!val) continue;
+    const score = (quoted !== undefined ? 2 : 0) + (sep !== undefined ? 1 : 0);
+    if (score > bestScore) { best = val; bestScore = score; }
+  }
+  return best;
 }
 
 /**
@@ -242,6 +275,14 @@ const ENV_VAR: Record<CredentialKind, "TEST_USERNAME" | "TEST_PASSWORD"> = {
 };
 export type CredentialEnvVar = (typeof ENV_VAR)[CredentialKind];
 
+/** The sentinel for a credential kind, so a step's value can be an env reference rather than
+ *  the literal. Exported for `ir.ts`'s login prefix, which sets these directly instead of going
+ *  through `applyCredentials` — that path re-derives which box is the password from the model,
+ *  and the model is empty of forms on exactly the SPA logins the prefix exists to handle. */
+export function envValueRef(kind: CredentialKind): string {
+  return ENV_VALUE_PREFIX + ENV_VAR[kind] + ENV_VALUE_SUFFIX;
+}
+
 /** Returns the env var name if `value` is an env-reference sentinel, else null. Only the two
  *  known names are accepted, so a crafted prompt can't smuggle another variable through. */
 export function isEnvValueRef(value: string | undefined): CredentialEnvVar | null {
@@ -277,9 +318,32 @@ export const REDACTED = "[redacted]";
  * Values shorter than 4 characters are left alone — replacing a 1-2 character string would
  * shred unrelated text for no benefit.
  */
+/**
+ * Tokens that mean something to a DOM, so replacing them destroys structure instead of
+ * protecting anything.
+ *
+ * Real case (run 2026-08-22T04-18-57-530Z-040dd5ae): the user's password was the literal string
+ * `password`. Blind replacement turned `inputType: "password"` into `"[redacted]"`, `id:
+ * "password"` into `"[redacted]"`, and `css: "#password"` into `"#[redacted]"` — 8 structural
+ * replacements. Downstream, credentialFieldMap could no longer find a password field and the
+ * generator emitted `#[redacted]`, a selector matching nothing.
+ *
+ * Skipping these is not a weakening: a value that appears verbatim across ordinary markup was
+ * never concealed by redacting it, so the trade is "no confidentiality gained" against "model
+ * destroyed". Deliberately a value-level guard rather than a key-aware object walk —
+ * redactCredentials is also called on RAW STRINGS (executor.ts scrubs final-page.txt and the
+ * error-context files through it), and a key-aware walk finds no keys in a string, which would
+ * silently stop scrubbing those files.
+ */
+const DOM_KEYWORDS = new Set([
+  "password", "email", "text", "user", "username", "login", "signin", "submit",
+  "button", "search", "form", "hidden", "admin", "input", "name", "value", "checkbox",
+]);
+
 export function redactCredentials<T>(value: T, creds?: Credentials): T {
   if (!creds?.secret) return value;
-  const secrets = [creds.password, creds.username].filter((s) => s && s.length >= 4);
+  const secrets = [creds.password, creds.username]
+    .filter((s) => s && s.length >= 4 && !DOM_KEYWORDS.has(s.toLowerCase()));
   if (!secrets.length) return value;
   let json = JSON.stringify(value);
   if (json === undefined) return value;

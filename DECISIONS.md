@@ -494,3 +494,147 @@ second provider to fail over to, where before a Groq outage/limit at least left 
 pipeline running on a different vendor. Nothing in this decision required migrating faster than
 one stage at a time or kept Groq around as a silent fallback path; `src/llm/groq.ts` is gone,
 not dormant.
+
+## D-22. Login detection and replay happen against the live DOM, never the extracted PageModel
+
+**Context.** The first version of auth-aware discovery found the password field via
+`credentialFieldMap`, which is built only from `PageModel.forms[]` (`domExtract.ts`'s
+`extractForms` requires a literal `<form>` tag). It worked on the first real site tried
+(learnvibes.vercel.app) and failed on the second (assettrack-web.onrender.com): a React login
+with no `<form>` wrapper yields `forms: []`, the map is empty, and the fallback matches the
+element's accessible *name* against `/pass/i` — which on that site was the placeholder
+`"••••••••"`. No password field found, no login attempted, no error surfaced. The same lossiness
+almost repeated on learnvibes itself: its real inputs carry no `id`/`name`/`data-*` at all, only a
+placeholder, so an early selector-building draft that tried attributes first and gave up found
+nothing for the identifier box.
+
+**Decision.** `loginOnPage` (`hybridDiscovery.ts`) locates the password box as the first
+**visible, enabled** `input[type="password"]` in the live page, walks outward from there for the
+identifier and submit control, and builds a CSS selector for each with an escalating ladder (id ->
+data-test/data-testid/data-cy/name/placeholder/aria-label -> type -> a positional `tag >> nth=N`
+last resort that is unique by construction). `input[type="password"]` cannot be faked away by a
+missing `<form>`, a missing label, or a placeholder-as-name — it is the one universal signal every
+ordinary login has, and reading it live is also less code than maintaining the model-derived path
+it replaced.
+
+**Consequences.** Login detection and the AppModel's element extraction are now two independently
+correct readings of the same page, not one derived from the other — a page with a lossy structural
+extraction (rare markup, no accessible names) can still be logged into. The cost: `loginOnPage`'s
+`page.evaluate` callback duplicates some of what `domExtract.ts` already does (visibility
+computation, proximity walking) rather than reusing it, because the callback runs inside the
+browser with no access to project code. It also must be written with **no inner named or
+const-assigned functions** — esbuild (what `tsx` uses, i.e. how the server actually runs) wraps
+named functions in a `__name(...)` call to preserve `.name`, and that helper does not exist inside
+the serialized function `page.evaluate` ships to the browser. This broke silently under `vitest`
+(whose transform doesn't inject the helper) and only surfaced as `ReferenceError: __name is not
+defined` on a real `npm run serve` run — see `CLAUDE.md`'s sharp-edges list.
+
+## D-23. The crawl runs on one shared `Page`, not one `Page` per hop under a shared `BrowserContext`
+
+**Context.** The original fix for "discovery can't get past a login" was a shared
+`BrowserContext` (cookies persist across `context.newPage()` calls). It worked on
+learnvibes — until assettrack-web.onrender.com, whose auth lives entirely in **sessionStorage**
+(`token`, `user` keys, zero cookies), verified directly: a second page opened on the *same*
+context came back with empty `sessionStorage` and the login form. `sessionStorage` is scoped to a
+browsing-context tab, not to the `BrowserContext` object Playwright exposes — a mainstream
+React/Vite pattern this project had no prior exposure to.
+
+**Decision.** `discoverSiteHybrid` opens exactly one `Page` (`sharedPage()`) and navigates it from
+URL to URL for the entire crawl, login included, rather than closing and reopening one per hop.
+Each hop still begins with its own `goto`, so page-local state (a stale toast, an open modal) does
+not leak between snapshots — only the session does, which is the entire point.
+
+**Consequences.** This is strictly simpler than what it replaced (no per-hop
+open/navigate/snapshot/close bookkeeping) and it is the one design that covers every auth
+mechanism this project has seen — cookie, localStorage, and sessionStorage all persist on a page
+that never closes. The tradeoff: nothing in the crawl can parallelize across pages anymore, since
+they all share the one tab. `MAX_DISCOVERY_PAGES`'s default of 5 keeps this cheap in practice;
+revisit if a much larger crawl is ever needed. **Rejected:** capturing Playwright's
+`storageState()` once and reusing it — its documented shape excludes `sessionStorage`, so it would
+silently drop exactly the mechanism this decision exists to support, and it would additionally
+write a live session token into `runs/`, which is served publicly (`TECH_DEBT.md` TD-14).
+
+## D-24. The captured login is replayed by injecting it into the IR, once — not duplicated into the generator or the executor
+
+**Context.** Once discovery signs in, the generated Playwright spec and `liveExtend`'s grounding
+replay both need to reproduce that same login in a **fresh, session-less browser** — the
+executor's real starting condition. Implementing that twice (once as generated Playwright code,
+once as a replay routine) is exactly the shape `TECH_DEBT.md` TD-07 already warns about: the
+generated spec's locator logic has already drifted from `targetResolver.ts` once, from being
+maintained as a second copy of the same behaviour.
+
+**Decision.** `buildLoginPrefix` (`ir.ts`) turns `AppModel.auth.loginSteps` — the exact fill/
+click/press sequence `loginOnPage` performed, each carrying the live-verified CSS selector it
+used — into ordinary IR `Step`s, prepended to a case's own steps **before grounding**. Both
+consumers, the generated spec and the grounding replay, read the IR; write the login once there
+and both inherit it for free. Credential values are the `${env:...}` sentinel
+(`envValueRef`), never the literal, so the existing "secrets never touch disk" path
+(`generator.ts`'s `valueCode`, `executor.ts`'s env injection) needed no change at all.
+
+The prefix ends with a settle assertion — the password field's own selector, asserted `hidden` —
+appended after whatever step submits the form. Without it the very next step could fire while the
+login request was still in flight: caught directly on a real run, a screenshot showed the "Sign
+In" button still spinning while the following `navigate` had already fired, bouncing the whole
+case back to the login page. An `expect(...).toBeHidden({timeout:10000})` auto-waits, so it costs
+nothing when the login is fast and still covers a slow one (a cold serverless start) that a fixed
+`waitForTimeout` could not — the two failure modes of a static sleep (too short to be safe, or a
+tax on every run) don't apply to a condition-based wait.
+
+Whether a given case receives the prefix is decided by comparing its `targetUrl` to
+`AppModel.auth.loginUrl` (same-page comparison, `pageKey`) — not by
+`credentialPolicyFor(testCase)`, which was tried first and was answering a different question
+(see D-26).
+
+**Consequences.** One place defines "how to log into this site" for the whole pipeline. The
+tradeoff is that the login page must stay **in** the AppModel (not be replaced by the
+authenticated pages, which an earlier version did) purely so the prefix's steps have something to
+ground against — this is why `hybridDiscovery.ts` keeps both the pre- and post-login page models
+rather than discarding the login page once it's served its purpose.
+
+## D-25. Redaction is a value-level DOM-keyword guard, not a key-aware object walk
+
+**Context.** `redactCredentials` JSON-stringifies its input and blind-replaces every occurrence of
+a secret credential value. A real run's password was the literal string `"password"`, and blind
+replacement turned `inputType: "password"` into `"[redacted]"`, `id: "password"` into
+`"[redacted]"`, and `css: "#password"` into `"#[redacted]"` — eight structural fields destroyed,
+after which `credentialFieldMap` could no longer find a password field at all and the generator
+emitted a selector matching nothing. A first fix drafted here was a key-aware walk (only replace
+inside content-shaped keys: `name`, `text`, `placeholder`, ...). It was rejected before shipping:
+`redactCredentials` is also called on **raw strings** — `executor.ts` passes
+`readFileSync(finalPageTxt, "utf8")` straight through it to scrub a served artifact — and a
+key-aware object walk finds no keys in a bare string, so it would have silently stopped redacting
+that file. A credential leak into a publicly served path (`TECH_DEBT.md` TD-14) is a worse outcome
+than the corruption bug being fixed.
+
+**Decision.** Refuse to redact a secret value that is itself an ordinary DOM/HTML keyword
+(`password`, `email`, `user`, `username`, `login`, `submit`, `button`, `search`, `form`, `hidden`,
+`admin`, `input`, `name`, `value`, `checkbox`, ...). Such a value was never concealed by redacting
+it — the token is already all over ordinary markup — so skipping it trades zero confidentiality
+for keeping the model intact. Every existing call site, string and object alike, is untouched.
+
+**Consequences.** A password that happens to be a common DOM keyword is not redacted from artifacts
+in the rare case it does appear verbatim in captured text — an accepted, explicit tradeoff, not an
+oversight, and orthogonal to whether the login itself succeeds.
+
+## D-26. Whether a case needs a login prefix is decided from its target page, not from `credentialPolicyFor`
+
+**Context.** `credentialPolicyFor(testCase, ...)` answers "should this case's own field values be
+replaced with real credentials?" — a question about a case's **content** — and returns `"full"`
+only for `valid`/`fromPrompt` cases. The first version of the login-prefix gate reused that same
+check to decide a completely different question: "does this case need a session before it starts
+at all?" — a question about its **precondition**. Every other category (`invalid-input`,
+`state-change`, ...) never received a prefix and ran logged out. Verified directly against a real
+5-case suite: the two categories denied a prefix (an `invalid-input` search and a `state-change`
+sign-out) both failed on the login page; the one case that correctly received no prefix (a
+deliberate wrong-password login test) did so for the wrong reason — its category, not its target.
+
+**Decision.** `needsLoginPrefix(testCase, auth)` — true whenever discovery authenticated and the
+case's `targetUrl` is not the login page itself (`pageKey` comparison, the same one
+`testCases.ts`'s login-case cap already uses, so the two can't disagree about what counts as a
+login case). `credentialPolicyFor` goes back to deciding only what it was built for: field-value
+substitution.
+
+**Consequences.** Every case except ones genuinely about the login page now starts authenticated,
+which is correct for an app that is entirely behind a login. A case with no `targetUrl` at all
+defaults to receiving the prefix — a spurious login costs a few seconds; a missing one fails the
+whole case, so the safer default is to sign in.

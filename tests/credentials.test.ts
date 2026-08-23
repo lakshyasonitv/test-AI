@@ -126,6 +126,42 @@ describe("extractCredentialsFromPrompt", () => {
     expect(extractCredentialsFromPrompt("check the password field is masked")).toBeUndefined();
     expect(extractCredentialsFromPrompt("test the login and signup page")).toBeUndefined();
   });
+
+  // Regression, run 2026-08-21T22-02-15-775Z-5e8a577e (learnvibes): this exact prompt extracted
+  // username "flow" / password "-", so discovery tried to log in with garbage, failed, and fell
+  // back to the anonymous crawl — a one-page login-only AppModel, the symptom the auth-aware
+  // crawl exists to remove. Two independent defects, both live in this one sentence.
+  describe("the shapes that produced a garbage credential in a real run", () => {
+    it("reads a dash-separated value instead of capturing the dash itself", () => {
+      // `[:=]?` did not include "-", so `(\S+)` matched the separator. Both halves came back "-".
+      expect(extractCredentialsFromPrompt("email - 'a@b.com' password - '123456'"))
+        .toMatchObject({ username: "a@b.com", password: "123456" });
+      expect(extractCredentialsFromPrompt("email – 'a@b.com' password – '123456'"))
+        .toMatchObject({ username: "a@b.com", password: "123456" });
+    });
+
+    it("prefers a labelled value over a trigger word occurring earlier in prose", () => {
+      // "user" inside "add user flow" matched before "email:" was reached, and .match() is
+      // leftmost-first — so the username became "flow". "user" can't be dropped from the
+      // trigger set the way "login" was; it's how people actually write usernames.
+      expect(extractCredentialsFromPrompt("check the add user flow, email: 'a@b.com' password: '123456'"))
+        .toMatchObject({ username: "a@b.com", password: "123456" });
+      expect(extractCredentialsFromPrompt("user management page, username: alice, password: hunter2"))
+        .toMatchObject({ username: "alice", password: "hunter2" });
+    });
+
+    it("handles the real prompt, which hit both defects at once", () => {
+      expect(extractCredentialsFromPrompt(
+        "i want you to check the add user flow of this website, " +
+        "email - 'vaibhav.parmar@thinkvibes.com' password - '123456'",
+      )).toMatchObject({ username: "vaibhav.parmar@thinkvibes.com", password: "123456" });
+    });
+
+    it("still finds nothing in the same sentence without credentials", () => {
+      expect(extractCredentialsFromPrompt("check the add user flow of this website")).toBeUndefined();
+      expect(extractCredentialsFromPrompt("i want you to check the cart flow of this website")).toBeUndefined();
+    });
+  });
 });
 
 describe("credentialKindForTarget", () => {
@@ -231,6 +267,41 @@ describe("keeping user credentials off disk", () => {
   it("does not shred unrelated text for a very short credential", () => {
     const captured = { pageText: "an ordinary sentence" };
     expect(redactCredentials(captured, { username: "an", password: "x", secret: true })).toEqual(captured);
+  });
+
+  // Regression, run 2026-08-22T04-18-57-530Z-040dd5ae: the user's password was the literal
+  // string "password". Blind replacement rewrote type="password", id="password" and #password
+  // into "[redacted]" — 8 structural hits — so downstream credentialFieldMap could no longer
+  // find a password field and the generator emitted "#[redacted]", a selector matching nothing.
+  it("refuses to redact a secret that is an ordinary DOM keyword", () => {
+    const model = {
+      pageText: "Welcome Back",
+      forms: [{ fields: [{ inputType: "password", id: "password", label: "Password" }] }],
+      elements: [{ role: "textbox", name: "••••••••", css: "#password" }],
+    };
+    const out = redactCredentials(model, { username: "hr@company.com", password: "password", secret: true });
+    expect(out.forms[0].fields[0].inputType).toBe("password");
+    expect(out.forms[0].fields[0].id).toBe("password");
+    expect(out.elements[0].css).toBe("#password");
+    expect(JSON.stringify(out)).not.toContain(REDACTED);
+  });
+
+  it("still redacts the identifier in the same model", () => {
+    // The keyword guard is per-value, not all-or-nothing: a real email alongside a keyword
+    // password must still be scrubbed.
+    const model = { pageText: "Signed in as hr@company.com", elements: [{ css: "#password" }] };
+    const out = redactCredentials(model, { username: "hr@company.com", password: "password", secret: true });
+    expect(out.pageText).not.toContain("hr@company.com");
+    expect(out.elements[0].css).toBe("#password");
+  });
+
+  it("keeps working on raw strings, which executor.ts scrubs through it", () => {
+    // executor.ts passes readFileSync(final-page.txt) straight in. A key-aware object walk was
+    // considered here and rejected for exactly this reason: it finds no keys in a string and
+    // would have silently stopped scrubbing publicly served artifacts.
+    const out = redactCredentials("Signed in as me@real.com", { username: "me@real.com", password: "hunter2", secret: true });
+    expect(out).not.toContain("me@real.com");
+    expect(out).toContain(REDACTED);
   });
 
   it("hands the real values to the test process only for secret credentials", () => {

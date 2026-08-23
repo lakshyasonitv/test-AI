@@ -232,7 +232,7 @@ export async function runSuite(
 
         let diagnosisPath: string | undefined;
         if (!primaryResult.result.passed) {
-          const diagnosis = await analyzeFailure(primaryResult.ir, primaryResult.result);
+          const diagnosis = await analyzeFailure(primaryResult.ir, primaryResult.result, appModel.auth?.loginUrl);
           diagnosisPath = path.join(caseDir, "06-diagnosis.json");
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
         }
@@ -298,7 +298,7 @@ export async function runSuite(
         let diagnosisPath: string | undefined;
         let healed = false;
         if (!result.passed) {
-          const diagnosis = await analyzeFailure(ir, result);
+          const diagnosis = await analyzeFailure(ir, result, appModel.auth?.loginUrl);
           diagnosisPath = path.join(caseDir, "06-diagnosis.json");
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
 
