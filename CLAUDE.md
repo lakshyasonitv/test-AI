@@ -103,6 +103,19 @@ end-to-end confirmation, and say so before doing it, since it costs the user mon
   run afterward still showed the exact pre-fix timing signature, because the server process
   predated the fix by over an hour. Before judging any source change against a live run, check
   whether the server process actually started after the edit.
+- **A `page.evaluate` callback must not contain inner named or `const`-assigned functions.**
+  `tsx` (how the server actually runs) uses esbuild, which wraps every named function in a
+  `__name(...)` call to preserve `.name` — a helper that does not exist inside the code
+  `page.evaluate` serializes and runs in the browser. `vitest`'s own transform does not inject
+  that helper, so this passes every unit test and throws `ReferenceError: __name is not defined`
+  only on a real `npm run serve` run (`TECH_DEBT.md` TD-40). Write evaluate callbacks with
+  everything inlined, duplicated across branches if needed, and say why in a comment.
+- **`sessionStorage` does not survive `context.newPage()`.** It's scoped to the tab, not to
+  Playwright's `BrowserContext` — a shared context keeps cookies and `localStorage` across pages,
+  but a site whose session lives only in `sessionStorage` (a real, mainstream React/Vite pattern)
+  is logged out again on every new page. Verified directly: a second page on an authenticated
+  context came back with empty `sessionStorage` and the login form. If a flow needs to survive
+  across pages, keep it on the SAME page/tab (`TECH_DEBT.md` TD-41, `DECISIONS.md` D-23).
 
 ## Don't
 

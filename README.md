@@ -49,8 +49,18 @@ primary path and is tried first for every page.
 
 By default, discovery doesn't stop at the entry page: `hybridDiscovery.ts`'s `discoverSiteHybrid`
 follows the entry page's own same-origin internal links (bounded by `MAX_DISCOVERY_PAGES`,
-default 5) and merges every reachable page into one AppModel. A site whose entry page has no
-crawlable links (auth walls, single-page apps) behaves exactly as before: a one-page model.
+default 5) and merges every reachable page into one AppModel. A page whose navigation has no
+usable `href`s at all (a React/Next SPA routing entirely via `onClick`) is probed by clicking
+instead, once the ordinary link pass comes back empty.
+
+**Auth-aware:** if the entry page shows a live login form, discovery signs in before crawling —
+detected against the real page (a visible `input[type="password"]`), not the extracted model, so
+it works even on a login with no `<form>` tag or no labelled inputs. Credentials come from the
+prompt or the same UI dialog used elsewhere, asked as soon as the gate is found rather than after
+case generation. The exact steps that worked are carried forward and replayed at the start of
+every generated test, so the test itself starts authenticated in its own fresh browser. Full
+mechanics: [ARCHITECTURE.md's Auth-Aware Discovery section](ARCHITECTURE.md#auth-aware-discovery).
+Covers a plain email/password login only — no multi-step, SSO, or MFA flow.
 
 Gemini vision is the fallback, used only when DOM extraction returns nothing usable:
 
@@ -69,13 +79,21 @@ prompt + url
   -> Planner (Gemini)                 -> structured test plan
   -> Discovery                        -> app model: elements as accessibility role + name
        |_ DOM extraction (primary)     -> cheerio over page.content(), no LLM needed
-       |_ site crawl (same-origin)     -> follows the entry page's own internal links
+       |_ auth-aware login             -> signs in on a live login gate before crawling on;
+                                          credentials from the prompt or a UI prompt asked
+                                          right when the gate is found
+       |_ site crawl (same-origin)     -> follows the entry page's own internal links; probes
+                                          JS-only nav by clicking once href-following finds none
        |_ Gemini Vision (fallback)     -> only when DOM extraction finds nothing usable
   -> Test Cases (Gemini)              -> full coverage suite (valid/invalid/boundary/security)
        \_ case-selection gate (opt.)   -> pauses for you to review/accept/reject a batch and
                                           ask for a refined regeneration, ENABLE_CASE_SELECTION_GATE
+       \_ login-case cap              -> at most one case targets the login page itself
   -> Primary-case selection           -> fromPrompt case, else highest priority
   -> IR generation (Gemini) + grounding -> strict JSON test model (the contract)
+       \_ login prefix (on auth)      -> discovery's recorded login replayed as real steps,
+                                          prepended before grounding, so the generated test
+                                          starts authenticated in its own fresh browser
        \_ credentialPolicyFor(case)    -> full / identifier-only / none, decided from case
                                           wording before any substitution happens
        \_ live-extend (on demand)      -> reaches + models pages beyond the entry page,
@@ -102,7 +120,10 @@ Full technical detail, file by file: [ARCHITECTURE.md](ARCHITECTURE.md).
 | Capability | Details |
 |-----------|---------|
 | Natural language to executed test | Prompt + URL -> real Playwright test running in a browser |
-| Site-wide discovery | Follows the entry page's own same-origin internal links (bounded, `MAX_DISCOVERY_PAGES`), not just the one page you typed |
+| Site-wide discovery | Follows the entry page's own same-origin internal links (bounded, `MAX_DISCOVERY_PAGES`), not just the one page you typed; probes JS-only navigation (no `href`) by clicking once the link pass finds nothing |
+| Auth-aware discovery | Signs into a live login gate (email + password) before crawling, verified against the real page state, not inferred from a URL change. Works on logins with no `<form>` tag, no labelled inputs, or session state kept only in `sessionStorage`. See [ARCHITECTURE.md](ARCHITECTURE.md#auth-aware-discovery) |
+| Generated tests start authenticated | Discovery's recorded login is replayed at the start of every relevant case's own fresh browser session — the test signs in itself, it doesn't rely on discovery's session. At most one case targets the login page itself (`MAX_LOGIN_CASES`), so the rest of the suite tests the app behind it |
+| Auth-failure diagnosis | A run that ends back on the login page is reported as an authentication failure, not a misleading "element may have been renamed" |
 | Full coverage suite generation | Up to 5 cases per run by default (`MAX_CASES_PER_RUN`): valid path, invalid input, empty fields, boundaries, security. The checklist itself is filtered by scope before it reaches the model |
 | Case-selection gate (optional) | `ENABLE_CASE_SELECTION_GATE=true` pauses a run after generating a batch so you can accept/reject cases and ask for a refined regeneration; a rejected or already-accepted title is hard-excluded from every later batch |
 | All suite cases executed | Every selected case runs in its own Playwright `test()` / browser context, with per-case artifacts |
@@ -151,7 +172,8 @@ the executor's kill timer (TD-36).
 
 By design, not a defect: **no built-in demo credentials.** There's no per-site autofill list —
 credentials come from your prompt when it carries them, otherwise the run pauses and asks via the
-UI (or times out and continues without them, `CREDENTIAL_WAIT_MS`). See `DECISIONS.md` D-08.
+UI the moment discovery finds a live login gate (or times out and continues without them,
+`CREDENTIAL_WAIT_MS`). See `DECISIONS.md` D-08 and D-26.
 
 ## Configuration
 
@@ -172,6 +194,7 @@ are in `.env.example`.
 | `MAX_DISCOVERY_PAGES` | No | Max pages a single site crawl may collect (default: 5) |
 | `DISCOVERY_HYDRATION_POLL_MS` | No | Max time a zero-element page extraction keeps re-checking before being accepted as final (default: 6000) |
 | `MAX_CASES_PER_RUN` | No | Hard ceiling on cases turned into runnable scripts (default: 5) |
+| `MAX_LOGIN_CASES` | No | Max cases in a suite that may target the login page itself, on an auth-aware run (default: 1) |
 | `MAX_CONCURRENT_RUNS` | No | Max parallel pipeline runs (default: 3) |
 | `CREDENTIAL_WAIT_MS` | No | How long a paused run waits for credentials before continuing without them (default: 300000 / 5 min) |
 | `ENABLE_CASE_SELECTION_GATE` | No | Set `true` to pause a run after generating each batch of cases for review (default: off) |

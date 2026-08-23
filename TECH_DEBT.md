@@ -83,6 +83,17 @@ actually making that call.
 | TD-37 | "Assert submit button hidden" generalized from login to any form with a preceding fill — **fixed** | High | Accidental | Lakshya |
 | TD-38 | `Diagnosis.suggestedFix`/`explanation` are untrusted free text with no deterministic verification fed back into IR generation or heal | Medium | Accidental | ? |
 | TD-39 | `MESSAGE_LIKE` keyword scan missed gratitude-phrased confirmation copy, leaving a wrong guessed assertion uncorrected — **fixed** | High | Accidental | Lakshya |
+| TD-40 | Login detection read the extracted PageModel, which is lossy on real SPA logins (no `<form>`, placeholder-only naming) — **fixed** (live-DOM detection) | High | Accidental | Lakshya |
+| TD-41 | A shared `BrowserContext` was not enough — sessionStorage is scoped to a tab, not a context — **fixed** (one shared `Page` for the whole crawl) | High | Accidental | Lakshya |
+| TD-42 | "Login succeeded" was inferred from the URL changing, wrong in both directions — **fixed** (verify the login form is actually gone) | High | Accidental | Lakshya |
+| TD-43 | The login prefix was gated by credential-substitution policy instead of the case's target page — **fixed** (`needsLoginPrefix`) | High | Accidental | Lakshya |
+| TD-44 | The login prefix raced its own submit request, navigating on before the session landed — **fixed** (settle assertion) | High | Accidental | Lakshya |
+| TD-45 | Redaction corrupted the AppModel when a credential value collided with an ordinary DOM keyword — **fixed** | High | Accidental | Lakshya |
+| TD-46 | Discovery-time credential prompt could park a run with no UI to answer it — **fixed** (missing `credentials` event pair) | Medium | Accidental | Lakshya |
+| TD-47 | A failed login was cached for up to 30 minutes, silently repeating the failure — **fixed** (never cache `login-failed`) | Medium | Accidental | Lakshya |
+| TD-48 | SPA nav-button click-probe missed anchor-based routes with no `href` (saucedemo shape) — **fixed** (widened + destructive-verb guard) | Medium | Accidental | Lakshya |
+| TD-49 | `discoverPagesHybrid` (multi-URL entry) remains auth-unaware | Medium | Strategic | ? |
+| TD-50 | Click-probe candidate cap is document order, not priority order | Low | Strategic | ? |
 
 ---
 
@@ -1046,3 +1057,227 @@ fallback, not a replacement). All three guards individually regression-verified 
 one in turn makes its specific test fail with the exact wrong-candidate signature, restored
 after). `npx tsc --noEmit` clean, `npx vitest run` 329/331 (same 2 pre-existing unrelated
 fixture failures).
+
+## Auth-aware discovery — found and fixed across three real sites
+
+Discovery was extended to log into a site before crawling it (`DECISIONS.md` D-22–D-26 record the
+design). Every item below is a real bug caught against an actual target — saucedemo.com,
+learnvibes.vercel.app, assettrack-web.onrender.com — not a hypothetical. Several were only
+visible on a live `npm run serve` run; the corresponding fix is noted where a unit/vitest run
+could not have caught it.
+
+### TD-40. Login detection read the extracted PageModel, which is lossy on real SPA logins — High / Accidental — Fixed
+
+**What it is.** The first version of `loginOnPage` found the password field via
+`credentialFieldMap`, built only from `PageModel.forms[]` — and `extractForms` requires a literal
+`<form>` tag. A React login with bare `<input>`s (no `<form>` wrapper) yields `forms: []`; the
+fallback then matched the element's accessible *name* against `/pass/i`, and on
+assettrack-web.onrender.com that name was the placeholder `"••••••••"`, matching nothing.
+
+**Why it hurts.** No password field found means no login attempted at all, silently — the run
+produced a one-page, login-only AppModel with `auth` absent and no error anywhere, indistinguishable
+from a site that simply has no login. Confirmed directly against `runs/2026-08-22T04-18-57…040dd5ae`.
+
+**Fix applied.** Detect and drive the login against the **live DOM**: the first visible, enabled
+`input[type="password"]` is the anchor, with an escalating selector ladder for the identifier and
+submit control (see D-22). This is immune to a missing `<form>`, a missing label, or a
+placeholder-as-name.
+
+**Verified**: `tests/authCrawl.test.ts`'s `/login-formless` fixture asserts the model-derived path
+finds nothing (`credentialFieldMap(...).size === 0`) while the live-DOM path succeeds. The
+`/login-bare` fixture (inputs with no id/name/data-* at all, only a placeholder — the exact
+learnvibes shape) is covered by the `it.each` login table instead: it does have a `<form>`, so its
+bug isn't a missing-form miss but the selector ladder itself needing a placeholder/aria-label/type
+rung (part of this same fix, see D-22) — proven there by the live-DOM path still reaching a
+verified session.
+
+### TD-41. A shared `BrowserContext` was not enough — sessionStorage is scoped to a tab — High / Accidental — Fixed
+
+**What it is.** The crawl opened a fresh `Page` per hop under one shared `BrowserContext`,
+assuming cookie-based session persistence covered every site. assettrack-web.onrender.com stores
+its session as `sessionStorage` keys (`token`, `user`) with **no cookie at all** — verified
+directly: a second page opened on the same context came back with empty `sessionStorage` and the
+login form.
+
+**Why it hurts.** Every crawl hop after the login started logged out, producing the identical
+symptom as TD-40 (a one-page model) even after the login itself had genuinely succeeded — the two
+bugs were indistinguishable from the outside without reading `server.log`.
+
+**Fix applied.** One long-lived `Page` for the entire crawl (`sharedPage()`), navigating URL to
+URL instead of closing and reopening. Carries cookies, localStorage, and sessionStorage alike —
+see `DECISIONS.md` D-23 for the rejected `storageState()` alternative.
+
+**Verified**: `tests/authCrawl.test.ts`'s sessionStorage fixture asserts both directions in one
+test — the same tab keeps the session across a second `goto`, and a genuinely new tab on the same
+context does not, pinning the exact mechanism rather than just the end symptom.
+
+### TD-42. "Login succeeded" was inferred from the URL changing — High / Accidental — Fixed
+
+**What it is.** `page.url() !== urlBefore` was the sole success signal. Wrong in both directions:
+an SPA that renders its dashboard at the same route (assettrack, confirmed live — the URL stayed
+on `/login` while React swapped the whole page in) reports failure on a login that plainly worked
+("Logged in successfully" was on screen); a site that bounces `/login -> /login?error=1` on a
+rejected attempt reports success.
+
+**Why it hurts.** A false failure here made a working login look broken and fell back to an
+anonymous crawl, discarding a session that was fine. A false success (not observed live, but
+reachable on the bounce-with-query-param shape) would have been worse: crawling a logged-out site
+while believing it was authenticated.
+
+**Fix applied.** `verifySession`: the login form itself must be gone from the page currently
+loaded (`!hasLoginGate(page)`); if the app navigated somewhere, that destination is reloaded in the
+SAME tab (not a fresh one — a fresh tab loses sessionStorage, see TD-41) and checked again.
+
+**Verified**: `tests/authCrawl.test.ts` covers in-place SPA auth (no URL change, must report
+success) and a wrong password (URL unchanged, form still visible, must report failure) as separate
+cases — the two together are what a pure URL-diff check cannot distinguish.
+
+### TD-43. The login prefix was injected into the wrong subset of cases — High / Accidental — Fixed
+
+**What it is.** The prefix-injection gate reused `credentialPolicyFor(testCase, ...) === "full"`,
+which returns `"full"` only for `valid`/`fromPrompt` cases — a check built to answer "should this
+case's field values be replaced with real credentials," not "does this case need a session first."
+
+**Why it hurts.** Verified against a real 5-case suite (`runs/2026-08-22T16-10-40…04cfa936`): an
+`invalid-input` search case and a `state-change` sign-out case both ran with no login prefix and
+both failed on the login page, while the two `valid` cases correctly received one. 3 of 5 cases
+failed; the app being tested was never at fault.
+
+**Fix applied.** `needsLoginPrefix(testCase, auth)` — gates on whether the case's `targetUrl` is
+the login page itself, structurally (same `pageKey` comparison the login-case cap uses), not on
+the case's credential-substitution policy. See `DECISIONS.md` D-26.
+
+**Verified**: `tests/loginPrefix.test.ts` replays the exact category table from that run
+(`valid`/`invalid-input`/`state-change`/`security-injection` all sign in; the login-page case does
+not) and separately confirms artifact replay against that run's own saved `03-cases.json` matches.
+
+### TD-44. The login prefix raced its own submit request — High / Accidental — Fixed
+
+**What it is.** The prefix's last step was the submit click; the case's own steps started
+immediately after, with nothing waiting for the login request to resolve.
+
+**Why it hurts.** Caught directly from a step screenshot on a real run
+(`runs/2026-08-22T16-10-40…04cfa936`, case-1): credentials were filled correctly, and the
+following screenshot shows the "Sign In" button **still displaying its loading spinner** while the
+next step had already fired `navigate /dashboard` — which bounced straight back to `/login`. This
+is a pure timing bug; the login itself was correct.
+
+**Fix applied.** `buildLoginPrefix` appends one more step: assert the password field's own
+selector is `hidden`. `expect(...).toBeHidden({timeout:10000})` auto-waits, so it costs nothing on
+a fast login and still covers a slow one (a cold serverless start) that a fixed
+`page.waitForTimeout` could not size correctly either way.
+
+**Verified**: a dedicated `tests/authCrawl.test.ts` fixture whose login endpoint responds after a
+1.2s delay — every other login fixture in that file resolves instantly, which is exactly why this
+shape reached a live run before anything caught it. The test fails without the settle step and
+passes with it (confirmed both ways while writing it).
+
+### TD-45. Redaction corrupted the AppModel when a credential value collided with an ordinary DOM keyword — High / Accidental — Fixed
+
+**What it is.** `redactCredentials` JSON-stringifies its input and blind-replaces every occurrence
+of a secret credential value, string-wide, with no awareness of what the surrounding field means.
+
+**Why it hurts.** A real run's password was the literal string `"password"`. The saved AppModel
+came back with `inputType: "[redacted]"` (was `"password"`), `id: "[redacted]"`, and
+`css: "#[redacted]"` — eight structural replacements. `credentialFieldMap` could no longer find a
+password field afterward, and the generator would have emitted `#[redacted]`, a selector matching
+nothing. This fires *after* a successful login, so it silently poisons everything downstream of a
+correct discovery run.
+
+**Fix applied.** Refuse to redact a secret value that is itself a common DOM/HTML keyword — see
+`DECISIONS.md` D-25 for why the alternative (a key-aware object walk) was rejected instead
+(it would have broken `executor.ts`'s raw-string redaction of `final-page.txt`).
+
+**Verified**: `tests/credentials.test.ts` pins the exact corruption shape (an `inputType`/`id`/
+`css` all equal to `"password"` survive redaction intact) alongside a case in the *same* model
+proving a real credential value (an email) is still scrubbed — the guard is per-value, not
+all-or-nothing.
+
+### TD-46. The discovery-time credential prompt could park a run with no UI to answer it — Medium / Accidental — Fixed
+
+**What it is.** Moving the credential ask from after case-generation to inside discovery (so
+discovery itself could use the answer) called `askCredentials(...)` directly. `askCredentials`
+only parks a promise server-side; it is the `credentials`/`started` **event**
+(`store.append` -> SSE -> `app.js`'s `showCredentialPrompt`) that makes the frontend render the
+form at all.
+
+**Why it hurts.** Without the event pair, the run held one of `MAX_CONCURRENT_RUNS` slots for the
+full `CREDENTIAL_WAIT_MS` (5 min default) against a UI showing no way to type anything — reported
+directly: "it is stuck on discovering ... but there is no option to provide credentials in the ui."
+
+**Fix applied.** The discovery-side ask emits `credentials`/`started` before parking and
+`credentials`/`completed` on every path, including a skip — mirroring the pre-existing
+post-discovery ask exactly.
+
+**Verified**: live in the browser pane — the credential form rendered mid-`discovery` stage
+(step 2 still showing `WORKING`) for a prompt that carried no credentials, with the existing
+footer copy ("Used for this run only...") still accurate.
+
+### TD-47. A failed login was cached for up to 30 minutes, silently repeating the same failure — Medium / Accidental — Fixed
+
+**What it is.** `discoverSiteHybrid`'s result — including a `login-failed` outcome — was written
+to the AppModel disk cache like any other result, under `APPMODEL_CACHE_TTL_MS` (default 30 min).
+
+**Why it hurts.** Caught directly: after fixing an unrelated selector bug, the very next run
+against the same URL logged `cache hit for ... — skipping login and crawl` and reported the *old*
+`login-failed` outcome, even though the new code would have succeeded. A transient failure (wrong
+value typed, a login form that briefly changed, a slow deploy) should not pin a run to a broken
+model for half an hour.
+
+**Fix applied.** `auth.status === "login-failed"` is never cached; only `authenticated`,
+`no-gate`, and `no-credentials` are.
+
+**Verified**: manually only, once — clearing a stale cache entry and re-running reached the login
+step again instead of short-circuiting. No automated test covers this: the fix is a single
+`if (auth.status === "login-failed")` guard around the existing `cacheSet` call, and nothing in
+this file's test suite currently exercises `discoverSiteHybrid`'s cache path at all.
+
+### TD-48. The SPA nav-button click-probe only considered `nav`-landmark buttons, missing real anchor-based routes — Medium / Accidental — Fixed
+
+**What it is.** `discoverUrlsByClicking` (added to get past a Next.js dashboard whose nav is
+`<button onClick={router.push()}>` with zero `<a href>`) only looked at `role=button` elements
+scoped to a `nav` landmark.
+
+**Why it hurts.** saucedemo.com's inventory page has the opposite shape: its cart link is
+`<a class="shopping_cart_link" data-test="shopping-cart-link">` with **no `href` attribute at
+all**, and its product links are `href="#"` — both `role=link`, and neither inside a `<nav>`
+landmark. `extractLinks`'s `$("a[href]")` skips the cart entirely; the click-probe's
+nav-button-only filter found zero candidates either. Confirmed by replaying the new candidate rule
+against the real captured page model: the old rule found 0 candidates, the new rule finds 12,
+including the shopping cart link.
+
+**Fix applied.** Widen candidates to `(button AND landmark==="nav") OR any link` — anchors need no
+landmark scoping (they are semantically navigation, and the probe only runs once the href pass has
+already returned nothing). Added `DESTRUCTIVE_VERB` (reset/delete/remove/clear/discard/cancel/
+deactivate/archive, anchored) alongside the existing sign-out exclusion, since the widened rule
+also surfaced saucedemo's real "Reset App State" anchor — discovery must stay a read-only pass.
+
+**Verified**: a local `/anchor-spa` fixture in `tests/authCrawl.test.ts` reproduces the exact
+saucedemo shape (no href anywhere) and asserts `internalUrls` is empty first, so the test can't
+silently stop covering the bug it exists for; a second assertion confirms the reset control is
+never among the discovered targets.
+
+### TD-49. `discoverPagesHybrid` (multi-URL entry) remains auth-unaware — Medium / Strategic
+
+**What it is.** All of TD-40 through TD-48 apply to `discoverSiteHybrid`, the single-URL entry
+path. `discoverPagesHybrid`, used when a run is given multiple URLs directly, calls
+`discoverHybrid` per URL with no credentials and no login step at all.
+
+**Why it hurts.** A multi-URL run against a login-gated app gets the pre-auth-aware behaviour —
+each URL modelled as its own login page, same failure mode this whole effort exists to fix.
+
+**Owner.** Undecided whether multi-URL entry is common enough to justify duplicating the auth flow
+there, versus routing it through the same login-aware path `discoverSiteHybrid` uses.
+
+### TD-50. The click-probe's candidate cap is document order, not priority order — Low / Strategic
+
+**What it is.** `MAX_CLICK_PROBES` (default 12) takes the first N qualifying elements in DOM
+order. A page listing many repeated items (a large product grid) before its real navigation
+controls could exhaust the cap before reaching them.
+
+**Why it hurts.** Not yet observed on a real site — saucedemo's nav links happen to precede its
+product grid — but it is a real ceiling with no signal today if it's ever hit silently.
+
+**Owner.** Revisit if a real site's routes get cut off; the fix would be de-duplicating
+structurally-identical repeated candidates (a pattern-detection pass, not attempted here) before
+applying the cap, rather than raising the cap itself.

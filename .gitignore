@@ -5,3 +5,6 @@ test-results/
 playwright-report/
 .claude/
 artifacts/
+
+# Local dev server output (npm run serve redirect)
+server.log

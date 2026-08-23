@@ -13,11 +13,12 @@ rejected alternatives — see [DECISIONS.md](DECISIONS.md). For **what's broken*
 
 1. [Pipeline Overview](#pipeline-overview)
 2. [Discovery Fallback Chain](#discovery-fallback-chain)
-3. [Case Selection Gate](#case-selection-gate)
-4. [Source Files by Module](#source-files)
-5. [Schema Contracts](#schema-contracts)
-6. [LLM Integration](#llm-integration)
-7. [Frontend & Server](#frontend--server)
+3. [Auth-Aware Discovery](#auth-aware-discovery)
+4. [Case Selection Gate](#case-selection-gate)
+5. [Source Files by Module](#source-files)
+6. [Schema Contracts](#schema-contracts)
+7. [LLM Integration](#llm-integration)
+8. [Frontend & Server](#frontend--server)
 
 ---
 
@@ -32,12 +33,21 @@ prompt + url
                                           onclick, tabindex) but carry no semantic tag or role
        |_ visibility recheck           -> real computed style for selector-bearing elements,
                                           replacing the static parser's assumed visible:true
-       |_ site crawl (same-origin)     -> follows the entry page's own internal links, bounded
+       |_ auth-aware login             -> detects a live password field, signs in, verifies the
+                                          session, records the steps taken (see below)
+       |_ site crawl (same-origin)     -> follows the entry page's own internal links, bounded;
+                                          also probes JS-only nav (buttons/anchors with no href)
+                                          once the href pass returns nothing
        |_ Gemini Vision (fallback)     -> only when DOM extraction finds nothing usable
   -> Test Cases (Gemini)              -> full coverage suite (valid/invalid/boundary/security)
        \_ case-selection gate (opt.)   -> pauses for human review/regeneration, feature-flagged
+       \_ login-case cap              -> at most one case targets the login page itself, so a
+                                          gated app's suite isn't all login tests
   -> Primary-case selection           -> fromPrompt case, else highest priority
   -> IR generation (Gemini) + grounding -> strict JSON test model (the contract)
+       \_ login prefix (on auth)      -> discovery's recorded login is replayed as ordinary
+                                          Steps, prepended before grounding, so the spec starts
+                                          authenticated in its own fresh browser
        \_ groundingError(ir, model)    -> the deterministic authority over EVERY target kind:
                                           role+name (with a narrow clickable-role fallback),
                                           css selector, navigate URL, and hidden-vs-visible.
@@ -55,6 +65,9 @@ prompt + url
   -> Playwright Generator (no AI)     -> *.spec.ts with per-step test.step() blocks
   -> Suite Runner (no AI)             -> every case in its own Playwright test()/browser context
   -> Failure Analysis (LLM, vision)   -> diagnosis (only on failure)
+       \_ Auth-bounce check          -> deterministic: an authenticated run that ended back on
+                                          the login page is reported as that, before the generic
+                                          classifier can misreport it as a renamed/missing element
        \_ Deterministic classifier    -> pattern-matches Playwright errors first (free)
        \_ Gemini fallback             -> only for ambiguous cases
        \_ Bounded self-heal (<=1x)    -> re-snapshot (policy-aware) + regenerate + re-run once
@@ -79,12 +92,17 @@ The hybrid discovery orchestrator (`hybridDiscovery.ts`) tries these in order:
      |                      + Gemini concept labeling (text-only, no screenshot)
      |                      = Fast, deterministic structure, ~1 Gemini call, no service to run
      |
+2b. Entry page shows      -> Auth-Aware Discovery (below) — sign in, verify the session, keep
+    a login gate?            crawling authenticated. A gate with no usable credentials, or a
+     |                       login attempt that fails, falls through to the crawl unauthenticated
+     |                       rather than stopping — same one-page result as before this existed.
+     |
 3. Entry page has        -> collectCrawlTargets filters its internal links to same-origin,
    crawlable links?         http(s), non-asset, not-already-visited, and the crawl repeats
      |                      step 2 for each (bounded by MAX_DISCOVERY_PAGES, default 5) —
-     |                      merging every reachable page into ONE AppModel. A site with no
-     |                      crawlable entry-page links (auth wall, SPA) is unaffected: same
-     |                      one-page result as before this existed.
+     |                      merging every reachable page into ONE AppModel. A page whose links
+     |                      are all JS-only (no href, or href="#") is probed by clicking instead,
+     |                      once the href pass returns nothing (see Auth-Aware Discovery).
      |
 4. If DOM returns null   -> Gemini Vision fallback
    (no usable elements)    = Playwright ARIA snapshot + JPEG screenshot
@@ -113,6 +131,76 @@ an element with no `id`/`data-test`/`css` at all — is tracked in `TECH_DEBT.md
 snapshots a Playwright `Page` object that's ALREADY open and navigated — no new browser launch.
 Both `liveExtend.ts`'s replay and `hybridDiscovery.ts`'s site crawl use it, in preference to
 launching a fresh session-less browser (`DECISIONS.md` D-07).
+
+---
+
+## Auth-Aware Discovery
+
+Runs inside `discoverSiteHybrid` (`hybridDiscovery.ts`), between the entry-page snapshot and the
+site crawl. Applies to a plain email/password login only — no multi-step, SSO, or MFA flow
+(`DECISIONS.md` D-22–D-26 record the full design reasoning; this section is the mechanics).
+
+```
+entry page snapshotted
+  |
+  v
+hasLoginGate(page)?  -- a live, visible, enabled input[type="password"] on the page
+  |                      (never the extracted PageModel — see D-22 for why that's lossy)
+  no  -> auth: { status: "no-gate" }, crawl proceeds unauthenticated as before
+  |
+  yes, one hop allowed if the gate isn't on the entry page itself (a marketing home
+       linking to /login), then:
+  |
+  v
+credentials available?  -- prompt-supplied first, else askCredentials() fires HERE,
+  |                         mid-discovery (not after case generation) -- the credentials
+  |                         event pair (started/completed) is what makes the UI render
+  |                         the form at all; see TD-46
+  no  -> auth: { status: "no-credentials" }, crawl proceeds unauthenticated
+  |
+  yes
+  v
+loginOnPage(page, creds)  -- fills identifier + password by a live-DOM selector ladder,
+  |                          submits, returns the exact steps taken (AuthStep[])
+  v
+verifySession(page, gateUrl)  -- true iff the login form is actually gone from the page
+  |                              now loaded (re-navigating in the SAME tab if the app moved
+  |                              somewhere else -- never a fresh tab, which would lose
+  |                              sessionStorage; see D-23)
+  no  -> auth: { status: "login-failed", url, detail }, crawl proceeds unauthenticated,
+  |      result NOT cached (a transient failure shouldn't pin the run for 30 min)
+  |
+  yes
+  v
+auth: { status: "authenticated", url, loginUrl, loginSteps }
+crawl re-roots from the authenticated page; the login page is KEPT in the model
+alongside it (needed so the IR's login prefix has something to ground against)
+  |
+  v
+site crawl proceeds on ONE shared Page for the whole crawl (not one per hop) --
+sessionStorage-based auth doesn't survive a new page, only a new navigation on the
+same one; a Next.js/React nav with no <a href> (button-driven routing, or an anchor
+with no href / href="#") is discovered by discoverUrlsByClicking() once the ordinary
+href pass returns nothing, scoped to nav-landmark buttons + any link, excluding
+sign-out and destructive verbs (reset/delete/...)
+```
+
+**Downstream, in `ir.ts`:** `needsLoginPrefix(testCase, auth)` decides, per case, whether to
+prepend `buildLoginPrefix(auth)` — the recorded `loginSteps` turned into ordinary `navigate`/
+`fill`/`click`/`press` Steps (credential values as `${env:...}` sentinels, never literals) plus a
+settle assertion (the password field, asserted `hidden`) so the case's own steps don't race the
+still-in-flight login request. Gated on the case's `targetUrl`, not on
+`credentialPolicyFor` — a case *about* the login page gets no prefix; everything else does.
+
+**In `testCases.ts`:** `selectCases` caps how many surviving cases may target the login page
+itself (`MAX_LOGIN_CASES`, default 1) — without it, the category-diversity pass lets several
+differently-categorized login cases all survive, and a gated app's suite becomes mostly login
+tests instead of tests of the app behind it.
+
+**In `failureAnalysis.ts`:** before the generic classifier runs, `endedOnLoginPage` checks
+whether a failed run's `final-page.txt` shows the login gate while `auth.status` was
+`"authenticated"` — if so, the diagnosis reports the real cause (never signed in) instead of
+whatever the first missing element downstream happened to be.
 
 ---
 
@@ -170,19 +258,19 @@ timeout.
 | `promptSelectors.ts` | No | Honors selectors the user wrote directly into their prompt |
 | `classify.ts` | No | Deterministic failure classifier |
 | `targetResolver.ts` | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`) |
-| `failureAnalysis.ts` | Gemini + Vision | Failure diagnosis (fallback only) |
+| `failureAnalysis.ts` | Gemini + Vision | Failure diagnosis; deterministic auth-bounce check runs first |
 | `caseSelectionGate.ts` | Gemini (via testCases) | Optional human-review loop over generated case batches, incl. reactive-case rounds |
 | `suiteRunner.ts` | No | Runs every case in its own browser context, per-case artifacts |
 | `executor.ts` | No | Runs spec, captures artifacts, redacts secrets from served output |
 | `discovery.ts` | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
 | `liveExtend.ts` | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding |
-| `testCases.ts` | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist |
+| `testCases.ts` | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist, login-case cap |
 | `generator.ts` | No | IR -> Playwright spec (pure code) |
-| `hybridDiscovery.ts` | Gemini (text) | Discovery orchestrator: DOM first, same-origin site crawl, vision fallback; also owns `isAllowedEntryUrl`/`isPrivateOrLoopbackHost`, the entry-URL scheme + private-host allow-list |
-| `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry |
+| `hybridDiscovery.ts` | Gemini (text) | Discovery orchestrator: DOM first, auth-aware login + session verification, same-origin + click-probed site crawl, vision fallback; also owns `isAllowedEntryUrl`/`isPrivateOrLoopbackHost`, the entry-URL scheme + private-host allow-list |
+| `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry; `redactCredentials` skips DOM-keyword-colliding values |
 | `domDiscovery.ts` | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility |
 | `domExtract.ts` | No | Cheerio DOM extraction — Node port of the deleted Python parser |
-| `ir.ts` | Gemini | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
+| `ir.ts` | Gemini | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), login-prefix injection (`buildLoginPrefix`/`needsLoginPrefix`), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
 
 ### `src/schema/` — Data Contracts (3 files)
 
@@ -264,6 +352,24 @@ AppModel
                           tell a password field from a username field on an unlabelled form
     domLinks?, navigation?, internalUrls?: DomLink[] / NavigationItem[] / string[]  —
                           raw link/nav structure; internalUrls feeds the site crawl's queue
+  auth?: AuthOutcome      set only when discovery found a live login gate (see below)
+```
+
+```
+AuthOutcome
+  status: "no-gate" | "no-credentials" | "login-failed" | "authenticated"
+  url?                    where the login attempt ended up — the evidence for `status`
+  loginUrl?               the gate page itself, distinct from `url` (where it landed)
+  loginSteps?: AuthStep[] the exact fill/click/press sequence that worked, captured live —
+                          `ir.ts`'s `buildLoginPrefix` replays these; never re-derived from
+                          `elements`/`forms` after the fact
+  detail?                 human-readable reason, populated on "no-credentials"/"login-failed"
+
+AuthStep
+  action: "fill" | "click" | "press"
+  css                     a selector discovery verified against the live page, never invented
+  credential?: "username" | "password"
+  key?                    for a "press" step with no submit button to click
 ```
 
 This is the shared language between discovery, planning, test-case generation, IR grounding, and

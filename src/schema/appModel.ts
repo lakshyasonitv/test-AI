@@ -208,9 +208,62 @@ export type PageModel = z.infer<typeof PageModel>;
 // AppModel — unchanged structure, extended PageModel
 // ---------------------------------------------------------------------------
 
+/**
+ * What discovery's login attempt did — reported, not inferred.
+ *
+ * Before this existed, a login that failed produced a normal `discovery completed` event and a
+ * one-page AppModel with no reason attached, indistinguishable from a site that simply has no
+ * login. Three separate debugging sessions were spent working out which of these had happened;
+ * every one of them needed the run's raw artifacts to answer a question the run should have
+ * stated outright.
+ *
+ * `no-gate`        — no password field anywhere; nothing to log into.
+ * `no-credentials` — a login gate, but the run had no credentials to try.
+ * `login-failed`   — credentials were tried and no session resulted.
+ * `authenticated`  — verified: the reached page reloads without a password field.
+ */
+/**
+ * One step of the login discovery actually performed, recorded so nothing downstream has to
+ * work out "which box is the password" a second time.
+ *
+ * That re-derivation is exactly what broke before: `credentialFieldMap` reads only
+ * `PageModel.forms[]`, and a React login with no `<form>` tag yields an empty map, so the
+ * password field became unfindable even though `input[type="password"]` was right there.
+ * `loginOnPage` resolves these against the LIVE DOM; this carries its answer forward verbatim.
+ *
+ * Deliberately not `ir.ts`'s `Step`: appModel.ts must not import from ir.ts (ir.ts imports this
+ * module, and the cycle would be real). `ir.ts` converts these into Steps when it splices them in.
+ */
+export const AuthStep = z.object({
+  action: z.enum(["fill", "click", "press"]),
+  /** Selector discovery verified on the live page — never LLM-invented (DECISIONS.md D-02). */
+  css: z.string(),
+  /** Which credential this field wants. Absent for the submit control. */
+  credential: z.enum(["username", "password"]).optional(),
+  /** For `press` (native form submit when there is no button) — the key to send. */
+  key: z.string().optional(),
+});
+export type AuthStep = z.infer<typeof AuthStep>;
+
+export const AuthOutcome = z.object({
+  status: z.enum(["no-gate", "no-credentials", "login-failed", "authenticated"]),
+  /** Where the login attempt ended up — the evidence for `status`, and the first thing to look
+   *  at when it reads `login-failed`. */
+  url: z.string().optional(),
+  /** The gate itself: the page carrying the login form. Distinct from `url` above, which is
+   *  where the login LANDED — both are needed (the prefix navigates to this one, and
+   *  testCases.ts caps cases that target it). */
+  loginUrl: z.string().optional(),
+  /** Replayable record of the successful login. Present only when status is "authenticated". */
+  loginSteps: z.array(AuthStep).optional(),
+  detail: z.string().optional(),
+});
+export type AuthOutcome = z.infer<typeof AuthOutcome>;
+
 export const AppModel = z.object({
   baseUrl: z.string(),
   pages: z.array(PageModel),
+  auth: AuthOutcome.optional(),
 });
 export type AppModel = z.infer<typeof AppModel>;
 
@@ -333,7 +386,8 @@ export function compressRepetitiveSiblings(elements: Element[]): Element[] {
 }
 
 /** Origin + path, ignoring query/hash — same as ir.ts pageKey */
-function pageKey(url: string): string {
+/** Origin + path, ignoring query/hash — enough to decide whether two URLs are the same page. */
+export function pageKey(url: string): string {
   try {
     const u = new URL(url);
     return u.origin + (u.pathname.replace(/\/+$/, "") || "/");
