@@ -60,6 +60,150 @@ const STATUS_LABEL = {
 };
 
 // -----------------------------------------------------------------------------
+// Session (implentationplan.md Step 2.2)
+//
+// Deliberately dependency-free: Supabase Auth is a plain REST API and the rest of this app is
+// offline-safe (see icons.js's header on why no CDN), so pulling in supabase-js just to trade an
+// email/password for a JWT would be the one thing that introduces a network dependency.
+//
+// EVERYTHING here is inert unless the server reports authEnabled:true. With auth off (the
+// default) `required` stays false, `token` stays null, the fetch wrapper adds no header, and the
+// app behaves exactly as it did before this block existed.
+// -----------------------------------------------------------------------------
+
+const AUTH_STORAGE_KEY = "testbench.session";
+
+const auth = {
+  required: false,          // set from GET /api/auth/config
+  url: null,
+  publishableKey: null,
+  token: null,
+  email: null,
+};
+
+// Restore synchronously, before the first applyRoute() at the bottom of this file — otherwise an
+// already-signed-in user would flash the login view on every reload.
+try {
+  const saved = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "null");
+  if (saved && saved.token) {
+    auth.token = saved.token;
+    auth.email = saved.email || null;
+  }
+} catch { /* corrupt/blocked storage just means "not signed in" */ }
+
+/** The artifact route is hit by <img src>/<video src>, which can't carry an Authorization
+ *  header — so the token also rides along as a cookie for those. Same-site, session-scoped. */
+function writeSessionCookie(token) {
+  document.cookie = token
+    ? `sb-access-token=${encodeURIComponent(token)}; path=/; SameSite=Strict`
+    : "sb-access-token=; path=/; Max-Age=0; SameSite=Strict";
+}
+
+function setSession(token, email) {
+  auth.token = token || null;
+  auth.email = email || null;
+  if (token) localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ token, email: auth.email }));
+  else localStorage.removeItem(AUTH_STORAGE_KEY);
+  writeSessionCookie(token);
+}
+
+if (auth.token) writeSessionCookie(auth.token);
+
+// One wrapper instead of editing ~20 call sites. A per-call edit would eventually miss one, and a
+// missed call site fails only when auth is switched on — the worst time to discover it. With no
+// token this is a pure pass-through: same arguments, same behavior, no header added.
+const rawFetch = window.fetch.bind(window);
+window.fetch = function (input, init) {
+  if (!auth.token) return rawFetch(input, init);
+
+  const url = typeof input === "string" ? input : (input && input.url) || "";
+  // Only attach to this app's own endpoints. A relative path is same-origin by definition; an
+  // absolute one must be checked, so a token can never leak to a third-party host.
+  const sameOrigin = !/^https?:\/\//i.test(url) || url.startsWith(location.origin);
+  if (!sameOrigin) return rawFetch(input, init);
+
+  const next = { ...(init || {}) };
+  const headers = new Headers(next.headers || (typeof input === "object" && input.headers) || {});
+  if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${auth.token}`);
+  next.headers = headers;
+  return rawFetch(input, next);
+};
+
+async function signOut() {
+  const { url, publishableKey, token } = auth;
+  setSession(null, null);
+  // Best-effort server-side revoke; the local session is already gone either way, so a failure
+  // here must not strand the user on a screen they can't leave.
+  if (url && publishableKey && token) {
+    rawFetch(`${url}/auth/v1/logout`, {
+      method: "POST",
+      headers: { apikey: publishableKey, Authorization: `Bearer ${token}` },
+    }).catch(() => {});
+  }
+  applyRoute();
+}
+
+async function initAuth() {
+  let cfg;
+  try {
+    cfg = await rawFetch("/api/auth/config").then((r) => r.json());
+  } catch {
+    return; // config unreachable — leave auth off rather than locking the user out of a working app
+  }
+  if (!cfg || !cfg.authEnabled) return; // the default path: nothing below ever runs
+
+  auth.required = true;
+  auth.url = cfg.url;
+  auth.publishableKey = cfg.publishableKey;
+
+  const signOutBtn = document.getElementById("signOutBtn");
+  if (signOutBtn) {
+    signOutBtn.classList.remove("hidden");
+    signOutBtn.addEventListener("click", signOut);
+  }
+
+  const form = document.getElementById("loginForm");
+  const errorEl = document.getElementById("loginError");
+  const submitEl = document.getElementById("loginSubmit");
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    errorEl.classList.add("hidden");
+    submitEl.disabled = true;
+    submitEl.textContent = "Signing in…";
+    try {
+      const res = await rawFetch(`${auth.url}/auth/v1/token?grant_type=password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: auth.publishableKey },
+        body: JSON.stringify({
+          email: document.getElementById("loginEmail").value,
+          password: document.getElementById("loginPassword").value,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.access_token) {
+        throw new Error(body.error_description || body.msg || "Could not sign in.");
+      }
+      setSession(body.access_token, body.user && body.user.email);
+      document.getElementById("loginPassword").value = "";
+      navigate("#/");
+      applyRoute();
+      loadHistory();
+    } catch (err) {
+      errorEl.textContent = err.message || "Could not sign in.";
+      errorEl.classList.remove("hidden");
+    } finally {
+      submitEl.disabled = false;
+      submitEl.textContent = "Sign in";
+    }
+  });
+
+  // Re-run routing now that we know auth is on: a signed-out visitor gets redirected to the
+  // login view they'd otherwise have slipped past while this request was in flight.
+  applyRoute();
+}
+
+// -----------------------------------------------------------------------------
 // DOM references
 // -----------------------------------------------------------------------------
 
@@ -1004,7 +1148,11 @@ let allRunsCache = [];
 
 async function loadHistory() {
   const res = await fetch("/api/runs");
-  const runs = await res.json();
+  const runs = await res.json().catch(() => null);
+  // /api/runs can legitimately answer with a non-array body — a 401 `{error}` when auth is on and
+  // the visitor hasn't signed in yet, which happens on every cold load before initAuth() resolves.
+  // Bail instead of crashing on .slice(); the login flow calls loadHistory() again once signed in.
+  if (!Array.isArray(runs)) return;
   allRunsCache = runs;
   renderHistory(runs.slice(0, RECENT_RUNS_SHOWN));
   renderProjectsTree(runs);
@@ -1580,7 +1728,7 @@ function toast(message) {
   toastTimer = setTimeout(() => toastEl.classList.add("hidden"), 3200);
 }
 
-const VIEWS = ["home", "run", "suite", "case", "compare", "history"];
+const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login"];
 let currentView = "home";
 
 /**
@@ -1635,6 +1783,16 @@ function navigate(hash) {
 function applyRoute() {
   const raw = (location.hash || "#/").replace(/^#\/?/, "");
   const [head, id] = raw.split("/");
+
+  // Auth gate (Step 2.2). `auth.required` is only ever true when the server reported
+  // authEnabled:true, so with auth off this whole branch is dead code and routing behaves
+  // exactly as it always has. Routed through showView() like everything else — never by
+  // toggling .hidden, which is the bug showView()'s own comment documents.
+  if (auth.required && !auth.token) {
+    showView("login");
+    setCrumbs(["Sign in"]);
+    return;
+  }
 
   if (head === "run" && id) {
     showView("run");
@@ -1838,7 +1996,10 @@ async function renderHistoryView() {
     </div>
     <div class="panel"><div id="historyRows"></div></div>`;
 
-  const runs = await fetch("/api/runs").then((r) => r.json()).catch(() => []);
+  // Same guard as loadHistory(): a 401 resolves successfully with an `{error}` object, so
+  // .catch() alone isn't enough to guarantee an array here.
+  const raw = await fetch("/api/runs").then((r) => r.json()).catch(() => []);
+  const runs = Array.isArray(raw) ? raw : [];
   const rows = document.getElementById("historyRows");
   if (!runs.length) {
     rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">No runs recorded yet.</div>`;
@@ -1892,3 +2053,7 @@ async function renderHistoryView() {
 
 let currentRunId = null;
 applyRoute();
+
+// Async, and deliberately AFTER the synchronous applyRoute() above: with auth off this resolves
+// to a no-op, so the first paint is unchanged. With auth on it re-routes to the login view.
+initAuth();

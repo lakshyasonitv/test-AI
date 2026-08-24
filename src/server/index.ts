@@ -11,6 +11,7 @@ import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
 import { resolveCaseSelection, getPendingSelection } from "./pendingCaseSelection.js";
 import { getAllAcceptedCases, remainingCapacity } from "./caseAccumulator.js";
 import { startRetentionJob } from "./retention.js";
+import { requireAuth, resolveUser, isAuthEnabled } from "./auth.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
 
@@ -24,10 +25,26 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
-// Placeholder for Phase 2's real access control (auth + tenancy) — unconditional today, exactly
-// matching the blanket `express.static("runs")` mount this route replaces.
-async function canAccessRun(_req: express.Request, _runId: string): Promise<boolean> {
-  return true;
+// Identity for every /api/* route (implentationplan.md Step 2.1). With AUTH_ENABLED off this is a
+// pass-through that just attaches the synthetic LOCAL_USER, so behavior is unchanged — see
+// auth.ts's header for why it attaches a user instead of skipping.
+// Both of these must stay reachable without a credential, or login is unreachable by
+// construction: the UI has to be able to ask "is auth even on, and where do I authenticate?"
+// before it can possibly hold a token. Neither returns a secret — /api/health reports only
+// whether each env var is set, /api/auth/config returns only browser-safe publishable values.
+const PUBLIC_API_PATHS = new Set(["/health", "/auth/config"]);
+
+app.use("/api", (req, res, next) => {
+  if (PUBLIC_API_PATHS.has(req.path)) return next();
+  return void requireAuth(req, res, next);
+});
+
+// Access control for artifact files. Tenancy ("does THIS user own THIS run") is Step 3.4; the
+// only question this phase can answer is whether the caller is authenticated at all. With
+// AUTH_ENABLED off, resolveUser always returns the synthetic user, so this stays unconditionally
+// true — identical to the blanket `express.static("runs")` mount this route replaced.
+async function canAccessRun(req: express.Request, _runId: string): Promise<boolean> {
+  return (await resolveUser(req)) !== null;
 }
 
 const RUNS_DIR = path.resolve("runs");
@@ -229,6 +246,26 @@ app.get("/api/health", (_req, res) => {
       gateReview: process.env.ENABLE_CASE_SELECTION_GATE === "true",
       selfHeal: true,
     },
+    // ADDITIVE field (Step 2.2) — appended, never reordering or replacing anything above, per
+    // implentationplan.md Rule 2. The UI branches on this to decide whether a login view exists
+    // at all; with auth off it's `false` and the frontend behaves exactly as it always has.
+    authEnabled: isAuthEnabled(),
+  });
+});
+
+// What the browser needs to talk to Supabase Auth directly (Step 2.2). A NEW route rather than
+// more fields on /api/health, because health's contract is "whether each env var is set, never a
+// value" and this genuinely returns values.
+//
+// Nothing secret is exposed: the publishable key is designed to ship in client code (it grants
+// only what RLS allows). The service-role key is never read here. With auth off, the URL and key
+// aren't sent at all — there's nothing for the client to do with them.
+app.get("/api/auth/config", (_req, res) => {
+  if (!isAuthEnabled()) return res.json({ authEnabled: false });
+  res.json({
+    authEnabled: true,
+    url: process.env.SUPABASE_URL ?? null,
+    publishableKey: process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? null,
   });
 });
 

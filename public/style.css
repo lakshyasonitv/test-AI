@@ -1098,3 +1098,34 @@ summary:focus-visible, .history-item:focus-visible {
   .case-card-body { flex-direction: column; }
   .case-screenshot { width: 100%; }
 }
+/* ---------------------------------------------------------------------------
+   Login (Step 2.2). New classes only — nothing above is renamed or repurposed.
+   Only reachable when the server reports authEnabled:true; with auth off the
+   #view-login section never becomes .view-active, so none of this ever paints.
+   --------------------------------------------------------------------------- */
+
+.auth-card {
+  display: flex; flex-direction: column; gap: var(--sp-4);
+  max-width: 380px;
+  padding: var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+}
+.auth-card .run-btn { justify-content: center; }
+
+.auth-error {
+  margin: 0;
+  font-size: .78rem;
+  color: var(--failed);
+  background: var(--failed-bg);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+/* The login screen owns the whole window: the sidebar and topbar are chrome for
+   an app the visitor hasn't been let into yet, and leaving them visible would
+   show run history through the "locked" door. */
+body:has(#view-login.view-active) .sidebar,
+body:has(#view-login.view-active) .topbar { display: none; }

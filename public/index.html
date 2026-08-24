@@ -60,6 +60,8 @@
         <div class="topbar-actions">
           <button type="button" id="historyBtn" class="topbar-btn">History</button>
           <button type="button" id="settingsBtn" class="topbar-btn" aria-expanded="false">Settings</button>
+          <!-- Unhidden by app.js only when the server reports authEnabled:true. -->
+          <button type="button" id="signOutBtn" class="topbar-btn hidden">Sign out</button>
 
           <div id="settingsPop" class="settings-pop hidden">
             <h2>Run behaviour</h2>
@@ -82,6 +84,35 @@
       </header>
 
       <div class="main-inner">
+
+        <!-- ================= LOGIN =================
+             Only ever reachable when the server reports authEnabled:true. With auth off
+             (the default) app.js never routes here and this section stays inert, exactly
+             as if it didn't exist. Shown via showView("login") like every other view —
+             never by toggling .hidden directly. -->
+        <section class="view" data-view="login" id="view-login">
+          <div class="col">
+            <header class="page-head">
+              <h1>Sign in</h1>
+              <p class="tagline">This Testbench requires an account.</p>
+            </header>
+
+            <form id="loginForm" class="auth-card">
+              <label class="field">
+                <span class="field-label">Email</span>
+                <input id="loginEmail" type="email" autocomplete="username"
+                  placeholder="you@example.com" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Password</span>
+                <input id="loginPassword" type="password" autocomplete="current-password"
+                  placeholder="Password" required />
+              </label>
+              <p id="loginError" class="auth-error hidden" role="alert"></p>
+              <button type="submit" id="loginSubmit" class="run-btn">Sign in</button>
+            </form>
+          </div>
+        </section>
 
         <!-- ================= HOME ================= -->
         <section class="view" data-view="home" id="view-home">

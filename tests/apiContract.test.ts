@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import request from "supertest";
 import { app } from "../src/server/index.js";
 
@@ -89,6 +89,53 @@ describe("API contract — GET /api/health", () => {
 
     expect(typeof res.body.defaults.gateReview).toBe("boolean");
     expect(typeof res.body.defaults.selfHeal).toBe("boolean");
+  });
+
+  // Step 2.2 appended `authEnabled`. Asserted ADDITIVELY — the block above still pins every
+  // pre-existing field exactly as it was, and this only adds a new expectation rather than
+  // rewriting the shape as a closed set. A future additive field must not fail these tests.
+  it("also reports authEnabled (additive, Step 2.2)", async () => {
+    const res = await request(app).get("/api/health");
+    expect(res.status).toBe(200);
+    expect(typeof res.body.authEnabled).toBe("boolean");
+  });
+});
+
+// Step 2.1. These flip AUTH_ENABLED at runtime rather than at import, which is why auth.ts reads
+// process.env per-request instead of caching the flag at module load.
+describe("auth — AUTH_ENABLED gate (Step 2.1)", () => {
+  const original = process.env.AUTH_ENABLED;
+  afterEach(() => {
+    if (original === undefined) delete process.env.AUTH_ENABLED;
+    else process.env.AUTH_ENABLED = original;
+  });
+
+  it("with the flag off, /api/runs is reachable without any credential (today's behavior)", async () => {
+    delete process.env.AUTH_ENABLED;
+    const res = await request(app).get("/api/runs");
+    expect(res.status).toBe(200);
+  });
+
+  it("with the flag on, an unauthenticated /api/runs is 401", async () => {
+    process.env.AUTH_ENABLED = "true";
+    const res = await request(app).get("/api/runs");
+    expect(res.status).toBe(401);
+    expect(res.body).toHaveProperty("error");
+  });
+
+  it("with the flag on, /api/health stays public and self-reports authEnabled:true", async () => {
+    process.env.AUTH_ENABLED = "true";
+    const res = await request(app).get("/api/health");
+    // Must stay reachable: the login UI reads this to discover auth is on, before it can
+    // possibly hold a token.
+    expect(res.status).toBe(200);
+    expect(res.body.authEnabled).toBe(true);
+  });
+
+  it("with the flag on, an unauthenticated artifact request is 403", async () => {
+    process.env.AUTH_ENABLED = "true";
+    const res = await request(app).get(`/runs/${FAKE_RUN_ID}/00-input.json`);
+    expect(res.status).toBe(403);
   });
 });
 
