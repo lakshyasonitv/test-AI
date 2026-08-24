@@ -100,14 +100,31 @@
     } }],
   };
 
+  // Stages a finished run emits between "ir started" and the terminal event.
+  // Without these, a scene depicting a COMPLETED run replays with phase 3 still
+  // in flight, and the done handler correctly (but misleadingly) paints it as
+  // interrupted.
+  const FINISH_BUILD = [
+    { stage: "ir", status: "completed", data: { meta: { title: "Log in with valid credentials" } } },
+    { stage: "generate", status: "started" },
+    { stage: "generate", status: "completed" },
+    { stage: "execute", status: "started" },
+    { stage: "execute", status: "completed", data: { passed: true } },
+  ];
+  // "error" is deliberately excluded: an aborted run really did leave a phase
+  // unfinished, and painting it interrupted is the correct depiction.
+  const FINISHED_SCENES = new Set(["passed", "healed", "failed", "blocked", "unconfirmed"]);
+
   function play(name) {
-    renderPhases();
-    hideSingleTestResult();
-    hideSuiteResults();
-    hideSuiteProgress();
-    hideCredentialPrompt();
+    // resetRunUI() rather than a hand-listed set of hides: the old list here
+    // omitted hideCaseSelectionPanel, so switching away from the caseSelection
+    // scene left that panel on screen over every later scene.
+    showView("run");
+    resetRunUI();
     // Every scene builds on the pipeline reaching the same point first.
-    const seq = name === "running" ? SCENES.running : [...SCENES.running, ...SCENES[name]];
+    const seq = name === "running"
+      ? SCENES.running
+      : [...SCENES.running, ...(FINISHED_SCENES.has(name) ? FINISH_BUILD : []), ...SCENES[name]];
     for (const e of seq) applyEvent({ runId: RUN, ts: Date.now(), ...e }, RUN);
     history.replaceState(null, "", `?preview=states&scene=${name}`);
   }

@@ -3,194 +3,261 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI Test Platform</title>
+  <title>Testbench</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/style.css" />
-  <!-- Applied before first paint so a saved "light" preference never flashes dark first. -->
-  <script>
-    try {
-      var t = localStorage.getItem("theme");
-      if (t === "light") document.documentElement.dataset.theme = "light";
-    } catch (e) {}
-  </script>
 </head>
 <body>
   <div class="app">
 
-    <!-- Sidebar: identity, new run, history. History used to live at the very bottom of
-         the page, which meant scrolling past a whole run to reach it. -->
-    <aside class="sidebar">
-      <div class="brand">
-        <span class="brand-mark" id="brandMark"></span>
-        <span class="brand-name">AI Test Platform</span>
-      </div>
-
-      <button type="button" id="newRunBtn" class="new-run">
-        <span id="newRunIcon"></span> New run
-      </button>
-
-      <nav class="history-nav" aria-label="Recent runs">
-        <h2 class="rail-heading">Recent</h2>
-        <ul id="historyList" class="history-list"></ul>
-      </nav>
-
-      <button type="button" id="themeToggle" class="theme-toggle" aria-label="Switch to light theme" aria-pressed="false">
-        <span class="theme-toggle-track">
-          <span class="theme-toggle-icon theme-toggle-icon-sun" id="themeIconSun"></span>
-          <span class="theme-toggle-icon theme-toggle-icon-moon" id="themeIconMoon"></span>
-          <span class="theme-toggle-thumb"></span>
-        </span>
-        <span class="theme-toggle-label" id="themeToggleLabel">Dark</span>
-      </button>
-    </aside>
-
-    <main class="main">
-      <div class="main-inner">
-
-        <header class="page-head">
-          <h1>Test any website</h1>
-          <p class="tagline">
-            Describe what you want checked in plain words. It explores the site, writes the
-            tests, runs them in a real browser, and shows you what happened.
-          </p>
-        </header>
-
-        <!-- Composer -->
-        <form id="runForm" class="composer">
-          <label class="field">
-            <span class="field-label">What should I test?</span>
-            <textarea id="prompt" rows="3"
-              placeholder="Test the login page — try a wrong password and check a helpful error appears"></textarea>
-          </label>
-
-          <div class="composer-foot">
-            <label class="field field-url">
-              <span class="field-label">Website address</span>
-              <span class="input-wrap">
-                <span class="input-icon" id="urlIcon"></span>
-                <input id="url" type="url" placeholder="https://example.com" />
-              </span>
-            </label>
-            <button type="submit" class="run-btn">
-              <span id="runIcon"></span> <span class="run-btn-text">Run test</span>
-            </button>
-          </div>
-        </form>
-
-        <div class="templates-row">
-          <span class="templates-label">Try one of these</span>
-          <div id="templates" class="templates"></div>
+    <!-- Sidebar: identity, new run, the Projects tree, recent runs. Below 900px
+         this becomes a fixed drawer toggled by the topbar's menu button. -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <div class="brand">
+          <span class="brand-mark" id="brandMark"></span>
+          <span class="brand-name">Testbench</span>
+          <button type="button" id="sidebarClose" class="sidebar-close" aria-label="Close menu">&times;</button>
         </div>
 
-        <!-- Progress timeline -->
-        <section class="panel panel-progress" aria-label="Progress">
-          <ol id="stages" class="stages"></ol>
-        </section>
+        <button type="button" id="newRunBtn" class="new-run">
+          <span id="newRunIcon"></span> New run
+        </button>
 
-        <!-- Credential prompt: appears only when a run pauses because the site needs a login -->
-        <section id="credentialPrompt" class="cred hidden" aria-live="polite">
-          <div class="cred-head">
-            <span class="cred-key" id="credIcon"></span>
-            <div>
-              <h2>This site needs a login</h2>
-              <p id="credWhy" class="cred-why"></p>
-            </div>
+        <input type="search" id="sidebarSearch" class="sidebar-search" placeholder="Search projects, cases&hellip;" aria-label="Search projects and cases" />
+      </div>
+
+      <!-- Projects > Suites > Cases. Populated in a later slice; the empty state
+           is what ships until the library backend exists. -->
+      <nav class="sidebar-tree" aria-label="Projects">
+        <h2 class="rail-heading">
+          Projects
+          <button type="button" id="addProjectBtn" class="rail-add" title="New project" aria-label="New project">+</button>
+        </h2>
+        <div id="sidebarTree"></div>
+      </nav>
+
+      <div class="sidebar-foot">
+        <h2 class="rail-heading">
+          Recent runs
+          <button type="button" id="allRunsBtn" class="rail-link">All</button>
+        </h2>
+        <nav class="history-nav" aria-label="Recent runs">
+          <ul id="historyList" class="history-list"></ul>
+        </nav>
+      </div>
+    </aside>
+
+    <div class="main">
+
+      <header class="topbar">
+        <button type="button" id="sidebarOpen" class="sidebar-open" aria-label="Open menu">&#9776;</button>
+        <div class="crumbs" id="crumbs">
+          <button type="button" class="crumb crumb-root" id="crumbRoot">Testbench</button>
+        </div>
+        <div class="topbar-actions">
+          <button type="button" id="historyBtn" class="topbar-btn">History</button>
+          <button type="button" id="settingsBtn" class="topbar-btn" aria-expanded="false">Settings</button>
+
+          <div id="settingsPop" class="settings-pop hidden">
+            <h2>Run behaviour</h2>
+            <button type="button" class="settings-row" id="gateToggle" aria-pressed="false">
+              <span class="switch"><span class="switch-knob"></span></span>
+              <span class="settings-row-text">
+                <b>Review cases before running</b>
+                <span>Pause to approve the AI&rsquo;s test cases</span>
+              </span>
+            </button>
+            <button type="button" class="settings-row" id="healToggle" aria-pressed="true">
+              <span class="switch"><span class="switch-knob"></span></span>
+              <span class="settings-row-text">
+                <b>Self-heal broken selectors</b>
+                <span>Retry once after re-reading the page</span>
+              </span>
+            </button>
           </div>
-          <form id="credForm" class="cred-form">
-            <div class="cred-fields">
-              <label class="field">
-                <span class="field-label">Username or email</span>
-                <input id="credUser" type="text" autocomplete="off" spellcheck="false" />
-              </label>
-              <label class="field">
-                <span class="field-label">Password</span>
-                <input id="credPass" type="password" autocomplete="off" />
-              </label>
-            </div>
-            <div class="cred-actions">
-              <button type="submit">Use these</button>
-              <button type="button" id="credSkip" class="cred-skip">Skip &mdash; test without logging in</button>
-            </div>
-            <p class="cred-note">
-              Used for this run only. Never written to the run folder or the generated test &mdash;
-              the test reads them from the environment when it runs.
-            </p>
-          </form>
-        </section>
+        </div>
+      </header>
 
-        <!-- Case-selection panel: the gate pauses a run here to let you pick test cases -->
-        <section id="case-selection-panel" class="case-selection hidden" aria-live="polite">
-          <div class="case-selection-head">
-            <span class="case-selection-key" id="caseSelectionIcon"></span>
-            <div>
-              <div class="case-selection-head-row">
-                <h2 id="case-round-label">Review the test cases</h2>
-                <span class="case-action-pill">Action needed</span>
+      <div class="main-inner">
+
+        <!-- ================= HOME ================= -->
+        <section class="view" data-view="home" id="view-home">
+          <div class="col">
+            <header class="page-head">
+              <h1>What should we test today?</h1>
+              <p class="tagline">
+                Describe it in plain English and point it at a URL &mdash; or run the cases this
+                project already has.
+              </p>
+            </header>
+
+            <form id="runForm" class="composer">
+              <textarea id="prompt" rows="3"
+                placeholder="Check that a guest can add a product to the cart, apply the promo code SPRING24, and reach the payment step without signing in."></textarea>
+
+              <div class="composer-foot">
+                <label class="field field-url">
+                  <span class="field-label">https://</span>
+                  <span class="input-wrap">
+                    <input id="url" type="text" placeholder="example.com/page" />
+                  </span>
+                </label>
+
+                <div class="seg" id="coverageSeg" role="group" aria-label="Coverage">
+                  <button type="button" class="seg-btn" data-coverage="minimal">Minimal</button>
+                  <button type="button" class="seg-btn active" data-coverage="standard">Standard</button>
+                  <button type="button" class="seg-btn" data-coverage="full">Full</button>
+                </div>
+
+                <button type="submit" class="run-btn">
+                  <span id="runIcon"></span> <span class="run-btn-text">Run test</span>
+                </button>
               </div>
-              <p id="case-pool-counter" class="case-pool-counter"></p>
+            </form>
+
+            <div class="templates-row">
+              <span class="templates-label">Try one of these</span>
+              <div id="templates" class="templates"></div>
             </div>
           </div>
-          <ul id="case-selection-list" class="case-selection-list"></ul>
-          <div class="case-selection-bulk">
-            <button type="button" id="case-select-all-btn" class="case-selection-link">Select all</button>
-            <button type="button" id="case-select-none-btn" class="case-selection-link">Select none</button>
-          </div>
-          <div id="case-refine-input-wrap" class="case-refine-input-wrap hidden">
-            <label class="field">
-              <span class="field-label">What should change?</span>
-              <textarea id="case-new-prompt-input" rows="2"
-                placeholder="Describe what should change before refining."></textarea>
-            </label>
-          </div>
-          <p id="caseNotice" class="case-notice hidden" role="status"></p>
-          <div class="case-selection-final-actions">
-            <button type="button" id="case-not-satisfied-btn" class="case-not-satisfied">Not satisfied &mdash; refine</button>
-            <button type="button" id="case-done-btn" disabled>Run selected tests</button>
-          </div>
-          <p id="case-regen-attempts-left" class="case-regen-note"></p>
         </section>
 
-        <!-- Live suite progress -->
-        <section id="suiteProgress" class="panel suite-progress hidden">
-          <h2>Running checks</h2>
-          <div id="suiteProgressList" class="suite-progress-list"></div>
-        </section>
+        <!-- ================= RUN ================= -->
+        <section class="view" data-view="run" id="view-run">
+          <div class="wide">
+            <div>
+              <div class="eyebrow" id="runScopeLabel">Run</div>
+              <h1 class="run-title" id="runTitle"></h1>
+              <div class="eyebrow" id="runMeta"></div>
+            </div>
 
-        <!-- Verdict for the primary test -->
-        <section id="finalResult" class="hidden">
-          <h2 id="verdict"></h2>
-          <div id="testSummary" class="test-summary hidden">
-            <h3 id="testTitle"></h3>
-            <ol id="testSteps"></ol>
-            <p id="testExpected"></p>
+            <!-- Four phase cards. app.js owns the li classes; see style.css. -->
+            <ol id="stages" class="stages"></ol>
+
+            <!-- The gate pauses a run here to let you pick test cases -->
+            <section id="case-selection-panel" class="case-selection hidden" aria-live="polite">
+              <div class="case-selection-head">
+                <span class="case-selection-key" id="caseSelectionIcon"></span>
+                <div>
+                  <div class="case-selection-head-row">
+                    <h2 id="case-round-label">Review the test cases before we run them</h2>
+                    <span class="case-action-pill">Action needed</span>
+                  </div>
+                  <p id="case-pool-counter" class="case-pool-counter"></p>
+                </div>
+              </div>
+              <ul id="case-selection-list" class="case-selection-list"></ul>
+              <div class="case-selection-bulk">
+                <button type="button" id="case-select-all-btn" class="case-selection-link">Select all</button>
+                <button type="button" id="case-select-none-btn" class="case-selection-link">Select none</button>
+              </div>
+              <div id="case-refine-input-wrap" class="case-refine-input-wrap hidden">
+                <label class="field">
+                  <span class="field-label">What should change?</span>
+                  <textarea id="case-new-prompt-input" rows="2"
+                    placeholder="Tell the AI what to change &mdash; e.g. add edge cases for expired and already-used codes"></textarea>
+                </label>
+              </div>
+              <p id="caseNotice" class="case-notice hidden" role="status"></p>
+              <div class="case-selection-final-actions">
+                <button type="button" id="case-not-satisfied-btn" class="case-not-satisfied">Not satisfied &mdash; refine</button>
+                <button type="button" id="case-done-btn" disabled>Run selected tests</button>
+              </div>
+              <p id="case-regen-attempts-left" class="case-regen-note"></p>
+            </section>
+
+            <!-- Live suite progress -->
+            <section id="suiteProgress" class="panel suite-progress hidden">
+              <h2>Running checks</h2>
+              <div id="suiteProgressList" class="suite-progress-list"></div>
+            </section>
+
+            <!-- Verdict for the primary test -->
+            <section id="finalResult" class="hidden">
+              <h2 id="verdict"></h2>
+              <div id="testSummary" class="test-summary hidden">
+                <h3 id="testTitle"></h3>
+                <ol id="testSteps"></ol>
+                <p id="testExpected"></p>
+              </div>
+              <figure id="screenshotFigure" class="hidden">
+                <img id="screenshot" alt="Final state of the page at the end of the test"
+                  onerror="this.parentElement.classList.add('hidden')" />
+                <figcaption>Final state at the end of the test</figcaption>
+              </figure>
+              <figure id="videoFigure" class="case-video hidden">
+                <video id="resultVideo" controls preload="none"></video>
+                <figcaption>Recording of the run &mdash; nothing downloads until you press play</figcaption>
+              </figure>
+              <p id="diagnosis"></p>
+              <a id="traceLink" class="hidden" target="_blank" href="#">View the test code &amp; files</a>
+            </section>
+
+            <!-- Suite results -->
+            <section id="suiteResults" class="suite-results hidden">
+              <div id="suiteSummaryHeader" class="suite-summary-header"></div>
+              <button id="screenshotToggle" class="screenshot-toggle hidden" type="button">View all screenshots</button>
+              <div id="screenshotGrid" class="screenshot-grid hidden"></div>
+              <div id="suiteCaseList" class="suite-case-list"></div>
+            </section>
           </div>
-          <figure id="screenshotFigure" class="hidden">
-            <img id="screenshot" alt="Final state of the page at the end of the test" />
-            <figcaption>Final state at the end of the test</figcaption>
-          </figure>
-          <figure id="videoFigure" class="case-video hidden">
-            <video id="resultVideo" controls preload="none"></video>
-            <figcaption>Recording of the run — nothing downloads until you press play</figcaption>
-          </figure>
-          <p id="diagnosis"></p>
-          <a id="traceLink" class="hidden" target="_blank" href="#">View the test code &amp; files</a>
         </section>
 
-        <!-- Suite results -->
-        <section id="suiteResults" class="suite-results hidden">
-          <div id="suiteSummaryHeader" class="suite-summary-header"></div>
-          <button id="screenshotToggle" class="screenshot-toggle hidden" type="button">View all screenshots</button>
-          <div id="screenshotGrid" class="screenshot-grid hidden"></div>
-          <div id="suiteCaseList" class="suite-case-list"></div>
-        </section>
+        <!-- ================= SUITE / CASE / COMPARE / HISTORY =================
+             Containers exist so the router is real from the first slice; their
+             contents land with the library backend. -->
+        <section class="view" data-view="suite" id="view-suite"><div class="wide" id="suiteViewBody"></div></section>
+        <section class="view" data-view="case" id="view-case"><div class="wide" id="caseViewBody"></div></section>
+        <section class="view" data-view="compare" id="view-compare"><div class="wide" id="compareViewBody"></div></section>
+        <section class="view" data-view="history" id="view-history"><div class="wide" id="historyViewBody"></div></section>
 
       </div>
-    </main>
+    </div>
   </div>
 
+  <!-- Credential prompt: a modal, because the run is parked waiting on it and an
+       inline panel could scroll out of sight for the full CREDENTIAL_WAIT_MS. -->
+  <section id="credentialPrompt" class="cred hidden" aria-live="polite" role="dialog" aria-modal="true" aria-label="This site needs a login">
+    <div class="cred-card">
+      <div class="cred-head">
+        <span class="cred-key" id="credIcon"></span>
+        <div>
+          <h2>This site needs a login</h2>
+        </div>
+      </div>
+      <p id="credWhy" class="cred-why"></p>
+      <form id="credForm" class="cred-form">
+        <div class="cred-fields">
+          <label class="field">
+            <span class="field-label">Username or email</span>
+            <input id="credUser" type="text" placeholder="Username or email" autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span class="field-label">Password</span>
+            <input id="credPass" type="password" placeholder="Password" autocomplete="off" />
+          </label>
+        </div>
+        <p class="cred-note">
+          Used for this run only. Never written to the run folder or the results history.
+        </p>
+        <div class="cred-actions">
+          <button type="button" id="credSkip" class="cred-skip">Skip &mdash; test without logging in</button>
+          <button type="submit">Use these</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
   <div id="screenshotModal" class="screenshot-modal hidden" role="dialog" aria-modal="true" aria-label="Screenshot, full size">
-    <button id="screenshotModalClose" class="screenshot-modal-close" type="button" aria-label="Close">&times;</button>
+    <button id="screenshotModalClose" class="screenshot-modal-close" type="button" aria-label="Close">Close</button>
     <img id="screenshotModalImg" class="screenshot-modal-img" src="" alt="" />
   </div>
+
+  <div id="scrim" class="scrim hidden"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
   <script src="/icons.js"></script>
   <script src="/app.js"></script>

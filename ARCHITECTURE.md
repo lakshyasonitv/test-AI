@@ -484,18 +484,40 @@ escape `runs/`.
 
 ### Frontend Architecture
 
-Single-page HTML/JS/CSS app (`public/`):
-- **Run form:** prompt, URL, coverage dropdown
-- **Credential prompt:** appears when a run pauses waiting for login details; submitted values go
+Multi-screen HTML/JS/CSS app (`public/`), no bundler — served raw by `express.static`, so the
+files on disk are the files the browser runs.
+
+**Shell.** A sidebar (brand, New run, search, Projects tree, recent runs) plus a sticky 52px topbar
+(breadcrumb, History, a Settings popover). Below 900px the sidebar becomes a fixed drawer with a
+scrim.
+
+**Screens.** Each is a `<section class="view" data-view="...">`; exactly one carries
+`.view-active`. `showView(name)` in `app.js` is the *only* thing that moves that class, and it is
+also the only place run-scoped panels are cleared — see `resetRunUI()`. That single-site rule
+exists because the pre-router code hid panels from three places and had already drifted
+(`preview.js` forgot one, so a gate panel leaked across scenes). Routing is `location.hash`
+(`#/`, `#/run/:id`, `#/history`, and the not-yet-built `#/suite/:id`, `#/case/:id`,
+`#/compare/:id`) — no server routes needed.
+
+- **Home:** prompt, URL, a coverage segmented control, template chips
+- **Run:** four phase cards (`PENDING`/`WORKING`/`DONE`), the case-selection gate, live suite
+  progress, the verdict banner, per-case results
+- **History:** the newest runs, each viewable / re-runnable / deletable
+- **Credential prompt:** a modal, because the run is genuinely parked on it; submitted values go
   straight into the paused pipeline's memory, never through `runStore`/disk
-- **Case-selection panel:** appears when the gate pauses a run; checkbox review list, select
-  all/none, a "not satisfied" refinement flow, scrolls itself into view when it renders
-- **Phase pipeline:** 4 phases (Plan & Discover, Generate & Execute, Analyze, Report) with live aggregate status
-- **Suite progress:** per-case status, lazy-loaded details, screenshots, download buttons
-- **History panel:** newest 20 runs, each deletable
-- **Theme toggle:** light/dark, persisted in `localStorage`, applied before first paint via an
-  inline script (no flash of the wrong theme)
+- **Settings popover:** two per-run overrides (review-cases-before-running, self-heal). These are
+  sent with `POST /api/runs` as `options`; only a toggle the user actually changed is sent, so an
+  untouched popover leaves the server on its env default. `GET /api/health` reports those defaults
+  so the popover opens in the state the server is actually in.
 - **Polling:** uses `GET /api/runs/:id/state` (works through Cloudflare tunnels; SSE is localhost-only)
+
+**Status vocabulary.** The UI speaks seven statuses; the backend's are mapped onto them in
+`RUN_STATUS` (`app.js`). Two collapses are deliberate: `truncated`/`truncated_no_assertion`/
+`incomplete` all become **unconfirmed** (ran, proved nothing — never a pass), and `error` becomes
+**blocked**, never `failed`, so an invalid API key is not reported as a broken website.
+
+**Theme.** Light only. The design this implements ships no dark variant, so the previous dark/light
+token pair and its toggle were removed rather than half-maintained.
 
 ### Concurrency
 

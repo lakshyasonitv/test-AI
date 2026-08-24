@@ -29,7 +29,7 @@ npm run serve                # starts server on http://localhost:3000
 ```
 
 Open the UI, enter a prompt + URL, and watch the phase panel update with live progress. A
-light/dark theme toggle sits at the bottom of the sidebar — dark is the default, and the choice
+sidebar carries the Projects tree and your recent runs; the topbar carries History and a Settings
 is remembered across visits.
 
 **CLI mode:**

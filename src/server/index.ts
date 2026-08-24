@@ -32,7 +32,7 @@ app.param("runId", (_req, res, next, runId) => {
 // Start a run: generate the runId up front so we can hand it back immediately,
 // then let the pipeline run in the background, pushing events into the registry.
 app.post("/api/runs", (req, res) => {
-  const { prompt, url, urls, coverage } = req.body ?? {};
+  const { prompt, url, urls, coverage, options } = req.body ?? {};
   if (!prompt || (!url && !urls?.length)) return res.status(400).json({ error: "prompt and url (or urls) are required" });
 
   const checkUrls = (urls && Array.isArray(urls) && urls.length ? urls : [url]) as unknown[];
@@ -51,10 +51,19 @@ app.post("/api/runs", (req, res) => {
     return res.status(400).json({ error: `Invalid coverage "${coverage}". Use: minimal, standard, or full` });
   }
 
+  // Only the two known booleans are forwarded — the body is untrusted input, and
+  // spreading it straight into runPipeline would let a caller set anything.
+  const runOptions = options && typeof options === "object"
+    ? {
+      ...(typeof options.gateReview === "boolean" ? { gateReview: options.gateReview } : {}),
+      ...(typeof options.selfHeal === "boolean" ? { selfHeal: options.selfHeal } : {}),
+    }
+    : undefined;
+
   const runId = makeRunId();
   // Hand back the runId immediately; the run waits for a free slot, then executes.
   // Over-cap runs sit queued (UI shows pending) until a slot frees — no dropped requests.
-  runLimit.run(() => runPipeline({ prompt, url, urls, coverage }, record, runId, askCredentials))
+  runLimit.run(() => runPipeline({ prompt, url, urls, coverage, options: runOptions }, record, runId, askCredentials))
     .catch(() => { /* failure already emitted as an "error" event */ });
   res.status(202).json({ runId });
 });
@@ -181,6 +190,13 @@ app.get("/api/health", (_req, res) => {
       GEMINI_MODEL_LITE: check("GEMINI_MODEL_LITE"),
       NODE_ENV:        check("NODE_ENV"),
       PORT:            check("PORT"),
+    },
+    // Server-side defaults for the two per-run options a client may override. The
+    // UI reads these so its Settings toggles open in the state the server is
+    // actually in, instead of a hardcoded guess that silently disagrees.
+    defaults: {
+      gateReview: process.env.ENABLE_CASE_SELECTION_GATE === "true",
+      selfHeal: true,
     },
   });
 });

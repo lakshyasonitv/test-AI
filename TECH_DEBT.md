@@ -94,6 +94,7 @@ actually making that call.
 | TD-48 | SPA nav-button click-probe missed anchor-based routes with no `href` (saucedemo shape) — **fixed** (widened + destructive-verb guard) | Medium | Accidental | Lakshya |
 | TD-49 | `discoverPagesHybrid` (multi-URL entry) remains auth-unaware | Medium | Strategic | ? |
 | TD-50 | Click-probe candidate cap is document order, not priority order | Low | Strategic | ? |
+| TD-51 | History screen can only ever show the newest 20 runs — `listRuns()` has no paging and re-reads every run's full event log per call | Medium | Strategic | ? |
 
 ---
 
@@ -1281,3 +1282,25 @@ product grid — but it is a real ceiling with no signal today if it's ever hit 
 **Owner.** Revisit if a real site's routes get cut off; the fix would be de-duplicating
 structurally-identical repeated candidates (a pattern-detection pass, not attempted here) before
 applying the cap, rather than raising the cap itself.
+
+### TD-51. The History screen can only ever show 20 runs, and costs a full event-log read to do it — Medium / Strategic
+
+**What it is.** `listRuns()` (`src/runStore.ts:177`) hard-caps at `.slice(0, 20)` newest run
+directories, and for each one calls `store.read(runId)` (`:180`), which parses every line of that
+run's `events.ndjson` — files that embed whole AppModels and IRs. `GET /api/runs` is the only
+list endpoint; there is no paging, filtering, or search parameter.
+
+**Why it hurts.** The cap was invisible while the only consumer was a sidebar rail showing recent
+runs. The new History screen is a browsable list of past work, so the cap is now a product
+limitation rather than a rendering detail: runs older than the newest 20 are unreachable from the
+UI even though their directories are still on disk and still served at `/runs/<id>/`. The heading
+says "Your 20 most recent runs" precisely so the screen does not claim more than it delivers —
+that wording is a placeholder for a fix, not the intended end state. The per-call cost is the
+second half: every visit to the screen re-parses up to 20 full event logs to extract a handful of
+summary fields.
+
+**Remediation.** Two independent pieces, either alone helps. (1) Accept `?limit`/`?before` on
+`GET /api/runs` and page the directory listing, so the UI can ask for more. (2) Write a small
+per-run summary file at the end of a run (status, prompt, url, suite counts) and have
+`listRuns()` read *that* instead of replaying the event log — the data it needs is already
+computed at `done` time. (2) also removes the incentive to keep the cap low.

@@ -5,26 +5,26 @@
 const PHASES = [
   {
     key: "understand",
-    label: "1. Understanding Your Request",
-    desc: "The AI is analyzing your prompt to build an intelligent test plan.",
+    label: "1 · Understanding your request",
+    desc: "Reading the prompt and forming a plan.",
     stages: ["plan"]
   },
   {
     key: "analyze",
-    label: "2. Analyzing the Website",
-    desc: "Exploring web page layout, finding forms, inputs, buttons, and links.",
+    label: "2 · Analyzing the website",
+    desc: "Mapping pages, forms and controls.",
     stages: ["discovery"]
   },
   {
     key: "build_run",
-    label: "3. Building & Running Tests",
-    desc: "Writing the test steps and running them in a real browser, just like a person would.",
+    label: "3 · Building & running tests",
+    desc: "Writing Playwright scripts and executing them.",
     stages: ["testcases", "ir", "generate", "execute"]
   },
   {
     key: "results",
-    label: "4. Checking the Results",
-    desc: "Working out what passed, what didn't, and taking screenshots along the way.",
+    label: "4 · Checking the results",
+    desc: "Diagnosing failures and self-healing.",
     stages: ["failure_analysis", "heal"]
   },
 ];
@@ -159,7 +159,7 @@ function renderPhases() {
       <div class="phase-header">
         <span class="dot">${icon("clock", { size: 11 })}</span>
         <span class="label">${p.label}</span>
-        <span class="phase-badge pending">Pending</span>
+        <span class="phase-badge pending">PENDING</span>
       </div>
       <p class="phase-desc">${p.desc}</p>
       <p class="summary-text"></p>
@@ -232,10 +232,10 @@ function applyPhaseUI(phaseKey, phaseStatus, summaryText) {
   // Badge wording and the dot glyph are set together \u2014 they describe the same thing, and
   // when they were set in separate places the dot kept showing a clock on finished steps.
   const LOOK = {
-    started: { cls: "running", text: "Working", ic: "loader" },
-    completed: { cls: "done", text: "Done", ic: "check" },
-    failed: { cls: "failed", text: "Failed", ic: "x" },
-    pending: { cls: "pending", text: "Pending", ic: "clock" },
+    started: { cls: "running", text: "WORKING", ic: "loader" },
+    completed: { cls: "done", text: "DONE", ic: "check" },
+    failed: { cls: "failed", text: "FAILED", ic: "x" },
+    pending: { cls: "pending", text: "PENDING", ic: "clock" },
   };
   const look = LOOK[phaseStatus];
   if (look) {
@@ -595,16 +595,18 @@ function hideSuiteResults() {
 function verdictFor(data, stage, error) {
   const status = data?.status;
   if (stage === "error") {
-    return { cls: "failed", ic: "alert-circle", head: "Something went wrong while running this",
-             detail: error || "" };
+    return { cls: "blocked", ic: "alert-circle", head: "Couldn’t run this",
+             detail: error
+               ? error + " This is a problem on our side, not a result about your site."
+               : "The run stopped before it could test anything. This is a problem on our side, not a result about your site." };
   }
   if (status === "blocked") {
     return { cls: "blocked", ic: "slash-circle", head: "Couldn’t finish — the site needs something a test can’t provide",
              detail: `${data?.blockedBy ?? "The flow hit a step automation can’t pass."} The screenshot below is where it stopped.` };
   }
   if (status === "truncated_no_assertion") {
-    return { cls: "incomplete", ic: "minus-circle", head: "Ran, but couldn’t confirm the result",
-             detail: "It stopped before it got far enough to check the outcome, so this isn’t a pass or a failure." };
+    return { cls: "incomplete", ic: "minus-circle", head: "Ran, but couldn’t confirm everything",
+             detail: "One or more cases finished without a conclusive assertion — usually a step the test could not reach. That is neither a pass nor a failure." };
   }
   if (status === "no_cases_selected") {
     return { cls: "incomplete", ic: "minus-circle", head: "No test cases were selected",
@@ -619,10 +621,11 @@ function verdictFor(data, stage, error) {
              detail: "Everything it was able to reach behaved correctly." };
   }
   if (data?.passed) {
-    return { cls: "passed", ic: "check", head: "Passed", detail: "Everything checked out." };
+    return { cls: "passed", ic: "check", head: "Passed",
+             detail: "Everything checked out. Every selected case reached its expected outcome." };
   }
   return { cls: "failed", ic: "x", head: "Failed",
-           detail: "The site didn’t do what this test expected. Details below." };
+           detail: "The site did not do what at least one test expected. Open the failing case below for the diagnosis." };
 }
 
 /** Paint the verdict heading from that description. */
@@ -973,7 +976,7 @@ function renderHistory(runs) {
       li.classList.add("active");
       if (li.dataset.prompt) promptEl.value = li.dataset.prompt;
       if (li.dataset.url) urlEl.value = li.dataset.url;
-      connectToRun(li.dataset.runId);
+      navigate("#/run/" + li.dataset.runId);
     });
   });
   historyListEl.querySelectorAll(".history-del").forEach((btn) => {
@@ -990,10 +993,12 @@ function renderHistory(runs) {
   });
 }
 
+const RECENT_RUNS_SHOWN = 5;
+
 async function loadHistory() {
   const res = await fetch("/api/runs");
   const runs = await res.json();
-  renderHistory(runs);
+  renderHistory(runs.slice(0, RECENT_RUNS_SHOWN));
 }
 
 // -----------------------------------------------------------------------------
@@ -1382,14 +1387,8 @@ let pollGeneration = 0;
 async function connectToRun(runId) {
   const generation = ++pollGeneration;
 
-  // Reset UI
-  renderPhases();
-  hideSingleTestResult();
-  hideSuiteResults();
-  hideSuiteProgress();
-  hideCredentialPrompt();
-  hideCaseSelectionPanel();
-  diagnosisEl.textContent = "";
+  currentRunId = runId;
+  resetRunUI();
 
   let seen = 0;
   let fails = 0;
@@ -1448,12 +1447,12 @@ form.addEventListener("submit", async (e) => {
     const res = await fetch("/api/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prompt, url }),
+      body: JSON.stringify({ prompt, url, coverage, options: runOptions }),
     });
     if (!res.ok) throw new Error(`Server responded with HTTP ${res.status}`);
     const { runId } = await res.json();
     if (!runId) throw new Error("Server didn't return a run id");
-    connectToRun(runId);
+    navigate("#/run/" + runId);
   } catch (err) {
     // A failed POST previously left the button stuck on "Running\u2026" forever. Reset it and
     // surface the reason instead of silently swallowing the error.
@@ -1473,55 +1472,19 @@ form.addEventListener("submit", async (e) => {
 // Static chrome icons — set once, here, so index.html stays free of inline SVG.
 document.getElementById("brandMark").innerHTML = icon("zap", { size: 18 });
 document.getElementById("newRunIcon").innerHTML = icon("plus", { size: 15 });
-document.getElementById("urlIcon").innerHTML = icon("globe", { size: 15 });
 document.getElementById("runIcon").innerHTML = icon("play", { size: 14 });
 document.getElementById("credIcon").innerHTML = icon("key", { size: 18 });
 document.getElementById("caseSelectionIcon").innerHTML = icon("list", { size: 18 });
-document.getElementById("themeIconSun").innerHTML = icon("sun", { size: 14 });
-document.getElementById("themeIconMoon").innerHTML = icon("moon", { size: 14 });
-
-// -----------------------------------------------------------------------------
-// Theme (light/dark)
-// -----------------------------------------------------------------------------
-
-const themeToggleEl = document.getElementById("themeToggle");
-const themeToggleLabelEl = document.getElementById("themeToggleLabel");
-
-function applyTheme(theme) {
-  const isLight = theme === "light";
-  if (isLight) document.documentElement.dataset.theme = "light";
-  else delete document.documentElement.dataset.theme;
-
-  themeToggleEl.classList.toggle("is-light", isLight);
-  themeToggleEl.setAttribute("aria-pressed", String(isLight));
-  themeToggleEl.setAttribute("aria-label", isLight ? "Switch to dark theme" : "Switch to light theme");
-  themeToggleLabelEl.textContent = isLight ? "Light" : "Dark";
-
-  try { localStorage.setItem("theme", theme); } catch {}
-}
-
-// The inline script in index.html's <head> already applied a saved "light" preference
-// before first paint (to avoid a flash of the wrong theme) — this just syncs the toggle's
-// own UI state to match on load, and defaults to dark when nothing is saved yet.
-applyTheme(document.documentElement.dataset.theme === "light" ? "light" : "dark");
-
-themeToggleEl.addEventListener("click", () => {
-  applyTheme(themeToggleEl.classList.contains("is-light") ? "dark" : "light");
-});
 
 // "New run" clears the workspace without a page reload, so an in-flight poll is abandoned
 // (pollGeneration is what stops the old loop touching the DOM again).
 document.getElementById("newRunBtn").addEventListener("click", () => {
   pollGeneration++;
+  currentRunId = null;
   promptEl.value = "";
   urlEl.value = "";
-  renderPhases();
-  hideSingleTestResult();
-  hideSuiteResults();
-  hideSuiteProgress();
-  hideCredentialPrompt();
-  hideCaseSelectionPanel();
-  diagnosisEl.textContent = "";
+  resetRunUI();
+  navigate("#/");
   submitBtn.disabled = false;
   submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
   historyListEl.querySelectorAll(".history-item").forEach(i => i.classList.remove("active"));
@@ -1539,3 +1502,304 @@ screenshotToggleEl.addEventListener("click", () => {
     ? `${icon("image", { size: 14 })} View all screenshots`
     : `${icon("chevron-down", { size: 14 })} Hide screenshots`;
 });
+
+// -----------------------------------------------------------------------------
+// Shell: views, routing, and the one reset site
+// -----------------------------------------------------------------------------
+
+const sidebarEl = document.getElementById("sidebar");
+const sidebarTreeEl = document.getElementById("sidebarTree");
+const sidebarSearchEl = document.getElementById("sidebarSearch");
+const sidebarOpenEl = document.getElementById("sidebarOpen");
+const sidebarCloseEl = document.getElementById("sidebarClose");
+const scrimEl = document.getElementById("scrim");
+const crumbsEl = document.getElementById("crumbs");
+const crumbRootEl = document.getElementById("crumbRoot");
+const historyBtnEl = document.getElementById("historyBtn");
+const allRunsBtnEl = document.getElementById("allRunsBtn");
+const settingsBtnEl = document.getElementById("settingsBtn");
+const settingsPopEl = document.getElementById("settingsPop");
+const gateToggleEl = document.getElementById("gateToggle");
+const healToggleEl = document.getElementById("healToggle");
+const coverageSegEl = document.getElementById("coverageSeg");
+const toastEl = document.getElementById("toast");
+const runTitleEl = document.getElementById("runTitle");
+const runScopeLabelEl = document.getElementById("runScopeLabel");
+const runMetaEl = document.getElementById("runMeta");
+
+/**
+ * Backend status -> the vocabulary the UI speaks.
+ *
+ * Two collapses here are deliberate, not tidying:
+ *
+ *  - truncated / truncated_no_assertion / incomplete all become "unconfirmed".
+ *    They are three names for one situation: the test ran and proved nothing.
+ *    Reporting any of them as a pass is what problems.md calls out under
+ *    "a truncated test can report green".
+ *
+ *  - error becomes "blocked", NOT "failed". An invalid API key or a dead model
+ *    id is not the site under test misbehaving, and reporting it as a failure is
+ *    the single most expensive defect in problems.md ("you were told your
+ *    website has failing tests when the truth was that your API key was
+ *    invalid"). --blocked carries its own hue precisely so "we couldn't run"
+ *    can never be read as "your site is broken".
+ */
+const RUN_STATUS = {
+  passed: { key: "passed", label: "Passed" },
+  failed: { key: "failed", label: "Failed" },
+  blocked: { key: "blocked", label: "Blocked" },
+  error: { key: "blocked", label: "Couldn't run" },
+  truncated: { key: "unconfirmed", label: "Unconfirmed" },
+  truncated_no_assertion: { key: "unconfirmed", label: "Unconfirmed" },
+  incomplete: { key: "unconfirmed", label: "Unconfirmed" },
+  no_cases_selected: { key: "blocked", label: "Nothing selected" },
+  running: { key: "running", label: "Running" },
+  pending: { key: "pending", label: "Queued" },
+  draft: { key: "draft", label: "Not run yet" },
+};
+const statusKey = (s) => (RUN_STATUS[s] || RUN_STATUS.pending).key;
+const statusText = (s) => (RUN_STATUS[s] || { label: s }).label;
+
+/** The app's only general notification channel. showNotice() is not one: it
+ *  writes inside #case-selection-panel, so its message is invisible whenever
+ *  that panel is closed. */
+let toastTimer = null;
+function toast(message) {
+  toastEl.textContent = message;
+  toastEl.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.add("hidden"), 3200);
+}
+
+const VIEWS = ["home", "run", "suite", "case", "compare", "history"];
+let currentView = "home";
+
+/**
+ * The ONLY thing that switches screens.
+ *
+ * The pre-router code hid panels from three separate places and already leaked
+ * because of it (preview.js's play() forgot hideCaseSelectionPanel, so switching
+ * scenes left that panel open). With six screens that failure mode multiplies,
+ * so every hide lives here and nowhere else.
+ */
+function showView(name) {
+  if (!VIEWS.includes(name)) name = "home";
+  currentView = name;
+  document.querySelectorAll(".view").forEach((v) => {
+    v.classList.toggle("view-active", v.dataset.view === name);
+  });
+  closeSidebarDrawer();
+  window.scrollTo(0, 0);
+}
+
+/** Clears every run-scoped panel. Called on a new run, on switching runs, and
+ *  by preview.js between scenes — one function, so a new panel is registered
+ *  once instead of in three places that can drift apart. */
+function resetRunUI() {
+  renderPhases();
+  hideSingleTestResult();
+  hideSuiteResults();
+  hideSuiteProgress();
+  hideCredentialPrompt();
+  hideCaseSelectionPanel();
+  diagnosisEl.textContent = "";
+  runTitleEl.textContent = "";
+  runMetaEl.textContent = "";
+}
+
+function setCrumbs(parts) {
+  const tail = parts
+    .map((p) => `<span class="crumb-sep">/</span><span class="crumb-current">${escapeHtml(p)}</span>`)
+    .join("");
+  crumbsEl.innerHTML =
+    `<button type="button" class="crumb crumb-root" id="crumbRoot">Testbench</button>${tail}`;
+  crumbsEl.querySelector("#crumbRoot").addEventListener("click", () => navigate("#/"));
+}
+
+function navigate(hash) {
+  if (location.hash === hash) applyRoute();
+  else location.hash = hash;
+}
+
+/** Hash routing: no server routes needed, and express.static already 404s
+ *  anything it doesn't recognise, so a deep link can't hit the backend. */
+function applyRoute() {
+  const raw = (location.hash || "#/").replace(/^#\/?/, "");
+  const [head, id] = raw.split("/");
+
+  if (head === "run" && id) {
+    showView("run");
+    setCrumbs(["Run"]);
+    if (id !== currentRunId) connectToRun(id);
+    return;
+  }
+  if (head === "history") {
+    showView("history");
+    setCrumbs(["History"]);
+    renderHistoryView();
+    return;
+  }
+  if (head === "suite" && id) { showView("suite"); setCrumbs(["Suite"]); return; }
+  if (head === "case" && id) { showView("case"); setCrumbs(["Case"]); return; }
+  if (head === "compare" && id) { showView("compare"); setCrumbs(["Compare"]); return; }
+
+  showView("home");
+  setCrumbs([]);
+}
+
+window.addEventListener("hashchange", applyRoute);
+
+// -----------------------------------------------------------------------------
+// Sidebar drawer (narrow viewports only)
+// -----------------------------------------------------------------------------
+
+function openSidebarDrawer() {
+  sidebarEl.classList.add("open");
+  scrimEl.classList.remove("hidden");
+}
+function closeSidebarDrawer() {
+  sidebarEl.classList.remove("open");
+  scrimEl.classList.add("hidden");
+}
+sidebarOpenEl.addEventListener("click", openSidebarDrawer);
+sidebarCloseEl.addEventListener("click", closeSidebarDrawer);
+scrimEl.addEventListener("click", closeSidebarDrawer);
+
+// -----------------------------------------------------------------------------
+// Run options — the Settings popover
+//
+// These are per-run request options, not persisted server settings. The server
+// reads ENABLE_CASE_SELECTION_GATE from its own env; sending an override with a
+// run is what lets the popover mean anything without a settings backend.
+// -----------------------------------------------------------------------------
+
+// Only keys the user actually toggled are sent. An untouched popover therefore
+// leaves the server on its own env-configured default rather than the client
+// silently overriding it with a hardcoded guess.
+const runOptions = {};
+const optionDefaults = { gateReview: false, selfHeal: true };
+
+function paintToggle(el, on) { el.setAttribute("aria-pressed", String(on)); }
+
+function bindToggle(el, key) {
+  paintToggle(el, optionDefaults[key]);
+  el.addEventListener("click", () => {
+    const next = !(key in runOptions ? runOptions[key] : optionDefaults[key]);
+    runOptions[key] = next;
+    paintToggle(el, next);
+  });
+}
+bindToggle(gateToggleEl, "gateReview");
+bindToggle(healToggleEl, "selfHeal");
+
+fetch("/api/health")
+  .then((r) => r.json())
+  .then((h) => {
+    if (!h || !h.defaults) return;
+    Object.assign(optionDefaults, h.defaults);
+    if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);
+    if (!("selfHeal" in runOptions)) paintToggle(healToggleEl, optionDefaults.selfHeal);
+  })
+  .catch(() => { /* health is a diagnostic; the toggles still work without it */ });
+
+settingsBtnEl.addEventListener("click", () => {
+  const open = settingsPopEl.classList.toggle("hidden");
+  settingsBtnEl.setAttribute("aria-expanded", String(!open));
+});
+document.addEventListener("click", (e) => {
+  if (settingsPopEl.classList.contains("hidden")) return;
+  if (settingsPopEl.contains(e.target) || settingsBtnEl.contains(e.target)) return;
+  settingsPopEl.classList.add("hidden");
+  settingsBtnEl.setAttribute("aria-expanded", "false");
+});
+
+// -----------------------------------------------------------------------------
+// Coverage segmented control
+// -----------------------------------------------------------------------------
+
+let coverage = "standard";
+coverageSegEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".seg-btn");
+  if (!btn) return;
+  coverage = btn.dataset.coverage;
+  coverageSegEl.querySelectorAll(".seg-btn").forEach((b) => {
+    b.classList.toggle("active", b === btn);
+  });
+});
+
+sidebarTreeEl.innerHTML =
+  `<div class="tree-empty">No projects yet. Runs you save will appear here.</div>`;
+
+historyBtnEl.addEventListener("click", () => navigate("#/history"));
+allRunsBtnEl.addEventListener("click", () => navigate("#/history"));
+
+// -----------------------------------------------------------------------------
+// History screen — the full-page list, distinct from the sidebar's recent list.
+//
+// listRuns() on the server is hard-capped at the newest 20 run directories and
+// has no paging, so the heading says 20 rather than claiming "every run".
+// -----------------------------------------------------------------------------
+
+async function renderHistoryView() {
+  const body = document.getElementById("historyViewBody");
+  body.innerHTML = `
+    <div>
+      <div class="eyebrow">Results history</div>
+      <h1 class="page-head-title">Your 20 most recent runs</h1>
+    </div>
+    <div class="panel"><div id="historyRows"></div></div>`;
+
+  const runs = await fetch("/api/runs").then((r) => r.json()).catch(() => []);
+  const rows = document.getElementById("historyRows");
+  if (!runs.length) {
+    rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">No runs recorded yet.</div>`;
+    return;
+  }
+
+  rows.innerHTML = runs.map((r) => {
+    const st = statusKey(r.status);
+    const suite = r.suite ? `${r.suite.passed}/${r.suite.total} passed` : "";
+    const when = r.startedAt ? new Date(r.startedAt).toLocaleString() : "";
+    return `
+    <div class="hrow" data-run-id="${escapeHtml(r.runId)}">
+      <span class="case-badge badge-${escapeHtml(st)}">${escapeHtml(statusText(r.status))}</span>
+      <div class="hrow-main">
+        <div class="hrow-label">${escapeHtml(r.prompt || "(no prompt)")}</div>
+        <div class="hrow-meta">${escapeHtml([suite, when, r.url].filter(Boolean).join(" · "))}</div>
+      </div>
+      <div class="hrow-actions">
+        <button type="button" class="dl-btn-inline" data-act="view">View</button>
+        <button type="button" class="dl-btn-inline" data-act="rerun">Re-run</button>
+        <button type="button" class="dl-btn-inline hrow-del" data-act="delete">Delete</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  rows.querySelectorAll(".hrow").forEach((row) => {
+    const runId = row.dataset.runId;
+    row.querySelectorAll("[data-act]").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const act = btn.dataset.act;
+        if (act === "view") return navigate("#/run/" + runId);
+        if (act === "rerun") {
+          const src = runs.find((r) => r.runId === runId);
+          if (!src) return;
+          promptEl.value = src.prompt || "";
+          urlEl.value = src.url || "";
+          navigate("#/");
+          toast("Loaded that run into the composer — press Run test to go again");
+          return;
+        }
+        if (!confirm("Delete this run permanently?")) return;
+        await fetch(`/api/runs/${runId}`, { method: "DELETE" }).catch(() => {});
+        renderHistoryView();
+        loadHistory();
+        toast("Run deleted");
+      });
+    });
+  });
+}
+
+let currentRunId = null;
+applyRoute();

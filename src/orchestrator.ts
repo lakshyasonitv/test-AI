@@ -48,8 +48,21 @@ export type AskCredentials = (req: CredentialRequest) => Promise<Credentials | n
 
 export type Coverage = "minimal" | "standard" | "full";
 
+/**
+ * Per-run overrides for behaviour that is otherwise env-configured. The UI has a
+ * Settings popover for these two; a toggle that did not actually reach the
+ * pipeline would be a decorative control, so it reaches it. Both default to the
+ * existing env behaviour when a caller omits them (the CLI does).
+ */
+export interface RunOptions {
+  /** Pause after generating cases so a human can accept/reject them. */
+  gateReview?: boolean;
+  /** Allow one re-snapshot + regenerate + re-run on a selector-drift failure. */
+  selfHeal?: boolean;
+}
+
 export async function runPipeline(
-  { prompt, url, urls, coverage }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage },
+  { prompt, url, urls, coverage, options }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; options?: RunOptions },
   onEvent: OnEvent = () => { },
   presetRunId?: string,
   askCredentials?: AskCredentials
@@ -57,6 +70,7 @@ export async function runPipeline(
   // Normalize: single `url` becomes `urls: [url]`; both provided means `urls` wins.
   const resolvedUrls = urls?.length ? urls : url ? [url] : [];
   if (!resolvedUrls.length) throw new Error("Either url or urls must be provided");
+  const selfHealEnabled = options?.selfHeal ?? true;
   const runId = presetRunId ?? makeRunId();
   const runDir = path.join("runs", runId);
   mkdirSync(runDir, { recursive: true });
@@ -149,7 +163,11 @@ export async function runPipeline(
     // The case-selection gate pauses here: it generates a batch, parks the run on a selection
     // prompt, and regenerates on "not satisfied" — while the flag is off or no interactive
     // responder is supplied (CLI mode), the gate is never even imported.
-    const gateUsed = process.env.ENABLE_CASE_SELECTION_GATE === "true" && !!askCredentials;
+    // A per-run override wins over the env default; omitted, the env decides as before.
+    // The interactive-responder check is not overridable — with no way to answer, the gate
+    // would park the run until CASE_SELECTION_WAIT_MS expires with nothing to show for it.
+    const gateRequested = options?.gateReview ?? (process.env.ENABLE_CASE_SELECTION_GATE === "true");
+    const gateUsed = gateRequested && !!askCredentials;
     const cases = await step("testcases", "03-cases.json", async () => {
       if (gateUsed) {
         const { runCaseSelectionGate } = await import("./stages/caseSelectionGate.js");
@@ -249,7 +267,7 @@ export async function runPipeline(
       // shared with suiteRunner.ts's non-primary cases, see that module's own doc comment.
       // isHealable is the same gate attemptHeal applies internally — checked here too only so
       // "heal started" isn't emitted for a category that was never going to attempt anything.
-      if (isHealable(diagnosis, ir)) {
+      if (selfHealEnabled && isHealable(diagnosis, ir)) {
         try {
           emit("heal", "started");
           const healedOutcome = await attemptHeal({
@@ -342,7 +360,7 @@ export async function runPipeline(
       healed,
     };
     console.log("3. Running suite...");
-    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, llmBudget, runCreds);
+    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, llmBudget, runCreds, selfHealEnabled);
     console.log("✓ Suite finished");
 
     console.log("Pipeline finished");
