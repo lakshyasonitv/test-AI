@@ -68,7 +68,7 @@ actually making that call.
 | TD-21 | `tests/strategy.test.ts` flakes ~1 run in 6 under parallel load — **fixed**, import hoisted to module scope | Medium | Accidental | Lakshya |
 | TD-22 | LLM disk cache never expires; a key missing an input dimension serves stale results forever | Medium | Strategic | Lakshya |
 | TD-23 | Case-selection-gate progress events briefly corrupt the phase summary text | Low | Accidental | Lakshya |
-| TD-24 | `PLAYWRIGHT_TIMEOUT` env var is set but never read; comment implies otherwise | Low | Accidental | Lakshya |
+| TD-24 | `PLAYWRIGHT_TIMEOUT` env var is set but never read; comment implies otherwise — **fixed** | Low | Accidental | Lakshya |
 | TD-25 | Deleting the currently-viewed run leaves its polling loop running forever | Low | Accidental | Lakshya |
 | TD-26 | Credential prompt fires even when no case in the suite has a login step | Low | Accidental | ? |
 | TD-27 | `caseAccumulator.appendAcceptedCases` doesn't dedup near-duplicate titles within one batch | Low | Accidental | Lakshya |
@@ -146,8 +146,9 @@ step, never investigated further." It is now investigated: it's this.
 
 **Remediation.** Don't kill before the child can flush a report. Either raise
 `CONFIG.TIMEOUTS.TEST_RUN` comfortably above Playwright's own per-test timeout
-(`playwright.config.ts:5`, currently 50s — TD-24 documents that the env var meant to keep these in
-sync is dead), or give the child a bounded grace period after Playwright's own timeout fires before
+(`playwright.config.ts:5`, currently 50s and now genuinely configurable via `PLAYWRIGHT_TIMEOUT`
+per TD-24's fix — the two are no longer at risk of silently drifting apart), or give the child a
+bounded grace period after Playwright's own timeout fires before
 sending `SIGKILL`, so `onEnd` gets a chance to write `results.json` even for a test that legitimately
 timed out. Consider `trace: "on-first-retry"` (cheaper than `retain-on-failure`) if trace/video
 finalization on a large failing case turns out to be what's pushing total time past 60s — worth
@@ -556,22 +557,27 @@ text momentarily.
 **Remediation.** Give `summarize()` a branch for `data.action` before falling through to the
 count-based text, or skip `setPhaseFromStage` entirely for gate `action` events.
 
-### TD-24. `PLAYWRIGHT_TIMEOUT` env var is set but never read; comment implies otherwise — Low / Accidental
+### TD-24. `PLAYWRIGHT_TIMEOUT` env var is set but never read; comment implies otherwise — Low / Accidental — **fixed**
 
-**What it is.** `executor.ts` injects `PLAYWRIGHT_TIMEOUT: String(CONFIG.TIMEOUTS.TEST_RUN)` into
-the child's env. No code anywhere reads `process.env.PLAYWRIGHT_TIMEOUT` —
-`playwright.config.ts:5` hardcodes `timeout: 50_000` instead. The env var's own comment ("Increased
-from 30s to 60s") reads as if it controls Playwright's per-test timeout; it only controls the
-*parent* process's kill timer (TD-02).
+**What it is.** `playwright.config.ts:5` hardcoded `timeout: 50_000`, ignoring
+`process.env.PLAYWRIGHT_TIMEOUT` entirely.
 
-**Why it hurts.** Today 60s (parent kill) > 50s (Playwright's real timeout) by coincidence, so
-Playwright always reports before the parent kills it — except when it doesn't (TD-02). Someone
-editing `CONFIG.TIMEOUTS.TEST_RUN` down, reasonably trusting the env var's name, could invert that
-relationship and make a legitimately-slow-but-passing test get killed and silently retried instead
-of correctly reported.
+**Correction to this entry's own history, found while fixing it (Phase 0, Step 0.4):** this entry
+originally claimed `executor.ts` injects `PLAYWRIGHT_TIMEOUT: String(CONFIG.TIMEOUTS.TEST_RUN)`
+into the spawned Playwright process's env. That is not true of the code as it stands —
+`executePlaywright`'s `spawn(...)` call only sets `...process.env`, `...secretEnv`,
+`PLAYWRIGHT_JSON_OUTPUT_NAME`, and `PLAYWRIGHT_HEADLESS`; `PLAYWRIGHT_TIMEOUT` appears nowhere in
+`src/` before this fix. Either the injection was removed in a later refactor without updating this
+entry, or it never existed and this entry described an intended-but-unshipped change — either way,
+this is itself an instance of the doc-drift pattern `DECISIONS.md` D-01 already covers. `TEST_RUN`
+(currently `100_000`ms) only ever drove the *parent* process's own `setTimeout`/`SIGKILL` kill timer
+(TD-02); it was never actually connected to Playwright's own per-test timeout.
 
-**Remediation.** Either have `playwright.config.ts` actually read `process.env.PLAYWRIGHT_TIMEOUT`,
-or delete the env var and the misleading comment. Resolve together with TD-02.
+**Remediation (done).** `playwright.config.ts` now reads
+`Number(process.env.PLAYWRIGHT_TIMEOUT) || 50_000` — genuinely configurable, and since nothing sets
+that env var today (confirmed: absent from `.env`, and no longer any injection site to remove),
+behavior is unchanged — every run still gets Playwright's own 50s timeout, comfortably under the
+parent's 100s kill timer, exactly as before this fix.
 
 ### TD-25. Deleting the currently-viewed run leaves its polling loop running forever — Low / Accidental
 

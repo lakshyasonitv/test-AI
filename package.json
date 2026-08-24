@@ -2,6 +2,9 @@
   "name": "ai-test-platform",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.12.0"
+  },
   "scripts": {
     "generate": "node --env-file-if-exists=.env --import tsx src/cli.ts",
     "serve": "node --env-file-if-exists=.env --import tsx src/server/index.ts",
@@ -20,7 +23,9 @@
     "@playwright/test": "1.49.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.20.1",
+    "@types/supertest": "^7.2.1",
     "playwright": "1.49.0",
+    "supertest": "^7.2.2",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.10"

@@ -1,0 +1,13 @@
+{
+  "meta": {
+    "feature": "Ticketing",
+    "title": "Raise a ticket",
+    "priority": "high",
+    "sourcePrompt": "Raise a ticket",
+    "baseUrl": "https://assettrack-web.onrender.com"
+  },
+  "steps": [
+    { "id": "s8", "action": "click", "target": { "role": "button", "name": "Raise Ticket" } },
+    { "id": "s9", "action": "fill", "target": { "role": "textbox", "name": "E.g., Laptop screen flickering" }, "value": "Laptop screen flickering" }
+  ]
+}

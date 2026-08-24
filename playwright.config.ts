@@ -2,7 +2,10 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./runs",
-  timeout: 50_000,
+  // TD-24: this used to be hardcoded and silently ignore PLAYWRIGHT_TIMEOUT, which executor.ts
+  // documented setting but nothing ever read. Now genuinely configurable; unset, the default
+  // (50000) is unchanged from before this line existed.
+  timeout: Number(process.env.PLAYWRIGHT_TIMEOUT) || 50_000,
   retries: 0,
   reporter: [["json", { outputFile: "results.json" }], ["list"]],
   use: {

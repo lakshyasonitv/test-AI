@@ -1,0 +1,31 @@
+{
+  "ir": {
+    "meta": {
+      "feature": "Ticketing",
+      "title": "Raise a ticket",
+      "priority": "high",
+      "sourcePrompt": "Raise a ticket",
+      "baseUrl": "https://assettrack-web.onrender.com"
+    },
+    "steps": [
+      { "id": "s8", "action": "click", "target": { "role": "button", "name": "Raise Ticket" } },
+      { "id": "s9", "action": "wait", "value": "3000" },
+      { "id": "s10", "action": "fill", "target": { "role": "textbox", "name": "Search assets by serial or name..." }, "value": "Laptop screen flickering" }
+    ]
+  },
+  "updatedAppModel": {
+    "baseUrl": "https://assettrack-web.onrender.com",
+    "pages": [
+      {
+        "url": "https://assettrack-web.onrender.com/tickets",
+        "title": "Tickets",
+        "concepts": ["Ticketing"],
+        "elements": [
+          { "role": "link", "name": "TicketsTickets" },
+          { "role": "textbox", "name": "Search assets by serial or name..." },
+          { "role": "button", "name": "Raise Ticket" }
+        ]
+      }
+    ]
+  }
+}

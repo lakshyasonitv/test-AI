@@ -9,7 +9,7 @@ here.
 
 A pipeline that turns a natural-language testing request + URL into **executed** Playwright tests:
 Gemini plans -> DOM-first discovery (cheerio, zero LLM tokens on the common path, same-origin site
-crawl) -> Gemini generates a coverage suite -> Groq compiles the chosen case into a strict JSON IR,
+crawl) -> Gemini generates a coverage suite -> Gemini compiles the chosen case into a strict JSON IR,
 deterministically grounded against the live app -> a pure-code generator emits a Playwright spec ->
 the spec runs for real, per-case, in its own browser context -> on failure, a deterministic
 classifier tries first, Gemini vision second.
