@@ -30,11 +30,15 @@ let cachedKey = "";
 let warnedMissingKey = false;
 
 /**
- * Service-role client. Reads bypass row-level security, which is deliberate and why this key must
- * never reach a browser: the tables are RLS deny-all precisely so the publishable key can't read
- * them directly, and the server is the only thing allowed through.
+ * Service-role client. Reads and writes bypass row-level security, which is deliberate and why
+ * this key must never reach a browser: RLS only ever grants a signed-in user their own
+ * organisation's rows, and the server — which must be able to see across organisations to
+ * enforce access itself — is the only thing allowed through unrestricted.
+ *
+ * Exported because Step 3.4's authorization queries (membership lookups, the run→organisation
+ * map) need the same client. One construction site, one cache, one missing-key warning.
  */
-function getServiceClient(): SupabaseClient | null {
+export function getServiceClient(): SupabaseClient | null {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -43,9 +47,10 @@ function getServiceClient(): SupabaseClient | null {
     if (!warnedMissingKey) {
       warnedMissingKey = true;
       console.error(
-        "[shadow] DB_ENABLED=true but SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set. " +
+        "[db] SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set. " +
         "Copy the service_role key from Supabase Dashboard -> Project Settings -> API into .env. " +
-        "Falling back to disk only; nothing is broken, the shadow comparison is just not running.",
+        "Falling back to disk only; nothing is broken, but the shadow comparison and any " +
+        "organisation-scoped authorization cannot run.",
       );
     }
     return null;
@@ -73,10 +78,14 @@ export async function fetchRunsFromDb(limit = SHADOW_LIMIT): Promise<DbRunRow[] 
   const client = getServiceClient();
   if (!client) return null;
   try {
+    // Deliberately NOT filtered by organisation. The question this comparison answers is "does
+    // the database hold the same runs the disk does", and disk has no concept of an organisation
+    // — so scoping to one org would report every other org's runs as "missing from disk" and
+    // every run written by a second org as "missing from database". With a single organisation
+    // this is identical to the previous org-filtered query.
     const { data, error } = await client
       .from("runs")
       .select("id, prompt, url, status, started_at")
-      .eq("organisation_id", DEFAULT_ORG_ID)
       .order("started_at", { ascending: false })
       .limit(limit);
     if (error) {
@@ -135,6 +144,88 @@ export function diffRuns(diskRuns: RunSummary[], dbRows: DbRunRow[]): string[] {
   }
 
   return problems;
+}
+
+// ---------------------------------------------------------------------------
+// Writes (Step 3.4's dependency)
+//
+// Authorization asks "which organisation owns this run?". Until new runs are written to the
+// database that question has no answer for anything created after the one-off backfill, so
+// tenancy could only ever be enforced on historical rows. These writes are what make it real.
+//
+// Every one of them is fire-and-forget and non-fatal, exactly like the shadow read above: a run
+// is a long, expensive, user-visible operation and a database hiccup must never fail it, delay
+// it, or lose it. Disk remains authoritative for reads — flipping that is Step 3.3.
+// ---------------------------------------------------------------------------
+
+export interface NewRunRow {
+  id: string;
+  organisation_id: string;
+  started_by: string | null;
+  prompt: string | null;
+  url: string | null;
+  status: string;
+  started_at: string;
+}
+
+/** Record a newly-started run. Idempotent: re-running never duplicates or clobbers. */
+export function recordRunStarted(row: NewRunRow): void {
+  if (!isDbEnabled()) return;
+  const client = getServiceClient();
+  if (!client) return;
+
+  void (async () => {
+    try {
+      // onConflict ignoreDuplicates: a retried request must not reset a run's status back to
+      // "incomplete" after it has already finished.
+      const { error } = await client
+        .from("runs")
+        .upsert(row, { onConflict: "id", ignoreDuplicates: true });
+      if (error) console.error(`[db] could not record run ${row.id}:`, error.message);
+    } catch (err) {
+      console.error(`[db] recording run ${row.id} threw:`, (err as Error)?.message ?? err);
+    }
+  })();
+}
+
+/** Move a run to its terminal status once the pipeline reports done/error. */
+export function recordRunStatus(runId: string, status: string): void {
+  if (!isDbEnabled()) return;
+  const client = getServiceClient();
+  if (!client) return;
+
+  void (async () => {
+    try {
+      const { error } = await client.from("runs").update({ status }).eq("id", runId);
+      if (error) console.error(`[db] could not update run ${runId}:`, error.message);
+    } catch (err) {
+      console.error(`[db] updating run ${runId} threw:`, (err as Error)?.message ?? err);
+    }
+  })();
+}
+
+/**
+ * Which organisation owns each of these runs. Runs with no row are simply absent from the map —
+ * the caller decides what that means, and for authorization it must mean "deny", never "allow".
+ */
+export async function fetchRunOrgIds(runIds: string[]): Promise<Map<string, string> | null> {
+  if (runIds.length === 0) return new Map();
+  const client = getServiceClient();
+  if (!client) return null;
+  try {
+    const { data, error } = await client
+      .from("runs")
+      .select("id, organisation_id")
+      .in("id", runIds);
+    if (error) {
+      console.error("[db] run ownership lookup failed:", error.message);
+      return null;
+    }
+    return new Map((data ?? []).map((r: { id: string; organisation_id: string }) => [r.id, r.organisation_id]));
+  } catch (err) {
+    console.error("[db] run ownership lookup threw:", (err as Error)?.message ?? err);
+    return null;
+  }
 }
 
 let lastShadowRunMs = 0;

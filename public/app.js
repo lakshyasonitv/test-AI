@@ -79,7 +79,19 @@ const auth = {
   publishableKey: null,
   token: null,
   email: null,
+  // Step 3.4. Populated from GET /api/auth/me after sign-in; used ONLY to decide what the UI
+  // draws. Every action these gate is independently enforced server-side — hiding a button is a
+  // courtesy, not a control, and tampering with these values in devtools buys nothing.
+  role: null,
+  organisationId: null,
+  // Which credential screen an unauthenticated visitor is looking at: "login" or "signup".
+  screen: "login",
 };
+
+/** Role ladder, mirrored from src/server/authz.ts. Kept in sync by hand — it is only ever used
+ *  to hide controls, so a drift shows up as a visible affordance the server then refuses. */
+const ROLE_RANK = { viewer: 1, editor: 2, admin: 3, owner: 4 };
+const roleAtLeast = (actual, required) => (ROLE_RANK[actual] || 0) >= (ROLE_RANK[required] || 0);
 
 // Restore synchronously, before the first applyRoute() at the bottom of this file — otherwise an
 // already-signed-in user would flash the login view on every reload.
@@ -129,8 +141,69 @@ window.fetch = function (input, init) {
   return rawFetch(input, next);
 };
 
+/**
+ * Reflect the caller's role in what the UI offers.
+ *
+ * Expressed as RESTRICTION classes (`role-no-edit` / `role-no-admin`) rather than permission
+ * classes, so the default — no class, nothing hidden — is exactly today's behaviour. A permission
+ * model would hide every control until JS proved otherwise, which would make the whole UI flicker
+ * on load with auth off.
+ */
+function applyRoleRestrictions() {
+  const body = document.body;
+  // Auth off, or role not yet known: restrict nothing. The server is still the real gate.
+  const unrestricted = !auth.required || !auth.role;
+  body.classList.toggle("role-no-edit", !unrestricted && !roleAtLeast(auth.role, "editor"));
+  body.classList.toggle("role-no-admin", !unrestricted && !roleAtLeast(auth.role, "admin"));
+
+  const badge = document.getElementById("sessionBadge");
+  const emailEl = document.getElementById("sessionEmail");
+  const roleEl = document.getElementById("sessionRole");
+  if (!badge) return;
+  if (auth.required && auth.token && auth.role) {
+    emailEl.textContent = auth.email || "";
+    roleEl.textContent = auth.role;
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+}
+
+/**
+ * Make sure the signed-in account belongs to an organisation, then learn our role in it.
+ *
+ * bootstrap runs after every sign-in, not just after sign-up: an account created directly in the
+ * Supabase dashboard never touches this server, and would otherwise have a working login that
+ * could do nothing at all.
+ */
+async function refreshIdentity() {
+  if (!auth.required || !auth.token) {
+    auth.role = null;
+    auth.organisationId = null;
+    applyRoleRestrictions();
+    return;
+  }
+  try {
+    await fetch("/api/auth/bootstrap", { method: "POST" });
+    const me = await fetch("/api/auth/me").then((r) => (r.ok ? r.json() : null));
+    if (me) {
+      auth.role = me.role || null;
+      auth.organisationId = me.organisationId || null;
+      if (me.email) auth.email = me.email;
+    }
+  } catch {
+    // Non-fatal: an unknown role simply restricts nothing in the UI, and the server still
+    // enforces every action independently.
+  }
+  applyRoleRestrictions();
+}
+
 async function signOut() {
   const { url, publishableKey, token } = auth;
+  auth.role = null;
+  auth.organisationId = null;
+  auth.screen = "login";
+  applyRoleRestrictions();
   setSession(null, null);
   // Best-effort server-side revoke; the local session is already gone either way, so a failure
   // here must not strand the user on a screen they can't leave.
@@ -186,6 +259,7 @@ async function initAuth() {
       }
       setSession(body.access_token, body.user && body.user.email);
       document.getElementById("loginPassword").value = "";
+      await refreshIdentity();
       navigate("#/");
       applyRoute();
       loadHistory();
@@ -197,6 +271,92 @@ async function initAuth() {
       submitEl.textContent = "Sign in";
     }
   });
+
+  // --- sign up -------------------------------------------------------------
+  const signupForm = document.getElementById("signupForm");
+  const signupError = document.getElementById("signupError");
+  const signupNotice = document.getElementById("signupNotice");
+  const signupSubmit = document.getElementById("signupSubmit");
+
+  signupForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    signupError.classList.add("hidden");
+    signupNotice.classList.add("hidden");
+
+    const email = document.getElementById("signupEmail").value.trim();
+    const password = document.getElementById("signupPassword").value;
+
+    // Client-side checks are UX only — Supabase validates both again server-side.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      signupError.textContent = "Enter a valid email address.";
+      signupError.classList.remove("hidden");
+      return;
+    }
+    if (password.length < 8) {
+      signupError.textContent = "Password must be at least 8 characters.";
+      signupError.classList.remove("hidden");
+      return;
+    }
+
+    signupSubmit.disabled = true;
+    signupSubmit.textContent = "Creating account…";
+    try {
+      const res = await rawFetch(`${auth.url}/auth/v1/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: auth.publishableKey },
+        body: JSON.stringify({ email, password }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error_description || body.msg || "Could not create the account.");
+
+      if (body.access_token) {
+        // Email confirmation is OFF on this project — we got a session straight away, so sign
+        // the new owner in and drop them on Home rather than making them log in again.
+        setSession(body.access_token, (body.user && body.user.email) || email);
+        document.getElementById("signupPassword").value = "";
+        await refreshIdentity();
+        navigate("#/");
+        applyRoute();
+        loadHistory();
+        return;
+      }
+
+      // Email confirmation is ON (Supabase's default, and what this project currently does):
+      // signup returns the created user with `confirmation_sent_at` and NO session. Without
+      // saying so, the person is bounced to a sign-in screen that then rejects them, which reads
+      // as a broken app rather than as a pending email.
+      document.getElementById("signupPassword").value = "";
+      auth.screen = "login";
+      applyRoute();
+      const loginNoticeTarget = document.getElementById("loginError");
+      loginNoticeTarget.textContent =
+        `Account created. Check ${email} to confirm your address, then sign in.`;
+      loginNoticeTarget.classList.remove("hidden");
+    } catch (err) {
+      signupError.textContent = err.message || "Could not create the account.";
+      signupError.classList.remove("hidden");
+    } finally {
+      signupSubmit.disabled = false;
+      signupSubmit.textContent = "Create account";
+    }
+  });
+
+  // Switching between the two credential screens goes through showView() like every other view
+  // change — applyRoute() reads auth.screen and renders the right one.
+  document.getElementById("goSignup").addEventListener("click", () => {
+    auth.screen = "signup";
+    document.getElementById("loginError").classList.add("hidden");
+    applyRoute();
+  });
+  document.getElementById("goLogin").addEventListener("click", () => {
+    auth.screen = "login";
+    document.getElementById("signupError").classList.add("hidden");
+    document.getElementById("signupNotice").classList.add("hidden");
+    applyRoute();
+  });
+
+  // A restored session still needs its role resolved before the UI can reflect it.
+  if (auth.token) await refreshIdentity();
 
   // Re-run routing now that we know auth is on: a signed-out visitor gets redirected to the
   // login view they'd otherwise have slipped past while this request was in flight.
@@ -1728,7 +1888,7 @@ function toast(message) {
   toastTimer = setTimeout(() => toastEl.classList.add("hidden"), 3200);
 }
 
-const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login"];
+const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login", "signup"];
 let currentView = "home";
 
 /**
@@ -1789,8 +1949,9 @@ function applyRoute() {
   // exactly as it always has. Routed through showView() like everything else — never by
   // toggling .hidden, which is the bug showView()'s own comment documents.
   if (auth.required && !auth.token) {
-    showView("login");
-    setCrumbs(["Sign in"]);
+    const wantsSignup = auth.screen === "signup";
+    showView(wantsSignup ? "signup" : "login");
+    setCrumbs([wantsSignup ? "Sign up" : "Sign in"]);
     return;
   }
 

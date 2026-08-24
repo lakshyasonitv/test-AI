@@ -60,7 +60,11 @@
         <div class="topbar-actions">
           <button type="button" id="historyBtn" class="topbar-btn">History</button>
           <button type="button" id="settingsBtn" class="topbar-btn" aria-expanded="false">Settings</button>
-          <!-- Unhidden by app.js only when the server reports authEnabled:true. -->
+          <!-- Both unhidden by app.js only when the server reports authEnabled:true. -->
+          <span id="sessionBadge" class="session-badge hidden">
+            <span id="sessionEmail" class="session-email"></span>
+            <span id="sessionRole" class="session-role"></span>
+          </span>
           <button type="button" id="signOutBtn" class="topbar-btn hidden">Sign out</button>
 
           <div id="settingsPop" class="settings-pop hidden">
@@ -110,6 +114,46 @@
               </label>
               <p id="loginError" class="auth-error hidden" role="alert"></p>
               <button type="submit" id="loginSubmit" class="run-btn">Sign in</button>
+              <p class="auth-switch">
+                Don&rsquo;t have an account?
+                <button type="button" id="goSignup" class="auth-switch-btn">Sign up</button>
+              </p>
+            </form>
+          </div>
+        </section>
+
+        <!-- ================= SIGN UP =================
+             Same rules as the login view above: only reachable when the server reports
+             authEnabled:true, and only ever shown through showView("signup"). -->
+        <section class="view" data-view="signup" id="view-signup">
+          <div class="col">
+            <header class="page-head">
+              <h1>Create an account</h1>
+              <p class="tagline">You&rsquo;ll own a new workspace of your own.</p>
+            </header>
+
+            <!-- novalidate: the browser's own bubble would fire BEFORE submit and stop the
+                 handler ever running, leaving the JS checks below as dead code that only looks
+                 like validation. One validation path, one error style — the same .auth-error the
+                 server errors use, so a bad address and a rejected signup read the same way. -->
+            <form id="signupForm" class="auth-card" novalidate>
+              <label class="field">
+                <span class="field-label">Email</span>
+                <input id="signupEmail" type="email" autocomplete="username"
+                  placeholder="you@example.com" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Password</span>
+                <input id="signupPassword" type="password" autocomplete="new-password"
+                  placeholder="At least 8 characters" minlength="8" required />
+              </label>
+              <p id="signupError" class="auth-error hidden" role="alert"></p>
+              <p id="signupNotice" class="auth-notice hidden" role="status"></p>
+              <button type="submit" id="signupSubmit" class="run-btn">Create account</button>
+              <p class="auth-switch">
+                Already have an account?
+                <button type="button" id="goLogin" class="auth-switch-btn">Sign in</button>
+              </p>
             </form>
           </div>
         </section>

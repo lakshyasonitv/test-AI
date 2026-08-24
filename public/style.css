@@ -1124,8 +1124,60 @@ summary:focus-visible, .history-item:focus-visible {
   padding: var(--sp-2) var(--sp-3);
 }
 
-/* The login screen owns the whole window: the sidebar and topbar are chrome for
-   an app the visitor hasn't been let into yet, and leaving them visible would
-   show run history through the "locked" door. */
+/* Sign-up confirmation notice. Distinct from .auth-error on purpose — "check your
+   email" is a successful outcome, and colouring it as a failure reads as a bug. */
+.auth-notice {
+  margin: 0;
+  font-size: .78rem;
+  color: var(--done);
+  background: var(--done-bg);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+/* The "already have an account?" / "don't have one?" line under each auth form. */
+.auth-switch {
+  margin: 0;
+  font-size: .76rem;
+  color: var(--muted);
+  text-align: center;
+}
+.auth-switch-btn {
+  border: none; background: none; padding: 0; cursor: pointer;
+  font: inherit; color: var(--accent); text-decoration: underline;
+}
+.auth-switch-btn:hover { color: var(--accent-hover); }
+
+/* Who's signed in, shown in the topbar next to Sign out. */
+.session-badge { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.session-email { font-size: .74rem; color: var(--muted); }
+.session-role {
+  font-family: var(--font-mono);
+  font-size: .6rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--accent-deep);
+  background: var(--accent-soft);
+  border-radius: var(--r-pill);
+  padding: 2px 7px;
+}
+
+/* Role-gated affordances (Step 3.4).
+   Expressed as RESTRICTIONS, never permissions: with no class on <body> nothing is
+   hidden, so the AUTH_ENABLED=off path renders exactly as it always has and there is
+   no flash of hidden controls before app.js runs. app.js adds these only once it
+   knows the signed-in role.
+   These hide controls; they do NOT secure anything. Every action below is enforced
+   server-side in src/server/authz.ts — this is a courtesy so a viewer isn't offered
+   buttons that would only 403. */
+body.role-no-edit .run-btn,
+body.role-no-edit .new-run,
+body.role-no-edit .composer { display: none; }
+body.role-no-admin .history-del,
+body.role-no-admin .hrow-del { display: none; }
+
+/* The login and sign-up screens own the whole window: the sidebar and topbar are
+   chrome for an app the visitor hasn't been let into yet, and leaving them visible
+   would show run history through the "locked" door. */
 body:has(#view-login.view-active) .sidebar,
-body:has(#view-login.view-active) .topbar { display: none; }
+body:has(#view-login.view-active) .topbar,
+body:has(#view-signup.view-active) .sidebar,
+body:has(#view-signup.view-active) .topbar { display: none; }

@@ -11,7 +11,28 @@ import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
 import { resolveCaseSelection, getPendingSelection } from "./pendingCaseSelection.js";
 import { getAllAcceptedCases, remainingCapacity } from "./caseAccumulator.js";
 import { startRetentionJob } from "./retention.js";
-import { requireAuth, resolveUser, isAuthEnabled } from "./auth.js";
+import { requireAuth, resolveUser, isAuthEnabled, LOCAL_USER_ID } from "./auth.js";
+import {
+  AccessError,
+  assertOrgAccess,
+  canEnforceTenancy,
+  filterRunsForUser,
+  isRole,
+  orgForRun,
+  primaryOrgFor,
+  requireOrgRole,
+  requireRole,
+  requireRunRole,
+} from "./authz.js";
+import {
+  addMember,
+  bootstrapUser,
+  changeMemberRole,
+  listMembers,
+  removeMember,
+} from "./organisations.js";
+import { recordRunStarted, recordRunStatus } from "../db.js";
+import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
 
@@ -39,12 +60,30 @@ app.use("/api", (req, res, next) => {
   return void requireAuth(req, res, next);
 });
 
-// Access control for artifact files. Tenancy ("does THIS user own THIS run") is Step 3.4; the
-// only question this phase can answer is whether the caller is authenticated at all. With
-// AUTH_ENABLED off, resolveUser always returns the synthetic user, so this stays unconditionally
-// true — identical to the blanket `express.static("runs")` mount this route replaced.
-async function canAccessRun(req: express.Request, _runId: string): Promise<boolean> {
-  return (await resolveUser(req)) !== null;
+// Access control for artifact files: authentication (Step 2.1) AND tenancy (Step 3.4).
+//
+// This guard matters more than the /api/* ones. Screenshots, videos and traces are the most
+// sensitive thing this product stores — they are pictures of someone else's application, often
+// mid-login — and they are fetched by <img>/<video> tags rather than by app.js, so they bypass
+// every check the frontend does. If tenancy leaks anywhere, it leaks here first.
+//
+// With AUTH_ENABLED off, resolveUser always returns the synthetic user and canEnforceTenancy() is
+// false, so this stays unconditionally true — identical to the blanket `express.static("runs")`
+// mount this route replaced.
+async function canAccessRun(req: express.Request, runId: string): Promise<boolean> {
+  const user = await resolveUser(req);
+  if (!user) return false;
+  if (!canEnforceTenancy()) return true;
+
+  try {
+    const orgId = await orgForRun(runId);
+    // Fail closed: a run with no ownership record is one nobody can prove they own.
+    if (!orgId) return false;
+    await assertOrgAccess(user.id, orgId, "viewer");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const RUNS_DIR = path.resolve("runs");
@@ -79,7 +118,10 @@ app.param("runId", (_req, res, next, runId) => {
 
 // Start a run: generate the runId up front so we can hand it back immediately,
 // then let the pipeline run in the background, pushing events into the registry.
-app.post("/api/runs", (req, res) => {
+//
+// `editor` — starting a run spends real money (Gemini calls) and drives a browser against
+// someone's site, which is exactly the line a read-only `viewer` should not be able to cross.
+app.post("/api/runs", requireRole("editor"), (req, res) => {
   const { prompt, url, urls, coverage, options } = req.body ?? {};
   if (!prompt || (!url && !urls?.length)) return res.status(400).json({ error: "prompt and url (or urls) are required" });
 
@@ -109,9 +151,43 @@ app.post("/api/runs", (req, res) => {
     : undefined;
 
   const runId = makeRunId();
+
+  // Dual-write (Step 3.4's dependency). Authorization asks "which organisation owns this run?",
+  // and without this row the answer for anything created after the one-off backfill is "nobody",
+  // which the guards correctly treat as "denied". Fire-and-forget and non-fatal — a database
+  // hiccup must never fail a run. Disk stays authoritative for reads; that is still Step 3.3.
+  //
+  // The organisation comes from `req.organisationId`, set by requireRole from the *session*.
+  // Never from the request body: a caller naming its own org id is a caller choosing its own
+  // tenancy.
+  recordRunStarted({
+    id: runId,
+    organisation_id: req.organisationId!,
+    started_by: req.user?.id ?? LOCAL_USER_ID,
+    prompt: typeof prompt === "string" ? prompt : null,
+    url: typeof url === "string" ? url : (Array.isArray(urls) ? urls[0] ?? null : null),
+    status: "incomplete",
+    started_at: new Date().toISOString(),
+  });
+
+  // Wrap the event sink so a terminal event also settles the run's stored status. The status is
+  // re-derived with summariseRun() — the same function /api/runs serves from — rather than
+  // reimplemented here, because two implementations of "what status is this run" is precisely the
+  // divergence Step 3.2's shadow comparison exists to catch.
+  const onEvent = (event: Parameters<typeof record>[0]) => {
+    record(event);
+    if (event.stage === "done" || event.stage === "error") {
+      try {
+        recordRunStatus(runId, summariseRun(runId).status);
+      } catch (err) {
+        console.error(`[db] could not derive final status for ${runId}:`, (err as Error)?.message ?? err);
+      }
+    }
+  };
+
   // Hand back the runId immediately; the run waits for a free slot, then executes.
   // Over-cap runs sit queued (UI shows pending) until a slot frees — no dropped requests.
-  runLimit.run(() => runPipeline({ prompt, url, urls, coverage, options: runOptions }, record, runId, askCredentials))
+  runLimit.run(() => runPipeline({ prompt, url, urls, coverage, options: runOptions }, onEvent, runId, askCredentials))
     .catch(() => { /* failure already emitted as an "error" event */ });
   res.status(202).json({ runId });
 });
@@ -122,7 +198,7 @@ app.post("/api/runs", (req, res) => {
 // The body is never logged, never emitted as an event and never written to a run directory:
 // it goes straight into the waiting promise and lives only in the pipeline's memory. The
 // generated spec gets a process.env reference instead of the value (see credentials.ts).
-app.post("/api/runs/:runId/credentials", (req, res) => {
+app.post("/api/runs/:runId/credentials", requireRunRole("editor"), (req, res) => {
   const { runId } = req.params;
   if (!RUN_ID.test(runId)) return res.status(400).json({ error: "invalid runId" });
 
@@ -140,7 +216,7 @@ app.post("/api/runs/:runId/credentials", (req, res) => {
 // rejected when nothing was accumulated yet, so an accidental click can't end the round with
 // an empty pool. Like the credential prompt, the decision goes straight into the waiting
 // promise and lives only in the pipeline's memory.
-app.post("/api/runs/:runId/case-selection", express.json(), (req, res) => {
+app.post("/api/runs/:runId/case-selection", requireRunRole("editor"), express.json(), (req, res) => {
   const { runId } = req.params;
   if (!getPendingSelection(runId)) {
     return res.status(409).json({ error: "No case-selection round is pending for this run" });
@@ -165,7 +241,7 @@ app.post("/api/runs/:runId/case-selection", express.json(), (req, res) => {
 
 // Current accumulated pool state, for the frontend to render accepted cases and how much
 // capacity remains before the pool's cap forces newer picks into overflow.
-app.get("/api/runs/:runId/accepted-cases", (req, res) => {
+app.get("/api/runs/:runId/accepted-cases", requireRunRole("viewer"), (req, res) => {
   const cases = getAllAcceptedCases(req.params.runId);
   res.json({
     cases,
@@ -177,7 +253,7 @@ app.get("/api/runs/:runId/accepted-cases", (req, res) => {
 
 // Snapshot of the currently-pending round, for polling (SSE buffers behind a Cloudflare
 // tunnel, so the UI polls this instead). NOT a new event type — just what's parked right now.
-app.get("/api/runs/:runId/case-selection-status", (req, res) => {
+app.get("/api/runs/:runId/case-selection-status", requireRunRole("viewer"), (req, res) => {
   const pending = getPendingSelection(req.params.runId);
   if (!pending) {
     return res.status(404).json({ error: "No case-selection round is pending" });
@@ -193,25 +269,39 @@ app.get("/api/runs/:runId/case-selection-status", (req, res) => {
 // SSE stream of progress for one run. Fine locally; a Cloudflare Quick Tunnel buffers
 // text/event-stream sent over GET and only flushes when the connection closes (which
 // subscribe() never does), so the UI polls /state instead. See cloudflared#1449.
-app.get("/api/runs/:runId/events", (req, res) => {
+app.get("/api/runs/:runId/events", requireRunRole("viewer"), (req, res) => {
   subscribe(req.params.runId, res);
 });
 
 // Full event log as one JSON snapshot. Polling this can't be buffered by a proxy the way
 // a stream can — the RunStore already persists every event, so this is just a read.
-app.get("/api/runs/:runId/state", (req, res) => {
+app.get("/api/runs/:runId/state", requireRunRole("viewer"), (req, res) => {
   res.json(getEvents(req.params.runId));
 });
 
 // History list: every run that has ever been executed, newest first.
-app.get("/api/runs", (_req, res) => {
-  res.json(listRuns());
+//
+// Step 3.4 scopes this to the caller's organisations. That FILTERS ROWS ONLY — every field, its
+// type and its order are exactly as before, which is what keeps public/app.js and the Phase 0
+// contract tests working untouched (Rule 1). Disk is still what's read; flipping authority to the
+// database is Step 3.3.
+app.get("/api/runs", requireRole("viewer"), async (req, res) => {
+  const diskRuns = listRuns();
+  try {
+    res.json(await filterRunsForUser(req.user?.id ?? LOCAL_USER_ID, diskRuns));
+  } catch (err) {
+    console.error("[authz] run filtering failed:", (err as Error)?.message ?? err);
+    res.status(500).json({ error: "could not list runs" });
+  }
 });
 
 // Delete one run's directory. runId comes from the URL, so validate it against the exact
 // makeRunId() shape before building a path (see RUN_ID above — it also won't match "_cache").
 // rmSync with force so an already-gone run is a no-op.
-app.delete("/api/runs/:runId", (req, res) => {
+//
+// `admin` — destroying evidence (screenshots, traces, the generated spec) is irreversible and
+// there is no undo, so it sits a rung above the ability to create runs.
+app.delete("/api/runs/:runId", requireRunRole("admin"), (req, res) => {
   const { runId } = req.params;
   if (!RUN_ID.test(runId)) return res.status(400).json({ error: "invalid runId" });
   try {
@@ -267,6 +357,114 @@ app.get("/api/auth/config", (_req, res) => {
     url: process.env.SUPABASE_URL ?? null,
     publishableKey: process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? null,
   });
+});
+
+// --------------------------------------------------------------------------
+// Identity & membership (Step 3.4, plus Step 5.4's role management)
+//
+// All NEW routes — no existing route's shape changes anywhere in this phase.
+// --------------------------------------------------------------------------
+
+/** Translate an AccessError into its status; anything else is a 500 we shouldn't leak details of. */
+function sendAccessError(res: express.Response, err: unknown): void {
+  if (err instanceof AccessError) {
+    res.status(err.status).json({ error: err.message });
+    return;
+  }
+  console.error("[api]", (err as Error)?.message ?? err);
+  res.status(500).json({ error: "request failed" });
+}
+
+/**
+ * Who am I, and what may I do? The UI reads this to label the session and to hide actions the
+ * caller's role forbids.
+ *
+ * Hiding a button is a courtesy, never a control — every action this reports on is independently
+ * enforced server-side by the middleware above. This endpoint being wrong (or lied to) changes
+ * what the UI draws and nothing else.
+ */
+app.get("/api/auth/me", async (req, res) => {
+  const userId = req.user?.id ?? LOCAL_USER_ID;
+  try {
+    const organisationId = await primaryOrgFor(userId);
+    const role = organisationId ? await assertOrgAccess(userId, organisationId, "viewer") : null;
+    res.json({
+      userId,
+      email: req.user?.email ?? null,
+      synthetic: req.user?.synthetic ?? true,
+      organisationId,
+      role,
+      tenancyEnforced: canEnforceTenancy(),
+    });
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+/**
+ * Give a signed-in account somewhere to belong, creating an organisation it owns if it has none.
+ *
+ * Idempotent, and called after every sign-in rather than only after sign-up: an account created
+ * straight in the Supabase dashboard never touches this server, and without this would have a
+ * working login that could do nothing at all.
+ */
+app.post("/api/auth/bootstrap", async (req, res) => {
+  try {
+    const result = await bootstrapUser(req.user?.id ?? LOCAL_USER_ID, req.user?.email ?? null);
+    res.json(result);
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+app.get("/api/organisations/:orgId/members", requireOrgRole("viewer"), async (req, res) => {
+  try {
+    res.json({ members: await listMembers(req.params.orgId) });
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+app.post("/api/organisations/:orgId/members", requireOrgRole("admin"), async (req, res) => {
+  const { email, role } = req.body ?? {};
+  if (typeof email !== "string" || !email.trim()) {
+    return res.status(400).json({ error: "email is required" });
+  }
+  if (!isRole(role)) {
+    return res.status(400).json({ error: "role must be one of: owner, admin, editor, viewer" });
+  }
+  try {
+    res.status(201).json(await addMember(req.params.orgId, req.organisationRole!, email, role));
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+app.patch("/api/organisations/:orgId/members/:userId", requireOrgRole("admin"), async (req, res) => {
+  const { role } = req.body ?? {};
+  if (!isRole(role)) {
+    return res.status(400).json({ error: "role must be one of: owner, admin, editor, viewer" });
+  }
+  try {
+    res.json(await changeMemberRole(
+      req.params.orgId,
+      req.organisationRole!,
+      req.user?.id ?? LOCAL_USER_ID,
+      req.params.userId,
+      role,
+    ));
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+app.delete("/api/organisations/:orgId/members/:userId", requireOrgRole("admin"), async (req, res) => {
+  try {
+    await removeMember(req.params.orgId, req.organisationRole!, req.params.userId);
+    res.status(204).end();
+  } catch (err) {
+    sendAccessError(res, err);
+  }
 });
 
 app.get("/", (_req, res) => {
