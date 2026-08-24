@@ -91,6 +91,7 @@ const screenshotToggleEl = document.getElementById("screenshotToggle");
 const screenshotGridEl = document.getElementById("screenshotGrid");
 const screenshotModalEl = document.getElementById("screenshotModal");
 const screenshotModalImgEl = document.getElementById("screenshotModalImg");
+const screenshotModalLabelEl = document.getElementById("screenshotModalLabel");
 const screenshotModalCloseEl = document.getElementById("screenshotModalClose");
 const credPromptEl = document.getElementById("credentialPrompt");
 const credFormEl = document.getElementById("credForm");
@@ -790,6 +791,7 @@ function openScreenshotModal(src, alt) {
   modalPreviouslyFocused = document.activeElement;
   screenshotModalImgEl.src = src;
   screenshotModalImgEl.alt = alt || "Screenshot, full size";
+  screenshotModalLabelEl.textContent = alt || "";
   screenshotModalEl.classList.remove("hidden");
   document.addEventListener("keydown", handleScreenshotModalKeydown);
   screenshotModalCloseEl.focus();
@@ -798,6 +800,7 @@ function openScreenshotModal(src, alt) {
 function closeScreenshotModal() {
   screenshotModalEl.classList.add("hidden");
   screenshotModalImgEl.src = "";
+  screenshotModalLabelEl.textContent = "";
   document.removeEventListener("keydown", handleScreenshotModalKeydown);
   // Return focus to whatever opened the modal (the screenshot thumbnail), so a keyboard user
   // isn't dropped back at the top of the page.
@@ -995,10 +998,16 @@ function renderHistory(runs) {
 
 const RECENT_RUNS_SHOWN = 5;
 
+// Every run ever fetched from /api/runs, kept around so the Projects tree can
+// re-render on expand/collapse (a UI-only state change) without refetching.
+let allRunsCache = [];
+
 async function loadHistory() {
   const res = await fetch("/api/runs");
   const runs = await res.json();
+  allRunsCache = runs;
   renderHistory(runs.slice(0, RECENT_RUNS_SHOWN));
+  renderProjectsTree(runs);
 }
 
 // -----------------------------------------------------------------------------
@@ -1727,8 +1736,88 @@ coverageSegEl.addEventListener("click", (e) => {
   });
 });
 
-sidebarTreeEl.innerHTML =
-  `<div class="tree-empty">No projects yet. Runs you save will appear here.</div>`;
+// -----------------------------------------------------------------------------
+// Sidebar Projects tree — every past run, clustered by the URL it targeted.
+//
+// There's no persisted "project" entity on the server; a project here is just
+// the set of runs that share a URL, grouped client-side from the same list
+// GET /api/runs already returns for the history panel (allRunsCache, set in
+// loadHistory()). Depth is expressed as padding-left only via .tree-row.tree-*
+// (see style.css) — a collapsed project simply never emits its run rows, so
+// this stays one flat array per that existing tree contract.
+// -----------------------------------------------------------------------------
+
+// Run-level status -> the .sdot modifier class (style.css). Run statuses that
+// don't have their own dot color share the nearest semantic one: an infra
+// "error" reads as blocked (couldn't complete), not failed (assertion broke).
+const RUN_SDOT_CLASS = {
+  passed: "passed",
+  failed: "failed",
+  incomplete: "unconfirmed",
+  truncated_no_assertion: "unconfirmed",
+  error: "blocked",
+};
+
+function normalizeUrlKey(url) {
+  return (url || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
+}
+
+/** Runs sharing a URL become one project, most-recently-active project first.
+ *  `runs` is already newest-first from the server, so the first run seen for
+ *  a key is that project's most recent run and sets the group's position. */
+function groupRunsByUrl(runs) {
+  const groups = new Map();
+  for (const r of runs) {
+    const key = normalizeUrlKey(r.url) || "(no url)";
+    if (!groups.has(key)) groups.set(key, { key, label: r.url || "(no url)", runs: [] });
+    groups.get(key).runs.push(r);
+  }
+  return [...groups.values()];
+}
+
+const expandedProjects = new Set();
+
+function renderProjectsTree(runs) {
+  const groups = groupRunsByUrl(runs);
+  if (!groups.length) {
+    sidebarTreeEl.innerHTML = `<div class="tree-empty">No projects yet. Runs you save will appear here.</div>`;
+    return;
+  }
+
+  sidebarTreeEl.innerHTML = groups.map((g) => {
+    const open = expandedProjects.has(g.key);
+    const projectRow = `
+      <div class="tree-row tree-project" data-toggle-key="${escapeHtml(g.key)}">
+        <span class="tree-chevron">${icon(open ? "chevron-down" : "chevron-right", { size: 9 })}</span>
+        <span class="tree-label" title="${escapeHtml(g.label)}">${escapeHtml(g.label)}</span>
+        <span class="tree-count">${g.runs.length}</span>
+      </div>`;
+    const caseRows = !open ? "" : g.runs.map((r) => `
+      <div class="tree-row tree-case${r.runId === currentRunId ? " active" : ""}" data-run-id="${escapeHtml(r.runId)}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
+        <span class="sdot sdot-sm ${RUN_SDOT_CLASS[r.status] || "pending"}" title="${escapeHtml(STATUS_LABEL[r.status] ?? r.status)}"></span>
+        <span class="tree-label" title="${escapeHtml(r.prompt || "")}">${escapeHtml(r.prompt || "(no prompt)")}</span>
+      </div>`).join("");
+    return projectRow + caseRows;
+  }).join("");
+
+  sidebarTreeEl.querySelectorAll("[data-toggle-key]").forEach((row) => {
+    row.addEventListener("click", () => {
+      const key = row.dataset.toggleKey;
+      if (expandedProjects.has(key)) expandedProjects.delete(key);
+      else expandedProjects.add(key);
+      renderProjectsTree(allRunsCache);
+    });
+  });
+  sidebarTreeEl.querySelectorAll(".tree-row.tree-case").forEach((row) => {
+    row.addEventListener("click", () => {
+      if (row.dataset.prompt) promptEl.value = row.dataset.prompt;
+      if (row.dataset.url) urlEl.value = row.dataset.url;
+      navigate("#/run/" + row.dataset.runId);
+    });
+  });
+}
+
+renderProjectsTree(allRunsCache);
 
 historyBtnEl.addEventListener("click", () => navigate("#/history"));
 allRunsBtnEl.addEventListener("click", () => navigate("#/history"));
@@ -1744,7 +1833,7 @@ async function renderHistoryView() {
   const body = document.getElementById("historyViewBody");
   body.innerHTML = `
     <div>
-      <div class="eyebrow">Results history</div>
+      <div class="eyebrow">RESULTS HISTORY</div>
       <h1 class="page-head-title">Your 20 most recent runs</h1>
     </div>
     <div class="panel"><div id="historyRows"></div></div>`;

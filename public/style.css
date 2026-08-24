@@ -860,6 +860,13 @@ figcaption { font-size: .69rem; color: var(--muted); margin-top: 6px; }
 }
 .screenshot-modal.hidden { display: none !important; }
 .screenshot-modal-img { max-width: 900px; max-height: min(70vh, 520px); width: 100%; object-fit: contain; border-radius: 12px; border: 1px solid rgba(250, 249, 245, .25); }
+.screenshot-modal-label {
+  position: absolute; top: 24px; left: 28px; max-width: calc(100% - 140px);
+  font-family: var(--font-mono); font-size: .72rem;
+  color: rgba(250, 249, 245, .8);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.screenshot-modal-label:empty { display: none; }
 .screenshot-modal-close {
   position: absolute; top: 20px; right: 24px;
   border: 1px solid rgba(250, 249, 245, .3); background: transparent;
