@@ -1,6 +1,7 @@
 import express from "express";
 import path from "node:path";
 import { rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
 import { listRuns } from "../runStore.js";
@@ -9,6 +10,7 @@ import { askCredentials, settle } from "./pendingCredentials.js";
 import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
 import { resolveCaseSelection, getPendingSelection } from "./pendingCaseSelection.js";
 import { getAllAcceptedCases, remainingCapacity } from "./caseAccumulator.js";
+import { startRetentionJob } from "./retention.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
 
@@ -21,7 +23,36 @@ const runLimit = new Semaphore(Number(process.env.MAX_CONCURRENT_RUNS ?? 3));
 const app = express();
 app.use(express.json());
 app.use(express.static("public"));
-app.use("/runs", express.static("runs"));   // serves screenshots/trace/spec directly by path
+
+// Placeholder for Phase 2's real access control (auth + tenancy) — unconditional today, exactly
+// matching the blanket `express.static("runs")` mount this route replaces.
+async function canAccessRun(_req: express.Request, _runId: string): Promise<boolean> {
+  return true;
+}
+
+const RUNS_DIR = path.resolve("runs");
+
+// Serves screenshots/trace/spec/every stage-JSON snapshot directly by path — was
+// `express.static("runs")`, replaced with an explicit route so a guard can sit in front of it
+// (Phase 1, Step 1.1). The wildcard captures the full remainder of the path: artifact trees nest
+// arbitrarily deep under a Playwright-generated slug directory
+// (`cases/<caseId>/artifacts/<slug>/video.webm`), so this can't be a small set of fixed patterns —
+// it must pass through anything under runs/<runId>/**, same as the static mount did.
+app.get("/runs/:runId/*", async (req, res) => {
+  // @types/express doesn't type the trailing "*" segment's capture group on req.params — it's
+  // real at runtime (Express 4's wildcard route matching), just not reflected in the types.
+  const rel = (req.params as Record<string, string>)[0] ?? "";
+  const abs = path.resolve(RUNS_DIR, req.params.runId, rel);
+  // Path traversal guard: the resolved path must stay inside RUNS_DIR.
+  if (!abs.startsWith(RUNS_DIR + path.sep)) return res.sendStatus(403);
+  if (!(await canAccessRun(req, req.params.runId))) return res.sendStatus(403); // no-op today
+  res.sendFile(abs, (err) => {
+    // sendFile already sent a response (or started one) on success; only translate a real miss
+    // (nonexistent file, or a directory — sendFile can't serve those either) into a 404, matching
+    // what the static mount effectively returned for the same cases.
+    if (err && !res.headersSent) res.sendStatus(404);
+  });
+});
 
 // Uniform validation middleware for any route parameter named :runId
 app.param("runId", (_req, res, next, runId) => {
@@ -207,12 +238,23 @@ app.get("/", (_req, res) => {
 
 const port = Number(process.env.PORT ?? 3000);
 
-// Startup diagnostic — log which key env vars are detected so Render's deploy
-// log immediately shows whether secrets were injected.
-console.log("[startup] Environment variable check:");
-for (const v of ["GEMINI_API_KEYS", "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_MODEL_LITE", "NODE_ENV", "PORT"]) {
-  const val = process.env[v];
-  console.log(`  ${v}: ${val ? `SET (${val.length} chars)` : "NOT SET"}`);
-}
+export { app };
 
-app.listen(port, () => console.log(`AI Test Platform UI: http://localhost:${port}`));
+// Only actually start listening (and run startup-only diagnostics/jobs) when this file is
+// executed directly (`npm run serve`/`start`), not when a test imports `app` to exercise routes
+// via supertest — importing must never bind a real port or spin up background timers.
+const isMain = !!process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isMain) {
+  // Startup diagnostic — log which key env vars are detected so Render's deploy
+  // log immediately shows whether secrets were injected.
+  console.log("[startup] Environment variable check:");
+  for (const v of ["GEMINI_API_KEYS", "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_MODEL_LITE", "NODE_ENV", "PORT"]) {
+    const val = process.env[v];
+    console.log(`  ${v}: ${val ? `SET (${val.length} chars)` : "NOT SET"}`);
+  }
+
+  app.listen(port, () => console.log(`AI Test Platform UI: http://localhost:${port}`));
+
+  // No-op unless RUN_RETENTION_DAYS is set (TECH_DEBT.md TD-16) — see src/server/retention.ts.
+  startRetentionJob();
+}
