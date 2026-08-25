@@ -48,6 +48,25 @@ import {
   updateProject,
 } from "./projects.js";
 import { consumeSignupAttempt, createAccount, isSignupEnabled } from "./signup.js";
+import {
+  addCaseToSuite,
+  createSuite,
+  deleteCase,
+  deleteSuite,
+  getCase,
+  getCaseVersion,
+  listCases,
+  listSuiteCases,
+  listSuites,
+  loadCasesForReplay,
+  recordCaseOutcome,
+  removeCaseFromSuite,
+  renameSuite,
+  reorderSuite,
+  saveCaseFromRun,
+  updateCase,
+} from "./library.js";
+import { runReplay } from "../stages/replay.js";
 import { recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
@@ -668,6 +687,229 @@ app.delete("/api/organisations/:orgId/members/:userId", requireOrgRole("admin"),
   } catch (err) {
     sendAccessError(res, err);
   }
+});
+
+// --------------------------------------------------------------------------
+// The test-case library (Steps 5.2, 5.3, 5.5)
+//
+// All NEW routes. Everything is scoped by PROJECT — the Step 5.1 visibility axis — rather than by
+// a new permission concept: a case is reachable exactly when its project is, and library.ts
+// re-derives that from the id on every call rather than trusting one supplied by the caller.
+//
+// Role gating, matching the rest of the server: composing the library is authoring (`tester`),
+// destroying authored work is administration (`admin`), and reading is `viewer` — but a viewer
+// still only ever sees projects they were added to.
+// --------------------------------------------------------------------------
+
+const libraryCtx = (req: express.Request) =>
+  [req.user?.id ?? LOCAL_USER_ID, req.organisationId!, req.organisationRole!] as const;
+
+app.get("/api/suites", requireRole("viewer"), async (req, res) => {
+  try {
+    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
+    res.json({ suites: await listSuites(...libraryCtx(req), projectId) });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.post("/api/suites", requireRole("tester"), async (req, res) => {
+  const { projectId, name } = req.body ?? {};
+  if (typeof projectId !== "string" || !projectId) {
+    return res.status(400).json({ error: "projectId is required" });
+  }
+  if (typeof name !== "string" || !name.trim()) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  try {
+    res.status(201).json(await createSuite(...libraryCtx(req), projectId, name));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.patch("/api/suites/:suiteId", requireRole("tester"), async (req, res) => {
+  const { name } = req.body ?? {};
+  if (typeof name !== "string" || !name.trim()) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  try {
+    res.json(await renameSuite(...libraryCtx(req), req.params.suiteId, name));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+// `admin` — same rung as deleting a run. A suite is a grouping, so the cases survive, but
+// rebuilding a curated ordering by hand is real lost work.
+app.delete("/api/suites/:suiteId", requireRole("admin"), async (req, res) => {
+  try {
+    await deleteSuite(...libraryCtx(req), req.params.suiteId);
+    res.status(204).end();
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.get("/api/suites/:suiteId/cases", requireRole("viewer"), async (req, res) => {
+  try {
+    res.json({ cases: await listSuiteCases(...libraryCtx(req), req.params.suiteId) });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.post("/api/suites/:suiteId/cases", requireRole("tester"), async (req, res) => {
+  const { caseId } = req.body ?? {};
+  if (typeof caseId !== "string" || !caseId) {
+    return res.status(400).json({ error: "caseId is required" });
+  }
+  try {
+    await addCaseToSuite(...libraryCtx(req), req.params.suiteId, caseId);
+    res.status(201).json({ ok: true });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.delete("/api/suites/:suiteId/cases/:caseId", requireRole("tester"), async (req, res) => {
+  try {
+    await removeCaseFromSuite(...libraryCtx(req), req.params.suiteId, req.params.caseId);
+    res.status(204).end();
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/** Rewrite execution order. The body is the full ordered list of the suite's case ids. */
+app.patch("/api/suites/:suiteId/order", requireRole("tester"), async (req, res) => {
+  const { caseIds } = req.body ?? {};
+  if (!Array.isArray(caseIds) || caseIds.some((c) => typeof c !== "string")) {
+    return res.status(400).json({ error: "caseIds must be an array of case ids" });
+  }
+  try {
+    await reorderSuite(...libraryCtx(req), req.params.suiteId, caseIds);
+    res.status(204).end();
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.get("/api/cases", requireRole("viewer"), async (req, res) => {
+  try {
+    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
+    res.json({ cases: await listCases(...libraryCtx(req), projectId) });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.get("/api/cases/:caseId", requireRole("viewer"), async (req, res) => {
+  try {
+    res.json(await getCase(...libraryCtx(req), req.params.caseId));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/** One stored version's steps — what the Compare screen reads for each side. */
+app.get("/api/cases/:caseId/versions/:version", requireRole("viewer"), async (req, res) => {
+  const version = Number(req.params.version);
+  if (!Number.isInteger(version) || version < 1) {
+    return res.status(400).json({ error: "version must be a positive integer" });
+  }
+  try {
+    res.json(await getCaseVersion(...libraryCtx(req), req.params.caseId, version));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.patch("/api/cases/:caseId", requireRole("tester"), async (req, res) => {
+  const { title, ir, changeNote } = req.body ?? {};
+  try {
+    res.json(await updateCase(...libraryCtx(req), req.params.caseId, { title, ir, changeNote }));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.delete("/api/cases/:caseId", requireRole("admin"), async (req, res) => {
+  try {
+    await deleteCase(...libraryCtx(req), req.params.caseId);
+    res.status(204).end();
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * Save a finished run's case into the library — the bridge from authoring to reuse (Step 5.2).
+ *
+ * `requireRunRole("tester")` is the gate on the SOURCE run (you must be able to see it), and
+ * library.ts independently checks the DESTINATION project. Both matter: they can differ.
+ */
+app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async (req, res) => {
+  const { projectId, title, suiteId } = req.body ?? {};
+  if (typeof projectId !== "string" || !projectId) {
+    return res.status(400).json({ error: "projectId is required" });
+  }
+  try {
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    const role = await assertOrgAccess(userId, req.organisationId!, "tester");
+    res.status(201).json(await saveCaseFromRun(
+      userId, req.organisationId!, role,
+      req.params.runId, req.params.caseId, projectId,
+      { title: typeof title === "string" ? title : undefined,
+        suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined },
+    ));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * Replay saved cases — Step 5.3, and the reason the library exists.
+ *
+ * Three selections, one route: a whole suite (`suiteId`), a chosen subset (`suiteId` + `caseIds`,
+ * which honours the suite's order), or individual cases (`caseIds` alone). All three are the same
+ * zero-LLM path — stored IR straight to generateSpec/runSpec — so re-running a ten-case suite
+ * costs nothing.
+ *
+ * `tester`, matching POST /api/runs: a replay drives a real browser against someone's site, which
+ * is the line a read-only viewer should not cross. It spends no tokens, but it is not free of
+ * consequence.
+ */
+app.post("/api/replay", requireRole("tester"), async (req, res) => {
+  const { suiteId, caseIds, label } = req.body ?? {};
+  if (typeof suiteId !== "string" && !Array.isArray(caseIds)) {
+    return res.status(400).json({ error: "send a suiteId, caseIds, or both" });
+  }
+
+  try {
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    // Loading is where authorization happens: every case is proven visible before anything runs.
+    const cases = await loadCasesForReplay(userId, req.organisationId!, req.organisationRole!, {
+      suiteId: typeof suiteId === "string" ? suiteId : undefined,
+      caseIds: Array.isArray(caseIds) ? caseIds.filter((c) => typeof c === "string") : undefined,
+    });
+
+    const runId = makeRunId();
+    const runLabel = typeof label === "string" && label.trim()
+      ? label.trim()
+      : `Replayed ${cases.length} saved case${cases.length === 1 ? "" : "s"}`;
+
+    // Same dual-write as a normal run, so the replay is a first-class run: it appears in history,
+    // is scoped to its organisation, and its artifacts are guarded exactly like any other.
+    recordRunStarted({
+      id: runId,
+      organisation_id: req.organisationId!,
+      started_by: userId,
+      prompt: runLabel,
+      url: cases[0]?.ir.meta.baseUrl ?? null,
+      status: "incomplete",
+      started_at: new Date().toISOString(),
+    });
+    // Every case in a replay shares one project (loadCasesForReplay proves it), so the run files
+    // under that project rather than being inferred from a URL.
+    if (cases[0]) recordRunProject(runId, cases[0].projectId);
+
+    const onEvent = (event: Parameters<typeof record>[0]) => {
+      record(event);
+      if (event.stage === "done" || event.stage === "error") {
+        try {
+          recordRunStatus(runId, summariseRun(runId).status);
+        } catch (err) {
+          console.error(`[db] could not derive final status for ${runId}:`, (err as Error)?.message ?? err);
+        }
+      }
+    };
+
+    runLimit.run(() => runReplay({ runId, cases, label: runLabel }, onEvent))
+      .then((outcome) => {
+        // Surface each case's latest verdict on the library row, so the Suite screen can show a
+        // status without joining through run history.
+        for (let i = 0; i < cases.length; i++) {
+          const result = outcome.results.find((r) => r.caseId === `case-${i}`);
+          if (result) void recordCaseOutcome(cases[i].id, result.status);
+        }
+      })
+      .catch(() => { /* already emitted as an "error" event */ });
+
+    res.status(202).json({ runId, caseCount: cases.length });
+  } catch (err) { sendAccessError(res, err); }
 });
 
 app.get("/", (_req, res) => {

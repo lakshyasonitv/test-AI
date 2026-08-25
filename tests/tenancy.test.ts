@@ -181,6 +181,10 @@ const RUN_SCOPED_ROUTES: { name: string; method: "get" | "post" | "delete"; path
   { name: "POST credentials",           method: "post",   path: `/api/runs/${RUN_A}/credentials`, body: { skip: true } },
   { name: "POST case-selection",        method: "post",   path: `/api/runs/${RUN_A}/case-selection`, body: { action: "done", selectedIndexes: [0] } },
   { name: "DEL  run",                   method: "delete", path: `/api/runs/${RUN_A}` },
+  // Step 5.2's bridge from a run into the library. Doubly scoped — the SOURCE run must be
+  // reachable and the DESTINATION project must be too — so it belongs in this table like any
+  // other run-scoped route.
+  { name: "POST save case",             method: "post",   path: `/api/runs/${RUN_A}/cases/case-0/save`, body: { projectId: PROJ_A1 } },
   { name: "GET  artifact",              method: "get",    path: `/runs/${RUN_A}/00-input.json` },
 ];
 
@@ -507,7 +511,10 @@ describe("the isolation table covers every run-scoped route", () => {
     const covered = new Set(
       RUN_SCOPED_ROUTES
         .filter((r) => r.path.startsWith("/api/runs/"))
-        .map((r) => `${r.method.toUpperCase()} ${r.path.replace(RUN_A, ":runId")}`),
+        // Both parameters, not just :runId — Step 5.2 added a route nested under :caseId, and a
+        // normaliser that only knew about the run id would report it missing forever no matter
+        // how many rows were added.
+        .map((r) => `${r.method.toUpperCase()} ${r.path.replace(RUN_A, ":runId").replace("/cases/case-0/", "/cases/:caseId/")}`),
     );
 
     // Without this the guard would pass vacuously the day Express changes how it exposes its
