@@ -1270,3 +1270,71 @@ body:has(#view-signup.view-active) .topbar { display: none; }
 /* The Team entry point is hidden for anyone below admin. Belt and braces with the
    .hidden app.js toggles: if a future change forgets the JS, the class still hides it. */
 body.role-no-admin #teamBtn { display: none; }
+
+/* ---------------------------------------------------------------------------
+   The test-case library — Suite, Case and Compare (Steps 5.2, 5.3, 5.5).
+
+   All new class names. Nothing above is renamed or repurposed: the rows reuse
+   .hrow/.hrow-main/.hrow-meta, the status pills reuse .case-badge/.badge-*, the
+   tabs reuse .seg/.seg-btn and the small buttons reuse .dl-btn-inline, so these
+   screens inherit the app's existing vocabulary rather than starting a parallel
+   one.
+   --------------------------------------------------------------------------- */
+
+.lib-toolbar {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.lib-toolbar-gap { flex: 1; }
+.lib-run-all { height: 32px; padding: 0 var(--sp-3); font-size: .75rem; }
+
+.lib-row { align-items: center; }
+.lib-check { flex: none; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+/* Fixed width so the numbers form a column rather than shifting the titles at 10. */
+.lib-pos {
+  flex: none; width: 20px; text-align: right;
+  font-family: var(--font-mono); font-size: .66rem; color: var(--faint);
+}
+
+.lib-steps { padding: var(--sp-4); }
+.lib-steps-head { font-size: .72rem; font-weight: 600; margin-bottom: var(--sp-3); }
+.lib-step-list {
+  margin: 0 0 var(--sp-3); padding-left: var(--sp-5);
+  display: flex; flex-direction: column; gap: 6px;
+  font-size: .78rem; line-height: 1.55;
+}
+.lib-step-list li { padding-left: 2px; }
+
+.case-save-panel { padding: var(--sp-3) 0 0; }
+.case-save-form {
+  display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: flex-end;
+  margin-bottom: var(--sp-2);
+}
+.case-save-form .field { flex: 1 1 180px; max-width: 260px; margin: 0; }
+
+.cmp-grid { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
+.cmp-col {
+  flex: 1 1 300px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r); overflow: hidden;
+}
+.cmp-col-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line-soft); background: var(--inset);
+}
+.cmp-steps { padding: var(--sp-3); display: flex; flex-direction: column; gap: 3px; }
+.cmp-step {
+  padding: 6px var(--sp-2); border-radius: var(--r-sm);
+  font-size: .76rem; line-height: 1.5;
+  border-left: 3px solid transparent;
+}
+/* Green/red would collide with the pass/fail vocabulary the status pills own — a removed
+   step is not a failure. The two changed states borrow the accent and the "incomplete"
+   hue instead, which carry no verdict meaning anywhere else in the app. */
+.cmp-same { color: var(--text-2); }
+.cmp-added { background: var(--accent-soft); border-left-color: var(--accent); }
+.cmp-removed {
+  background: var(--truncated-bg); border-left-color: var(--truncated);
+  text-decoration: line-through; text-decoration-color: var(--faint);
+}

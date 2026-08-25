@@ -222,6 +222,7 @@ async function signOut() {
   // sees the last one's sidebar until their own fetch lands.
   projectsCache = null;
   projectsUnavailable = false;
+  suitesCache = [];
   allRunsCache = [];
   expandedProjects.clear();
   applyRoleRestrictions();
@@ -488,6 +489,11 @@ function renderPhases() {
 
 function summarize(stage, data) {
   try {
+    // A replay (Step 5.3) skips planning, discovery and IR compilation, and says so on the card
+    // rather than leaving a blank one. Checked first so any stage can carry the note; purely
+    // additive — a normal run never sets `skipped`, so every case below is reached exactly as
+    // before.
+    if (data && typeof data.skipped === "string") return data.skipped;
     switch (stage) {
       case "plan": return data.goal ? `AI Strategy: ${data.goal}` : "";
       case "discovery": {
@@ -761,7 +767,11 @@ function renderCaseCard(c, runId, index) {
         <div class="case-downloads">
           <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">${icon("file-text", { size: 13 })} Download test script</a>
           <a href="${escapeHtml(resultUrl)}" download="result.json" class="dl-btn">${icon("download", { size: 13 })} Download full result</a>
+          <!-- Step 5.2's bridge: keep this run's test plan as a reusable case. Offered to
+               testers and above; the server refuses anyone lower regardless of what is drawn. -->
+          <button type="button" class="dl-btn case-save-btn">${icon("plus", { size: 13 })} Save case</button>
         </div>
+        <div class="case-save-panel hidden"></div>
         <details class="case-details">
           <summary>${icon("code", { size: 13 })} Technical details (for developers)</summary>
           <div class="case-details-content">
@@ -805,6 +815,16 @@ function setupCaseCardListeners() {
     img.addEventListener("click", open);
     img.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    });
+  });
+
+  // Save-case (Step 5.2). A viewer never gets the control — and the server refuses them anyway,
+  // which is the actual guarantee.
+  suiteCaseListEl.querySelectorAll(".case-save-btn").forEach((btn) => {
+    if (!roleAtLeast(auth.role, "tester")) { btn.remove(); return; }
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openSaveCasePanel(btn.closest(".case-card"));
     });
   });
 
@@ -878,6 +898,100 @@ function renderSuiteResults(suite, runId) {
   setupScreenshotToggle(suite, runId);
   suiteCaseListEl.innerHTML = suite.cases.map((c, i) => renderCaseCard(c, runId, i)).join("");
   setupCaseCardListeners();
+}
+
+/**
+ * The inline "save this case into the library" panel (Step 5.2).
+ *
+ * Inline rather than a modal: the run's result is the context for the decision, and a modal would
+ * cover the very card being saved. It asks for a project because a case's project is what governs
+ * who can see it afterwards — defaulting silently would file authored work somewhere the author
+ * did not choose.
+ */
+async function openSaveCasePanel(card) {
+  const panel = card.querySelector(".case-save-panel");
+  if (!panel) return;
+  if (!panel.classList.contains("hidden")) { panel.classList.add("hidden"); return; }
+
+  panel.classList.remove("hidden");
+  panel.innerHTML = `<p class="hrow-meta">Loading projects…</p>`;
+
+  let projects = [], suites = [];
+  try {
+    [projects, suites] = await Promise.all([
+      api("/api/projects").then((r) => r.projects ?? []),
+      api("/api/suites").then((r) => r.suites ?? []),
+    ]);
+  } catch (err) {
+    panel.innerHTML = `<p class="team-error">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  if (!projects.length) {
+    panel.innerHTML = `<p class="team-error">You're not in any project yet, so there's nowhere to save this.</p>`;
+    return;
+  }
+
+  const runId = suiteResultsEl.dataset.runId;
+  const caseId = card.dataset.caseId;
+  const title = card.querySelector(".case-title")?.textContent ?? "";
+
+  panel.innerHTML = `
+    <div class="case-save-form">
+      <label class="field">
+        <span class="field-label">Project</span>
+        <select class="team-select" data-role="project">
+          ${projects.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Suite (optional)</span>
+        <select class="team-select" data-role="suite">
+          <option value="">— none —</option>
+          ${suites.map((s) => `<option value="${escapeHtml(s.id)}" data-project="${escapeHtml(s.projectId)}">${escapeHtml(s.name)}</option>`).join("")}
+        </select>
+      </label>
+      <button type="button" class="dl-btn" data-role="confirm">Save to library</button>
+    </div>
+    <p class="hrow-meta">Saved cases re-run with no AI calls at all.</p>
+    <div data-role="feedback"></div>`;
+
+  const projectSel = panel.querySelector('[data-role="project"]');
+  const suiteSel = panel.querySelector('[data-role="suite"]');
+
+  // Only offer suites belonging to the chosen project — the server refuses a cross-project pair,
+  // so offering one would be offering a guaranteed error.
+  const syncSuites = () => {
+    [...suiteSel.options].forEach((o) => {
+      if (!o.value) return;
+      o.hidden = o.dataset.project !== projectSel.value;
+    });
+    const chosen = suiteSel.selectedOptions[0];
+    if (chosen && chosen.value && chosen.hidden) suiteSel.value = "";
+  };
+  syncSuites();
+  projectSel.addEventListener("change", syncSuites);
+
+  panel.querySelector('[data-role="confirm"]').addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const saved = await api(`/api/runs/${encodeURIComponent(runId)}/cases/${encodeURIComponent(caseId)}/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: projectSel.value,
+          title,
+          ...(suiteSel.value ? { suiteId: suiteSel.value } : {}),
+        }),
+      });
+      panel.querySelector('[data-role="feedback"]').innerHTML =
+        `<p class="team-ok">Saved. <a href="#/case/${encodeURIComponent(saved.id)}">Open the case</a></p>`;
+    } catch (err) {
+      panel.querySelector('[data-role="feedback"]').innerHTML =
+        `<p class="team-error">${escapeHtml(err.message)}</p>`;
+      btn.disabled = false;
+    }
+  });
 }
 
 function hideSuiteResults() {
@@ -1327,6 +1441,9 @@ let projectsCache = null;
 /** True once a load has been attempted and failed, which is how the tree tells "not loaded yet"
  *  apart from "this deployment has no project rows to serve". */
 let projectsUnavailable = false;
+/** Saved suites, shown under their project in the sidebar (Step 5.5). Always an array — the tree
+ *  renders it inline, and a null here would mean guarding every use. */
+let suitesCache = [];
 
 async function loadHistory() {
   const res = await fetch("/api/runs");
@@ -1914,6 +2031,410 @@ function toast(message) {
   toastTimer = setTimeout(() => toastEl.classList.add("hidden"), 3200);
 }
 
+// -----------------------------------------------------------------------------
+// The test-case library — Suite, Case and Compare (Steps 5.2, 5.3, 5.5)
+//
+// These three views existed as empty stubs in the router from the first slice. They render real
+// data now. Everything is scoped by project on the server, so a viewer only ever sees suites and
+// cases inside projects they were added to — this code never has to filter for access, and must
+// not try to: hiding a row is a courtesy, the server's refusal is the control.
+//
+// Execution is always a REPLAY (POST /api/replay): stored IR straight to generateSpec/runSpec,
+// zero LLM calls. Whole suite, a chosen subset, or one case are the same call with a different
+// selection, which is why there is one runReplay() helper below rather than three.
+// -----------------------------------------------------------------------------
+
+const CASE_BADGE = {
+  passed: "badge-passed", failed: "badge-failed", blocked: "badge-blocked",
+  truncated: "badge-truncated", truncated_no_assertion: "badge-partial",
+};
+const caseBadgeClass = (s) => CASE_BADGE[s] ?? "badge-pending";
+const caseStatusLabel = (s) => (s ? (STATUS_LABEL[s] ?? s) : "Not run yet");
+
+/** One line of a step, as plain English. The IR is role+name; a person reads verbs. */
+function stepText(step, i) {
+  const t = step.target ?? {};
+  const what = t.name || t.label || t.text || t.placeholder || t.url || t.css || "";
+  const verb = {
+    navigate: "Go to", click: "Click", fill: "Fill", select: "Select",
+    check: "Check", press: "Press", wait: "Wait for", assert: "Assert",
+  }[step.action] ?? step.action;
+  const value = step.value ? ` with "${step.value}"` : "";
+  const assertion = step.assertion ? ` (${step.assertion.replace(/_/g, " ")})` : "";
+  return `${i + 1}. ${verb}${what ? ` ${what}` : ""}${value}${assertion}`;
+}
+
+/** A timestamp as something readable. Falls back to the raw value rather than "Invalid Date". */
+function formatWhen(ts) {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
+}
+
+async function api(path, init) {
+  const res = await fetch(path, init);
+  if (res.status === 204) return null;
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `That didn't work (${res.status}).`);
+  return body;
+}
+
+/**
+ * Start a replay and follow it on the Run view.
+ *
+ * The run it creates is a first-class run — it appears in history and its artifacts are guarded
+ * exactly like any other — so handing off to the existing Run view is the whole integration.
+ */
+async function startReplay(selection, label) {
+  try {
+    const { runId } = await api("/api/replay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...selection, label }),
+    });
+    toast("Replaying — this costs nothing, the steps are already saved.");
+    navigate("#/run/" + runId);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+// ---------------------------------------------------------------- Suite view
+
+async function renderSuiteView(suiteId) {
+  const body = document.getElementById("suiteViewBody");
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+
+  let suite, cases;
+  try {
+    const suites = (await api("/api/suites")).suites ?? [];
+    suite = suites.find((s) => s.id === suiteId);
+    if (!suite) throw new Error("That suite no longer exists, or you don't have access to it.");
+    cases = (await api(`/api/suites/${encodeURIComponent(suiteId)}/cases`)).cases ?? [];
+  } catch (err) {
+    body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  setCrumbs(["Suite", suite.name]);
+  const canAuthor = roleAtLeast(auth.role, "tester");
+  const canDelete = roleAtLeast(auth.role, "admin");
+
+  body.innerHTML = `
+    <div>
+      <div class="eyebrow">TEST SUITE</div>
+      <h1 class="page-head-title">${escapeHtml(suite.name)}</h1>
+      <p class="tagline">${cases.length} case${cases.length === 1 ? "" : "s"} — they run in the order below.
+      Re-running a saved suite makes no AI calls at all.</p>
+    </div>
+    <div class="lib-toolbar">
+      ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="rename">Rename suite</button>` : ""}
+      ${canDelete ? `<button type="button" class="dl-btn-inline" data-act="delete-suite">Delete suite</button>` : ""}
+      <span class="lib-toolbar-gap"></span>
+      ${canAuthor ? `
+        <button type="button" class="dl-btn-inline" data-act="run-selected" disabled>▸ Run 0 selected</button>
+        <button type="button" class="run-btn lib-run-all" data-act="run-all">▸ Run all</button>` : ""}
+    </div>
+    <div id="suiteFeedback"></div>
+    <div class="panel"><div id="suiteRows"></div></div>`;
+
+  const rows = document.getElementById("suiteRows");
+  if (!cases.length) {
+    rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">
+      No cases in this suite yet. Finish a run, then use <b>Save case</b> on a result to add one.</div>`;
+  } else {
+    rows.innerHTML = cases.map((c, i) => `
+      <div class="hrow lib-row" data-case-id="${escapeHtml(c.id)}">
+        ${canAuthor ? `<input type="checkbox" class="lib-check" aria-label="Select ${escapeHtml(c.title)}" />` : ""}
+        <span class="lib-pos">${i + 1}</span>
+        <span class="case-badge ${caseBadgeClass(c.lastRunStatus)}">${escapeHtml(caseStatusLabel(c.lastRunStatus))}</span>
+        <div class="hrow-main">
+          <div class="hrow-label">${escapeHtml(c.title)}</div>
+          <div class="hrow-meta">v${c.currentVersion}${c.feature ? ` · ${escapeHtml(c.feature)}` : ""}${c.lastRunAt ? ` · last run ${formatWhen(c.lastRunAt)}` : ""}</div>
+        </div>
+        <div class="hrow-actions">
+          ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="up" title="Move up" ${i === 0 ? "disabled" : ""}>↑</button>` : ""}
+          ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="down" title="Move down" ${i === cases.length - 1 ? "disabled" : ""}>↓</button>` : ""}
+          <button type="button" class="dl-btn-inline" data-act="open">Open</button>
+          ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="run-one">▸ Run</button>` : ""}
+          ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="remove">Remove</button>` : ""}
+        </div>
+      </div>`).join("");
+  }
+
+  const feedback = (msg, isError) => {
+    document.getElementById("suiteFeedback").innerHTML =
+      `<p class="${isError ? "team-error" : "team-ok"}">${escapeHtml(msg)}</p>`;
+  };
+
+  const order = () => [...rows.querySelectorAll(".lib-row")].map((r) => r.dataset.caseId);
+  const selected = () => [...rows.querySelectorAll(".lib-row")]
+    .filter((r) => r.querySelector(".lib-check")?.checked)
+    .map((r) => r.dataset.caseId);
+
+  const refreshSelectedBtn = () => {
+    const btn = body.querySelector('[data-act="run-selected"]');
+    if (!btn) return;
+    const n = selected().length;
+    btn.textContent = `▸ Run ${n} selected`;
+    btn.disabled = n === 0;
+  };
+  rows.querySelectorAll(".lib-check").forEach((cb) => cb.addEventListener("change", refreshSelectedBtn));
+
+  body.querySelectorAll("[data-act]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const act = btn.dataset.act;
+      const row = btn.closest(".lib-row");
+      const caseId = row?.dataset.caseId;
+      try {
+        if (act === "run-all") return startReplay({ suiteId }, `Replayed suite "${suite.name}"`);
+        if (act === "run-selected") {
+          const ids = selected();
+          return startReplay({ suiteId, caseIds: ids },
+            `Replayed ${ids.length} case${ids.length === 1 ? "" : "s"} from "${suite.name}"`);
+        }
+        if (act === "run-one") {
+          const title = row.querySelector(".hrow-label").textContent;
+          return startReplay({ caseIds: [caseId] }, `Replayed "${title}"`);
+        }
+        if (act === "open") return navigate("#/case/" + encodeURIComponent(caseId));
+
+        if (act === "rename") {
+          const name = prompt("Rename this suite", suite.name);
+          if (!name || name === suite.name) return;
+          await api(`/api/suites/${encodeURIComponent(suiteId)}`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          });
+          return renderSuiteView(suiteId);
+        }
+        if (act === "delete-suite") {
+          if (!confirm(`Delete the suite "${suite.name}"? The cases themselves are kept.`)) return;
+          await api(`/api/suites/${encodeURIComponent(suiteId)}`, { method: "DELETE" });
+          toast("Suite deleted — its cases were kept.");
+          return navigate("#/");
+        }
+        if (act === "remove") {
+          await api(`/api/suites/${encodeURIComponent(suiteId)}/cases/${encodeURIComponent(caseId)}`,
+            { method: "DELETE" });
+          return renderSuiteView(suiteId);
+        }
+        if (act === "up" || act === "down") {
+          const ids = order();
+          const i = ids.indexOf(caseId);
+          const j = act === "up" ? i - 1 : i + 1;
+          if (j < 0 || j >= ids.length) return;
+          [ids[i], ids[j]] = [ids[j], ids[i]];
+          await api(`/api/suites/${encodeURIComponent(suiteId)}/order`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ caseIds: ids }),
+          });
+          return renderSuiteView(suiteId);
+        }
+      } catch (err) {
+        feedback(err.message, true);
+      }
+    });
+  });
+}
+
+// ----------------------------------------------------------------- Case view
+
+/** Which tab the Case screen is on. Module-level so a re-render keeps the reader where they were. */
+let caseTab = "steps";
+
+async function renderCaseView(caseId) {
+  const body = document.getElementById("caseViewBody");
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+
+  let c;
+  try {
+    c = await api(`/api/cases/${encodeURIComponent(caseId)}`);
+  } catch (err) {
+    body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  setCrumbs(["Case", c.title]);
+  const canAuthor = roleAtLeast(auth.role, "tester");
+  const canDelete = roleAtLeast(auth.role, "admin");
+
+  body.innerHTML = `
+    <div>
+      <div class="eyebrow">TEST CASE</div>
+      <h1 class="page-head-title">${escapeHtml(c.title)}</h1>
+      <p class="tagline">
+        <span class="case-badge ${caseBadgeClass(c.lastRunStatus)}">${escapeHtml(caseStatusLabel(c.lastRunStatus))}</span>
+        <span class="hrow-meta">v${c.currentVersion}${c.sourceRunId ? ` · saved from ${escapeHtml(c.sourceRunId)}` : ""}</span>
+      </p>
+    </div>
+    <div class="lib-toolbar">
+      ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="rename">Rename</button>` : ""}
+      ${c.versions.length > 1 ? `<button type="button" class="dl-btn-inline" data-act="compare">Compare versions</button>` : ""}
+      ${canDelete ? `<button type="button" class="dl-btn-inline" data-act="delete">Delete case</button>` : ""}
+      <span class="lib-toolbar-gap"></span>
+      ${canAuthor ? `<button type="button" class="run-btn lib-run-all" data-act="run">▸ Run case</button>` : ""}
+    </div>
+    <div id="caseFeedback"></div>
+    <div class="seg" id="caseTabs" role="group" aria-label="Case sections">
+      <button type="button" class="seg-btn${caseTab === "steps" ? " active" : ""}" data-tab="steps">Steps</button>
+      <button type="button" class="seg-btn${caseTab === "versions" ? " active" : ""}" data-tab="versions">Versions</button>
+    </div>
+    <div class="panel"><div id="caseBody"></div></div>`;
+
+  const paint = () => {
+    const el = document.getElementById("caseBody");
+    if (caseTab === "steps") {
+      el.innerHTML = `
+        <div class="lib-steps">
+          <div class="lib-steps-head">Steps — what this test actually does</div>
+          <ol class="lib-step-list">
+            ${c.ir.steps.map((s, i) => `<li>${escapeHtml(stepText(s, i).replace(/^\d+\.\s*/, ""))}</li>`).join("")}
+          </ol>
+          <p class="hrow-meta">Target: ${escapeHtml(c.ir.meta.baseUrl)}</p>
+        </div>`;
+    } else {
+      el.innerHTML = c.versions.length
+        ? c.versions.map((v) => `
+          <div class="hrow">
+            <span class="case-badge badge-pending">v${v.version}</span>
+            <div class="hrow-main">
+              <div class="hrow-label">${escapeHtml(v.changeNote || "No note")}</div>
+              <div class="hrow-meta">${v.savedAt ? formatWhen(v.savedAt) : ""}</div>
+            </div>
+            <div class="hrow-actions">
+              ${v.version !== c.currentVersion
+                ? `<button type="button" class="dl-btn-inline" data-act="compare-v" data-v="${v.version}">Compare with current</button>`
+                : `<span class="hrow-meta">current</span>`}
+            </div>
+          </div>`).join("")
+        : `<div class="tree-empty" style="padding:24px 16px;text-align:center">No version history yet.</div>`;
+
+      el.querySelectorAll('[data-act="compare-v"]').forEach((b) => {
+        b.addEventListener("click", () =>
+          navigate(`#/compare/${encodeURIComponent(caseId)}?from=${b.dataset.v}&to=${c.currentVersion}`));
+      });
+    }
+  };
+  paint();
+
+  document.getElementById("caseTabs").addEventListener("click", (e) => {
+    const btn = e.target.closest(".seg-btn");
+    if (!btn) return;
+    caseTab = btn.dataset.tab;
+    document.querySelectorAll("#caseTabs .seg-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    paint();
+  });
+
+  body.querySelectorAll(".lib-toolbar [data-act]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const act = btn.dataset.act;
+      try {
+        if (act === "run") return startReplay({ caseIds: [caseId] }, `Replayed "${c.title}"`);
+        if (act === "compare") {
+          const prev = c.versions.find((v) => v.version !== c.currentVersion);
+          return navigate(`#/compare/${encodeURIComponent(caseId)}?from=${prev?.version ?? 1}&to=${c.currentVersion}`);
+        }
+        if (act === "rename") {
+          const title = prompt("Rename this case", c.title);
+          if (!title || title === c.title) return;
+          await api(`/api/cases/${encodeURIComponent(caseId)}`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title }),
+          });
+          return renderCaseView(caseId);
+        }
+        if (act === "delete") {
+          if (!confirm(`Delete "${c.title}"? This removes it from every suite it is in.`)) return;
+          await api(`/api/cases/${encodeURIComponent(caseId)}`, { method: "DELETE" });
+          toast("Case deleted.");
+          return navigate("#/");
+        }
+      } catch (err) {
+        document.getElementById("caseFeedback").innerHTML =
+          `<p class="team-error">${escapeHtml(err.message)}</p>`;
+      }
+    });
+  });
+}
+
+// -------------------------------------------------------------- Compare view
+
+/** Longest-common-subsequence diff over step lines, so an inserted step shifts nothing after it. */
+function diffSteps(a, b) {
+  const n = a.length, m = b.length;
+  const lcs = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const left = [], right = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { left.push({ t: a[i], k: "same" }); right.push({ t: b[j], k: "same" }); i++; j++; }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) { left.push({ t: a[i], k: "removed" }); i++; }
+    else { right.push({ t: b[j], k: "added" }); j++; }
+  }
+  while (i < n) left.push({ t: a[i++], k: "removed" });
+  while (j < m) right.push({ t: b[j++], k: "added" });
+  return { left, right };
+}
+
+async function renderCompareView(caseId, fromV, toV) {
+  const body = document.getElementById("compareViewBody");
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+
+  let c, A, B;
+  try {
+    c = await api(`/api/cases/${encodeURIComponent(caseId)}`);
+    const from = Number(fromV) || 1;
+    const to = Number(toV) || c.currentVersion;
+    [A, B] = await Promise.all([
+      api(`/api/cases/${encodeURIComponent(caseId)}/versions/${from}`),
+      api(`/api/cases/${encodeURIComponent(caseId)}/versions/${to}`),
+    ]);
+  } catch (err) {
+    body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  setCrumbs(["Compare", c.title]);
+  const aLines = A.ir.steps.map((s, i) => stepText(s, i).replace(/^\d+\.\s*/, ""));
+  const bLines = B.ir.steps.map((s, i) => stepText(s, i).replace(/^\d+\.\s*/, ""));
+  const { left, right } = diffSteps(aLines, bLines);
+  const added = right.filter((r) => r.k === "added").length;
+  const removed = left.filter((r) => r.k === "removed").length;
+
+  const col = (label, note, side) => `
+    <div class="cmp-col">
+      <div class="cmp-col-head">
+        <span class="case-badge badge-pending">v${label}</span>
+        <span class="hrow-meta">${escapeHtml(note || "")}</span>
+      </div>
+      <div class="cmp-steps">
+        ${side.map((s) => `<div class="cmp-step cmp-${s.k}">${escapeHtml(s.t)}</div>`).join("")}
+      </div>
+    </div>`;
+
+  body.innerHTML = `
+    <div>
+      <div class="eyebrow">COMPARE VERSIONS</div>
+      <h1 class="page-head-title">${escapeHtml(c.title)}</h1>
+      <p class="tagline">${added} step${added === 1 ? "" : "s"} added, ${removed} removed
+      between v${A.version} and v${B.version}.</p>
+    </div>
+    <div class="lib-toolbar">
+      <button type="button" class="dl-btn-inline" data-act="back">Back to case</button>
+    </div>
+    <div class="cmp-grid">
+      ${col(A.version, A.changeNote, left)}
+      ${col(B.version, B.changeNote, right)}
+    </div>`;
+
+  body.querySelector('[data-act="back"]').addEventListener("click", () =>
+    navigate("#/case/" + encodeURIComponent(caseId)));
+}
+
 const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login", "signup", "team"];
 let currentView = "home";
 
@@ -1999,9 +2520,32 @@ function applyRoute() {
     renderTeamView();
     return;
   }
-  if (head === "suite" && id) { showView("suite"); setCrumbs(["Suite"]); return; }
-  if (head === "case" && id) { showView("case"); setCrumbs(["Case"]); return; }
-  if (head === "compare" && id) { showView("compare"); setCrumbs(["Compare"]); return; }
+  // The library (Steps 5.2/5.3/5.5). These were empty stubs from the first slice; they render
+  // real data now. Each render sets its own crumbs once it knows the suite/case name, so the
+  // placeholder here is only what shows while the fetch is in flight.
+  //
+  // `id` is split off the hash above, so a query string rides along on it — strip it before use
+  // and read the version pair from it for Compare.
+  if (head === "suite" && id) {
+    showView("suite");
+    setCrumbs(["Suite"]);
+    renderSuiteView(id.split("?")[0]);
+    return;
+  }
+  if (head === "case" && id) {
+    showView("case");
+    setCrumbs(["Case"]);
+    renderCaseView(id.split("?")[0]);
+    return;
+  }
+  if (head === "compare" && id) {
+    showView("compare");
+    setCrumbs(["Compare"]);
+    const [bare, query] = id.split("?");
+    const params = new URLSearchParams(query ?? "");
+    renderCompareView(bare, params.get("from"), params.get("to"));
+    return;
+  }
 
   showView("home");
   setCrumbs([]);
@@ -2139,6 +2683,17 @@ async function loadProjects() {
     projectsCache = null;
   }
   projectsUnavailable = projectsCache === null;
+
+  // Suites are a separate call and a softer failure: without them the sidebar simply shows no
+  // library, which is strictly better than showing no projects either.
+  try {
+    const res = await fetch("/api/suites");
+    const data = res.ok ? await res.json() : null;
+    suitesCache = data && Array.isArray(data.suites) ? data.suites : [];
+  } catch {
+    suitesCache = [];
+  }
+
   renderProjectsTree(allRunsCache);
 }
 
@@ -2198,6 +2753,16 @@ function renderProjectsTree(runs) {
         <span class="tree-label" title="${escapeHtml(p.baseUrl || p.name)}">${escapeHtml(p.name)}</span>
         <span class="tree-count">${count}</span>
       </div>`;
+    // Saved suites first, then recent runs. The suites are the reusable, zero-cost thing — a
+    // project's library is more useful to reach than its scrollback, so it sits above.
+    const suiteRows = !open ? "" : (suitesCache
+      .filter((s) => s.projectId === p.id)
+      .map((s) => `
+      <div class="tree-row tree-suite" data-suite-id="${escapeHtml(s.id)}">
+        <span class="tree-label" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+        <span class="tree-count">${s.caseCount}</span>
+      </div>`).join(""));
+
     const caseRows = !open ? "" : (projectRuns.length
       ? projectRuns.map((r) => `
       <div class="tree-row tree-case${r.runId === currentRunId ? " active" : ""}" data-run-id="${escapeHtml(r.runId)}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
@@ -2205,7 +2770,7 @@ function renderProjectsTree(runs) {
         <span class="tree-label" title="${escapeHtml(r.prompt || "")}">${escapeHtml(r.prompt || "(no prompt)")}</span>
       </div>`).join("")
       : `<div class="tree-empty" style="padding-left:40px">No recent runs.</div>`);
-    return projectRow + caseRows;
+    return projectRow + suiteRows + caseRows;
   }).join("");
 
   sidebarTreeEl.querySelectorAll("[data-toggle-key]").forEach((row) => {
@@ -2215,6 +2780,9 @@ function renderProjectsTree(runs) {
       else expandedProjects.add(key);
       renderProjectsTree(allRunsCache);
     });
+  });
+  sidebarTreeEl.querySelectorAll(".tree-row.tree-suite").forEach((row) => {
+    row.addEventListener("click", () => navigate("#/suite/" + encodeURIComponent(row.dataset.suiteId)));
   });
   sidebarTreeEl.querySelectorAll(".tree-row.tree-case").forEach((row) => {
     row.addEventListener("click", () => {

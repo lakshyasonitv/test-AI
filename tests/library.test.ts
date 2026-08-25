@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
+import { rmSync } from "node:fs";
+import path from "node:path";
 
 /**
  * The test-case library — implentationplan.md Steps 5.2, 5.3, 5.5.
@@ -185,6 +187,20 @@ const { invalidateMemberships } = await import("../src/server/authz.js");
 
 const as = (userId: string) => ({ Authorization: `Bearer ${userId}` });
 
+/**
+ * runReplay writes real artifacts under runs/<runId>/ — it is the actual pipeline entry point, not
+ * a mock, which is the point of exercising it here. Fixed ids (rather than makeRunId()) so this
+ * file can delete exactly what it created and nothing else, and so a re-run overwrites its own
+ * directories instead of accumulating a new one each time. Without this, every `npx vitest run`
+ * would leave debris that the Step 3.2 shadow comparison then reports as "missing from database".
+ */
+const TEST_RUN_IDS = ["2026-01-01T00-00-00-000Z-abcdabcd", "2026-01-02T00-00-00-000Z-abcdabce"];
+afterAll(() => {
+  for (const id of TEST_RUN_IDS) {
+    rmSync(path.join("runs", id), { recursive: true, force: true });
+  }
+});
+
 beforeEach(() => {
   reset();
   invalidateMemberships();
@@ -337,7 +353,7 @@ describe("replay spends nothing — the whole economic point", () => {
     const events: any[] = [];
     const outcome = await runReplay(
       {
-        runId: "2026-01-01T00-00-00-000Z-abcdabcd",
+        runId: TEST_RUN_IDS[0],
         label: "Replayed 2 saved cases",
         cases: [
           { id: CASE_LOGIN, title: "Login works", ir: lib.parseIr(validIr("Login works"), "x") },
@@ -363,7 +379,7 @@ describe("replay spends nothing — the whole economic point", () => {
     const events: any[] = [];
     await runReplay(
       {
-        runId: "2026-01-02T00-00-00-000Z-abcdabce",
+        runId: TEST_RUN_IDS[1],
         label: "one",
         cases: [{ id: CASE_LOGIN, title: "Login works", ir: lib.parseIr(validIr("Login works"), "x") }],
       },
