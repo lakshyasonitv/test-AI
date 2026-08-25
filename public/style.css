@@ -1338,3 +1338,106 @@ body.role-no-admin #teamBtn { display: none; }
   background: var(--truncated-bg); border-left-color: var(--truncated);
   text-decoration: line-through; text-decoration-color: var(--faint);
 }
+
+/* ---------------------------------------------------------------------------
+   Inline step editor (Case screen).
+
+   The steps are structured data, not prose, so each row draws the fields its
+   action actually uses and nothing else — an editor that accepted free text
+   would need a model to parse it back into an IR, which is exactly the cost
+   a replay exists to avoid. Reuses .lib-pos, .dl-btn-inline, .case-badge and
+   .team-error rather than restating them.
+   --------------------------------------------------------------------------- */
+
+.step-edit-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--sp-3); }
+
+.step-edit {
+  border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3); background: var(--surface);
+}
+/* Borrows the "incomplete" hue, not --failed: a step you are still editing has not failed
+   anything, and green/red belong to the run verdict vocabulary. */
+.step-edit-bad { border-color: var(--truncated); background: var(--truncated-bg); }
+
+.step-edit-main { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2); }
+
+.step-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.step-f > span {
+  font-family: var(--font-mono); font-size: .58rem; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--faint);
+}
+.step-f input, .step-f select {
+  height: 28px; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); font-size: .74rem; min-width: 92px;
+}
+/* The name / value / URL fields hold sentences; the role and action fields hold one word. */
+.step-f-wide { flex: 1 1 180px; }
+.step-f-wide input { width: 100%; }
+
+.step-edit-btns { display: flex; gap: 3px; margin-left: auto; }
+.step-edit-btns .dl-btn-inline { min-width: 26px; text-align: center; }
+.step-edit-btns .dl-btn-inline:disabled { opacity: .35; cursor: default; }
+
+.step-edit-err, .step-edit-warn {
+  margin: var(--sp-2) 0 0; font-size: .7rem; line-height: 1.45;
+}
+.step-edit-err { color: var(--failed); }
+.step-edit-warn { color: var(--truncated); }
+
+.step-edit-actions {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap; margin-bottom: var(--sp-3);
+}
+
+/* Sidebar "+ New suite" — sits with the suites it creates, indented to match .tree-suite so the
+   tree keeps one alignment. Reuses .tree-row / .dl-btn-inline rather than restating them. */
+.tree-suite-add { padding-left: 22px; cursor: pointer; }
+.tree-suite-add .tree-label { font-size: .75rem; color: var(--accent); }
+.tree-suite-add:hover { background: var(--surface-hover); }
+
+.tree-suite-new { padding-left: 22px; gap: 4px; cursor: default; }
+.tree-suite-new .suite-new-input {
+  flex: 1; min-width: 0; height: 26px; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); font-size: .74rem;
+}
+.tree-suite-new .dl-btn-inline { flex: none; }
+.suite-new-err {
+  padding: 2px 8px 6px 22px;
+  font-size: .68rem; line-height: 1.4; color: var(--failed);
+}
+
+/* Suite membership on the Case screen, and the Suite screen's "add cases" picker. Both reuse
+   .lib-check / .hrow-label / .hrow-meta / .case-save-panel rather than restating them. */
+.case-suites {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2);
+  margin: var(--sp-2) 0 var(--sp-3);
+}
+.case-suites-label {
+  font-family: var(--font-mono); font-size: .58rem; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--faint);
+}
+.case-suite-chip {
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-pill); padding: 3px 11px;
+  font: inherit; font-size: .72rem; cursor: pointer; color: var(--text);
+}
+.case-suite-chip:hover { border-color: var(--line-hover); background: var(--surface-hover); }
+.case-suite-pick {
+  height: 26px; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); font-size: .72rem;
+}
+
+.suite-add-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 320px; overflow-y: auto;
+  margin-bottom: var(--sp-3);
+}
+.suite-add-row {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 7px var(--sp-2); border-radius: var(--r-sm); cursor: pointer;
+}
+.suite-add-row:hover { background: var(--surface-hover); }
+.suite-add-row .hrow-label { flex: 1; min-width: 0; }

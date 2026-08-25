@@ -229,6 +229,28 @@ describe("the IR schema is imported, never restated (the plan's named hazard)", 
     expect(db.test_cases.find((c) => c.id === CASE_LOGIN).current_version).toBe(1);
     expect(db.test_case_versions).toHaveLength(0);
   });
+
+  // The Case screen's step editor draws only action / role / name / value / url / assertion. A
+  // grounded target also carries css, testId and nth — css being "what makes icon-only controls
+  // addressable at all" (schema/ir.ts). The editor keeps them by mutating the existing target
+  // rather than rebuilding it, but that only holds if the round-trip preserves them too: if the
+  // server ever normalised unknown target keys away, every edit would silently strip the
+  // grounding and the case would still validate while no longer resolving its elements.
+  it("preserves target fields the step editor never draws (css/testId/nth)", async () => {
+    const grounded = {
+      meta: validIr("grounded").meta,
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "https://example.com" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Cart", css: "#cart-icon", testId: "cart", nth: 2 } },
+      ],
+    };
+    await lib.updateCase(OWNER, ORG, "owner", CASE_LOGIN, { ir: grounded, changeNote: "grounded" });
+
+    const stored = db.test_cases.find((c) => c.id === CASE_LOGIN).ir;
+    expect(stored.steps[1].target).toMatchObject({ css: "#cart-icon", testId: "cart", nth: 2 });
+    // and the fields the editor does draw are still there alongside them
+    expect(stored.steps[1].target).toMatchObject({ role: "button", name: "Cart" });
+  });
 });
 
 describe("suites — clubbing cases together", () => {

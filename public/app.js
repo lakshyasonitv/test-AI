@@ -1445,6 +1445,13 @@ let projectsUnavailable = false;
  *  renders it inline, and a null here would mean guarding every use. */
 let suitesCache = [];
 
+// The sidebar's inline "new suite" form. Module state rather than DOM state because
+// renderProjectsTree() re-renders wholesale on every history refresh — anything held only in the
+// input would be wiped mid-typing by a background reload.
+let newSuiteFor = null;     // project id whose form is open, or null
+let newSuiteName = "";
+let newSuiteError = "";
+
 async function loadHistory() {
   const res = await fetch("/api/runs");
   const runs = await res.json().catch(() => null);
@@ -2127,6 +2134,7 @@ async function renderSuiteView(suiteId) {
       Re-running a saved suite makes no AI calls at all.</p>
     </div>
     <div class="lib-toolbar">
+      ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="add-cases">+ Add cases</button>` : ""}
       ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="rename">Rename suite</button>` : ""}
       ${canDelete ? `<button type="button" class="dl-btn-inline" data-act="delete-suite">Delete suite</button>` : ""}
       <span class="lib-toolbar-gap"></span>
@@ -2135,6 +2143,7 @@ async function renderSuiteView(suiteId) {
         <button type="button" class="run-btn lib-run-all" data-act="run-all">▸ Run all</button>` : ""}
     </div>
     <div id="suiteFeedback"></div>
+    <div id="suiteAddPanel"></div>
     <div class="panel"><div id="suiteRows"></div></div>`;
 
   const rows = document.getElementById("suiteRows");
@@ -2164,6 +2173,83 @@ async function renderSuiteView(suiteId) {
   const feedback = (msg, isError) => {
     document.getElementById("suiteFeedback").innerHTML =
       `<p class="${isError ? "team-error" : "team-ok"}">${escapeHtml(msg)}</p>`;
+  };
+
+  /**
+   * Pick saved cases from this project and file them into this suite.
+   *
+   * Only offers cases NOT already in the suite: `suite_cases` has (suite_id, case_id) as its key,
+   * so re-adding one is a guaranteed error, and offering it would be offering a mistake. Same
+   * reasoning as the Team screen's addable-users list.
+   */
+  const openAddPanel = async () => {
+    const panel = document.getElementById("suiteAddPanel");
+    panel.innerHTML = `<div class="case-save-panel"><p class="hrow-meta">Loading cases…</p></div>`;
+    let pool;
+    try {
+      const all = (await api(`/api/cases?projectId=${encodeURIComponent(suite.projectId)}`)).cases ?? [];
+      const already = new Set(cases.map((c) => c.id));
+      pool = all.filter((c) => !already.has(c.id));
+    } catch (err) {
+      panel.innerHTML = `<div class="case-save-panel"><p class="team-error">${escapeHtml(err.message)}</p></div>`;
+      return;
+    }
+
+    if (!pool.length) {
+      panel.innerHTML = `<div class="case-save-panel">
+        <p class="hrow-meta">Every saved case in this project is already in this suite.
+        Save another from a finished run to add more.</p>
+        <button type="button" class="dl-btn-inline" data-add="close">Close</button>
+      </div>`;
+    } else {
+      panel.innerHTML = `<div class="case-save-panel">
+        <div class="lib-steps-head">Add saved cases to “${escapeHtml(suite.name)}”</div>
+        <div class="suite-add-list">
+          ${pool.map((c) => `
+            <label class="suite-add-row">
+              <input type="checkbox" class="lib-check" value="${escapeHtml(c.id)}" />
+              <span class="hrow-label">${escapeHtml(c.title)}</span>
+              <span class="hrow-meta">v${c.currentVersion}${c.feature ? ` · ${escapeHtml(c.feature)}` : ""}</span>
+            </label>`).join("")}
+        </div>
+        <div class="step-edit-actions">
+          <button type="button" class="dl-btn-inline" data-add="close">Cancel</button>
+          <span class="lib-toolbar-gap"></span>
+          <button type="button" class="run-btn lib-run-all" data-add="confirm" disabled>Add 0 cases</button>
+        </div>
+      </div>`;
+    }
+
+    const picked = () => [...panel.querySelectorAll(".lib-check")].filter((c) => c.checked).map((c) => c.value);
+    const confirmBtn = panel.querySelector('[data-add="confirm"]');
+    panel.querySelectorAll(".lib-check").forEach((cb) => cb.addEventListener("change", () => {
+      const n = picked().length;
+      confirmBtn.textContent = `Add ${n} case${n === 1 ? "" : "s"}`;
+      confirmBtn.disabled = n === 0;
+    }));
+
+    panel.querySelectorAll("[data-add]").forEach((btn) => btn.addEventListener("click", async () => {
+      if (btn.dataset.add === "close") { panel.innerHTML = ""; return; }
+      const ids = picked();
+      btn.disabled = true;
+      try {
+        // Sequential, not Promise.all: each POST appends, so the order they arrive in is the
+        // order they end up in. Parallel requests would land in a nondeterministic order.
+        for (const caseId of ids) {
+          await api(`/api/suites/${encodeURIComponent(suiteId)}/cases`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ caseId }),
+          });
+        }
+        toast(`Added ${ids.length} case${ids.length === 1 ? "" : "s"}.`);
+        await loadProjects();                 // suite case-counts in the sidebar
+        return renderSuiteView(suiteId);
+      } catch (err) {
+        btn.disabled = false;
+        panel.querySelector(".case-save-panel").insertAdjacentHTML(
+          "beforeend", `<p class="team-error">${escapeHtml(err.message)}</p>`);
+      }
+    }));
   };
 
   const order = () => [...rows.querySelectorAll(".lib-row")].map((r) => r.dataset.caseId);
@@ -2197,6 +2283,7 @@ async function renderSuiteView(suiteId) {
           return startReplay({ caseIds: [caseId] }, `Replayed "${title}"`);
         }
         if (act === "open") return navigate("#/case/" + encodeURIComponent(caseId));
+        if (act === "add-cases") return openAddPanel();
 
         if (act === "rename") {
           const name = prompt("Rename this suite", suite.name);
@@ -2242,7 +2329,246 @@ async function renderSuiteView(suiteId) {
 /** Which tab the Case screen is on. Module-level so a re-render keeps the reader where they were. */
 let caseTab = "steps";
 
+// -------------------------------------------------------- inline step editor
+//
+// Edits a case's steps in place and PATCHes the whole IR back, which mints a version and feeds
+// Compare. The server's Zod parse (src/schema/ir.ts, via library.ts's parseIr) stays the ONLY
+// authority on what a valid step is — nothing here re-implements it, because a second copy of
+// that schema is exactly the drift DECISIONS.md D-01 is about. What lives here is only which
+// inputs to draw for a given action.
+
+let caseEditor = null;   // { caseId, steps, original, errorAt, errorMsg } — non-null while editing
+
+const STEP_ACTIONS = ["navigate", "click", "fill", "select", "check", "press", "wait", "assert"];
+const STEP_ASSERTIONS = [
+  "visible", "hidden", "text_equals", "text_contains",
+  "url_contains", "title_contains", "title_equals", "enabled", "disabled",
+];
+// Page-level assertions take no target — see the note on the title/url assertions in schema/ir.ts.
+const PAGE_ASSERTIONS = new Set(["url_contains", "title_contains", "title_equals"]);
+/** generator.ts's emitAssert REFUSES to emit these without a comparison value ("refusing to emit
+ *  a vacuous assertion"). Zod accepts the step, so without a nudge here the failure would only
+ *  surface at replay. Rendered as a warning, never a block — blocking would be a second
+ *  validator to drift out of step with the generator. */
+const VALUE_ASSERTIONS = new Set(["url_contains", "text_contains", "text_equals", "title_contains", "title_equals"]);
+
+/** Which inputs a step shows, driven by its action — so an invalid step is hard to express. */
+function stepFields(step) {
+  switch (step.action) {
+    case "navigate": return { url: true };
+    case "press": return { value: true };
+    case "fill":
+    case "select": return { role: true, name: true, value: true };
+    case "click":
+    case "check":
+    case "wait": return { role: true, name: true };
+    case "assert":
+      return PAGE_ASSERTIONS.has(step.assertion)
+        ? { assertion: true, value: true }
+        : { assertion: true, role: true, name: true, value: VALUE_ASSERTIONS.has(step.assertion) };
+    default: return { role: true, name: true, value: true };
+  }
+}
+
+/**
+ * Write one edited field back into a step.
+ *
+ * Mutates the step and its EXISTING target rather than rebuilding either. That is deliberate and
+ * load-bearing: a grounded target can carry `css`, `testId`, `nth`, `label`, `text` and
+ * `placeholder`, none of which this editor draws. `css` in particular is written during grounding
+ * and is "what makes icon-only controls addressable at all" (schema/ir.ts). Rebuilding a target
+ * from the two fields shown here would drop it — producing an IR that still validates but no
+ * longer resolves the element it was grounded against. Mutating in place makes that impossible
+ * by construction rather than by remembering to copy each field.
+ */
+function setStepField(step, field, raw) {
+  const filled = raw.trim() !== "";
+  if (field === "action") {
+    step.action = raw;
+    // Leaving a stale assertion on a non-assert step is harmless to Zod but confusing to read
+    // back, and it reappears if the user switches to assert and away again.
+    if (raw !== "assert") delete step.assertion;
+    else if (!step.assertion) step.assertion = "visible";
+    return;
+  }
+  if (field === "assertion") { step.assertion = raw || undefined; return; }
+  // Stored untrimmed: a value may be a `${env:...}` credential reference or contain meaningful
+  // spacing, and this editor must hand both back exactly as it found them.
+  if (field === "value") { if (filled) step.value = raw; else delete step.value; return; }
+
+  step.target = step.target || {};
+  if (filled) step.target[field] = raw;
+  else delete step.target[field];
+  if (!Object.keys(step.target).length) delete step.target;
+}
+
+/** A fresh step id that cannot collide with one already in use — ids are referenced by
+ *  failing-step reporting, so reusing one would misattribute a failure. */
+function nextStepId(steps) {
+  const used = new Set(steps.map((s) => s.id));
+  let n = steps.length + 1;
+  while (used.has(`s${n}`)) n++;
+  return `s${n}`;
+}
+
+function caseEditorDirty() {
+  return !!caseEditor && JSON.stringify(caseEditor.steps) !== caseEditor.original;
+}
+
+/** The server reports the offending path as e.g. `steps.3.action …` — pull the index out so the
+ *  message can be shown against that row instead of floating above the whole list. */
+function errorStepIndex(message) {
+  const m = /steps\.(\d+)/.exec(message || "");
+  return m ? Number(m[1]) : null;
+}
+
+/** One editable step. Inputs carry data-i/data-f so a single delegated listener writes them all
+ *  back — twelve per-input handlers would be twelve chances to miss one. */
+function stepEditorRow(step, i, total) {
+  const f = stepFields(step);
+  const t = step.target || {};
+  const err = caseEditor.errorAt === i ? caseEditor.errorMsg : "";
+  const needsValue =
+    step.action === "assert" && VALUE_ASSERTIONS.has(step.assertion) && !String(step.value ?? "").trim();
+
+  const field = (label, name, value, wide) => `
+    <label class="step-f${wide ? " step-f-wide" : ""}">
+      <span>${label}</span>
+      <input type="text" data-i="${i}" data-f="${name}" value="${escapeHtml(String(value ?? ""))}" />
+    </label>`;
+
+  return `
+    <div class="step-edit${err ? " step-edit-bad" : ""}">
+      <div class="step-edit-main">
+        <span class="lib-pos">${i + 1}</span>
+        <label class="step-f">
+          <span>Action</span>
+          <select data-i="${i}" data-f="action">
+            ${STEP_ACTIONS.map((a) =>
+              `<option value="${a}"${a === step.action ? " selected" : ""}>${a}</option>`).join("")}
+          </select>
+        </label>
+        ${f.assertion ? `
+          <label class="step-f">
+            <span>Assertion</span>
+            <select data-i="${i}" data-f="assertion">
+              ${STEP_ASSERTIONS.map((a) =>
+                `<option value="${a}"${a === step.assertion ? " selected" : ""}>${a.replace(/_/g, " ")}</option>`).join("")}
+            </select>
+          </label>` : ""}
+        ${f.url ? field("URL", "url", t.url, true) : ""}
+        ${f.role ? field("Role", "role", t.role) : ""}
+        ${f.name ? field("Name", "name", t.name, true) : ""}
+        ${f.value ? field(step.action === "press" ? "Key" : "Value", "value", step.value, true) : ""}
+        <span class="step-edit-btns">
+          <button type="button" class="dl-btn-inline" data-ed="up" data-i="${i}" title="Move up"${i === 0 ? " disabled" : ""}>↑</button>
+          <button type="button" class="dl-btn-inline" data-ed="down" data-i="${i}" title="Move down"${i === total - 1 ? " disabled" : ""}>↓</button>
+          <button type="button" class="dl-btn-inline" data-ed="insert" data-i="${i}" title="Insert a step below">+</button>
+          <button type="button" class="dl-btn-inline" data-ed="del" data-i="${i}" title="Remove this step">×</button>
+        </span>
+      </div>
+      ${err ? `<p class="step-edit-err">${escapeHtml(err)}</p>` : ""}
+      ${needsValue ? `<p class="step-edit-warn">“${escapeHtml(String(step.assertion).replace(/_/g, " "))}” needs a comparison value — the run cannot generate this step without one.</p>` : ""}
+    </div>`;
+}
+
+/** The editor body. Re-rendered wholesale on every structural change; field edits mutate state
+ *  in place and only repaint when the visible field set actually changes. */
+function paintStepEditor(el, c, caseId, repaint) {
+  const steps = caseEditor.steps;
+
+  el.innerHTML = `
+    <div class="lib-steps">
+      <div class="lib-steps-head">
+        Steps — edit in place
+        ${caseEditorDirty() ? `<span class="case-badge badge-truncated">UNSAVED</span>` : ""}
+      </div>
+      ${caseEditor.errorMsg && caseEditor.errorAt === null
+        ? `<p class="team-error">${escapeHtml(caseEditor.errorMsg)}</p>` : ""}
+      <div class="step-edit-list">
+        ${steps.length
+          ? steps.map((s, i) => stepEditorRow(s, i, steps.length)).join("")
+          : `<p class="hrow-meta">No steps. A test plan needs at least one — add one below.</p>`}
+      </div>
+      <div class="step-edit-actions">
+        <button type="button" class="dl-btn-inline" data-ed="add">+ Add step</button>
+        <span class="lib-toolbar-gap"></span>
+        <button type="button" class="dl-btn-inline" data-ed="cancel">Cancel</button>
+        <button type="button" class="run-btn lib-run-all" data-ed="save">Save changes</button>
+      </div>
+      <p class="hrow-meta">Target: ${escapeHtml(c.ir.meta.baseUrl)}</p>
+    </div>`;
+
+  // Field edits. `change` (not `input`) so a repaint never steals focus mid-typing; the action
+  // and assertion selects repaint because they change which inputs exist.
+  el.querySelectorAll("[data-f]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const i = Number(input.dataset.i);
+      const before = JSON.stringify(stepFields(steps[i]));
+      setStepField(steps[i], input.dataset.f, input.value);
+      caseEditor.errorAt = null;
+      caseEditor.errorMsg = "";
+      if (JSON.stringify(stepFields(steps[i])) !== before || input.dataset.f === "action") repaint();
+      else paintStepEditor(el, c, caseId, repaint);   // refresh the UNSAVED badge and warnings
+    });
+  });
+
+  el.querySelectorAll("[data-ed]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const act = btn.dataset.ed;
+      const i = Number(btn.dataset.i);
+      caseEditor.errorAt = null;
+      caseEditor.errorMsg = "";
+
+      if (act === "up" || act === "down") {
+        const j = act === "up" ? i - 1 : i + 1;
+        [steps[i], steps[j]] = [steps[j], steps[i]];
+        return repaint();
+      }
+      if (act === "del") { steps.splice(i, 1); return repaint(); }
+      if (act === "insert") {
+        steps.splice(i + 1, 0, { id: nextStepId(steps), action: "click", target: { role: "button" } });
+        return repaint();
+      }
+      if (act === "add") {
+        steps.push({ id: nextStepId(steps), action: "click", target: { role: "button" } });
+        return repaint();
+      }
+      if (act === "cancel") {
+        if (caseEditorDirty() && !confirm("Discard your unsaved step changes?")) return;
+        caseEditor = null;
+        return repaint();
+      }
+      if (act === "save") {
+        if (!caseEditorDirty()) { caseEditor = null; return repaint(); }
+        btn.disabled = true;
+        try {
+          // meta is carried through untouched — this editor owns steps and nothing else.
+          const updated = await api(`/api/cases/${encodeURIComponent(caseId)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ir: { ...c.ir, steps }, changeNote: "Edited steps" }),
+          });
+          caseEditor = null;
+          toast(`Saved as v${updated.currentVersion}.`);
+          caseTab = "versions";        // the new version is the payoff; show it immediately
+          return renderCaseView(caseId);
+        } catch (err) {
+          btn.disabled = false;
+          caseEditor.errorMsg = err.message;
+          caseEditor.errorAt = errorStepIndex(err.message);
+          return repaint();
+        }
+      }
+    });
+  });
+}
+
 async function renderCaseView(caseId) {
+  // An editor belongs to exactly one case. Rendering a different one drops it — the route guard
+  // has already asked about unsaved work by this point, so anything still here was abandoned.
+  if (caseEditor && caseEditor.caseId !== caseId) caseEditor = null;
+
   const body = document.getElementById("caseViewBody");
   body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
 
@@ -2275,23 +2601,95 @@ async function renderCaseView(caseId) {
       ${canAuthor ? `<button type="button" class="run-btn lib-run-all" data-act="run">▸ Run case</button>` : ""}
     </div>
     <div id="caseFeedback"></div>
+    <div id="caseSuites"></div>
     <div class="seg" id="caseTabs" role="group" aria-label="Case sections">
       <button type="button" class="seg-btn${caseTab === "steps" ? " active" : ""}" data-tab="steps">Steps</button>
       <button type="button" class="seg-btn${caseTab === "versions" ? " active" : ""}" data-tab="versions">Versions</button>
     </div>
     <div class="panel"><div id="caseBody"></div></div>`;
 
+  /**
+   * Which suites this case is in, and a way into another one.
+   *
+   * `suite_cases` is a join table precisely so a case can live in several suites at once — a login
+   * case belongs in both "Smoke" and "Auth". Without this the many-to-many is a schema detail
+   * nobody can reach: a case could only ever be filed at save time, into exactly one suite.
+   */
+  const paintSuites = async () => {
+    const el = document.getElementById("caseSuites");
+    let all = [];
+    try {
+      all = ((await api(`/api/suites?projectId=${encodeURIComponent(c.projectId)}`)).suites ?? []);
+    } catch { el.innerHTML = ""; return; }
+
+    const inIds = new Set(c.suiteIds || []);
+    const inSuites = all.filter((s) => inIds.has(s.id));
+    const available = all.filter((s) => !inIds.has(s.id));
+
+    el.innerHTML = `
+      <div class="case-suites">
+        <span class="case-suites-label">Suites</span>
+        ${inSuites.length
+          ? inSuites.map((s) => `
+              <button type="button" class="case-suite-chip" data-goto="${escapeHtml(s.id)}"
+                      title="Open ${escapeHtml(s.name)}">${escapeHtml(s.name)}</button>`).join("")
+          : `<span class="hrow-meta">Not in any suite yet.</span>`}
+        ${canAuthor && available.length ? `
+          <select class="case-suite-pick" id="caseSuitePick" aria-label="Add this case to a suite">
+            <option value="">Add to suite…</option>
+            ${available.map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join("")}
+          </select>` : ""}
+      </div>`;
+
+    el.querySelectorAll("[data-goto]").forEach((b) =>
+      b.addEventListener("click", () => navigate("#/suite/" + encodeURIComponent(b.dataset.goto))));
+
+    const pick = document.getElementById("caseSuitePick");
+    if (pick) pick.addEventListener("change", async () => {
+      const suiteId = pick.value;
+      if (!suiteId) return;
+      pick.disabled = true;
+      try {
+        await api(`/api/suites/${encodeURIComponent(suiteId)}/cases`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ caseId }),
+        });
+        toast("Added to the suite.");
+        await loadProjects();
+        return renderCaseView(caseId);
+      } catch (err) {
+        pick.disabled = false;
+        document.getElementById("caseFeedback").innerHTML =
+          `<p class="team-error">${escapeHtml(err.message)}</p>`;
+      }
+    });
+  };
+  paintSuites();
+
   const paint = () => {
     const el = document.getElementById("caseBody");
-    if (caseTab === "steps") {
+    if (caseTab === "steps" && caseEditor && caseEditor.caseId === caseId) {
+      paintStepEditor(el, c, caseId, paint);
+    } else if (caseTab === "steps") {
       el.innerHTML = `
         <div class="lib-steps">
-          <div class="lib-steps-head">Steps — what this test actually does</div>
+          <div class="lib-steps-head">
+            Steps — what this test actually does
+            ${canAuthor ? `<button type="button" class="dl-btn-inline" id="editStepsBtn">Edit steps</button>` : ""}
+          </div>
           <ol class="lib-step-list">
             ${c.ir.steps.map((s, i) => `<li>${escapeHtml(stepText(s, i).replace(/^\d+\.\s*/, ""))}</li>`).join("")}
           </ol>
           <p class="hrow-meta">Target: ${escapeHtml(c.ir.meta.baseUrl)}</p>
         </div>`;
+      const edit = document.getElementById("editStepsBtn");
+      if (edit) edit.addEventListener("click", () => {
+        // Deep clone: every edit mutates this copy, so Cancel is just "throw it away" and the
+        // rendered case object is never touched until a PATCH succeeds.
+        const steps = JSON.parse(JSON.stringify(c.ir.steps));
+        caseEditor = { caseId, steps, original: JSON.stringify(steps), errorAt: null, errorMsg: "" };
+        paint();
+      });
     } else {
       el.innerHTML = c.versions.length
         ? c.versions.map((v) => `
@@ -2485,11 +2883,38 @@ function navigate(hash) {
   else location.hash = hash;
 }
 
+// Where we were before the current hash change, so an unsaved edit can put it back.
+let lastHash = location.hash;
+let restoringHash = false;
+
+/** The browser's own guard, for reload / close / an external link — the in-app one below cannot
+ *  see those. The message is the browser's; the string only marks the event as blocking. */
+window.addEventListener("beforeunload", (e) => {
+  if (!caseEditorDirty()) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+
 /** Hash routing: no server routes needed, and express.static already 404s
  *  anything it doesn't recognise, so a deep link can't hit the backend. */
 function applyRoute() {
   const raw = (location.hash || "#/").replace(/^#\/?/, "");
   const [head, id] = raw.split("/");
+
+  // Unsaved step edits. Leaving the case they belong to would discard them with no warning, and
+  // the back button reaches here too — so the check lives in the router rather than on each link.
+  if (restoringHash) { restoringHash = false; lastHash = location.hash; return; }
+  const stayingOnCase = head === "case" && id && id.split("?")[0] === caseEditor?.caseId;
+  if (caseEditorDirty() && !stayingOnCase) {
+    if (!confirm("You have unsaved step changes. Leave and discard them?")) {
+      // Guarded: if the hash is somehow already correct this would never fire hashchange, and
+      // the flag would poison the next navigation instead.
+      if (location.hash !== lastHash) { restoringHash = true; location.hash = lastHash; }
+      return;
+    }
+    caseEditor = null;
+  }
+  lastHash = location.hash;
 
   // Auth gate (Step 2.2). `auth.required` is only ever true when the server reported
   // authEnabled:true, so with auth off this whole branch is dead code and routing behaves
@@ -2763,6 +3188,24 @@ function renderProjectsTree(runs) {
         <span class="tree-count">${s.caseCount}</span>
       </div>`).join(""));
 
+    // Creating a suite belongs where the suites already are — someone looking at a project's
+    // suites and wanting another looks right here. Naming happens inline rather than through a
+    // prompt() so the server's refusal (duplicate name, project you can't see) has somewhere to
+    // land. `tester`+ only; the server enforces it regardless (POST /api/suites).
+    const canAuthorSuites = !auth.required || roleAtLeast(auth.role, "tester");
+    const newSuiteRow = !open || !canAuthorSuites ? "" : (newSuiteFor === p.id
+      ? `<div class="tree-row tree-suite-new">
+           <input type="text" class="suite-new-input" id="newSuiteInput"
+                  placeholder="Suite name" value="${escapeHtml(newSuiteName)}"
+                  aria-label="Name for the new suite" />
+           <button type="button" class="dl-btn-inline" data-suite-create="${escapeHtml(p.id)}">Add</button>
+           <button type="button" class="dl-btn-inline" data-suite-cancel="1" title="Cancel">×</button>
+         </div>
+         ${newSuiteError ? `<div class="suite-new-err">${escapeHtml(newSuiteError)}</div>` : ""}`
+      : `<div class="tree-row tree-suite-add" data-suite-add="${escapeHtml(p.id)}">
+           <span class="tree-label">+ New suite</span>
+         </div>`);
+
     const caseRows = !open ? "" : (projectRuns.length
       ? projectRuns.map((r) => `
       <div class="tree-row tree-case${r.runId === currentRunId ? " active" : ""}" data-run-id="${escapeHtml(r.runId)}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
@@ -2770,8 +3213,59 @@ function renderProjectsTree(runs) {
         <span class="tree-label" title="${escapeHtml(r.prompt || "")}">${escapeHtml(r.prompt || "(no prompt)")}</span>
       </div>`).join("")
       : `<div class="tree-empty" style="padding-left:40px">No recent runs.</div>`);
-    return projectRow + suiteRows + caseRows;
+    return projectRow + suiteRows + newSuiteRow + caseRows;
   }).join("");
+
+  sidebarTreeEl.querySelectorAll("[data-suite-add]").forEach((row) => {
+    row.addEventListener("click", () => {
+      newSuiteFor = row.dataset.suiteAdd;
+      newSuiteName = "";
+      newSuiteError = "";
+      renderProjectsTree(allRunsCache);
+      document.getElementById("newSuiteInput")?.focus();
+    });
+  });
+  sidebarTreeEl.querySelectorAll("[data-suite-cancel]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
+      renderProjectsTree(allRunsCache);
+    });
+  });
+
+  const createSuite = async (projectId) => {
+    const name = newSuiteName.trim();
+    if (!name) { newSuiteError = "Give the suite a name."; return renderProjectsTree(allRunsCache); }
+    try {
+      const created = await api("/api/suites", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, name }),
+      });
+      newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
+      await loadProjects();                       // refresh suitesCache so the new row appears
+      // Land in the new (empty) suite — adding cases is the obvious next step and it should be
+      // in front of them rather than something they have to go find.
+      navigate("#/suite/" + encodeURIComponent(created.id));
+    } catch (err) {
+      newSuiteError = err.message;
+      renderProjectsTree(allRunsCache);
+      document.getElementById("newSuiteInput")?.focus();
+    }
+  };
+
+  const nameInput = document.getElementById("newSuiteInput");
+  if (nameInput) {
+    nameInput.addEventListener("input", () => { newSuiteName = nameInput.value; });
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); createSuite(newSuiteFor); }
+      if (e.key === "Escape") {
+        newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
+        renderProjectsTree(allRunsCache);
+      }
+    });
+  }
+  sidebarTreeEl.querySelectorAll("[data-suite-create]").forEach((btn) => {
+    btn.addEventListener("click", () => createSuite(btn.dataset.suiteCreate));
+  });
 
   sidebarTreeEl.querySelectorAll("[data-toggle-key]").forEach((row) => {
     row.addEventListener("click", () => {
