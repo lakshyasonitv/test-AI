@@ -28,9 +28,11 @@ import {
   addMember,
   bootstrapUser,
   changeMemberRole,
+  listAddableUsers,
   listMembers,
   removeMember,
 } from "./organisations.js";
+import { consumeSignupAttempt, createAccount, isSignupEnabled } from "./signup.js";
 import { recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
@@ -53,7 +55,10 @@ app.use(express.static("public"));
 // construction: the UI has to be able to ask "is auth even on, and where do I authenticate?"
 // before it can possibly hold a token. Neither returns a secret — /api/health reports only
 // whether each env var is set, /api/auth/config returns only browser-safe publishable values.
-const PUBLIC_API_PATHS = new Set(["/health", "/auth/config"]);
+// /auth/signup joins them for the same reason: an account that does not exist yet cannot present
+// a token, so requiring one would make sign-up unreachable by construction. It carries its own
+// flag, rate limit and validation instead — see signup.ts.
+const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup"]);
 
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API_PATHS.has(req.path)) return next();
@@ -359,6 +364,55 @@ app.get("/api/auth/config", (_req, res) => {
   });
 });
 
+/**
+ * Create an account and return a session for it.
+ *
+ * Public by necessity (see PUBLIC_API_PATHS) and therefore the most exposed route in this server:
+ * it is the only unauthenticated endpoint that *writes*, and it writes with an admin key. The
+ * ordering below is deliberate — flag, then rate limit, then validation — so a disabled or
+ * flooded endpoint costs nothing and never reaches Supabase.
+ *
+ * Why this exists at all rather than the browser calling Supabase directly: signup.ts's header.
+ */
+app.post("/api/auth/signup", async (req, res) => {
+  if (!isAuthEnabled()) {
+    // With auth off there is no sign-up screen and no login, so an account would be unusable.
+    // Refuse plainly rather than creating something nobody can sign in as.
+    return res.status(404).json({ error: "sign-up is not available — this server has AUTH_ENABLED off" });
+  }
+  if (!isSignupEnabled()) {
+    return res.status(403).json({ error: "sign-up is closed on this server" });
+  }
+
+  const ip = req.ip || req.socket.remoteAddress || "unknown";
+  if (!consumeSignupAttempt(ip)) {
+    return res.status(429).json({ error: "too many sign-up attempts — wait a few minutes and try again" });
+  }
+
+  const { email, password } = req.body ?? {};
+  if (typeof email !== "string" || typeof password !== "string") {
+    return res.status(400).json({ error: "email and password are required" });
+  }
+
+  try {
+    const result = await createAccount(email, password);
+    // Give the new account its own organisation before replying, so the session the client
+    // receives is immediately usable. Doing it here rather than leaving it to the client's
+    // bootstrap call means there is no window where a signed-in user belongs nowhere.
+    try {
+      await bootstrapUser(result.user.id, result.user.email);
+    } catch (err) {
+      // The account and session are real; only the workspace is missing, and the client's own
+      // refreshIdentity() calls bootstrap again on every sign-in. Log and continue rather than
+      // failing a sign-up that actually succeeded.
+      console.error("[signup] bootstrap after sign-up failed:", (err as Error)?.message ?? err);
+    }
+    res.status(201).json(result);
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
 // --------------------------------------------------------------------------
 // Identity & membership (Step 3.4, plus Step 5.4's role management)
 //
@@ -420,6 +474,21 @@ app.post("/api/auth/bootstrap", async (req, res) => {
 app.get("/api/organisations/:orgId/members", requireOrgRole("viewer"), async (req, res) => {
   try {
     res.json({ members: await listMembers(req.params.orgId) });
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+/**
+ * Registered accounts that aren't in this organisation yet — suggestions for the add-member field.
+ *
+ * `admin`, matching POST .../members: the only thing you can do with this list is add someone, so
+ * anyone who can't add shouldn't be able to enumerate. Enforced through the same
+ * `requireOrgRole`/`assertOrgAccess` path as every other member route — no new permission concept.
+ */
+app.get("/api/organisations/:orgId/addable-users", requireOrgRole("admin"), async (req, res) => {
+  try {
+    res.json({ emails: await listAddableUsers(req.params.orgId) });
   } catch (err) {
     sendAccessError(res, err);
   }

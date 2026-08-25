@@ -37,6 +37,21 @@ const MEMBERSHIPS: { organisation_id: string; user_id: string; role: string }[] 
   { organisation_id: ORG_B, user_id: OWNER_B, role: "owner" },
 ];
 
+/**
+ * The Supabase account directory, as `auth.admin.listUsers` would report it. Deliberately wider
+ * than ORG_A's roster: OUTSIDER_EMAIL belongs to nobody, which is what the add-member field's
+ * suggestion list exists to surface.
+ */
+const OUTSIDER_EMAIL = "outsider@example.com";
+const DIRECTORY = [
+  { id: OWNER_A, email: "owner-a@example.com" },
+  { id: ADMIN_A, email: "admin-a@example.com" },
+  { id: TESTER_A, email: "tester-a@example.com" },
+  { id: VIEWER_A, email: "viewer-a@example.com" },
+  { id: OWNER_B, email: "owner-b@example.com" },
+  { id: ORPHAN, email: OUTSIDER_EMAIL },
+];
+
 const RUN_A = "2026-01-01T00-00-00-000Z-aaaaaaaa";
 const RUN_B = "2026-01-02T00-00-00-000Z-bbbbbbbb";
 const RUN_UNOWNED = "2026-01-03T00-00-00-000Z-cccccccc"; // on disk, never written to the database
@@ -90,7 +105,7 @@ vi.mock("@supabase/supabase-js", () => ({
         token
           ? { data: { user: { id: token, email: `${token.slice(0, 8)}@example.com` } }, error: null }
           : { data: { user: null }, error: new Error("no token") },
-      admin: { listUsers: async () => ({ data: { users: [] }, error: null }) },
+      admin: { listUsers: async () => ({ data: { users: DIRECTORY }, error: null }) },
     },
   }),
 }));
@@ -353,6 +368,58 @@ describe("team management — the screen's controls map to enforced routes", () 
       .send({ role: "tester" });
     expect(res.status).toBe(200);
     expect(res.body.role).toBe("tester");
+  });
+});
+
+/**
+ * The add-member field's suggestion list.
+ *
+ * It is `admin`-gated for a reason worth stating: the only thing the list is useful for is adding
+ * someone, so anyone who cannot add should not be able to enumerate the directory either. These
+ * assert that gate, and that the list actually excludes people already in the organisation —
+ * suggesting an existing member would just produce a guaranteed 409.
+ */
+describe("team management — addable-account suggestions", () => {
+  it("suggests an account that exists but is not in this organisation", async () => {
+    const res = await request(app)
+      .get(`/api/organisations/${ORG_A}/addable-users`)
+      .set(as(OWNER_A));
+    expect(res.status).toBe(200);
+    expect(res.body.emails).toContain(OUTSIDER_EMAIL);
+  });
+
+  it("excludes accounts already in the organisation", async () => {
+    const res = await request(app)
+      .get(`/api/organisations/${ORG_A}/addable-users`)
+      .set(as(OWNER_A));
+    expect(res.body.emails).not.toContain("owner-a@example.com");
+    expect(res.body.emails).not.toContain("viewer-a@example.com");
+  });
+
+  it("refuses a tester — you cannot enumerate what you cannot add to", async () => {
+    const res = await request(app)
+      .get(`/api/organisations/${ORG_A}/addable-users`)
+      .set(as(TESTER_A));
+    expect(res.status).toBe(403);
+  });
+
+  it("refuses a viewer", async () => {
+    const res = await request(app)
+      .get(`/api/organisations/${ORG_A}/addable-users`)
+      .set(as(VIEWER_A));
+    expect(res.status).toBe(403);
+  });
+
+  it("refuses another organisation's owner", async () => {
+    const res = await request(app)
+      .get(`/api/organisations/${ORG_A}/addable-users`)
+      .set(as(OWNER_B));
+    expect(res.status).toBe(403);
+  });
+
+  it("401s an unauthenticated caller", async () => {
+    const res = await request(app).get(`/api/organisations/${ORG_A}/addable-users`);
+    expect(res.status).toBe(401);
   });
 });
 

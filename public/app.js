@@ -287,13 +287,11 @@ async function initAuth() {
   // --- sign up -------------------------------------------------------------
   const signupForm = document.getElementById("signupForm");
   const signupError = document.getElementById("signupError");
-  const signupNotice = document.getElementById("signupNotice");
   const signupSubmit = document.getElementById("signupSubmit");
 
   signupForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     signupError.classList.add("hidden");
-    signupNotice.classList.add("hidden");
 
     const email = document.getElementById("signupEmail").value.trim();
     const password = document.getElementById("signupPassword").value;
@@ -313,37 +311,29 @@ async function initAuth() {
     signupSubmit.disabled = true;
     signupSubmit.textContent = "Creating account…";
     try {
-      const res = await rawFetch(`${auth.url}/auth/v1/signup`, {
+      // Our own server, NOT Supabase's public /auth/v1/signup. That endpoint 504s on this project
+      // — it tries to send a confirmation email through the free-tier sender, which hangs, and no
+      // account is ever created. The server creates a pre-confirmed account with the Admin API and
+      // hands back a session, so there is no "check your email" state to land in. See
+      // src/server/signup.ts.
+      const res = await rawFetch("/api/auth/signup", {
         method: "POST",
-        headers: { "Content-Type": "application/json", apikey: auth.publishableKey },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error_description || body.msg || "Could not create the account.");
-
-      if (body.access_token) {
-        // Email confirmation is OFF on this project — we got a session straight away, so sign
-        // the new owner in and drop them on Home rather than making them log in again.
-        setSession(body.access_token, (body.user && body.user.email) || email);
-        document.getElementById("signupPassword").value = "";
-        await refreshIdentity();
-        navigate("#/");
-        applyRoute();
-        loadHistory();
-        return;
+      if (!res.ok || !body.accessToken) {
+        throw new Error(body.error || "Could not create the account.");
       }
 
-      // Email confirmation is ON (Supabase's default, and what this project currently does):
-      // signup returns the created user with `confirmation_sent_at` and NO session. Without
-      // saying so, the person is bounced to a sign-in screen that then rejects them, which reads
-      // as a broken app rather than as a pending email.
+      // The server already gave the new account its own organisation, so this session is usable
+      // immediately — straight to Home, signed in, rather than back to a login screen.
+      setSession(body.accessToken, (body.user && body.user.email) || email);
       document.getElementById("signupPassword").value = "";
-      auth.screen = "login";
+      await refreshIdentity();
+      navigate("#/");
       applyRoute();
-      const loginNoticeTarget = document.getElementById("loginError");
-      loginNoticeTarget.textContent =
-        `Account created. Check ${email} to confirm your address, then sign in.`;
-      loginNoticeTarget.classList.remove("hidden");
+      loadHistory();
     } catch (err) {
       signupError.textContent = err.message || "Could not create the account.";
       signupError.classList.remove("hidden");
@@ -363,7 +353,6 @@ async function initAuth() {
   document.getElementById("goLogin").addEventListener("click", () => {
     auth.screen = "login";
     document.getElementById("signupError").classList.add("hidden");
-    document.getElementById("signupNotice").classList.add("hidden");
     applyRoute();
   });
 
@@ -2299,7 +2288,11 @@ async function renderTeamView() {
         <label class="field">
           <span class="field-label">Email of an existing account</span>
           <input id="teamAddEmail" type="email" placeholder="someone@example.com"
-            autocomplete="off" spellcheck="false" />
+            autocomplete="off" spellcheck="false" list="teamAddSuggestions" />
+          <!-- Suggestions are filled in below, after the list of addable accounts loads. A
+               datalist is used deliberately: it needs no CSS, no keyboard handling and no new
+               class names, and the field stays plain free text if the list never arrives. -->
+          <datalist id="teamAddSuggestions"></datalist>
         </label>
         <label class="field" style="flex:0 0 150px">
           <span class="field-label">Role</span>
@@ -2323,6 +2316,19 @@ async function renderTeamView() {
         `${email} added as ${role}.`,
       );
     });
+
+    // Populate the suggestions without blocking the roster render below. A failure here is
+    // silent by design — the field still works as free text, which is exactly what it did before.
+    fetch(`/api/organisations/${encodeURIComponent(orgId)}/addable-users`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const list = document.getElementById("teamAddSuggestions");
+        if (!list || !data || !Array.isArray(data.emails)) return;
+        list.innerHTML = data.emails
+          .map((e) => `<option value="${escapeHtml(e)}"></option>`)
+          .join("");
+      })
+      .catch(() => { /* suggestions are a convenience, never a requirement */ });
   }
 
   rows.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">Loading…</div>`;

@@ -105,6 +105,43 @@ export async function findUserByEmail(email: string): Promise<{ id: string; emai
   }
 }
 
+/**
+ * Accounts that exist but are not yet in this organisation — the add-member field's suggestions.
+ *
+ * Read-only and admin-gated at the route. It exists because adding a member meant typing a full
+ * address blind, and a typo produced "no account with that email" with no way to tell a wrong
+ * address from an unregistered one.
+ *
+ * **This returns every registered address to any admin of any organisation.** Correct for one
+ * company running this locally, a privacy leak the moment two unrelated customers share an
+ * instance — see the report's DEFERRED section. It has to be scoped or dropped before that.
+ */
+export async function listAddableUsers(orgId: string): Promise<string[]> {
+  const client = requireClient();
+
+  const { data: memberRows, error } = await client
+    .from("organisation_members")
+    .select("user_id")
+    .eq("organisation_id", orgId);
+  if (error) throw new AccessError(500, `could not list members: ${error.message}`);
+
+  const alreadyIn = new Set((memberRows ?? []).map((r) => (r as { user_id: string }).user_id));
+
+  try {
+    const { data, error: listErr } = await client.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    if (listErr) throw new Error(listErr.message);
+    return (data?.users ?? [])
+      .filter((u) => u.email && !alreadyIn.has(u.id))
+      .map((u) => u.email as string)
+      .sort((a, b) => a.localeCompare(b));
+  } catch (err) {
+    // A suggestion list is a convenience. If the directory can't be read, the field still works
+    // as free text — degrade to "no suggestions" rather than failing the whole Team screen.
+    console.error("[org] could not list addable accounts:", (err as Error)?.message ?? err);
+    return [];
+  }
+}
+
 /** Invariant 1, in one place so every mutation below is covered by it. */
 function assertCanGrant(actorRole: Role, targetRole: Role): void {
   if (!roleAtLeast(actorRole, targetRole)) {

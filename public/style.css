@@ -1124,16 +1124,9 @@ summary:focus-visible, .history-item:focus-visible {
   padding: var(--sp-2) var(--sp-3);
 }
 
-/* Sign-up confirmation notice. Distinct from .auth-error on purpose — "check your
-   email" is a successful outcome, and colouring it as a failure reads as a bug. */
-.auth-notice {
-  margin: 0;
-  font-size: .78rem;
-  color: var(--done);
-  background: var(--done-bg);
-  border-radius: var(--r-sm);
-  padding: var(--sp-2) var(--sp-3);
-}
+/* .auth-notice was removed along with the "check your email to confirm" state: sign-up now goes
+   through this server's own /api/auth/signup, which creates a pre-confirmed account and returns a
+   session, so there is no pending-confirmation outcome left to style. */
 
 /* The "already have an account?" / "don't have one?" line under each auth form. */
 .auth-switch {
