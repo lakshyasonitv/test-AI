@@ -73,6 +73,7 @@ import {
 import { runReplay } from "../stages/replay.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
+import { credentialsFromEnv, credentialKindsNeeded, type Credentials } from "../stages/credentials.js";
 import { proposeRewrite, consumeRewriteAttempt } from "./rewrite.js";
 import {
   cancelJob, createJob, emitJobEvent, getJob, isCancelled, jobEvents, subscribeJob,
@@ -921,6 +922,44 @@ async function prepareEdit(req: express.Request, res: express.Response) {
 }
 
 /**
+ * The credentials the re-ground walk will need, or undefined if it needs none.
+ *
+ * Resolved BEFORE the walk starts, not lazily inside it, for two reasons: the steps already say
+ * whether a credential is needed (`credentialKindsNeeded` reads the `${env:...}` values
+ * `applyCredentials` wrote when the case was authored), and asking first means a prompt the user
+ * ignores costs no browser time at all — there is nothing running to leak.
+ *
+ * ENV FIRST, PROMPT SECOND. `TEST_USERNAME`/`TEST_PASSWORD` are the same pair the generated spec
+ * references and the executor injects, so an operator who has already set them for their runs gets
+ * a silent save. Only when they are absent does this park the job and ask, through the SAME
+ * `askCredentials` mechanism a run uses — one waiter table, one timeout, one set of guarantees.
+ *
+ * Never returned to a caller that writes: the value lives in this promise and in the walk, and
+ * `regroundEditedIr` redacts it out of anything it reports.
+ */
+async function resolveWalkCredentials(
+  jobId: string,
+  ir: { meta?: { baseUrl?: string }; steps: { value?: string }[] },
+  needsCredentials: boolean,
+): Promise<Credentials | undefined> {
+  if (!needsCredentials) return undefined;
+
+  const fromEnv = credentialsFromEnv();
+  if (fromEnv) return fromEnv;
+
+  const url = ir.meta?.baseUrl ?? "";
+  const fields = credentialKindsNeeded(ir.steps);
+
+  // The emit is not optional: askCredentials only parks a promise server-side. Without the event
+  // the editor never renders the form, and the job sits for the full CREDENTIAL_WAIT_MS against a
+  // UI that offered nowhere to type — the same trap documented on the run path.
+  emitJobEvent(jobId, "credentials", "started", { url, fields, caseEdit: true });
+  const answered = await askCredentials({ runId: jobId, url, fields });
+  emitJobEvent(jobId, "credentials", "completed", { supplied: !!answered });
+  return answered ?? undefined;
+}
+
+/**
  * What would saving this cost? Answers WITHOUT doing any of it.
  *
  * Pure arithmetic over the diff — no browser, no model, no write. This is what lets the editor say
@@ -995,8 +1034,18 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
     void (async () => {
       emitJobEvent(jobId, "ir", "started", { ...estimate, caseId });
       try {
+        const creds = await resolveWalkCredentials(jobId, validated, estimate.needsCredentials);
+        // Cancelled while the prompt was open, or the prompt timed out into a cancel. Return
+        // before any browser launches — there is nothing to close and nothing to write.
+        if (isCancelled(jobId)) {
+          emitJobEvent(jobId, "done", "completed", { cancelled: true, saved: false, snapshots: 0 },
+            "cancelled before saving — nothing was written, and the case is exactly as it was");
+          return;
+        }
+
         const grounded = await regroundEditedIr(validated, parsed.regroundIndexes, {
           sourceRunId: found.sourceRunId,
+          creds,
           shouldCancel: () => isCancelled(jobId),
           onProgress: (p) => emitJobEvent(jobId, "ir", "started", p),
         });
@@ -1063,7 +1112,33 @@ app.post("/api/cases/:caseId/steps/jobs/:jobId/cancel", requireRole("tester"), (
   const job = getJob(req.params.jobId, req.user?.id ?? LOCAL_USER_ID);
   if (!job) return res.status(404).json({ error: "no such editing session" });
   cancelJob(job);
+  // A job parked on the credential prompt is not inside the walk, so `shouldCancel` will never be
+  // polled — without this it would sit until CREDENTIAL_WAIT_MS regardless of the cancel. Settling
+  // with null releases it immediately; the `isCancelled` check straight after the await then ends
+  // the job before any browser launches. Harmless when nothing is waiting (returns false).
+  settle(req.params.jobId, null);
   res.status(202).json({ cancelling: true });
+});
+
+/**
+ * Answer a re-ground's credential prompt. Deliberately the same shape as the run's
+ * `/api/runs/:runId/credentials` — same body, same `secret: true`, same settle() — because it IS
+ * the same mechanism, keyed on the job id instead of a run id.
+ *
+ * The values go straight into the waiting promise and live only in the walk's memory. Nothing here
+ * writes them anywhere: not to the job's event log, not to `runs/`, not to the database.
+ */
+app.post("/api/cases/:caseId/steps/jobs/:jobId/credentials", requireRole("tester"), (req, res) => {
+  const job = getJob(req.params.jobId, req.user?.id ?? LOCAL_USER_ID);
+  if (!job) return res.status(404).json({ error: "no such editing session" });
+
+  const { username, password, skip } = req.body ?? {};
+  const supplied = !skip && typeof username === "string" && typeof password === "string"
+    && username.length > 0 && password.length > 0;
+
+  const answered = settle(req.params.jobId, supplied ? { username, password, secret: true } : null);
+  if (!answered) return res.status(409).json({ error: "this editing session is not waiting for credentials" });
+  res.status(204).end();
 });
 
 /** Copy a case. Fresh history at v1 — see library.ts for why the original's is not carried over. */

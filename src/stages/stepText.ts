@@ -1,4 +1,5 @@
 import type { Step, Target } from "../schema/ir.js";
+import { credentialKindsNeeded } from "./credentials.js";
 
 /**
  * The IR <-> plain-English mapping, in ONE place.
@@ -365,6 +366,15 @@ export interface RegroundEstimate {
   estimatedSeconds: number;
   /** True when the save needs no browser at all — the fast path. */
   instant: boolean;
+  /**
+   * True when the walk has to sign in to arrive — i.e. a step it must replay was filled with a
+   * real credential. The editor says so up front, because otherwise `Save — re-checks 1 step`
+   * turns into an unannounced password prompt, and a surprise credential request is exactly the
+   * kind of thing a person refuses on reflex.
+   *
+   * Cheap: read straight off the steps' `${env:...}` values, no browser, no guessing.
+   */
+  needsCredentials: boolean;
 }
 
 /**
@@ -389,6 +399,14 @@ export function estimateRegrounding(
   // The deepest walk dominates; earlier ones are cached by prefix.
   const deepest = arrivals.length ? Math.max(...arrivals) : 0;
 
+  // Mirrors regroundEditedIr's loop, which walks arrivals in ascending order and stops at the
+  // cap — so the deepest prefix ACTUALLY replayed is the capped one, not `deepest`. Checking the
+  // uncapped depth would promise a sign-in for steps the walk never reaches.
+  const deepestWalked = arrivals.length
+    ? Math.max(...[...arrivals].sort((a, b) => a - b).slice(0, cap))
+    : 0;
+  const needsCredentials = credentialKindsNeeded(parsed.steps.slice(0, deepestWalked)).length > 0;
+
   return {
     changedSteps: parsed.changedIndexes.length,
     stepsToVerify: toVerify.length,
@@ -400,5 +418,6 @@ export function estimateRegrounding(
     // coarse over-estimate: a save that finishes sooner than promised is a good surprise.
     estimatedSeconds: snapshots === 0 ? 0 : Math.round(snapshots * 8 + deepest * 2),
     instant: toVerify.length === 0,
+    needsCredentials,
   };
 }

@@ -1503,13 +1503,22 @@ async function loadHistory() {
 // The run this prompt belongs to. Also the guard against a stale prompt: the poller replays
 // events, and a second run must never post its answer to the previous run's id.
 let credRunId = null;
+// Where the answer is POSTed. A run and a case-edit park on the SAME server-side waiter table,
+// keyed by run id or job id, so the only thing that differs is this URL — which is why this is one
+// variable rather than a second modal.
+let credPostUrl = null;
 
-function showCredentialPrompt(runId, data) {
+function showCredentialPrompt(runId, data, postUrl) {
   credRunId = runId;
+  credPostUrl = postUrl ?? `/api/runs/${runId}/credentials`;
   const host = (() => { try { return new URL(data?.url).host; } catch { return data?.url ?? "this site"; } })();
-  credWhyEl.textContent =
-    `The tests for ${host} need to sign in, and there's no built-in account for it. ` +
-    `Add credentials to test the flow past the login, or skip to test only what's reachable without one.`;
+  credWhyEl.textContent = data?.caseEdit
+    // Editing says something different on purpose: nothing is being tested yet, and skipping here
+    // does not "test less" — it fails the check outright, because the walk cannot reach the step.
+    ? `Checking this edit means signing in to ${host} first — the step you changed is behind the login. ` +
+      `Add credentials to verify it, or skip and the check will stop at the login.`
+    : `The tests for ${host} need to sign in, and there's no built-in account for it. ` +
+      `Add credentials to test the flow past the login, or skip to test only what's reachable without one.`;
   credUserEl.value = "";
   credPassEl.value = "";
   credFormEl.querySelectorAll("button, input").forEach((el) => { el.disabled = false; });
@@ -1519,6 +1528,7 @@ function showCredentialPrompt(runId, data) {
 
 function hideCredentialPrompt() {
   credRunId = null;
+  credPostUrl = null;
   // Don't leave the password sitting in the DOM once it's been handed over.
   credUserEl.value = "";
   credPassEl.value = "";
@@ -1527,10 +1537,10 @@ function hideCredentialPrompt() {
 
 async function submitCredentials(body) {
   if (!credRunId) return;
-  const runId = credRunId;
+  const url = credPostUrl;
   credFormEl.querySelectorAll("button, input").forEach((el) => { el.disabled = true; });
   try {
-    await fetch(`/api/runs/${runId}/credentials`, {
+    await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -2473,9 +2483,14 @@ function refreshCaseSaveAffordance() {
     // maxLlmCalls is a CEILING. Grounding is DOM-first and usually spends none, so promising
     // "N model calls" would make the common zero-cost save read as a bug.
     if (hint) {
-      hint.textContent = est.maxLlmCalls
+      const cost = est.maxLlmCalls
         ? `Opens the site to re-check the marked ${s} · up to ${est.maxLlmCalls} model call${est.maxLlmCalls === 1 ? "" : "s"}.`
         : `Opens the site to re-check the marked ${s}.`;
+      // Said BEFORE the click. A sign-in request that arrives unannounced mid-save is the kind of
+      // thing people refuse on reflex — and refusing it here means the check simply cannot run.
+      hint.textContent = est.needsCredentials
+        ? `${cost} The step is behind a login, so this will sign in first.`
+        : cost;
     }
   }
 
@@ -2611,6 +2626,18 @@ async function pollCaseJob(c, repaint) {
         if (typeof total === "number" && total) job.total = total;
       }
     }
+    // The walk is parked on a login it has no credentials for. Same modal a run uses — it posts
+    // to the job instead of a run, which is the only difference between the two cases.
+    if (ev.stage === "credentials") {
+      if (ev.status === "started") {
+        showCredentialPrompt(job.jobId, ev.data,
+          `/api/cases/${encodeURIComponent(editor.caseId)}/steps/jobs/${encodeURIComponent(job.jobId)}/credentials`);
+      } else {
+        // Answered, skipped, or timed out server-side. Close it either way so a stale form can't
+        // sit over a job that has already moved on.
+        if (credRunId === job.jobId) hideCredentialPrompt();
+      }
+    }
     if (ev.stage === "done" || ev.stage === "error") terminal = ev;
   }
 
@@ -2621,6 +2648,10 @@ async function pollCaseJob(c, repaint) {
   }
 
   // ---- terminal
+  // However this ended — saved, failed, cancelled — a credential form still open belongs to a job
+  // that no longer exists, and answering it would 409.
+  if (credRunId === job.jobId) hideCredentialPrompt();
+
   const d = terminal.data ?? {};
   if (terminal.stage === "done" && d.saved) {
     return finishCaseSave(d, repaint);

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { formatIrStep, parseIrStep, parseIrSteps, nextStepId } from "../src/stages/stepText.js";
+import { formatIrStep, parseIrStep, parseIrSteps, nextStepId, estimateRegrounding } from "../src/stages/stepText.js";
 import type { Step } from "../src/schema/ir.js";
 
 /**
@@ -263,4 +263,54 @@ describe("stepText — public/app.js's copy must not drift from this one", () =>
       expect(browserFormat(step)).toBe(formatIrStep(step));
     });
   }
+});
+
+/**
+ * `needsCredentials` — the estimate telling the truth about a login wall.
+ *
+ * Without it, `Save — re-checks 1 step (~14s)` turns into an unannounced password prompt, and a
+ * credential request that arrives unannounced is the kind of thing people refuse on reflex.
+ */
+describe("estimateRegrounding — warning about a sign-in before Save is pressed", () => {
+  const LOGIN_STEPS: Step[] = [
+    { id: "s1", action: "navigate", target: { url: "/login" } },
+    { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "${env:TEST_USERNAME}" },
+    { id: "s3", action: "fill", target: { role: "textbox", name: "Pass" }, value: "${env:TEST_PASSWORD}" },
+    { id: "s4", action: "click", target: { role: "button", name: "Sign in" } },
+    { id: "s5", action: "click", target: { role: "link", name: "Admin" } },
+  ];
+
+  const parsed = (steps: Step[], regroundIndexes: number[]) =>
+    ({ steps, changedIndexes: regroundIndexes, regroundIndexes });
+
+  it("warns when the walk must cross a login to arrive", () => {
+    // Editing step 5 means replaying 1-4, which includes the two credential fills.
+    expect(estimateRegrounding(parsed(LOGIN_STEPS, [4])).needsCredentials).toBe(true);
+  });
+
+  it("stays quiet when the replayed prefix contains no credential fill", () => {
+    // Editing step 2 replays only step 1 — the login has not happened yet.
+    expect(estimateRegrounding(parsed(LOGIN_STEPS, [1])).needsCredentials).toBe(false);
+  });
+
+  it("stays quiet on the fast path, which opens no browser at all", () => {
+    expect(estimateRegrounding(parsed(LOGIN_STEPS, [])).needsCredentials).toBe(false);
+  });
+
+  it("stays quiet for a case with no login in it", () => {
+    const plain: Step[] = [
+      { id: "s1", action: "navigate", target: { url: "/shop" } },
+      { id: "s2", action: "fill", target: { role: "searchbox", name: "Search" }, value: "mug" },
+      { id: "s3", action: "click", target: { role: "button", name: "Go" } },
+    ];
+    expect(estimateRegrounding(parsed(plain, [2])).needsCredentials).toBe(false);
+  });
+
+  it("does not promise a sign-in the capped walk never reaches", () => {
+    // With one snapshot allowed, only the shallowest arrival is walked. The deeper edit — the one
+    // behind the login — is never replayed, so promising a prompt would be a lie.
+    const est = estimateRegrounding(parsed(LOGIN_STEPS, [1, 4]), { maxSnapshots: 1 });
+    expect(est.snapshots).toBe(1);
+    expect(est.needsCredentials).toBe(false);
+  });
 });

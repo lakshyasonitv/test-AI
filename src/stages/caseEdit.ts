@@ -5,7 +5,7 @@ import type { IR, Step } from "../schema/ir.js";
 import { groundingError } from "./ir.js";
 import { refreshPageModel } from "./liveExtend.js";
 import { LlmBudget, enterWithBudget } from "../llm/llmBudget.js";
-import type { Credentials } from "./credentials.js";
+import { redactCredentials, type Credentials } from "./credentials.js";
 
 /**
  * Re-grounding an edited case — the half of case editing that costs money.
@@ -202,9 +202,14 @@ export async function regroundEditedIr(
       ok: false,
       stepIndex,
       stepId: err?.stepId ?? ir.steps[stepIndex]?.id ?? String(stepIndex + 1),
+      // Redacted because this message is emitted as a job event and rendered in the editor, and
+      // the walk types REAL credentials into a real browser. A Playwright failure on the fill
+      // itself quotes what it was filling, so an unredacted message is a live password on its way
+      // to the client. `replayAndSnapshot` already redacts the model and page text it returns;
+      // this closes the one path out of here that it does not cover.
       message: cancelled
         ? "cancelled before saving — nothing was written, and the case is exactly as it was"
-        : err?.message ?? String(err),
+        : redactCredentials(err?.message ?? String(err), opts.creds),
       snapshots,
       usage: budget.snapshot(),
       ...(cancelled ? { cancelled: true } : {}),
@@ -229,7 +234,10 @@ export async function regroundEditedIr(
       ok: false,
       stepIndex: failure.index,
       stepId: step?.id ?? String(failure.index + 1),
-      message: failure.message,
+      // The model this grounds against was already redacted by replayAndSnapshot, so this is
+      // belt-and-braces — but it costs nothing and it means every message leaving this function
+      // is scrubbed on the same line, rather than one being safe by inheritance.
+      message: redactCredentials(failure.message, opts.creds),
       snapshots,
       usage: budget.snapshot(),
     };

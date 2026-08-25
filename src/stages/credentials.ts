@@ -299,6 +299,48 @@ export function credentialEnvVars(creds?: Credentials): Partial<Record<Credentia
   return { TEST_USERNAME: creds.username, TEST_PASSWORD: creds.password };
 }
 
+/**
+ * The credentials the environment already holds, if any — the reverse of `credentialEnvVars`.
+ *
+ * A saved case's login steps carry `${env:TEST_USERNAME}` / `${env:TEST_PASSWORD}` rather than
+ * literals (see ENV_VALUE_PREFIX). Those names ARE the contract, so reading them back belongs
+ * here beside the writer rather than at a call site that would have to restate them.
+ *
+ * `secret: true` unconditionally: a value the operator put in the environment for their own site
+ * is exactly as sensitive as one typed into the prompt, and must get the same never-to-disk
+ * treatment. BOTH must be present — half a credential cannot authenticate, and returning it would
+ * type an empty string into the other box and fail slower than not trying.
+ */
+export function credentialsFromEnv(env: NodeJS.ProcessEnv = process.env): Credentials | undefined {
+  const username = env.TEST_USERNAME;
+  const password = env.TEST_PASSWORD;
+  if (!username || !password) return undefined;
+  return { username, password, secret: true };
+}
+
+/**
+ * Which credential kinds a step list will actually need typed into it.
+ *
+ * Deliberately NOT a guess from field names — the steps say so themselves. `applyCredentials`
+ * already rewrote every login fill to the `${env:...}` sentinel when the case was authored, so a
+ * step whose value is that sentinel is a field that was filled with a real credential and will
+ * need one again. Anything else is an ordinary fill whose literal value is the test.
+ *
+ * That precision is what lets `/estimate` promise "this will ask you to sign in" cheaply and
+ * correctly, without opening a browser to find out.
+ */
+export function credentialKindsNeeded(steps: { value?: string }[]): CredentialKind[] {
+  const kinds = new Set<CredentialKind>();
+  for (const step of steps) {
+    const envVar = isEnvValueRef(step.value);
+    if (envVar === "TEST_USERNAME") kinds.add("username");
+    if (envVar === "TEST_PASSWORD") kinds.add("password");
+  }
+  // A login form wants both together; asking for half a pair is a worse experience than asking
+  // once, and matches what credentialFieldsNeeded already does for a run.
+  return kinds.size ? ["username", "password"] : [];
+}
+
 /** Stand-in written wherever a secret credential would otherwise have been recorded. */
 export const REDACTED = "[redacted]";
 

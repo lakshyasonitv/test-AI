@@ -183,3 +183,48 @@ describe("cancellation — stopping must write nothing and leak nothing", () => 
     expect((res as any).ir).toBeUndefined();
   });
 });
+
+/**
+ * Credentials on the walk.
+ *
+ * A saved login step's value is the `${env:...}` sentinel, not a literal. Without credentials the
+ * walk types that sentinel string into the email box, the login fails, and the NEXT step times out
+ * — which is why editing anything behind a login was impossible before this was wired.
+ */
+describe("credentials — reaching a step that is behind a login", () => {
+  const CREDS = { username: "real-user@example.com", password: "s3cr3t-pa55word", secret: true };
+
+  it("hands the credentials to the walk, so the login can actually be completed", async () => {
+    await regroundEditedIr(editedIr(), [2], { creds: CREDS });
+    // Third argument is what runStepLive consults instead of the step's sentinel value.
+    expect(refreshPageModel.mock.calls[0][2]).toEqual(CREDS);
+  });
+
+  it("passes nothing when there are none, leaving today's behaviour untouched", async () => {
+    await regroundEditedIr(editedIr(), [2], {});
+    expect(refreshPageModel.mock.calls[0][2]).toBeUndefined();
+  });
+
+  it("never lets a credential out in a walk failure message", async () => {
+    // Playwright quotes what it was filling when a fill fails, so this is the realistic shape of
+    // a leak: the password arrives inside the error text on its way to the client.
+    refreshPageModel.mockRejectedValue(
+      new Error(`locator.fill: failed typing "${CREDS.password}" into #password`));
+    const res = await regroundEditedIr(editedIr(), [2], { creds: CREDS });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.message).not.toContain(CREDS.password);
+    expect(res.message).toContain("[redacted]");
+    // Still says which step and still says a fill failed — redaction must not gut the diagnosis.
+    expect(res.message).toContain("could not reach step s3");
+    expect(res.message).toContain("locator.fill");
+  });
+
+  it("redacts the identifier too, not just the password", async () => {
+    refreshPageModel.mockRejectedValue(new Error(`signed in as ${CREDS.username}`));
+    const res = await regroundEditedIr(editedIr(), [2], { creds: CREDS });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.message).not.toContain(CREDS.username);
+  });
+});

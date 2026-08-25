@@ -4,6 +4,7 @@ import {
   credentialEnvVars, credentialKindForTarget, credentialForTarget, redactCredentials, REDACTED,
   wantsRealCredentials, credentialFieldMap, credentialPolicyFor, lastFillIndexByKind,
   extractCredentialsFromPrompt, looksLikeCompoundLoginCase,
+  credentialsFromEnv, credentialKindsNeeded,
 } from "../src/stages/credentials.js";
 import { generateSpec } from "../src/stages/generator.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -669,3 +670,68 @@ describe("looksLikeCompoundLoginCase", () => {
 });
 
 
+
+/**
+ * Reading credentials back out of the environment — the reverse of `credentialEnvVars`, and the
+ * silent path for case editing: an operator who already set these for their runs is never asked.
+ */
+describe("credentialsFromEnv", () => {
+  it("reads the same pair credentialEnvVars writes", () => {
+    const creds = credentialsFromEnv({
+      TEST_USERNAME: "user@example.com", TEST_PASSWORD: "hunter2",
+    } as NodeJS.ProcessEnv);
+    expect(creds).toEqual({ username: "user@example.com", password: "hunter2", secret: true });
+  });
+
+  it("round-trips with credentialEnvVars, so the two names cannot drift apart", () => {
+    const original = { username: "u@e.com", password: "p455", secret: true };
+    const back = credentialsFromEnv(credentialEnvVars(original) as NodeJS.ProcessEnv);
+    expect(back).toEqual(original);
+  });
+
+  it("is always secret — an operator's own credential must never reach disk as a literal", () => {
+    expect(credentialsFromEnv({ TEST_USERNAME: "u", TEST_PASSWORD: "p" } as NodeJS.ProcessEnv)?.secret)
+      .toBe(true);
+  });
+
+  it("returns nothing for half a pair, which could only fail slower", () => {
+    expect(credentialsFromEnv({ TEST_USERNAME: "u" } as NodeJS.ProcessEnv)).toBeUndefined();
+    expect(credentialsFromEnv({ TEST_PASSWORD: "p" } as NodeJS.ProcessEnv)).toBeUndefined();
+    expect(credentialsFromEnv({} as NodeJS.ProcessEnv)).toBeUndefined();
+  });
+
+  it("treats an empty string as absent rather than as a blank username", () => {
+    expect(credentialsFromEnv({ TEST_USERNAME: "", TEST_PASSWORD: "p" } as NodeJS.ProcessEnv))
+      .toBeUndefined();
+  });
+});
+
+/**
+ * Which credentials a step list needs — read off the steps themselves rather than guessed from
+ * field names. `applyCredentials` already rewrote every login fill to the sentinel when the case
+ * was authored, so the sentinel IS the declaration.
+ */
+describe("credentialKindsNeeded", () => {
+  const fill = (value?: string) => ({ value });
+
+  it("sees a login step by its env sentinel", () => {
+    expect(credentialKindsNeeded([fill("${env:TEST_USERNAME}")])).toEqual(["username", "password"]);
+    expect(credentialKindsNeeded([fill("${env:TEST_PASSWORD}")])).toEqual(["username", "password"]);
+  });
+
+  it("asks for both together — half a login cannot authenticate", () => {
+    expect(credentialKindsNeeded([fill("${env:TEST_USERNAME}"), fill("${env:TEST_PASSWORD}")]))
+      .toEqual(["username", "password"]);
+  });
+
+  it("ignores ordinary fills, whose literal value IS the test", () => {
+    expect(credentialKindsNeeded([fill("mug"), fill("94107"), fill(undefined)])).toEqual([]);
+  });
+
+  it("is not fooled by a value that merely mentions an env var", () => {
+    // Only the exact sentinel counts — isEnvValueRef rejects anything else, which is what stops a
+    // crafted case text from claiming it needs a credential.
+    expect(credentialKindsNeeded([fill("my ${env:TEST_PASSWORD} is secret")])).toEqual([]);
+    expect(credentialKindsNeeded([fill("${env:HOME}")])).toEqual([]);
+  });
+});
