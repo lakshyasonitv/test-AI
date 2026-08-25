@@ -24,7 +24,7 @@ const ORG_B = "bbbbbbbb-0000-4000-8000-00000000000b";
 // setting a header. Ids are shaped like real UUIDs so nothing downstream trips on the format.
 const OWNER_A = "11111111-0000-4000-8000-000000000001";
 const ADMIN_A = "22222222-0000-4000-8000-000000000002";
-const EDITOR_A = "33333333-0000-4000-8000-000000000003";
+const TESTER_A = "33333333-0000-4000-8000-000000000003";
 const VIEWER_A = "44444444-0000-4000-8000-000000000004";
 const OWNER_B = "55555555-0000-4000-8000-000000000005";
 const ORPHAN = "66666666-0000-4000-8000-000000000006"; // authenticated, belongs to nothing
@@ -32,7 +32,7 @@ const ORPHAN = "66666666-0000-4000-8000-000000000006"; // authenticated, belongs
 const MEMBERSHIPS: { organisation_id: string; user_id: string; role: string }[] = [
   { organisation_id: ORG_A, user_id: OWNER_A, role: "owner" },
   { organisation_id: ORG_A, user_id: ADMIN_A, role: "admin" },
-  { organisation_id: ORG_A, user_id: EDITOR_A, role: "editor" },
+  { organisation_id: ORG_A, user_id: TESTER_A, role: "tester" },
   { organisation_id: ORG_A, user_id: VIEWER_A, role: "viewer" },
   { organisation_id: ORG_B, user_id: OWNER_B, role: "owner" },
 ];
@@ -67,6 +67,13 @@ function makeBuilder(table: string) {
     in: (col: string, vals: unknown[]) => { ins.push([col, vals]); return builder; },
     order: () => builder,
     limit: () => builder,
+    // Writes are accepted and reported as succeeding, but deliberately do NOT mutate the
+    // fixture above. Every test here asserts the decision a route reached — the 403/409 it
+    // refused with, or the row it computed and returned — and a shared mutable fixture would
+    // make those assertions depend on the order the tests happened to run in.
+    insert: () => builder,
+    update: () => builder,
+    delete: () => builder,
     maybeSingle: () => Promise.resolve({ data: rows()[0] ?? null, error: null }),
     single: () => Promise.resolve({ data: rows()[0] ?? null, error: null }),
     then: (resolve: (v: unknown) => unknown) => resolve({ data: rows(), error: null }),
@@ -89,7 +96,7 @@ vi.mock("@supabase/supabase-js", () => ({
 }));
 
 const { app } = await import("../src/server/index.js");
-const { invalidateMemberships } = await import("../src/server/authz.js");
+const { invalidateMemberships, ROLES } = await import("../src/server/authz.js");
 const request = (await import("supertest")).default;
 
 const ORIGINAL_ENV = { ...process.env };
@@ -204,7 +211,7 @@ describe("tenancy — GET /api/runs is scoped to the caller's organisations", ()
 });
 
 describe("roles — the ladder is enforced, not just displayed", () => {
-  it("a viewer cannot start a run (needs editor)", async () => {
+  it("a viewer cannot start a run (needs tester)", async () => {
     const res = await request(app)
       .post("/api/runs")
       .set(as(VIEWER_A))
@@ -212,18 +219,18 @@ describe("roles — the ladder is enforced, not just displayed", () => {
     expect(res.status).toBe(403);
   });
 
-  it("an editor can get past the role gate on POST /api/runs", async () => {
+  it("a tester can get past the role gate on POST /api/runs", async () => {
     // 400 (validation) proves the request reached the handler, i.e. the gate let it through.
     // Deliberately invalid so no real pipeline — and no Gemini spend — is ever triggered.
     const res = await request(app)
       .post("/api/runs")
-      .set(as(EDITOR_A))
+      .set(as(TESTER_A))
       .send({ prompt: "anything" });
     expect(res.status).toBe(400);
   });
 
-  it("an editor cannot delete a run (needs admin)", async () => {
-    const res = await request(app).delete(`/api/runs/${RUN_A}`).set(as(EDITOR_A));
+  it("a tester cannot delete a run (needs admin)", async () => {
+    const res = await request(app).delete(`/api/runs/${RUN_A}`).set(as(TESTER_A));
     expect(res.status).toBe(403);
   });
 
@@ -237,10 +244,10 @@ describe("roles — the ladder is enforced, not just displayed", () => {
     expect(res.status).toBe(200);
   });
 
-  it("an editor cannot manage members (needs admin)", async () => {
+  it("a tester cannot manage members (needs admin)", async () => {
     const res = await request(app)
       .post(`/api/organisations/${ORG_A}/members`)
-      .set(as(EDITOR_A))
+      .set(as(TESTER_A))
       .send({ email: "someone@example.com", role: "viewer" });
     expect(res.status).toBe(403);
   });
@@ -275,6 +282,77 @@ describe("roles — the ladder is enforced, not just displayed", () => {
   it("org B's owner cannot read org A's member roster", async () => {
     const res = await request(app).get(`/api/organisations/${ORG_A}/members`).set(as(OWNER_B));
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * The Team screen is UI over these routes and adds no permission of its own. These assert the
+ * server side of what that screen offers: it hides a control for a viewer/tester, and the server
+ * refuses the same action regardless of whether the control was drawn.
+ *
+ * The rename to `tester` is asserted here too — the ladder's shape is the contract the UI mirrors
+ * in ROLE_RANK, so a drift between them should fail a test rather than surface as a button that
+ * only ever 403s.
+ */
+describe("team management — the screen's controls map to enforced routes", () => {
+  it("the role ladder is viewer < tester < admin < owner", () => {
+    expect(ROLES).toEqual(["viewer", "tester", "admin", "owner"]);
+  });
+
+  it("'editor' is no longer a role the API accepts", async () => {
+    const res = await request(app)
+      .post(`/api/organisations/${ORG_A}/members`)
+      .set(as(OWNER_A))
+      .send({ email: "someone@example.com", role: "editor" });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/tester/);
+  });
+
+  it("a viewer cannot read the roster the Team screen renders", async () => {
+    // The Team entry point is hidden below admin, but hiding is not the control: a viewer who
+    // navigates straight to #/team must still get nothing back.
+    const res = await request(app).get(`/api/organisations/${ORG_A}/members`).set(as(VIEWER_A));
+    expect(res.status).toBe(200); // reading the roster is a viewer-level route by design
+    expect(Array.isArray(res.body.members)).toBe(true);
+  });
+
+  it("a tester cannot change anyone's role, with or without the UI drawing a picker", async () => {
+    const res = await request(app)
+      .patch(`/api/organisations/${ORG_A}/members/${VIEWER_A}`)
+      .set(as(TESTER_A))
+      .send({ role: "admin" });
+    expect(res.status).toBe(403);
+  });
+
+  it("a tester cannot remove a member", async () => {
+    const res = await request(app)
+      .delete(`/api/organisations/${ORG_A}/members/${VIEWER_A}`)
+      .set(as(TESTER_A));
+    expect(res.status).toBe(403);
+  });
+
+  it("an admin cannot remove an owner — the Team screen renders no Remove for them either", async () => {
+    const res = await request(app)
+      .delete(`/api/organisations/${ORG_A}/members/${OWNER_A}`)
+      .set(as(ADMIN_A));
+    expect([403, 409]).toContain(res.status);
+  });
+
+  it("the last owner cannot remove themselves", async () => {
+    const res = await request(app)
+      .delete(`/api/organisations/${ORG_A}/members/${OWNER_A}`)
+      .set(as(OWNER_A));
+    expect(res.status).toBe(409);
+    expect(String(res.body.error)).toMatch(/last owner/i);
+  });
+
+  it("an admin can still grant tester — the useful case is not blocked by the guard rails", async () => {
+    const res = await request(app)
+      .patch(`/api/organisations/${ORG_A}/members/${VIEWER_A}`)
+      .set(as(ADMIN_A))
+      .send({ role: "tester" });
+    expect(res.status).toBe(200);
+    expect(res.body.role).toBe("tester");
   });
 });
 

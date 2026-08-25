@@ -84,13 +84,14 @@ const auth = {
   // courtesy, not a control, and tampering with these values in devtools buys nothing.
   role: null,
   organisationId: null,
+  userId: null,
   // Which credential screen an unauthenticated visitor is looking at: "login" or "signup".
   screen: "login",
 };
 
 /** Role ladder, mirrored from src/server/authz.ts. Kept in sync by hand — it is only ever used
  *  to hide controls, so a drift shows up as a visible affordance the server then refuses. */
-const ROLE_RANK = { viewer: 1, editor: 2, admin: 3, owner: 4 };
+const ROLE_RANK = { viewer: 1, tester: 2, admin: 3, owner: 4 };
 const roleAtLeast = (actual, required) => (ROLE_RANK[actual] || 0) >= (ROLE_RANK[required] || 0);
 
 // Restore synchronously, before the first applyRoute() at the bottom of this file — otherwise an
@@ -153,8 +154,16 @@ function applyRoleRestrictions() {
   const body = document.body;
   // Auth off, or role not yet known: restrict nothing. The server is still the real gate.
   const unrestricted = !auth.required || !auth.role;
-  body.classList.toggle("role-no-edit", !unrestricted && !roleAtLeast(auth.role, "editor"));
+  body.classList.toggle("role-no-edit", !unrestricted && !roleAtLeast(auth.role, "tester"));
   body.classList.toggle("role-no-admin", !unrestricted && !roleAtLeast(auth.role, "admin"));
+
+  // Team is an admin/owner screen. With auth off there is no team to manage — the synthetic
+  // user is the only member — so the entry point stays hidden, exactly as before this existed.
+  const teamBtn = document.getElementById("teamBtn");
+  if (teamBtn) {
+    const showTeam = auth.required && !!auth.token && roleAtLeast(auth.role, "admin");
+    teamBtn.classList.toggle("hidden", !showTeam);
+  }
 
   const badge = document.getElementById("sessionBadge");
   const emailEl = document.getElementById("sessionEmail");
@@ -180,6 +189,7 @@ async function refreshIdentity() {
   if (!auth.required || !auth.token) {
     auth.role = null;
     auth.organisationId = null;
+    auth.userId = null;
     applyRoleRestrictions();
     return;
   }
@@ -189,6 +199,7 @@ async function refreshIdentity() {
     if (me) {
       auth.role = me.role || null;
       auth.organisationId = me.organisationId || null;
+      auth.userId = me.userId || null;
       if (me.email) auth.email = me.email;
     }
   } catch {
@@ -202,6 +213,7 @@ async function signOut() {
   const { url, publishableKey, token } = auth;
   auth.role = null;
   auth.organisationId = null;
+  auth.userId = null;
   auth.screen = "login";
   applyRoleRestrictions();
   setSession(null, null);
@@ -1833,6 +1845,7 @@ const scrimEl = document.getElementById("scrim");
 const crumbsEl = document.getElementById("crumbs");
 const crumbRootEl = document.getElementById("crumbRoot");
 const historyBtnEl = document.getElementById("historyBtn");
+const teamBtnEl = document.getElementById("teamBtn");
 const allRunsBtnEl = document.getElementById("allRunsBtn");
 const settingsBtnEl = document.getElementById("settingsBtn");
 const settingsPopEl = document.getElementById("settingsPop");
@@ -1888,7 +1901,7 @@ function toast(message) {
   toastTimer = setTimeout(() => toastEl.classList.add("hidden"), 3200);
 }
 
-const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login", "signup"];
+const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login", "signup", "team"];
 let currentView = "home";
 
 /**
@@ -1965,6 +1978,12 @@ function applyRoute() {
     showView("history");
     setCrumbs(["History"]);
     renderHistoryView();
+    return;
+  }
+  if (head === "team") {
+    showView("team");
+    setCrumbs(["Team"]);
+    renderTeamView();
     return;
   }
   if (head === "suite" && id) { showView("suite"); setCrumbs(["Suite"]); return; }
@@ -2139,6 +2158,7 @@ function renderProjectsTree(runs) {
 renderProjectsTree(allRunsCache);
 
 historyBtnEl.addEventListener("click", () => navigate("#/history"));
+teamBtnEl.addEventListener("click", () => navigate("#/team"));
 allRunsBtnEl.addEventListener("click", () => navigate("#/history"));
 
 // -----------------------------------------------------------------------------
@@ -2210,6 +2230,207 @@ async function renderHistoryView() {
       });
     });
   });
+}
+
+// -----------------------------------------------------------------------------
+// Team screen — the members of your organisation, and the controls to manage them.
+//
+// This is the UI for routes that already existed and were already enforced
+// (/api/organisations/:orgId/members, Step 3.4). It adds no permission of its own: every
+// button here maps to a call the server independently authorises, and the two guard rails
+// that matter — nobody grants above themselves, an org always keeps one owner — live in
+// src/server/organisations.ts and are surfaced here by rendering the server's own message.
+//
+// Hiding a control is a courtesy so a tester isn't offered a button that would only 403.
+// It is NOT the control. Tampering with auth.role in devtools changes what is drawn and
+// nothing else.
+// -----------------------------------------------------------------------------
+
+/** Role descriptions, kept next to the picker so an admin assigning one can see what it means. */
+const ROLE_HELP = {
+  viewer: "Read-only — can see runs and results, cannot start or delete them.",
+  tester: "Runs tests — talks to the AI, answers login prompts, picks cases. Cannot delete.",
+  admin: "Manages people and can delete runs.",
+  owner: "Full control of the organisation.",
+};
+
+/** Lowest to highest — the same order as ROLES in src/server/authz.ts. */
+const ROLES_ASC = ["viewer", "tester", "admin", "owner"];
+
+function teamRoleOptions(selected, maxRole) {
+  // Never offer a role the server would refuse to grant — the ladder is mirrored from
+  // src/server/authz.ts, and offering `owner` to an admin only produces a 403 they can't act on.
+  return ROLES_ASC
+    .filter((r) => roleAtLeast(maxRole, r))
+    .map((r) => `<option value="${r}"${r === selected ? " selected" : ""}>${r}</option>`)
+    .join("");
+}
+
+async function renderTeamView() {
+  const body = document.getElementById("teamViewBody");
+  const orgId = auth.organisationId;
+
+  body.innerHTML = `
+    <div>
+      <div class="eyebrow">TEAM</div>
+      <h1 class="page-head-title">Who can use this workspace</h1>
+      <p class="tagline">Roles decide what each person may do. Every role is enforced on the
+      server — hiding a button here is only a convenience.</p>
+    </div>
+    <div id="teamFeedback"></div>
+    <div id="teamAddWrap"></div>
+    <div class="panel"><div id="teamRows"></div></div>`;
+
+  const rows = document.getElementById("teamRows");
+
+  if (!orgId) {
+    rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">
+      Sign in to see your organisation's members.</div>`;
+    return;
+  }
+
+  const isAdmin = roleAtLeast(auth.role, "admin");
+
+  // Add-member form, admins and owners only. The server refuses POST from anyone lower, so
+  // this is purely about not offering a dead control.
+  if (isAdmin) {
+    document.getElementById("teamAddWrap").innerHTML = `
+      <div class="team-add">
+        <label class="field">
+          <span class="field-label">Email of an existing account</span>
+          <input id="teamAddEmail" type="email" placeholder="someone@example.com"
+            autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="field" style="flex:0 0 150px">
+          <span class="field-label">Role</span>
+          <select id="teamAddRole" class="team-select">
+            ${teamRoleOptions("tester", auth.role)}
+          </select>
+        </label>
+        <div class="team-add-actions">
+          <button type="button" id="teamAddBtn" class="dl-btn-inline">Add to team</button>
+        </div>
+      </div>`;
+
+    document.getElementById("teamAddBtn").addEventListener("click", async () => {
+      const email = document.getElementById("teamAddEmail").value.trim();
+      const role = document.getElementById("teamAddRole").value;
+      if (!email) return teamFeedback("Enter the email address of an existing account.", true);
+      await teamCall(
+        `/api/organisations/${encodeURIComponent(orgId)}/members`,
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, role }) },
+        `${email} added as ${role}.`,
+      );
+    });
+  }
+
+  rows.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">Loading…</div>`;
+
+  const res = await fetch(`/api/organisations/${encodeURIComponent(orgId)}/members`)
+    .then((r) => r.json())
+    .catch(() => null);
+  const members = res && Array.isArray(res.members) ? res.members : [];
+
+  if (!members.length) {
+    rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">
+      ${escapeHtml((res && res.error) || "No members found.")}</div>`;
+    return;
+  }
+
+  const ownerCount = members.filter((m) => m.role === "owner").length;
+
+  rows.innerHTML = members.map((m) => {
+    const isYou = m.userId === auth.userId;
+    // Mirrors the server's rules so the UI doesn't offer something guaranteed to 403:
+    //  - you cannot act on someone whose role outranks yours
+    //  - the last owner can be neither demoted nor removed
+    const outranksYou = !roleAtLeast(auth.role, m.role);
+    const lastOwner = m.role === "owner" && ownerCount <= 1;
+    const canEdit = isAdmin && !outranksYou && !lastOwner;
+
+    const roleControl = canEdit
+      ? `<select class="team-select" data-role-for="${escapeHtml(m.userId)}">
+           ${teamRoleOptions(m.role, auth.role)}
+         </select>`
+      : `<span class="team-role-static" title="${escapeHtml(
+            lastOwner ? "The last owner cannot be changed" :
+            outranksYou ? "This member outranks you" : ROLE_HELP[m.role] || "")}">${escapeHtml(m.role)}</span>`;
+
+    const removeBtn = canEdit
+      ? `<button type="button" class="dl-btn-inline hrow-del" data-remove="${escapeHtml(m.userId)}">Remove</button>`
+      : "";
+
+    return `
+    <div class="team-row">
+      <div class="team-row-main">
+        <span class="team-email">${escapeHtml(m.email || "(unknown address)")}${
+          isYou ? `<span class="team-you">YOU</span>` : ""}</span>
+        <span class="team-meta">${escapeHtml(ROLE_HELP[m.role] || "")}</span>
+      </div>
+      <div class="team-row-actions">${roleControl}${removeBtn}</div>
+    </div>`;
+  }).join("");
+
+  rows.querySelectorAll("[data-role-for]").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      const userId = sel.dataset.roleFor;
+      await teamCall(
+        `/api/organisations/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+        { method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: sel.value }) },
+        `Role changed to ${sel.value}.`,
+      );
+    });
+  });
+
+  rows.querySelectorAll("[data-remove]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const userId = btn.dataset.remove;
+      if (!confirm("Remove this person from the organisation?")) return;
+      await teamCall(
+        `/api/organisations/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+        { method: "DELETE" },
+        "Member removed.",
+      );
+    });
+  });
+}
+
+function teamFeedback(message, isError) {
+  const el = document.getElementById("teamFeedback");
+  if (!el) return;
+  el.innerHTML = `<p class="${isError ? "team-error" : "team-ok"}" role="${
+    isError ? "alert" : "status"}">${escapeHtml(message)}</p>`;
+}
+
+/**
+ * One place every member mutation goes through, so the guard rails always surface.
+ *
+ * A 403 ("you cannot grant the owner role — it is above your own") and a 409 ("this is the last
+ * owner") are the two sentences that explain the whole permission model, and swallowing them
+ * would make a refused action look like a broken button. The server's own message is rendered
+ * verbatim rather than being restated here, so the two can never drift apart.
+ */
+async function teamCall(url, init, successMessage) {
+  try {
+    const res = await fetch(url, init);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `That didn't work (${res.status}).`);
+    }
+    // Order matters: renderTeamView() rebuilds the whole view body, #teamFeedback included, so
+    // writing the message first means the re-render silently eats it. The error path below is
+    // unaffected — it throws past the re-render — which is exactly why this was invisible until
+    // a successful add was tried in a browser.
+    await renderTeamView();
+    teamFeedback(successMessage, false);
+    // Our own role may have just changed (an owner promoting someone, or leaving), and the
+    // topbar badge plus the restriction classes are derived from it.
+    await refreshIdentity();
+  } catch (err) {
+    teamFeedback(err.message || "That didn't work.", true);
+  }
 }
 
 let currentRunId = null;

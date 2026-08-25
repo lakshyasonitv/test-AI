@@ -108,7 +108,7 @@ to this endpoint changes what the UI draws and nothing else.
 | Route | Min role | Why |
 |---|---|---|
 | `GET /api/runs`, `/state`, `/events`, `/accepted-cases`, `/case-selection-status`, `GET /runs/*` | `viewer` | Reading. |
-| `POST /api/runs`, `/credentials`, `/case-selection` | `editor` | Starting a run spends real money and drives a browser against someone's site. |
+| `POST /api/runs`, `/credentials`, `/case-selection` | `editor` (renamed `tester` — see `PHASE_TEAM_REPORT.md`) | Starting a run spends real money and drives a browser against someone's site. |
 | `DELETE /api/runs/:runId` | `admin` | Destroying screenshots, traces and the generated spec is irreversible. |
 
 `GET /api/runs` is scoped by **filtering rows only** — every field, its type and its order are
@@ -266,7 +266,8 @@ hold the same runs the disk does"), which has nothing to do with organisations.
     curl -X POST http://localhost:3000/api/runs -H "Authorization: Bearer <VIEWER_TOKEN>" \
       -H "Content-Type: application/json" -d '{"prompt":"x","url":"https://example.com"}'   # 403
     ```
-16. Promote them to **editor** (`PATCH .../members/<userId>` with `{"role":"editor"}`) and repeat —
+16. Promote them to **editor** — since renamed `tester`, so use `{"role":"tester"}` today
+    (`PATCH .../members/<userId>`) — and repeat —
     the same call now gets past the role gate. Then confirm they still cannot delete:
     ```
     curl -X DELETE http://localhost:3000/api/runs/<runId> -H "Authorization: Bearer <EDITOR_TOKEN>"  # 403
@@ -348,9 +349,8 @@ gone). To remove them: `delete from runs where started_at > '<when you deployed 
 - **Runs created while `DB_ENABLED` was off have no owner row**, so with tenancy on nobody can open
   them (fail-closed, by design). Re-run `npx tsx scripts/generateRunBackfill.ts` to give them one —
   it assigns them to the Default organisation and is idempotent.
-- **No members-management UI.** Roles are enforced and visible (the topbar badge), but adding and
-  promoting people is `curl` against the new routes. The plan puts the invite flow in Step 5.4;
-  this is the enforcement half only.
+- ~~**No members-management UI.**~~ **Done** — see `PHASE_TEAM_REPORT.md`, which adds the Team
+  screen over these same routes and renames `editor` to `tester`.
 - **No email invites.** `POST .../members` requires the person to have signed up already. The plan
   puts Resend-backed invites in Step 5.4.
 - **The 5-second membership cache** means a role change made directly in SQL (rather than through

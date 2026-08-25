@@ -119,9 +119,9 @@ app.param("runId", (_req, res, next, runId) => {
 // Start a run: generate the runId up front so we can hand it back immediately,
 // then let the pipeline run in the background, pushing events into the registry.
 //
-// `editor` — starting a run spends real money (Gemini calls) and drives a browser against
+// `tester` — starting a run spends real money (Gemini calls) and drives a browser against
 // someone's site, which is exactly the line a read-only `viewer` should not be able to cross.
-app.post("/api/runs", requireRole("editor"), (req, res) => {
+app.post("/api/runs", requireRole("tester"), (req, res) => {
   const { prompt, url, urls, coverage, options } = req.body ?? {};
   if (!prompt || (!url && !urls?.length)) return res.status(400).json({ error: "prompt and url (or urls) are required" });
 
@@ -198,7 +198,7 @@ app.post("/api/runs", requireRole("editor"), (req, res) => {
 // The body is never logged, never emitted as an event and never written to a run directory:
 // it goes straight into the waiting promise and lives only in the pipeline's memory. The
 // generated spec gets a process.env reference instead of the value (see credentials.ts).
-app.post("/api/runs/:runId/credentials", requireRunRole("editor"), (req, res) => {
+app.post("/api/runs/:runId/credentials", requireRunRole("tester"), (req, res) => {
   const { runId } = req.params;
   if (!RUN_ID.test(runId)) return res.status(400).json({ error: "invalid runId" });
 
@@ -216,7 +216,7 @@ app.post("/api/runs/:runId/credentials", requireRunRole("editor"), (req, res) =>
 // rejected when nothing was accumulated yet, so an accidental click can't end the round with
 // an empty pool. Like the credential prompt, the decision goes straight into the waiting
 // promise and lives only in the pipeline's memory.
-app.post("/api/runs/:runId/case-selection", requireRunRole("editor"), express.json(), (req, res) => {
+app.post("/api/runs/:runId/case-selection", requireRunRole("tester"), express.json(), (req, res) => {
   const { runId } = req.params;
   if (!getPendingSelection(runId)) {
     return res.status(409).json({ error: "No case-selection round is pending for this run" });
@@ -431,7 +431,7 @@ app.post("/api/organisations/:orgId/members", requireOrgRole("admin"), async (re
     return res.status(400).json({ error: "email is required" });
   }
   if (!isRole(role)) {
-    return res.status(400).json({ error: "role must be one of: owner, admin, editor, viewer" });
+    return res.status(400).json({ error: "role must be one of: owner, admin, tester, viewer" });
   }
   try {
     res.status(201).json(await addMember(req.params.orgId, req.organisationRole!, email, role));
@@ -443,7 +443,7 @@ app.post("/api/organisations/:orgId/members", requireOrgRole("admin"), async (re
 app.patch("/api/organisations/:orgId/members/:userId", requireOrgRole("admin"), async (req, res) => {
   const { role } = req.body ?? {};
   if (!isRole(role)) {
-    return res.status(400).json({ error: "role must be one of: owner, admin, editor, viewer" });
+    return res.status(400).json({ error: "role must be one of: owner, admin, tester, viewer" });
   }
   try {
     res.json(await changeMemberRole(

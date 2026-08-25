@@ -1181,3 +1181,73 @@ body:has(#view-login.view-active) .sidebar,
 body:has(#view-login.view-active) .topbar,
 body:has(#view-signup.view-active) .sidebar,
 body:has(#view-signup.view-active) .topbar { display: none; }
+
+/* ---------------------------------------------------------------------------
+   Team (members management). New classes only — nothing above is renamed or
+   repurposed. Reuses .panel, .field, .dl-btn-inline and the .case-badge/.sdot
+   vocabulary so the screen reads as native rather than bolted on.
+   --------------------------------------------------------------------------- */
+
+.team-add {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-3);
+  padding: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+/* Capped at the same 380px as .auth-card so the email input doesn't stretch to fill a wide
+   screen and leave the Role picker and button stranded at the far right. */
+.team-add .field { flex: 1 1 220px; max-width: 380px; margin: 0; }
+.team-add-actions { display: flex; gap: var(--sp-2); align-items: center; }
+
+.team-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line-soft);
+}
+.team-row:last-child { border-bottom: none; }
+.team-row-main { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 3px; }
+.team-email { font-size: .82rem; }
+.team-meta { font-family: var(--font-mono); font-size: .62rem; color: var(--faint); }
+.team-you {
+  font-family: var(--font-mono);
+  font-size: .58rem; font-weight: 600; letter-spacing: .06em;
+  color: var(--accent-deep); background: var(--accent-soft);
+  border-radius: var(--r-pill); padding: 1px 6px; margin-left: var(--sp-2);
+}
+.team-row-actions { display: flex; gap: var(--sp-2); align-items: center; flex: none; }
+
+/* A role that can't be changed (yours-and-you're-the-last-owner, or someone above
+   you) renders as static text instead of a select, so the UI never offers a
+   control whose every option the server would refuse. */
+.team-role-static {
+  font-family: var(--font-mono);
+  font-size: .6rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-2); background: var(--surface-3);
+  border-radius: var(--r-pill); padding: 3px 9px;
+}
+
+.team-select {
+  font: inherit; font-size: .75rem;
+  padding: 5px var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+.team-select:hover { border-color: var(--line-hover); }
+
+/* Inline result of the last action. Errors carry the server's own message —
+   "you cannot grant the owner role", "this is the last owner" — because those
+   sentences are the whole point of the guard rails. */
+.team-error, .team-ok {
+  margin: 0; font-size: .78rem;
+  border-radius: var(--r-sm); padding: var(--sp-2) var(--sp-3);
+}
+.team-error { color: var(--failed); background: var(--failed-bg); }
+.team-ok { color: var(--done); background: var(--done-bg); }
+
+/* The Team entry point is hidden for anyone below admin. Belt and braces with the
+   .hidden app.js toggles: if a future change forgets the JS, the class still hides it. */
+body.role-no-admin #teamBtn { display: none; }

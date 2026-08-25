@@ -16,12 +16,17 @@ import { LOCAL_USER_ID, isAuthEnabled } from "./auth.js";
  * looked up by the session's user id — is what grants anything.
  */
 
-export const ROLES = ["viewer", "editor", "admin", "owner"] as const;
+/**
+ * `tester` is the person who drives a run — talks to the AI, answers the credential prompt, and
+ * picks cases at the selection gate. It was called `editor` until the role names were made to
+ * describe the job rather than the permission; the rank, the meaning and every gate are unchanged.
+ */
+export const ROLES = ["viewer", "tester", "admin", "owner"] as const;
 export type Role = (typeof ROLES)[number];
 
 /** Lowest to highest. A check is "your rank >= the required rank", never string equality — the
  *  point of a ladder is that an owner automatically satisfies every lesser requirement. */
-const ROLE_RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3, owner: 4 };
+const ROLE_RANK: Record<Role, number> = { viewer: 1, tester: 2, admin: 3, owner: 4 };
 
 export function isRole(value: unknown): value is Role {
   return typeof value === "string" && (ROLES as readonly string[]).includes(value);

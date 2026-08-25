@@ -59,6 +59,9 @@
         </div>
         <div class="topbar-actions">
           <button type="button" id="historyBtn" class="topbar-btn">History</button>
+          <!-- Admin/owner only. app.js unhides it from the role reported by /api/auth/me; the
+               server refuses the member routes regardless, so this is a courtesy not a control. -->
+          <button type="button" id="teamBtn" class="topbar-btn hidden">Team</button>
           <button type="button" id="settingsBtn" class="topbar-btn" aria-expanded="false">Settings</button>
           <!-- Both unhidden by app.js only when the server reports authEnabled:true. -->
           <span id="sessionBadge" class="session-badge hidden">
@@ -288,6 +291,12 @@
         <section class="view" data-view="case" id="view-case"><div class="wide" id="caseViewBody"></div></section>
         <section class="view" data-view="compare" id="view-compare"><div class="wide" id="compareViewBody"></div></section>
         <section class="view" data-view="history" id="view-history"><div class="wide" id="historyViewBody"></div></section>
+
+        <!-- ================= TEAM =================
+             Members of the current organisation, and (for admin/owner) the controls to add,
+             promote and remove them. Body is rendered by app.js from
+             GET /api/organisations/:orgId/members. Only ever shown via showView("team"). -->
+        <section class="view" data-view="team" id="view-team"><div class="wide" id="teamViewBody"></div></section>
 
       </div>
     </div>
