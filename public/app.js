@@ -985,7 +985,7 @@ async function openSaveCasePanel(card) {
         }),
       });
       panel.querySelector('[data-role="feedback"]').innerHTML =
-        `<p class="team-ok">Saved. <a href="#/case/${encodeURIComponent(saved.id)}">Open the case</a></p>`;
+        `<p class="team-ok">Saved. <a href="${caseHash(projectSel.value, saved.id)}">Open the case</a></p>`;
     } catch (err) {
       panel.querySelector('[data-role="feedback"]').innerHTML =
         `<p class="team-error">${escapeHtml(err.message)}</p>`;
@@ -2311,7 +2311,7 @@ async function renderSuiteView(suiteId) {
           const title = row.querySelector(".hrow-label").textContent;
           return startReplay({ caseIds: [caseId] }, `Replayed "${title}"`);
         }
-        if (act === "open") return navigate("#/case/" + encodeURIComponent(caseId));
+        if (act === "open") return navigate(caseHash(suite.projectId, caseId));
         if (act === "add-cases") return openAddPanel();
 
         if (act === "rename") {
@@ -2358,297 +2358,902 @@ async function renderSuiteView(suiteId) {
 /** Which tab the Case screen is on. Module-level so a re-render keeps the reader where they were. */
 let caseTab = "steps";
 
-// -------------------------------------------------------- inline step editor
+// ------------------------------------------- case step editor (plain English)
 //
-// Edits a case's steps in place and PATCHes the whole IR back, which mints a version and feeds
-// Compare. The server's Zod parse (src/schema/ir.ts, via library.ts's parseIr) stays the ONLY
-// authority on what a valid step is — nothing here re-implements it, because a second copy of
-// that schema is exactly the drift DECISIONS.md D-01 is about. What lives here is only which
-// inputs to draw for a given action.
+// Steps are edited as the SAME English sentences formatIrStep() renders, and shipped back to the
+// server as strings. The server owns BOTH directions (src/stages/stepText.ts) and parses each
+// sentence *onto* the step it came from, so an untouched line returns the original step object —
+// its grounding, its `${env:...}` value and its `nth` survive by construction rather than by this
+// file remembering to copy them. Nothing here parses a sentence: a second parser is exactly the
+// drift TD-07 records, and it would be worse here because it would show one sentence and save
+// another.
 
-let caseEditor = null;   // { caseId, steps, original, errorAt, errorMsg } — non-null while editing
+let caseEditor = null;
 
-const STEP_ACTIONS = ["navigate", "click", "fill", "select", "check", "press", "wait", "assert"];
-const STEP_ASSERTIONS = [
-  "visible", "hidden", "text_equals", "text_contains",
-  "url_contains", "title_contains", "title_equals", "enabled", "disabled",
-];
-// Page-level assertions take no target — see the note on the title/url assertions in schema/ir.ts.
-const PAGE_ASSERTIONS = new Set(["url_contains", "title_contains", "title_equals"]);
-/** generator.ts's emitAssert REFUSES to emit these without a comparison value ("refusing to emit
- *  a vacuous assertion"). Zod accepts the step, so without a nudge here the failure would only
- *  surface at replay. Rendered as a warning, never a block — blocking would be a second
- *  validator to drift out of step with the generator. */
-const VALUE_ASSERTIONS = new Set(["url_contains", "text_contains", "text_equals", "title_contains", "title_equals"]);
+/** The lines as the API wants them. */
+const caseLinesPayload = () => caseEditor.lines.map((l) => l.text);
 
-/** Which inputs a step shows, driven by its action — so an invalid step is hard to express. */
-function stepFields(step) {
-  switch (step.action) {
-    case "navigate": return { url: true };
-    case "press": return { value: true };
-    case "fill":
-    case "select": return { role: true, name: true, value: true };
-    case "click":
-    case "check":
-    case "wait": return { role: true, name: true };
-    case "assert":
-      return PAGE_ASSERTIONS.has(step.assertion)
-        ? { assertion: true, value: true }
-        : { assertion: true, role: true, name: true, value: VALUE_ASSERTIONS.has(step.assertion) };
-    default: return { role: true, name: true, value: true };
-  }
+function caseEditorDirty() {
+  return !!caseEditor && JSON.stringify(caseLinesPayload()) !== caseEditor.original;
 }
 
-/**
- * Write one edited field back into a step.
- *
- * Mutates the step and its EXISTING target rather than rebuilding either. That is deliberate and
- * load-bearing: a grounded target can carry `css`, `testId`, `nth`, `label`, `text` and
- * `placeholder`, none of which this editor draws. `css` in particular is written during grounding
- * and is "what makes icon-only controls addressable at all" (schema/ir.ts). Rebuilding a target
- * from the two fields shown here would drop it — producing an IR that still validates but no
- * longer resolves the element it was grounded against. Mutating in place makes that impossible
- * by construction rather than by remembering to copy each field.
- */
-function setStepField(step, field, raw) {
-  const filled = raw.trim() !== "";
-  if (field === "action") {
-    step.action = raw;
-    // Leaving a stale assertion on a non-assert step is harmless to Zod but confusing to read
-    // back, and it reappears if the user switches to assert and away again.
-    if (raw !== "assert") delete step.assertion;
-    else if (!step.assertion) step.assertion = "visible";
-    return;
-  }
-  if (field === "assertion") { step.assertion = raw || undefined; return; }
-  // Stored untrimmed: a value may be a `${env:...}` credential reference or contain meaningful
-  // spacing, and this editor must hand both back exactly as it found them.
-  if (field === "value") { if (filled) step.value = raw; else delete step.value; return; }
+/** A re-ground is in flight — steps are read-only and Save is replaced by Cancel. */
+const caseEditorBusy = () => !!caseEditor?.job;
 
-  step.target = step.target || {};
-  if (filled) step.target[field] = raw;
-  else delete step.target[field];
-  if (!Object.keys(step.target).length) delete step.target;
+/** Stop following a job without cancelling it server-side. Used when the view is torn down;
+ *  the job itself keeps going and simply finishes unobserved. */
+function stopFollowingCaseJob() {
+  if (caseEditor?.job?.timer) clearTimeout(caseEditor.job.timer);
+  if (caseEditor?.job) caseEditor.job.timer = null;
 }
 
-/** A fresh step id that cannot collide with one already in use — ids are referenced by
- *  failing-step reporting, so reusing one would misattribute a failure. */
-function nextStepId(steps) {
-  const used = new Set(steps.map((s) => s.id));
-  let n = steps.length + 1;
+/** A fresh line id that cannot collide. Ids are what failing-step reporting names, so a reused
+ *  one would misattribute a failure to the wrong row. */
+function nextLineId(lines) {
+  const used = new Set(lines.map((l) => l.id));
+  let n = lines.length + 1;
   while (used.has(`s${n}`)) n++;
   return `s${n}`;
 }
 
-function caseEditorDirty() {
-  return !!caseEditor && JSON.stringify(caseEditor.steps) !== caseEditor.original;
+// -------------------------------------------------------------------- estimate
+//
+// /estimate is pure arithmetic over the diff — no browser, no model, no write — so it is cheap
+// enough to run live. It drives the Save button's own LABEL: the cost is stated on the control
+// that spends it, not in a dialog after the fact.
+
+function scheduleCaseEstimate(repaint) {
+  if (!caseEditor) return;
+  clearTimeout(caseEditor.estimateTimer);
+  caseEditor.estimateTimer = setTimeout(() => runCaseEstimate(repaint), 400);
 }
 
-/** The server reports the offending path as e.g. `steps.3.action …` — pull the index out so the
- *  message can be shown against that row instead of floating above the whole list. */
-function errorStepIndex(message) {
-  const m = /steps\.(\d+)/.exec(message || "");
-  return m ? Number(m[1]) : null;
+async function runCaseEstimate(repaint) {
+  if (!caseEditor || caseEditorBusy()) return;
+  const editor = caseEditor;
+  const forLines = JSON.stringify(caseLinesPayload());
+
+  if (!caseEditorDirty()) {
+    editor.estimate = null;
+    editor.estimateError = "";
+    return refreshCaseSaveAffordance();
+  }
+
+  try {
+    const est = await api(`/api/cases/${encodeURIComponent(editor.caseId)}/steps/estimate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ steps: JSON.parse(forLines), expectedVersion: editor.currentVersion }),
+    });
+    // The user kept typing while this was in flight — its answer is about older text.
+    if (caseEditor !== editor || JSON.stringify(caseLinesPayload()) !== forLines) return;
+    editor.estimate = est;
+    editor.estimateError = "";
+  } catch (err) {
+    if (caseEditor !== editor) return;
+    editor.estimate = null;
+    // A malformed sentence fails here first, which is the cheapest possible place to learn it.
+    editor.estimateError = err.message;
+  }
+  refreshCaseSaveAffordance();
 }
 
-/** One editable step. Inputs carry data-i/data-f so a single delegated listener writes them all
- *  back — twelve per-input handlers would be twelve chances to miss one. */
-function stepEditorRow(step, i, total) {
-  const f = stepFields(step);
-  const t = step.target || {};
-  const err = caseEditor.errorAt === i ? caseEditor.errorMsg : "";
-  const needsValue =
-    step.action === "assert" && VALUE_ASSERTIONS.has(step.assertion) && !String(step.value ?? "").trim();
+/** Update just the Save label and the will-verify markers, WITHOUT a repaint — a repaint mid-typing
+ *  would steal focus out of the input the user is still in. */
+function refreshCaseSaveAffordance() {
+  const btn = document.getElementById("cdSave");
+  const hint = document.getElementById("cdSaveHint");
+  if (!btn || !caseEditor) return;
 
-  const field = (label, name, value, wide) => `
-    <label class="step-f${wide ? " step-f-wide" : ""}">
-      <span>${label}</span>
-      <input type="text" data-i="${i}" data-f="${name}" value="${escapeHtml(String(value ?? ""))}" />
-    </label>`;
+  const dirty = caseEditorDirty();
+  const est = caseEditor.estimate;
+  btn.disabled = !dirty || caseEditorBusy();
 
-  return `
-    <div class="step-edit${err ? " step-edit-bad" : ""}">
-      <div class="step-edit-main">
-        <span class="lib-pos">${i + 1}</span>
-        <label class="step-f">
-          <span>Action</span>
-          <select data-i="${i}" data-f="action">
-            ${STEP_ACTIONS.map((a) =>
-              `<option value="${a}"${a === step.action ? " selected" : ""}>${a}</option>`).join("")}
-          </select>
-        </label>
-        ${f.assertion ? `
-          <label class="step-f">
-            <span>Assertion</span>
-            <select data-i="${i}" data-f="assertion">
-              ${STEP_ASSERTIONS.map((a) =>
-                `<option value="${a}"${a === step.assertion ? " selected" : ""}>${a.replace(/_/g, " ")}</option>`).join("")}
-            </select>
-          </label>` : ""}
-        ${f.url ? field("URL", "url", t.url, true) : ""}
-        ${f.role ? field("Role", "role", t.role) : ""}
-        ${f.name ? field("Name", "name", t.name, true) : ""}
-        ${f.value ? field(step.action === "press" ? "Key" : "Value", "value", step.value, true) : ""}
-        <span class="step-edit-btns">
-          <button type="button" class="dl-btn-inline" data-ed="up" data-i="${i}" title="Move up"${i === 0 ? " disabled" : ""}>↑</button>
-          <button type="button" class="dl-btn-inline" data-ed="down" data-i="${i}" title="Move down"${i === total - 1 ? " disabled" : ""}>↓</button>
-          <button type="button" class="dl-btn-inline" data-ed="insert" data-i="${i}" title="Insert a step below">+</button>
-          <button type="button" class="dl-btn-inline" data-ed="del" data-i="${i}" title="Remove this step">×</button>
-        </span>
-      </div>
-      ${err ? `<p class="step-edit-err">${escapeHtml(err)}</p>` : ""}
-      ${needsValue ? `<p class="step-edit-warn">“${escapeHtml(String(step.assertion).replace(/_/g, " "))}” needs a comparison value — the run cannot generate this step without one.</p>` : ""}
-    </div>`;
+  // Typing does not repaint (that would steal the caret), so the UNSAVED badge has to be
+  // toggled here rather than re-rendered — otherwise it only ever appears after a structural
+  // change, which is exactly when the user is least likely to be looking for it.
+  const unsaved = document.getElementById("cdUnsaved");
+  if (unsaved) unsaved.style.display = dirty ? "" : "none";
+
+  if (!dirty) {
+    btn.textContent = "Save";
+    if (hint) hint.textContent = "";
+  } else if (caseEditor.estimateError) {
+    btn.textContent = "Save";
+    if (hint) hint.textContent = "";
+  } else if (!est) {
+    btn.textContent = "Save";
+    if (hint) hint.textContent = "Checking what this will cost…";
+  } else if (est.instant) {
+    btn.textContent = "Save";
+    if (hint) hint.textContent = "No steps need re-checking.";
+  } else {
+    const s = est.stepsToVerify === 1 ? "step" : "steps";
+    btn.textContent = `Save — re-checks ${est.stepsToVerify} ${s} (~${est.estimatedSeconds}s)`;
+    // maxLlmCalls is a CEILING. Grounding is DOM-first and usually spends none, so promising
+    // "N model calls" would make the common zero-cost save read as a bug.
+    if (hint) {
+      hint.textContent = est.maxLlmCalls
+        ? `Opens the site to re-check the marked ${s} · up to ${est.maxLlmCalls} model call${est.maxLlmCalls === 1 ? "" : "s"}.`
+        : `Opens the site to re-check the marked ${s}.`;
+    }
+  }
+
+  const verify = new Set(est?.stepIdsToVerify ?? []);
+  document.querySelectorAll("#cdLines .cd-line").forEach((row) => {
+    row.classList.toggle("will-verify", !caseEditorBusy() && verify.has(row.dataset.sid));
+  });
+
+  const errEl = document.getElementById("cdEstimateError");
+  if (errEl) errEl.innerHTML = caseEditor.estimateError
+    ? `<p class="team-error">${escapeHtml(caseEditor.estimateError)}</p>` : "";
 }
 
-/** The editor body. Re-rendered wholesale on every structural change; field edits mutate state
- *  in place and only repaint when the visible field set actually changes. */
-function paintStepEditor(el, c, caseId, repaint) {
-  const steps = caseEditor.steps;
+// ------------------------------------------------------------------------ save
 
+async function saveCaseSteps(c, repaint) {
+  if (!caseEditor || !caseEditorDirty()) return;
+  const editor = caseEditor;
+  editor.errorAt = null;
+  editor.errorMsg = "";
+  editor.notice = "";
+  editor.conflict = null;
+
+  const btn = document.getElementById("cdSave");
+  if (btn) btn.disabled = true;
+
+  let res;
+  try {
+    res = await fetch(`/api/cases/${encodeURIComponent(editor.caseId)}/steps`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        steps: caseLinesPayload(),
+        // Held from the moment the case loaded. This is what turns a silent clobber into a
+        // visible conflict.
+        expectedVersion: editor.currentVersion,
+        changeNote: "Edited steps",
+      }),
+    });
+  } catch (err) {
+    editor.errorMsg = String(err.message ?? err);
+    return repaint();
+  }
+
+  const body = await res.json().catch(() => ({}));
+
+  if (res.status === 409) {
+    editor.conflict = body;
+    return repaint();
+  }
+  if (!res.ok) {
+    editor.errorMsg = body.error || `That didn't work (${res.status}).`;
+    // The server names the offending step, so the message lands on that row rather than
+    // floating above a list of nine.
+    editor.errorAt = typeof body.stepIndex === "number" ? body.stepIndex : null;
+    return repaint();
+  }
+
+  // ---- fast path: nothing pointed anywhere new, so nothing had to be verified.
+  if (res.status === 200) {
+    return finishCaseSave(body, repaint);
+  }
+
+  // ---- job path
+  editor.job = {
+    jobId: body.jobId,
+    total: body.stepsToVerify ?? 0,
+    done: 0,
+    states: {},
+    seen: 0,
+    timer: null,
+    cancelling: false,
+  };
+  (body.stepIdsToVerify ?? []).forEach((id) => { editor.job.states[id] = "pending"; });
+  repaint();
+  pollCaseJob(c, repaint);
+}
+
+/** Shared tail of both save paths. */
+function finishCaseSave(payload, repaint) {
+  const steps = payload.steps ?? payload.case?.steps;
+  const updated = payload.case ?? payload;
+  caseEditor.job = null;
+  caseEditor.lines = (steps ?? caseLinesPayload().map((t, i) => ({ id: `s${i + 1}`, text: t })))
+    .map((s) => ({ id: s.id, text: s.text }));
+  caseEditor.original = JSON.stringify(caseLinesPayload());
+  caseEditor.currentVersion = updated.currentVersion ?? caseEditor.currentVersion;
+  caseEditor.estimate = null;
+  caseEditor.notice = `Saved as v${caseEditor.currentVersion}.`;
+  toast(`Saved as v${caseEditor.currentVersion}.`);
+  caseEditor.reloadNeeded = true;
+  repaint();
+}
+
+/**
+ * Follow a re-ground.
+ *
+ * Polls /state rather than opening an EventSource: this codebase already established that pattern
+ * for runs (SSE buffers behind a Cloudflare tunnel and only flushes on close — see the comment on
+ * /api/runs/:runId/events), and the same reasoning applies unchanged here. The route is offered as
+ * SSE with /state as the poll fallback; this takes the fallback deliberately.
+ */
+async function pollCaseJob(c, repaint) {
+  if (!caseEditor?.job) return;
+  const editor = caseEditor;
+  const job = editor.job;
+
+  let events = [];
+  try {
+    events = await api(
+      `/api/cases/${encodeURIComponent(editor.caseId)}/steps/jobs/${encodeURIComponent(job.jobId)}/state`);
+  } catch (err) {
+    // The server restarted, or the session expired. Job state is in memory, so the edit is simply
+    // not saved — say that rather than spinning forever.
+    if (caseEditor !== editor) return;
+    editor.job = null;
+    editor.errorMsg = `Lost track of this save (${err.message}). Nothing was saved — press Save to try again.`;
+    return repaint();
+  }
+  if (caseEditor !== editor || editor.job !== job) return;
+
+  let terminal = null;
+  for (const ev of events.slice(job.seen)) {
+    job.seen++;
+    if (ev.stage === "ir" && ev.data?.stepId) {
+      const { stepId, done, total, phase } = ev.data;
+      if (phase === "walking" || phase === "grounding") {
+        Object.keys(job.states).forEach((id) => {
+          if (job.states[id] === "verifying") job.states[id] = "ok";
+        });
+        if (job.states[stepId] !== undefined) job.states[stepId] = "verifying";
+        job.done = typeof done === "number" ? done : job.done;
+        if (typeof total === "number" && total) job.total = total;
+      }
+    }
+    if (ev.stage === "done" || ev.stage === "error") terminal = ev;
+  }
+
+  if (!terminal) {
+    job.timer = setTimeout(() => pollCaseJob(c, repaint), 800);
+    paintCaseJobBanner();
+    return;
+  }
+
+  // ---- terminal
+  const d = terminal.data ?? {};
+  if (terminal.stage === "done" && d.saved) {
+    return finishCaseSave(d, repaint);
+  }
+
+  editor.job = null;
+
+  if (d.cancelled) {
+    // Cancel is NOT an undo: nothing was written, so there is nothing to undo. Saying "reverted"
+    // would send someone looking for a version that was never created.
+    editor.notice = "Cancelled — nothing was saved. Your edits are still here.";
+    return repaint();
+  }
+  if (d.conflict) {
+    editor.errorMsg =
+      `${terminal.error || "Someone else saved while this was verifying."} Reload to see their version.`;
+    return repaint();
+  }
+
+  editor.errorMsg = terminal.error || "That save could not be verified.";
+  editor.errorAt = typeof d.stepIndex === "number" ? d.stepIndex : null;
+  // Two shapes, two remedies. "could not reach" means an EARLIER step is the real problem, so the
+  // marker belongs on where the walk stopped — not on the step that was edited.
+  editor.errorKind = /could not reach|never arrived|failed to reach/i.test(editor.errorMsg)
+    ? "reach" : "ground";
+  repaint();
+}
+
+/** Repaint only the banner, so progress updates don't tear down the right column. */
+function paintCaseJobBanner() {
+  const el = document.getElementById("cdJob");
+  if (!el || !caseEditor?.job) return;
+  const job = caseEditor.job;
   el.innerHTML = `
-    <div class="lib-steps">
-      <div class="lib-steps-head">
-        Steps — edit in place
-        ${caseEditorDirty() ? `<span class="case-badge badge-truncated">UNSAVED</span>` : ""}
-      </div>
-      ${caseEditor.errorMsg && caseEditor.errorAt === null
-        ? `<p class="team-error">${escapeHtml(caseEditor.errorMsg)}</p>` : ""}
-      <div class="step-edit-list">
-        ${steps.length
-          ? steps.map((s, i) => stepEditorRow(s, i, steps.length)).join("")
-          : `<p class="hrow-meta">No steps. A test plan needs at least one — add one below.</p>`}
-      </div>
-      <div class="step-edit-actions">
-        <button type="button" class="dl-btn-inline" data-ed="add">+ Add step</button>
-        <span class="lib-toolbar-gap"></span>
-        <button type="button" class="dl-btn-inline" data-ed="cancel">Cancel</button>
-        <button type="button" class="run-btn lib-run-all" data-ed="save">Save changes</button>
-      </div>
-      <p class="hrow-meta">Target: ${escapeHtml(c.ir.meta.baseUrl)}</p>
+    <div class="cd-job">
+      <span class="cd-job-text">${job.cancelling
+        ? "Cancelling… the page being checked has to finish first."
+        : `Verifying ${Math.min(job.done + 1, job.total)} of ${job.total}…`}</span>
+      <button type="button" class="dl-btn-inline" id="cdCancel"${job.cancelling ? " disabled" : ""}>Cancel</button>
     </div>`;
-
-  // Field edits. `change` (not `input`) so a repaint never steals focus mid-typing; the action
-  // and assertion selects repaint because they change which inputs exist.
-  el.querySelectorAll("[data-f]").forEach((input) => {
-    input.addEventListener("change", () => {
-      const i = Number(input.dataset.i);
-      const before = JSON.stringify(stepFields(steps[i]));
-      setStepField(steps[i], input.dataset.f, input.value);
-      caseEditor.errorAt = null;
-      caseEditor.errorMsg = "";
-      if (JSON.stringify(stepFields(steps[i])) !== before || input.dataset.f === "action") repaint();
-      else paintStepEditor(el, c, caseId, repaint);   // refresh the UNSAVED badge and warnings
-    });
-  });
-
-  el.querySelectorAll("[data-ed]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const act = btn.dataset.ed;
-      const i = Number(btn.dataset.i);
-      caseEditor.errorAt = null;
-      caseEditor.errorMsg = "";
-
-      if (act === "up" || act === "down") {
-        const j = act === "up" ? i - 1 : i + 1;
-        [steps[i], steps[j]] = [steps[j], steps[i]];
-        return repaint();
-      }
-      if (act === "del") { steps.splice(i, 1); return repaint(); }
-      if (act === "insert") {
-        steps.splice(i + 1, 0, { id: nextStepId(steps), action: "click", target: { role: "button" } });
-        return repaint();
-      }
-      if (act === "add") {
-        steps.push({ id: nextStepId(steps), action: "click", target: { role: "button" } });
-        return repaint();
-      }
-      if (act === "cancel") {
-        if (caseEditorDirty() && !confirm("Discard your unsaved step changes?")) return;
-        caseEditor = null;
-        return repaint();
-      }
-      if (act === "save") {
-        if (!caseEditorDirty()) { caseEditor = null; return repaint(); }
-        btn.disabled = true;
-        try {
-          // meta is carried through untouched — this editor owns steps and nothing else.
-          const updated = await api(`/api/cases/${encodeURIComponent(caseId)}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ir: { ...c.ir, steps }, changeNote: "Edited steps" }),
-          });
-          caseEditor = null;
-          toast(`Saved as v${updated.currentVersion}.`);
-          caseTab = "versions";        // the new version is the payoff; show it immediately
-          return renderCaseView(caseId);
-        } catch (err) {
-          btn.disabled = false;
-          caseEditor.errorMsg = err.message;
-          caseEditor.errorAt = errorStepIndex(err.message);
-          return repaint();
-        }
-      }
-    });
+  const cancel = document.getElementById("cdCancel");
+  if (cancel) cancel.addEventListener("click", cancelCaseJob);
+  document.querySelectorAll("#cdLines .cd-line").forEach((row) => {
+    const st = job.states[row.dataset.sid];
+    row.classList.toggle("is-pending", st === "pending");
+    row.classList.toggle("is-verifying", st === "verifying");
+    row.classList.toggle("is-ok", st === "ok");
+    const stateEl = row.querySelector(".cd-line-state");
+    if (stateEl) stateEl.textContent = st === "verifying" ? "verifying…" : st === "ok" ? "ok" : st === "pending" ? "pending" : "";
   });
 }
 
-async function renderCaseView(caseId) {
+async function cancelCaseJob() {
+  if (!caseEditor?.job || caseEditor.job.cancelling) return;
+  caseEditor.job.cancelling = true;
+  paintCaseJobBanner();
+  try {
+    await api(
+      `/api/cases/${encodeURIComponent(caseEditor.caseId)}/steps/jobs/${encodeURIComponent(caseEditor.job.jobId)}/cancel`,
+      { method: "POST" });
+  } catch { /* the poll will report whatever actually happened */ }
+}
+
+// --------------------------------------------------------------------- the view
+
+/** The canonical hash for a case. Falls back to the legacy shape when the caller has no project
+ *  to hand — applyRoute resolves that one from the case and rewrites the URL in place, so the
+ *  fallback is a working link rather than a dead one. */
+const caseHash = (projectId, caseId) =>
+  projectId
+    ? `#/projects/${encodeURIComponent(projectId)}/cases/${encodeURIComponent(caseId)}`
+    : `#/case/${encodeURIComponent(caseId)}`;
+
+async function renderCaseView(caseId, routeProjectId) {
   // An editor belongs to exactly one case. Rendering a different one drops it — the route guard
   // has already asked about unsaved work by this point, so anything still here was abandoned.
-  if (caseEditor && caseEditor.caseId !== caseId) caseEditor = null;
+  if (caseEditor && caseEditor.caseId !== caseId) { stopFollowingCaseJob(); caseEditor = null; }
 
   const body = document.getElementById("caseViewBody");
   body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
 
-  let c;
+  let c, stepsDoc;
   try {
-    c = await api(`/api/cases/${encodeURIComponent(caseId)}`);
+    [c, stepsDoc] = await Promise.all([
+      api(`/api/cases/${encodeURIComponent(caseId)}`),
+      api(`/api/cases/${encodeURIComponent(caseId)}/steps`),
+    ]);
   } catch (err) {
-    body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${escapeHtml(err.message)}</div>`;
+    // Includes the 503 when there is no database configured — this screen reads library rows, so
+    // it cannot degrade to anything useful. Say why rather than throwing into the console.
+    body.innerHTML =
+      `<div class="tree-empty" style="padding:36px 16px;text-align:center">${escapeHtml(err.message)}</div>`;
     return;
   }
 
-  setCrumbs(["Case", c.title]);
+  // The route may not carry a project (an old `#/case/:id` link). Resolve it from the case and
+  // quietly make the URL canonical — replaceState fires no hashchange, so this cannot re-render.
+  const projectId = c.projectId;
+  if (routeProjectId !== projectId) {
+    const want = caseHash(projectId, caseId);
+    if (location.hash !== want) {
+      history.replaceState(null, "", want);
+      lastHash = want;
+    }
+  }
+
   const canAuthor = roleAtLeast(auth.role, "tester");
   const canDelete = roleAtLeast(auth.role, "admin");
 
-  body.innerHTML = `
-    <div>
-      <div class="eyebrow">TEST CASE</div>
-      <h1 class="page-head-title">${escapeHtml(c.title)}</h1>
-      <p class="tagline">
-        <span class="case-badge ${caseBadgeClass(c.lastRunStatus)}">${escapeHtml(caseStatusLabel(c.lastRunStatus))}</span>
-        <span class="hrow-meta">v${c.currentVersion}${c.sourceRunId ? ` · saved from ${escapeHtml(c.sourceRunId)}` : ""}</span>
-      </p>
-    </div>
-    <div class="lib-toolbar">
-      ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="rename">Rename</button>` : ""}
-      ${c.versions.length > 1 ? `<button type="button" class="dl-btn-inline" data-act="compare">Compare versions</button>` : ""}
-      ${canDelete ? `<button type="button" class="dl-btn-inline" data-act="delete">Delete case</button>` : ""}
-      <span class="lib-toolbar-gap"></span>
-      ${canAuthor ? `<button type="button" class="run-btn lib-run-all" data-act="run">▸ Run case</button>` : ""}
-    </div>
-    <div id="caseFeedback"></div>
-    <div id="caseSuites"></div>
-    <div class="seg" id="caseTabs" role="group" aria-label="Case sections">
-      <button type="button" class="seg-btn${caseTab === "steps" ? " active" : ""}" data-tab="steps">Steps</button>
-      <button type="button" class="seg-btn${caseTab === "versions" ? " active" : ""}" data-tab="versions">Versions</button>
-    </div>
-    <div class="panel"><div id="caseBody"></div></div>`;
+  // Names for the breadcrumb. Both are best-effort: a missing one degrades to a quieter crumb
+  // rather than blocking the screen the user asked for.
+  let projectName = "", suiteName = "";
+  try {
+    const p = (projectsCache ?? []).find((x) => x.id === projectId);
+    projectName = p?.name ?? "";
+    if (c.suiteIds?.length) {
+      const suites = (await api(`/api/suites?projectId=${encodeURIComponent(projectId)}`)).suites ?? [];
+      suiteName = suites.find((s) => c.suiteIds.includes(s.id))?.name ?? "";
+    }
+  } catch { /* breadcrumb only */ }
+
+  setCrumbs([projectName || "Case", c.title]);
+
+  if (!caseEditor) {
+    caseEditor = {
+      caseId,
+      lines: stepsDoc.steps.map((s) => ({ id: s.id, text: s.text })),
+      original: JSON.stringify(stepsDoc.steps.map((s) => s.text)),
+      currentVersion: c.currentVersion,
+      expected: stepsDoc.expected ?? "",
+      estimate: null, estimateTimer: null, estimateError: "",
+      job: null, errorAt: null, errorMsg: "", errorKind: "",
+      conflict: null, askText: "", proposal: null, notice: "", reloadNeeded: false,
+    };
+  } else if (caseEditor.reloadNeeded) {
+    // A save landed: adopt the server's canonical version/steps without losing the notice.
+    caseEditor.reloadNeeded = false;
+    caseEditor.currentVersion = c.currentVersion;
+  }
+
+  const repaint = () => {
+    if (caseEditor?.reloadNeeded) return renderCaseView(caseId, projectId);
+    paintCaseScreen();
+  };
+
+  function paintCaseScreen() {
+    const dirty = caseEditorDirty();
+    const busy = caseEditorBusy();
+
+    body.innerHTML = `
+      <div class="cd-head">
+        <div class="cd-head-main">
+          <div class="cd-crumb">${escapeHtml([projectName, suiteName].filter(Boolean).join(" / ") || "TEST CASE")}</div>
+          <div class="cd-meta">
+            <span class="case-badge ${caseBadgeClass(c.lastRunStatus)}">${escapeHtml(caseStatusLabel(c.lastRunStatus))}</span>
+            <span class="cd-version">v${caseEditor.currentVersion} · ${c.versions.length} version${c.versions.length === 1 ? "" : "s"}</span>
+            <span class="case-badge badge-truncated" id="cdUnsaved"${dirty ? "" : ` style="display:none"`}>UNSAVED</span>
+          </div>
+          <input class="cd-title" id="cdTitle" value="${escapeHtml(c.title)}"
+                 ${canAuthor ? "" : "readonly"} aria-label="Case title" />
+          <p class="cd-why">${escapeHtml(c.ir?.meta?.sourcePrompt || c.feature || "No description recorded for this case.")}</p>
+        </div>
+        <div class="cd-actions">
+          ${canAuthor ? `<button type="button" class="dl-btn-inline cd-save" id="cdSave" disabled>Save</button>` : ""}
+          ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="duplicate">Duplicate</button>` : ""}
+          ${c.versions.length > 1 ? `<button type="button" class="dl-btn-inline" data-act="compare">Compare versions</button>` : ""}
+          ${canDelete ? `<button type="button" class="dl-btn-inline" data-act="delete">Delete case</button>` : ""}
+          ${canAuthor ? `<button type="button" class="run-btn lib-run-all" data-act="run">${icon("play", { size: 13 })} Run case</button>` : ""}
+        </div>
+      </div>
+
+      <div id="caseFeedback">
+        ${caseEditor.notice ? `<p class="team-ok">${escapeHtml(caseEditor.notice)}</p>` : ""}
+        ${caseEditor.errorMsg && caseEditor.errorAt === null
+          ? `<p class="team-error">${escapeHtml(caseEditor.errorMsg)}</p>` : ""}
+      </div>
+      <div id="cdConflict">${caseEditor.conflict ? conflictHtml(caseEditor.conflict) : ""}</div>
+      <div id="caseSuites"></div>
+
+      <div class="seg" id="caseTabs" role="group" aria-label="Case sections">
+        <button type="button" class="seg-btn${caseTab === "steps" ? " active" : ""}" data-tab="steps">Steps</button>
+        <button type="button" class="seg-btn${caseTab === "script" ? " active" : ""}" data-tab="script">Script</button>
+        <button type="button" class="seg-btn${caseTab === "runs" ? " active" : ""}" data-tab="runs">Runs &amp; versions</button>
+      </div>
+      <div id="caseBody"></div>`;
+
+    paintSuites();
+    paintTabBody();
+    wireHeader();
+  }
+
+  function conflictHtml(k) {
+    const mine = caseLinesPayload();
+    const theirs = (k.current?.steps ?? []).map((s) => s.text);
+    return `
+      <div class="cd-conflict">
+        <div class="cd-conflict-head">${escapeHtml(k.error || "This case changed while you were editing it.")}</div>
+        <div class="cd-conflict-cols">
+          <div class="cd-conflict-col">
+            <h4>Your steps</h4>
+            <ol>${mine.map((t) => `<li>${escapeHtml(t)}</li>`).join("")}</ol>
+          </div>
+          <div class="cd-conflict-col">
+            <h4>Theirs — v${k.currentVersion}</h4>
+            <ol>${theirs.map((t) => `<li>${escapeHtml(t)}</li>`).join("")}</ol>
+          </div>
+        </div>
+        <div class="cd-conflict-actions">
+          <button type="button" class="dl-btn-inline" data-conflict="theirs">Discard mine, use theirs</button>
+          <button type="button" class="dl-btn-inline" data-conflict="mine">Keep mine on top of theirs</button>
+        </div>
+      </div>`;
+  }
+
+  function paintTabBody() {
+    const el = document.getElementById("caseBody");
+    if (caseTab === "steps") return paintStepsTab(el);
+    if (caseTab === "script") return paintScriptTab(el);
+    return paintRunsTab(el);
+  }
+
+  // ---------------------------------------------------------------- steps tab
+
+  function paintStepsTab(el) {
+    const busy = caseEditorBusy();
+    const verify = new Set(caseEditor.estimate?.stepIdsToVerify ?? []);
+
+    el.innerHTML = `
+      <div class="cd-cols">
+        <div class="cd-left">
+          <div class="cd-card">
+            <div class="cd-card-head">Steps — edit in plain English</div>
+            <div id="cdJob"></div>
+            <div id="cdEstimateError"></div>
+            <div class="cd-lines" id="cdLines">
+              ${caseEditor.lines.map((l, i) => lineHtml(l, i, verify, busy)).join("")}
+            </div>
+            ${canAuthor && !busy ? `<button type="button" class="cd-add" id="cdAdd">+ Add step</button>` : ""}
+            <div class="cd-expected">
+              <div class="cd-card-head">Expected outcome</div>
+              <div class="cd-expected-value">${escapeHtml(caseEditor.expected || "Not recorded.")}</div>
+            </div>
+            ${canAuthor ? `<p class="hrow-meta" id="cdSaveHint" style="margin-top:10px"></p>` : ""}
+            <p class="hrow-meta" style="margin-top:6px">Target: ${escapeHtml(c.ir?.meta?.baseUrl ?? "")}</p>
+          </div>
+        </div>
+        <div class="cd-right">
+          ${canAuthor ? `
+            <div class="cd-card cd-card-inset">
+              <div class="cd-card-label">Ask for a change</div>
+              <textarea class="cd-ask-text" id="cdAsk" placeholder="also assert the order total is unchanged"
+                        ${busy ? "disabled" : ""}>${escapeHtml(caseEditor.askText)}</textarea>
+              <button type="button" class="cd-ask-btn" id="cdRewrite"${busy ? " disabled" : ""}>Rewrite steps</button>
+              <div id="cdProposal">${caseEditor.proposal ? proposalHtml(caseEditor.proposal) : ""}</div>
+            </div>` : ""}
+          <div class="cd-card">
+            <div class="cd-card-head">Latest result</div>
+            <div class="cd-meta">
+              <span class="case-badge ${caseBadgeClass(c.lastRunStatus)}">${escapeHtml(caseStatusLabel(c.lastRunStatus))}</span>
+              <span class="hrow-meta" id="cdLastMeta">${c.lastRunAt ? escapeHtml(formatWhen(c.lastRunAt)) : "Never run"}</span>
+            </div>
+            <div id="cdShot">
+              <div class="cd-shot"><span class="cd-shot-label">no screenshot yet</span></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    wireSteps();
+    refreshCaseSaveAffordance();
+    if (busy) paintCaseJobBanner();
+    paintLatestResult();
+  }
+
+  function lineHtml(l, i, verify, busy) {
+    const st = caseEditor.job?.states?.[l.id];
+    const bad = caseEditor.errorAt === i;
+    const cls = [
+      "cd-line",
+      !busy && verify.has(l.id) ? "will-verify" : "",
+      st === "pending" ? "is-pending" : st === "verifying" ? "is-verifying" : st === "ok" ? "is-ok" : "",
+      bad ? "is-bad" : "",
+    ].filter(Boolean).join(" ");
+
+    return `
+      <div class="${cls}" data-sid="${escapeHtml(l.id)}">
+        <span class="cd-line-num">${i + 1}</span>
+        <input class="cd-line-input" type="text" data-i="${i}"
+               value="${escapeHtml(l.text)}" ${canAuthor && !busy ? "" : "disabled"} />
+        ${busy ? `<span class="cd-line-state">${st === "verifying" ? "verifying…" : st === "ok" ? "ok" : st === "pending" ? "pending" : ""}</span>` : ""}
+        ${canAuthor && !busy ? `
+          <button type="button" class="cd-line-btn" data-ed="up" data-i="${i}" title="Move up"${i === 0 ? " disabled" : ""}>↑</button>
+          <button type="button" class="cd-line-btn" data-ed="down" data-i="${i}" title="Move down"${i === caseEditor.lines.length - 1 ? " disabled" : ""}>↓</button>
+          <button type="button" class="cd-line-btn cd-line-del" data-ed="del" data-i="${i}" title="Remove">×</button>` : ""}
+      </div>
+      ${bad ? `<p class="cd-line-err">${escapeHtml(caseEditor.errorMsg)}${
+        caseEditor.errorKind === "reach"
+          ? " — an earlier step is the real problem; this is where the walk stopped."
+          : ""}</p>` : ""}`;
+  }
+
+  function wireSteps() {
+    // `input` updates state and re-estimates but does NOT repaint — a repaint mid-typing would
+    // steal the caret. The full repaint happens on structural changes only.
+    document.querySelectorAll("#cdLines .cd-line-input").forEach((input) => {
+      input.addEventListener("input", () => {
+        caseEditor.lines[Number(input.dataset.i)].text = input.value;
+        caseEditor.errorAt = null;
+        caseEditor.errorMsg = "";
+        caseEditor.notice = "";
+        scheduleCaseEstimate(repaint);
+        refreshCaseSaveAffordance();
+      });
+    });
+
+    document.querySelectorAll("#cdLines [data-ed]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const i = Number(btn.dataset.i);
+        const act = btn.dataset.ed;
+        const lines = caseEditor.lines;
+        caseEditor.errorAt = null; caseEditor.errorMsg = ""; caseEditor.notice = "";
+        if (act === "up") [lines[i - 1], lines[i]] = [lines[i], lines[i - 1]];
+        if (act === "down") [lines[i + 1], lines[i]] = [lines[i], lines[i + 1]];
+        if (act === "del") lines.splice(i, 1);
+        scheduleCaseEstimate(repaint);
+        paintTabBody();
+      });
+    });
+
+    const add = document.getElementById("cdAdd");
+    if (add) add.addEventListener("click", () => {
+      caseEditor.lines.push({ id: nextLineId(caseEditor.lines), text: 'Click on button "Submit"' });
+      caseEditor.notice = "";
+      scheduleCaseEstimate(repaint);
+      paintTabBody();
+    });
+
+    const ask = document.getElementById("cdAsk");
+    if (ask) ask.addEventListener("input", () => { caseEditor.askText = ask.value; });
+
+    const rewrite = document.getElementById("cdRewrite");
+    if (rewrite) rewrite.addEventListener("click", () => doRewrite(rewrite));
+
+    document.querySelectorAll("#cdProposal [data-prop]").forEach((b) => {
+      b.addEventListener("click", () => {
+        if (b.dataset.prop === "apply") {
+          // Apply only FILLS the editor. The user still presses Save, still sees the estimate,
+          // still gets the re-ground — one way into the library, whoever wrote the sentences.
+          const proposed = caseEditor.proposal.steps;
+          caseEditor.lines = proposed.map((text, i) => ({
+            id: caseEditor.lines[i]?.id ?? `s${i + 1}`, text,
+          }));
+          caseEditor.notice = "Proposal applied to the editor — nothing is saved until you press Save.";
+        }
+        caseEditor.proposal = null;
+        scheduleCaseEstimate(repaint);
+        paintCaseScreen();
+      });
+    });
+  }
+
+  async function doRewrite(btn) {
+    const instruction = (caseEditor.askText || "").trim();
+    if (!instruction) { caseEditor.errorMsg = "Say what you would like changed."; return paintCaseScreen(); }
+    btn.disabled = true;
+    btn.textContent = "Asking…";
+    try {
+      caseEditor.proposal = await api(`/api/cases/${encodeURIComponent(caseId)}/rewrite`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction }),
+      });
+      caseEditor.errorMsg = "";
+    } catch (err) {
+      caseEditor.errorMsg = err.message;
+      caseEditor.proposal = null;
+    }
+    paintCaseScreen();
+  }
+
+  function proposalHtml(p) {
+    // Reuses the Compare screen's LCS diff so an inserted step shifts nothing after it.
+    const { left, right } = diffSteps(p.before, p.steps);
+    const rows = [];
+    left.forEach((l) => { if (l.k === "removed") rows.push({ k: "del", t: l.t }); });
+    right.forEach((r) => rows.push({ k: r.k === "added" ? "add" : "same", t: r.t }));
+    return `
+      <div class="cd-proposal">
+        ${p.note ? `<p class="cd-proposal-note">${escapeHtml(p.note)}</p>` : ""}
+        <div class="cd-diff">
+          ${rows.map((r) => `<div class="cd-diff-line cd-diff-${r.k}">${escapeHtml(r.t)}</div>`).join("")}
+        </div>
+        <div class="cd-proposal-actions">
+          <button type="button" class="dl-btn-inline" data-prop="apply">Apply to editor</button>
+          <button type="button" class="dl-btn-inline" data-prop="discard">Discard</button>
+        </div>
+      </div>`;
+  }
+
+  /** The last run's final screenshot, read from the artifact the run already wrote. */
+  async function paintLatestResult() {
+    const el = document.getElementById("cdShot");
+    const metaEl = document.getElementById("cdLastMeta");
+    if (!el) return;
+    let runs = [];
+    try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; } catch { return; }
+    const last = runs[0];
+    if (!last) return;
+
+    if (metaEl) {
+      metaEl.textContent =
+        `${last.ranAt ? formatWhen(last.ranAt) : ""} · v${caseEditor.currentVersion} · ${last.runId}`;
+    }
+    try {
+      const result = await fetch(`/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/05-result.json`)
+        .then((r) => (r.ok ? r.json() : null));
+      const shot = result?.screenshotUrl;
+      if (!shot) return;
+      el.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="case ${last.caseIndex} · final screenshot" />`;
+      el.querySelector("img").addEventListener("click", () =>
+        openScreenshotModal(shot, `case ${last.caseIndex} · final screenshot`));
+    } catch { /* the hatched placeholder is already correct */ }
+  }
+
+  // --------------------------------------------------------------- script tab
+
+  async function paintScriptTab(el) {
+    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">Loading…</div></div>`;
+    let runs = [];
+    try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; } catch { /* below */ }
+    const last = runs[0];
+
+    // There is no endpoint that generates a spec from a stored IR — the generator runs as part of
+    // a run. So this shows the spec the last run actually emitted, which is the real artifact
+    // rather than a re-derivation that could differ from what executed.
+    let text = "";
+    if (last) {
+      text = await fetch(`/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/generated.spec.ts`)
+        .then((r) => (r.ok ? r.text() : "")).catch(() => "");
+    }
+
+    if (!text) {
+      el.innerHTML = `
+        <div class="panel"><div class="tree-empty" style="padding:34px 16px;text-align:center">
+          No script yet — the spec is written when this case runs.
+          ${canAuthor ? "Press <b>Run case</b> to generate one." : ""}
+        </div></div>`;
+      return;
+    }
+
+    el.innerHTML = `
+      <div class="panel" style="padding:0;overflow:hidden">
+        <div class="cd-script-head">
+          <span class="cd-script-name">generated.spec.ts</span>
+          <a class="dl-btn-inline" href="/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/generated.spec.ts"
+             download="${escapeHtml(c.title)}.spec.ts">Download .spec.ts</a>
+        </div>
+        <pre class="cd-script-body">${escapeHtml(text)}</pre>
+        <div class="cd-script-foot">From the run on ${escapeHtml(last.ranAt ? formatWhen(last.ranAt) : last.runId)}. Edit the steps and press Save to cut a new version.</div>
+      </div>`;
+  }
+
+  // ----------------------------------------------------------- runs & versions
+
+  async function paintRunsTab(el) {
+    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">Loading…</div></div>`;
+    let runs = [];
+    let runsError = "";
+    try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; }
+    catch (err) { runsError = err.message; }
+
+    el.innerHTML = `
+      <div class="cd-cols">
+        <div class="cd-left" style="flex:1 1 320px">
+          <div class="panel" style="padding:0;overflow:hidden">
+            <div class="cd-script-head"><span class="cd-card-head" style="margin:0">Previous runs</span></div>
+            <div id="cdRunRows"></div>
+          </div>
+        </div>
+        <div class="cd-right" style="flex:1 1 300px">
+          <div class="panel" style="padding:0;overflow:hidden">
+            <div class="cd-script-head"><span class="cd-card-head" style="margin:0">Versions</span></div>
+            <div id="cdVersionRows"></div>
+          </div>
+        </div>
+      </div>`;
+
+    const rowsEl = document.getElementById("cdRunRows");
+    rowsEl.innerHTML = runsError
+      ? `<div class="tree-empty" style="padding:24px 16px;text-align:center">${escapeHtml(runsError)}</div>`
+      : runs.length
+      ? runs.map((r) => `
+          <div class="hrow">
+            <span class="case-badge ${caseBadgeClass(r.status)}">${escapeHtml(caseStatusLabel(r.status))}</span>
+            <div class="hrow-main">
+              <div class="hrow-label">${escapeHtml(r.ranAt ? formatWhen(r.ranAt) : r.runId)}</div>
+              <div class="hrow-meta">${escapeHtml(r.runId)} · ${escapeHtml(r.resultPath)}</div>
+            </div>
+            <div class="hrow-actions">
+              <button type="button" class="dl-btn-inline" data-run="${escapeHtml(r.runId)}">Open run</button>
+            </div>
+          </div>`).join("")
+      : `<div class="tree-empty" style="padding:28px 16px;text-align:center">
+           No runs recorded for this case yet. Run history is indexed from the first replay after the
+           case library shipped, so older runs will not appear here.
+         </div>`;
+
+    rowsEl.querySelectorAll("[data-run]").forEach((b) =>
+      b.addEventListener("click", () => navigate("#/run/" + encodeURIComponent(b.dataset.run))));
+
+    const vEl = document.getElementById("cdVersionRows");
+    vEl.innerHTML = c.versions.length
+      ? c.versions.map((v) => `
+          <div class="hrow">
+            <span class="case-badge badge-pending">v${v.version}</span>
+            <div class="hrow-main">
+              <div class="hrow-label">${escapeHtml(v.changeNote || "No note")}</div>
+              <div class="hrow-meta">${escapeHtml(v.savedAt ? formatWhen(v.savedAt) : "")}</div>
+            </div>
+            <div class="hrow-actions">
+              ${v.version !== caseEditor.currentVersion
+                ? `<button type="button" class="dl-btn-inline" data-v="${v.version}">Compare with current</button>`
+                : `<span class="hrow-meta">current</span>`}
+            </div>
+          </div>`).join("")
+      : `<div class="tree-empty" style="padding:24px 16px;text-align:center">No version history yet.</div>`;
+
+    vEl.querySelectorAll("[data-v]").forEach((b) =>
+      b.addEventListener("click", () =>
+        navigate(`#/compare/${encodeURIComponent(caseId)}?from=${b.dataset.v}&to=${caseEditor.currentVersion}`)));
+  }
+
+  // ------------------------------------------------------------------- wiring
+
+  function wireHeader() {
+    document.getElementById("caseTabs").addEventListener("click", (e) => {
+      const btn = e.target.closest(".seg-btn");
+      if (!btn) return;
+      caseTab = btn.dataset.tab;
+      document.querySelectorAll("#caseTabs .seg-btn").forEach((b) => b.classList.toggle("active", b === btn));
+      paintTabBody();
+    });
+
+    const save = document.getElementById("cdSave");
+    if (save) save.addEventListener("click", () => saveCaseSteps(c, repaint));
+
+    const title = document.getElementById("cdTitle");
+    if (title && canAuthor) title.addEventListener("change", async () => {
+      const next = title.value.trim();
+      if (!next || next === c.title) { title.value = c.title; return; }
+      try {
+        await api(`/api/cases/${encodeURIComponent(caseId)}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: next }),
+        });
+        c.title = next;
+        toast("Renamed.");
+        setCrumbs([projectName || "Case", next]);
+      } catch (err) {
+        title.value = c.title;
+        document.getElementById("caseFeedback").innerHTML = `<p class="team-error">${escapeHtml(err.message)}</p>`;
+      }
+    });
+
+    document.querySelectorAll("#cdConflict [data-conflict]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const theirs = (caseEditor.conflict.current?.steps ?? []).map((s) => ({ id: s.id, text: s.text }));
+        const mine = caseEditor.lines;
+        if (b.dataset.conflict === "theirs") {
+          caseEditor.lines = theirs;
+          caseEditor.original = JSON.stringify(theirs.map((l) => l.text));
+          caseEditor.notice = "Using their version. Your edits are gone.";
+        } else {
+          // Re-apply your edits on top of theirs, then save against the version that actually won.
+          caseEditor.lines = mine;
+          caseEditor.original = JSON.stringify(theirs.map((l) => l.text));
+          caseEditor.notice = "Your edits are on top of their version — press Save to write them.";
+        }
+        caseEditor.currentVersion = caseEditor.conflict.currentVersion;
+        caseEditor.conflict = null;
+        caseEditor.reloadNeeded = false;
+        scheduleCaseEstimate(repaint);
+        paintCaseScreen();
+      });
+    });
+
+    body.querySelectorAll(".cd-actions [data-act]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const act = btn.dataset.act;
+        try {
+          if (act === "run") return startReplay({ caseIds: [caseId] }, `Replayed "${c.title}"`);
+          if (act === "compare") {
+            const prev = c.versions.find((v) => v.version !== caseEditor.currentVersion);
+            return navigate(`#/compare/${encodeURIComponent(caseId)}?from=${prev?.version ?? 1}&to=${caseEditor.currentVersion}`);
+          }
+          if (act === "duplicate") {
+            const copy = await api(`/api/cases/${encodeURIComponent(caseId)}/duplicate`, {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+            });
+            toast("Duplicated.");
+            stopFollowingCaseJob();
+            caseEditor = null;
+            await loadProjects();
+            return navigate(caseHash(copy.projectId ?? projectId, copy.id));
+          }
+          if (act === "delete") {
+            if (!confirm(`Delete "${c.title}"? This removes it from every suite it is in.`)) return;
+            await api(`/api/cases/${encodeURIComponent(caseId)}`, { method: "DELETE" });
+            stopFollowingCaseJob();
+            caseEditor = null;
+            toast("Case deleted.");
+            return navigate("#/");
+          }
+        } catch (err) {
+          document.getElementById("caseFeedback").innerHTML =
+            `<p class="team-error">${escapeHtml(err.message)}</p>`;
+        }
+      });
+    });
+  }
 
   /**
    * Which suites this case is in, and a way into another one.
    *
    * `suite_cases` is a join table precisely so a case can live in several suites at once — a login
    * case belongs in both "Smoke" and "Auth". Without this the many-to-many is a schema detail
-   * nobody can reach: a case could only ever be filed at save time, into exactly one suite.
+   * nobody can reach.
    */
-  const paintSuites = async () => {
+  async function paintSuites() {
     const el = document.getElementById("caseSuites");
+    if (!el) return;
     let all = [];
     try {
-      all = ((await api(`/api/suites?projectId=${encodeURIComponent(c.projectId)}`)).suites ?? []);
+      all = ((await api(`/api/suites?projectId=${encodeURIComponent(projectId)}`)).suites ?? []);
     } catch { el.innerHTML = ""; return; }
 
     const inIds = new Set(c.suiteIds || []);
@@ -2684,105 +3289,21 @@ async function renderCaseView(caseId) {
           body: JSON.stringify({ caseId }),
         });
         toast("Added to the suite.");
+        c.suiteIds = [...(c.suiteIds ?? []), suiteId];
         await loadProjects();
-        return renderCaseView(caseId);
+        paintSuites();
       } catch (err) {
         pick.disabled = false;
         document.getElementById("caseFeedback").innerHTML =
           `<p class="team-error">${escapeHtml(err.message)}</p>`;
       }
     });
-  };
-  paintSuites();
+  }
 
-  const paint = () => {
-    const el = document.getElementById("caseBody");
-    if (caseTab === "steps" && caseEditor && caseEditor.caseId === caseId) {
-      paintStepEditor(el, c, caseId, paint);
-    } else if (caseTab === "steps") {
-      el.innerHTML = `
-        <div class="lib-steps">
-          <div class="lib-steps-head">
-            Steps — what this test actually does
-            ${canAuthor ? `<button type="button" class="dl-btn-inline" id="editStepsBtn">Edit steps</button>` : ""}
-          </div>
-          <ol class="lib-step-list">
-            ${c.ir.steps.map((s, i) => `<li>${escapeHtml(stepText(s, i).replace(/^\d+\.\s*/, ""))}</li>`).join("")}
-          </ol>
-          <p class="hrow-meta">Target: ${escapeHtml(c.ir.meta.baseUrl)}</p>
-        </div>`;
-      const edit = document.getElementById("editStepsBtn");
-      if (edit) edit.addEventListener("click", () => {
-        // Deep clone: every edit mutates this copy, so Cancel is just "throw it away" and the
-        // rendered case object is never touched until a PATCH succeeds.
-        const steps = JSON.parse(JSON.stringify(c.ir.steps));
-        caseEditor = { caseId, steps, original: JSON.stringify(steps), errorAt: null, errorMsg: "" };
-        paint();
-      });
-    } else {
-      el.innerHTML = c.versions.length
-        ? c.versions.map((v) => `
-          <div class="hrow">
-            <span class="case-badge badge-pending">v${v.version}</span>
-            <div class="hrow-main">
-              <div class="hrow-label">${escapeHtml(v.changeNote || "No note")}</div>
-              <div class="hrow-meta">${v.savedAt ? formatWhen(v.savedAt) : ""}</div>
-            </div>
-            <div class="hrow-actions">
-              ${v.version !== c.currentVersion
-                ? `<button type="button" class="dl-btn-inline" data-act="compare-v" data-v="${v.version}">Compare with current</button>`
-                : `<span class="hrow-meta">current</span>`}
-            </div>
-          </div>`).join("")
-        : `<div class="tree-empty" style="padding:24px 16px;text-align:center">No version history yet.</div>`;
-
-      el.querySelectorAll('[data-act="compare-v"]').forEach((b) => {
-        b.addEventListener("click", () =>
-          navigate(`#/compare/${encodeURIComponent(caseId)}?from=${b.dataset.v}&to=${c.currentVersion}`));
-      });
-    }
-  };
-  paint();
-
-  document.getElementById("caseTabs").addEventListener("click", (e) => {
-    const btn = e.target.closest(".seg-btn");
-    if (!btn) return;
-    caseTab = btn.dataset.tab;
-    document.querySelectorAll("#caseTabs .seg-btn").forEach((b) => b.classList.toggle("active", b === btn));
-    paint();
-  });
-
-  body.querySelectorAll(".lib-toolbar [data-act]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const act = btn.dataset.act;
-      try {
-        if (act === "run") return startReplay({ caseIds: [caseId] }, `Replayed "${c.title}"`);
-        if (act === "compare") {
-          const prev = c.versions.find((v) => v.version !== c.currentVersion);
-          return navigate(`#/compare/${encodeURIComponent(caseId)}?from=${prev?.version ?? 1}&to=${c.currentVersion}`);
-        }
-        if (act === "rename") {
-          const title = prompt("Rename this case", c.title);
-          if (!title || title === c.title) return;
-          await api(`/api/cases/${encodeURIComponent(caseId)}`, {
-            method: "PATCH", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title }),
-          });
-          return renderCaseView(caseId);
-        }
-        if (act === "delete") {
-          if (!confirm(`Delete "${c.title}"? This removes it from every suite it is in.`)) return;
-          await api(`/api/cases/${encodeURIComponent(caseId)}`, { method: "DELETE" });
-          toast("Case deleted.");
-          return navigate("#/");
-        }
-      } catch (err) {
-        document.getElementById("caseFeedback").innerHTML =
-          `<p class="team-error">${escapeHtml(err.message)}</p>`;
-      }
-    });
-  });
+  paintCaseScreen();
+  if (caseEditorDirty()) scheduleCaseEstimate(repaint);
 }
+
 
 // -------------------------------------------------------------- Compare view
 
@@ -2859,7 +3380,7 @@ async function renderCompareView(caseId, fromV, toV) {
     </div>`;
 
   body.querySelector('[data-act="back"]').addEventListener("click", () =>
-    navigate("#/case/" + encodeURIComponent(caseId)));
+    navigate(caseHash(c.projectId, caseId)));
 }
 
 const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login", "signup", "team"];
@@ -2928,12 +3449,23 @@ window.addEventListener("beforeunload", (e) => {
  *  anything it doesn't recognise, so a deep link can't hit the backend. */
 function applyRoute() {
   const raw = (location.hash || "#/").replace(/^#\/?/, "");
-  const [head, id] = raw.split("/");
+  const parts = raw.split("/");
+  const [head, id] = parts;
+
+  // The case screen has a canonical project-scoped shape and a legacy one. Both land on the same
+  // view — the legacy path learns its project from the case itself and rewrites the URL in place,
+  // so old links and bookmarks keep working rather than 404ing.
+  const caseRoute =
+    head === "projects" && parts[2] === "cases" && parts[3]
+      ? { caseId: parts[3].split("?")[0], projectId: decodeURIComponent(parts[1]) }
+      : head === "case" && id
+      ? { caseId: id.split("?")[0], projectId: null }
+      : null;
 
   // Unsaved step edits. Leaving the case they belong to would discard them with no warning, and
   // the back button reaches here too — so the check lives in the router rather than on each link.
   if (restoringHash) { restoringHash = false; lastHash = location.hash; return; }
-  const stayingOnCase = head === "case" && id && id.split("?")[0] === caseEditor?.caseId;
+  const stayingOnCase = !!caseRoute && caseRoute.caseId === caseEditor?.caseId;
   if (caseEditorDirty() && !stayingOnCase) {
     if (!confirm("You have unsaved step changes. Leave and discard them?")) {
       // Guarded: if the hash is somehow already correct this would never fire hashchange, and
@@ -2941,8 +3473,12 @@ function applyRoute() {
       if (location.hash !== lastHash) { restoringHash = true; location.hash = lastHash; }
       return;
     }
+    stopFollowingCaseJob();
     caseEditor = null;
   }
+  // Left the case entirely with a clean editor — stop the progress poll so an abandoned screen
+  // isn't still talking to the server.
+  if (!stayingOnCase && caseEditor) { stopFollowingCaseJob(); caseEditor = null; }
   lastHash = location.hash;
 
   // Auth gate (Step 2.2). `auth.required` is only ever true when the server reported
@@ -2986,10 +3522,10 @@ function applyRoute() {
     renderSuiteView(id.split("?")[0]);
     return;
   }
-  if (head === "case" && id) {
+  if (caseRoute) {
     showView("case");
     setCrumbs(["Case"]);
-    renderCaseView(id.split("?")[0]);
+    renderCaseView(caseRoute.caseId, caseRoute.projectId);
     return;
   }
   if (head === "compare" && id) {

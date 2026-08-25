@@ -1464,3 +1464,197 @@ body.role-no-admin #addProjectBtn { display: none; }
 }
 .suite-add-row:hover { background: var(--surface-hover); }
 .suite-add-row .hrow-label { flex: 1; min-width: 0; }
+
+/* ---------------------------------------------------------------------------
+   Case detail (#/projects/:projectId/cases/:caseId)
+
+   Steps are edited as SENTENCES here, not as role/name fields — `cd-line` is one
+   of them. The row states (.is-pending / .is-verifying / .is-ok / .is-bad) are a
+   contract app.js toggles while a re-ground job runs; renaming one silently stops
+   the progress display without erroring anywhere.
+   --------------------------------------------------------------------------- */
+
+.cd-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--sp-4); }
+.cd-head-main { flex: 1; min-width: 260px; }
+.cd-crumb {
+  font-family: var(--font-mono); font-size: .66rem; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--faint); margin-bottom: 7px;
+}
+.cd-meta {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: var(--sp-2); margin-bottom: var(--sp-2);
+}
+.cd-version { font-family: var(--font-mono); font-size: .64rem; color: var(--muted); }
+
+/* The title doubles as the rename control, as in the reference: a borderless serif
+   input that only looks like a field once you reach for it. */
+.cd-title {
+  width: 100%; max-width: 620px;
+  border: 1px solid transparent; background: transparent;
+  font-family: var(--font-display); font-size: 1.62rem; font-weight: 400; line-height: 1.2;
+  padding: 2px 6px; margin-left: -6px; border-radius: 7px; color: var(--text);
+}
+.cd-title:hover:not([readonly]) { border-color: var(--line); }
+.cd-title[readonly] { cursor: default; }
+.cd-why {
+  font-size: .78rem; line-height: 1.6; color: var(--text-2);
+  margin: var(--sp-2) 0 0; max-width: 640px; text-wrap: pretty;
+}
+.cd-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); flex: none; }
+.cd-actions .dl-btn-inline { padding: 7px var(--sp-3); font-size: .72rem; }
+.cd-save[disabled] { opacity: .45; cursor: default; }
+
+/* Left ~40 / right ~60, per the layout spec. Both flex so a narrow window stacks
+   them rather than crushing the sentence inputs. */
+.cd-cols { display: flex; flex-wrap: wrap; gap: var(--sp-4); align-items: flex-start; }
+/* Equal basis so the 2:3 grow ratio actually lands near 40/60 — differing bases would make the
+   ratio apply only to the leftover and the columns would come out near-equal. */
+.cd-left { flex: 2 1 300px; min-width: 0; }
+.cd-right { flex: 3 1 300px; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+
+.cd-card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: var(--sp-4);
+}
+.cd-card-inset { background: var(--inset); }
+.cd-card-head { font-size: .72rem; font-weight: 600; margin-bottom: var(--sp-3); }
+.cd-card-label {
+  font-family: var(--font-mono); font-size: .64rem; font-weight: 600;
+  letter-spacing: .07em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 9px;
+}
+
+.cd-lines { display: flex; flex-direction: column; gap: var(--sp-2); }
+.cd-line { display: flex; align-items: center; gap: 9px; }
+.cd-line-num {
+  width: 20px; flex: none; text-align: right;
+  font-family: var(--font-mono); font-size: .64rem; color: var(--faint);
+}
+.cd-line-input {
+  flex: 1; min-width: 0; height: 33px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 0 10px; font-size: .78rem; background: var(--bg); color: var(--text);
+}
+.cd-line-input:disabled { opacity: .7; cursor: default; }
+.cd-line-btn {
+  width: 28px; height: 28px; flex: none;
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: 7px; font-size: .7rem; cursor: pointer; color: var(--text);
+}
+.cd-line-btn:hover:not(:disabled) { background: var(--surface-hover); }
+.cd-line-btn:disabled { opacity: .35; cursor: default; }
+.cd-line-del { color: var(--failed); }
+
+/* A step this save will pay to re-verify. The marker is what stops "re-checks 2
+   steps" being an abstract number — you can see which two. */
+.cd-line.will-verify .cd-line-input { border-color: var(--accent); background: var(--accent-tint); }
+.cd-line.is-pending .cd-line-input { border-color: var(--line-hover); }
+.cd-line.is-verifying .cd-line-input { border-color: var(--running); background: var(--running-bg); }
+.cd-line.is-ok .cd-line-input { border-color: var(--done); background: var(--done-bg); }
+.cd-line.is-bad .cd-line-input { border-color: var(--failed); background: var(--failed-bg); }
+.cd-line-state {
+  flex: none; font-family: var(--font-mono); font-size: .58rem;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
+  min-width: 58px; text-align: right;
+}
+.cd-line-err {
+  margin: 3px 0 0 29px; font-size: .7rem; line-height: 1.5; color: var(--failed);
+}
+
+.cd-add {
+  margin-top: var(--sp-3); width: 100%;
+  border: 1px dashed var(--line-hover); background: transparent;
+  border-radius: var(--r-sm); padding: 8px var(--sp-3);
+  font: inherit; font-size: .74rem; color: var(--text-2); cursor: pointer;
+}
+.cd-add:hover { background: var(--surface-hover); color: var(--text); }
+
+.cd-expected {
+  margin-top: var(--sp-4); padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+.cd-expected-value {
+  font-size: .78rem; line-height: 1.5; color: var(--text-2);
+  background: var(--bg); border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm); padding: 8px 10px;
+}
+
+.cd-ask-text {
+  width: 100%; min-height: 62px; resize: vertical;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 9px 10px; font: inherit; font-size: .78rem; line-height: 1.5;
+  background: var(--surface); color: var(--text);
+}
+.cd-ask-btn {
+  margin-top: 9px; width: 100%; height: 32px;
+  border: none; border-radius: var(--r-sm);
+  background: var(--text); color: var(--bg);
+  font: inherit; font-size: .74rem; font-weight: 500; cursor: pointer;
+}
+.cd-ask-btn:hover:not(:disabled) { background: #000; }
+.cd-ask-btn:disabled { opacity: .5; cursor: default; }
+
+/* A proposal is a DIFF, never a save — Apply only fills the editor. */
+.cd-proposal { margin-top: var(--sp-3); border-top: 1px solid var(--line-soft); padding-top: var(--sp-3); }
+.cd-proposal-note { font-size: .74rem; line-height: 1.5; color: var(--text-2); margin: 0 0 var(--sp-2); }
+.cd-diff { display: flex; flex-direction: column; gap: 2px; margin-bottom: var(--sp-3); }
+.cd-diff-line {
+  font-family: var(--font-mono); font-size: .66rem; line-height: 1.5;
+  padding: 3px 7px; border-radius: 5px; word-break: break-word;
+}
+.cd-diff-same { color: var(--muted); }
+.cd-diff-add { background: var(--done-bg); color: var(--done); }
+.cd-diff-del { background: var(--failed-bg); color: var(--failed); text-decoration: line-through; }
+.cd-proposal-actions { display: flex; gap: var(--sp-2); }
+
+.cd-shot {
+  height: 128px; border-radius: 9px; cursor: zoom-in;
+  border: 1px solid var(--line); overflow: hidden;
+  display: flex; align-items: flex-end; padding: 9px;
+  background: repeating-linear-gradient(135deg, #eae7dd 0 7px, #f3f1e9 7px 14px);
+}
+.cd-shot-img { width: 100%; height: 128px; object-fit: cover; border-radius: 9px; border: 1px solid var(--line); cursor: zoom-in; display: block; }
+.cd-shot-label {
+  font-family: var(--font-mono); font-size: .64rem; color: var(--muted);
+  background: rgba(255, 255, 255, .8); padding: 3px 7px; border-radius: 5px;
+}
+
+/* The job banner. Sits above the steps while a re-ground runs; the right column
+   deliberately stays live underneath it. */
+.cd-job {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3);
+  background: var(--running-bg); border: 1px solid var(--running);
+  border-radius: var(--r); padding: 10px var(--sp-3); margin-bottom: var(--sp-3);
+}
+.cd-job-text { flex: 1; min-width: 160px; font-size: .76rem; color: var(--running); font-weight: 500; }
+
+/* A 409. Never offers a plain overwrite — that silent clobber is what the whole
+   expectedVersion mechanism exists to prevent. */
+.cd-conflict {
+  background: var(--truncated-bg); border: 1px solid var(--truncated);
+  border-radius: var(--r); padding: var(--sp-3); margin-bottom: var(--sp-3);
+}
+.cd-conflict-head { font-size: .76rem; font-weight: 600; color: var(--truncated); margin-bottom: var(--sp-2); }
+.cd-conflict-cols { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+.cd-conflict-col { flex: 1 1 220px; min-width: 0; }
+.cd-conflict-col > h4 {
+  font-family: var(--font-mono); font-size: .6rem; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--muted); margin: 0 0 6px;
+}
+.cd-conflict-col ol { margin: 0; padding-left: 18px; font-size: .7rem; line-height: 1.6; color: var(--text-2); }
+.cd-conflict-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+
+.cd-script-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2);
+  padding: 11px var(--sp-4); border-bottom: 1px solid var(--line-soft); background: var(--inset);
+}
+.cd-script-name { font-family: var(--font-mono); font-size: .72rem; flex: 1; min-width: 160px; }
+.cd-script-body {
+  margin: 0; padding: var(--sp-4) 18px; overflow-x: auto;
+  font-family: var(--font-mono); font-size: .72rem; line-height: 1.85;
+  color: var(--text); white-space: pre;
+}
+.cd-script-foot {
+  padding: 11px var(--sp-4); border-top: 1px solid var(--line-soft);
+  font-size: .72rem; color: var(--muted);
+}
