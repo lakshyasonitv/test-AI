@@ -257,6 +257,42 @@ export function recordRunProject(runId: string, projectId: string): void {
 }
 
 /**
+ * Record which saved cases a run executed, so a case can show its own run history.
+ *
+ * A join table rather than a `runs.case_id` column: a suite replay runs several cases under one
+ * run id, so a single column would only ever be right for single-case replays — and a case that
+ * usually runs as part of a suite would show an empty history forever.
+ *
+ * Fire-and-forget and non-fatal, like every write in this file. The run and its artifacts are
+ * already on disk; losing the index row costs a history entry, never a result.
+ */
+export function recordRunCases(
+  runId: string,
+  cases: { testCaseId: string; caseIndex: number; status?: string | null }[],
+): void {
+  if (!isDbEnabled() || cases.length === 0) return;
+  const client = getServiceClient();
+  if (!client) return;
+
+  void (async () => {
+    try {
+      const { error } = await client.from("run_cases").upsert(
+        cases.map((c) => ({
+          run_id: runId,
+          test_case_id: c.testCaseId,
+          case_index: c.caseIndex,
+          status: c.status ?? null,
+        })),
+        { onConflict: "run_id,test_case_id" },
+      );
+      if (error) console.error(`[db] could not record run cases for ${runId}:`, error.message);
+    } catch (err) {
+      console.error(`[db] recording run cases for ${runId} threw:`, (err as Error)?.message ?? err);
+    }
+  })();
+}
+
+/**
  * Which organisation owns each of these runs. Runs with no row are simply absent from the map —
  * the caller decides what that means, and for authorization it must mean "deny", never "allow".
  */

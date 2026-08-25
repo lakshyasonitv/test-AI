@@ -50,15 +50,19 @@ import {
 import { consumeSignupAttempt, createAccount, isSignupEnabled } from "./signup.js";
 import {
   addCaseToSuite,
+  CaseConflictError,
   createSuite,
   deleteCase,
   deleteSuite,
+  duplicateCase,
   getCase,
   getCaseVersion,
+  listCaseRuns,
   listCases,
   listSuiteCases,
   listSuites,
   loadCasesForReplay,
+  parseIr,
   recordCaseOutcome,
   removeCaseFromSuite,
   renameSuite,
@@ -67,7 +71,13 @@ import {
   updateCase,
 } from "./library.js";
 import { runReplay } from "../stages/replay.js";
-import { recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
+import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
+import { regroundEditedIr } from "../stages/caseEdit.js";
+import { proposeRewrite, consumeRewriteAttempt } from "./rewrite.js";
+import {
+  cancelJob, createJob, emitJobEvent, getJob, isCancelled, jobEvents, subscribeJob,
+} from "./regroundJobs.js";
+import { recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
@@ -472,6 +482,21 @@ app.post("/api/auth/signup", async (req, res) => {
 
 /** Translate an AccessError into its status; anything else is a 500 we shouldn't leak details of. */
 function sendAccessError(res: express.Response, err: unknown): void {
+  // A stale edit is not an access failure — it carries the winning state so the loser of the race
+  // can see what they would have overwritten, which is the entire point of refusing.
+  if (err instanceof CaseConflictError) {
+    res.status(409).json({
+      error: err.message,
+      expectedVersion: err.expectedVersion,
+      currentVersion: err.currentVersion,
+      current: {
+        title: err.current.title,
+        currentVersion: err.current.currentVersion,
+        steps: err.current.ir.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+      },
+    });
+    return;
+  }
   if (err instanceof AccessError) {
     res.status(err.status).json({ error: err.message });
     return;
@@ -804,9 +829,283 @@ app.get("/api/cases/:caseId/versions/:version", requireRole("viewer"), async (re
 });
 
 app.patch("/api/cases/:caseId", requireRole("tester"), async (req, res) => {
-  const { title, ir, changeNote } = req.body ?? {};
+  const { title, ir, changeNote, expectedVersion } = req.body ?? {};
   try {
-    res.json(await updateCase(...libraryCtx(req), req.params.caseId, { title, ir, changeNote }));
+    res.json(await updateCase(...libraryCtx(req), req.params.caseId, {
+      title, ir, changeNote,
+      expectedVersion: typeof expectedVersion === "number" ? expectedVersion : undefined,
+    }));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * A case's steps as the sentences the editor shows — the read side of English editing.
+ *
+ * Rendered SERVER-side from the same `formatIrStep` the parser is paired with, so the text a
+ * person edits is provably the text `parseIrSteps` expects back. The browser has its own copy for
+ * display; `tests/stepText.test.ts` pins the two identical so this can never disagree with what is
+ * already on screen.
+ */
+app.get("/api/cases/:caseId/steps", requireRole("viewer"), async (req, res) => {
+  try {
+    const found = await getCase(...libraryCtx(req), req.params.caseId);
+    res.json({
+      caseId: found.id,
+      currentVersion: found.currentVersion,
+      expected: found.ir.meta.title,
+      steps: found.ir.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+    });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * Save edited steps written in plain English — the write side, and the expensive one.
+ *
+ * Three things happen, in this order, and none of them can be skipped:
+ *   1. PARSE each sentence back to a step, merged onto the one it was rendered from. An untouched
+ *      line returns its original object byte-for-byte, `${env:...}` and grounding intact.
+ *   2. RE-GROUND whatever changed against the live site — walking the earlier steps to arrive at
+ *      the right page, because step 7 cannot be checked without executing steps 1-6.
+ *   3. WRITE, minting a version.
+ *
+ * A failure in 1 or 2 returns the offending step's index and id so the editor can attach the
+ * message to that row. Nothing is stored unless all three succeed: a case whose steps no longer
+ * resolve is worse than an unsaved edit, because it looks fine until it runs.
+ */
+/**
+ * Shared prelude for the estimate and the save: read the case, refuse a stale edit, parse.
+ *
+ * The staleness check happens HERE, before any browser work. Refusing an edit after spending 90
+ * seconds and a browser launch on it would charge the user for work that was never going to be
+ * saved.
+ */
+async function prepareEdit(req: express.Request, res: express.Response) {
+  const { steps, expectedVersion } = req.body ?? {};
+  if (!Array.isArray(steps) || steps.length === 0) {
+    res.status(400).json({ error: "send the edited steps as a non-empty array of strings" });
+    return null;
+  }
+  const ctx = libraryCtx(req);
+  const found = await getCase(...ctx, req.params.caseId);
+
+  if (typeof expectedVersion === "number" && expectedVersion !== found.currentVersion) {
+    res.status(409).json({
+      error:
+        `this case has changed since you opened it — you have v${expectedVersion}, it is now ` +
+        `v${found.currentVersion}. Review the newer version before saving over it.`,
+      expectedVersion,
+      currentVersion: found.currentVersion,
+      current: {
+        title: found.title,
+        currentVersion: found.currentVersion,
+        steps: found.ir.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+      },
+    });
+    return null;
+  }
+
+  const parsed = parseIrSteps(steps.map((s: unknown) => String(s ?? "")), found.ir.steps);
+  if (!parsed.ok) {
+    res.status(400).json({
+      error: parsed.error,
+      stepIndex: parsed.index,
+      stepId: found.ir.steps[parsed.index]?.id ?? null,
+    });
+    return null;
+  }
+
+  // Structurally valid before it is ever checked against a live site — a malformed plan should
+  // fail in milliseconds, not after a browser walk.
+  const validated = parseIr({ ...found.ir, steps: parsed.result.steps }, "the edited test plan");
+  return { ctx, found, parsed: parsed.result, validated };
+}
+
+/**
+ * What would saving this cost? Answers WITHOUT doing any of it.
+ *
+ * Pure arithmetic over the diff — no browser, no model, no write. This is what lets the editor say
+ * "this will re-check 2 steps, about 40 seconds" *before* Save is clicked, so a save that spends
+ * real time is never a surprise. Call it on every edit; it is cheap enough to be live.
+ */
+app.post("/api/cases/:caseId/steps/estimate", requireRole("tester"), async (req, res) => {
+  try {
+    const prep = await prepareEdit(req, res);
+    if (!prep) return;
+    res.json({
+      ...estimateRegrounding(prep.parsed),
+      currentVersion: prep.found.currentVersion,
+    });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * Save edited steps written in plain English.
+ *
+ * TWO PATHS, and the client branches on which it got back:
+ *
+ *  - **Fast path (200).** Nothing points at a different element — a retyped fill value, a
+ *    reordered-but-identical list, a rename. No browser, no job, no waiting: the parse already
+ *    proved the steps still carry the grounding they always had. Saved synchronously.
+ *
+ *  - **Job path (202 `{jobId}`).** At least one step points somewhere new and must be verified
+ *    against the live site. Returns immediately; progress arrives as `StageEvent`s on
+ *    `/api/cases/:caseId/steps/jobs/:jobId/events` (SSE) or `/state` (poll), and the job can be
+ *    cancelled. Nothing is written until it succeeds.
+ *
+ * The line between them is `regroundIndexes` — the steps whose TARGET changed. That is the same
+ * number `/estimate` reports, so what the UI promised is exactly what it gets.
+ */
+app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => {
+  const { changeNote, expectedVersion } = req.body ?? {};
+  try {
+    const prep = await prepareEdit(req, res);
+    if (!prep) return;
+    const { ctx, found, parsed, validated } = prep;
+    const caseId = req.params.caseId;
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+
+    const writeIt = async (ir: typeof validated) => updateCase(...ctx, caseId, {
+      ir,
+      changeNote: typeof changeNote === "string" ? changeNote : undefined,
+      // Re-checked inside updateCase against the row it is about to write, closing the window
+      // between the check in prepareEdit and this write.
+      expectedVersion: typeof expectedVersion === "number" ? expectedVersion : undefined,
+    });
+
+    // ---- fast path ------------------------------------------------------
+    if (parsed.regroundIndexes.length === 0) {
+      const updated = await writeIt(validated);
+      return res.json({
+        ...updated,
+        mode: "instant",
+        regrounded: 0,
+        snapshots: 0,
+        steps: validated.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+      });
+    }
+
+    // ---- job path -------------------------------------------------------
+    const jobId = makeRunId();
+    createJob(jobId, userId, caseId);
+    const estimate = estimateRegrounding(parsed);
+    res.status(202).json({ jobId, mode: "verifying", ...estimate });
+
+    // Deliberately not awaited: the response is already sent. Every outcome ends in a `done` or
+    // `error` event, which is what closes the stream.
+    void (async () => {
+      emitJobEvent(jobId, "ir", "started", { ...estimate, caseId });
+      try {
+        const grounded = await regroundEditedIr(validated, parsed.regroundIndexes, {
+          sourceRunId: found.sourceRunId,
+          shouldCancel: () => isCancelled(jobId),
+          onProgress: (p) => emitJobEvent(jobId, "ir", "started", p),
+        });
+
+        if (!grounded.ok) {
+          // Cancelled and failed are different outcomes and the UI says different things about
+          // them, but neither writes: this branch never reaches writeIt().
+          emitJobEvent(jobId, grounded.cancelled ? "done" : "error", grounded.cancelled ? "completed" : "failed", {
+            cancelled: !!grounded.cancelled,
+            saved: false,
+            stepIndex: grounded.stepIndex,
+            stepId: grounded.stepId,
+            snapshots: grounded.snapshots,
+            usage: grounded.usage,
+          }, grounded.message);
+          return;
+        }
+
+        const updated = await writeIt(grounded.ir);
+        emitJobEvent(jobId, "done", "completed", {
+          saved: true,
+          cancelled: false,
+          case: updated,
+          regrounded: parsed.regroundIndexes.length,
+          snapshots: grounded.snapshots,
+          usage: grounded.usage,
+          steps: grounded.ir.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+        });
+      } catch (err: any) {
+        // Includes the 409 raised by updateCase if someone else saved during the walk.
+        emitJobEvent(jobId, "error", "failed", {
+          saved: false,
+          conflict: err instanceof CaseConflictError,
+          currentVersion: err instanceof CaseConflictError ? err.currentVersion : undefined,
+        }, err?.message ?? String(err));
+      }
+    })();
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/** Live progress for a re-ground. SSE, same contract as a run's event stream. */
+app.get("/api/cases/:caseId/steps/jobs/:jobId/events", requireRole("tester"), (req, res) => {
+  const job = getJob(req.params.jobId, req.user?.id ?? LOCAL_USER_ID);
+  if (!job) return res.status(404).json({ error: "no such editing session" });
+  subscribeJob(job, res);
+});
+
+/** Poll fallback — SSE buffers behind a Cloudflare tunnel, the same reason runs have one. */
+app.get("/api/cases/:caseId/steps/jobs/:jobId/state", requireRole("tester"), (req, res) => {
+  const job = getJob(req.params.jobId, req.user?.id ?? LOCAL_USER_ID);
+  if (!job) return res.status(404).json({ error: "no such editing session" });
+  res.json(jobEvents(job));
+});
+
+/**
+ * Stop a re-ground in flight.
+ *
+ * Read between snapshots, so it lands before the next browser launch; an in-flight snapshot
+ * finishes and closes its own browser either way. **Nothing is written** — a cancelled job never
+ * reaches the update, so there is no version row, no `current_version` bump, and the stored case
+ * is byte-identical to before it started.
+ */
+app.post("/api/cases/:caseId/steps/jobs/:jobId/cancel", requireRole("tester"), (req, res) => {
+  const job = getJob(req.params.jobId, req.user?.id ?? LOCAL_USER_ID);
+  if (!job) return res.status(404).json({ error: "no such editing session" });
+  cancelJob(job);
+  res.status(202).json({ cancelling: true });
+});
+
+/** Copy a case. Fresh history at v1 — see library.ts for why the original's is not carried over. */
+app.post("/api/cases/:caseId/duplicate", requireRole("tester"), async (req, res) => {
+  const { title } = req.body ?? {};
+  try {
+    res.status(201).json(await duplicateCase(
+      ...libraryCtx(req), req.params.caseId,
+      typeof title === "string" && title.trim() ? title : undefined,
+    ));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/** This case's own run history, newest first — what the "Runs & versions" tab lists. */
+app.get("/api/cases/:caseId/runs", requireRole("viewer"), async (req, res) => {
+  const limit = Number(req.query.limit ?? 20);
+  try {
+    res.json({
+      runs: await listCaseRuns(
+        ...libraryCtx(req), req.params.caseId,
+        Number.isFinite(limit) ? limit : 20,
+      ),
+    });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * "Ask for a change" — a model PROPOSES an edit. It never saves.
+ *
+ * Approving a proposal sends it back through POST /steps like any hand-typed edit, so it is
+ * parsed, re-grounded and versioned on exactly the same path. That is deliberate: one way into
+ * the library, one set of guarantees, regardless of who wrote the sentences.
+ */
+app.post("/api/cases/:caseId/rewrite", requireRole("tester"), async (req, res) => {
+  const { instruction } = req.body ?? {};
+  const userId = req.user?.id ?? LOCAL_USER_ID;
+  if (!consumeRewriteAttempt(userId)) {
+    return res.status(429).json({ error: "too many rewrite requests — try again in a few minutes" });
+  }
+  try {
+    const found = await getCase(...libraryCtx(req), req.params.caseId);
+    res.json(await proposeRewrite(found.ir, typeof instruction === "string" ? instruction : ""));
   } catch (err) { sendAccessError(res, err); }
 });
 
@@ -905,6 +1204,13 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
           const result = outcome.results.find((r) => r.caseId === `case-${i}`);
           if (result) void recordCaseOutcome(cases[i].id, result.status);
         }
+        // Index which cases this run executed, so each case can list its OWN history. Written
+        // after the fact so each row carries its real verdict rather than "incomplete".
+        recordRunCases(runId, cases.map((c, i) => ({
+          testCaseId: c.id,
+          caseIndex: i,
+          status: outcome.results.find((r) => r.caseId === `case-${i}`)?.status ?? null,
+        })));
       })
       .catch(() => { /* already emitted as an "error" event */ });
 

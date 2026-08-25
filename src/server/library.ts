@@ -463,10 +463,29 @@ export async function saveCaseFromRun(
   return toCaseRow(data);
 }
 
+/**
+ * Raised when a case moved on under an editor's feet. Carries the current server-side state so the
+ * caller can show what changed instead of a bare refusal.
+ */
+export class CaseConflictError extends Error {
+  readonly status = 409;
+  constructor(
+    readonly expectedVersion: number,
+    readonly currentVersion: number,
+    readonly current: CaseRow & { ir: IR; versions: CaseVersionRow[]; suiteIds: string[] },
+  ) {
+    super(
+      `this case has changed since you opened it — you have v${expectedVersion}, it is now ` +
+      `v${currentVersion}. Review the newer version before saving over it.`,
+    );
+    this.name = "CaseConflictError";
+  }
+}
+
 /** Edit a case's steps or title. Every IR change mints a new version. */
 export async function updateCase(
   userId: string, orgId: string, role: Role, caseId: string,
-  patch: { title?: string; ir?: unknown; changeNote?: string },
+  patch: { title?: string; ir?: unknown; changeNote?: string; expectedVersion?: number },
 ): Promise<CaseRow> {
   await projectOfCase(userId, orgId, role, caseId);
   const client = requireClient();
@@ -475,8 +494,21 @@ export async function updateCase(
     .from("test_cases").select("current_version").eq("id", caseId).single();
   if (readErr || !current) throw new AccessError(404, "no such case");
 
+  // Optimistic concurrency (plan Step 5.4). OPTIONAL: a request that sends no `expectedVersion`
+  // behaves exactly as it always did, so this is additive and no existing caller changes. When it
+  // IS sent and is stale, refuse with the current state rather than silently overwriting — the
+  // loser of a race otherwise never learns their colleague's edit is gone.
+  const currentVersion = (current as { current_version: number }).current_version;
+  if (typeof patch.expectedVersion === "number" && patch.expectedVersion !== currentVersion) {
+    throw new CaseConflictError(
+      patch.expectedVersion,
+      currentVersion,
+      await getCase(userId, orgId, role, caseId),
+    );
+  }
+
   const update: Record<string, unknown> = { updated_at: new Date().toISOString(), updated_by: userId };
-  let nextVersion = (current as { current_version: number }).current_version;
+  let nextVersion = currentVersion;
 
   if (typeof patch.title === "string" && patch.title.trim()) update.title = patch.title.trim();
 
@@ -505,6 +537,89 @@ export async function updateCase(
     .single();
   if (error || !data) throw new AccessError(500, `could not update case: ${error?.message}`);
   return toCaseRow(data);
+}
+
+/**
+ * Copy a case into an independent one.
+ *
+ * The copy starts a FRESH history at v1 rather than cloning the original's versions or runs. A
+ * duplicate is a new piece of authored work that happens to start from the same steps — carrying
+ * over "edited by Priya three weeks ago" would attribute history to a case that did not exist yet,
+ * and carrying over run results would claim outcomes it never produced.
+ */
+export async function duplicateCase(
+  userId: string, orgId: string, role: Role, caseId: string, title?: string,
+): Promise<CaseRow> {
+  const projectId = await projectOfCase(userId, orgId, role, caseId);
+  const client = requireClient();
+
+  const { data: src, error } = await client
+    .from("test_cases").select("title, feature, ir").eq("id", caseId).single();
+  if (error || !src) throw new AccessError(404, "no such case");
+
+  const ir = parseIr((src as any).ir, "the case being duplicated");
+  const copyTitle = (title ?? `${(src as any).title} (copy)`).trim() || "Untitled case";
+  const now = new Date().toISOString();
+
+  const { data, error: insErr } = await client
+    .from("test_cases")
+    .insert({
+      project_id: projectId,
+      title: copyTitle,
+      feature: (src as any).feature ?? null,
+      ir,
+      current_version: 1,
+      // Deliberately null: this case did not come out of a run, it came out of another case.
+      source_run_id: null,
+      updated_at: now,
+      updated_by: userId,
+    })
+    .select("id, project_id, title, feature, current_version, source_run_id, last_run_status, last_run_at, updated_at")
+    .single();
+  if (insErr || !data) throw new AccessError(500, `could not duplicate case: ${insErr?.message}`);
+
+  await client.from("test_case_versions").insert({
+    test_case_id: data.id,
+    version: 1,
+    ir,
+    change_note: `Duplicated from "${(src as any).title}"`,
+    saved_by: userId,
+  });
+
+  return toCaseRow(data);
+}
+
+export interface CaseRunRow {
+  runId: string;
+  caseIndex: number;
+  status: string | null;
+  ranAt: string | null;
+  /** Where this case's artifacts live inside that run — `cases/case-N`. */
+  resultPath: string;
+}
+
+/** A case's own run history, newest first — what the "Runs & versions" tab lists. */
+export async function listCaseRuns(
+  userId: string, orgId: string, role: Role, caseId: string, limit = 20,
+): Promise<CaseRunRow[]> {
+  await projectOfCase(userId, orgId, role, caseId);
+  const client = requireClient();
+
+  const { data, error } = await client
+    .from("run_cases")
+    .select("run_id, case_index, status, created_at")
+    .eq("test_case_id", caseId)
+    .order("created_at", { ascending: false })
+    .limit(Math.min(Math.max(limit, 1), 100));
+  if (error) throw new AccessError(500, `could not read run history: ${error.message}`);
+
+  return ((data ?? []) as any[]).map((r) => ({
+    runId: r.run_id,
+    caseIndex: r.case_index,
+    status: r.status ?? null,
+    ranAt: r.created_at ?? null,
+    resultPath: `cases/case-${r.case_index}`,
+  }));
 }
 
 export async function deleteCase(

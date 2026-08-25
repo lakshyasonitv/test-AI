@@ -1,0 +1,195 @@
+[
+  {
+    "title": "SQL Injection attempt in login email field",
+    "ir": {
+      "meta": {
+        "title": "SQL Injection attempt in login email field",
+        "baseUrl": "https://learnvibes.vercel.app",
+        "feature": "Authentication",
+        "priority": "critical",
+        "sourcePrompt": "i want you to  login to the provided url wait for 3 seconds and then click on Admin button on the sidepanel, then i want you to click on Users button and then i want you to click on Add New button then wait for 2 seconds fill the \"new user\" popup form enter the FullName as \"test lakshay\" and email as \"test@thinkvibes.com\" and assign it the any manager in the dropdown and role as a learner and click on save",
+        "hasTerminalAssertion": true
+      },
+      "steps": [
+        {
+          "id": "s1",
+          "action": "navigate",
+          "target": {
+            "url": "/login"
+          }
+        },
+        {
+          "id": "s2",
+          "value": "' OR '1'='1",
+          "action": "fill",
+          "target": {
+            "name": "you@thinkvibes.com",
+            "role": "textbox"
+          }
+        },
+        {
+          "id": "s3",
+          "value": "anything",
+          "action": "fill",
+          "target": {
+            "name": "*********",
+            "role": "textbox"
+          }
+        },
+        {
+          "id": "s4",
+          "action": "click",
+          "target": {
+            "name": "Sign In",
+            "role": "button"
+          }
+        },
+        {
+          "id": "literal-wait-3000",
+          "value": "2000",
+          "action": "wait"
+        },
+        {
+          "id": "sX",
+          "value": "/login",
+          "action": "assert",
+          "assertion": "url_contains"
+        }
+      ]
+    }
+  },
+  {
+    "title": "Admin creates a new user via management interface",
+    "ir": {
+      "meta": {
+        "title": "Admin creates a new user via management interface",
+        "baseUrl": "https://learnvibes.vercel.app",
+        "feature": "Authentication",
+        "priority": "high",
+        "sourcePrompt": "i want you to  login to the provided url wait for 3 seconds and then click on Admin button on the sidepanel, then i want you to click on Users button and then i want you to click on Add New button then wait for 2 seconds fill the \"new user\" popup form enter the FullName as \"test lakshay\" and email as \"test@thinkvibes.com\" and assign it the any manager in the dropdown and role as a learner and click on save",
+        "hasTerminalAssertion": true
+      },
+      "steps": [
+        {
+          "id": "s1",
+          "action": "navigate",
+          "target": {
+            "url": "/login"
+          }
+        },
+        {
+          "id": "s2",
+          "value": "${env:TEST_USERNAME}",
+          "action": "fill",
+          "target": {
+            "name": "you@thinkvibes.com",
+            "role": "textbox"
+          }
+        },
+        {
+          "id": "s3",
+          "value": "${env:TEST_PASSWORD}",
+          "action": "fill",
+          "target": {
+            "name": "*********",
+            "role": "textbox"
+          }
+        },
+        {
+          "id": "s4",
+          "action": "click",
+          "target": {
+            "name": "Sign In",
+            "role": "button"
+          }
+        },
+        {
+          "id": "s5",
+          "value": "3000",
+          "action": "wait"
+        },
+        {
+          "id": "s6",
+          "action": "click",
+          "target": {
+            "name": "Admin",
+            "role": "button"
+          }
+        },
+        {
+          "id": "s7",
+          "action": "click",
+          "target": {
+            "name": "Users",
+            "role": "button"
+          }
+        },
+        {
+          "id": "s8",
+          "action": "click",
+          "target": {
+            "name": "Add New",
+            "role": "button"
+          }
+        },
+        {
+          "id": "s9",
+          "value": "2000",
+          "action": "wait"
+        },
+        {
+          "id": "s10",
+          "value": "test lakshay",
+          "action": "fill",
+          "target": {
+            "name": "Full Name",
+            "role": "textbox"
+          }
+        },
+        {
+          "id": "s11",
+          "value": "test@thinkvibes.com",
+          "action": "fill",
+          "target": {
+            "name": "Email",
+            "role": "textbox"
+          }
+        },
+        {
+          "id": "s12",
+          "value": "prashant mishra",
+          "action": "select",
+          "target": {
+            "name": "Manager",
+            "role": "combobox"
+          }
+        },
+        {
+          "id": "s13",
+          "value": "Learner",
+          "action": "select",
+          "target": {
+            "name": "Role",
+            "role": "combobox"
+          }
+        },
+        {
+          "id": "s14",
+          "action": "click",
+          "target": {
+            "name": "Save",
+            "role": "button"
+          }
+        },
+        {
+          "id": "s15",
+          "action": "assert",
+          "target": {
+            "text": "test lakshay"
+          },
+          "assertion": "visible"
+        }
+      ]
+    }
+  }
+]

@@ -45,6 +45,7 @@ interface Tables {
   test_cases: any[];
   test_case_versions: any[];
   suite_cases: any[];
+  run_cases: any[];
 }
 
 let db: Tables;
@@ -77,6 +78,7 @@ function reset() {
     ],
     test_case_versions: [],
     suite_cases: [],
+    run_cases: [],
   };
 }
 
@@ -98,7 +100,8 @@ function makeBuilder(table: keyof Tables) {
       for (const m of made) {
         // upsert: a duplicate primary key is ignored rather than duplicated.
         const dup = pending.kind === "upsert" && rows.some((r) =>
-          (r.suite_id !== undefined && r.suite_id === m.suite_id && r.test_case_id === m.test_case_id));
+          (r.suite_id !== undefined && r.suite_id === m.suite_id && r.test_case_id === m.test_case_id)
+          || (r.run_id !== undefined && r.run_id === m.run_id && r.test_case_id === m.test_case_id));
         if (!dup) rows.push(m);
       }
       return { data: single ? made[0] : made, error: null };
@@ -455,5 +458,224 @@ describe("role gating on the library routes", () => {
   it("an owner can, because admin+ sees every project by role", async () => {
     const res = await request(app).get(`/api/cases/${CASE_OTHER_PROJECT}`).set(as(OWNER));
     expect(res.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case editing: concurrency, duplicate, run history, and the two save paths
+// ---------------------------------------------------------------------------
+
+/** A grounded step, so an edit can be shown to strip its identity — and a value-only edit shown
+ *  NOT to. `css` is the whole reason the fast/slow split exists. */
+const groundedIr = (title: string) => ({
+  meta: { feature: "auth", title, priority: "medium", sourcePrompt: "p", baseUrl: "https://one.example.com" },
+  steps: [
+    { id: "s1", action: "navigate", target: { url: "/login" } },
+    { id: "s2", action: "fill", target: { role: "textbox", name: "Email", css: "#email" }, value: "a@b.c" },
+    { id: "s3", action: "click", target: { role: "button", name: "Sign In", css: "#signin" } },
+  ],
+});
+
+describe("optimistic concurrency — an editor left open must not clobber someone else's save", () => {
+  beforeEach(() => {
+    reset();
+    db.test_cases[0].ir = groundedIr("Login works");
+    db.test_cases[0].current_version = 4;
+  });
+
+  it("saves when no expectedVersion is sent — the additive default is unchanged behaviour", async () => {
+    const res = await request(app).patch(`/api/cases/${CASE_LOGIN}`).set(as(TESTER))
+      .send({ title: "Renamed with no version check" });
+    expect(res.status).toBe(200);
+  });
+
+  it("saves when expectedVersion matches", async () => {
+    const res = await request(app).patch(`/api/cases/${CASE_LOGIN}`).set(as(TESTER))
+      .send({ title: "Renamed", expectedVersion: 4 });
+    expect(res.status).toBe(200);
+  });
+
+  it("409s a stale edit rather than overwriting", async () => {
+    const res = await request(app).patch(`/api/cases/${CASE_LOGIN}`).set(as(TESTER))
+      .send({ title: "Stale write", expectedVersion: 2 });
+    expect(res.status).toBe(409);
+    expect(res.body.currentVersion).toBe(4);
+    expect(res.body.expectedVersion).toBe(2);
+  });
+
+  it("the 409 carries the winning state, so the loser can see what they'd have destroyed", async () => {
+    const res = await request(app).patch(`/api/cases/${CASE_LOGIN}`).set(as(TESTER))
+      .send({ ir: groundedIr("x"), expectedVersion: 1 });
+    expect(res.status).toBe(409);
+    expect(res.body.current.steps.map((s: any) => s.text)).toContain(`Click on button "Sign In"`);
+  });
+
+  it("a refused save writes nothing — no version row, no version bump", async () => {
+    await request(app).patch(`/api/cases/${CASE_LOGIN}`).set(as(TESTER))
+      .send({ ir: groundedIr("x"), expectedVersion: 1 });
+    expect(db.test_cases[0].current_version).toBe(4);
+    expect(db.test_case_versions.length).toBe(0);
+  });
+});
+
+describe("the two save paths — what costs a browser and what does not", () => {
+  beforeEach(() => {
+    reset();
+    db.test_cases[0].ir = groundedIr("Login works");
+  });
+
+  const stepsOf = async () => {
+    const res = await request(app).get(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER));
+    return res.body.steps.map((s: any) => s.text) as string[];
+  };
+
+  it("renders steps as the sentences the editor shows", async () => {
+    expect(await stepsOf()).toEqual([
+      "Go to /login",
+      `Type "a@b.c" into textbox "Email"`,
+      `Click on button "Sign In"`,
+    ]);
+  });
+
+  it("estimates an untouched edit as instant and free", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps/estimate`).set(as(TESTER))
+      .send({ steps: await stepsOf() });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ instant: true, stepsToVerify: 0, snapshots: 0, maxLlmCalls: 0 });
+  });
+
+  it("estimates a VALUE-only edit as instant — the element never changed", async () => {
+    const steps = await stepsOf();
+    steps[1] = `Type "new@example.com" into textbox "Email"`;
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps/estimate`).set(as(TESTER))
+      .send({ steps });
+    expect(res.body).toMatchObject({ instant: true, changedSteps: 1, stepsToVerify: 0 });
+  });
+
+  it("estimates a TARGET edit as needing verification, and says how much", async () => {
+    const steps = await stepsOf();
+    steps[2] = `Click on button "Log In"`;
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps/estimate`).set(as(TESTER))
+      .send({ steps });
+    expect(res.body.instant).toBe(false);
+    expect(res.body.stepsToVerify).toBe(1);
+    expect(res.body.stepIdsToVerify).toEqual(["s3"]);
+    expect(res.body.snapshots).toBe(1);
+    expect(res.body.estimatedSeconds).toBeGreaterThan(0);
+  });
+
+  it("estimating opens no browser and writes nothing", async () => {
+    const steps = await stepsOf();
+    steps[2] = `Click on button "Log In"`;
+    await request(app).post(`/api/cases/${CASE_LOGIN}/steps/estimate`).set(as(TESTER)).send({ steps });
+    expect(db.test_case_versions.length).toBe(0);
+    expect(db.test_cases[0].current_version).toBe(1);
+  });
+
+  it("saves a value-only edit synchronously, keeping the grounding", async () => {
+    const steps = await stepsOf();
+    steps[1] = `Type "new@example.com" into textbox "Email"`;
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({ steps });
+    expect(res.status).toBe(200);
+    expect(res.body.mode).toBe("instant");
+    expect(db.test_cases[0].current_version).toBe(2);
+    // The css survived: this step was never in question, so it was never re-derived.
+    expect(db.test_cases[0].ir.steps[1].target.css).toBe("#email");
+    expect(db.test_cases[0].ir.steps[1].value).toBe("new@example.com");
+  });
+
+  it("a save with a bad sentence is refused, and names the row", async () => {
+    const steps = await stepsOf();
+    steps[1] = "do something vague";
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({ steps });
+    expect(res.status).toBe(400);
+    expect(res.body.stepIndex).toBe(1);
+    expect(db.test_cases[0].current_version).toBe(1);
+  });
+
+  it("refuses a stale save before doing any work", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER))
+      .send({ steps: await stepsOf(), expectedVersion: 99 });
+    expect(res.status).toBe(409);
+  });
+
+  it("a viewer cannot save or estimate, whatever the UI drew", async () => {
+    const steps = await stepsOf();
+    for (const p of [`/api/cases/${CASE_LOGIN}/steps`, `/api/cases/${CASE_LOGIN}/steps/estimate`]) {
+      const res = await request(app).post(p).set(as(VIEWER)).send({ steps });
+      expect(res.status).toBe(403);
+    }
+  });
+});
+
+describe("duplicate — an independent copy, not a shared one", () => {
+  beforeEach(() => { reset(); db.test_cases[0].current_version = 5; });
+
+  it("creates a new case with a fresh history at v1", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/duplicate`).set(as(TESTER)).send({});
+    expect(res.status).toBe(201);
+    expect(res.body.id).not.toBe(CASE_LOGIN);
+    expect(res.body.currentVersion).toBe(1);
+    expect(res.body.title).toBe("Login works (copy)");
+  });
+
+  it("does not clone the original's version history or its run outcome", async () => {
+    db.test_case_versions.push({ test_case_id: CASE_LOGIN, version: 1, ir: validIr("v1") });
+    db.test_cases[0].last_run_status = "passed";
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/duplicate`).set(as(TESTER)).send({});
+    const copyVersions = db.test_case_versions.filter((v) => v.test_case_id === res.body.id);
+    expect(copyVersions.length).toBe(1);
+    expect(res.body.lastRunStatus).toBeNull();
+    // It did not come out of a run — it came out of another case.
+    expect(res.body.sourceRunId).toBeNull();
+  });
+
+  it("editing the copy leaves the original alone", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/duplicate`).set(as(TESTER)).send({});
+    await request(app).patch(`/api/cases/${res.body.id}`).set(as(TESTER)).send({ title: "Diverged" });
+    expect(db.test_cases.find((c) => c.id === CASE_LOGIN).title).toBe("Login works");
+  });
+
+  it("a viewer cannot duplicate", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/duplicate`).set(as(VIEWER)).send({});
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("a case's own run history", () => {
+  beforeEach(() => reset());
+
+  it("is empty before it has ever run", async () => {
+    const res = await request(app).get(`/api/cases/${CASE_LOGIN}/runs`).set(as(TESTER));
+    expect(res.status).toBe(200);
+    expect(res.body.runs).toEqual([]);
+  });
+
+  it("lists a run once one has executed it, pointing at its artifacts", async () => {
+    db.run_cases.push({ run_id: "2026-01-01T00-00-00-000Z-aaaaaaaa", test_case_id: CASE_LOGIN, case_index: 2, status: "passed", created_at: "2026-01-01T00:00:00Z" });
+    const res = await request(app).get(`/api/cases/${CASE_LOGIN}/runs`).set(as(TESTER));
+    expect(res.body.runs).toEqual([{
+      runId: "2026-01-01T00-00-00-000Z-aaaaaaaa",
+      caseIndex: 2,
+      status: "passed",
+      ranAt: "2026-01-01T00:00:00Z",
+      resultPath: "cases/case-2",
+    }]);
+  });
+
+  it("records a row per case in a MULTI-case replay — the reason this is a join table", async () => {
+    await request(app).post(`/api/suites/${SUITE_SMOKE}/cases`).set(as(TESTER)).send({ caseId: CASE_LOGIN });
+    await request(app).post(`/api/suites/${SUITE_SMOKE}/cases`).set(as(TESTER)).send({ caseId: CASE_CART });
+    const res = await request(app).post("/api/replay").set(as(TESTER)).send({ suiteId: SUITE_SMOKE });
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(db.run_cases.length).toBe(2), { timeout: 5000 });
+    // Both cases ran under ONE run id, and both are individually addressable.
+    expect(new Set(db.run_cases.map((r) => r.run_id)).size).toBe(1);
+    expect(db.run_cases.map((r) => r.test_case_id).sort()).toEqual([CASE_LOGIN, CASE_CART].sort());
+  });
+
+  it("a viewer in another project cannot read a case's history", async () => {
+    const res = await request(app).get(`/api/cases/${CASE_OTHER_PROJECT}/runs`).set(as(VIEWER));
+    expect(res.status).toBe(403);
   });
 });
