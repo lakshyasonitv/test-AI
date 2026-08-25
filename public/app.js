@@ -1452,6 +1452,31 @@ let newSuiteFor = null;     // project id whose form is open, or null
 let newSuiteName = "";
 let newSuiteError = "";
 
+// The sidebar's inline project form, for both create and edit — same shape, same two fields, so
+// one form serves both and `projectFormId` is what tells them apart (null = creating). Module
+// state for the same reason as the suite form: a background history refresh re-renders the whole
+// tree and would otherwise wipe what's being typed.
+let projectFormOpen = false;
+let projectFormId = null;   // project being edited, or null when creating
+let projectFormName = "";
+let projectFormUrl = "";
+let projectFormError = "";
+
+/** Creating and editing a project is admin+, and impossible at all without a database — with none
+ *  configured the sidebar is showing URL groupings, not project rows, so there is nothing to edit
+ *  and offering the control would be a lie. */
+function canManageProjects() {
+  return (!auth.required || roleAtLeast(auth.role, "admin")) && !projectsUnavailable;
+}
+
+function closeProjectForm() {
+  projectFormOpen = false;
+  projectFormId = null;
+  projectFormName = "";
+  projectFormUrl = "";
+  projectFormError = "";
+}
+
 async function loadHistory() {
   const res = await fetch("/api/runs");
   const runs = await res.json().catch(() => null);
@@ -1984,6 +2009,7 @@ const crumbRootEl = document.getElementById("crumbRoot");
 const historyBtnEl = document.getElementById("historyBtn");
 const teamBtnEl = document.getElementById("teamBtn");
 const allRunsBtnEl = document.getElementById("allRunsBtn");
+const addProjectBtnEl = document.getElementById("addProjectBtn");
 const settingsBtnEl = document.getElementById("settingsBtn");
 const settingsPopEl = document.getElementById("settingsPop");
 const gateToggleEl = document.getElementById("gateToggle");
@@ -2149,7 +2175,10 @@ async function renderSuiteView(suiteId) {
   const rows = document.getElementById("suiteRows");
   if (!cases.length) {
     rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">
-      No cases in this suite yet. Finish a run, then use <b>Save case</b> on a result to add one.</div>`;
+      ${canAuthor
+        ? `No cases in this suite yet. Use <b>+ Add cases</b> above to file saved ones here,
+           or <b>Save case</b> on a finished run's result to make a new one.`
+        : `No cases in this suite yet.`}</div>`;
   } else {
     rows.innerHTML = cases.map((c, i) => `
       <div class="hrow lib-row" data-case-id="${escapeHtml(c.id)}">
@@ -3137,6 +3166,11 @@ function groupRunsByUrl(runs) {
 function renderProjectsTree(runs) {
   if (!sidebarTreeEl) return;
 
+  // Belt-and-braces with `body.role-no-admin #addProjectBtn` in style.css: the class covers the
+  // role, this covers the no-database case, where the sidebar is showing URL groupings rather
+  // than project rows and there is nothing a create button could write to.
+  if (addProjectBtnEl) addProjectBtnEl.classList.toggle("hidden", !canManageProjects());
+
   if (projectsCache === null && !projectsUnavailable) {
     sidebarTreeEl.innerHTML = `<div class="tree-empty">Loading projects…</div>`;
     return;
@@ -3146,15 +3180,38 @@ function renderProjectsTree(runs) {
   // projects were real rows, so that setup looks exactly as it did.
   const projects = projectsCache === null ? groupRunsByUrl(runs) : projectsCache;
 
+  // The inline create/edit form, rendered wherever it is currently open. One markup path for both
+  // modes — they differ only in which button label and which handler the Save carries.
+  const projectFormHtml = () => `
+    <div class="tree-row tree-project-form">
+      <input type="text" class="project-form-input" id="projectFormName"
+             placeholder="Project name" value="${escapeHtml(projectFormName)}"
+             aria-label="Project name" />
+      <input type="text" class="project-form-input" id="projectFormUrl"
+             placeholder="Base URL (optional)" value="${escapeHtml(projectFormUrl)}"
+             aria-label="Base URL, optional" />
+      <div class="project-form-actions">
+        <button type="button" class="dl-btn-inline" data-project-save="1">${projectFormId ? "Save" : "Create"}</button>
+        <button type="button" class="dl-btn-inline" data-project-cancel="1" title="Cancel">×</button>
+      </div>
+    </div>
+    ${projectFormError ? `<div class="suite-new-err">${escapeHtml(projectFormError)}</div>` : ""}`;
+
+  const creating = projectFormOpen && !projectFormId;
+
   if (!projects.length) {
     // Two very different situations, and telling them apart matters: someone who just signed up
     // has been deliberately given no access yet and needs to know who to ask, whereas an admin
     // with an empty workspace just hasn't run anything. A bare "No projects yet" reads as a bug
     // to the first person.
     const needsAccess = auth.required && auth.role && !roleAtLeast(auth.role, "admin");
-    sidebarTreeEl.innerHTML = needsAccess
+    const emptyMsg = needsAccess
       ? `<div class="tree-empty">You're not in any project yet. Ask an admin to add you to one.</div>`
-      : `<div class="tree-empty">No projects yet. Runs you start will appear here.</div>`;
+      : `<div class="tree-empty">No projects yet. Use + above to add one.</div>`;
+    // An admin with an empty workspace still needs the form — returning only the message here is
+    // what would leave a brand-new organisation with no way in.
+    sidebarTreeEl.innerHTML = (creating ? projectFormHtml() : "") + emptyMsg;
+    if (creating) bindProjectForm();
     return;
   }
 
@@ -3166,16 +3223,21 @@ function renderProjectsTree(runs) {
     byKey.get(key).push(r);
   }
 
-  sidebarTreeEl.innerHTML = projects.map((p) => {
+  const canManage = canManageProjects();
+
+  sidebarTreeEl.innerHTML = (creating ? projectFormHtml() : "") + projects.map((p) => {
     const open = expandedProjects.has(p.id);
     const projectRuns = byKey.get(normalizeUrlKey(p.name) || p.name) || [];
     // The server's count is authoritative — it covers every run in the project, while the
     // sidebar's own list is capped at the newest 20 from disk.
     const count = typeof p.runCount === "number" ? p.runCount : projectRuns.length;
-    const projectRow = `
+    // Editing swaps the row for the form in place, so the project being renamed stays where the
+    // eye already is rather than the form appearing somewhere else in the tree.
+    const projectRow = projectFormId === p.id ? projectFormHtml() : `
       <div class="tree-row tree-project" data-toggle-key="${escapeHtml(p.id)}">
         <span class="tree-chevron">${icon(open ? "chevron-down" : "chevron-right", { size: 9 })}</span>
         <span class="tree-label" title="${escapeHtml(p.baseUrl || p.name)}">${escapeHtml(p.name)}</span>
+        ${canManage ? `<button type="button" class="dl-btn-inline tree-project-edit" data-project-edit="${escapeHtml(p.id)}" title="Rename or set a base URL">Edit</button>` : ""}
         <span class="tree-count">${count}</span>
       </div>`;
     // Saved suites first, then recent runs. The suites are the reusable, zero-cost thing — a
@@ -3215,6 +3277,25 @@ function renderProjectsTree(runs) {
       : `<div class="tree-empty" style="padding-left:40px">No recent runs.</div>`);
     return projectRow + suiteRows + newSuiteRow + caseRows;
   }).join("");
+
+  bindProjectForm();
+
+  sidebarTreeEl.querySelectorAll("[data-project-edit]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      // The row itself toggles expand/collapse; without this the tree would open or close every
+      // time someone reached for Edit.
+      e.stopPropagation();
+      const p = projects.find((x) => x.id === btn.dataset.projectEdit);
+      if (!p) return;
+      projectFormOpen = true;
+      projectFormId = p.id;
+      projectFormName = p.name || "";
+      projectFormUrl = p.baseUrl || "";
+      projectFormError = "";
+      renderProjectsTree(allRunsCache);
+      document.getElementById("projectFormName")?.focus();
+    });
+  });
 
   sidebarTreeEl.querySelectorAll("[data-suite-add]").forEach((row) => {
     row.addEventListener("click", () => {
@@ -3287,7 +3368,99 @@ function renderProjectsTree(runs) {
   });
 }
 
+/**
+ * Wire the inline project form, for both create and edit.
+ *
+ * Split out of renderProjectsTree() because the empty-workspace branch returns early and still
+ * needs it — an admin whose organisation has no projects yet is exactly the person who most needs
+ * the create form to work.
+ *
+ * A base URL is OPTIONAL by design: a project can be a bare name with nothing pointed at it yet,
+ * and the server already stores "" for one. Only the name is required, and the server says so too
+ * (POST /api/projects → 400 "name is required") — this doesn't restate that rule, it just avoids
+ * a round-trip for the empty case.
+ */
+function bindProjectForm() {
+  if (!projectFormOpen) return;
+
+  const nameEl = document.getElementById("projectFormName");
+  const urlEl2 = document.getElementById("projectFormUrl");
+  if (!nameEl || !urlEl2) return;
+
+  nameEl.addEventListener("input", () => { projectFormName = nameEl.value; });
+  urlEl2.addEventListener("input", () => { projectFormUrl = urlEl2.value; });
+
+  const submit = async () => {
+    const name = projectFormName.trim();
+    if (!name) {
+      projectFormError = "Give the project a name.";
+      renderProjectsTree(allRunsCache);
+      document.getElementById("projectFormName")?.focus();
+      return;
+    }
+    const editingId = projectFormId;
+    try {
+      if (editingId) {
+        // baseUrl is sent even when blank — that is how a URL gets cleared, and updateProject()
+        // distinguishes "" (set it empty) from undefined (leave it alone).
+        await api(`/api/projects/${encodeURIComponent(editingId)}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, baseUrl: projectFormUrl.trim() }),
+        });
+        closeProjectForm();
+        await loadProjects();
+        toast("Project updated.");
+      } else {
+        const created = await api("/api/projects", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, baseUrl: projectFormUrl.trim() }),
+        });
+        closeProjectForm();
+        await loadProjects();
+        // Land in the new project: expand it so its "+ New suite" row is already on screen. There
+        // is no project screen to navigate to, so this is what "in front of them" means here.
+        if (created?.id) {
+          expandedProjects.add(created.id);
+          renderProjectsTree(allRunsCache);
+          sidebarTreeEl.querySelector(`[data-toggle-key="${CSS.escape(created.id)}"]`)
+            ?.scrollIntoView({ block: "nearest" });
+        }
+        toast(`Project "${name}" created.`);
+      }
+    } catch (err) {
+      projectFormError = err.message;
+      renderProjectsTree(allRunsCache);
+      document.getElementById("projectFormName")?.focus();
+    }
+  };
+
+  for (const el of [nameEl, urlEl2]) {
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); submit(); }
+      if (e.key === "Escape") { closeProjectForm(); renderProjectsTree(allRunsCache); }
+    });
+  }
+  sidebarTreeEl.querySelector("[data-project-save]")?.addEventListener("click", submit);
+  sidebarTreeEl.querySelector("[data-project-cancel]")?.addEventListener("click", () => {
+    closeProjectForm();
+    renderProjectsTree(allRunsCache);
+  });
+}
+
 renderProjectsTree(allRunsCache);
+
+// The "+" beside the PROJECTS heading has existed in the markup since the original template and
+// did nothing until now — no handler referenced it at all.
+addProjectBtnEl?.addEventListener("click", () => {
+  if (!canManageProjects()) return;
+  projectFormOpen = true;
+  projectFormId = null;
+  projectFormName = "";
+  projectFormUrl = "";
+  projectFormError = "";
+  renderProjectsTree(allRunsCache);
+  document.getElementById("projectFormName")?.focus();
+});
 
 historyBtnEl.addEventListener("click", () => navigate("#/history"));
 teamBtnEl.addEventListener("click", () => navigate("#/team"));

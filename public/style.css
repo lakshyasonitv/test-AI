@@ -1408,6 +1408,29 @@ body.role-no-admin #teamBtn { display: none; }
   font-size: .68rem; line-height: 1.4; color: var(--failed);
 }
 
+/* The sidebar's inline project form — create and edit share it. Two stacked fields rather than
+   the suite form's single row, because a base URL needs more width than a name leaves beside it.
+   Reuses .tree-row / .dl-btn-inline; .suite-new-err above carries its error. */
+.tree-project-form {
+  flex-direction: column; align-items: stretch; gap: 4px;
+  padding: var(--sp-2); cursor: default;
+}
+.tree-project-form .project-form-input {
+  width: 100%; height: 26px; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); font-size: .74rem;
+}
+.project-form-actions { display: flex; gap: 4px; justify-content: flex-end; }
+
+/* Only on hover/focus, so the tree stays quiet — the label and count are what you read, Edit is
+   what you reach for. */
+.tree-project-edit { flex: none; opacity: 0; font-size: .66rem; padding: 1px 6px; }
+.tree-project:hover .tree-project-edit,
+.tree-project-edit:focus-visible { opacity: 1; }
+
+/* Same reasoning as #teamBtn: if a future change forgets the JS toggle, the class still hides it. */
+body.role-no-admin #addProjectBtn { display: none; }
+
 /* Suite membership on the Case screen, and the Suite screen's "add cases" picker. Both reuse
    .lib-check / .hrow-label / .hrow-meta / .case-save-panel rather than restating them. */
 .case-suites {
