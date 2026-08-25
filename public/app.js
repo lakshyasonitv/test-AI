@@ -207,6 +207,9 @@ async function refreshIdentity() {
     // enforces every action independently.
   }
   applyRoleRestrictions();
+  // Which projects are visible follows from the role we just learned — an admin sees every one,
+  // a viewer only what they've been assigned — so the tree has to be re-fetched, not just redrawn.
+  await loadProjects();
 }
 
 async function signOut() {
@@ -215,6 +218,12 @@ async function signOut() {
   auth.organisationId = null;
   auth.userId = null;
   auth.screen = "login";
+  // Drop the previous account's visible projects, or the next person to sign in on this browser
+  // sees the last one's sidebar until their own fetch lands.
+  projectsCache = null;
+  projectsUnavailable = false;
+  allRunsCache = [];
+  expandedProjects.clear();
   applyRoleRestrictions();
   setSession(null, null);
   // Best-effort server-side revoke; the local session is already gone either way, so a failure
@@ -1307,6 +1316,18 @@ const RECENT_RUNS_SHOWN = 5;
 // re-render on expand/collapse (a UI-only state change) without refetching.
 let allRunsCache = [];
 
+// Sidebar tree state. Declared here, beside the run cache they pair with, rather than next to
+// renderProjectsTree() further down: loadHistory() runs at module load and reaches them through
+// loadProjects(), so declaring them later would be a temporal-dead-zone crash waiting on a
+// scheduling change.
+const expandedProjects = new Set();
+/** Projects the server says we may see; null until the first load resolves, and null again if the
+ *  server can't answer (no database configured — see loadProjects()). */
+let projectsCache = null;
+/** True once a load has been attempted and failed, which is how the tree tells "not loaded yet"
+ *  apart from "this deployment has no project rows to serve". */
+let projectsUnavailable = false;
+
 async function loadHistory() {
   const res = await fetch("/api/runs");
   const runs = await res.json().catch(() => null);
@@ -1316,7 +1337,10 @@ async function loadHistory() {
   if (!Array.isArray(runs)) return;
   allRunsCache = runs;
   renderHistory(runs.slice(0, RECENT_RUNS_SHOWN));
-  renderProjectsTree(runs);
+  // Projects come from their own endpoint (Step 5.1) — the sidebar can no longer be derived from
+  // the run list, because which projects you may see is a server decision, and a project you can
+  // see may legitimately have no runs in the newest-20 window.
+  await loadProjects();
 }
 
 // -----------------------------------------------------------------------------
@@ -2064,14 +2088,20 @@ coverageSegEl.addEventListener("click", (e) => {
 });
 
 // -----------------------------------------------------------------------------
-// Sidebar Projects tree — every past run, clustered by the URL it targeted.
+// Sidebar Projects tree — real projects, from GET /api/projects.
 //
-// There's no persisted "project" entity on the server; a project here is just
-// the set of runs that share a URL, grouped client-side from the same list
-// GET /api/runs already returns for the history panel (allRunsCache, set in
-// loadHistory()). Depth is expressed as padding-left only via .tree-row.tree-*
-// (see style.css) — a collapsed project simply never emits its run rows, so
-// this stays one flat array per that existing tree contract.
+// This used to group runs by URL client-side because no project entity existed.
+// Step 5.1 made projects real rows, and the server now decides which ones you
+// may see: admins and owners get every project in the organisation, everyone
+// else only the ones they've been added to. So the list must come from the API —
+// grouping locally would show a viewer projects the server would refuse to serve
+// runs for.
+//
+// Run rows still come from allRunsCache (GET /api/runs), which is already scoped
+// the same way, matched to their project by the same normalised URL key the
+// backfill migration used. Depth is padding-left only via .tree-row.tree-*
+// (style.css) — a collapsed project simply never emits its run rows, so this
+// stays one flat array per that existing tree contract.
 // -----------------------------------------------------------------------------
 
 // Run-level status -> the .sdot modifier class (style.css). Run statuses that
@@ -2085,45 +2115,96 @@ const RUN_SDOT_CLASS = {
   error: "blocked",
 };
 
+/** MUST match normaliseUrlKey() in src/server/projects.ts and the backfill migration's SQL —
+ *  it's how a run row finds the project row it belongs under. */
 function normalizeUrlKey(url) {
   return (url || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
 }
 
-/** Runs sharing a URL become one project, most-recently-active project first.
- *  `runs` is already newest-first from the server, so the first run seen for
- *  a key is that project's most recent run and sets the group's position. */
+/**
+ * Fetch the projects this account may see.
+ *
+ * Never throws. A FAILED load is not the same as "no projects": running with no database
+ * configured at all is a supported mode (it is the default), and in it `/api/projects` can't
+ * answer because project rows live in Postgres. Falling back to the pre-Step-5.1 behaviour —
+ * grouping the run list by URL client-side — keeps that setup's sidebar exactly as it was
+ * instead of emptying it.
+ */
+async function loadProjects() {
+  try {
+    const res = await fetch("/api/projects");
+    const data = res.ok ? await res.json() : null;
+    projectsCache = data && Array.isArray(data.projects) ? data.projects : null;
+  } catch {
+    projectsCache = null;
+  }
+  projectsUnavailable = projectsCache === null;
+  renderProjectsTree(allRunsCache);
+}
+
+/** Runs sharing a normalised URL become one pseudo-project. The pre-Step-5.1 sidebar, kept as the
+ *  fallback for the no-database case where real project rows are unreachable. */
 function groupRunsByUrl(runs) {
   const groups = new Map();
-  for (const r of runs) {
+  for (const r of runs || []) {
     const key = normalizeUrlKey(r.url) || "(no url)";
-    if (!groups.has(key)) groups.set(key, { key, label: r.url || "(no url)", runs: [] });
-    groups.get(key).runs.push(r);
+    if (!groups.has(key)) groups.set(key, { id: key, name: r.url || "(no url)", runCount: 0 });
+    groups.get(key).runCount++;
   }
   return [...groups.values()];
 }
 
-const expandedProjects = new Set();
-
 function renderProjectsTree(runs) {
-  const groups = groupRunsByUrl(runs);
-  if (!groups.length) {
-    sidebarTreeEl.innerHTML = `<div class="tree-empty">No projects yet. Runs you save will appear here.</div>`;
+  if (!sidebarTreeEl) return;
+
+  if (projectsCache === null && !projectsUnavailable) {
+    sidebarTreeEl.innerHTML = `<div class="tree-empty">Loading projects…</div>`;
     return;
   }
 
-  sidebarTreeEl.innerHTML = groups.map((g) => {
-    const open = expandedProjects.has(g.key);
+  // No database configured: fall back to the client-side URL grouping this sidebar used before
+  // projects were real rows, so that setup looks exactly as it did.
+  const projects = projectsCache === null ? groupRunsByUrl(runs) : projectsCache;
+
+  if (!projects.length) {
+    // Two very different situations, and telling them apart matters: someone who just signed up
+    // has been deliberately given no access yet and needs to know who to ask, whereas an admin
+    // with an empty workspace just hasn't run anything. A bare "No projects yet" reads as a bug
+    // to the first person.
+    const needsAccess = auth.required && auth.role && !roleAtLeast(auth.role, "admin");
+    sidebarTreeEl.innerHTML = needsAccess
+      ? `<div class="tree-empty">You're not in any project yet. Ask an admin to add you to one.</div>`
+      : `<div class="tree-empty">No projects yet. Runs you start will appear here.</div>`;
+    return;
+  }
+
+  // Bucket the visible runs under their project by URL key.
+  const byKey = new Map();
+  for (const r of runs || []) {
+    const key = normalizeUrlKey(r.url);
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(r);
+  }
+
+  sidebarTreeEl.innerHTML = projects.map((p) => {
+    const open = expandedProjects.has(p.id);
+    const projectRuns = byKey.get(normalizeUrlKey(p.name) || p.name) || [];
+    // The server's count is authoritative — it covers every run in the project, while the
+    // sidebar's own list is capped at the newest 20 from disk.
+    const count = typeof p.runCount === "number" ? p.runCount : projectRuns.length;
     const projectRow = `
-      <div class="tree-row tree-project" data-toggle-key="${escapeHtml(g.key)}">
+      <div class="tree-row tree-project" data-toggle-key="${escapeHtml(p.id)}">
         <span class="tree-chevron">${icon(open ? "chevron-down" : "chevron-right", { size: 9 })}</span>
-        <span class="tree-label" title="${escapeHtml(g.label)}">${escapeHtml(g.label)}</span>
-        <span class="tree-count">${g.runs.length}</span>
+        <span class="tree-label" title="${escapeHtml(p.baseUrl || p.name)}">${escapeHtml(p.name)}</span>
+        <span class="tree-count">${count}</span>
       </div>`;
-    const caseRows = !open ? "" : g.runs.map((r) => `
+    const caseRows = !open ? "" : (projectRuns.length
+      ? projectRuns.map((r) => `
       <div class="tree-row tree-case${r.runId === currentRunId ? " active" : ""}" data-run-id="${escapeHtml(r.runId)}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
         <span class="sdot sdot-sm ${RUN_SDOT_CLASS[r.status] || "pending"}" title="${escapeHtml(STATUS_LABEL[r.status] ?? r.status)}"></span>
         <span class="tree-label" title="${escapeHtml(r.prompt || "")}">${escapeHtml(r.prompt || "(no prompt)")}</span>
-      </div>`).join("");
+      </div>`).join("")
+      : `<div class="tree-empty" style="padding-left:40px">No recent runs.</div>`);
     return projectRow + caseRows;
   }).join("");
 
@@ -2338,6 +2419,22 @@ async function renderTeamView() {
     .catch(() => null);
   const members = res && Array.isArray(res.members) ? res.members : [];
 
+  // Project assignments — what each person may SEE, the second axis alongside their role.
+  // Admin-only endpoints, so only fetched when we're an admin; a non-admin's Team screen is
+  // read-only anyway.
+  let assignments = {};
+  let allProjects = [];
+  if (isAdmin) {
+    const [aRes, pRes] = await Promise.all([
+      fetch(`/api/organisations/${encodeURIComponent(orgId)}/assignments`)
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/projects").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    assignments = (aRes && aRes.assignments) || {};
+    allProjects = (pRes && Array.isArray(pRes.projects)) ? pRes.projects : [];
+  }
+  const projectName = new Map(allProjects.map((p) => [p.id, p.name]));
+
   if (!members.length) {
     rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">
       ${escapeHtml((res && res.error) || "No members found.")}</div>`;
@@ -2367,16 +2464,62 @@ async function renderTeamView() {
       ? `<button type="button" class="dl-btn-inline hrow-del" data-remove="${escapeHtml(m.userId)}">Remove</button>`
       : "";
 
+    // Which projects this person may see. Admins and owners see everything by role, so listing
+    // projects for them would be a lie the moment a new one is created — say the rule instead.
+    const seesEverything = roleAtLeast(m.role, "admin");
+    const mine = assignments[m.userId] || [];
+    const projectsCell = !isAdmin ? "" : seesEverything
+      ? `<div class="team-projects"><span class="team-projects-all">Sees every project (by role)</span></div>`
+      : `<div class="team-projects">
+          ${mine.length
+            ? mine.map((pid) => `
+              <span class="team-chip">${escapeHtml(projectName.get(pid) || "project")}
+                <button type="button" class="team-chip-x" data-unassign="${escapeHtml(m.userId)}"
+                  data-project="${escapeHtml(pid)}" title="Remove from this project">&times;</button>
+              </span>`).join("")
+            : `<span class="team-projects-none">No projects yet — they can't see anything.</span>`}
+          ${allProjects.length > mine.length ? `
+          <select class="team-select team-assign" data-assign="${escapeHtml(m.userId)}">
+            <option value="">+ Add to project…</option>
+            ${allProjects.filter((p) => !mine.includes(p.id))
+              .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")}
+          </select>` : ""}
+        </div>`;
+
     return `
     <div class="team-row">
       <div class="team-row-main">
         <span class="team-email">${escapeHtml(m.email || "(unknown address)")}${
           isYou ? `<span class="team-you">YOU</span>` : ""}</span>
         <span class="team-meta">${escapeHtml(ROLE_HELP[m.role] || "")}</span>
+        ${projectsCell}
       </div>
       <div class="team-row-actions">${roleControl}${removeBtn}</div>
     </div>`;
   }).join("");
+
+  // Project assignment — add and remove. Both are admin-only on the server too.
+  rows.querySelectorAll("[data-assign]").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      if (!sel.value) return;
+      await teamCall(
+        `/api/projects/${encodeURIComponent(sel.value)}/members`,
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: sel.dataset.assign }) },
+        "Added to the project.",
+      );
+    });
+  });
+
+  rows.querySelectorAll("[data-unassign]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await teamCall(
+        `/api/projects/${encodeURIComponent(btn.dataset.project)}/members/${encodeURIComponent(btn.dataset.unassign)}`,
+        { method: "DELETE" },
+        "Removed from the project.",
+      );
+    });
+  });
 
   rows.querySelectorAll("[data-role-for]").forEach((sel) => {
     sel.addEventListener("change", async () => {

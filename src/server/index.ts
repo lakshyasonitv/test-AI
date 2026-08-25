@@ -16,6 +16,7 @@ import {
   AccessError,
   assertOrgAccess,
   canEnforceTenancy,
+  canViewRun,
   filterRunsForUser,
   isRole,
   orgForRun,
@@ -28,12 +29,26 @@ import {
   addMember,
   bootstrapUser,
   changeMemberRole,
+  findUserByEmail,
   listAddableUsers,
   listMembers,
   removeMember,
+  roleOfMember,
 } from "./organisations.js";
+import {
+  addProjectMember,
+  assertProjectInOrg,
+  assignmentsByUser,
+  createProject,
+  deleteProject,
+  listProjectMembers,
+  listVisibleProjects,
+  removeProjectMember,
+  resolveProjectForUrl,
+  updateProject,
+} from "./projects.js";
 import { consumeSignupAttempt, createAccount, isSignupEnabled } from "./signup.js";
-import { recordRunStarted, recordRunStatus } from "../db.js";
+import { recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
@@ -80,15 +95,11 @@ async function canAccessRun(req: express.Request, runId: string): Promise<boolea
   if (!user) return false;
   if (!canEnforceTenancy()) return true;
 
-  try {
-    const orgId = await orgForRun(runId);
-    // Fail closed: a run with no ownership record is one nobody can prove they own.
-    if (!orgId) return false;
-    await assertOrgAccess(user.id, orgId, "viewer");
-    return true;
-  } catch {
-    return false;
-  }
+  // Step 5.1: the same two gates the history list applies — the run's organisation must be one of
+  // yours, and unless you're an admin its project must be one you were added to. Deliberately the
+  // identical function, not a parallel re-implementation: an artifact guard that is even slightly
+  // weaker than the list guard is how a screenshot leaks after the row was already hidden.
+  return canViewRun(user.id, runId);
 }
 
 const RUNS_DIR = path.resolve("runs");
@@ -127,7 +138,7 @@ app.param("runId", (_req, res, next, runId) => {
 // `tester` — starting a run spends real money (Gemini calls) and drives a browser against
 // someone's site, which is exactly the line a read-only `viewer` should not be able to cross.
 app.post("/api/runs", requireRole("tester"), (req, res) => {
-  const { prompt, url, urls, coverage, options } = req.body ?? {};
+  const { prompt, url, urls, coverage, options, projectId } = req.body ?? {};
   if (!prompt || (!url && !urls?.length)) return res.status(400).json({ error: "prompt and url (or urls) are required" });
 
   const checkUrls = (urls && Array.isArray(urls) && urls.length ? urls : [url]) as unknown[];
@@ -165,15 +176,36 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
   // The organisation comes from `req.organisationId`, set by requireRole from the *session*.
   // Never from the request body: a caller naming its own org id is a caller choosing its own
   // tenancy.
+  const primaryUrl = typeof url === "string" ? url : (Array.isArray(urls) ? urls[0] ?? null : null);
+
   recordRunStarted({
     id: runId,
     organisation_id: req.organisationId!,
     started_by: req.user?.id ?? LOCAL_USER_ID,
     prompt: typeof prompt === "string" ? prompt : null,
-    url: typeof url === "string" ? url : (Array.isArray(urls) ? urls[0] ?? null : null),
+    url: primaryUrl,
     status: "incomplete",
     started_at: new Date().toISOString(),
   });
+
+  // File the run under a project (Step 5.1). `projectId` in the body is OPTIONAL and additive —
+  // absent behaves exactly as before — but it is still never trusted as authority: the caller's
+  // organisation comes from the session, and a project id outside it simply doesn't resolve.
+  //
+  // With no explicit id the project is inferred from the URL using the same key the backfill used,
+  // so a run lands in the project its own history is already in rather than creating a duplicate.
+  // Fire-and-forget: a run must start even if its filing cabinet is unreachable.
+  void (async () => {
+    try {
+      const explicit = typeof projectId === "string" && projectId ? projectId : null;
+      const resolved = explicit
+        ? (await assertProjectInOrg(req.organisationId!, explicit).then((p) => p.id).catch(() => null))
+        : await resolveProjectForUrl(req.organisationId!, primaryUrl);
+      if (resolved) recordRunProject(runId, resolved);
+    } catch (err) {
+      console.error(`[projects] could not file run ${runId}:`, (err as Error)?.message ?? err);
+    }
+  })();
 
   // Wrap the event sink so a terminal event also settles the run's stored status. The status is
   // re-derived with summariseRun() — the same function /api/runs serves from — rather than
@@ -466,6 +498,108 @@ app.post("/api/auth/bootstrap", async (req, res) => {
   try {
     const result = await bootstrapUser(req.user?.id ?? LOCAL_USER_ID, req.user?.email ?? null);
     res.json(result);
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// Projects (Step 5.1) — the second axis of access.
+//
+// Org role says what you may DO; project membership says what you may SEE. Admins and owners see
+// every project in their organisation by role; a tester or viewer sees only what they've been
+// added to, and a brand-new account has been added to nothing.
+//
+// All NEW routes. Every one takes its organisation from `req.organisationId`, which requireRole
+// derives from the *session* — never from the body or the query, per the plan's rule.
+// --------------------------------------------------------------------------
+
+app.get("/api/projects", requireRole("viewer"), async (req, res) => {
+  try {
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    res.json({ projects: await listVisibleProjects(userId, req.organisationId!, req.organisationRole!) });
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+app.post("/api/projects", requireRole("admin"), async (req, res) => {
+  const { name, baseUrl } = req.body ?? {};
+  if (typeof name !== "string" || !name.trim()) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  try {
+    res.status(201).json(await createProject(
+      req.organisationId!,
+      name,
+      typeof baseUrl === "string" ? baseUrl : "",
+    ));
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+app.patch("/api/projects/:projectId", requireRole("admin"), async (req, res) => {
+  const { name, baseUrl } = req.body ?? {};
+  try {
+    res.json(await updateProject(req.organisationId!, req.params.projectId, { name, baseUrl }));
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+app.delete("/api/projects/:projectId", requireRole("admin"), async (req, res) => {
+  try {
+    await deleteProject(req.organisationId!, req.params.projectId);
+    res.status(204).end();
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+app.get("/api/projects/:projectId/members", requireRole("admin"), async (req, res) => {
+  try {
+    res.json({ members: await listProjectMembers(req.organisationId!, req.params.projectId) });
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+app.post("/api/projects/:projectId/members", requireRole("admin"), async (req, res) => {
+  const { email, userId } = req.body ?? {};
+  try {
+    // Accept either an id (the Team screen has one already) or an address (typed by hand).
+    let targetId: string | null = typeof userId === "string" && userId ? userId : null;
+    if (!targetId) {
+      if (typeof email !== "string" || !email.trim()) {
+        return res.status(400).json({ error: "email or userId is required" });
+      }
+      const found = await findUserByEmail(email);
+      if (!found) return res.status(404).json({ error: "no account with that email" });
+      targetId = found.id;
+    }
+    const isOrgMember = !!(await roleOfMember(req.organisationId!, targetId));
+    await addProjectMember(req.organisationId!, req.params.projectId, targetId, isOrgMember);
+    res.status(201).json({ ok: true, userId: targetId });
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+app.delete("/api/projects/:projectId/members/:userId", requireRole("admin"), async (req, res) => {
+  try {
+    await removeProjectMember(req.organisationId!, req.params.projectId, req.params.userId);
+    res.status(204).end();
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+/** Every project assignment in the org — one call so the Team screen renders in one pass. */
+app.get("/api/organisations/:orgId/assignments", requireOrgRole("admin"), async (req, res) => {
+  try {
+    const map = await assignmentsByUser(req.params.orgId);
+    res.json({ assignments: Object.fromEntries(map) });
   } catch (err) {
     sendAccessError(res, err);
   }

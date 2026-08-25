@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { getServiceClient, isDbEnabled, DEFAULT_ORG_ID, fetchRunOrgIds } from "../db.js";
+import { getServiceClient, isDbEnabled, DEFAULT_ORG_ID, fetchRunOrgIds, fetchRunScopes } from "../db.js";
 import { LOCAL_USER_ID, isAuthEnabled } from "./auth.js";
 
 /**
@@ -245,14 +245,24 @@ export function requireRunRole(minRole: Role) {
         next();
         return;
       }
-      const orgId = await orgForRun(req.params.runId);
-      if (!orgId) {
+      const scope = (await fetchRunScopes([req.params.runId]))?.get(req.params.runId);
+      if (!scope) {
         // Fail closed. A run with no ownership record is a run nobody can prove they own, and
         // guessing "probably yours" is how a second tenant reads the first tenant's screenshots.
         throw new AccessError(403, "you do not have access to this run");
       }
-      req.organisationId = orgId;
-      req.organisationRole = await assertOrgAccess(userId, orgId, minRole);
+      req.organisationId = scope.organisationId;
+      const role = await assertOrgAccess(userId, scope.organisationId, minRole);
+
+      // Project visibility too (Step 5.1), not just the org. Otherwise the run list and the
+      // artifact route would hide a run that this endpoint still served in full to anyone who
+      // knew — or guessed — its id, which would make the project boundary decorative.
+      const allowed = await visibleProjectIds(userId, scope.organisationId, role);
+      if (allowed && (scope.projectId === null || !allowed.has(scope.projectId))) {
+        throw new AccessError(403, "you have not been added to this run's project");
+      }
+
+      req.organisationRole = role;
       next();
     } catch (err) {
       deny(res, err);
@@ -275,7 +285,51 @@ export function requireOrgRole(minRole: Role) {
 }
 
 /**
+ * Which projects this user may SEE within an organisation, or `null` meaning "no restriction".
+ *
+ * The second axis of the model (Step 5.1). The org role above answers "what may you do"; this
+ * answers "what may you look at". They are deliberately separate — `project_members` has no role
+ * column, because duplicating the ladder per project would make two places answer the same
+ * question and guarantee they drift.
+ *
+ * `null` for admin/owner rather than a materialised list of every id: their answer is a property
+ * of their role, not a set that could go stale between the check and the query.
+ *
+ * Lives here rather than in projects.ts because it is an authorization question and because
+ * `filterRunsForUser` below needs it — putting it there would make the two modules import each
+ * other.
+ */
+export async function visibleProjectIds(
+  userId: string,
+  orgId: string,
+  role: Role,
+): Promise<Set<string> | null> {
+  if (roleAtLeast(role, "admin")) return null;
+
+  const client = getServiceClient();
+  if (!client) return new Set();
+
+  const { data, error } = await client
+    .from("project_members")
+    .select("project_id, projects!inner(organisation_id)")
+    .eq("user_id", userId)
+    .eq("projects.organisation_id", orgId);
+
+  if (error) {
+    // Fail closed: "we cannot tell which projects you may see" must mean none, never all.
+    console.error(`[authz] project visibility lookup failed for ${userId}:`, error.message);
+    return new Set();
+  }
+  return new Set((data ?? []).map((r) => (r as { project_id: string }).project_id));
+}
+
+/**
  * Filter a disk-derived run list down to what this user may see.
+ *
+ * Two gates now, in order: the run's organisation must be one of theirs (Step 3.4), AND — unless
+ * they are an admin or owner — its project must be one they have been assigned to (Step 5.1). A
+ * viewer with no project assignments therefore sees an empty history, which is the whole point of
+ * the model the user asked for.
  *
  * Disk stays authoritative for the *content* of the list (flipping that is Step 3.3) — this only
  * removes rows. The response shape is untouched, which is what keeps `public/app.js` and the
@@ -289,20 +343,57 @@ export async function filterRunsForUser<T extends { runId: string }>(
 
   const memberships = await getMemberships(userId);
   if (memberships.length === 0) return [];
-  const allowed = new Set(memberships.map((m) => m.organisationId));
+  const allowedOrgs = new Set(memberships.map((m) => m.organisationId));
 
-  const owners = await fetchRunOrgIds(runs.map((r) => r.runId));
-  if (owners === null) {
+  const scopes = await fetchRunScopes(runs.map((r) => r.runId));
+  if (scopes === null) {
     // Database unreachable while tenancy is meant to be enforced. Fail closed: showing the full
     // list "just this once" is showing every tenant's history to whoever is signed in.
     console.error("[authz] could not resolve run ownership; returning an empty history");
     return [];
   }
 
+  // One project-visibility lookup per organisation involved, not per run.
+  const projectScopes = new Map<string, Set<string> | null>();
+  for (const m of memberships) {
+    projectScopes.set(m.organisationId, await visibleProjectIds(userId, m.organisationId, m.role));
+  }
+
   return runs.filter((r) => {
-    const org = owners.get(r.runId);
-    return org !== undefined && allowed.has(org);
+    const scope = scopes.get(r.runId);
+    if (!scope || !allowedOrgs.has(scope.organisationId)) return false;
+
+    const allowedProjects = projectScopes.get(scope.organisationId);
+    if (allowedProjects === null || allowedProjects === undefined) return true; // admin/owner
+    // A run with no project can only be seen by admin+ — nobody can be assigned to "no project",
+    // so treating it as visible would be a hole that widens as unfiled runs accumulate.
+    return scope.projectId !== null && allowedProjects.has(scope.projectId);
   });
+}
+
+/**
+ * May this user see this one run? The artifact guard's question.
+ *
+ * Same two gates as filterRunsForUser, for a single run — screenshots and videos are fetched by
+ * `<img>`/`<video>` tags that bypass every check the frontend does, so this must not be a weaker
+ * test than the list is.
+ */
+export async function canViewRun(userId: string, runId: string): Promise<boolean> {
+  if (!canEnforceTenancy()) return true;
+
+  const scopes = await fetchRunScopes([runId]);
+  const scope = scopes?.get(runId);
+  // Fail closed: a run with no ownership record is one nobody can prove they own.
+  if (!scope) return false;
+
+  try {
+    const role = await assertOrgAccess(userId, scope.organisationId, "viewer");
+    const allowed = await visibleProjectIds(userId, scope.organisationId, role);
+    if (allowed === null) return true;
+    return scope.projectId !== null && allowed.has(scope.projectId);
+  } catch {
+    return false;
+  }
 }
 
 declare global {

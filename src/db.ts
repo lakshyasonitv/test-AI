@@ -204,6 +204,58 @@ export function recordRunStatus(runId: string, status: string): void {
   })();
 }
 
+/** Which organisation AND project each run belongs to. */
+export interface RunScope {
+  organisationId: string;
+  projectId: string | null;
+}
+
+/**
+ * The org + project each of these runs belongs to.
+ *
+ * Step 5.1 scopes visibility by project as well as organisation, so one lookup now has to answer
+ * both questions. Runs with no row are absent from the map, and for authorization that must mean
+ * "deny" — never "allow".
+ */
+export async function fetchRunScopes(runIds: string[]): Promise<Map<string, RunScope> | null> {
+  if (runIds.length === 0) return new Map();
+  const client = getServiceClient();
+  if (!client) return null;
+  try {
+    const { data, error } = await client
+      .from("runs")
+      .select("id, organisation_id, project_id")
+      .in("id", runIds);
+    if (error) {
+      console.error("[db] run scope lookup failed:", error.message);
+      return null;
+    }
+    return new Map(
+      (data ?? []).map((r: { id: string; organisation_id: string; project_id: string | null }) =>
+        [r.id, { organisationId: r.organisation_id, projectId: r.project_id }] as const),
+    );
+  } catch (err) {
+    console.error("[db] run scope lookup threw:", (err as Error)?.message ?? err);
+    return null;
+  }
+}
+
+/** Record which project a run belongs to, once inferred. Fire-and-forget like every write here. */
+export function recordRunProject(runId: string, projectId: string): void {
+  if (!isDbEnabled()) return;
+  const client = getServiceClient();
+  if (!client) return;
+
+  void (async () => {
+    try {
+      const { error } = await client.from("runs").update({ project_id: projectId }).eq("id", runId);
+      if (error) console.error(`[db] could not set project for run ${runId}:`, error.message);
+    } catch (err) {
+      console.error(`[db] setting project for run ${runId} threw:`, (err as Error)?.message ?? err);
+    }
+  })();
+}
+
 /**
  * Which organisation owns each of these runs. Runs with no row are simply absent from the map —
  * the caller decides what that means, and for authorization it must mean "deny", never "allow".

@@ -52,13 +52,44 @@ const DIRECTORY = [
   { id: ORPHAN, email: OUTSIDER_EMAIL },
 ];
 
+/**
+ * Projects — the SECOND access axis (Step 5.1). The role ladder above says what someone may DO;
+ * project membership says what they may SEE. Admins and owners see every project in their org by
+ * role; a tester or viewer sees only what they've been assigned, and a fresh account has nothing.
+ */
+const PROJ_A1 = "aaaa1111-0000-4000-8000-00000000a001";
+const PROJ_A2 = "aaaa2222-0000-4000-8000-00000000a002";
+const PROJ_B1 = "bbbb1111-0000-4000-8000-00000000b001";
+
+const PROJECTS: { id: string; organisation_id: string; name: string; base_url: string }[] = [
+  { id: PROJ_A1, organisation_id: ORG_A, name: "alpha.example.com", base_url: "https://alpha.example.com" },
+  { id: PROJ_A2, organisation_id: ORG_A, name: "beta.example.com", base_url: "https://beta.example.com" },
+  { id: PROJ_B1, organisation_id: ORG_B, name: "orgb.example.com", base_url: "https://orgb.example.com" },
+];
+
+/**
+ * The `projects.organisation_id` key is literal, not a typo: `visibleProjectIds` filters with
+ * supabase-js's embedded-resource syntax (`.eq("projects.organisation_id", …)` alongside a
+ * `projects!inner(...)` select), and the builder mock filters rows by exact key. Storing the
+ * denormalised value under that exact key is what lets the real query run unmodified against the
+ * fake, rather than teaching the mock to perform joins.
+ */
+const PROJECT_MEMBERS: { project_id: string; user_id: string; "projects.organisation_id": string }[] = [
+  // The viewer and tester are assigned to A1 only — so A2's run is invisible to them, which is
+  // what makes the "assigned to one project" tests meaningful rather than vacuous.
+  { project_id: PROJ_A1, user_id: VIEWER_A, "projects.organisation_id": ORG_A },
+  { project_id: PROJ_A1, user_id: TESTER_A, "projects.organisation_id": ORG_A },
+];
+
 const RUN_A = "2026-01-01T00-00-00-000Z-aaaaaaaa";
 const RUN_B = "2026-01-02T00-00-00-000Z-bbbbbbbb";
 const RUN_UNOWNED = "2026-01-03T00-00-00-000Z-cccccccc"; // on disk, never written to the database
+const RUN_A2 = "2026-01-04T00-00-00-000Z-dddddddd";     // org A, but a project they're not in
 
-const RUNS: { id: string; organisation_id: string }[] = [
-  { id: RUN_A, organisation_id: ORG_A },
-  { id: RUN_B, organisation_id: ORG_B },
+const RUNS: { id: string; organisation_id: string; project_id: string | null }[] = [
+  { id: RUN_A, organisation_id: ORG_A, project_id: PROJ_A1 },
+  { id: RUN_A2, organisation_id: ORG_A, project_id: PROJ_A2 },
+  { id: RUN_B, organisation_id: ORG_B, project_id: PROJ_B1 },
 ];
 
 /** Minimal stand-in for supabase-js's chainable, thenable query builder. */
@@ -70,6 +101,8 @@ function makeBuilder(table: string) {
     let data: any[] =
       table === "organisation_members" ? [...MEMBERSHIPS] :
       table === "runs" ? [...RUNS] :
+      table === "projects" ? [...PROJECTS] :
+      table === "project_members" ? [...PROJECT_MEMBERS] :
       [];
     for (const [col, val] of eqs) data = data.filter((r) => r[col] === val);
     for (const [col, vals] of ins) data = data.filter((r) => vals.includes(r[col]));
@@ -486,5 +519,137 @@ describe("the isolation table covers every run-scoped route", () => {
 
     const missing = mounted.filter((m) => !covered.has(m));
     expect(missing, `add these to RUN_SCOPED_ROUTES: ${missing.join(", ")}`).toEqual([]);
+  });
+});
+
+/**
+ * Project-level visibility — implentationplan.md Step 5.1, and the access model the user asked
+ * for: "create by default a user as viewer, and then admin or the owner can add them to a
+ * particular project."
+ *
+ * The two axes are tested separately on purpose. The role tests above answer "may they do this";
+ * these answer "may they see this at all", and the interesting cases are the ones where the two
+ * disagree — a tester who may start runs but has been added to no project, and an admin who is
+ * scoped to nothing yet sees everything by role.
+ */
+describe("projects — visibility is a second axis, independent of the role ladder", () => {
+  it("an admin sees every project in their organisation without being assigned to any", async () => {
+    const res = await request(app).get("/api/projects").set(as(ADMIN_A));
+    expect(res.status).toBe(200);
+    const names = res.body.projects.map((p: { name: string }) => p.name).sort();
+    expect(names).toEqual(["alpha.example.com", "beta.example.com"]);
+  });
+
+  it("an owner likewise — and never sees another organisation's projects", async () => {
+    const res = await request(app).get("/api/projects").set(as(OWNER_A));
+    expect(res.status).toBe(200);
+    const ids = res.body.projects.map((p: { id: string }) => p.id);
+    expect(ids).toContain(PROJ_A1);
+    expect(ids).not.toContain(PROJ_B1);
+  });
+
+  it("a viewer sees only the project they were added to", async () => {
+    const res = await request(app).get("/api/projects").set(as(VIEWER_A));
+    expect(res.status).toBe(200);
+    expect(res.body.projects.map((p: { id: string }) => p.id)).toEqual([PROJ_A1]);
+  });
+
+  it("a viewer may read a run in their project", async () => {
+    const res = await request(app).get(`/api/runs/${RUN_A}/state`).set(as(VIEWER_A));
+    expect(res.status).toBe(200);
+  });
+
+  it("but NOT a run in a project they were never added to — same org, still refused", async () => {
+    // The whole point of the second axis. Org membership alone used to be enough here.
+    const res = await request(app).get(`/api/runs/${RUN_A2}/state`).set(as(VIEWER_A));
+    expect(res.status).toBe(403);
+  });
+
+  it("the artifact guard applies the same project rule as the API", async () => {
+    // Screenshots and videos are fetched by <img>/<video>, which bypass every frontend check —
+    // an artifact guard weaker than the API guard is how a hidden run leaks its pictures anyway.
+    const mine = await request(app).get(`/runs/${RUN_A}/00-input.json`).set(as(VIEWER_A));
+    expect(mine.status).toBe(404); // allowed through; no such file on disk
+
+    const notMine = await request(app).get(`/runs/${RUN_A2}/00-input.json`).set(as(VIEWER_A));
+    expect(notMine.status).toBe(403);
+  });
+
+  it("a tester with runs permission still cannot reach an unassigned project's run", async () => {
+    // Role and visibility are independent: being allowed to START runs says nothing about which
+    // existing ones you may look at.
+    const res = await request(app).get(`/api/runs/${RUN_A2}/state`).set(as(TESTER_A));
+    expect(res.status).toBe(403);
+  });
+
+  it("an admin reaches a run in a project nobody assigned them to", async () => {
+    const res = await request(app).get(`/api/runs/${RUN_A2}/state`).set(as(ADMIN_A));
+    expect(res.status).toBe(200);
+  });
+
+  it("org B's owner cannot see org A's projects", async () => {
+    const res = await request(app).get("/api/projects").set(as(OWNER_B));
+    expect(res.status).toBe(200);
+    expect(res.body.projects.map((p: { id: string }) => p.id)).not.toContain(PROJ_A1);
+  });
+
+  it("org B's owner cannot manage a project belonging to org A", async () => {
+    // The org comes from the session, so naming someone else's project id resolves to nothing
+    // rather than to their data.
+    const res = await request(app)
+      .patch(`/api/projects/${PROJ_A1}`)
+      .set(as(OWNER_B))
+      .send({ name: "hijacked" });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("projects — management is admin-and-above, exactly like member management", () => {
+  const MANAGEMENT_ROUTES: { name: string; method: "post" | "patch" | "delete" | "get"; path: string; body?: unknown }[] = [
+    { name: "POST   create",         method: "post",   path: "/api/projects", body: { name: "new" } },
+    { name: "PATCH  rename",         method: "patch",  path: `/api/projects/${PROJ_A1}`, body: { name: "renamed" } },
+    { name: "DELETE project",        method: "delete", path: `/api/projects/${PROJ_A1}` },
+    { name: "GET    members",        method: "get",    path: `/api/projects/${PROJ_A1}/members` },
+    { name: "POST   add member",     method: "post",   path: `/api/projects/${PROJ_A1}/members`, body: { userId: VIEWER_A } },
+    { name: "DELETE remove member",  method: "delete", path: `/api/projects/${PROJ_A1}/members/${VIEWER_A}` },
+  ];
+
+  for (const route of MANAGEMENT_ROUTES) {
+    it(`403s a viewer on ${route.name}`, async () => {
+      const req = (request(app) as any)[route.method](route.path).set(as(VIEWER_A));
+      const res = route.body ? await req.send(route.body) : await req;
+      expect(res.status).toBe(403);
+    });
+
+    it(`403s a tester on ${route.name}`, async () => {
+      const req = (request(app) as any)[route.method](route.path).set(as(TESTER_A));
+      const res = route.body ? await req.send(route.body) : await req;
+      expect(res.status).toBe(403);
+    });
+  }
+
+  it("lets an admin list a project's members", async () => {
+    const res = await request(app).get(`/api/projects/${PROJ_A1}/members`).set(as(ADMIN_A));
+    expect(res.status).toBe(200);
+    expect(res.body.members.map((m: { userId: string }) => m.userId).sort())
+      .toEqual([VIEWER_A, TESTER_A].sort());
+  });
+
+  it("refuses to add someone who isn't in the organisation at all", async () => {
+    // Project membership grants visibility, never entry — someone with no role has no permissions,
+    // and silently creating that state would be a tenancy hole rather than a convenience.
+    const res = await request(app)
+      .post(`/api/projects/${PROJ_A1}/members`)
+      .set(as(ADMIN_A))
+      .send({ userId: ORPHAN });
+    expect(res.status).toBe(404);
+  });
+
+  it("the assignments map is admin-only", async () => {
+    const ok = await request(app).get(`/api/organisations/${ORG_A}/assignments`).set(as(ADMIN_A));
+    expect(ok.status).toBe(200);
+
+    const denied = await request(app).get(`/api/organisations/${ORG_A}/assignments`).set(as(VIEWER_A));
+    expect(denied.status).toBe(403);
   });
 });

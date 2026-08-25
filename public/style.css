@@ -1231,6 +1231,32 @@ body:has(#view-signup.view-active) .topbar { display: none; }
 }
 .team-select:hover { border-color: var(--line-hover); }
 
+/* Project assignments on a member's row — the second access axis (Step 5.1).
+   Role says what someone may DO; these say what they may SEE. Admins and owners
+   see every project by role, so their row states the rule rather than listing
+   projects that would go stale the moment a new one is created. */
+.team-projects {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+.team-projects-all, .team-projects-none {
+  font-family: var(--font-mono); font-size: .62rem; color: var(--faint);
+}
+.team-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: .7rem;
+  color: var(--text-2); background: var(--surface-3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-pill); padding: 2px 4px 2px 9px;
+}
+.team-chip-x {
+  border: none; background: none; cursor: pointer;
+  font-size: .85rem; line-height: 1; color: var(--muted);
+  padding: 0 4px; border-radius: var(--r-pill);
+}
+.team-chip-x:hover { color: var(--failed); }
+.team-assign { font-size: .7rem; padding: 3px var(--sp-2); }
+
 /* Inline result of the last action. Errors carry the server's own message —
    "you cannot grant the owner role", "this is the last owner" — because those
    sentences are the whole point of the guard rails. */

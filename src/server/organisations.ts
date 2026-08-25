@@ -1,4 +1,4 @@
-import { getServiceClient } from "../db.js";
+import { getServiceClient, DEFAULT_ORG_ID } from "../db.js";
 import { AccessError, invalidateMemberships, isRole, roleAtLeast, type Role } from "./authz.js";
 
 /**
@@ -44,6 +44,7 @@ async function ownerCount(orgId: string): Promise<number> {
   return (data ?? []).length;
 }
 
+/** Exported as `roleOfMember` below — project membership has to check org membership first. */
 async function roleOf(orgId: string, userId: string): Promise<Role | null> {
   const client = requireClient();
   const { data, error } = await client
@@ -55,6 +56,17 @@ async function roleOf(orgId: string, userId: string): Promise<Role | null> {
   if (error) throw new AccessError(500, `could not read membership: ${error.message}`);
   const role = (data as { role?: string } | null)?.role;
   return isRole(role) ? role : null;
+}
+
+/**
+ * This account's role in this organisation, or null if they aren't a member.
+ *
+ * Project membership grants visibility, never entry: adding someone to a project only makes sense
+ * once they are in the organisation and therefore have a role. The project routes call this to
+ * refuse the other case rather than creating a member with visibility but no permissions.
+ */
+export async function roleOfMember(orgId: string, userId: string): Promise<Role | null> {
+  return roleOf(orgId, userId);
 }
 
 /** Best-effort address lookup so the members list is readable. Never fails the request. */
@@ -252,7 +264,19 @@ export interface BootstrapResult {
 }
 
 /**
- * Make sure a signed-in account belongs somewhere, creating an organisation it owns if not.
+ * Make sure a signed-in account belongs somewhere.
+ *
+ * **A new account joins the existing workspace as `viewer` with no project access** (Step 5.1).
+ * It used to become `owner` of a brand-new organisation of its own, which meant every colleague
+ * who signed up landed in a private empty workspace instead of the company's, saw none of the
+ * shared history, and had no way to ask for it — the opposite of what a team tool should do.
+ *
+ * `viewer` and zero projects is the deliberate floor: they can sign in, and they can see nothing
+ * until an admin adds them to a project. That is the whole access model the user asked for.
+ *
+ * SINGLE-COMPANY ASSUMPTION: every sign-up lands in the one bootstrap organisation. Correct for
+ * one company running this locally; wrong the moment two unrelated customers share an instance,
+ * when sign-up needs an invite token or a domain rule instead. See the report's DEFERRED section.
  *
  * Idempotent by design: the frontend calls it after every sign-in, not just after sign-up, so an
  * account created directly in the Supabase dashboard (which never touches this server) still ends
@@ -279,21 +303,30 @@ export async function bootstrapUser(userId: string, email: string | null): Promi
     return { organisationId: first.organisation_id, organisationName: name, role: first.role, created: false };
   }
 
-  const orgName = email ? `${email.split("@")[0]}'s organisation` : "New organisation";
+  // Join the bootstrap workspace as the lowest role. The organisation is looked up rather than
+  // created: if it is somehow missing, that is a broken deployment and inventing a second one
+  // would quietly split the tenancy in half.
   const { data: org, error: orgErr } = await client
     .from("organisations")
-    .insert({ name: orgName })
     .select("id, name")
-    .single();
-  if (orgErr || !org) throw new AccessError(500, `could not create organisation: ${orgErr?.message}`);
+    .eq("id", DEFAULT_ORG_ID)
+    .maybeSingle();
+  if (orgErr) throw new AccessError(500, `could not read the workspace: ${orgErr.message}`);
+  if (!org) {
+    throw new AccessError(
+      500,
+      "the default workspace does not exist — run the bootstrap migration before signing anyone up",
+    );
+  }
 
   const { error: memberErr } = await client
     .from("organisation_members")
-    .insert({ organisation_id: org.id, user_id: userId, role: "owner" });
+    .insert({ organisation_id: org.id, user_id: userId, role: "viewer" });
   if (memberErr) {
     throw new AccessError(500, `could not create membership: ${memberErr.message}`);
   }
 
   invalidateMemberships(userId);
-  return { organisationId: org.id, organisationName: org.name, role: "owner", created: true };
+  void email; // retained for the signature; the workspace name no longer derives from it
+  return { organisationId: org.id, organisationName: org.name, role: "viewer", created: true };
 }
