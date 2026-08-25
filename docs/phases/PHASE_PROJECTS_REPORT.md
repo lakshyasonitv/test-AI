@@ -162,7 +162,7 @@ Postgres.
    ```
    AUTH_ENABLED=true DB_ENABLED=true npm run serve
    ```
-10. Sign in as `garvit.khandelwal@thinkvibes.com` / `111111`.
+10. Sign in as the owner account (`garvit.khandelwal@thinkvibes.com`) with its password.
 
     **Chrome autofill will fight you on this form** — it overwrites the email field with a stale
     saved address, which is what made an earlier "invalid credentials" look like an app bug. Clear
