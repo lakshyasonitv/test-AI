@@ -19,6 +19,12 @@ rather than repeating, because six copies of the same list is how they drifted o
 | **What's broken, ranked, with remediation** | [TECH_DEBT.md](TECH_DEBT.md) |
 | Why a design choice was made, what was rejected | [DECISIONS.md](DECISIONS.md) |
 | Working guidance for an agent editing this repo | [CLAUDE.md](CLAUDE.md) |
+| **What each shipped phase changed, and how to roll it back** | [docs/phases/](docs/phases/) |
+
+`docs/phases/` is the build log for the multi-user platform layered on top of the original
+single-user tool. One report per phase, each with the same ten sections: what changed, new files,
+new flags, new routes, schema changes, what was deliberately left alone, how to verify, how to
+roll back, and what was found but not fixed.
 
 ## Quick Start
 
@@ -144,6 +150,35 @@ Full technical detail, file by file: [ARCHITECTURE.md](ARCHITECTURE.md).
 | Deterministic failure classifier | Pattern-matches Playwright errors before spending a Gemini call |
 | LLM response caching | File + in-memory cache for repeated prompts, 30-min in-memory TTL, disk tier never expires |
 
+### The platform layer
+
+Built on top of the pipeline above, in the phases logged under `docs/phases/`. Everything here is
+behind a flag; with all flags off the tool behaves exactly as it did before any of it existed.
+
+| Capability | Details |
+|-----------|---------|
+| Sign-in and sign-up | Supabase Auth. `AUTH_ENABLED=false` substitutes a synthetic local owner, so the permission checks still *run* and still *pass* rather than being skipped — a flag-off server exercises the same code path |
+| Four org roles | `viewer` < `tester` < `admin` < `owner`. The role is what you may **do** |
+| Project membership | A separate axis from the role: it is what you may **see**. A new user is a `viewer` in nothing until an owner or admin adds them to a project |
+| Team management | Owners and admins assign roles and project membership from the Team screen |
+| Test-case library | Save a finished run's case, then re-run it with **zero LLM calls** — the stored IR replays as pure code |
+| Suites | Club cases into suites and execute a chosen subset |
+| Case detail view | Per-case screen with steps, the generated script (read-only), version history, and a diff against any earlier version |
+| Plain-English step editing | Steps are edited as sentences, not JSON. An edit that changes *which element* a step points at is re-verified against the live site before it saves; an edit that does not (a retyped value, a rename) saves instantly and free |
+| Cost shown before it is spent | The editor says how many steps will be re-checked and roughly how long, *before* Save is pressed. Re-grounding runs as a cancellable job with live per-step progress |
+| "Write it for me" | A step line typed in loose English is translated into the vocabulary the parser accepts — as a **proposal** you approve. `NL_STEPS_ENABLED`, see [docs/phases/PHASE_NL_STEPS_REPORT.md](docs/phases/PHASE_NL_STEPS_REPORT.md) |
+| "Ask for a change" | Describe a change in a sentence and get a proposed step list back, as a diff. Also a proposal — approving it goes through the ordinary parse/re-ground/version path |
+| Run retention | `RUN_RETENTION_DAYS` ages off `runs/` directories on a schedule |
+| History is access-scoped | `GET /api/runs` returns the newest 20 runs **you may see** — filtering happens before the cap, so unfiled runs on disk cannot crowd out your own (`TECH_DEBT.md` TD-54) |
+
+Two rules hold across all of it, and the reason is the same one both times — **one way in, one set
+of guarantees**:
+
+- A model **proposes**, it never writes. Every proposal is approved by a person and then travels
+  the same parse -> re-ground -> version path a hand-typed edit does.
+- Real credentials **never touch disk or the database**. They live in process memory for the
+  length of one walk; stored steps keep `${env:...}` references.
+
 ### What's Broken
 
 **Tracked in one place: [TECH_DEBT.md](TECH_DEBT.md)** — every known gap, ranked by severity, with
@@ -202,6 +237,23 @@ are in `.env.example`.
 | `MAX_ACCUMULATED_CASES` | No | Cap on cases accepted into the gate's pool across all rounds (default: 5) |
 | `CASE_SELECTION_WAIT_MS` | No | How long a gate round waits for your pick before timing out (default: 600000 / 10 min) |
 | `PORT` | No | Web UI port (default: 3000) |
+| `PLAYWRIGHT_TIMEOUT` | No | Per-test timeout in ms, read by `playwright.config.ts` (default: 50000) |
+
+#### Platform flags — every one defaults OFF
+
+Added by the phases in `docs/phases/`. The default is off in each case so that a server which has
+not been configured for a capability never advertises it.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTH_ENABLED` | `false` | Real Supabase sign-in. Off substitutes a synthetic local owner |
+| `DB_ENABLED` | `false` | Server-side database reads. Requires `SUPABASE_SERVICE_ROLE_KEY` |
+| `SUPABASE_URL` | — | Browser-safe project URL |
+| `SUPABASE_PUBLISHABLE_KEY` | — | Browser-safe key. Every table is RLS deny-all to it, by design |
+| `SUPABASE_SERVICE_ROLE_KEY` | — | **Secret.** Server-side only. Never sent to a browser |
+| `SIGNUP_ENABLED` | `true` | Note the default: sign-up is **on** unless set to `false`. Set it to `false` before exposing this server beyond localhost |
+| `NL_STEPS_ENABLED` | `false` | "Write it for me" — translate loosely-typed step lines. Spends one Gemini call per press |
+| `RUN_RETENTION_DAYS` | unset | Age off `runs/` directories after N days. Unset keeps everything |
 
 ### Playwright Config
 

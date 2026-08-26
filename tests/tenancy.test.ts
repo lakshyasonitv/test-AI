@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import path from "node:path";
 
 /**
  * Tenancy and role enforcement — implentationplan.md Step 3.4.
@@ -259,6 +261,65 @@ describe("tenancy — GET /api/runs is scoped to the caller's organisations", ()
       expect(typeof run.startedAt).toBe("number");
       expect(typeof run.hasEvents).toBe("boolean");
     }
+  });
+});
+
+/**
+ * The bug this pins was measured in production, not imagined: History showed 2 rows while 85 run
+ * directories sat on disk, and it read from the outside as "runs stopped being recorded".
+ *
+ * The cause was an ordering that looks equivalent and is not. `/api/runs` used to take the newest
+ * 20 directories off disk and THEN drop the ones whose ownership it could not prove. Every unfiled
+ * directory therefore consumed one of the twenty visible slots, so the list shrank toward empty as
+ * they accumulated — and unfiled directories accumulate for ordinary reasons (runs created before
+ * DB_ENABLED was turned on, a crashed dual-write, a stray process).
+ *
+ * Filtering first and capping second gives twenty rows the caller may actually see.
+ */
+describe("history — the cap is applied AFTER access filtering, not before", () => {
+  const NOISE: string[] = [];
+
+  beforeAll(() => {
+    // RUN_A has an ownership row in the fixture but no directory — the rest of this file only
+    // needs the row. The history list is disk-derived, so it needs both to be reachable at all.
+    mkdirSync(path.join("runs", RUN_A), { recursive: true });
+    writeFileSync(
+      path.join("runs", RUN_A, "00-input.json"),
+      JSON.stringify({ url: "https://a.test", prompt: "org A run" }),
+      "utf8",
+    );
+
+    // 25 directories, all newer than RUN_A (2026-01-01) and none of them in the RUNS fixture, so
+    // every one is unowned. More than the cap, which is the whole point: under the old order they
+    // filled the window on their own and RUN_A could never be reached.
+    for (let i = 0; i < 25; i++) {
+      const id = `2026-06-${String(i + 1).padStart(2, "0")}T00-00-00-000Z-eeee${String(i).padStart(4, "0")}`;
+      const dir = path.join("runs", id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, "00-input.json"), JSON.stringify({ url: "https://noise.test", prompt: "noise" }), "utf8");
+      NOISE.push(id);
+    }
+  });
+
+  afterAll(() => {
+    for (const id of [...NOISE, RUN_A]) rmSync(path.join("runs", id), { recursive: true, force: true });
+  });
+
+  it("still returns the caller's own run even when newer unowned runs outnumber the cap", async () => {
+    const res = await request(app).get("/api/runs").set(as(OWNER_A));
+    expect(res.status).toBe(200);
+    expect(res.body.map((r: { runId: string }) => r.runId)).toContain(RUN_A);
+  });
+
+  it("returns none of the unowned noise — filtering is not weakened by doing it first", async () => {
+    const res = await request(app).get("/api/runs").set(as(OWNER_A));
+    const returned = res.body.map((r: { runId: string }) => r.runId);
+    for (const id of NOISE) expect(returned).not.toContain(id);
+  });
+
+  it("still honours the cap — filtering first must not turn the list unbounded", async () => {
+    const res = await request(app).get("/api/runs").set(as(OWNER_A));
+    expect(res.body.length).toBeLessThanOrEqual(20);
   });
 });
 

@@ -4,7 +4,7 @@ import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
-import { listRuns } from "../runStore.js";
+import { allRunIds, listRuns } from "../runStore.js";
 import { Semaphore } from "./concurrency.js";
 import { askCredentials, settle } from "./pendingCredentials.js";
 import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
@@ -74,7 +74,7 @@ import { runReplay } from "../stages/replay.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
 import { credentialsFromEnv, credentialKindsNeeded, type Credentials } from "../stages/credentials.js";
-import { proposeRewrite, consumeRewriteAttempt } from "./rewrite.js";
+import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsEnabled } from "./rewrite.js";
 import {
   cancelJob, createJob, emitJobEvent, getJob, isCancelled, jobEvents, subscribeJob,
 } from "./regroundJobs.js";
@@ -353,9 +353,18 @@ app.get("/api/runs/:runId/state", requireRunRole("viewer"), (req, res) => {
 // contract tests working untouched (Rule 1). Disk is still what's read; flipping authority to the
 // database is Step 3.3.
 app.get("/api/runs", requireRole("viewer"), async (req, res) => {
-  const diskRuns = listRuns();
   try {
-    res.json(await filterRunsForUser(req.user?.id ?? LOCAL_USER_ID, diskRuns));
+    // FILTER FIRST, THEN CAP. The other order looks equivalent and is not: filtering removes runs
+    // whose ownership cannot be proved, so capping first let every unfiled directory on disk eat
+    // one of the twenty visible slots. History then shrank as those accumulated and read, from the
+    // outside, as "no runs happened" — measured at 20 directories on disk yielding 2 rows.
+    //
+    // Filtering ids is also the cheap half: it is one database lookup over the id list, whereas
+    // summarising is a full event-log parse per run. So only the survivors are summarised, and
+    // only the newest 20 of those.
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    const visible = await filterRunsForUser(userId, allRunIds().map((runId) => ({ runId })));
+    res.json(listRuns(visible.map((r) => r.runId)));
   } catch (err) {
     console.error("[authz] run filtering failed:", (err as Error)?.message ?? err);
     res.status(500).json({ error: "could not list runs" });
@@ -855,6 +864,10 @@ app.get("/api/cases/:caseId/steps", requireRole("viewer"), async (req, res) => {
       currentVersion: found.currentVersion,
       expected: found.ir.meta.title,
       steps: found.ir.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+      // ADDITIVE, OPTIONAL. Tells the editor whether to offer "Write it for me" on an
+      // unreadable line. A capability the server does not have must not be advertised as a
+      // button that 404s, and the editor has no parser of its own to decide this locally.
+      nlSteps: nlStepsEnabled(),
     });
   } catch (err) { sendAccessError(res, err); }
 });
@@ -1181,6 +1194,35 @@ app.post("/api/cases/:caseId/rewrite", requireRole("tester"), async (req, res) =
   try {
     const found = await getCase(...libraryCtx(req), req.params.caseId);
     res.json(await proposeRewrite(found.ir, typeof instruction === "string" ? instruction : ""));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * "Write it for me" — translate loosely-typed step lines into the vocabulary the parser reads.
+ *
+ * The sibling of /rewrite, and gated the same way: it PROPOSES, it never saves. Approving a
+ * translation drops the sentences into the editor, and saving them goes back through POST /steps
+ * like any hand-typed edit — one parser, one grounder, one version history, whoever wrote the
+ * words.
+ *
+ * Behind NL_STEPS_ENABLED, default OFF. A server with no Gemini key, or an operator who does not
+ * want a model touching step text at all, gets a 404 and an editor that never shows the button.
+ *
+ * Shares the rewrite rate limiter on purpose: both spend one Gemini call per press on behalf of
+ * one signed-in person, so one allowance covering both is the honest ceiling. Two separate
+ * budgets would let a user double their model spend by alternating buttons.
+ */
+app.post("/api/cases/:caseId/steps/translate", requireRole("tester"), async (req, res) => {
+  if (!nlStepsEnabled()) {
+    return res.status(404).json({ error: "plain-language steps are not available — this server has NL_STEPS_ENABLED off" });
+  }
+  const userId = req.user?.id ?? LOCAL_USER_ID;
+  if (!consumeRewriteAttempt(userId)) {
+    return res.status(429).json({ error: "too many rewrite requests — try again in a few minutes" });
+  }
+  try {
+    const found = await getCase(...libraryCtx(req), req.params.caseId);
+    res.json(await proposeStepTranslation(found.ir, req.body?.steps));
   } catch (err) { sendAccessError(res, err); }
 });
 

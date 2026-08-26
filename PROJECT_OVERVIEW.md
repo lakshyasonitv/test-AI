@@ -104,8 +104,11 @@ field, `ARCHITECTURE.md` is the real reference.
 
 ## The server layer
 
-`src/server/index.ts` is a small Express app — no database, no auth, no session store. Its job is
-almost entirely "kick off `runPipeline()` and let clients watch it happen":
+`src/server/index.ts` is an Express app in two halves.
+
+The **original half** is almost entirely "kick off `runPipeline()` and let clients watch it
+happen" — no database, no auth, no session store. That half still works exactly as it always did,
+and with every platform flag off it is the *only* half that exists:
 
 | Route | Purpose |
 |---|---|
@@ -146,6 +149,51 @@ Run history itself is intentionally simple: `runStore.ts` just reads `runs/<runI
 off disk (see "What gets persisted" below) — there's no separate database to keep in sync with
 the filesystem, which is also why `GET /api/runs` has a hard cap instead of real pagination.
 
+### The platform half
+
+The **second half** turns the tool into something a team can share: accounts, projects, a library
+of saved tests, and an editor for them. It was built in the phases logged under `docs/phases/`,
+and every part of it is behind an env flag that defaults to **off**.
+
+| Area | Routes | What it is |
+|---|---|---|
+| Identity | `/api/auth/*`, `/api/signup` | Supabase Auth. `AUTH_ENABLED=false` substitutes a synthetic local **owner** — the permission checks still run and still pass, rather than being skipped |
+| Org + team | `/api/organisations/*`, `/api/members/*` | Four roles: `viewer` < `tester` < `admin` < `owner` |
+| Projects | `/api/projects*` | Create and update, never delete. A project may have no URL |
+| Library | `/api/cases*`, `/api/suites*` | Saved test cases, their version history, and suites you can run a chosen subset of |
+| Step editing | `/api/cases/:id/steps*` | Read steps as English, estimate what a save costs, save it as a cancellable job |
+| Model help | `/api/cases/:id/rewrite`, `/api/cases/:id/steps/translate` | A model **proposes** a step list; it never writes |
+
+**Two access axes, deliberately separate.** Your org **role** is what you may *do* (a `viewer` can
+look, a `tester` can author, an `admin` can assign). Your **project membership** is what you may
+*see*. A brand-new account is a `viewer` who is a member of nothing, so it sees an empty app until
+an owner or admin adds it to a project. Neither axis alone is enough: a `tester` who is not a
+member of a project cannot touch its cases, and an `admin` still only sees the projects they are
+in.
+
+**Editing a saved test is the interesting part.** Steps are shown as sentences —
+`Click on button "Sign In"` — and edited as text. When you save, the server parses each sentence
+back onto the step it came from, which produces a distinction the whole cost model rests on:
+
+- Changing a step's **value** (retyping a password, fixing a typo in a name) leaves the *element*
+  it points at alone. The stored grounding survives, so the save is **instant and free** — no
+  browser opens at all.
+- Changing **which element** a step points at strips that grounding by construction. Now the new
+  target has to be verified against the live site, which means replaying the earlier steps to
+  arrive at the right page first — you cannot check step 7 without executing steps 1 through 6.
+
+So the editor tells you which it is **before** you press Save: how many steps will be re-checked,
+roughly how long, and whether the walk will need to sign in. The save then runs as a job with live
+per-step progress and a Cancel button, and nothing is written unless it finishes.
+
+**And when the sentence is wrong,** the parser says so within about 400ms of you stopping typing —
+and offers **"Write it for me"**. A model translates the loose line (`press the admin button at the
+top`) into the vocabulary the parser accepts (`Click on button "Admin"`) and shows it as a diff.
+Approving it only fills the editor; you still press Save, and it still goes through the same parse,
+the same re-ground, the same version history. That rule — **a model proposes, a person approves,
+and there is only ever one way into the library** — is `DECISIONS.md` D-27, and it applies equally
+to the "Ask for a change" card next to it.
+
 ---
 
 ## The frontend
@@ -157,7 +205,9 @@ most of its source (config, components, a lib layer) was missing from disk and i
 so it has since been deleted. Everything below is `public/`.
 
 The three files: `public/index.html` (structure — one `<section class="view" data-view="...">`
-per screen), `public/app.js` (~1800 lines — all behavior, all state, all rendering), and
+per screen), `public/app.js` (~4400 lines — all behavior, all state, all rendering, including every platform
+screen: login and sign-up, the projects tree, the Team screen, suites, and the case detail screen
+with its step editor, live estimate, job progress and proposal diffs), and
 `public/style.css` (the visual system — a warm cream/terracotta/serif palette, deliberately
 single-theme, with every component class documented as a *contract*: `app.js` drives the UI
 purely by toggling class names like `.hidden`, `li.completed`, `.phase-badge.running`,
@@ -274,3 +324,4 @@ source of truth — don't take this file's word over theirs:
 | Why a specific design choice was made (and what was rejected) | [DECISIONS.md](DECISIONS.md) |
 | Working rules for an agent editing this repo | [CLAUDE.md](CLAUDE.md) |
 | What this is / how to run it / current capabilities | [README.md](README.md) |
+| What each shipped phase changed, and how to roll it back | [docs/phases/](docs/phases/) |

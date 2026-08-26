@@ -1310,3 +1310,117 @@ summary fields.
 per-run summary file at the end of a run (status, prompt, url, suite counts) and have
 `listRuns()` read *that* instead of replaying the event log — the data it needs is already
 computed at `done` time. (2) also removes the incentive to keep the cap low.
+
+---
+
+
+**Update (TD-54).** The cap is now applied *after* access filtering, so the twenty rows
+are twenty rows the caller may actually see rather than twenty directories that mostly get
+discarded. The remediation below is unchanged and still wanted — this only removed the way
+the cap was silently eating the whole list.
+## The platform layer — found while building the case library and editor
+
+Each of these is recorded in the phase report that found it (`docs/phases/`) and repeated here so
+the ranked list stays the single place to look.
+
+### TD-52. `replayAndSnapshot`'s cache key omits the credentials it was given — Medium / Accidental
+
+**Symptom.** Fix a wrong username or password in the credential prompt, retry the save, and the
+walk returns the **stale failed snapshot** instead of signing in again. The retry appears to run
+and appears to fail the same way, which reads as "the fix did not work" rather than "the fix was
+never tried".
+
+**Cause.** The prefix-replay cache is keyed on `(baseUrl, prefix, policy)`. That is correct for
+what the cache was built for — two edits on the same page sharing one browser walk — but
+credentials are an input to the walk that the key does not mention, so two walks that differ *only*
+in credentials collide.
+
+**Why it matters more than it looks.** The failure is silent and self-reinforcing: the second
+attempt is cheaper and faster than the first, which is exactly what a successful cache hit looks
+like from outside.
+
+**Remediation.** Include a non-reversible fingerprint of the credentials in the key — a hash, never
+the values, since D-09 keeps secrets off disk and the cache key is a plain string. Alternatively,
+bypass the cache entirely for any walk that consumed credentials: those walks are rare and already
+the expensive path, so the lost sharing costs little.
+
+*Found in `PHASE_CASE_CREDENTIALS_REPORT.md`, still open.*
+
+### TD-53. A malformed case id returns 500 with raw Postgres text — Low / Accidental
+
+**Symptom.** `GET /api/cases/xyz/steps` (or any `/api/cases/:caseId/*` route) with a non-UUID id
+returns `500 {"error":"could not read case: invalid input syntax for type uuid: \"xyz\""}`.
+
+**Cause.** `getCase` passes the path parameter straight to the query and lets the driver's error
+text through. A value that cannot be an id is a **client** error — the right answer is 404, the
+same one a well-formed-but-absent id gets.
+
+**Why it matters.** Two small things, neither urgent. It tells an authenticated caller which
+database engine is behind the API, and it turns a routine typo into a 5xx, which is the class of
+error that pages an on-call.
+
+**Remediation.** Validate the parameter shape at the route boundary and 404 on a mismatch, so the
+answer for "no such case" is the same whether the id was malformed or simply absent.
+
+*Found in `PHASE_NL_STEPS_REPORT.md`, out of that phase's scope, not fixed.*
+
+### TD-54. `/api/runs` capped the list BEFORE access-filtering it, so history shrank toward empty — High / Accidental — Fixed
+
+**Symptom.** History showed **2 runs** while **85 run directories** sat on disk and the pipeline was
+writing new ones correctly. From the outside this is indistinguishable from "runs stopped being
+recorded", which is how it was reported.
+
+**Cause.** An ordering that looks equivalent and is not:
+
+```ts
+const diskRuns = listRuns();                       // newest 20 DIRECTORIES off disk
+res.json(await filterRunsForUser(userId, diskRuns)); // then drop what you cannot prove you own
+```
+
+`filterRunsForUser` removes any run with no ownership row — correctly, and by design (TD-49's
+sibling rule: "we cannot tell whose this is" must mean nobody's). But because the cap ran **first**,
+every unfiled directory consumed one of the twenty visible slots before the filter ever saw it.
+Measured directly: of the newest 20 directories, exactly **2** had rows.
+
+**Why it degrades rather than fails.** Unfiled directories accumulate for entirely ordinary
+reasons — runs created before `DB_ENABLED` was switched on, a dual-write that lost its race, a
+stray process, and (TD-55) the test suite itself. Every one of them permanently costs a slot, so
+the visible history shrinks monotonically while every individual component reports success.
+
+**Fix.** Filter first, cap second. `listRuns(ids?)` now takes the id list to summarise, and the
+route hands it only the ids that survived filtering:
+
+```ts
+const visible = await filterRunsForUser(userId, allRunIds().map((runId) => ({ runId })));
+res.json(listRuns(visible.map((r) => r.runId)));
+```
+
+This is also the cheaper order: filtering is one database lookup over an id list, while
+summarising is a full event-log parse per run — so only survivors pay for a parse.
+
+Verified on the real server: **2 rows -> 20 rows**, same data, same response shape. Pinned by three
+cases in `tests/tenancy.test.ts` ("the cap is applied AFTER access filtering"), one of which was
+confirmed to fail against the old ordering before the fix was kept.
+
+**Still open, and related:** TD-51 — there is no paging past 20 in either order.
+
+### TD-55. The test suite leaked two real run directories into `runs/` on every invocation — Medium / Accidental — Fixed
+
+**Symptom.** `ls runs/ | wc -l` grew by exactly 2 on every `npx vitest run`. The directories held
+genuine pipeline output (`generated.spec.ts`, `cases/`, `07-suite-summary.json`) against
+`https://example.com`, labelled "Replayed 2 saved cases" / "Replayed 1 saved case".
+
+**Cause.** Two tests in `tests/library.test.ts` exercise the **real** `POST /api/replay` route,
+which is the point — it is where authorization actually happens. But that route calls
+`makeRunId()` itself, so unlike the file's other run fixtures the id cannot be fixed in advance,
+and nothing recorded what the route returned. The existing `afterAll` cleaned only the two
+hard-coded `TEST_RUN_IDS`.
+
+**Why it mattered more than ordinary debris.** Combined with TD-54, it was actively degrading the
+product: history reads the newest directories off disk, so two fresh unfiled runs per test
+invocation pushed two of the user's real runs out of the visible window every time the suite ran.
+A test that quietly makes the application worse is worse than no test.
+
+**Fix.** `trackMintedRun(res)` records `res.body.runId` from any response that carries one, and
+`afterAll` removes those alongside the fixed ids. Verified: `runs/` count unchanged across a full
+suite run (87 -> 87, previously 85 -> 87).

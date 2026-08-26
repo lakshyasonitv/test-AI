@@ -234,9 +234,16 @@ export function summariseRun(runId: string): RunSummary {
  * return value is untouched — deliberately fire-and-forget, so this function stays synchronous
  * and /api/runs is never delayed (or broken) by a database round-trip. Flipping authority to the
  * database is Step 3.3, gated on this reporting zero divergence over a few days of real use.
+ *
+ * `ids` exists so the CAP CAN BE APPLIED AFTER ACCESS FILTERING, not before it. That ordering is
+ * not cosmetic. `/api/runs` drops any run whose ownership it cannot prove, so capping first meant
+ * every unfiled run on disk silently consumed one of the twenty visible slots — and the history
+ * shrank toward empty as they accumulated, while looking exactly like "no runs happened". It was
+ * measured at 20 disk directories yielding 2 visible rows. Callers that want the raw disk window
+ * pass nothing and get the old behaviour.
  */
-export function listRuns(): RunSummary[] {
-  const diskRuns = allRunIds().slice(0, 20).map(summariseRun);
+export function listRuns(ids: string[] = allRunIds()): RunSummary[] {
+  const diskRuns = ids.slice(0, 20).map(summariseRun);
   shadowCompareRuns(diskRuns); // no await: never blocks or alters the response
   return diskRuns;
 }

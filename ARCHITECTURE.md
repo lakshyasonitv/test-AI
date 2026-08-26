@@ -272,6 +272,14 @@ timeout.
 | `domExtract.ts` | No | Cheerio DOM extraction — Node port of the deleted Python parser |
 | `ir.ts` | Gemini | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), login-prefix injection (`buildLoginPrefix`/`needsLoginPrefix`), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
 
+**Added for the case library and the editor:**
+
+| File | LLM? | Purpose |
+|------|------|---------|
+| `stepText.ts` | No | **The IR <-> English mapping, in one place.** `formatIrStep` renders a step as the sentence a person edits; `parseIrStep` reads it back, merged onto the step it came from. Also owns `STEP_VOCABULARY` and `estimateRegrounding` (what a save will cost, computed without doing any of it). `public/app.js` has a display-only copy of `formatIrStep` that `tests/stepText.test.ts` pins identical — drift is a failing test, not a silent bug |
+| `caseEdit.ts` | Gemini (ceiling only) | Re-grounds the steps whose **target** changed, by replaying the earlier steps to arrive at the right page. Grounding is DOM-first, so it usually spends no model call at all |
+| `replay.ts` | No | Walks a stored IR prefix in a real browser and snapshots where it lands. Prefix-cached, so two edits on the same page share one walk |
+
 ### `src/schema/` — Data Contracts (3 files)
 
 | File | Purpose |
@@ -307,7 +315,7 @@ timeout.
 | `llmCache.ts` | Two-tier LLM response cache (in-memory, 30-min TTL + disk, no expiry); every stage's cache key also hashes its system prompt + model name (`DECISIONS.md` D-10) |
 | `testStrategy.ts` | Static QA knowledge: coverage taxonomy, scope classification, filtering |
 
-### `src/server/` — Web Server (7 files)
+### `src/server/` — Web Server (16 files)
 
 | File | Purpose |
 |------|---------|
@@ -317,7 +325,21 @@ timeout.
 | `pendingCaseSelection.ts` | Parks a paused run's case-review round in memory; resolved by the UI's decision or `CASE_SELECTION_WAIT_MS` timeout |
 | `caseAccumulator.ts` | File-backed pool of accepted cases across gate rounds, capped at `MAX_ACCUMULATED_CASES` |
 | `caseHistoryLedger.ts` | File-backed record of every case title ever shown and its outcome, so rejections never resurface |
-| `index.ts` | Express: `/api/runs` CRUD, credential-prompt + case-selection endpoints, SSE stream, polling, static files, `/api/health` diagnostic endpoint, entry-URL validation |
+| `index.ts` | Express: `/api/runs` CRUD, credential-prompt + case-selection endpoints, SSE stream, polling, static files, `/api/health` diagnostic endpoint, entry-URL validation — plus every platform route below |
+
+**The platform layer** (added by the phases in `docs/phases/`; every file is inert with its flag off):
+
+| File | Purpose |
+|------|---------|
+| `auth.ts` | Resolves the caller's identity on every `/api/*` route. With `AUTH_ENABLED=false` it returns a synthetic local **owner** — a real identity that passes real checks, not a bypass that skips them |
+| `authz.ts` | The two access axes: org **role** (`viewer` < `tester` < `admin` < `owner`) = what you may do; project **membership** = what you may see. `AccessError` carries the HTTP status |
+| `organisations.ts` | Organisation records and their member roster |
+| `projects.ts` | Projects, their membership, create/update. No delete — deliberately |
+| `library.ts` | The test-case library: cases, versions, suites, suite membership, and every access check on them |
+| `signup.ts` | Sign-up through Supabase's Admin API rather than the client SDK — the free tier's confirmation mailer hangs, and a 504 on sign-up is indistinguishable from a broken server. `SIGNUP_ENABLED` defaults **on**, so turn it off before exposing the server |
+| `regroundJobs.ts` | A re-ground is a job, not a blocking request: `POST -> 202 {id}` + SSE + polling + cancel. The same protocol runs use, because a 90-second PATCH can report neither progress nor be stopped |
+| `rewrite.ts` | Where a model proposes step text and **never writes**: `proposeRewrite` ("ask for a change") and `proposeStepTranslation` ("write it for me"). Both return sentences, not IR, so approving one re-enters the ordinary parse/re-ground path |
+| `retention.ts` | Ages off `runs/` directories on a schedule, per `RUN_RETENTION_DAYS` |
 
 ### `public/` — Frontend (5 files)
 
@@ -327,7 +349,7 @@ timeout.
 | `preview.js` | Static preview/demo states for UI development |
 | `index.html` | Single-page HTML shell, case-selection panel, theme toggle |
 | `style.css` | Dark theme (default) + `[data-theme="light"]` override, responsive design |
-| `app.js` | Single-page app: run form, phase UI, suite cards, history, case-selection panel, theme toggle, renders executed IR steps (not raw case prose) in the results panel |
+| `app.js` | Single-page app: run form, phase UI, suite cards, history, case-selection panel, theme toggle, renders executed IR steps (not raw case prose) in the results panel. Also the whole platform UI — login/sign-up, projects tree, Team screen, suites, and the case detail screen with its step editor, live estimate, job progress and diff-based proposal cards |
 
 ---
 

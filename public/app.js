@@ -2500,8 +2500,50 @@ function refreshCaseSaveAffordance() {
   });
 
   const errEl = document.getElementById("cdEstimateError");
-  if (errEl) errEl.innerHTML = caseEditor.estimateError
-    ? `<p class="team-error">${escapeHtml(caseEditor.estimateError)}</p>` : "";
+  if (!errEl) return;
+  if (!caseEditor.estimateError) { errEl.innerHTML = ""; return; }
+
+  // The estimate is the cheapest place a badly-worded line surfaces — it runs while the person is
+  // still typing, before any browser or save. So it is also the right place to offer the way out.
+  // Rendered HERE rather than in paintStepsTab because this function deliberately does not
+  // repaint: a repaint mid-typing steals the caret out of the line being fixed.
+  const offer = caseEditor.nlSteps && roleAtLeast(auth.role, "tester");
+  errEl.innerHTML = `
+    <p class="team-error">${escapeHtml(caseEditor.estimateError)}</p>
+    ${offer ? `<button type="button" class="dl-btn-inline" id="cdTranslate">Write it for me</button>` : ""}`;
+  const tb = document.getElementById("cdTranslate");
+  if (tb) tb.addEventListener("click", () => doTranslateSteps(tb));
+}
+
+/**
+ * Ask the server to say the unreadable line(s) in the vocabulary the parser accepts.
+ *
+ * Sends the CURRENT draft, gets back a proposal, and puts it in exactly the same `caseEditor
+ * .proposal` slot the "Ask for a change" card uses — so it renders through the same diff, is
+ * approved with the same Apply button, and Apply still only FILLS the editor. Nothing here is a
+ * shortcut past Save: the sentences still get parsed, still get re-grounded, still mint a version.
+ * A second approval path would be a second set of guarantees.
+ */
+async function doTranslateSteps(btn) {
+  if (!caseEditor) return;
+  const editor = caseEditor;
+  btn.disabled = true;
+  btn.textContent = "Writing…";
+  try {
+    const proposal = await api(`/api/cases/${encodeURIComponent(editor.caseId)}/steps/translate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ steps: caseLinesPayload() }),
+    });
+    if (caseEditor !== editor) return;
+    editor.proposal = proposal;
+    editor.notice = "";
+  } catch (err) {
+    if (caseEditor !== editor) return;
+    editor.proposal = null;
+    editor.estimateError = err.message;
+  }
+  editor.repaint?.();
 }
 
 // ------------------------------------------------------------------------ save
@@ -2785,6 +2827,10 @@ async function renderCaseView(caseId, routeProjectId) {
       estimate: null, estimateTimer: null, estimateError: "",
       job: null, errorAt: null, errorMsg: "", errorKind: "",
       conflict: null, askText: "", proposal: null, notice: "", reloadNeeded: false,
+      // Whether this server will translate loosely-typed lines. Comes from the server rather
+      // than being assumed, because the browser has no parser and no Gemini key of its own —
+      // guessing would mean offering a button that 404s.
+      nlSteps: stepsDoc.nlSteps === true,
     };
   } else if (caseEditor.reloadNeeded) {
     // A save landed: adopt the server's canonical version/steps without losing the notice.
@@ -2796,6 +2842,10 @@ async function renderCaseView(caseId, routeProjectId) {
     if (caseEditor?.reloadNeeded) return renderCaseView(caseId, projectId);
     paintCaseScreen();
   };
+  // Module-scope helpers (refreshCaseSaveAffordance, doTranslateSteps) live outside this
+  // closure and still need a way to redraw. They get the SAME `repaint` the rest of the screen
+  // uses, so a reload-needed editor is honoured identically no matter who triggered the paint.
+  caseEditor.repaint = repaint;
 
   function paintCaseScreen() {
     const dirty = caseEditorDirty();
@@ -3005,6 +3055,10 @@ async function renderCaseView(caseId, routeProjectId) {
             id: caseEditor.lines[i]?.id ?? `s${i + 1}`, text,
           }));
           caseEditor.notice = "Proposal applied to the editor — nothing is saved until you press Save.";
+          // The line that failed to parse has just been replaced, so the message about it is
+          // already wrong. Clearing it now rather than waiting for the next estimate keeps the
+          // "Write it for me" button from sitting under a proposal the user just accepted.
+          caseEditor.estimateError = "";
         }
         caseEditor.proposal = null;
         scheduleCaseEstimate(repaint);
@@ -3037,8 +3091,16 @@ async function renderCaseView(caseId, routeProjectId) {
     const rows = [];
     left.forEach((l) => { if (l.k === "removed") rows.push({ k: "del", t: l.t }); });
     right.forEach((r) => rows.push({ k: r.k === "added" ? "add" : "same", t: r.t }));
+    // Both the rewrite and the translation land here. `translatedIndexes` is what distinguishes
+    // them, and the heading matters: "we changed your test" and "we spelled your test properly"
+    // deserve different amounts of scrutiny from the person about to approve the diff.
+    const translated = Array.isArray(p.translatedIndexes);
     return `
       <div class="cd-proposal">
+        <p class="cd-proposal-note">${translated
+          ? `Re-worded line${p.translatedIndexes.length === 1 ? "" : "s"} ${
+              p.translatedIndexes.map((i) => i + 1).join(", ")} — the rest is untouched.`
+          : "Proposed change"}</p>
         ${p.note ? `<p class="cd-proposal-note">${escapeHtml(p.note)}</p>` : ""}
         <div class="cd-diff">
           ${rows.map((r) => `<div class="cd-diff-line cd-diff-${r.k}">${escapeHtml(r.t)}</div>`).join("")}

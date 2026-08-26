@@ -638,3 +638,45 @@ substitution.
 which is correct for an app that is entirely behind a login. A case with no `targetUrl` at all
 defaults to receiving the prefix — a spurious login costs a few seconds; a missing one fails the
 whole case, so the safer default is to sign in.
+
+---
+
+## D-27. A model proposes step TEXT and never writes — for both the rewrite and the translation
+
+**Context.** Two features let a model touch a saved test's steps: "ask for a change" (describe an
+edit in a sentence) and "write it for me" (a step line typed in loose English that the parser
+cannot read). Either could have been built the obvious way — the model emits IR, the server stores
+it. Both would then have been a *second way into the library*: a path where a test is authored by
+something that has not looked at the site since the case was created, with no re-grounding, no
+version diff, and no person in between.
+
+The translation case makes the risk concrete. `parseIrStep` defines exactly eleven sentence shapes.
+A model asked to produce IR directly is a model that can produce **any** shape — including one the
+save path would accept structurally and then fail on at run time, weeks later, blaming an innocent
+step.
+
+**Decision.** Both features return **step text**, never IR, and **never save**.
+
+1. The model is shown `STEP_VOCABULARY` — the one exported list, owned by `stepText.ts` next to
+   the parser that defines it, never re-typed into a prompt file.
+2. Every line the model returns is run back through **`parseIrStep`** on the server, before the
+   proposal is shown. A sentence the parser cannot read never reaches a person.
+3. The proposal renders as a diff. Approving it only **fills the editor** — the person still
+   presses Save, still sees the estimate, still gets the re-ground and the new version.
+4. Translation is **line-for-line**: a differing line count is a hard failure, and lines that
+   already parsed are restored from the user's draft rather than taken from the model.
+
+**Rejected: letting the model emit IR and validating it with Zod.** Zod proves the shape is
+well-formed, not that the target exists on the page — that is what grounding is for, and grounding
+happens on the save path the model would have skipped.
+
+**Rejected: trusting the prompt's "keep the other lines identical" instruction.** A reworded
+untouched line parses perfectly, so no gate catches it, and it silently converts a free save into a
+browser walk the person never asked for. Rebuilding the list from the drafts makes the instruction
+unnecessary to trust — which is D-03 ("prompt nudges are never the only guard") applied again.
+
+**Consequences.** There is one parser, one grounder, one version history, and one approval step,
+regardless of who wrote the sentences. The worst a misbehaving model can do is fail, and a failure
+costs one call and no writes. It also means neither feature can ever restructure a test on its own:
+translation fixes *wording*, and anything that adds or removes a step goes through the rewrite
+card, where the person sees the inserted line in the diff before approving it.

@@ -198,8 +198,25 @@ const as = (userId: string) => ({ Authorization: `Bearer ${userId}` });
  * would leave debris that the Step 3.2 shadow comparison then reports as "missing from database".
  */
 const TEST_RUN_IDS = ["2026-01-01T00-00-00-000Z-abcdabcd", "2026-01-02T00-00-00-000Z-abcdabce"];
+
+/**
+ * Run ids minted by the REAL `POST /api/replay` route during these tests.
+ *
+ * Unlike TEST_RUN_IDS these cannot be fixed in advance — the route calls `makeRunId()` itself, so
+ * the only way to clean them up is to record what it actually returned. Without this, every
+ * `npx vitest run` left two fresh directories in `runs/` forever, and they were not merely debris:
+ * the history list reads the newest directories off disk, so accumulated test runs pushed the
+ * user's real runs out of the visible window (see tenancy.test.ts, "the cap is applied AFTER
+ * access filtering"). Test output that quietly degrades the product is worse than none.
+ */
+const MINTED_RUN_IDS: string[] = [];
+const trackMintedRun = (res: { body?: { runId?: string } }) => {
+  if (res.body?.runId) MINTED_RUN_IDS.push(res.body.runId);
+  return res;
+};
+
 afterAll(() => {
-  for (const id of TEST_RUN_IDS) {
+  for (const id of [...TEST_RUN_IDS, ...MINTED_RUN_IDS]) {
     rmSync(path.join("runs", id), { recursive: true, force: true });
   }
 });
@@ -445,7 +462,7 @@ describe("role gating on the library routes", () => {
 
     it(`tester gets ${c.tester} on ${c.name}`, async () => {
       const req = (request(app) as any)[c.method](c.path).set(as(TESTER));
-      const res = c.body ? await req.send(c.body) : await req;
+      const res = trackMintedRun(c.body ? await req.send(c.body) : await req);
       expect(res.status).toBe(c.tester);
     });
   }
@@ -666,7 +683,9 @@ describe("a case's own run history", () => {
   it("records a row per case in a MULTI-case replay — the reason this is a join table", async () => {
     await request(app).post(`/api/suites/${SUITE_SMOKE}/cases`).set(as(TESTER)).send({ caseId: CASE_LOGIN });
     await request(app).post(`/api/suites/${SUITE_SMOKE}/cases`).set(as(TESTER)).send({ caseId: CASE_CART });
-    const res = await request(app).post("/api/replay").set(as(TESTER)).send({ suiteId: SUITE_SMOKE });
+    const res = trackMintedRun(
+      await request(app).post("/api/replay").set(as(TESTER)).send({ suiteId: SUITE_SMOKE }),
+    );
     expect(res.status).toBe(202);
     await vi.waitFor(() => expect(db.run_cases.length).toBe(2), { timeout: 5000 });
     // Both cases ran under ONE run id, and both are individually addressable.

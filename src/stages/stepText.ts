@@ -42,6 +42,33 @@ import { credentialKindsNeeded } from "./credentials.js";
  */
 
 // ---------------------------------------------------------------------------
+// The vocabulary, as one exported list
+// ---------------------------------------------------------------------------
+
+/**
+ * Every sentence shape `parseIrStep` accepts, written the way a person would type it.
+ *
+ * Exported because two callers need to SHOW it: the "ask for a change" prompt and the free-text
+ * translation prompt both tell a model "use only these shapes". A second hand-maintained copy of
+ * the list in a prompt file is TD-07 in miniature — the parser would gain a form, the prompt would
+ * not, and the model would keep proposing sentences that no longer needed rewriting (or worse,
+ * stop proposing ones that are now valid). One list, next to the parser that defines it.
+ */
+export const STEP_VOCABULARY: readonly string[] = [
+  `Go to /path`,
+  `Click on button "Name"`,
+  `Type "value" into textbox "Name"`,
+  `Choose "option" from combobox "Name"`,
+  `Check checkbox "Name"`,
+  `Press the Enter key`,
+  `Wait briefly`,
+  `Check that button "Name" appears on the page`,
+  `Check that button "Name" is not shown`,
+  `Check that the text "some words" is displayed`,
+  `Check the page address contains "/path"`,
+];
+
+// ---------------------------------------------------------------------------
 // IR -> English
 // ---------------------------------------------------------------------------
 
