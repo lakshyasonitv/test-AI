@@ -1781,7 +1781,7 @@ comparison are all structurally blind to it: the junk is present in *both* arms 
 prompts, so every comparison cancels it out. It was found by reading the View's output during §6 —
 a defect in the INPUT, surfaced by an exercise designed to compare OUTPUTS.
 
-### TD-63. The `forms` block sends every hidden field's name AND value to the model, including CSRF tokens — Medium / Accidental
+### TD-63. The `forms` block sent every hidden field's name AND value to the model, including CSRF tokens — High / Accidental — Fixed in the prompts; the run artifacts are TD-64
 
 **Distinct from TD-62, and not fixed by it.** TD-62 filters the `elements` array. `toLiteModel` and
 `toMicroModel` also emit a **`forms` block**, copied through with `fields.slice(0, 20)` and no
@@ -1799,22 +1799,82 @@ What goes out on the amazon run includes `anti-csrftoken-a2z` with its live toke
 (`hEj/Wh8642+o8zAEP15lt9A5gFAdyyTAqoNqg9Fa9jHD`), plus `appAction`, `claimType`, `countryCode` and
 the rest of the OpenID handshake parameters.
 
-**Why it is Medium rather than Low.** A CSRF token is short-lived and scoped to a session the
-crawler owned, so this is not the same class as leaking a password. But `DECISIONS.md` D-09 is
-"secrets never reach disk", and these values reach an LLM provider and then the prompt cache on
-disk — a channel that rule was written to close. The prompt cache never expires
-(`TECH_DEBT.md` TD-22 territory), so the value persists.
+**Severity: High, not Medium.** `DECISIONS.md` D-09 is "secrets never reach disk", and this is the
+exact channel that rule exists to close. The value is session-scoped and short-lived, which is why
+it is not Critical — but it left the process to a third-party API, and it was written to disk in a
+publicly-served directory.
 
-**Why it is not Higher.** It is two runs out of 38, the values are session-scoped, and nothing in
-the pipeline acts on them.
+**Fixed.** `promptFormFields(form, cap)` in `appModel.ts` filters `inputType === "hidden"` **before**
+the cap, and both serializers call it. Order matters: slicing first spends the field budget on
+entries the model can do nothing with — 30 hidden fields ahead of one real one would emit 20 hidden
+and lose the real field entirely. A hidden field has no label and cannot be typed into, so dropping
+it costs no capability.
 
-**Remediation.** Drop `inputType === "hidden"` fields in `toLiteModel` and `toMicroModel` when
-projecting `forms`, the same way `isUsableElement` now drops them from `elements`. A hidden field
-has no label, cannot be typed into, and gives the model nothing it can write a step against — so
-this costs no capability. Then re-run the leak count in `scripts/measureView.ts`; it should reach
-zero on both prompts.
+Verified across all 38 saved runs: **hidden fields in the IR prompt 1 -> 0, in the test-case prompt
+2 -> 0**, and no token marker survives in either projection.
 
-**Pinned, so it cannot be forgotten:** `tests/irHiddenInputs.test.ts` asserts that
-`SIGNIN_CLAIM_COLLECT` **is** still present in the IR prompt. That assertion is deliberately
-backwards — it documents the gap, and it will fail the moment TD-63 is fixed, which is the signal
-to flip it.
+#### Check 1 — the run artifacts. CONFIRMED EXPOSED, and NOT fixed by this. See TD-64.
+
+`runs/` is served publicly (TD-14). The token is on disk in **two** files of
+`2026-08-14T07-13-38`:
+
+| File | Size | `anti-csrftoken` | token value |
+|---|---|---|---|
+| `02-appmodel.json` | 2.2 MB | 11 | 3 |
+| `events.ndjson` | 2.1 MB | 11 | 3 |
+
+Carried by the `discovery` / `completed` event. This fix does not touch it: both files record the
+**full** AppModel, not a projection, so filtering the projection cannot reach them.
+
+**`scrubServedSecrets` could not have caught it either, and extending it there would not work.**
+That function redacts KNOWN secret values — the operator's `TEST_USERNAME` / `TEST_PASSWORD`. A
+CSRF token is supplied by the *site under test*, so it is on no list to redact against. It also
+covers only `results.json`, `final-page.txt` and error-context files, not these two.
+
+#### Check 2 — the caches. CLEAN, and by construction for one of them.
+
+| Cache | Entries | Contains the token |
+|---|---|---|
+| `runs/_cache/llm` | 311 | **0** |
+| `runs/_cache/appmodels` | 20 | **0** |
+
+The LLM cache is clean *structurally*, not by luck: `llmCacheSet` stores only the **response**,
+under a SHA-1 **hash** of the prompt. The prompt text is never written, so a prompt containing a
+token puts nothing on disk. The "never-expiring cache keeps the leak forever" concern does not
+materialise.
+
+The AppModel cache stores the full model and therefore *could* hold one; it happens not to today.
+Its 30-minute TTL governs reads only — files stay on disk indefinitely — so a fix that stops the
+value being recorded at all is the durable answer, which is TD-64.
+
+**No purge is required.** Nothing needs deleting from either cache.
+
+### TD-64. Hidden field values are recorded into publicly-served run artifacts — High / Accidental
+
+**Split from TD-63, which fixed only the prompts.** `02-appmodel.json` and `events.ndjson` record
+the **full** AppModel, not a projection, so filtering `toLiteModel` / `toMicroModel` cannot reach
+them. On `2026-08-14T07-13-38` both files carry `anti-csrftoken-a2z` and its live token value, and
+`runs/` is served publicly (TD-14).
+
+**Why `scrubServedSecrets` is the wrong tool.** It redacts *known* secret values — the operator's
+`TEST_USERNAME` / `TEST_PASSWORD` pair. A CSRF token comes from the site under test and is on no
+list to redact against, so no amount of extending its file coverage would catch this class. The
+value has to be dropped where it is captured, not where it is served.
+
+**Remediation, in preference order.**
+
+1. **Do not record hidden field values at all.** `domExtract.ts` populates `DomForm.fields[].value`.
+   A hidden field's value is never useful downstream — nothing grounds against it, no step fills
+   it, and `promptFormFields` now strips the whole field before any prompt. Recording `value: ""`
+   for `inputType === "hidden"` closes every channel at once: artifacts, both caches, both prompts.
+   This is the durable fix and it is small.
+2. Failing that, strip hidden field values in `runStore`/the event sink before writing, which
+   closes the artifact channel only.
+
+**Existing artifacts still contain the token.** The affected run is `2026-08-14T07-13-38`
+(amazon.in). It is one run, the token is session-scoped and long expired, and the file is 2.2 MB —
+but if `runs/` is ever exposed beyond localhost it should be deleted or scrubbed first. Deleting
+that run directory is sufficient and costs nothing but the artifact.
+
+**Verify with:** `grep -rl "anti-csrftoken" runs/` — should return nothing once the run is removed
+and the capture fix is in.
