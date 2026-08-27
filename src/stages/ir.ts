@@ -1245,11 +1245,40 @@ Example — handling duplicate selectors with nth:
     // Fallback: if filtering yielded nothing, use the entry page only
     const pagesToSend = relevantPages.length > 0 ? relevantPages : model.pages.slice(0, 1);
 
-    // Entry page always kept first and never dropped below — everything else drops
+    // Lead page always kept first and never dropped below — everything else drops
     // lowest-relevance-last if the prompt is still over budget after toLiteModel's own
     // per-page array caps (see appModel.ts).
-    const entryPage = pagesToSend.find(p => p.url.startsWith(entryOrigin) && entryPath && p.url.includes(entryPath));
-    const orderedPages = entryPage ? [entryPage, ...pagesToSend.filter(p => p !== entryPage)] : pagesToSend;
+    //
+    // WHICH page leads decides everything, because toMicroModel emits exactly ONE page. Two
+    // silent fallbacks used to land on the same wrong answer, and they compounded:
+    //
+    //   1. `p.url.includes(entryPath)` with entryPath "/" is true for EVERY url, so a
+    //      bare-origin entry ("https://site.app", no path) matched whichever page happened to
+    //      be first rather than the entry page. It is not a path test at that point.
+    //   2. toMicroModel then received `currentPageUrl: entryUrl`, matched no page by pageKey,
+    //      and fell back to pages[0] — the same wrong page, chosen a second time.
+    //
+    // Measured on three saved runs (2026-08-24T11-10-01, 2026-08-24T14-52-21,
+    // 2026-08-25T06-51-31): entry "https://learnvibes.vercel.app", pages /dashboard and
+    // /login, case feature "Authentication". Both fallbacks picked /dashboard, so an
+    // Authentication case was compiled with "Sign In", the email box and the password box
+    // absent from the prompt entirely. The relevance filter above had correctly kept /login —
+    // it was discarded afterwards.
+    //
+    // The fix reads the case's own `targetUrl`. That is a schema field (testCases.ts:259),
+    // documented to the model as "when the model has multiple pages, this tells the later
+    // stage which page to start from", and already compared with pageKey elsewhere in this
+    // file (line 393) and in testCases.ts:104. It was simply never read here. Structural, not
+    // a regex over prose.
+    const targetPage = testCase.targetUrl
+      ? pagesToSend.find(p => pageKey(p.url) === pageKey(testCase.targetUrl!))
+      : undefined;
+    // Only trust the path test when there IS a path; otherwise fall back to exact page identity.
+    const entryPage = entryPath !== "/"
+      ? pagesToSend.find(p => p.url.startsWith(entryOrigin) && p.url.includes(entryPath))
+      : pagesToSend.find(p => pageKey(p.url) === pageKey(entryUrl));
+    const leadPage = targetPage ?? entryPage;
+    const orderedPages = leadPage ? [leadPage, ...pagesToSend.filter(p => p !== leadPage)] : pagesToSend;
 
     // Filter elements: only named interactive elements (links, buttons, menuitems,
     // textboxes, checkboxes, headings). Drops thousands of anonymous list/div/container
@@ -1260,10 +1289,14 @@ Example — handling duplicate selectors with nth:
         e.name && e.name.trim() && INTERACTIVE_ROLES.has(e.role?.toLowerCase() ?? "")
       ),
     }));
+    // Hand toMicroModel the page THIS function already chose, rather than the raw entry URL it
+    // then has to re-resolve. Passing entryUrl let it disagree with the ordering above and drop
+    // to pages[0] whenever the entry was a bare origin — the second of the two fallbacks. The
+    // page that leads `pages` is the page that should survive; say so explicitly.
     const modelJsonFor = (pages: PageModel[]) =>
       JSON.stringify(toMicroModel(
         { ...model, pages: withFilteredElements(pages) },
-        { currentPageUrl: entryUrl }
+        { currentPageUrl: pages[0]?.url ?? entryUrl }
       ));
 
     // Retries previously re-sent a byte-identical prompt and predictably got a
