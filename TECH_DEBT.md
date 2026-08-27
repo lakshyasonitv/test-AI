@@ -1838,10 +1838,11 @@ covers only `results.json`, `final-page.txt` and error-context files, not these 
 | `runs/_cache/llm` | 311 | **0** |
 | `runs/_cache/appmodels` | 20 | **0** |
 
-The LLM cache is clean *structurally*, not by luck: `llmCacheSet` stores only the **response**,
-under a SHA-1 **hash** of the prompt. The prompt text is never written, so a prompt containing a
-token puts nothing on disk. The "never-expiring cache keeps the leak forever" concern does not
-materialise.
+**Why the LLM cache is clean, so nobody re-investigates this:** `llmCacheSet` writes only the
+**response**, to a file named after a SHA-1 **hash** of the prompt (`src/kb/llmCache.ts`). Prompt
+text never reaches disk at all. A prompt carrying a secret therefore leaves nothing in the cache,
+by construction rather than by luck — and the "a never-expiring cache turns a leak into a durable
+artifact" concern does not apply to this cache for any secret, present or future.
 
 The AppModel cache stores the full model and therefore *could* hold one; it happens not to today.
 Its 30-minute TTL governs reads only — files stay on disk indefinitely — so a fix that stops the
@@ -1849,7 +1850,7 @@ value being recorded at all is the durable answer, which is TD-64.
 
 **No purge is required.** Nothing needs deleting from either cache.
 
-### TD-64. Hidden field values are recorded into publicly-served run artifacts — High / Accidental
+### TD-64. Hidden field values were recorded into publicly-served run artifacts — High / Accidental — Fixed at capture; `cleanedHtml` remains, see TD-65
 
 **Split from TD-63, which fixed only the prompts.** `02-appmodel.json` and `events.ndjson` record
 the **full** AppModel, not a projection, so filtering `toLiteModel` / `toMicroModel` cannot reach
@@ -1871,10 +1872,190 @@ value has to be dropped where it is captured, not where it is served.
 2. Failing that, strip hidden field values in `runStore`/the event sink before writing, which
    closes the artifact channel only.
 
-**Existing artifacts still contain the token.** The affected run is `2026-08-14T07-13-38`
-(amazon.in). It is one run, the token is session-scoped and long expired, and the file is 2.2 MB —
-but if `runs/` is ever exposed beyond localhost it should be deleted or scrubbed first. Deleting
-that run directory is sufficient and costs nothing but the artifact.
+**Fixed at capture, in two places, because it arrived by two routes.**
 
-**Verify with:** `grep -rl "anti-csrftoken" runs/` — should return nothing once the run is removed
-and the capture fix is in.
+| Route | Fix |
+|---|---|
+| `forms[].fields[].value` (`domExtract.ts:238`) | `inputType === "hidden" ? "" : attr($in, "value")` |
+| `elements[].name` — the accname chain fell through to `attr($el, "value")` | that fallback is skipped for `type=hidden` |
+
+The second route is the one that is easy to miss: the element was *named after its own token*, and
+one such element was recorded `visible: true`, so no visibility check would have caught it either.
+A `type=hidden` input is not in the accessibility tree, so it has no accessible name to derive —
+the fallback was wrong independently of this leak.
+
+**Verified before changing it that nothing reads a hidden field's value.** `credentials.ts` reads
+`inputType` / `name` / `placeholder` / `label` / `id`; `ir.ts`'s `formIndicesForName` reads
+`label` / `name` / `placeholder`. No consumer anywhere reads `.value`. The field's *name* is still
+recorded, since it identifies the form and carries nothing sensitive.
+
+#### The affected run directory was DELETED
+
+`runs/2026-08-14T07-13-38-280Z-9ac0738e` (amazon.in, 4.3 MB) is **gone**, removed deliberately on
+2026-08-27 because `02-appmodel.json` and `events.ndjson` both carried a live
+`anti-csrftoken-a2z` value and `runs/` is served publicly (TD-14). The token was session-scoped and
+long expired, so this was hygiene rather than an incident.
+
+**It is recorded here so its absence is not a mystery later.** That run was the densest AppModel in
+the corpus — 5 pages, 474 elements, 133.5 chars/element — and it is cited throughout TD-56 to TD-63
+as the source of the 80.7% reduction figure, the 11 wasted cap slots, and the §6 case-quality
+comparison. Those numbers were measured before deletion and are not reproducible from `runs/` any
+more. The §6 output survives verbatim in `docs/phases/PHASE0_CASE_QUALITY_RUNB.txt`.
+
+After deletion: `grep -rl "anti-csrftoken\|hEj/Wh8642\|hLJv+ZAi" runs/` returns **nothing**.
+
+### TD-65. `cleanedHtml` persists every page's raw HTML into a publicly-served artifact, and nothing reads it — Medium / Strategic
+
+**The route TD-64's field-level fix cannot reach.** `PageModel.cleanedHtml` is the sanitised source
+of the whole page, so it contains `value="..."` verbatim — every hidden input, and anything else the
+page happened to embed. No field-level filter can touch it.
+
+**It has zero readers.** Written at `domDiscovery.ts:199`, declared at `appModel.ts:180`, and never
+read anywhere in `src/` or `public/`. It is not sent to any prompt: neither `toLiteModel` nor
+`toMicroModel` emits it.
+
+**It is most of the artifact.** On the amazon run it was **1,791 KB of a 2,139 KB
+`02-appmodel.json`** — 84%. `runs/` is served publicly (TD-14), and `RUN_RETENTION_DAYS` is the only
+thing that ever removes it.
+
+So it is simultaneously the largest thing on disk, the last uncovered exposure route, and unused.
+
+**Why it is Strategic rather than a bug.** It was presumably kept as debugging evidence, and
+`CLAUDE.md` is explicit that `runs/` is "the primary evidence source this project's own debugging
+relies on". Removing it is a judgement about what evidence is worth keeping, not a defect to fix —
+which is why it is filed rather than deleted.
+
+**Remediation, if taken.** Stop persisting `cleanedHtml` into `02-appmodel.json`. Artifacts shrink
+by roughly 84%, the last raw-value route closes, and nothing loses a reader. If the raw HTML is
+genuinely wanted for debugging, write it to a separate file that the run-artifact route does not
+serve, rather than embedding it in the model.
+
+**Pinned:** `tests/hiddenFieldCapture.test.ts` asserts that `cleaned_html` **does** still contain
+the token — deliberately inverted, the same device used for TD-63. It fails when TD-65 lands, which
+is the signal to flip it.
+
+---
+
+## Where the Site Store / View work ended — read this before picking it up
+
+Written 2026-08-27, at the point the work was deliberately stopped. `SITE_STORE_VIEW_SPEC_v2.md`
+planned 18–19 days across seven phases after a measurement spike. **The spike's gate fired on day
+two and most of the plan was cancelled.** What follows is what shipped, what is parked, and the
+conditions under which each parked thing should be looked at again.
+
+Nothing here is a to-do list. It is a map, so that the next person — including whoever wrote the
+spec — does not re-derive the reasoning or re-litigate a decision that already has evidence behind
+it.
+
+### What merged into `frontend`
+
+| Merged | What it is |
+|---|---|
+| `ir.ts` page pick (TD-57) | An Authentication case was compiled with the login page absent from the prompt. Two silent fallbacks landing on the same wrong page. Misses 9 → 1 across the corpus. |
+| `isUsableElement` (TD-62) | Hidden inputs and skip-links were reaching the model as ordinary controls. On one run, 11 of `toMicroModel`'s 30 slots were spent on things no test can act on; eleven real category links took their place. |
+| `promptFormFields` (TD-63) | The `forms` block carried every hidden field's name **and value** into both prompts, including a live CSRF token. 1 → 0 and 2 → 0 leaking runs. |
+| capture-time fix (TD-64) | A hidden input's value is no longer recorded at all — not in `fields[].value`, not as an element's accessible name. |
+| `scripts/measureView.ts` | The offline harness. Replays every saved run: no browser, no LLM, no cost. |
+
+Every one of those bugs was found **by the measurement, not by the feature it was measuring.**
+
+### What is parked on a branch, and why
+
+**`appmodel-projection`** — the one piece of the spec worth building. `appModelBlock()` projects the
+test-case prompt to text above 70 chars/element: measured **78.1% fewer tokens across 30 of 38
+runs**, byte-identical baseline below the threshold, no run regressing.
+
+It is **held, not abandoned**, for one reason: the evidence that it does not degrade case quality is
+**a single comparison** (§6 — 10 cases vs 11 on the densest run, with auth and form flows surviving
+in both). At n=1, with generation variance visibly present, that says *"did not produce thinner
+cases on the run with the most structure to lose."* It does not say *"is safe."*
+
+**Merge it when:** a handful of real runs have gone through the merged fixes and nothing looks off,
+or a second §6 comparison on a different dense site agrees with the first.
+
+### The cancelled phases, and what would revive them
+
+| Phase | Status | Revive when |
+|---|---|---|
+| 1 — Store, identity, structural fields | Not started | Only if TD-61's measurement says id-addressing prevents real grounding failures |
+| 2 — View builder | **Partially retained** as the projection above | — |
+| 2.5 — Retrieval | Not started, **blocked on corpus** | **≥10 saved runs have ≥4 crawled pages.** 34 of 38 are single-page, so `retrieveSubgraph` had nothing to choose between and its value is unmeasured, not disproved |
+| 3 — Resolver, `elementId?` on `Target` | Not started | With Phase 1 |
+| 4 — Assertion-text grounding | **Untouched by any of this** | Its own hypothesis, never tested: *do live text-assertion corrections drop measurably?* |
+| 5 — Wire into the IR prompt | **Dead** | Never. The IR prompt is already 56.6% smaller than the View would be |
+| 6 — Failure modes | Not applicable | — |
+
+### The re-check triggers, in one place
+
+- **Retrieval (Phase 2.5):** re-measure when ≥10 saved runs have ≥4 crawled pages.
+- **The 70 ch/el threshold (TD-56):** re-fit when **15 saved runs postdate its selection**. It was
+  fitted to this corpus and sits inside an empty band (56.4–72.6). As runs land inside that band it
+  acquires a shape, and the threshold should be re-fitted against it rather than defended as a
+  constant. A run above the threshold that regresses means **the threshold is wrong**, not that the
+  per-run test is too strict.
+- **TD-58 (cap evicting a grounded element):** promote from Low when the dropped element is
+  load-bearing — a form field or a submit control — rather than a decorative anchor.
+- **TD-60 (grounding scope):** promote when any run grounds a target absent from **all three**
+  prompt blocks. `measureView.ts` §3.0 computes exactly this; a non-`live-extended` miss on a form
+  or submit control is the signal.
+
+### Two inverted assertions are deliberately in the test suite
+
+`tests/hiddenFieldCapture.test.ts` asserts that `cleaned_html` **does** still contain a token
+(TD-65). It is not a claim that the junk belongs there — it records that TD-65 is unfixed, and it
+**fails when TD-65 lands**, which is the signal to flip it. TD-63's equivalent already did this job
+and has been flipped.
+
+If one of these fails, do not "repair" it by widening whatever filter is nearby. Read the TD.
+
+### The harness is load-bearing, and it lied five times
+
+Every decision above came out of `scripts/measureView.ts`. It shipped **five** bugs before producing
+a number worth trusting, and **not one of them threw** — each produced a confident, wrong table:
+
+1. `04-ir.json` is `{ir, updatedAppModel}`; reading `.steps` off the wrapper gave zero references,
+   and `coverage()` returned `1` for zero references. "irCoverage 100% on 38/38" measured nothing.
+2. Keys joined on `\u0000` in some functions and a space in others — every comparison said
+   "missing". Reported 29/29 runs truncating and 0/0 covered. Both artefacts.
+3. Live-extended elements scored as truncations, blaming `toMicroModel` for elements that did not
+   exist when it ran.
+4. Coverage counted `elements[]` only, while the prompt also carries a `navigation` tree and a
+   `forms` block.
+5. Junk slots counted on the *emitted* elements, where `toMicroModel` has already stripped
+   `visible`.
+
+Bugs 2, 4 and 5 are one failure class: **a structure modelled incompletely, then compared
+confidently.** `tests/measureView.test.ts` now guards it — `coverage()` throws on zero references
+rather than returning a figure, and the source is scanned for hand-rolled `(role, name)` keys.
+
+**Treat a number from this harness as provisional until a test pins it.** That is not pessimism;
+it is the observed base rate.
+
+### The one thing that is still open and costs nothing to answer
+
+**TD-61 — the identity hypothesis.** The spec bundled two independent arguments and only one was
+ever tested. Tokens: tested, and mostly wrong. Identity — id-addressing instead of the model
+authoring names, `nth` from the Store, group discriminators against TD-05's ambiguous
+`(role, name)` pairs — was **never a token argument and has never been measured.**
+
+The measurement is free, because `runs/` already holds the evidence:
+
+> Across saved runs, in what fraction of grounded targets is `(role, name)` ambiguous within the
+> page the step is on — and in what fraction of those did `targetResolver` resolve to a **different
+> element than the IR intended**?
+
+The second half is the real question. Ambiguity that always resolves correctly is not a bug. If it
+is ambiguous 30% of the time and wrong 0% of the time, TD-61 closes and the Store idea is finished
+for good. If it is wrong even occasionally, that is a correctness bug no amount of prompt
+compression would have fixed — and it is the strongest remaining reason to revisit Phase 1.
+
+**State the hypothesis before touching the data.**
+
+### What this cost, and what it bought
+
+Two days of measurement prevented roughly seventeen days of building the wrong thing, and turned up
+five real defects — one of which was compiling authentication tests that could not see the login
+form, and three of which were sending a live CSRF token to a third-party API and writing it to a
+publicly-served directory.
+
+The gate worked. Record it as a method that worked, not a project that failed.
