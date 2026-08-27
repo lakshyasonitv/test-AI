@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { hiddenInputNames, isUsableElement, isHiddenInput } from "../src/schema/appModel.js";
+import { hiddenInputNames, isUsableElement, isHiddenInput, toLiteModel, toMicroModel } from "../src/schema/appModel.js";
 
 /**
  * TD-62 on the IR path.
@@ -91,7 +91,7 @@ describe("TD-62 — the IR element filter excludes what no test can act on", () 
 });
 
 describe("TD-62 — the fix reaches the real IR prompt", () => {
-  it("keeps hidden inputs out of the model block toIR sends — CONTAINS ONE INVERTED ASSERTION, see below", async () => {
+  it("keeps hidden inputs out of the model block toIR sends", async () => {
     const { geminiMock } = vi.hoisted(() => ({ geminiMock: vi.fn() }));
     vi.doMock("../src/llm/gemini.js", () => ({ gemini: geminiMock }));
     geminiMock.mockResolvedValue({
@@ -127,13 +127,71 @@ describe("TD-62 — the fix reaches the real IR prompt", () => {
     // Asserting it here would either fail for a reason this fix is not responsible for, or —
     // worse — tempt someone to widen `withFilteredElements` to paper over a forms-block problem
     // it cannot see. The gap is recorded rather than blurred.
-    // ****************************************************************************************
-    // *** INVERTED ASSERTION. This is NOT saying the junk SHOULD be here. It is saying the  ***
-    // *** junk IS STILL here, via the forms block, and that TD-63 has not been fixed yet.   ***
-    // *** When TD-63 lands this line WILL FAIL. That failure is the point: flip it to       ***
-    // *** .not.toContain and delete this banner. Do not "repair" it by widening the element ***
-    // *** filter — the element filter cannot see the forms block at all.                    ***
-    // ****************************************************************************************
-    expect(prompt).toContain("SIGNIN_CLAIM_COLLECT");
+    // TD-63 has landed, so this is no longer inverted: the forms block is filtered too, and the
+    // hidden field's name and its value are both gone from the prompt entirely.
+    expect(prompt).not.toContain("SIGNIN_CLAIM_COLLECT");
+    expect(prompt).not.toContain(CSRF);
+  });
+});
+
+describe("TD-63 — the forms block never carries a hidden field's value out", () => {
+  /**
+   * A separate channel from the element filter. `toLiteModel` and `toMicroModel` both project
+   * `forms`, and both used `fields.slice(0, cap)` on the raw list — so a hidden field excluded
+   * from `elements` reappeared in `forms`, complete with its value.
+   *
+   * Measured on the saved corpus before the fix: 1 run leaked into the IR prompt, 2 into the
+   * test-case prompt, including `anti-csrftoken-a2z` and its live token. On the amazon run, 48 of
+   * 54 hidden fields carried a non-empty value.
+   *
+   * `scrubServedSecrets` could never have caught this: it redacts KNOWN secret values (the
+   * operator's TEST_USERNAME / TEST_PASSWORD), and a CSRF token is supplied by the site under
+   * test, so it is on no list to redact against. The only place to stop it is where it is
+   * projected.
+   */
+  const CSRF2 = "hEj/Wh8642+o8zAEP15lt9A5gFAdyyTAqoNqg9Fa9jHD";
+  const model: any = {
+    baseUrl: "https://x.test",
+    pages: [{
+      url: "https://x.test/", title: "T", concepts: [],
+      elements: [{ role: "searchbox", name: "Search the site", visible: true }],
+      forms: [{
+        action: "/go", method: "POST", id: "f1", name: "",
+        fields: [
+          { tag: "input", inputType: "hidden", name: "anti-csrftoken-a2z", value: CSRF2, label: "" },
+          { tag: "input", inputType: "hidden", name: "appAction", value: "SIGNIN_CLAIM_COLLECT", label: "" },
+          { tag: "input", inputType: "text", name: "field-keywords", label: "Search the site", value: "" },
+          { tag: "input", inputType: "password", name: "password", label: "Password", value: "" },
+        ],
+      }],
+    }],
+  };
+
+  for (const [label, project] of [
+    ["toLiteModel (test-case prompt)", (m: any) => JSON.stringify(toLiteModel(m))],
+    ["toMicroModel (IR prompt)", (m: any) => JSON.stringify(toMicroModel(m, { currentPageUrl: "https://x.test/" }))],
+  ] as [string, (m: any) => string][]) {
+    it(`${label} carries neither the hidden field nor its value`, () => {
+      const out = project(model);
+      expect(out).not.toContain(CSRF2);
+      expect(out).not.toContain("anti-csrftoken");
+      expect(out).not.toContain("SIGNIN_CLAIM_COLLECT");
+      // ...while the fields a test CAN act on survive, so this is a filter and not a blanket drop.
+      expect(out).toContain("field-keywords");
+      expect(out).toContain("Password");
+    });
+  }
+
+  it("filters BEFORE the cap, so hidden fields cannot consume the field budget", () => {
+    // 30 hidden fields ahead of one real one: slicing first would emit 20 hidden and lose the real
+    // field entirely, which is the ordering bug this fixes.
+    const m: any = JSON.parse(JSON.stringify(model));
+    m.pages[0].forms[0].fields = [
+      ...Array.from({ length: 30 }, (_, i) => ({ tag: "input", inputType: "hidden", name: `h${i}`, value: `v${i}`, label: "" })),
+      { tag: "input", inputType: "text", name: "field-keywords", label: "Search the site", value: "" },
+    ];
+    const out = JSON.stringify(toLiteModel(m));
+    expect(out).toContain("field-keywords");
+    expect(out).not.toContain("\"h0\"");
   });
 });

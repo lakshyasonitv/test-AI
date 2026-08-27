@@ -381,6 +381,26 @@ function capNavTree(
  *  from producing a 17,000+ line JSON that trips an LLM's context/payload limit — see
  *  ARCHITECTURE.md's "AppModel context explosion" gap. Defaults are calibrated well above every
  *  page observed in this project's own sampled runs, so an ordinary site is unaffected. */
+/**
+ * Project a form's fields for a PROMPT: hidden fields removed, then capped — TD-63.
+ *
+ * Order matters. `fields.slice(0, cap)` on the raw list spends the cap on entries the model can do
+ * nothing with, and worse, carries their VALUES out of the process. On the amazon run 48 of the 54
+ * hidden fields had non-empty values, among them `anti-csrftoken-a2z` and its live token.
+ *
+ * A hidden field has no label, cannot be typed into, and gives the model nothing to write a step
+ * against, so dropping it costs no capability at all.
+ *
+ * WHY THIS IS NOT SOMETHING `scrubServedSecrets` COULD HAVE CAUGHT. That function redacts KNOWN
+ * secret values — the `TEST_USERNAME` / `TEST_PASSWORD` pair the operator supplied. A CSRF token is
+ * supplied by the site under test, so it is not on any list to redact against. The only place it
+ * can be stopped is where it is projected, which is here.
+ */
+export function promptFormFields<T extends { fields?: unknown[] }>(form: T, cap: number): unknown[] {
+  const fields = (form.fields ?? []) as { inputType?: string }[];
+  return fields.filter((f) => f?.inputType !== "hidden").slice(0, cap);
+}
+
 export function toLiteModel(model: AppModel): AppModel {
   const caps = liteCaps();
   return {
@@ -392,7 +412,7 @@ export function toLiteModel(model: AppModel): AppModel {
       elements: capElements(p.elements, caps.elements).map(({ role, name, concept }) => ({ role, name, concept })),
       // Preserve DOM summary fields even in lite model — they're small and useful
       ...(p.forms && p.forms.length > 0 ? {
-        forms: p.forms.slice(0, caps.forms).map((f) => ({ ...f, fields: f.fields.slice(0, caps.formFields) })),
+        forms: p.forms.slice(0, caps.forms).map((f) => ({ ...f, fields: promptFormFields(f, caps.formFields) as typeof f.fields })),
       } : {}),
       ...(p.navigation && p.navigation.length > 0 ? {
         navigation: capNavTree(p.navigation, 0, caps.navDepth, { remaining: caps.navNodes }),
@@ -480,7 +500,7 @@ export function toMicroModel(
         ({ role, name, concept, ...(c ? { compressed: c, count } : {}) })),
       ...(targetPage.forms && targetPage.forms.length > 0 ? {
         forms: targetPage.forms.slice(0, 2).map(f => ({
-          ...f, fields: f.fields.slice(0, 20),
+          ...f, fields: promptFormFields(f, 20) as typeof f.fields,
         })),
       } : {}),
       ...(targetPage.navigation && targetPage.navigation.length > 0 ? {
