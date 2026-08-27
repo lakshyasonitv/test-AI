@@ -555,12 +555,27 @@ textarea:focus, input:focus {
    this without knowing the layout changed.
    --------------------------------------------------------------------------- */
 
+/* The four phase cards stack VERTICALLY, one per row.
+   They used to be a wrapping row, and a flex row's default `align-items: stretch` makes every
+   item as tall as the tallest — so opening one card's "Technical details" inflated the other
+   three with empty space. In a column each item's height is its own content, so the
+   independence the layout needs comes for free rather than being enforced. */
 .stages {
   list-style: none; margin: 0; padding: 0;
-  display: flex; flex-wrap: wrap; gap: 10px;
+  display: flex; flex-direction: column; gap: 10px;
 }
 .stages li {
-  flex: 1 1 210px; min-width: 200px;
+  /* `flex: none` is the load-bearing half. The main axis is now VERTICAL, so the old
+     `flex: 1 1 210px` would read as "at least 210px tall, and grow to fill" — recreating the
+     equal-height bug in a new form. Height must come from content and nothing else.
+
+     `align-items: stretch` is deliberately left at its default: in a column it acts on the
+     CROSS axis, so it makes each card full-width and has no effect on height at all. Anything
+     else here would shrink the cards to the width of their text.
+
+     min-width is a width floor now, not a column size. 0 is right for a full-width card and
+     stops a wide <pre> from holding the card open on a narrow viewport. */
+  flex: none; min-width: 0;
   background: var(--surface);
   border: 1px solid rgba(var(--ink-rgb), .11);
   border-radius: 11px;
@@ -1003,6 +1018,15 @@ figcaption { font-size: .69rem; color: var(--muted); margin-top: 6px; }
   font-family: var(--font-mono); font-size: .72rem; line-height: 1.85;
   margin: 0;
 }
+/* Phase-card JSON wraps rather than scrolling sideways.
+   Scoped to `.output`, which is used only by the phase card (app.js:482), so the case-detail and
+   diagnosis blocks above keep the scroll behaviour they have. Now that a card is the full width
+   of the content column there is room to wrap, and the horizontal scrollbar simply stops
+   appearing; `overflow-x: auto` on the rule above stays as the fallback for a single unbreakable
+   token. The card itself cannot be widened by this — it is a stretched flex item, so its width
+   is the column's, and the <pre> wraps inside a containing block that is already decided. */
+.output pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .diag-tech-details code { font-family: var(--font-mono); font-size: .72rem; background: var(--inset); padding: 1px 5px; border-radius: 4px; }
 
 /* ---------------------------------------------------------------------------
