@@ -1618,7 +1618,7 @@ which page `ir.ts` chose rather than left to re-resolve the entry URL and disagr
 Pinned by `tests/irPagePick.test.ts`, with `/dashboard` deliberately first in the fixture because
 that ordering is what made the old code look correct. Verified failing against the old code.
 
-### TD-58. `toMicroModel`'s 30-element cap dropped one grounded element — Low / Accidental — Filed, not fixed
+### TD-58. `toMicroModel`'s 30-element cap dropped one grounded element — Low / Accidental — Filed, not fixed; NOT closed by TD-62
 
 **Symptom.** On `2026-08-25T10-06-10` (87 elements, one page), `toMicroModel` logs
 `capped 73 -> 30 elements`, and `link "custom logo link"` — which that run's IR grounds against —
@@ -1639,6 +1639,13 @@ cutting and keep the cap at 30.
 **Promote to Medium when:** a run grounds against an element the cap dropped *and* that element is
 load-bearing for the case (a form field, a submit control), rather than a decorative logo link.
 `scripts/measureView.ts` reports this per run under `element-cap`.
+
+**TD-62 did NOT close this, though it was expected to.** The theory was that hidden inputs were
+competing for the 30 slots, so evicting them would let the missing element back in. Measured after
+the fix: on `2026-08-25T10-06-10` the cap emits 30 elements and `link "custom logo link"` is
+**still absent** — that page had **zero** junk slots to recover, so nothing was freed. The recovery
+TD-62 produced (11 slots) was entirely on a different run. Ranking the cap before it cuts remains
+the only route, and on evidence of one decorative anchor it is still not worth taking.
 
 ### TD-59. `toMicroModel` sends one page, so a case spanning two pages cannot see both — Medium / Strategic
 
@@ -1698,12 +1705,16 @@ what fraction of grounding failures in saved runs are caused by ambiguous `(role
 would id-addressing have prevented them? `runs/` already holds the evidence, and answering it costs
 nothing.
 
-### TD-62. Hidden form inputs and a live CSRF token reach the model as if they were controls — High / Accidental — Fixed in the View, OPEN on the IR path
+### TD-62. Hidden form inputs and a live CSRF token reach the model as if they were controls — High / Accidental — Fixed
 
-**Read this first: the IR prompt is contaminated too, and that half is NOT fixed.** The View was
-the place it was noticed, because the View promotes the junk to its most prominent line. The
-underlying defect is in the element filter that both stages share, and it is independently
-actionable without reading anything else.
+**Both paths are fixed.** The View was where it was noticed, because the View promotes the junk to
+its most prominent line, but the defect was in the element filter both stages share.
+`isUsableElement` now lives in `appModel.ts` next to `INTERACTIVE_ROLES` and is called by
+`ir.ts`'s `withFilteredElements` and by the projection, so the two cannot drift apart again — a
+second copy is how they diverged in the first place.
+
+**A narrower leak on a different path remains: see TD-63.** Filtering elements does not touch the
+`forms` block, which is emitted verbatim with every hidden field's name and value.
 
 **Symptom, on `2026-08-14T07-13-38` (amazon.in).** `toLiteModel`'s output — the block sent to the
 test-case model — carries **55 hidden form inputs out of 440 elements**, including a live CSRF
@@ -1742,17 +1753,68 @@ second, a CSRF token still led the `shared:` line, precisely because appearing o
 page makes it look like site chrome. Six tests in `tests/measureView.test.ts`, at four densities
 plus the hoist and the visible-alone case; all six verified failing without the filter.
 
-**OPEN: the IR path.** `withFilteredElements` is unchanged, so the IR prompt still carries all 55.
-It was left alone deliberately rather than widened in the middle of unrelated work — changing what
-every IR prompt contains is not a side effect to slip into a measurement branch.
+**What the fix recovered, measured.** `toMicroModel` caps at 30, so junk does not merely add
+noise — it takes slots from real controls. On `2026-08-14T07-13-38` (amazon.in), **11 of the 30
+elements the model saw were things no test can act on**:
 
-**Remediation.** Lift the predicate into one shared helper next to `INTERACTIVE_ROLES` in
-`appModel.ts` and call it from both `withFilteredElements` and the View, so the two filters cannot
-diverge again. Then re-run `scripts/measureView.ts`: the IR baseline (`toMicroModel`) should shrink,
-which also makes TD-58's 30-element cap less likely to evict a real control — 55 junk entries are
-currently competing for those 30 slots.
+| what it was | how many |
+|---|---|
+| keyboard skip-links (`nav top`, `Cart, shift, alt, c`, ...) | 6 |
+| hidden inputs (`add-new` x2, `IP2LOCATION`, a CSRF token, a hidden `Search in` combobox) | 5 |
+
+Eleven real category links took their place — `Electronics`, `Fashion`, `Prime`, `Home & Kitchen`,
+`Computers`, `Toys & Games`, `Beauty & Personal Care` and four more — none of which had reached the
+model before. **Playwright would have refused to act on any of the eleven**, since its actionability
+checks require visibility, so a case written against one could never have passed.
+
+**Honest note on which signal did the work.** On that page all 11 were caught by
+`visible === false`; the `forms[].inputType` signal contributed nothing there, because the hidden
+fields live on the *sign-in* pages that the single-page pick never reaches. `forms[]` is still
+required — it is the only witness for `SIGNIN_CLAIM_COLLECT`, `claimType` and `countryCode`, which
+are all recorded `visible: true` — but it does not show up in these particular numbers.
+
+**Corpus-wide the effect is narrow: 1 run of 38 spent slots on junk, 11 slots in total.** It is
+filed as High because of what it cost on the run where it happened, not because it is widespread.
 
 **Why this was not caught by any measurement.** Token reduction, `irCoverage` and the §6 A/B
 comparison are all structurally blind to it: the junk is present in *both* arms and in *both*
 prompts, so every comparison cancels it out. It was found by reading the View's output during §6 —
 a defect in the INPUT, surfaced by an exercise designed to compare OUTPUTS.
+
+### TD-63. The `forms` block sends every hidden field's name AND value to the model, including CSRF tokens — Medium / Accidental
+
+**Distinct from TD-62, and not fixed by it.** TD-62 filters the `elements` array. `toLiteModel` and
+`toMicroModel` also emit a **`forms` block**, copied through with `fields.slice(0, 20)` and no
+regard for `inputType`. So a hidden field excluded from `elements` reappears in `forms`, complete
+with its value.
+
+**Measured across the 38-run corpus, after TD-62's fix:**
+
+| Prompt | Runs still leaking hidden fields |
+|---|---|
+| IR (`toMicroModel`) | **1** — `2026-08-25T10-06-10`, 6 fields |
+| test cases (`toLiteModel`) | **2** — including 53 fields on the amazon run |
+
+What goes out on the amazon run includes `anti-csrftoken-a2z` with its live token value
+(`hEj/Wh8642+o8zAEP15lt9A5gFAdyyTAqoNqg9Fa9jHD`), plus `appAction`, `claimType`, `countryCode` and
+the rest of the OpenID handshake parameters.
+
+**Why it is Medium rather than Low.** A CSRF token is short-lived and scoped to a session the
+crawler owned, so this is not the same class as leaking a password. But `DECISIONS.md` D-09 is
+"secrets never reach disk", and these values reach an LLM provider and then the prompt cache on
+disk — a channel that rule was written to close. The prompt cache never expires
+(`TECH_DEBT.md` TD-22 territory), so the value persists.
+
+**Why it is not Higher.** It is two runs out of 38, the values are session-scoped, and nothing in
+the pipeline acts on them.
+
+**Remediation.** Drop `inputType === "hidden"` fields in `toLiteModel` and `toMicroModel` when
+projecting `forms`, the same way `isUsableElement` now drops them from `elements`. A hidden field
+has no label, cannot be typed into, and gives the model nothing it can write a step against — so
+this costs no capability. Then re-run the leak count in `scripts/measureView.ts`; it should reach
+zero on both prompts.
+
+**Pinned, so it cannot be forgotten:** `tests/irHiddenInputs.test.ts` asserts that
+`SIGNIN_CLAIM_COLLECT` **is** still present in the IR prompt. That assertion is deliberately
+backwards — it documents the gap, and it will fail the moment TD-63 is fixed, which is the signal
+to flip it.
