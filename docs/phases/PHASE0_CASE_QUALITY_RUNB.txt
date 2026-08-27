@@ -1,0 +1,203 @@
+
+====================================================================================================
+B — dense, largest baseline (133.5 ch/el)
+run    2026-08-14T07-13-38-280Z-9ac0738e
+url    https://www.amazon.in
+prompt Verify the homepage loads successfully and key elements (header, navigation, main content) are visible.
+pages 5  elements 474
+model block: baseline 18030 tok  ->  View 3360 tok
+====================================================================================================
+
+  ---- BASELINE  toLiteModel JSON ----
+[testCases] prompt chars: 65537 | approx tokens: 16384 | pages: 5
+[gemini] calling model: gemini-3-flash-preview | prompt length: 65537
+[backoff] attempt 1 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[gemini] response status: 200
+[gemini] response length: 7444 | usage: {
+  promptTokenCount: 22516,
+  candidatesTokenCount: 2006,
+  totalTokenCount: 26884,
+  promptTokensDetails: [ { modality: 'TEXT', tokenCount: 22516 } ],
+  thoughtsTokenCount: 2362,
+  serviceTier: 'standard'
+}
+      10 case(s)
+
+      1. [valid] Verify Amazon India homepage structural integrity
+         priority   high   feature Navigation   targetUrl https://www.amazon.in/
+         intent     Ensures the essential structural components of the Amazon India homepage load and are accessible to users.
+           - Go to the 'https://www.amazon.in/' homepage.
+           - Verify that the 'Amazon.in' link is visible in the header.
+           - Check that the 'Open All Categories Menu' button is present and interactive.
+           - Verify that the 'Search Amazon.in' searchbox is displayed.
+           - Ensure the 'main content' area is visible and populated with product links.
+         expected   The page loads with the header, navigation menu, and main content area all visible and interactive.
+
+      2. [valid] Search for a valid product
+         priority   high   feature Search   targetUrl https://www.amazon.in/
+         intent     Proves that users can successfully find products using the primary search interface.
+           - Type 'Mobiles' into the 'Search Amazon.in' searchbox.
+           - Click the 'Go' button to execute the search.
+         expected   The search results page loads showing a variety of mobile phone products.
+
+      3. [empty-boundary] Search with no results
+         priority   medium   feature Search   targetUrl https://www.amazon.in/
+         intent     Ensures the system handles searches for non-existent items gracefully without erroring.
+           - Type 'qwertyuiopasdfghjkl12345' into the 'Search Amazon.in' searchbox.
+           - Click the 'Go' button.
+         expected   A message indicating no results were found is displayed instead of an error page.
+
+      4. [empty-boundary] Empty search submission
+         priority   low   feature Search   targetUrl https://www.amazon.in/
+         intent     Verifies that submitting an empty search box does not lead to a broken state.
+           - Clear any text in the 'Search Amazon.in' searchbox.
+           - Click the 'Go' button.
+         expected   The page either remains on the homepage or refreshes without displaying an error.
+
+      5. [security-xss] Search field XSS security check
+         priority   medium   feature Search   targetUrl https://www.amazon.in/
+         intent     Confirms that the search input is properly sanitized against cross-site scripting attempts.
+           - Type '<script>alert("XSS")</script>' into the 'Search Amazon.in' searchbox.
+           - Click the 'Go' button.
+         expected   The search results page loads safely, displaying the input as literal text and not executing any script.
+
+      6. [state-change] Add an item to the shopping cart
+         priority   high   feature Cart   targetUrl https://www.amazon.in/
+         intent     Verifies that the cart count updates when a user adds a product.
+           - Click on the 'Mobiles' link in the navigation bar.
+           - Select any mobile phone from the results list.
+           - Click the 'Add to Cart' button on the product details page.
+           - Observe the '0 items in cart' link in the header.
+         expected   The cart indicator updates to reflect that 1 item is now in the cart.
+
+      7. [invalid-input] Invalid sign-in with empty email
+         priority   medium   feature Authentication   targetUrl https://www.amazon.in/ax/claim?arb=059ca547-93bc-4da5-b699-111c89466fe3
+         intent     Ensures the sign-in form requires an identifier before proceeding.
+           - Navigate to the sign-in page.
+           - Leave the 'Enter mobile number or email' field blank.
+           - Click the 'Continue' button.
+         expected   An alert message saying 'Enter your mobile number or email' appears.
+
+      8. [security-injection] SQL Injection attempt in sign-in
+         priority   critical   feature Authentication   targetUrl https://www.amazon.in/ax/claim?arb=059ca547-93bc-4da5-b699-111c89466fe3
+         intent     Proves that the login identifier field is resistant to SQL injection attacks.
+           - Type "' OR '1'='1" into the 'Enter mobile number or email' field.
+           - Click the 'Continue' button.
+         expected   The system rejects the input with an error message and does not grant access.
+
+      9. [valid] Verify footer navigation and legal links
+         priority   low   feature Footer Navigation   targetUrl https://www.amazon.in/
+         intent     Ensures that users can access legal and help information from the footer.
+           - Scroll to the bottom of the homepage.
+           - Click on the 'Conditions of Use' link.
+         expected   The browser navigates to the Conditions of Use legal information page.
+
+      10. [functional-other] Open category navigation menu
+         priority   high   feature Navigation   targetUrl https://www.amazon.in/
+         intent     Verifies that the side navigation menu is responsive and functional.
+           - Click the 'Open All Categories Menu' button.
+           - Check if the menu drawer becomes visible on the screen.
+         expected   A side-bar menu expands containing various shopping categories and account links.
+
+
+  ---- PROJECTED View text ----
+[testCases] prompt chars: 11975 | approx tokens: 2994 | pages: 5
+[gemini] calling model: gemini-3-flash-preview | prompt length: 11975
+[backoff] attempt 1 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[gemini] response status: 200
+[gemini] response length: 9488 | usage: {
+  promptTokenCount: 6345,
+  candidatesTokenCount: 2722,
+  totalTokenCount: 11132,
+  promptTokensDetails: [ { modality: 'TEXT', tokenCount: 6345 } ],
+  thoughtsTokenCount: 2065,
+  serviceTier: 'standard'
+}
+      11 case(s)
+
+      1. [valid] Verify Amazon India homepage structure and visibility
+         priority   high   feature Navigation   targetUrl https://www.amazon.in/
+         intent     Verify that the Amazon India homepage loads with its primary structural components (header, menu, content) intact.
+           - Navigate to the homepage at 'https://www.amazon.in/'.
+           - Verify that the page 'Online Shopping site in India: Shop Online for Mobiles, Books, Watches, Shoes and More - Amazon.in' loads without errors.
+           - Check that the 'Amazon.in' link is visible in the header area.
+           - Confirm the 'Open All Categories Menu' button is present and clickable.
+           - Verify that the main content heading 'Appliances for your home | Up to 55% off' is visible on the page.
+         expected   The page loads fully and all specified structural elements are visible and interactive.
+
+      2. [valid] Search for a valid product
+         priority   high   feature Search   targetUrl https://www.amazon.in/
+         intent     Proves that users can find items using the primary search functionality.
+           - Type 'laptop' into the 'Search Amazon.in' textbox.
+           - Click the 'Go' button to execute the search.
+         expected   The page updates to show relevant search results for laptops.
+
+      3. [empty-boundary] Search for a non-existent item
+         priority   medium   feature Search   targetUrl https://www.amazon.in/
+         intent     Ensures the system handles searches with no matches gracefully without crashing.
+           - Type 'xyz123abc987' into the 'Search Amazon.in' textbox.
+           - Click the 'Go' button to search.
+         expected   The page displays a message indicating that no results were found for the query.
+
+      4. [empty-boundary] Submit an empty search query
+         priority   low   feature Search   targetUrl https://www.amazon.in/
+         intent     Verifies that submitting a blank search does not trigger a server error.
+           - Ensure the 'Search Amazon.in' textbox is empty.
+           - Click the 'Go' button.
+         expected   The site either stays on the current page or reloads the homepage without an error.
+
+      5. [security-xss] Search with script tags to test XSS
+         priority   medium   feature Search   targetUrl https://www.amazon.in/
+         intent     Proves the search input is properly sanitized against cross-site scripting attacks.
+           - Type '<script>alert("XSS")</script>' into the 'Search Amazon.in' textbox.
+           - Click the 'Go' button.
+         expected   The script does not execute; the literal string is safely displayed as text or filtered.
+
+      6. [invalid-input] Attempt login with no email or mobile number
+         priority   medium   feature Account   targetUrl https://www.amazon.in/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.in%2Fyour-orders%2Forders%3Fref_%3Dnav_orders_first&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=amzn_retail_yourorders_in&openid.mode=checkid_setup&language=en_IN&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0
+         intent     Ensures the system prevents empty submissions for required login fields.
+           - Leave the 'Enter mobile number or email' field blank.
+           - Click the 'Continue' button.
+         expected   The alert 'Enter your mobile number or email' becomes visible.
+
+      7. [invalid-input] Attempt login with malformed email format
+         priority   medium   feature Account   targetUrl https://www.amazon.in/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.in%2Fyour-orders%2Forders%3Fref_%3Dnav_orders_first&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=amzn_retail_yourorders_in&openid.mode=checkid_setup&language=en_IN&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0
+         intent     Verifies that the login form validates email syntax.
+           - Type 'notanemailaddress' into the 'Enter mobile number or email' field.
+           - Click the 'Continue' button.
+         expected   The alert 'Invalid email address' or 'Invalid mobile number' is displayed.
+
+      8. [security-injection] Attempt SQL injection in login field
+         priority   critical   feature Account   targetUrl https://www.amazon.in/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.in%2Fyour-orders%2Forders%3Fref_%3Dnav_orders_first&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=amzn_retail_yourorders_in&openid.mode=checkid_setup&language=en_IN&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0
+         intent     Ensures that malicious SQL commands cannot bypass authentication.
+           - Type "' OR '1'='1" into the 'Enter mobile number or email' field.
+           - Click the 'Continue' button.
+         expected   The application rejects the input as an invalid identifier and does not grant access.
+
+      9. [state-change] Add a product to the shopping cart
+         priority   high   feature Cart   targetUrl https://www.amazon.in/
+         intent     Proves that selecting a product and adding it correctly updates the user's shopping cart state.
+           - Click on the 'Air conditioners' button from the homepage category links.
+           - Select the first available air conditioner product from the list.
+           - Click the 'Add to cart' button on the product details page.
+         expected   The cart count on the '0 Cart' button updates to '1'.
+
+      10. [functional-other] Open and interact with the main categories menu
+         priority   medium   feature Navigation   targetUrl https://www.amazon.in/
+         intent     Verifies that the sidebar navigation menu functions as an entry point for all site sections.
+           - Click the 'Open All Categories Menu' button in the navigation bar.
+           - Wait for the sidebar to appear.
+           - Click on a top-level category like 'Mobiles, Computers' in the menu.
+         expected   The sidebar menu opens and allows the user to navigate to a specific category page.
+
+      11. [functional-other] Navigate to legal information via footer
+         priority   low   feature Legal Information   targetUrl https://www.amazon.in/
+         intent     Proves that the site provides access to mandatory legal notices and conditions of use.
+           - Scroll to the bottom of the homepage.
+           - Click the 'Conditions of Use' link.
+         expected   The user is navigated to the Conditions of Use legal information page.
+
+
+Done. Read the cases above before any assessment.

@@ -5,6 +5,7 @@ import type { Plan } from "./planner.js";
 import type { Coverage } from "./planner.js";
 import type { AppModel } from "../schema/appModel.js";
 import { toLiteModel, pageKey } from "../schema/appModel.js";
+import { appModelBlock } from "./appModelText.js";
 import {
   strategyFor, unmatchedConcepts, filterByScope, ALL_SCOPES, CATEGORY_IDS, normalizeCategory,
   type ScopeFilter,
@@ -297,6 +298,22 @@ export interface GenerationOptions {
   /** The literal source prompt of the run. Used in the cache key so two runs whose plans
    *  happen to be identical (a rephrased prompt) never collide on a stale cached suite. */
   sourcePrompt?: string;
+  /**
+   * Substitute the serialized application model with something else — a measurement seam.
+   *
+   * Absent (every production caller today) this changes nothing: the block is
+   * `JSON.stringify(toLiteModel(appModel))`, byte for byte what it has always been.
+   *
+   * It exists so `scripts/compareCaseQuality.ts` can generate cases from the SAME prompt, the
+   * SAME system instruction and the SAME checklist, varying only the model block. Rebuilding
+   * this prompt inside the script instead would have compared two arms under a replica of the
+   * real prompt, and any conclusion about case quality would then be about the replica.
+   *
+   * It also feeds the CACHE KEY, not just the prompt. A block that changed the prompt without
+   * changing the key would let one form be served the other's batch — TD-22 and DECISIONS.md
+   * D-10, the recurring "cache key missing a real input dimension" failure in this repo.
+   */
+  modelBlock?: string;
 }
 
 export async function toTestCases(
@@ -425,6 +442,12 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     ? `\nConcepts with NO checklist entry — apply the 5 reasoning dimensions above to these directly, do not just emit one generic case: ${gaps.join(", ")}\n`
     : "";
   const liteModel = toLiteModel(appModel);
+  // One value, used for BOTH the prompt and the cache key — see GenerationOptions.modelBlock.
+  //
+  // `appModelBlock` returns the baseline JSON byte for byte unless the model is dense enough for
+  // the projection to be a measured win (>70 chars/element — TD-56). Sparse models therefore keep
+  // today's prompt AND today's cache key, so existing cache entries still hit.
+  const modelBlock = opts.modelBlock ?? appModelBlock(appModel);
   // The literal prompt is part of the key: two runs whose plans are identical (a rephrased
   // request) must NOT collide on a cached batch, or "customizing" silently returns yesterday's
   // suite. The round's refinement prompt joins too, so a new focus direction in a later gate
@@ -433,7 +456,7 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
   // expires, so a rule this prompt gains or loses would otherwise never reach any plan+model
   // combination already seen. Hashing the text means nobody has to remember to bump a version.
   const cacheKey = makeCacheKey(
-    JSON.stringify(p), JSON.stringify(liteModel), scope.join(","),
+    JSON.stringify(p), modelBlock, scope.join(","),
     (extend?.existingTitles ?? []).join("|"), (extend?.rejectedTitles ?? []).join("|"),
     opts.sourcePrompt ?? "", extend?.latestPrompt ?? "",
     system, process.env.GEMINI_MODEL ?? "default");
@@ -454,7 +477,7 @@ ${extend.latestPrompt}
 
   const user =
     `Plan: ${JSON.stringify(p)}
-Application model: ${JSON.stringify(liteModel)}
+Application model: ${modelBlock}
 
 Coverage checklist floor (produce one grounded case per applicable item):
 ${strategyList}

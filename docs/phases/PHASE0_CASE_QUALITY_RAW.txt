@@ -1,0 +1,320 @@
+
+====================================================================================================
+A — just above threshold (72.6 ch/el)
+run    2026-07-28T09-42-27-474Z-4987461b
+url    https://learnvibes.vercel.app
+prompt Test the login functionality: attempt to log in with invalid credentials and verify an appropriate error is shown.
+pages 1  elements 9
+model block: baseline 170 tok  ->  View 103 tok
+====================================================================================================
+
+  ---- BASELINE  toLiteModel JSON ----
+[testCases] prompt chars: 2538 | approx tokens: 635 | pages: 1
+[gemini] calling model: gemini-3-flash-preview | prompt length: 2538
+[backoff] attempt 1 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[backoff] timeout ( LLM call exceeded 45000ms ) — retrying in 1246 ms (attempt 1 )
+[backoff] attempt 2 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[gemini] response status: 200
+[gemini] response length: 6456 | usage: {
+  promptTokenCount: 2588,
+  candidatesTokenCount: 1750,
+  totalTokenCount: 6411,
+  promptTokensDetails: [ { modality: 'TEXT', tokenCount: 2588 } ],
+  thoughtsTokenCount: 2073,
+  serviceTier: 'standard'
+}
+      8 case(s)
+
+      1. [invalid-input] Log in with invalid credentials
+         priority   high   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     proves that the application rejects unauthorized access and provides feedback for incorrect credentials
+           - Go to the 'https://learnvibes.vercel.app' page.
+           - Type an invalid email address into the 'you@thinkvibes.com' field.
+           - Type an invalid password into the '*********' field.
+           - Click the 'Sign In' button to attempt to log in.
+         expected   The login fails and an error message indicating invalid credentials is displayed.
+
+      2. [valid] Log in with valid credentials
+         priority   high   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     proves a real user can authenticate with valid credentials
+           - Go to the 'https://learnvibes.vercel.app' page.
+           - Type a valid email address into the 'you@thinkvibes.com' field.
+           - Type a valid password into the '*********' field.
+           - Click the 'Sign In' button.
+         expected   Login succeeds and the user is redirected to the dashboard or authenticated area.
+
+      3. [empty-boundary] Log in with an empty email field
+         priority   medium   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     proves the form requires an identifier and prevents submission without one
+           - Go to the 'https://learnvibes.vercel.app' page.
+           - Leave the 'you@thinkvibes.com' field blank.
+           - Type a password into the '*********' field.
+           - Click the 'Sign In' button.
+         expected   The form is not submitted and a validation message appears for the email field.
+
+      4. [empty-boundary] Log in with an empty password field
+         priority   medium   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     proves the form enforces the password requirement
+           - Go to the 'https://learnvibes.vercel.app' page.
+           - Type an email address into the 'you@thinkvibes.com' field.
+           - Leave the '*********' field blank.
+           - Click the 'Sign In' button.
+         expected   The form is not submitted and a validation message appears for the password field.
+
+      5. [invalid-input] Log in with a malformed email address
+         priority   low   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     proves the email field only accepts correctly formatted email addresses
+           - Go to the 'https://learnvibes.vercel.app' page.
+           - Type 'testuser_example.com' into the 'you@thinkvibes.com' field.
+           - Type a password into the '*********' field.
+           - Click the 'Sign In' button.
+         expected   An email format validation error is shown and the login attempt is stopped.
+
+      6. [security-injection] Prevent SQL injection in login fields
+         priority   critical   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     proves that malicious database commands are not executed via the login fields
+           - Go to the 'https://learnvibes.vercel.app' page.
+           - Type "' OR '1'='1" into the 'you@thinkvibes.com' field.
+           - Type a random string into the '*********' field.
+           - Click the 'Sign In' button.
+         expected   The attempt is rejected and no authentication bypass or server error occurs.
+
+      7. [security-xss] Prevent Cross-Site Scripting in login fields
+         priority   critical   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     proves that scripts entered into fields are sanitized and not executed by the browser
+           - Go to the 'https://learnvibes.vercel.app' page.
+           - Type '<script>alert("XSS")</script>' into the 'you@thinkvibes.com' field.
+           - Type a password into the '*********' field.
+           - Click the 'Sign In' button.
+         expected   The script is not executed and the page handles the input as plain text.
+
+      8. [state-change] Navigate to registration
+         priority   high   feature SignUp   targetUrl https://learnvibes.vercel.app
+         intent     proves that new users can reach the account creation page from the landing screen
+           - Go to the 'https://learnvibes.vercel.app' page.
+           - Click the 'Sign Up' button to leave the login area.
+         expected   The browser navigates to the registration or sign-up page.
+
+
+  ---- PROJECTED View text ----
+[testCases] prompt chars: 2152 | approx tokens: 538 | pages: 1
+[gemini] calling model: gemini-3-flash-preview | prompt length: 2152
+[backoff] attempt 1 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[gemini] response status: 200
+[gemini] response length: 6344 | usage: {
+  promptTokenCount: 2533,
+  candidatesTokenCount: 1732,
+  totalTokenCount: 5867,
+  promptTokensDetails: [ { modality: 'TEXT', tokenCount: 2533 } ],
+  thoughtsTokenCount: 1602,
+  serviceTier: 'standard'
+}
+      8 case(s)
+
+      1. [invalid-input] Login with invalid credentials
+         priority   high   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     Verify that entering both an invalid username and an invalid password correctly triggers an error message.
+           - Go to 'https://learnvibes.vercel.app'.
+           - Type an invalid username or email into the 'you@thinkvibes.com' field.
+           - Type an invalid password into the '*********' field.
+           - Click the 'Login' button to attempt to sign in.
+         expected   An error message indicating invalid credentials is displayed and the user remains on the login page.
+
+      2. [valid] Login with valid credentials
+         priority   high   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     Ensure that a user with correct credentials can successfully access the application.
+           - Go to 'https://learnvibes.vercel.app'.
+           - Type a valid email address into the 'you@thinkvibes.com' field.
+           - Type the correct password into the '*********' field.
+           - Click the 'Login' button to sign in.
+         expected   The user is redirected to the authenticated dashboard or home area.
+
+      3. [invalid-input] Login with invalid password
+         priority   high   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     Verify that a valid email combined with a wrong password prevents access.
+           - Go to 'https://learnvibes.vercel.app'.
+           - Type a known valid email into the 'you@thinkvibes.com' field.
+           - Type an incorrect password into the '*********' field.
+           - Click the 'Login' button.
+         expected   An error message is shown and the login attempt is rejected.
+
+      4. [empty-boundary] Login with empty email field
+         priority   medium   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     Check that the form prevents submission when the email field is left blank.
+           - Go to 'https://learnvibes.vercel.app'.
+           - Leave the 'you@thinkvibes.com' field blank.
+           - Type any password into the '*********' field.
+           - Click the 'Login' button.
+         expected   A validation error appears indicating that the email field is required.
+
+      5. [empty-boundary] Login with empty password field
+         priority   medium   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     Check that the form prevents submission when the password field is left blank.
+           - Go to 'https://learnvibes.vercel.app'.
+           - Type a valid email into the 'you@thinkvibes.com' field.
+           - Leave the '*********' field blank.
+           - Click the 'Login' button.
+         expected   A validation error appears indicating that the password field is required.
+
+      6. [invalid-input] Login with malformed email
+         priority   low   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     Ensure that the email field does not accept text that lacks a standard email format.
+           - Go to 'https://learnvibes.vercel.app'.
+           - Type 'not-an-email' into the 'you@thinkvibes.com' field.
+           - Type a password into the '*********' field.
+           - Click the 'Login' button.
+         expected   The system displays a format validation error for the email field.
+
+      7. [security-injection] SQL Injection attempt in login
+         priority   critical   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     Verify that common database injection strings cannot bypass the authentication logic.
+           - Go to 'https://learnvibes.vercel.app'.
+           - Type "' OR '1'='1" into the 'you@thinkvibes.com' field.
+           - Type "' OR '1'='1" into the '*********' field.
+           - Click the 'Login' button.
+         expected   The system treats the injection strings as invalid credentials and does not grant access.
+
+      8. [security-xss] Cross-Site Scripting (XSS) attempt in login
+         priority   high   feature Login   targetUrl https://learnvibes.vercel.app
+         intent     Verify that scripts entered into the login fields are not executed by the browser.
+           - Go to 'https://learnvibes.vercel.app'.
+           - Type "<script>alert('xss')</script>" into the 'you@thinkvibes.com' field.
+           - Type a password into the '*********' field.
+           - Click the 'Login' button.
+         expected   The text is handled as literal characters; no script execution occurs and no alert box appears.
+
+
+====================================================================================================
+B — dense, largest baseline (133.5 ch/el)
+run    2026-08-14T07-13-38-280Z-9ac0738e
+url    https://www.amazon.in
+prompt Verify the homepage loads successfully and key elements (header, navigation, main content) are visible.
+pages 5  elements 474
+model block: baseline 18030 tok  ->  View 3461 tok
+====================================================================================================
+
+  ---- BASELINE  toLiteModel JSON ----
+[testCases] prompt chars: 65537 | approx tokens: 16384 | pages: 5
+[gemini] calling model: gemini-3-flash-preview | prompt length: 65537
+[backoff] attempt 1 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[backoff] timeout ( LLM call exceeded 45000ms ) — retrying in 1136 ms (attempt 1 )
+[backoff] attempt 2 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[gemini] response status: 503
+[gemini] error body: {
+  "error": {
+    "code": 503,
+    "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.",
+    "status": "UNAVAILABLE"
+  }
+}
+
+[backoff] rate-limited, sleeping 2109 ms (server: null )
+[backoff] attempt 3 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[backoff] timeout ( LLM call exceeded 45000ms ) — retrying in 4041 ms (attempt 3 )
+[backoff] attempt 4 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[gemini] response status: 503
+[gemini] error body: {
+  "error": {
+    "code": 503,
+    "message": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.",
+    "status": "UNAVAILABLE"
+  }
+}
+
+[backoff] rate-limited, sleeping 8088 ms (server: null )
+[backoff] attempt 5 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[backoff] timeout ( LLM call exceeded 45000ms ) — retrying in 10093 ms (attempt 5 )
+[backoff] attempt 6 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[backoff] timeout ( LLM call exceeded 45000ms ) — retrying in 10281 ms (attempt 6 )
+      GENERATION FAILED: LLM call exceeded 45000ms
+
+  ---- PROJECTED View text ----
+[testCases] prompt chars: 12057 | approx tokens: 3014 | pages: 5
+[gemini] calling model: gemini-3-flash-preview | prompt length: 12057
+[backoff] attempt 1 / 6 | key: AQ.Ab8RN...
+[gemini] sending request...
+[gemini] response status: 200
+[gemini] response length: 7113 | usage: {
+  promptTokenCount: 6439,
+  candidatesTokenCount: 2060,
+  totalTokenCount: 10107,
+  promptTokensDetails: [ { modality: 'TEXT', tokenCount: 6439 } ],
+  thoughtsTokenCount: 1608,
+  serviceTier: 'standard'
+}
+      9 case(s)
+
+      1. [valid] Verify Amazon India homepage essential structure
+         priority   high   feature Homepage   targetUrl https://www.amazon.in/
+         intent     Verify that the primary navigation, header, and content areas are rendered on initial page load.
+           - Navigate to the homepage URL 'https://www.amazon.in/'.
+           - Observe the header containing the 'Amazon.in' link.
+           - Check that the 'Open All Categories Menu' button is visible and clickable.
+           - Verify that the main content area displays the heading 'Appliances for your home | Up to 55% off'.
+         expected   The page loads with the header, navigation menu, and promotional content sections fully visible.
+
+      2. [valid] Perform a valid search for products
+         priority   high   feature Search   targetUrl https://www.amazon.in/
+         intent     Verify that a standard text query returns a results page.
+           - Type 'Mobiles' into the 'Search Amazon.in' search box.
+           - Click the 'Go' button to execute the search.
+         expected   The page updates to show a list of mobile phone products.
+
+      3. [empty-boundary] Submit search with empty input
+         priority   low   feature Search   targetUrl https://www.amazon.in/
+         intent     Verify that clicking search without a query does not cause a crash or error page.
+           - Ensure the 'Search Amazon.in' search box is empty.
+           - Click the 'Go' button.
+         expected   The page either remains on the homepage or refreshes without an error message.
+
+      4. [valid] Search for non-existent gibberish
+         priority   medium   feature Search   targetUrl https://www.amazon.in/
+         intent     Verify the system handles queries with no matches by showing a helpful message.
+           - Type 'xyzzy12345abcde' into the 'Search Amazon.in' search box.
+           - Click the 'Go' button.
+         expected   The results page displays a 'No results found' message.
+
+      5. [security-xss] Verify search box security against XSS
+         priority   medium   feature Search   targetUrl https://www.amazon.in/
+         intent     Verify that script tags in the search box are treated as plain text and not executed.
+           - Type '<script>alert("XSS")</script>' into the 'Search Amazon.in' search box.
+           - Click the 'Go' button.
+         expected   The script code is displayed as literal text on the results page and no alert popup appears.
+
+      6. [invalid-input] Submit sign-in without an identifier
+         priority   medium   feature Login   targetUrl https://www.amazon.in/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.in%2Fyour-orders%2Forders%3Fref_%3Dnav_orders_first&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=amzn_retail_yourorders_in&openid.mode=checkid_setup&language=en_IN&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0
+         intent     Verify that the sign-in form requires a mobile number or email address.
+           - Leave the 'Enter mobile number or email' field blank.
+           - Click the 'Continue' button.
+         expected   The alert 'Enter your mobile number or email' becomes visible.
+
+      7. [security-injection] Verify login against SQL injection
+         priority   critical   feature Login   targetUrl https://www.amazon.in/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.in%2Fyour-orders%2Forders%3Fref_%3Dnav_orders_first&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=amzn_retail_yourorders_in&openid.mode=checkid_setup&language=en_IN&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0
+         intent     Verify that common SQL injection patterns in the login field are rejected.
+           - Type "' OR '1'='1" into the 'Enter mobile number or email' field.
+           - Click the 'Continue' button.
+         expected   The system rejects the input or shows an invalid account error, and does not log the user in.
+
+      8. [state-change] Open the side navigation menu
+         priority   high   feature Navigation   targetUrl https://www.amazon.in/
+         intent     Verify that the main categories menu expands when requested.
+           - Click the 'Open All Categories Menu' button.
+         expected   A sidebar menu slides out containing various shopping categories.
+
+      9. [state-change] Trigger location update dialog
+         priority   medium   feature Navigation   targetUrl https://www.amazon.in/
+         intent     Verify that the location picker opens when the delivery address is clicked.
+           - Click the 'Delivering to Jaipur 302021 Update location' button.
+         expected   A dialog or pop-up appears allowing the user to enter a new pincode or select a delivery address.
+
+
+Done. Read the cases above before any assessment.
