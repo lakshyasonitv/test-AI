@@ -1936,6 +1936,31 @@ is the signal to flip it.
 
 ---
 
+## Where the code lives
+
+**`main` is the branch of record. `frontend` is the working branch. Everything else is noise.**
+
+| Branch | What it is |
+|---|---|
+| `main` | The source of truth. Carries everything below. |
+| `frontend` | Where work lands day to day, merged into `main` the same day. |
+| `appmodel-projection` | The ONE branch deliberately held. See TD-56 — the projection is measured and tested but waiting on real runs before merging. |
+
+Written after a real confusion: nine branches were created — one per request, so each could be
+reviewed on its own merit — and then not merged. The result was that a delivered fix looked
+broken because the checkout predated it. Splitting is fine; splitting *and leaving it* is not.
+
+**The rule that follows from it:** a branch only survives overnight if it is genuinely being
+held for a decision. Everything else merges the day it is finished.
+
+**A stale held branch is worse than no branch.** `appmodel-projection` sat for long enough that
+merging it would have *reverted* TD-63, TD-64, the project-count fix and the stacked phase
+cards, and deleted three test files — silently, with a clean merge, because those files simply
+did not exist on it. It has been rebased onto `main`; if it sits again, rebase it again before
+going near a merge, and check `git diff --stat main..appmodel-projection` shows only additions.
+
+---
+
 ## Where the Site Store / View work ended — read this before picking it up
 
 Written 2026-08-27, at the point the work was deliberately stopped. `SITE_STORE_VIEW_SPEC_v2.md`
