@@ -320,6 +320,43 @@ async function casesByIds(ids: string[]): Promise<CaseRow[]> {
   return ((data ?? []) as any[]).map(toCaseRow);
 }
 
+/**
+ * How many saved cases each project holds — the ONE source for that number.
+ *
+ * The sidebar tree renders `.tree-count` on a project row and on each of its suite rows, in the
+ * same position. Those used to be different units: the project showed its RUN count while its
+ * children showed CASE counts, so a project with 38 runs and 3 cases read as holding 38 cases.
+ * This is the number that fixes it, and it lives here because `library.ts` owns the case library —
+ * counting rows client-side by fetching every case just to take `.length` does not scale and
+ * drifts from what the server thinks.
+ *
+ * COUNTS EVERY CASE IN THE PROJECT, NOT THE SUM OF ITS SUITES. `project_id` is on the case itself,
+ * so a case that is saved but filed in no suite is still counted — without that it would vanish
+ * from the tree entirely, present in the library and invisible in the only place that lists it.
+ * A project's number can therefore legitimately exceed the sum of its suite numbers, and that is
+ * correct rather than a discrepancy to reconcile.
+ *
+ * That property falls out of the schema rather than being enforced here: the count is over
+ * `test_cases`, never through the `suite_cases` join. `deleteCase` is a hard delete, so there is
+ * no soft-deleted state to exclude either.
+ *
+ * One grouped query for every project, matching `listSuites`' own count — never one per project.
+ */
+export async function countCasesByProject(projectIds: string[]): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (projectIds.length === 0) return counts;
+
+  const client = requireClient();
+  const { data, error } = await client
+    .from("test_cases").select("project_id").in("project_id", projectIds);
+  if (error) throw new AccessError(500, `could not count cases: ${error.message}`);
+
+  for (const r of (data ?? []) as { project_id: string | null }[]) {
+    if (r.project_id) counts.set(r.project_id, (counts.get(r.project_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /** Cases the caller may see, optionally narrowed to one project. */
 export async function listCases(
   userId: string, orgId: string, role: Role, projectId?: string,

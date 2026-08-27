@@ -3857,17 +3857,37 @@ function renderProjectsTree(runs) {
   sidebarTreeEl.innerHTML = (creating ? projectFormHtml() : "") + projects.map((p) => {
     const open = expandedProjects.has(p.id);
     const projectRuns = byKey.get(normalizeUrlKey(p.name) || p.name) || [];
-    // The server's count is authoritative — it covers every run in the project, while the
-    // sidebar's own list is capped at the newest 20 from disk.
-    const count = typeof p.runCount === "number" ? p.runCount : projectRuns.length;
+    // The number on a project row is its SAVED CASE count, because the suite rows nested under it
+    // show case counts in the same `.tree-count` position. It used to show runs, so a project with
+    // 38 runs and 3 cases read as holding 38 cases — two units, one column.
+    //
+    // It counts EVERY case in the project, not the sum of its suites, so a case saved but filed in
+    // no suite still appears in the total. That means this number can legitimately be larger than
+    // its children add up to, and that is correct rather than a discrepancy.
+    //
+    // Defaults to 0, never blank: a project with no saved cases shows "0". The same default covers
+    // the DB-off fallback below, where `groupRunsByUrl` synthesises pseudo-projects that have no
+    // case count because there is no case library in that mode.
+    const caseCount = typeof p.caseCount === "number" ? p.caseCount : 0;
+
+    // The run count is not discarded — it moves into the row's tooltip where it can be LABELLED,
+    // rather than sitting in the tree as a bare number in the wrong unit. The server's figure is
+    // authoritative: it covers every run in the project, while the sidebar's own list is capped at
+    // the newest 20 read off disk.
+    const runCount = typeof p.runCount === "number" ? p.runCount : projectRuns.length;
+    const rowTitle = [
+      p.baseUrl || p.name,
+      `${caseCount} saved case${caseCount === 1 ? "" : "s"}`,
+      `${runCount} run${runCount === 1 ? "" : "s"}`,
+    ].join(" · ");
     // Editing swaps the row for the form in place, so the project being renamed stays where the
     // eye already is rather than the form appearing somewhere else in the tree.
     const projectRow = projectFormId === p.id ? projectFormHtml() : `
       <div class="tree-row tree-project" data-toggle-key="${escapeHtml(p.id)}">
         <span class="tree-chevron">${icon(open ? "chevron-down" : "chevron-right", { size: 9 })}</span>
-        <span class="tree-label" title="${escapeHtml(p.baseUrl || p.name)}">${escapeHtml(p.name)}</span>
+        <span class="tree-label" title="${escapeHtml(rowTitle)}">${escapeHtml(p.name)}</span>
         ${canManage ? `<button type="button" class="dl-btn-inline tree-project-edit" data-project-edit="${escapeHtml(p.id)}" title="Rename or set a base URL">Edit</button>` : ""}
-        <span class="tree-count">${count}</span>
+        <span class="tree-count">${caseCount}</span>
       </div>`;
     // Saved suites first, then recent runs. The suites are the reusable, zero-cost thing — a
     // project's library is more useful to reach than its scrollback, so it sits above.

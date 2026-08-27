@@ -1,5 +1,6 @@
 import { getServiceClient } from "../db.js";
 import { AccessError, visibleProjectIds, type Role } from "./authz.js";
+import { countCasesByProject } from "./library.js";
 
 /**
  * Projects, and project-level visibility — implentationplan.md Step 5.1 plus the access model the
@@ -36,7 +37,14 @@ export interface ProjectRow {
   id: string;
   name: string;
   baseUrl: string;
+  /** Runs filed under this project. Kept, and still returned — it is a real fact about the
+   *  project and removing it would drop a field callers may already read. It is simply not the
+   *  number the tree renders, because the tree's other rows count cases. */
   runCount?: number;
+  /** Saved cases in this project — ALL of them, not the sum of its suites. The number the sidebar
+   *  tree shows on a project row, so it speaks the same unit its suite children already do.
+   *  Additive and optional; see `countCasesByProject` in library.ts for why it is counted there. */
+  caseCount?: number;
 }
 
 export interface ProjectMemberRow {
@@ -56,7 +64,7 @@ export function normaliseUrlKey(url: string | null | undefined): string {
   return (url ?? "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
 }
 
-/** Projects the caller may see, busiest first, each with its run count. */
+/** Projects the caller may see, busiest first, each with its run count AND its saved-case count. */
 export async function listVisibleProjects(
   userId: string,
   orgId: string,
@@ -79,17 +87,30 @@ export async function listVisibleProjects(
   if (rows.length === 0) return [];
 
   // One grouped count rather than a query per project.
+  const projectIds = rows.map((r) => r.id);
   const { data: runRows } = await client
     .from("runs")
     .select("project_id")
-    .in("project_id", rows.map((r) => r.id));
+    .in("project_id", projectIds);
   const counts = new Map<string, number>();
   for (const r of (runRows ?? []) as { project_id: string | null }[]) {
     if (r.project_id) counts.set(r.project_id, (counts.get(r.project_id) ?? 0) + 1);
   }
 
+  // The case count is owned by library.ts, which owns the case library. One grouped query there,
+  // not one per project, and never counted client-side off a full listCases().
+  const caseCounts = await countCasesByProject(projectIds);
+
   return rows
-    .map((r) => ({ id: r.id, name: r.name, baseUrl: r.base_url, runCount: counts.get(r.id) ?? 0 }))
+    .map((r) => ({
+      id: r.id, name: r.name, baseUrl: r.base_url,
+      runCount: counts.get(r.id) ?? 0,
+      // Zero is a real answer and must survive as 0 — a project with no saved cases shows "0",
+      // never a blank.
+      caseCount: caseCounts.get(r.id) ?? 0,
+    }))
+    // Ordering is deliberately UNCHANGED: busiest-by-runs first. Re-sorting on the new number
+    // would silently rearrange everyone's sidebar, which is not what this fix is for.
     .sort((a, b) => (b.runCount! - a.runCount!) || a.name.localeCompare(b.name));
 }
 
@@ -137,7 +158,7 @@ export async function createProject(orgId: string, name: string, baseUrl: string
     .select("id, name, base_url")
     .single();
   if (error || !data) throw new AccessError(500, `could not create project: ${error?.message}`);
-  return { id: data.id, name: data.name, baseUrl: data.base_url, runCount: 0 };
+  return { id: data.id, name: data.name, baseUrl: data.base_url, runCount: 0, caseCount: 0 };
 }
 
 export async function updateProject(
