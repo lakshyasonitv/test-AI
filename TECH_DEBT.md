@@ -1424,3 +1424,335 @@ A test that quietly makes the application worse is worse than no test.
 **Fix.** `trackMintedRun(res)` records `res.body.runId` from any response that carries one, and
 `afterAll` removes those alongside the fixed ids. Verified: `runs/` count unchanged across a full
 suite run (87 -> 87, previously 85 -> 87).
+
+---
+
+## Site Store / View — Phase 0 measurement result
+
+`SITE_STORE_VIEW_SPEC_v2.md` proposes replacing the AppModel-in-prompt with a Store + retrieval +
+View. Its ground rule 7 gates the whole project on one unmeasured number, and rule 8 says the
+finding is recorded here either way. `scripts/measureView.ts` produced it over **all 38 saved runs
+that have an `02-appmodel.json`**, with a real tokenizer (`gpt-tokenizer`), no browser and no LLM.
+
+**Outcome: the gate was not met. Phases 1, 2.5 and 3 are NOT STARTED, BLOCKED ON EVIDENCE — not
+abandoned, not in progress.** The spec cost two days and prevented seventeen. Read what follows as
+a method that worked, not a project that failed.
+
+### TD-56. The token premise is half stale, and the half that holds is narrower than it looked — High / Strategic
+
+#### A retracted number, first
+
+> ~~`irCoverage` 100% on 38/38 runs~~
+
+**This line measured nothing and must not be quoted.** `04-ir.json` stores `{ir, updatedAppModel}`,
+not a bare IR; reading `.steps` off the wrapper produced zero references, and `coverage()` returned
+`1` for zero references. Every run scored a perfect, empty pass. It is struck rather than quietly
+replaced because it will otherwise be read back out of a diff and believed.
+
+**The distribution figures below never depended on it and stand unchanged.** Reduction compares the
+whole `toLiteModel` JSON against the whole View text; the coverage bug lived in a different
+computation. A blanket "the earlier numbers were wrong" would throw away the good measurements
+along with the bad.
+
+The corrected figure is **`irCoverage` 100% on 28 of the 29 runs that have grounded references**,
+with nine runs recorded as NOT MEASURED rather than counted as passes. The one drop is
+`link "Contact Us"` on `2026-08-25T10-06-10`.
+
+#### The correction that changes the result
+
+The spec's Phase 0 says to measure "the AppModel exactly as it is serialized into the IR prompt
+today" and points at `toLiteModel`. Appendix C says to follow the repo when a name differs, and the
+repo has **two** serializers feeding **two** prompts:
+
+| Stage | Call site | What it emits |
+|---|---|---|
+| test cases | `testCases.ts:427` `toLiteModel(appModel)` | **every** page, capped per page, 3 fields per element |
+| IR | `ir.ts:1263` `toMicroModel(filtered, {currentPageUrl})` | **one** page, at most 30 elements, 3 fields |
+
+`toMicroModel` already does most of what the View was proposed to do. So the spec's problem
+statement — "large, page-unscoped, and full of fields the model cannot use" — is **true of the
+test-case prompt and false of the IR prompt**.
+
+#### The numbers
+
+| Comparison | Result |
+|---|---|
+| purpose `testcases` — View vs `toLiteModel` | **max 80.7% / p95 69.0% / median 39.4%** smaller |
+| — same, as a mean | 32.0% (kept for completeness; the wrong headline for a token-pressure problem) |
+| — worst case | **-35.8%**, and **8 of 38 runs regress** |
+| purpose `ir` — View vs `toMicroModel`, page-for-page | **56.6% LARGER** |
+| retrieval — test View vs generic View | 16,214 vs 16,200 tokens |
+
+Totals: `toLiteModel` 36,005 tokens, `toMicroModel` 9,563, generic View 16,200, single-page IR View
+14,979.
+
+**The IR half fails outright — not "under target", negative.** Building the Store and View for
+`purpose: "ir"` would make that prompt bigger and replace a working path with a costlier one.
+
+**The test-case half is real but uneven.** The win comes from a handful of dense runs while a third
+of the corpus measures negative, which is why it is reported as max/p95 rather than as a mean.
+
+**Retrieval was not measured, and this records a CORPUS LIMITATION, not a verdict against
+retrieval.** 34 of the 38 runs are single-page (3 have two pages, 1 has five), so
+`retrieveSubgraph` had nothing to choose between and the retrieved View is the generic View.
+**Re-measure when at least 10 saved runs have 4 or more crawled pages.**
+
+#### Why these numbers can be trusted where the first set could not
+
+The harness shipped **four** bugs, none of which threw — each produced a confident, wrong table.
+Three were arithmetic on the wrong data; the fourth is the one worth naming:
+
+1. `04-ir.json` unwrapping, above.
+2. **Keys joined on `\u0000` in some functions and on a space in others.** A NUL key never equals a
+   space key, so every comparison returned "missing" — 29/29 runs "truncating", 0/0 "covered".
+3. Live-extended elements scored as truncations, blaming `toMicroModel` for elements that did not
+   exist when it ran.
+4. Coverage counted `elements[]` only, while the prompt also carries a `navigation` tree and a
+   `forms` block. Three nav links were reported as dropped by the element cap while the nav tree
+   listed all three, as links, with hrefs.
+
+Bugs 2 and 4 are **the same failure class**: a key or a prompt modelled incompletely, compared
+confidently. A further instance was then caught *by the guard written for bug 2* — a hand-rolled
+`(role, name)` joiner still sitting inside `elementId`, which nothing had noticed. That is four
+occurrences of one root cause inside a single piece of work.
+
+So it is not fixed, it is **guarded**, in `tests/measureView.test.ts`:
+
+- `coverage()` **throws** on zero references instead of returning `1`. The caller decides "not
+  measured"; the function refuses to invent a score. This is TD-01's shape — a check that passes
+  because it never looked.
+- the source is scanned for any hand-rolled `(role, name)` key, for raw NUL bytes, and for a second
+  `NUL_SEP` declaration
+- exact counts throughout — a fixture of 5 references with 3 present asserts **3/5**, never
+  "greater than zero" and never "did not throw"
+- an element present only in the nav tree, and one present only as a form label, each assert as
+  covered
+
+**Those two guards are the reason the rewritten figures are quotable and the originals are not.**
+
+#### The threshold: 70 chars per element, and the band it sits in
+
+Baseline **size** does not separate winners from losers — 87 elements in 15.5k chars reduces 69%,
+while 108 elements in 6.1k chars regresses 25%, and size buckets stay mixed at every level.
+Baseline **density** separates cleanly, and the mechanism is understood: `toLiteModel` also carries
+forms, navigation trees, buttons, headings and breadcrumbs, all of which the View drops. A baseline
+that is mostly bare elements has nothing to give up, so the View's per-element ids cost more than
+compact JSON.
+
+**Record the band, not just the number:**
+
+| | |
+|---|---|
+| highest density that still **regresses** | **56.4** ch/el |
+| lowest density that **improves** | **72.6** ch/el |
+| empty band between them | **56.4 to 72.6**, containing no run of any kind |
+
+`VIEW_MIN_CHARS_PER_ELEMENT = 70` therefore **sits inside a gap, not on a curve**. It clears the
+worst regressor by 13.6 ch/el and keeps a cluster of seven runs at +39.4% that a higher setting
+inside the same band would have forfeited for no gain in safety. A threshold chosen for margin is
+the right instinct against a cliff; against an empty band it only forfeits value.
+
+The threshold is **fitted to this corpus**. `tests/appModelText.test.ts`'s per-run assertion
+therefore passes by construction and is a regression guard, not evidence of generalisation.
+
+**Re-check trigger — point it at the BAND, not the number: re-fit when 15 saved runs postdate the
+threshold's selection.** As runs accumulate inside 56.4–72.6 the band acquires a shape, and the
+threshold should be re-fitted against that shape rather than defended as a chosen constant. **A run
+above the threshold that regresses means the threshold is wrong**, not that the per-run test is too
+strict — the per-run assertion stays per-run.
+
+Chars track tokens closely across the corpus (ratio 3.49–4.38, median 4.15), so gating in
+characters is sound and no runtime tokenizer dependency is needed. `ir.ts:1294` already gates on
+`prompt.length` for the same kind of decision.
+
+#### What this work produced besides a negative
+
+The Store/View **artifact** failed its gate. The **harness built to measure it** did not: replaying
+saved runs offline surfaced TD-57 (an Authentication case compiled without the login page — fixed,
+truncation misses 10 to 2 corpus-wide), TD-58, TD-59 and TD-60, none of which anyone was looking
+for. Recorded so the negative headline does not bury it.
+
+#### Recommendation
+
+Do not build Phases 1–3 as specified. Build the narrow projection of the test-case prompt only,
+above the threshold above, and re-measure retrieval when the corpus can support it.
+
+**Re-run with:** `npx tsx scripts/measureView.ts`. Touches no shipped file, costs nothing.
+`VIEW_TOKEN_BUDGET` overrides the 2500-token default.
+
+**Caveat on the tokenizer.** `gpt-tokenizer` counts GPT tokens; this pipeline sends Gemini. The
+ratios the gate turns on hold across tokenizers, but the absolute counts are not Gemini's.
+
+### TD-57. A bare-origin entry URL sent the IR prompt the wrong page — an Authentication case never saw the login form — High / Accidental — Fixed
+
+**Symptom.** Three saved runs (`2026-08-24T11-10-01`, `2026-08-24T14-52-21`,
+`2026-08-25T06-51-31`), all identical in shape: entry `https://learnvibes.vercel.app`, two
+discovered pages `/dashboard` and `/login`, primary case feature `"Authentication"`. The IR prompt
+was built from `/dashboard`. `"Sign In"`, the email box and the password box appear **nowhere** in
+it — not in `elements`, not in the `navigation` tree, not in `forms`. The IR still grounded against
+all three, because `groundingError()` validates against the *full* model rather than the prompt.
+
+**Cause — two silent fallbacks compounding onto the same wrong page.** `toMicroModel` emits exactly
+ONE page, so the lead page decides what the model can see at all.
+
+1. `ir.ts` tested `p.url.startsWith(entryOrigin) && entryPath && p.url.includes(entryPath)`. For a
+   bare origin `entryPath` is `"/"`, and every URL contains `"/"` — so the test matched whichever
+   page came first in the array. It stops being a path test at that point.
+2. `toMicroModel` then received `{ currentPageUrl: entryUrl }`, matched no page by `pageKey`, and
+   fell back to `model.pages[0]` — the same wrong page, chosen a second time.
+
+**The relevance filter was never at fault.** It correctly kept `/login` (its `concepts` are
+`["Authentication", "Registration"]`, which the filter matches against the case's feature). The page
+was discarded *after* the filter deliberately kept it.
+
+**Fix.** Read `testCase.targetUrl` when choosing the lead page. That is a Zod schema field
+(`testCases.ts:259`), documented to the model as *"when the model has multiple pages, this tells the
+later stage which page to start from"*, and already compared with `pageKey` at `ir.ts:393` and
+`testCases.ts:104`. It was simply never read here — structural, not a regex over prose. Two smaller
+changes with it: the path test is only trusted when there *is* a path, and `toMicroModel` is told
+which page `ir.ts` chose rather than left to re-resolve the entry URL and disagree with it.
+
+**Measured, over all 29 runs with a saved IR: page-filter misses 9 → 1.** Two runs fully fixed
+(3 missing → 0 each). The third went 4 → 1 — see TD-59.
+
+Pinned by `tests/irPagePick.test.ts`, with `/dashboard` deliberately first in the fixture because
+that ordering is what made the old code look correct. Verified failing against the old code.
+
+### TD-58. `toMicroModel`'s 30-element cap dropped one grounded element — Low / Accidental — Filed, not fixed
+
+**Symptom.** On `2026-08-25T10-06-10` (87 elements, one page), `toMicroModel` logs
+`capped 73 -> 30 elements`, and `link "custom logo link"` — which that run's IR grounds against —
+reaches the prompt in no form: not as an element, not in the nav tree, not as a form label.
+
+**Scope, and why it is Low.** This is **one element, on one run, across the whole 38-run corpus.**
+The first measurement reported four, but three of those (`"Who We Are"`, `"Services"`,
+`"Contact Us"`) were listed in the `navigation` tree as links with hrefs — the check was reading
+`elements[]` only and ignoring two thirds of the prompt. The remaining one is the WordPress
+custom-logo anchor.
+
+**Deliberately not fixed.** The proposed fix was to make the cap rank before it cuts, reusing the
+View's Pass 3 priority function. That would change how *every* IR prompt is built, on evidence of
+one logo anchor on one run — the same disproportion that killed Phases 1–3 of
+`SITE_STORE_VIEW_SPEC_v2.md`. **Do not fix by raising the cap**; if this is ever fixed, rank before
+cutting and keep the cap at 30.
+
+**Promote to Medium when:** a run grounds against an element the cap dropped *and* that element is
+load-bearing for the case (a form field, a submit control), rather than a decorative logo link.
+`scripts/measureView.ts` reports this per run under `element-cap`.
+
+### TD-59. `toMicroModel` sends one page, so a case spanning two pages cannot see both — Medium / Strategic
+
+**Symptom.** `2026-08-24T14-52-21` grounds against four targets: `"Sign In"`, the email box and the
+password box on `/login`, and `"Sign out"` on `/dashboard`. `toMicroModel` emits exactly one page,
+so whichever is chosen, one target is invisible to the model. After TD-57's fix the run improved
+from 4 missing to 1, and that last one is not reachable by any choice of single page.
+
+**Why it is left standing.** The one-page reduction is what makes the IR prompt the most compressed
+artifact in the pipeline — Phase 0 measured it at 9,563 tokens against `toLiteModel`'s 36,005, and a
+projected View was **56.6% larger** than it. Widening the page pick to fix this is the token problem
+returning by another door.
+
+**Remediation, when it earns its way in.** Send the lead page in full and a *name-only* digest of
+the other pages the relevance filter kept — enough for the model to reference an element on a second
+page without carrying that page's whole element list. Measure before and after; if the digest costs
+more than a few hundred tokens it is not worth it.
+
+### TD-60. Grounding validates against the full model while the prompt shows a subset — Medium / Strategic — Theoretical, with a trigger
+
+**The gap.** `groundingError()` (`ir.ts:1472`) checks a target against the complete `AppModel`.
+The prompt shows a reduced projection: one page, ≤30 elements, plus a capped nav tree and form
+block. So a target naming anything that exists *anywhere* on the site is accepted, whether or not
+the model was ever shown it. Real by construction.
+
+**Undemonstrated.** The run that prompted this note turned out not to be evidence: three of the four
+elements were in the prompt's nav tree, and the fourth (TD-58) is a single decorative anchor. Across
+29 runs with a saved IR there is currently **no** confirmed case of the model naming a load-bearing
+element it was never shown.
+
+**Why it is worth writing down anyway.** The failure it would produce is silent and would look like
+a good IR: the model guesses a plausible name, grounding accepts it because it exists on some other
+page, and the test fails at run time against the page it is actually on.
+
+**Trigger — promote to a bug when:** any run grounds a target absent from the prompt in **all three**
+blocks (elements, navigation tree, form labels) *and* that target is load-bearing. This is not
+something to remember to check — `scripts/measureView.ts` §3.0 computes exactly this and attributes
+each miss to its cause. A non-`live-extended` miss on a form or submit control is the signal.
+
+### TD-61. The identity hypothesis was never a token argument, and has never been measured — Medium / Strategic — Open
+
+`SITE_STORE_VIEW_SPEC_v2.md` bundled two independent claims. Phase 0 tested one of them.
+
+- **Token argument** — the View is smaller than what ships today. Tested. Fails on the IR prompt,
+  partially holds on the test-case prompt. That is TD-56.
+- **Identity argument** — the model addresses elements by **id** rather than authoring a name, so
+  grounding becomes a dictionary lookup; `nth` is computed from the Store instead of invented; and
+  repeated-group discriminators disambiguate the duplicate `(role, name)` pairs that make grounding
+  ambiguous today (TD-05). **Never a token argument, and never measured.**
+
+Filed separately so it cannot re-enter under the token banner. Phase 0's negative says nothing about
+it either way — a smaller prompt and an unambiguous one are different goods, and this one was never
+on the scale.
+
+**If it is revived it needs its own hypothesis and its own measurement**, stated before any code:
+what fraction of grounding failures in saved runs are caused by ambiguous `(role, name)` pairs, and
+would id-addressing have prevented them? `runs/` already holds the evidence, and answering it costs
+nothing.
+
+### TD-62. Hidden form inputs and a live CSRF token reach the model as if they were controls — High / Accidental — Fixed in the View, OPEN on the IR path
+
+**Read this first: the IR prompt is contaminated too, and that half is NOT fixed.** The View was
+the place it was noticed, because the View promotes the junk to its most prominent line. The
+underlying defect is in the element filter that both stages share, and it is independently
+actionable without reading anything else.
+
+**Symptom, on `2026-08-14T07-13-38` (amazon.in).** `toLiteModel`'s output — the block sent to the
+test-case model — carries **55 hidden form inputs out of 440 elements**, including a live CSRF
+token, each presented as an ordinary `textbox`:
+
+```
+textbox "SIGNIN_CLAIM_COLLECT"   textbox "FullPageUnifiedClaimCollect"   textbox "true"
+textbox "claimType"   textbox "countryCode"   textbox "1"
+textbox "hLJv+ZAi/ZCOz9pLnTdj9vNiN9BjFZcn/4qCiyrYi8cPAAAAAGp+wC0AAAAB"
+```
+
+**Cause.** `withFilteredElements` (`ir.ts`) keeps an element when it has a name and its role is in
+`INTERACTIVE_ROLES`. `textbox` is interactive and these all have names, so all 55 survive. The same
+predicate is what the View copied.
+
+**Why they appear to have names.** The accessible name of an unlabelled hidden input **is its
+value**, which is why a CSRF token looks like it is named after its own contents:
+
+| hidden field `name` | `value`, which becomes the element's "name" |
+|---|---|
+| `appAction` | `SIGNIN_CLAIM_COLLECT` |
+| `anti-csrftoken-a2z` | `hEj/Wh8642+o8zAEP15lt9A5gFAdyyTAqoNqg9Fa9jHD` |
+| `metadata1` | `true` |
+
+**Two signals are needed; neither is sufficient alone.**
+
+- `Element` carries **no `tag` and no `inputType`**, so `type=hidden` cannot be read off the
+  element at all. It *can* be read off `PageModel.forms[].fields[]`, which does carry `inputType` —
+  a schema field, not a guess about wording. Match on the field's **value as well as its name**.
+- `visible === false` catches only part: 30 of the 474 elements carry it, while
+  `SIGNIN_CLAIM_COLLECT`, `claimType` and `countryCode` are all recorded **`visible: true`**.
+
+**Fixed in the View** (`scripts/measureView.ts`), filtered in **two** places — the per-page element
+filter and Pass 1's shared hoist, because the hoist runs first and on raw `p.elements`. Without the
+second, a CSRF token still led the `shared:` line, precisely because appearing on every sign-in
+page makes it look like site chrome. Six tests in `tests/measureView.test.ts`, at four densities
+plus the hoist and the visible-alone case; all six verified failing without the filter.
+
+**OPEN: the IR path.** `withFilteredElements` is unchanged, so the IR prompt still carries all 55.
+It was left alone deliberately rather than widened in the middle of unrelated work — changing what
+every IR prompt contains is not a side effect to slip into a measurement branch.
+
+**Remediation.** Lift the predicate into one shared helper next to `INTERACTIVE_ROLES` in
+`appModel.ts` and call it from both `withFilteredElements` and the View, so the two filters cannot
+diverge again. Then re-run `scripts/measureView.ts`: the IR baseline (`toMicroModel`) should shrink,
+which also makes TD-58's 30-element cap less likely to evict a real control — 55 junk entries are
+currently competing for those 30 slots.
+
+**Why this was not caught by any measurement.** Token reduction, `irCoverage` and the §6 A/B
+comparison are all structurally blind to it: the junk is present in *both* arms and in *both*
+prompts, so every comparison cancels it out. It was found by reading the View's output during §6 —
+a defect in the INPUT, surfaced by an exercise designed to compare OUTPUTS.
