@@ -91,7 +91,7 @@ describe("TD-62 — the IR element filter excludes what no test can act on", () 
 });
 
 describe("TD-62 — the fix reaches the real IR prompt", () => {
-  it("keeps hidden inputs out of the model block toIR sends", async () => {
+  it("keeps hidden inputs out of the model block toIR sends — CONTAINS ONE INVERTED ASSERTION, see below", async () => {
     const { geminiMock } = vi.hoisted(() => ({ geminiMock: vi.fn() }));
     vi.doMock("../src/llm/gemini.js", () => ({ gemini: geminiMock }));
     geminiMock.mockResolvedValue({
@@ -127,6 +127,13 @@ describe("TD-62 — the fix reaches the real IR prompt", () => {
     // Asserting it here would either fail for a reason this fix is not responsible for, or —
     // worse — tempt someone to widen `withFilteredElements` to paper over a forms-block problem
     // it cannot see. The gap is recorded rather than blurred.
-    expect(prompt).toContain("SIGNIN_CLAIM_COLLECT");   // pins the KNOWN gap; flip when TD-63 lands
+    // ****************************************************************************************
+    // *** INVERTED ASSERTION. This is NOT saying the junk SHOULD be here. It is saying the  ***
+    // *** junk IS STILL here, via the forms block, and that TD-63 has not been fixed yet.   ***
+    // *** When TD-63 lands this line WILL FAIL. That failure is the point: flip it to       ***
+    // *** .not.toContain and delete this banner. Do not "repair" it by widening the element ***
+    // *** filter — the element filter cannot see the forms block at all.                    ***
+    // ****************************************************************************************
+    expect(prompt).toContain("SIGNIN_CLAIM_COLLECT");
   });
 });
