@@ -160,7 +160,10 @@ export async function runSuite(
   primaryResult?: PrimaryCaseResult,
   llmBudget?: LlmBudget,
   /** Credentials the user supplied for this run, shared by every case. */
-  runCreds?: Credentials
+  runCreds?: Credentials,
+  /** Per-run self-heal switch (orchestrator.ts RunOptions). Defaults on, matching
+   *  the behaviour before the switch existed. */
+  selfHeal = true
 ): Promise<CaseRunResult[]> {
   const results: CaseRunResult[] = [];
   const runId = path.basename(runDir);
@@ -232,7 +235,7 @@ export async function runSuite(
 
         let diagnosisPath: string | undefined;
         if (!primaryResult.result.passed) {
-          const diagnosis = await analyzeFailure(primaryResult.ir, primaryResult.result);
+          const diagnosis = await analyzeFailure(primaryResult.ir, primaryResult.result, appModel.auth?.loginUrl);
           diagnosisPath = path.join(caseDir, "06-diagnosis.json");
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
         }
@@ -298,7 +301,7 @@ export async function runSuite(
         let diagnosisPath: string | undefined;
         let healed = false;
         if (!result.passed) {
-          const diagnosis = await analyzeFailure(ir, result);
+          const diagnosis = await analyzeFailure(ir, result, appModel.auth?.loginUrl);
           diagnosisPath = path.join(caseDir, "06-diagnosis.json");
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
 
@@ -306,7 +309,7 @@ export async function runSuite(
           // suite cases never got it at all until now, even though this category is exactly
           // what heal was built for. Recompute status/blocked against the HEALED ir/result, not
           // the original, or a healed-and-passing case would still get reported truncated/failed.
-          if (healsUsed < MAX_SUITE_HEALS && isHealable(diagnosis, ir)) {
+          if (selfHeal && healsUsed < MAX_SUITE_HEALS && isHealable(diagnosis, ir)) {
             healsUsed++;
             try {
               const healedOutcome = await attemptHeal({

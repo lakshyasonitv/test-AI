@@ -7,6 +7,13 @@ function norm(s: string): string {
 }
 
 /**
+ * Accessible names that mean "this control submits a login". Exported so the discovery-time
+ * login (hybridDiscovery.ts) locates the submit button with the same vocabulary that decides,
+ * later, whether to wait for an auth redirect — one definition, so the two can't drift.
+ */
+export const AUTH_VERB = /^(sign\s*in|log\s*in|login|authenticate|submit)$/;
+
+/**
  * Returns true if the step is an auth-triggering action (click/press on a button
  * whose accessible name matches common login/submit vocabulary).
  */
@@ -16,7 +23,7 @@ export function isAuthTriggeringStep(step: Step): boolean {
   if (!name) return false;
   const n = norm(name);
   // Exact match against common auth verbs (normalized).
-  return /^(sign\s*in|log\s*in|login|authenticate|submit)$/.test(n);
+  return AUTH_VERB.test(n);
 }
 
 /**

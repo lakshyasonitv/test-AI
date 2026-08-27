@@ -2,6 +2,9 @@
   "name": "ai-test-platform",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.12.0"
+  },
   "scripts": {
     "generate": "node --env-file-if-exists=.env --import tsx src/cli.ts",
     "serve": "node --env-file-if-exists=.env --import tsx src/server/index.ts",
@@ -12,6 +15,7 @@
     "postinstall": "playwright install"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.4",
     "cheerio": "^1.2.0",
     "express": "^4.21.0",
     "zod": "^3.23.8"
@@ -20,7 +24,10 @@
     "@playwright/test": "1.49.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.20.1",
+    "@types/supertest": "^7.2.1",
+    "gpt-tokenizer": "^4.0.0",
     "playwright": "1.49.0",
+    "supertest": "^7.2.2",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.10"

@@ -1,121 +1,137 @@
 /* ---------------------------------------------------------------------------
-   AI Test Platform — dark app shell.
+   Testbench — light app shell, ThinkVibes blue.
 
    The controller in app.js drives state through class names, so every one of
    these is a contract, not a styling choice: .hidden, li.started/.completed/
    .failed, .phase-badge.running, .badge-*, .case-card.open, .history-item.active,
    .suite-progress-item.<status>. Renaming any of them silently breaks a feature.
+
+   Single palette, deliberately. The design this implements ships light-only —
+   there is no dark variant anywhere in it, so inventing one would be guessing.
+   The previous dark/light token pair and its toggle were removed rather than
+   left half-maintained. Every token name below is unchanged from that pair, so
+   all ~880 lines of component rules under here kept working through the reskin.
    --------------------------------------------------------------------------- */
 
 :root {
-  /* Surfaces, darkest to lightest */
-  --bg: #0a0b0e;
-  --surface: #121419;
-  --surface-2: #171a20;
-  --surface-3: #1d2128;
-  --sunken: #0d0e12;
-  --line: #23272f;
-  --line-soft: #1b1e25;
+  /* TWO COLOURS. White, and the ThinkVibes blue #0b63ce. Black for text.
 
-  --text: #e8eaee;
-  --text-2: #a3a9b5;
-  --muted: #7d8492;
-  --faint: #5c6270;
+     Nothing else is allowed in here. Every surface that is not white is that same
+     blue at a low opacity, written as rgba(var(--accent-rgb), a) rather than as a
+     pre-mixed pale hex — so anyone reading this file can see at a glance that it
+     IS the blue, not a fourth colour that happens to look bluish. Every grey is
+     black at a low opacity, for the same reason.
 
-  /* Brand accent — the SAME hue in both themes (see the light-theme block below). A
-     product's accent is its identity; it used to switch from blue to green depending on
-     theme, and the light-theme green happened to collide with --done (also green), so a
-     primary button and a "passed" badge were nearly indistinguishable. One blue accent
-     everywhere means green is free to mean exactly one thing: passed. */
-  --accent: #6d8cff;
-  --accent-hover: #8aa2ff;
-  --accent-rgb: 109, 140, 255;
+     A UI cannot be built from two flat values alone: an input has to read as
+     recessed against the card it sits in, a hairline has to be lighter than text,
+     a hover has to be visible. Those steps are opacities of the two colours, never
+     new hues. */
+
+  /* Surfaces. The app is white, the way thinkvibes.com is white — its hero, its
+     panels and its cards are all #fff. --surface-2 is the recessed step (inputs,
+     secondary buttons, hover rows); --surface-3 is the stronger tint for the few
+     places that should read as filled rather than merely recessed. */
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: rgba(var(--accent-rgb), .05);
+  --surface-3: rgba(var(--accent-rgb), .10);
+  --sunken: rgba(var(--accent-rgb), .05);
+  --line: rgba(var(--accent-rgb), .20);
+  --line-soft: rgba(var(--accent-rgb), .10);
+
+  /* Named aliases for the two surfaces that carry their own identity. --surface-1
+     existed only as a typo in the .diag-* block; it is declared here so that block
+     resolves instead of falling back to transparent. The sidebar is plain white —
+     it is separated from the canvas by its border, not by a fill. */
+  --sidebar: #ffffff;
+  --inset: rgba(var(--accent-rgb), .05);
+  --surface-1: #ffffff;
+
+  /* Black, and every softer tone an opacity of it — never a separate grey.
+     The alphas run .66/.62/.60 rather than the .6/.5/.4 the old palette used:
+     at those, --muted measured 3.32:1 and --faint 2.51:1 against the page, both
+     under WCAG AA. Every step now clears 4.5:1 on white. */
+  --ink-rgb: 17, 17, 17;
+  --text: #111111;
+  --text-2: rgba(var(--ink-rgb), .66);
+  --muted: rgba(var(--ink-rgb), .62);
+  --faint: rgba(var(--ink-rgb), .60);
+
+  /* The blue, #0b63ce, exactly as thinkvibes.com sets it on its primary button and
+     its CTA band. It clears AA against white text unmodified (5.69:1), so the app's
+     primary button is their primary button, not a darkened lookalike. Hover and
+     active are the same blue pushed darker — their site defines no hover state and
+     an app needs one. */
+  --accent: #0b63ce;
+  --accent-hover: #0a56b3;
+  --accent-deep: #094a99;
+  --accent-rgb: 11, 99, 206;
   --accent-soft: rgba(var(--accent-rgb), .13);
+  --accent-tint: rgba(var(--accent-rgb), .10);
 
-  /* Hover-only elevation, distinct from the resting surface/line tokens above. */
-  --surface-hover: #232830;
-  --line-hover: #2e333d;
+  --surface-hover: rgba(var(--accent-rgb), .07);
+  --line-hover: rgba(var(--accent-rgb), .38);
+
+  /* The page ground as a triple, for the rules that fade a scrolling list out. */
+  --bg-rgb: 255, 255, 255;
 
   /* Status. Names are referenced by app.js-driven classes below — keep them.
-     Four semantic families, not seven near-distinct hues: success (--done), failure
-     (--failed), attention/in-progress (--running, active + pulsing) and
-     attention/incomplete (--truncated and --partial share ONE hue now — both mean "we
-     couldn't fully confirm this," and used to be yellow vs. blue for no semantic reason,
-     which read as two different severities when they're the same one). --blocked keeps
-     its own hue on purpose: "the site stopped us" is a genuinely different situation from
-     "the test failed" and must never be visually confusable with it. */
-  --pending: #3a3f4a;
-  --running: #e5a943;
-  --running-rgb: 229, 169, 67;
-  --done: #46c46d;
-  --failed: #f2635a;
-  --truncated: #5fa8ff;
-  --partial: #5fa8ff;
-  --blocked: #b37ada;
+
+     These are the ONE exception to the two-colour rule, and it is deliberate: this
+     app exists to report whether a test passed. If passed and failed were both the
+     brand blue there would be nothing left to read. So the verdict colours stay
+     green / red / amber, and --blocked keeps its own hue because "the site stopped
+     us" must never be confusable with "the test failed" — an infrastructure error
+     (bad API key, dead model id) maps to blocked, not failed, so a broken key
+     can't be reported as a broken website.
+
+     Everything that is NOT a verdict is blue, white or black. --running is the
+     brand blue, because in-progress is chrome, not a verdict. --pending is black
+     at low opacity, because not-started is an absence, not a status. */
+  --pending: rgba(var(--ink-rgb), .45);
+  --running: #0b63ce;
+  --running-rgb: 11, 99, 206;
+  --done: #1a6b45;
+  --failed: #b42318;
+  --truncated: #8a6410;
+  --partial: #8a6410;
+  --blocked: #665445;
+
+  --done-rgb: 31, 138, 86;
+  --failed-rgb: 214, 69, 48;
+  --partial-rgb: 184, 134, 11;
+  --blocked-rgb: 122, 104, 88;
+
+  --pending-bg: rgba(var(--ink-rgb), .07);   --pending-dot: #9d9d9d;
+  --running-bg: rgba(var(--accent-rgb), .13);  --running-dot: #0b63ce;
+  --done-bg: rgba(var(--done-rgb), .13);     --done-dot: #1f8a56;
+  --failed-bg: rgba(var(--failed-rgb), .12);   --failed-dot: #d64530;
+  --truncated-bg: rgba(var(--partial-rgb), .15); --truncated-dot: #b8860b;
+  --partial-bg: rgba(var(--partial-rgb), .15); --partial-dot: #b8860b;
+  --blocked-bg: rgba(var(--blocked-rgb), .14); --blocked-dot: #7a6858;
 
   --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
   --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
 
-  --r-sm: 8px; --r: 12px; --r-lg: 16px; --r-pill: 999px;
+  --r-sm: 8px; --r-md: 10px; --r: 11px; --r-lg: 14px; --r-pill: 999px;
 
-  --shadow: 0 1px 3px rgba(0,0,0,.4);
-  --shadow-lg: 0 12px 32px rgba(0,0,0,.5);
+  --shadow: 0 1px 2px rgba(var(--ink-rgb), .04), 0 8px 24px -14px rgba(var(--ink-rgb), .18);
+  --shadow-lg: 0 12px 30px -12px rgba(var(--ink-rgb), .3);
+  --shadow-modal: 0 24px 60px -20px rgba(var(--ink-rgb), .5);
   --ease: cubic-bezier(.4, 0, .2, 1);
 
-  --sidebar-w: 268px;
+  --sidebar-w: 272px;
+  --header-h: 52px;
+
+  /* Two families beyond the body font, so these DO need tokens — the old
+     "font-family on :root, no token" convention only held while there was one.
+     --font-mono was already referenced by the .diag-* block without ever being
+     declared; this is where that gets fixed. */
+  --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 16px;
-  color-scheme: dark;
-}
-
-/* ---------------------------------------------------------------------------
-   Light theme — palette inspired by medium.com: warm white surfaces, near-
-   black body text (never pure #000), hairline gray borders, and Medium's own
-   signature green as the accent in place of the dark theme's blue. Toggled by
-   app.js setting data-theme="light" on <html>, persisted in localStorage.
-   Every token below has the exact same name as its dark counterpart above —
-   that contract is what makes every existing rule theme-aware for free.
-   --------------------------------------------------------------------------- */
-:root[data-theme="light"] {
-  --bg: #ffffff;
-  --surface: #ffffff;
-  --surface-2: #f7f7f5;
-  --surface-3: #f2f2f0;
-  --sunken: #fafaf9;
-  --line: #e6e6e6;
-  --line-soft: #eeeeec;
-
-  --text: #242424;
-  --text-2: #5b5b5b;
-  --muted: #757575;
-  --faint: #9b9b9b;
-
-  /* Same brand hue as dark mode (indigo-blue), re-tuned for contrast on a white surface —
-     not a different color. See the dark-theme block for why this matters. */
-  --accent: #4f46e5;
-  --accent-hover: #4338ca;
-  --accent-rgb: 79, 70, 229;
-  --accent-soft: rgba(var(--accent-rgb), .1);
-
-  --surface-hover: #f0f0ee;
-  --line-hover: #d8d8d6;
-
-  --pending: #c9c9c7;
-  /* running/done darkened from #b8720f/#1e8e3e — the original shades sat at 3.44/3.75:1
-     against --surface-3, under the 4.5:1 WCAG AA floor for the small badge text that
-     renders in this color (case-badge is .66rem, not "large text," so 3:1 doesn't apply). */
-  --running: #986009;
-  --running-rgb: 152, 96, 9;
-  --done: #1a7a35;
-  --failed: #c5221f;
-  --truncated: #1a56c4;
-  --partial: #1a56c4;
-  --blocked: #8944ab;
-
-  --shadow: 0 1px 3px rgba(36,36,36,.08);
-  --shadow-lg: 0 12px 32px rgba(36,36,36,.12);
-
   color-scheme: light;
 }
 
@@ -136,169 +152,383 @@ body {
 h1, h2, h3, h4 { letter-spacing: -0.015em; margin: 0; }
 
 /* ---------------------------------------------------------------------------
-   Shell
+   Shell — sidebar + sticky topbar + one view at a time.
+
+   The app is now multi-screen. Exactly one .view carries .view-active at any
+   moment and every other one is display:none; showView() in app.js is the only
+   thing that moves that class. Nothing here should ever hide a view directly —
+   see showView's comment for why that single site matters.
    --------------------------------------------------------------------------- */
 
-.app { display: flex; min-height: 100vh; }
+.app { display: flex; min-height: 100vh; background: var(--bg); }
 
 .sidebar {
   width: var(--sidebar-w);
   flex-shrink: 0;
-  background: var(--surface);
+  background: var(--sidebar);
   border-right: 1px solid var(--line);
-  padding: var(--sp-4);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
   position: sticky;
   top: 0;
   height: 100vh;
-  overflow-y: auto;
+  z-index: 30;
 }
 
-.brand { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-2) 0; }
-.brand-mark { color: var(--accent); display: inline-flex; }
-.brand-name { font-size: .92rem; font-weight: 600; }
+.sidebar-head {
+  flex: none;
+  padding: var(--sp-4) 14px var(--sp-3);
+  display: flex; flex-direction: column; gap: 11px;
+}
+
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand-mark {
+  width: 22px; height: 22px; border-radius: 6px; flex: none;
+  background: var(--text); color: var(--bg);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.brand-name { font-size: .81rem; font-weight: 600; letter-spacing: -.01em; flex: 1; }
+
+.sidebar-close {
+  display: none; /* only in the narrow drawer, see the responsive block */
+  border: none; background: none; cursor: pointer;
+  font-size: 1rem; line-height: 1; color: var(--muted); padding: 0 2px;
+}
 
 .new-run {
-  display: flex; align-items: center; justify-content: center; gap: var(--sp-2);
-  width: 100%;
-  background: var(--surface-3); color: var(--text);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  padding: 10px var(--sp-3);
-  font: inherit; font-size: .86rem; font-weight: 500;
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  width: 100%; height: 34px;
+  background: var(--text); color: var(--bg);
+  border: none;
+  border-radius: 9px;
+  font: inherit; font-size: .78rem; font-weight: 500;
   cursor: pointer;
-  transition: background .15s var(--ease), border-color .15s var(--ease);
+  transition: background .15s var(--ease);
 }
-.new-run:hover { background: var(--surface-hover); border-color: var(--line-hover); }
+.new-run:hover { background: #000000; }
 
-.history-nav { display: flex; flex-direction: column; gap: var(--sp-2); min-height: 0; flex: 1; }
+.sidebar-search {
+  height: 31px; width: 100%;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 0 10px;
+  font: inherit; font-size: .75rem;
+}
+
+/* Tree: Projects, then Suites, then Cases. Depth is expressed as padding-left
+   only — no nested lists, because the rows are rendered from one flat array, so
+   a collapsed branch simply never emits its children. */
+.sidebar-tree {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 0 var(--sp-2) var(--sp-2);
+  display: flex; flex-direction: column; gap: 2px;
+}
+
 .rail-heading {
-  font-size: .68rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--faint); padding: 0 var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: .59rem; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--faint);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px var(--sp-2) 5px;
+  margin: 0;
 }
+.rail-add {
+  border: none; background: none; cursor: pointer;
+  font-size: .94rem; line-height: 1; color: var(--muted); padding: 0 3px;
+}
+.rail-add:hover { color: var(--accent); }
+
+.tree-row {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 6px var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  background: none;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+}
+.tree-row:hover { background: var(--surface-hover); }
+.tree-row.active { background: rgba(var(--ink-rgb), .055); }
+.tree-row.tree-case.active { background: var(--surface); border-color: var(--line); }
+.tree-row.tree-project { padding-left: var(--sp-2); }
+.tree-row.tree-suite { padding-left: 22px; }
+.tree-row.tree-case { padding-left: 40px; }
+
+.tree-chevron { font-size: .56rem; width: 9px; flex: none; color: var(--muted); }
+.tree-label {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tree-project .tree-label { font-size: .78rem; font-weight: 500; }
+.tree-suite .tree-label { font-size: .75rem; font-weight: 500; color: rgba(var(--ink-rgb), .85); }
+.tree-case .tree-label { font-size: .75rem; color: rgba(var(--ink-rgb), .72); }
+.tree-case.active .tree-label { color: var(--text); }
+.tree-count { font-family: var(--font-mono); font-size: .62rem; color: var(--faint); flex: none; }
+.tree-empty { padding: var(--sp-3) var(--sp-2); font-size: .72rem; color: var(--muted); }
+
+/* Status dot — one element, colored by a status class. Same contract as
+   .suite-progress-item.<status>: app.js sets the class, never an inline color. */
+.sdot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; background: var(--pending-dot); }
+.sdot-sm { width: 6px; height: 6px; }
+.sdot.passed { background: var(--done-dot); }
+.sdot.failed { background: var(--failed-dot); }
+.sdot.unconfirmed, .sdot.truncated, .sdot.partial { background: var(--truncated-dot); }
+.sdot.blocked, .sdot.error { background: var(--blocked-dot); }
+.sdot.running { background: var(--running-dot); }
+.sdot.pending, .sdot.draft { background: var(--pending-dot); }
+
+.sidebar-foot {
+  flex: none;
+  max-height: 42vh; overflow-y: auto;
+  padding: var(--sp-3) var(--sp-4) 14px;
+  border-top: 1px solid rgba(var(--ink-rgb), .09);
+  display: flex; flex-direction: column; gap: 9px;
+}
+.rail-link {
+  border: none; background: none; cursor: pointer;
+  font: inherit; font-size: .69rem; color: var(--accent); padding: 0;
+  text-transform: none; letter-spacing: 0;
+}
+.rail-link:hover { color: var(--accent-hover); }
+.rail-empty { font-size: .72rem; color: var(--faint); }
 
 /* ---------------------------------------------------------------------------
-   Theme toggle — sits at the bottom of the sidebar (history-nav's flex: 1
-   pushes it there). Thumb rests over the moon by default (dark, the app's
-   original look) and slides to the sun when switched to light.
+   Topbar
    --------------------------------------------------------------------------- */
-.theme-toggle {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
-  width: 100%; flex-shrink: 0;
-  background: none; border: 1px solid var(--line); border-radius: var(--r-sm);
-  padding: var(--sp-2) var(--sp-3);
-  cursor: pointer; font: inherit; color: var(--text-2);
-  transition: background .15s var(--ease), border-color .15s var(--ease);
-}
-.theme-toggle:hover { background: var(--surface-hover); border-color: var(--line-hover); }
-.theme-toggle-label { font-size: .82rem; font-weight: 550; }
 
-.theme-toggle-track {
-  position: relative; flex-shrink: 0;
-  display: inline-flex; align-items: center; justify-content: space-between;
-  width: 44px; height: 24px;
-  background: var(--surface-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-pill);
-  padding: 0 5px;
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.topbar {
+  height: var(--header-h); flex: none;
+  border-bottom: 1px solid rgba(var(--ink-rgb), .09);
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 var(--sp-4);
+  background: var(--bg);
+  position: sticky; top: 0; z-index: 20;
 }
-.theme-toggle-icon {
-  position: relative; z-index: 1;
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 14px; height: 14px; color: var(--faint);
+
+.sidebar-open {
+  display: none; /* narrow only */
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-sm); height: 32px; padding: 0 10px;
+  font: inherit; font-size: .81rem; cursor: pointer;
 }
-.theme-toggle-thumb {
+
+.crumbs { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; flex: 1; }
+.crumb {
+  border: none; background: none; cursor: pointer;
+  font: inherit; font-size: .78rem; color: var(--text-2);
+  padding: 4px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
+}
+.crumb:hover { color: var(--text); }
+.crumb-root {
+  background: rgba(var(--ink-rgb), .06); border-radius: 6px;
+  padding: 4px 9px; font-weight: 500; color: var(--text);
+}
+.crumb-sep { color: rgba(var(--ink-rgb), .3); font-size: .75rem; }
+.crumb-current { font-size: .78rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
+
+.topbar-actions { display: flex; align-items: center; gap: var(--sp-2); flex: none; position: relative; }
+.topbar-btn {
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-sm); height: 31px; padding: 0 11px;
+  font: inherit; font-size: .75rem; cursor: pointer; color: var(--text);
+  transition: background .15s var(--ease);
+}
+.topbar-btn:hover { background: var(--surface-hover); }
+
+.settings-pop {
+  position: absolute; top: 38px; right: 0; width: 272px; z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 14px;
+  animation: fadeUp .16s var(--ease);
+}
+.settings-pop h2 { font-size: .69rem; font-weight: 600; margin: 0 0 11px; }
+.settings-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 0; cursor: pointer;
+  background: none; border: none; width: 100%; text-align: left; font: inherit; color: var(--text);
+}
+.settings-row-text { flex: 1; }
+.settings-row-text b { display: block; font-size: .75rem; font-weight: 400; }
+.settings-row-text span { display: block; font-size: .69rem; line-height: 1.4; color: var(--muted); }
+
+.switch {
+  width: 32px; height: 18px; border-radius: var(--r-pill); flex: none;
+  background: rgba(var(--ink-rgb), .18);
+  position: relative;
+  transition: background .18s var(--ease);
+}
+.switch-knob {
   position: absolute; top: 2px; left: 2px;
-  width: 18px; height: 18px; border-radius: 50%;
-  background: var(--accent);
-  box-shadow: var(--shadow);
-  transform: translateX(20px); /* default: dark theme, resting over the moon */
-  transition: transform .22s var(--ease), background .15s var(--ease);
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--surface); box-shadow: 0 1px 2px rgba(var(--ink-rgb), .3);
+  transition: transform .18s var(--ease);
 }
-.theme-toggle.is-light .theme-toggle-thumb { transform: translateX(0); } /* light theme: slid to the sun */
-
-.main { flex: 1; min-width: 0; }
-.main-inner { max-width: 780px; margin: 0 auto; padding: var(--sp-7) var(--sp-5) 96px; }
-
-.page-head { margin-bottom: var(--sp-5); }
-.page-head h1 { font-size: 1.6rem; font-weight: 650; }
-.tagline { color: var(--text-2); font-size: .9rem; margin: var(--sp-2) 0 0; max-width: 62ch; }
+.settings-row[aria-pressed="true"] .switch { background: var(--accent); }
+.settings-row[aria-pressed="true"] .switch-knob { transform: translateX(14px); }
 
 /* ---------------------------------------------------------------------------
-   Composer
+   Views — one screen visible at a time
    --------------------------------------------------------------------------- */
 
-.composer {
-  background: linear-gradient(180deg, var(--surface-2), var(--surface));
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  padding: var(--sp-4);
-  box-shadow: var(--shadow);
-  display: flex; flex-direction: column; gap: var(--sp-3);
+.view { display: none; }
+.view.view-active { display: block; }
+
+.main-inner { width: 100%; margin: 0 auto; padding: var(--sp-5) var(--sp-4) 96px; }
+.col  { max-width: 780px;  margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+.wide { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+
+.page-head { display: flex; flex-direction: column; gap: var(--sp-2); }
+.page-head h1 { font-family: var(--font-display); font-weight: 400; font-size: 2.125rem; line-height: 1.15; letter-spacing: -.01em; margin: 0; }
+.tagline { color: var(--text-2); font-size: .84rem; line-height: 1.6; margin: 0; max-width: 560px; }
+
+.eyebrow {
+  font-family: var(--font-mono); font-size: .69rem;
+  color: var(--faint); margin-bottom: 7px;
 }
 
-.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.field-label { font-size: .74rem; font-weight: 500; color: var(--muted); }
+/* ---------------------------------------------------------------------------
+   Toast — the app had no general notification channel. showNotice() looks like
+   one but writes inside #case-selection-panel, so its message is swallowed by
+   that panel's own display:none whenever the panel is closed. This is the real
+   one: a direct child of body, owned by toast() in app.js.
+   --------------------------------------------------------------------------- */
+.toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+  background: var(--text); color: var(--bg);
+  padding: 10px var(--sp-4); border-radius: var(--r-md);
+  font-size: .78rem;
+  box-shadow: 0 12px 30px -12px rgba(var(--ink-rgb), .6);
+  z-index: 80;
+  animation: fadeUp .18s var(--ease);
+}
+
+/* Scrim behind the narrow-viewport sidebar drawer. */
+.scrim { position: fixed; inset: 0; background: rgba(var(--ink-rgb), .35); z-index: 25; }
+
+/* ---------------------------------------------------------------------------
+   Forms + composer
+   --------------------------------------------------------------------------- */
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-label { font-size: .72rem; font-weight: 500; color: var(--text-2); }
 
 textarea, input {
-  background: var(--sunken);
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  color: var(--text);
-  padding: 11px var(--sp-3);
-  font: inherit; font-size: .92rem;
+  padding: 9px 10px;
   width: 100%;
-  transition: border-color .15s var(--ease), box-shadow .15s var(--ease);
 }
-textarea { resize: vertical; min-height: 76px; line-height: 1.55; }
-textarea::placeholder, input::placeholder { color: var(--faint); }
+textarea { resize: vertical; line-height: 1.5; }
+textarea::placeholder, input::placeholder { color: rgba(var(--ink-rgb), .38); }
 textarea:focus, input:focus {
-  outline: none; border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: 2px solid rgba(var(--accent-rgb), .35);
+  outline-offset: 1px;
+  border-color: var(--line-hover);
 }
 
-.input-wrap { position: relative; display: block; }
-.input-icon {
-  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
-  color: var(--faint); display: inline-flex; pointer-events: none;
-}
-.input-wrap input { padding-left: 36px; }
+.input-wrap { display: flex; align-items: center; gap: 7px; }
+.input-icon { color: var(--faint); display: inline-flex; flex: none; }
+.input-wrap input { border: none; background: transparent; padding: 0; }
+.input-wrap input:focus { outline: none; }
 
-.composer-foot { display: flex; gap: var(--sp-3); align-items: flex-end; }
-.field-url { flex: 1; }
+/* The composer is one card: prompt on top, a control strip under it, and a
+   tinted "save the script to" strip at the bottom. The strip is --inset rather
+   than another white card so it reads as part of the composer, not a sibling. */
+.composer {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.composer textarea {
+  border: none; background: transparent; border-radius: 0;
+  min-height: 96px;
+  padding: 17px 19px 8px;
+  font-size: .9rem; line-height: 1.6;
+}
+.composer textarea:focus { outline: none; }
+
+.composer-foot {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 10px 13px 10px 19px;
+  border-top: 1px solid var(--line-soft);
+}
+.field-url {
+  flex: 1; min-width: 220px;
+  flex-direction: row; align-items: center; gap: 7px;
+  height: 34px;
+  border: 1px solid rgba(var(--ink-rgb), .13);
+  border-radius: 9px;
+  padding: 0 11px;
+  background: var(--surface-2);
+}
+.field-url .field-label {
+  font-family: var(--font-mono); font-size: .66rem; color: var(--faint); flex: none; font-weight: 400;
+}
+.field-url .input-wrap { flex: 1; min-width: 0; }
+.field-url input { font-family: var(--font-mono); font-size: .78rem; }
+
+/* Segmented coverage control — the selected segment is a raised white chip on a
+   sunken track, which is what makes "one of three" read without a border. */
+.seg { display: flex; height: 34px; background: rgba(var(--ink-rgb), .06); border-radius: 9px; padding: 3px; gap: 2px; flex: none; }
+.seg-btn {
+  padding: 0 10px; display: flex; align-items: center;
+  border: none; border-radius: 7px; cursor: pointer;
+  background: transparent; font: inherit; font-size: .72rem; color: var(--muted);
+}
+.seg-btn.active { background: var(--surface); color: var(--text); font-weight: 500; box-shadow: 0 1px 2px rgba(var(--ink-rgb), .08); }
 
 .run-btn {
-  display: inline-flex; align-items: center; gap: var(--sp-2);
+  height: 34px; padding: 0 16px; flex: none;
+  border: none; border-radius: 9px;
   background: var(--accent); color: #fff;
-  border: none; border-radius: var(--r-sm);
-  padding: 11px var(--sp-4);
-  font: inherit; font-size: .9rem; font-weight: 550;
-  cursor: pointer; white-space: nowrap;
-  transition: background .15s var(--ease), transform .08s var(--ease), opacity .15s var(--ease);
+  font: inherit; font-size: .78rem; font-weight: 500;
+  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 7px;
+  transition: background .15s var(--ease);
 }
 .run-btn:hover { background: var(--accent-hover); }
 .run-btn:active { transform: translateY(1px); }
-.run-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.run-btn:disabled { background: rgba(var(--accent-rgb), .10); color: var(--faint); cursor: default; }
+.run-btn .spin { animation: spin .8s linear infinite; display: inline-flex; }
 
-button:focus-visible, a:focus-visible, [tabindex]:focus-visible,
-summary:focus-visible, .history-item:focus-visible {
-  outline: 2px solid var(--accent); outline-offset: 2px;
+.composer-save {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 9px;
+  padding: 11px 19px;
+  background: var(--inset);
+  border-top: 1px solid var(--line-soft);
+  font-size: .72rem; color: var(--muted);
 }
+.composer-save-btn {
+  padding: 4px 9px; border-radius: 6px;
+  background: var(--surface); border: 1px solid rgba(var(--ink-rgb), .13);
+  font: inherit; font-size: .72rem; font-weight: 500; color: var(--text); cursor: pointer;
+}
+.composer-save-btn:hover { background: var(--surface-hover); }
 
-/* Templates */
-.templates-row { margin: var(--sp-4) 0 var(--sp-6); }
-.templates-label { font-size: .74rem; color: var(--faint); display: block; margin-bottom: var(--sp-2); }
+.templates-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.templates-label { font-size: .72rem; color: var(--muted); }
 .templates { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .template-btn {
-  background: var(--surface-2); color: var(--text-2);
-  border: 1px solid var(--line); border-radius: var(--r-pill);
-  padding: 6px 14px; font: inherit; font-size: .78rem;
-  cursor: pointer;
-  transition: background .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);
+  padding: 6px 11px; border-radius: 20px;
+  border: 1px solid rgba(var(--ink-rgb), .13); background: var(--surface);
+  font: inherit; font-size: .75rem; color: var(--text-2); cursor: pointer;
+  transition: background .15s var(--ease);
 }
-.template-btn:hover { background: var(--surface-3); color: var(--text); border-color: var(--line-hover); }
+.template-btn:hover { background: var(--surface-hover); }
 
 /* ---------------------------------------------------------------------------
    Panels
@@ -306,695 +536,1197 @@ summary:focus-visible, .history-item:focus-visible {
 
 .panel {
   background: var(--surface);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r);
-  padding: var(--sp-4);
-  margin-bottom: var(--sp-4);
+  border: 1px solid rgba(var(--ink-rgb), .11);
+  border-radius: 13px;
+  overflow: hidden;
 }
-.panel h2 { font-size: .95rem; font-weight: 600; margin-bottom: var(--sp-3); }
+.panel h2 {
+  font-size: .75rem; font-weight: 600; margin: 0;
+  padding: 13px var(--sp-4);
+  border-bottom: 1px solid var(--line-soft);
+}
+.panel-progress { background: none; border: none; border-radius: 0; overflow: visible; }
 
 /* ---------------------------------------------------------------------------
-   Progress timeline — a connected rail, not detached boxes
+   Progress — four phase cards in a row, not a vertical rail.
+
+   The class contract is unchanged from the rail version (li.started/.completed/
+   .failed, .dot, .phase-badge.<state>) so app.js's applyPhaseUI still drives
+   this without knowing the layout changed.
    --------------------------------------------------------------------------- */
 
-.stages { list-style: none; margin: 0; padding: 0; }
-
+/* The four phase cards stack VERTICALLY, one per row.
+   They used to be a wrapping row, and a flex row's default `align-items: stretch` makes every
+   item as tall as the tallest — so opening one card's "Technical details" inflated the other
+   three with empty space. In a column each item's height is its own content, so the
+   independence the layout needs comes for free rather than being enforced. */
+.stages {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
 .stages li {
-  position: relative;
-  padding: 0 0 var(--sp-4) 32px;
-  display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--sp-2);
-}
-.stages li:last-child { padding-bottom: 0; }
+  /* `flex: none` is the load-bearing half. The main axis is now VERTICAL, so the old
+     `flex: 1 1 210px` would read as "at least 210px tall, and grow to fill" — recreating the
+     equal-height bug in a new form. Height must come from content and nothing else.
 
-/* the rail */
-.stages li::before {
-  content: ""; position: absolute;
-  left: 9px; top: 22px; bottom: 0;
-  width: 1.5px; background: var(--line);
-}
-.stages li:last-child::before { display: none; }
+     `align-items: stretch` is deliberately left at its default: in a column it acts on the
+     CROSS axis, so it makes each card full-width and has no effect on height at all. Anything
+     else here would shrink the cards to the width of their text.
 
+     min-width is a width floor now, not a column size. 0 is right for a full-width card and
+     stops a wide <pre> from holding the card open on a narrow viewport. */
+  flex: none; min-width: 0;
+  background: var(--surface);
+  border: 1px solid rgba(var(--ink-rgb), .11);
+  border-radius: 11px;
+  padding: 13px;
+}
+.stages li::before { content: none; }          /* the rail connector is gone */
+.stages li:last-child::before { content: none; }
+.stages li.started { border-color: rgba(var(--accent-rgb), .4); }
+.stages li.failed { border-color: rgba(var(--failed-rgb), .35); }
+
+.phase-header { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; }
+.phase-header .label { font-size: .75rem; font-weight: 500; flex: 1; }
+.phase-desc { font-size: .72rem; line-height: 1.5; color: var(--text-2); text-wrap: pretty; margin: 0; }
+/* Once a stage reports, its own summary replaces the generic description — the
+   prototype shows one note per card, not a description AND a result. */
+.summary-text { font-size: .72rem; line-height: 1.5; color: var(--text-2); text-wrap: pretty; margin: 0; }
+.summary-text:empty { display: none; }
+li:has(.summary-text:not(:empty)) .phase-desc { display: none; }
+
+/* The dot is three different things depending on state: an empty ring when
+   pending, a spinning arc while working, a filled check when done. */
 .dot {
-  position: absolute; left: 0; top: 2px;
-  width: 19px; height: 19px; border-radius: 50%;
+  width: 16px; height: 16px; border-radius: 50%; flex: none;
+  border: 1px solid rgba(var(--ink-rgb), .25);
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--surface-3); color: var(--faint);
-  border: 1.5px solid var(--line);
-  transition: background .2s var(--ease), color .2s var(--ease), border-color .2s var(--ease);
+  color: transparent;
 }
-li.started .dot { color: var(--running); border-color: var(--running); background: rgba(229,169,67,.12); }
-li.started .dot .icon { animation: spin 1.6s linear infinite; }
-li.completed .dot { color: var(--done); border-color: rgba(70,196,109,.5); background: rgba(70,196,109,.12); }
-li.failed .dot { color: var(--failed); border-color: rgba(242,99,90,.5); background: rgba(242,99,90,.12); }
-li.completed::before { background: rgba(70,196,109,.35); }
-
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
-@keyframes fadeUp { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-
-.phase-header { display: flex; align-items: center; gap: var(--sp-2); width: 100%; font-size: .88rem; font-weight: 550; }
-
-.phase-badge {
-  margin-left: auto;
-  font-size: .66rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
-  padding: 2px 9px; border-radius: var(--r-pill);
-  border: 1px solid transparent; white-space: nowrap;
+li.started .dot {
+  width: 16px; height: 16px;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  animation: spin .8s linear infinite;
 }
-.phase-badge.pending { background: var(--surface-3); color: var(--faint); border-color: var(--line); }
-.phase-badge.running { background: rgba(229,169,67,.14); color: var(--running); border-color: rgba(229,169,67,.32); animation: pulse 1.6s infinite; }
-.phase-badge.done { background: rgba(70,196,109,.13); color: var(--done); border-color: rgba(70,196,109,.3); }
-.phase-badge.failed { background: rgba(242,99,90,.13); color: var(--failed); border-color: rgba(242,99,90,.32); }
-
-.phase-desc { font-size: .8rem; color: var(--muted); width: 100%; line-height: 1.5; margin: 0; }
-.summary-text { font-size: .82rem; color: var(--partial); width: 100%; font-weight: 500; margin: 4px 0 0; }
+li.started .dot .icon { display: none; }        /* the ring IS the spinner */
+li.completed .dot {
+  width: 18px; height: 18px;
+  border: none;
+  background: var(--done-bg); color: var(--done);
+}
+li.completed::before { content: none; }
+li.failed .dot { border: none; background: var(--failed-bg); color: var(--failed); }
 li.failed .summary-text { color: var(--failed); }
 
-/* Technical output, collapsed by default — the QA-engineer layer */
-.output { width: 100%; margin: var(--sp-2) 0 0; }
-.output summary {
-  cursor: pointer; font-size: .72rem; color: var(--faint);
-  user-select: none; list-style: none; display: inline-flex; align-items: center; gap: 5px;
+.phase-badge {
+  font-family: var(--font-mono);
+  font-size: .59rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--faint); flex: none;
 }
-.output summary::-webkit-details-marker { display: none; }
-.output summary:hover { color: var(--text-2); }
-.output pre {
-  margin: var(--sp-2) 0 0; padding: var(--sp-3);
-  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: var(--r-sm);
-  font-size: .72rem; color: var(--text-2);
-  overflow-x: auto; max-height: 260px; line-height: 1.55;
-}
+.phase-badge.pending { color: var(--faint); }
+.phase-badge.running { color: var(--accent-deep); }
+.phase-badge.done { color: var(--faint); }
+.phase-badge.failed { color: var(--failed); }
 
 /* ---------------------------------------------------------------------------
-   Credential prompt — inline, not a modal: the run is waiting, not broken
+   Credential prompt — a modal now, not an inline panel. The run is genuinely
+   parked waiting on this answer, and inline it could scroll off-screen while a
+   run sat idle for the full CREDENTIAL_WAIT_MS.
    --------------------------------------------------------------------------- */
-
 .cred {
-  background: linear-gradient(180deg, var(--surface-2), var(--surface));
-  border: 1px solid var(--line); border-left: 3px solid var(--running);
-  border-radius: var(--r);
-  padding: var(--sp-4) var(--sp-5);
-  margin-bottom: var(--sp-4);
-  box-shadow: var(--shadow);
-  animation: fadeUp .22s var(--ease);
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(var(--ink-rgb), .45);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
 }
-.cred-head { display: flex; gap: var(--sp-3); align-items: flex-start; }
-.cred-key { color: var(--running); display: inline-flex; margin-top: 2px; }
-.cred h2 { font-size: .95rem; font-weight: 600; }
-.cred-why { font-size: .82rem; color: var(--text-2); margin: 5px 0 0; line-height: 1.55; }
-.cred-form { margin-top: var(--sp-4); }
-.cred-fields { display: flex; gap: var(--sp-3); }
-.cred-fields .field { flex: 1; }
-.cred-actions { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); flex-wrap: wrap; }
+.cred-card {
+  width: 100%; max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-modal);
+  padding: 20px;
+  animation: fadeUp .18s var(--ease);
+}
+.cred-head { display: flex; gap: 10px; margin-bottom: 6px; }
+.cred-key { color: var(--accent); display: inline-flex; flex: none; }
+.cred h2 { font-size: .88rem; font-weight: 600; margin: 0; }
+.cred-why { font-size: .75rem; line-height: 1.6; color: var(--text-2); margin: 6px 0 14px; text-wrap: pretty; }
+.cred-form { display: flex; flex-direction: column; }
+.cred-fields { display: flex; flex-direction: column; gap: 9px; }
+.cred-fields .field { gap: 0; }
+.cred-fields .field-label { display: none; }   /* placeholders carry the label in the modal */
+.cred-fields input { height: 35px; border-radius: var(--r-sm); padding: 0 11px; font-size: .78rem; background: var(--surface); }
+.cred-note { font-size: .69rem; line-height: 1.5; color: var(--faint); margin: 10px 0 14px; }
+.cred-actions { display: flex; gap: 9px; }
 .cred-actions button {
-  background: var(--accent); color: #fff; border: none; border-radius: var(--r-sm);
-  padding: 9px var(--sp-4); font: inherit; font-size: .86rem; font-weight: 550; cursor: pointer;
+  flex: none; height: 34px; padding: 0 15px;
+  border: none; border-radius: var(--r-sm);
+  background: var(--accent); color: #fff;
+  font: inherit; font-size: .75rem; font-weight: 500; cursor: pointer;
 }
 .cred-actions button:hover { background: var(--accent-hover); }
-.cred-skip { background: none !important; color: var(--muted) !important; font-weight: 450 !important; }
-.cred-skip:hover { background: var(--surface-3) !important; color: var(--text) !important; }
-.cred-note { font-size: .72rem; color: var(--faint); margin: var(--sp-3) 0 0; line-height: 1.55; }
+.cred-skip {
+  flex: 1 !important;
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
+  border: 1px solid rgba(var(--ink-rgb), .16) !important;
+  font-weight: 400 !important;
+}
+.cred-skip:hover { background: var(--surface-hover) !important; }
 
 /* ---------------------------------------------------------------------------
-   Case-selection panel — same semantics as the credential prompt: the run is
-   waiting on the user, so it reads as an inline call-to-action, not a modal.
-   Given a visibly stronger treatment than the passive progress timeline above
-   it (glow ring, "action needed" pill, scrollIntoView on render in app.js) —
-   it used to render with no strong visual cue and go unnoticed further down
-   the page.
+   Case-selection gate — the one panel that is asking you for something, so it
+   is the one panel allowed to carry the accent border.
    --------------------------------------------------------------------------- */
-
-@keyframes caseSelectionGlow {
-  0%, 100% { box-shadow: var(--shadow-lg), 0 0 0 1px rgba(var(--accent-rgb), .25); }
-  50%      { box-shadow: var(--shadow-lg), 0 0 0 4px rgba(var(--accent-rgb), .12); }
-}
-
 #case-selection-panel {
-  background: linear-gradient(165deg, var(--surface-2), var(--surface));
-  border: 1px solid rgba(var(--accent-rgb), .3);
-  border-radius: var(--r-lg);
-  padding: var(--sp-5);
-  margin-bottom: var(--sp-4);
-  animation: fadeUp .22s var(--ease), caseSelectionGlow 2.6s ease-in-out .22s 2;
+  background: var(--surface);
+  border: 1px solid rgba(var(--accent-rgb), .4);
+  border-radius: 13px;
+  overflow: hidden;
+  animation: fadeUp .2s var(--ease);
 }
-.case-selection-head { display: flex; gap: var(--sp-3); align-items: flex-start; }
-.case-selection-key {
-  color: var(--accent); display: inline-flex; align-items: center; justify-content: center;
-  width: 34px; height: 34px; flex: none; border-radius: var(--r); background: var(--accent-soft);
+.case-selection-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 14px var(--sp-4);
+  background: var(--accent-tint);
+  border-bottom: 1px solid rgba(var(--accent-rgb), .2);
 }
-#case-selection-panel h2 { font-size: 1rem; font-weight: 650; letter-spacing: -.01em; }
-.case-selection-head > div { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
-.case-selection-head-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.case-selection-key { color: var(--accent-deep); display: inline-flex; flex: none; }
+.case-selection-head > div { flex: 1; min-width: 180px; }
+.case-selection-head-row { display: flex; align-items: center; gap: var(--sp-2); }
+#case-selection-panel h2 { font-size: .78rem; font-weight: 600; margin: 0; padding: 0; border: none; }
+.case-pool-counter { font-family: var(--font-mono); font-size: .66rem; color: var(--muted); margin: 3px 0 0; }
+
 .case-action-pill {
+  padding: 2px 7px; border-radius: 20px;
+  background: rgba(var(--accent-rgb), .13); color: var(--accent-deep);
+  font-family: var(--font-mono); font-size: .59rem; font-weight: 600; letter-spacing: .04em;
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: .68rem; font-weight: 650; letter-spacing: .03em; text-transform: uppercase;
-  color: var(--running); background: rgba(var(--running-rgb), .14);
-  border: 1px solid rgba(var(--running-rgb), .35);
-  padding: 2px 9px 2px 7px; border-radius: var(--r-pill); white-space: nowrap;
 }
 .case-action-pill::before {
-  content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--running);
-  animation: casePillPulse 1.6s ease-in-out infinite;
+  content: ""; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); animation: casePillPulse 1.6s ease-in-out infinite;
 }
-@keyframes casePillPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
-.case-pool-counter { font-size: .82rem; color: var(--text-2); margin: 0; line-height: 1.55; }
 
-.case-selection-list {
-  list-style: none; margin: var(--sp-4) 0 0; padding: 0;
-  display: grid; gap: var(--sp-2);
-}
+.case-selection-list { list-style: none; margin: 0; padding: 0; }
 .case-selection-list li {
-  display: grid; grid-template-columns: auto 1fr; align-items: start; gap: var(--sp-3);
-  background: var(--surface); border: 1px solid var(--line-soft); border-radius: var(--r);
-  padding: var(--sp-3); transition: border-color .15s var(--ease), background .15s var(--ease);
+  display: flex; align-items: flex-start; gap: 11px;
+  padding: 12px var(--sp-4);
+  border-top: 1px solid var(--line-soft);
+  cursor: pointer;
 }
-.case-selection-list li:hover { border-color: var(--line); background: var(--surface-2); }
-.case-selection-list li:has(input:checked) { border-color: rgba(var(--accent-rgb), .4); background: var(--accent-soft); }
+.case-selection-list li:hover { background: var(--surface-2); }
+.case-selection-list li:has(input:checked) { background: var(--surface-2); }
 .case-selection-list input[type="checkbox"] {
-  width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent);
-  cursor: pointer; flex: none;
+  width: 16px; height: 16px; flex: none; margin: 2px 0 0;
+  accent-color: var(--accent); cursor: pointer;
 }
-.case-selection-list .case-label {
-  display: flex; flex-direction: column; gap: 5px; cursor: pointer; min-width: 0;
-}
-.case-selection-list .case-label-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
-.case-selection-list .case-title { font-size: .88rem; font-weight: 600; line-height: 1.4; }
-.case-selection-list .case-intent { font-size: .76rem; color: var(--muted); line-height: 1.55; }
-.case-selection-list .case-expected {
-  /* --muted, not --faint: this is real informational text ("what should happen"), and
-     --faint drops below the 4.5:1 WCAG AA floor at this font size (2.78:1 in light mode). */
-  display: block; font-size: .72rem; color: var(--muted); line-height: 1.5; margin-top: 2px;
-}
-.case-selection-list .case-expected b { font-weight: 600; color: var(--text-2); }
+.case-selection-list .case-label { flex: 1; min-width: 200px; }
+.case-selection-list .case-label-row { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: 3px; }
+.case-selection-list .case-title { font-size: .78rem; font-weight: 500; }
+.case-selection-list .case-intent { font-size: .72rem; line-height: 1.5; color: var(--text-2); text-wrap: pretty; }
+.case-selection-list .case-expected { font-size: .72rem; color: var(--muted); margin-top: 4px; }
+.case-selection-list .case-expected b { font-weight: 500; color: var(--text-2); }
+
 .case-primary-badge {
-  font-size: .62rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
-  color: var(--accent); background: var(--accent-soft);
-  border: 1px solid rgba(var(--accent-rgb), .35);
-  padding: 1px 7px; border-radius: var(--r-pill); white-space: nowrap;
+  padding: 2px 7px; border-radius: 20px;
+  background: rgba(var(--accent-rgb), .13); color: var(--accent-deep);
+  font-family: var(--font-mono); font-size: .59rem; font-weight: 600;
 }
 
-.case-selection-bulk { display: flex; gap: var(--sp-4); margin-top: var(--sp-3); }
+.case-selection-bulk, .case-selection-final-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 9px;
+  padding: 13px var(--sp-4);
+}
+.case-selection-bulk { border-top: 1px solid var(--line-soft); padding-bottom: 0; }
 .case-selection-link {
-  background: none; border: none; padding: 0; cursor: pointer;
-  font: inherit; font-size: .78rem; font-weight: 550; color: var(--partial);
+  border: 1px solid var(--line); background: var(--surface-2);
+  border-radius: 7px; padding: 6px 10px;
+  font: inherit; font-size: .72rem; color: var(--text); cursor: pointer;
 }
-.case-selection-link:hover { text-decoration: underline; }
+.case-selection-link:hover { background: var(--surface-hover); }
 
-.case-refine-input-wrap { margin-top: var(--sp-3); }
-.case-notice { font-size: .8rem; margin: var(--sp-3) 0 0; }
-.case-notice.notice { color: var(--text-2); }
-.case-notice.error { color: var(--failed); }
-
-.case-selection-final-actions {
-  display: flex; align-items: center; gap: var(--sp-2);
-  margin-top: var(--sp-5); padding-top: var(--sp-4); border-top: 1px solid var(--line-soft);
-  flex-wrap: wrap;
-}
 .case-selection-final-actions button {
-  background: var(--accent); color: #fff; border: none; border-radius: var(--r-sm);
-  padding: 9px var(--sp-4); font: inherit; font-size: .86rem; font-weight: 550; cursor: pointer;
-  transition: background .15s var(--ease), transform .1s var(--ease);
+  border: none; border-radius: var(--r-sm);
+  background: var(--accent); color: #fff;
+  padding: 7px 13px;
+  font: inherit; font-size: .75rem; font-weight: 500; cursor: pointer;
+  margin-left: auto;
 }
 .case-selection-final-actions button:hover:not(:disabled) { background: var(--accent-hover); }
-.case-selection-final-actions button:active:not(:disabled) { transform: scale(.98); }
-.case-selection-final-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.case-selection-final-actions button:active:not(:disabled) { transform: translateY(1px); }
+.case-selection-final-actions button:disabled { background: rgba(var(--accent-rgb), .10); color: var(--faint); cursor: default; }
 .case-selection-final-actions .case-not-satisfied {
-  background: none !important; color: var(--muted) !important; font-weight: 450 !important;
+  margin-left: 0 !important;
+  border: 1px solid var(--line) !important;
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
+  font-weight: 400 !important;
 }
-.case-selection-final-actions .case-not-satisfied:hover { background: var(--surface-3) !important; color: var(--text) !important; }
+.case-selection-final-actions .case-not-satisfied:hover { background: var(--surface-hover) !important; }
 
-.case-regen-note { font-size: .72rem; color: var(--faint); margin: var(--sp-3) 0 0; line-height: 1.55; }
+.case-refine-input-wrap { padding: 13px var(--sp-4); border-top: 1px solid var(--line-soft); background: var(--inset); }
+.case-notice { margin: 0 var(--sp-4) var(--sp-3); font-size: .72rem; padding: 8px 10px; border-radius: var(--r-sm); }
+.case-notice.notice { background: var(--truncated-bg); color: var(--truncated); }
+.case-notice.error { background: var(--failed-bg); color: var(--failed); }
+.case-regen-note { margin: 0 var(--sp-4) 13px; font-size: .69rem; color: var(--faint); }
 
 /* ---------------------------------------------------------------------------
-   Verdict — plain English, stated as a sentence
+   Verdict — a banner, tinted by outcome
    --------------------------------------------------------------------------- */
 
-#finalResult { margin-bottom: var(--sp-5); animation: fadeUp .25s var(--ease); }
+#finalResult { display: flex; flex-direction: column; gap: 16px; }
+
 #verdict {
-  font-size: 1.12rem; font-weight: 600; line-height: 1.45;
-  display: flex; align-items: flex-start; gap: var(--sp-2);
-  margin-bottom: var(--sp-3);
+  display: flex; align-items: center; gap: 11px;
+  margin: 0; padding: var(--sp-4);
+  border-radius: 13px;
+  font-size: .94rem; font-weight: 600;
+  background: var(--surface-2); border: 1px solid var(--line);
 }
-#verdict .icon { margin-top: 4px; }
-#verdict.passed { color: var(--done); }
-#verdict.failed { color: var(--failed); }
-#verdict.incomplete { color: var(--truncated); }
-#verdict.blocked { color: var(--blocked); }
-.verdict-detail { display: block; font-size: .88rem; font-weight: 400; color: var(--text-2); margin-top: 4px; }
-
-.test-summary {
-  padding: var(--sp-4);
-  background: var(--surface); border: 1px solid var(--line-soft); border-radius: var(--r);
-  margin-bottom: var(--sp-4);
+#verdict .icon {
+  width: 26px; height: 26px; border-radius: 50%; flex: none;
+  background: var(--surface); border: 1px solid currentColor;
+  display: inline-flex; align-items: center; justify-content: center;
 }
-.test-summary h3 { font-size: .9rem; margin-bottom: var(--sp-2); }
-.test-summary ol { margin: 0; padding-left: 20px; font-size: .84rem; color: var(--text-2); line-height: 1.8; }
-.test-summary p { font-size: .82rem; color: var(--partial); margin: var(--sp-3) 0 0; }
-
-figure { margin: 0 0 var(--sp-4); }
-figure img, .case-screenshot img {
-  width: 100%; display: block;
-  border: 1px solid var(--line); border-radius: var(--r); background: var(--sunken);
+#verdict.passed { background: rgba(var(--done-rgb), .09); border-color: rgba(var(--done-rgb), .35); color: var(--done); }
+#verdict.failed { background: rgba(var(--failed-rgb), .07); border-color: rgba(var(--failed-rgb), .35); color: var(--failed); }
+#verdict.incomplete { background: rgba(var(--partial-rgb), .09); border-color: rgba(var(--partial-rgb), .4); color: var(--truncated); }
+#verdict.blocked { background: rgba(var(--blocked-rgb), .09); border-color: rgba(var(--blocked-rgb), .35); color: var(--blocked); }
+.verdict-detail {
+  font-size: .78rem; line-height: 1.6; color: rgba(var(--ink-rgb), .65);
+  font-weight: 400; max-width: 720px; text-wrap: pretty;
+  display: block; margin-top: 3px;
 }
-figcaption { font-size: .74rem; color: var(--faint); margin-top: 6px; }
 
-#diagnosis { font-size: .85rem; color: var(--text-2); line-height: 1.6; margin: 0 0 var(--sp-3); }
+.test-summary { background: var(--surface); border: 1px solid rgba(var(--ink-rgb), .11); border-radius: 12px; padding: var(--sp-4); }
+.test-summary h3 { font-size: .81rem; font-weight: 600; margin: 0 0 var(--sp-2); }
+.test-summary ol { margin: 0; padding-left: 1.2rem; font-size: .78rem; line-height: 1.7; color: var(--text-2); }
+.test-summary p { font-size: .78rem; color: var(--text-2); margin: var(--sp-3) 0 0; }
+
+#diagnosis { font-size: .78rem; line-height: 1.6; color: var(--text-2); margin: 0; }
 #diagnosis:empty { display: none; }
 
 #traceLink {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: .82rem; color: var(--accent); text-decoration: none;
+  align-self: flex-start;
+  border: 1px solid var(--line); background: var(--surface-2);
+  border-radius: var(--r-sm); padding: 7px 11px;
+  font-size: .72rem; color: var(--text); text-decoration: none;
 }
-#traceLink:hover { text-decoration: underline; }
+#traceLink:hover { background: var(--surface-hover); }
 
-.blocked-note {
-  font-size: .82rem; color: var(--blocked); line-height: 1.6;
-  margin: 0 0 var(--sp-3); padding: 10px var(--sp-3);
-  background: rgba(179,122,218,.09); border: 1px solid rgba(179,122,218,.25);
-  border-radius: var(--r-sm);
+figure { margin: 0; }
+figure img, .case-screenshot img {
+  width: 100%; display: block;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  cursor: zoom-in;
 }
+figcaption { font-size: .69rem; color: var(--muted); margin-top: 6px; }
+
+.case-video video { width: 100%; border-radius: var(--r-md); border: 1px solid var(--line); display: block; }
+.case-video figcaption { font-size: .69rem; color: var(--muted); margin-top: 6px; }
 
 /* ---------------------------------------------------------------------------
    Suite progress + results
    --------------------------------------------------------------------------- */
 
-.suite-progress-list { display: flex; flex-direction: column; gap: 6px; }
+.suite-progress-list { display: flex; flex-direction: column; }
 .suite-progress-item {
-  display: flex; align-items: center; gap: var(--sp-3);
-  padding: 9px var(--sp-3); border-radius: var(--r-sm);
-  background: var(--sunken); font-size: .84rem;
-  border-left: 2px solid var(--pending);
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px var(--sp-4);
+  border-top: 1px solid rgba(var(--ink-rgb), .05);
+  border-left: 3px solid transparent;
 }
-.suite-progress-icon { display: inline-flex; width: 18px; justify-content: center; color: var(--faint); }
-.suite-progress-label { color: var(--faint); font-size: .74rem; font-variant-numeric: tabular-nums; }
-.suite-progress-title { flex: 1; min-width: 0; }
-.suite-progress-item.passed { border-left-color: var(--done); }
+.suite-progress-item.passed { border-left-color: var(--done-dot); }
+.suite-progress-item.failed { border-left-color: var(--failed-dot); }
+.suite-progress-item.truncated { border-left-color: var(--truncated-dot); }
+.suite-progress-item.blocked { border-left-color: var(--blocked-dot); }
+.suite-progress-icon { display: inline-flex; flex: none; color: var(--faint); }
 .suite-progress-item.passed .suite-progress-icon { color: var(--done); }
-.suite-progress-item.failed { border-left-color: var(--failed); }
 .suite-progress-item.failed .suite-progress-icon { color: var(--failed); }
-.suite-progress-item.blocked { border-left-color: var(--blocked); }
-.suite-progress-item.blocked .suite-progress-icon { color: var(--blocked); }
-.suite-progress-item.truncated { border-left-color: var(--truncated); }
 .suite-progress-item.truncated .suite-progress-icon { color: var(--truncated); }
+.suite-progress-item.blocked .suite-progress-icon { color: var(--blocked); }
 .suite-progress-item.running .suite-progress-icon { color: var(--running); }
-.suite-progress-item.running .suite-progress-icon .icon { animation: spin 1.6s linear infinite; }
+.suite-progress-item.running .suite-progress-icon .icon { animation: spin .8s linear infinite; }
+.suite-progress-title { font-size: .75rem; flex: 1; min-width: 0; }
+.suite-progress-label { font-size: .69rem; color: var(--muted); flex: none; }
 
-.suite-results { animation: fadeUp .25s var(--ease); }
-.suite-summary-header { margin-bottom: var(--sp-4); }
-.suite-summary-stats { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+/* A thin pass/fail/rest bar. Segments are flex-grown by count, so the bar is a
+   proportion, not a set of fixed blocks. */
+.suite-bar { display: flex; gap: 2px; height: 5px; padding: 12px var(--sp-4) 6px; }
+.suite-bar span { flex-basis: 0; border-radius: 3px; }
+.suite-bar .bar-pass { background: var(--done-dot); }
+.suite-bar .bar-fail { background: var(--failed-dot); }
+.suite-bar .bar-rest { background: rgba(var(--accent-rgb), .18); }
+
+.suite-results { display: flex; flex-direction: column; gap: 11px; }
+.suite-summary-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+.suite-summary-stats { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .suite-stat {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: .78rem; font-weight: 600;
-  padding: 6px 13px; border-radius: var(--r-pill);
-  background: var(--surface-2); border: 1px solid var(--line);
-  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono); font-size: .66rem; font-weight: 500;
+  padding: 3px 8px; border-radius: 20px;
+  background: var(--pending-bg); color: var(--text-2);
 }
-.suite-stat-passed { color: var(--done); border-color: rgba(70,196,109,.3); background: rgba(70,196,109,.08); }
-.suite-stat-failed { color: var(--failed); border-color: rgba(242,99,90,.3); background: rgba(242,99,90,.08); }
-.suite-stat-truncated { color: var(--truncated); border-color: rgba(95,168,255,.3); background: rgba(95,168,255,.08); }
-.suite-stat-partial { color: var(--partial); border-color: rgba(95,168,255,.3); background: rgba(95,168,255,.08); }
-.suite-stat-blocked { color: var(--blocked); border-color: rgba(179,122,218,.3); background: rgba(179,122,218,.08); }
+.suite-stat-passed { background: var(--done-bg); color: var(--done); }
+.suite-stat-failed { background: var(--failed-bg); color: var(--failed); }
+.suite-stat-truncated, .suite-stat-partial { background: var(--truncated-bg); color: var(--truncated); }
+.suite-stat-blocked { background: var(--blocked-bg); color: var(--blocked); }
 
 .screenshot-toggle {
-  display: inline-flex; align-items: center; gap: 6px;
-  margin-bottom: var(--sp-3);
-  background: var(--surface-2); color: var(--text-2);
-  border: 1px solid var(--line); border-radius: var(--r-sm);
-  padding: 8px 14px; font: inherit; font-size: .8rem; cursor: pointer;
+  align-self: flex-start;
+  border: 1px solid var(--line); background: var(--surface-2);
+  border-radius: var(--r-sm); padding: 7px 11px;
+  font: inherit; font-size: .72rem; color: var(--text); cursor: pointer;
 }
-.screenshot-toggle:hover { background: var(--surface-3); color: var(--text); }
+.screenshot-toggle:hover { background: var(--surface-hover); }
 
-.screenshot-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: var(--sp-3); margin-bottom: var(--sp-4);
-}
+.screenshot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--sp-3); }
 .screenshot-tile {
-  border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--surface);
-  transition: transform .15s var(--ease), border-color .15s var(--ease), box-shadow .15s var(--ease);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-md); overflow: hidden; cursor: zoom-in;
 }
-.screenshot-tile:hover { transform: translateY(-2px); border-color: var(--line-hover); box-shadow: var(--shadow-lg); }
-.screenshot-tile img { width: 100%; display: block; }
-.screenshot-tile-label {
-  font-size: .72rem; color: var(--muted); padding: 8px 10px;
-  border-top: 1px solid var(--line-soft);
+.screenshot-tile:hover { border-color: var(--line-hover); }
+.screenshot-tile img { width: 100%; display: block; border: none; border-radius: 0; }
+.screenshot-tile-label { font-size: .69rem; color: var(--muted); padding: 7px 9px; display: block; }
+
+/* Cases sit SIDE BY SIDE while collapsed, so a suite of five does not turn the
+   results panel into a page you have to scroll. auto-fit + minmax means the column
+   count follows the width available rather than being fixed: three across on a wide
+   screen, one on a narrow one, with no breakpoint to maintain.
+
+   align-items: start stops a tall card from stretching its neighbours to match it —
+   without it, one open card pads every card beside it with dead space.
+
+   An OPEN card takes the full width instead. Its body lays a 320px screenshot beside
+   the IR, the spec and the downloads; in a third-width column that stacks into a
+   cramped ribbon, which is the opposite of why you opened it. So the grid is for
+   scanning and the full width is for reading, and .case-card.open — already the class
+   app.js toggles — is what switches between them. No new class, no JS change. */
+.suite-case-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  align-items: start;
+  gap: 11px;
+}
+.suite-case-list .case-card.open { grid-column: 1 / -1; }
+
+/* ---------------------------------------------------------------------------
+   Screenshot zoom modal
+   --------------------------------------------------------------------------- */
+.screenshot-modal {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(var(--ink-rgb), .72);
+  display: flex; align-items: center; justify-content: center;
+  padding: 28px; cursor: zoom-out;
+}
+.screenshot-modal.hidden { display: none !important; }
+.screenshot-modal-img { max-width: 900px; max-height: min(70vh, 520px); width: 100%; object-fit: contain; border-radius: 12px; border: 1px solid rgba(var(--bg-rgb), .25); }
+.screenshot-modal-label {
+  position: absolute; top: 24px; left: 28px; max-width: calc(100% - 140px);
+  font-family: var(--font-mono); font-size: .72rem;
+  color: rgba(var(--bg-rgb), .8);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-
-/* ---------------------------------------------------------------------------
-   Screenshot zoom modal — a scrim over the whole viewport, so it's deliberately opaque black
-   regardless of theme (rgba(0,0,0,.9)), not a design-token color: its entire job is to
-   suppress whatever's behind it, light or dark theme alike, which is the one place in this
-   file a hardcoded color is correct rather than a token gap.
-   --------------------------------------------------------------------------- */
-
-.screenshot-modal {
-  position: fixed; inset: 0; z-index: 200;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, .9);
-  padding: var(--sp-6, 32px);
-}
-.screenshot-modal.hidden { display: none; }
-.screenshot-modal-img {
-  max-width: 90vw; max-height: 90vh; object-fit: contain;
-  border-radius: var(--r-sm); box-shadow: var(--shadow-lg);
-}
+.screenshot-modal-label:empty { display: none; }
 .screenshot-modal-close {
-  position: fixed; top: var(--sp-4); right: var(--sp-4);
-  width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
-  font-size: 1.6rem; line-height: 1; color: #fff; background: rgba(255, 255, 255, .12);
-  border: 1px solid rgba(255, 255, 255, .25); border-radius: 50%; cursor: pointer;
-  transition: background .15s var(--ease);
+  position: absolute; top: 20px; right: 24px;
+  border: 1px solid rgba(var(--bg-rgb), .3); background: transparent;
+  color: var(--bg); border-radius: 7px; padding: 5px 11px;
+  font: inherit; font-size: .72rem; cursor: pointer;
 }
-.screenshot-modal-close:hover { background: rgba(255, 255, 255, .22); }
+.screenshot-modal-close:hover { background: rgba(var(--bg-rgb), .12); }
 
 /* ---------------------------------------------------------------------------
-   Case cards — plain summary up front, technical detail behind a drawer
+   Case cards
    --------------------------------------------------------------------------- */
-
-.suite-case-list { display: flex; flex-direction: column; gap: var(--sp-2); }
 
 .case-card {
-  background: var(--surface); border: 1px solid var(--line-soft); border-radius: var(--r);
-  overflow: hidden; transition: border-color .15s var(--ease);
+  background: var(--surface);
+  border: 1px solid rgba(var(--ink-rgb), .11);
+  border-radius: 12px;
+  overflow: hidden;
 }
-.case-card:hover { border-color: var(--line); }
-.case-card.open { border-color: var(--line); }
-
+.case-card:hover { border-color: var(--line-hover); }
 .case-card-header {
-  display: flex; align-items: flex-start; gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4); cursor: pointer;
-  transition: background .15s var(--ease);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 11px;
+  padding: 13px var(--sp-4);
+  cursor: pointer;
 }
 .case-card-header:hover { background: var(--surface-2); }
-
-.case-status-icon { display: inline-flex; margin-top: 2px; }
-.case-status-icon.badge-passed { color: var(--done); }
-.case-status-icon.badge-failed { color: var(--failed); }
-.case-status-icon.badge-blocked { color: var(--blocked); }
-.case-status-icon.badge-truncated { color: var(--truncated); }
-.case-status-icon.badge-partial { color: var(--partial); }
-.case-status-icon.badge-pending { color: var(--faint); }
-
-.case-heading { flex: 1; min-width: 0; }
-.case-title { font-size: .88rem; font-weight: 550; display: block; }
-/* The plain-English line: what this check actually proves. */
-.case-intent { font-size: .78rem; color: var(--muted); margin: 3px 0 0; line-height: 1.5; }
-/* --muted, not --faint — same WCAG AA reasoning as .case-selection-list .case-expected above. */
-.case-expected { font-size: .74rem; color: var(--muted); margin: 3px 0 0; line-height: 1.5; }
-.case-expected span { font-weight: 600; color: var(--text-2); }
-
-.case-expand-icon { color: var(--faint); display: inline-flex; margin-top: 2px; transition: transform .2s var(--ease); }
+.case-heading { flex: 1; min-width: 200px; }
+.case-title { font-size: .81rem; font-weight: 500; margin-bottom: 3px; }
+.case-intent { font-size: .72rem; line-height: 1.5; color: var(--text-2); text-wrap: pretty; }
+.case-expand-icon { color: var(--faint); flex: none; transition: transform .18s var(--ease); }
 .case-card.open .case-expand-icon { transform: rotate(180deg); }
+.case-card-body { display: none; padding: 0 var(--sp-4) var(--sp-4); flex-wrap: wrap; gap: var(--sp-4); }
+.case-card.open .case-card-body { display: flex; }
 
-.case-badge {
-  font-size: .66rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
-  padding: 3px 9px; border-radius: var(--r-pill);
-  border: 1px solid transparent; white-space: nowrap; margin-top: 1px;
+.case-badge, .case-status-icon {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 3px 9px; border-radius: 20px;
+  font-family: var(--font-mono); font-size: .62rem; font-weight: 600; letter-spacing: .02em;
+  background: var(--pending-bg); color: var(--text-2);
 }
-.badge-passed { color: var(--done); background: rgba(70,196,109,.12); border-color: rgba(70,196,109,.3); }
-.badge-failed { color: var(--failed); background: rgba(242,99,90,.12); border-color: rgba(242,99,90,.3); }
-.badge-truncated { color: var(--truncated); background: rgba(95,168,255,.12); border-color: rgba(95,168,255,.3); }
-.badge-partial { color: var(--partial); background: rgba(95,168,255,.12); border-color: rgba(95,168,255,.3); }
-.badge-blocked { color: var(--blocked); background: rgba(179,122,218,.12); border-color: rgba(179,122,218,.3); }
-.badge-pending { color: var(--muted); background: var(--surface-3); border-color: var(--line); }
-/* Uses the accent (not --done green) — this badge isn't a status, it's a note about HOW a
-   passed result was reached, sitting next to the real PASSED badge rather than replacing it. */
-.case-badge-healed {
-  color: var(--accent); background: var(--accent-soft); border-color: rgba(var(--accent-rgb), .3);
-  display: inline-flex; align-items: center; gap: 4px;
-}
+.badge-passed, .case-status-icon.badge-passed { background: var(--done-bg); color: var(--done); }
+.badge-failed, .case-status-icon.badge-failed { background: var(--failed-bg); color: var(--failed); }
+.badge-truncated, .case-status-icon.badge-truncated,
+.badge-partial, .case-status-icon.badge-partial { background: var(--truncated-bg); color: var(--truncated); }
+.badge-blocked, .case-status-icon.badge-blocked { background: var(--blocked-bg); color: var(--blocked); }
+.badge-pending, .case-status-icon.badge-pending { background: var(--pending-bg); color: var(--text-2); }
+.case-badge-healed { background: var(--running-bg); color: var(--running); }
 
-/* Animated expand/collapse: box-sizing is border-box (see the reset near the top of this
-   file), so max-height:0 on the closed state crushes the padding and border-top along with
-   the content — no separate "hide the border too" rule needed. The 5000px open-state ceiling
-   is just a value comfortably larger than any real card's content (screenshot + narrative/
-   diagnosis + the collapsed technical-details toggle); browsers only animate the actual
-   height delta, so an oversized ceiling costs nothing. prefers-reduced-motion is handled
-   globally (see the media query near the top of this file), not repeated here. */
-.case-card-body {
-  padding: var(--sp-4); border-top: 1px solid var(--line-soft);
-  max-height: 0; opacity: 0; overflow: hidden;
-  transition: max-height .2s ease-out, opacity .2s ease-out;
-}
-.case-card.open .case-card-body { max-height: 5000px; opacity: 1; }
-
-.case-screenshot { margin: 0 0 var(--sp-3); }
-.case-screenshot img { cursor: zoom-in; border-radius: var(--r-sm); }
-.case-screenshot figcaption { font-size: .72rem; color: var(--faint); margin-top: 4px; }
-
-/* Same width/border treatment as the screenshot it sits next to — a video is just another
-   "what actually happened" artifact, not a visually distinct element. `background: #000` on
-   the video itself (not a token) is standard practice for a media player's letterbox area,
-   the same class of deliberate exception as the screenshot zoom modal's backdrop. */
-.case-video { margin: 0 0 var(--sp-3); }
-.case-video video {
-  width: 100%; display: block; background: #000;
-  border: 1px solid var(--line); border-radius: var(--r);
-}
-.case-video figcaption { font-size: .72rem; color: var(--faint); margin-top: 4px; }
-
-/* The plain-language "what happened" / "what the image shows" block for passed cases, and the
-   container renderCaseDiagnosisBlock fills in for failed ones — both start empty/hidden and
-   are populated by loadCaseDetails once the card is expanded (see app.js). */
-.case-narrative { margin-bottom: var(--sp-3); font-size: .82rem; }
-.case-narrative-line { margin: 0 0 6px; line-height: 1.5; color: var(--text-2); }
+.case-narrative { flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: 11px; }
+.case-narrative-line { font-size: .78rem; line-height: 1.65; color: rgba(var(--ink-rgb), .75); text-wrap: pretty; }
+.case-narrative-line b { font-weight: 500; color: var(--text); }
 .case-narrative-line:last-child { margin-bottom: 0; }
-.case-narrative-line b { color: var(--text); font-weight: 600; }
+.case-expected { font-size: .72rem; color: var(--muted); }
+.case-expected span { color: var(--text-2); }
+.case-screenshot { width: 320px; flex: 1 1 260px; display: flex; flex-direction: column; gap: var(--sp-2); }
+.case-screenshot figcaption { font-size: .69rem; color: var(--muted); }
 .case-diagnosis-block:empty { display: none; }
+.blocked-note { font-size: .75rem; color: var(--blocked); background: var(--blocked-bg); padding: 10px 12px; border-radius: var(--r-md); }
 
-.case-downloads { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-3); }
-.dl-btn {
+.case-downloads { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.dl-btn, .dl-btn-inline {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: .74rem; color: var(--text-2); text-decoration: none;
-  padding: 6px 11px; border-radius: var(--r-sm);
-  background: var(--sunken); border: 1px solid var(--line);
-  transition: color .15s var(--ease), border-color .15s var(--ease);
+  border: 1px solid var(--line); background: var(--surface-2);
+  border-radius: var(--r-sm); padding: 7px 11px;
+  font: inherit; font-size: .72rem; color: var(--text); text-decoration: none; cursor: pointer;
 }
-.dl-btn:hover { color: var(--text); border-color: var(--line-hover); }
+.dl-btn:hover { background: var(--surface-hover); }
+.dl-btn-inline { padding: 4px 9px; font-size: .69rem; }
 
-/* Smaller, inline variant sitting next to a technical-details heading (e.g. "Full test code
-   [download]") rather than in the main action row. */
-.dl-btn-inline {
-  padding: 2px 8px; font-size: .68rem; background: transparent; border-color: var(--line-soft);
-  margin-left: var(--sp-2); vertical-align: middle;
+.output, .case-details, .diag-tech-details {
+  border-top: 1px solid var(--line-soft);
+  margin-top: var(--sp-3); padding-top: var(--sp-3);
 }
-
-.case-details { margin-top: var(--sp-2); }
-.case-details summary {
-  cursor: pointer; font-size: .76rem; color: var(--muted); user-select: none;
-  display: inline-flex; align-items: center; gap: 6px; list-style: none;
+.output summary, .case-details summary, .diag-tech-details summary {
+  cursor: pointer; list-style: none;
+  font-size: .72rem; font-weight: 500; color: var(--text-2);
 }
-.case-details summary::-webkit-details-marker { display: none; }
-.case-details summary:hover { color: var(--text); }
+.output summary::-webkit-details-marker, .case-details summary::-webkit-details-marker { display: none; }
+.output summary:hover, .case-details summary:hover, .diag-tech-details summary:hover { color: var(--text); }
 .case-details-content { margin-top: var(--sp-3); }
-.case-details-content h4 {
-  font-size: .72rem; font-weight: 600; color: var(--faint);
-  text-transform: uppercase; letter-spacing: .06em; margin: var(--sp-3) 0 6px;
-}
+.case-details-content h4 { font-size: .69rem; font-weight: 600; margin: var(--sp-3) 0 6px; color: var(--text-2); }
 .case-details-content h4:first-child { margin-top: 0; }
-.case-details-content pre {
-  margin: 0; padding: var(--sp-3);
-  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: var(--r-sm);
-  font-size: .72rem; color: var(--text-2); overflow-x: auto; max-height: 320px; line-height: 1.55;
+.output pre, .case-details-content pre {
+  background: var(--inset); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 12px 14px;
+  overflow-x: auto;
+  font-family: var(--font-mono); font-size: .72rem; line-height: 1.85;
+  margin: 0;
 }
+/* Phase-card JSON wraps rather than scrolling sideways.
+   Scoped to `.output`, which is used only by the phase card (app.js:482), so the case-detail and
+   diagnosis blocks above keep the scroll behaviour they have. Now that a card is the full width
+   of the content column there is room to wrap, and the horizontal scrollbar simply stops
+   appearing; `overflow-x: auto` on the rule above stays as the fallback for a single unbreakable
+   token. The card itself cannot be widened by this — it is a stretched flex item, so its width
+   is the column's, and the <pre> wraps inside a containing block that is already decided. */
+.output pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.diag-tech-details code { font-family: var(--font-mono); font-size: .72rem; background: var(--inset); padding: 1px 5px; border-radius: 4px; }
 
 /* ---------------------------------------------------------------------------
-   History (sidebar)
+   Diagnosis card
+   --------------------------------------------------------------------------- */
+.diag-card {
+  border: 1px solid rgba(var(--failed-rgb), .3);
+  background: rgba(var(--failed-rgb), .05);
+  border-radius: var(--r-md);
+  padding: 13px;
+}
+.diag-card-header { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: 6px; }
+.diag-card-header h4 { font-size: .75rem; font-weight: 600; color: var(--failed); margin: 0; flex: 1; }
+.diag-badge {
+  font-family: var(--font-mono); font-size: .59rem; font-weight: 600;
+  padding: 2px 7px; border-radius: 20px;
+  background: var(--failed-bg); color: var(--failed);
+}
+.diag-card-body { display: flex; flex-direction: column; gap: 9px; }
+.diag-text { font-size: .75rem; line-height: 1.6; color: rgba(var(--ink-rgb), .72); text-wrap: pretty; }
+.diag-item { display: flex; flex-direction: column; gap: 3px; }
+.diag-label, .fix-label {
+  font-family: var(--font-mono); font-size: .62rem; font-weight: 600;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--muted);
+}
+.diag-fix-box { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; }
+.diag-fix-list { margin: 6px 0 0; padding-left: 1.1rem; font-size: .75rem; line-height: 1.6; }
+.diag-fix-list li { margin-bottom: 4px; }
+.diag-fix-list li:last-child { margin-bottom: 0; }
+.diag-fix-code { font-family: var(--font-mono); font-size: .72rem; background: var(--inset); padding: 1px 5px; border-radius: 4px; }
+
+/* ---------------------------------------------------------------------------
+   History screen rows — distinct from the sidebar list, which is a compact
+   footer summary rather than a browsable table.
    --------------------------------------------------------------------------- */
 
+.page-head-title {
+  font-family: var(--font-display); font-weight: 400;
+  font-size: 1.7rem; line-height: 1.2; margin: 0;
+}
+
+.hrow {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3);
+  padding: 13px var(--sp-4);
+  border-bottom: 1px solid rgba(var(--ink-rgb), .06);
+}
+.hrow:last-child { border-bottom: none; }
+.hrow-main { flex: 1; min-width: 200px; }
+.hrow-label { font-size: .78rem; font-weight: 500; margin-bottom: 3px; }
+.hrow-meta { font-family: var(--font-mono); font-size: .66rem; color: var(--muted); }
+.hrow-actions { display: flex; gap: 7px; flex: none; }
+.hrow-del { color: var(--failed); }
+
+/* ---------------------------------------------------------------------------
+   Recent runs (sidebar footer)
+   --------------------------------------------------------------------------- */
+
+.history-nav { display: block; min-width: 0; }
 .history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .history-item {
   display: flex; align-items: center; gap: var(--sp-2);
-  padding: 8px var(--sp-2); border-radius: var(--r-sm);
-  font-size: .8rem; cursor: pointer; border: 1px solid transparent;
-  transition: background .15s var(--ease);
+  padding: 3px 0; cursor: pointer;
+  border-radius: 6px;
 }
-.history-item:hover { background: var(--surface-2); }
-.history-item.active { background: var(--surface-3); border-color: var(--line); }
-.history-item .badge { display: inline-flex; color: var(--faint); flex-shrink: 0; }
+.history-item:hover { opacity: .75; }
+.history-item.active .hprompt { color: var(--text); font-weight: 500; }
+.history-item:hover .hprompt { color: var(--text); }
+.history-item .badge { display: inline-flex; flex: none; color: var(--faint); }
 .history-item .badge.passed { color: var(--done); }
 .history-item .badge.failed { color: var(--failed); }
 .history-item .badge.blocked { color: var(--blocked); }
 .history-item .hprompt {
-  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  color: var(--text-2);
+  font-size: .72rem; flex: 1; min-width: 0; color: rgba(var(--ink-rgb), .8);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.history-item:hover .hprompt, .history-item.active .hprompt { color: var(--text); }
-.history-item .hurl, .history-item .hsuite { display: none; }
-
+.history-item .hurl, .history-item .hsuite {
+  font-family: var(--font-mono); font-size: .62rem; color: var(--faint); flex: none;
+}
+.history-item .hurl { display: none; }          /* the footer list is too narrow for both */
 .history-del {
-  background: none; border: none; color: var(--faint);
-  display: inline-flex; padding: 3px; border-radius: 5px; cursor: pointer;
-  opacity: 0; flex-shrink: 0; transition: opacity .15s var(--ease), color .15s var(--ease);
+  border: none; background: none; cursor: pointer;
+  color: var(--faint); padding: 0 2px; display: none;
 }
-.history-item:hover .history-del { opacity: 1; }
-.history-del:hover { color: var(--failed); background: rgba(242,99,90,.12); }
-.history-empty { color: var(--faint); font-size: .78rem; padding: var(--sp-2); }
+.history-item:hover .history-del { display: inline-flex; }
+.history-del:hover { color: var(--failed); }
+.history-empty { font-size: .72rem; color: var(--faint); }
 
 /* ---------------------------------------------------------------------------
-   Responsive
+   Focus + motion
    --------------------------------------------------------------------------- */
 
-@media (max-width: 900px) {
-  .app { flex-direction: column; }
-  .sidebar {
-    width: 100%; height: auto; position: static;
-    border-right: none; border-bottom: 1px solid var(--line);
-    flex-direction: row; align-items: center; gap: var(--sp-3);
-    padding: var(--sp-3) var(--sp-4);
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible,
+summary:focus-visible, .history-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes caseSelectionGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0); }
+  50% { box-shadow: 0 0 0 4px rgba(var(--accent-rgb), .1); }
+}
+@keyframes casePillPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
   }
-  .brand { padding: 0; }
-  .history-nav { flex-direction: row; align-items: center; overflow-x: auto; flex: 1; }
-  .rail-heading { display: none; }
-  .history-list { flex-direction: row; }
-  .history-item { max-width: 190px; }
-  .history-del { opacity: 1; }
-  .main-inner { padding: var(--sp-5) var(--sp-4) 64px; }
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive — one breakpoint at 900px turns the sidebar into a drawer
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 1180px) {
+  :root { --sidebar-w: 244px; }
+}
+
+@media (max-width: 900px) {
+  .sidebar {
+    position: fixed; top: 0; bottom: 0; left: -300px;
+    width: 278px; height: 100vh;
+    transition: left .22s var(--ease);
+    z-index: 50;
+  }
+  .sidebar.open { left: 0; }
+  .sidebar-close, .sidebar-open { display: inline-flex; align-items: center; }
+  .main-inner { padding: var(--sp-4) var(--sp-3) 80px; }
 }
 
 @media (max-width: 600px) {
   .composer-foot { flex-direction: column; align-items: stretch; }
-  .run-btn { justify-content: center; }
-  .cred-fields { flex-direction: column; }
-  .screenshot-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
-  .page-head h1 { font-size: 1.35rem; }
+  .field-url, .seg, .run-btn { width: 100%; }
+  .seg { justify-content: space-between; }
+  .seg-btn { flex: 1; justify-content: center; }
+  .page-head h1 { font-size: 1.7rem; }
+  .case-card-body { flex-direction: column; }
+  .case-screenshot { width: 100%; }
 }
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: .01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: .01ms !important;
-  }
-}
-
-/* The run button's spinner while a run is in flight. */
-.run-btn .spin { animation: spin 1.6s linear infinite; }
-
 /* ---------------------------------------------------------------------------
-   Enterprise Diagnostic Card
+   Login (Step 2.2). New classes only — nothing above is renamed or repurposed.
+   Only reachable when the server reports authEnabled:true; with auth off the
+   #view-login section never becomes .view-active, so none of this ever paints.
    --------------------------------------------------------------------------- */
 
-.diag-card {
-  margin-top: var(--sp-4);
-  background: var(--surface-2);
-  border: 1px solid rgba(229, 169, 67, 0.35);
-  border-radius: var(--r-md);
-  padding: var(--sp-4);
-  font-size: .84rem;
-  color: var(--text);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+.auth-card {
+  display: flex; flex-direction: column; gap: var(--sp-4);
+  max-width: 380px;
+  padding: var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
 }
+.auth-card .run-btn { justify-content: center; }
 
-.diag-card-header {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin-bottom: var(--sp-3);
-  padding-bottom: var(--sp-2);
-  border-bottom: 1px solid var(--line);
-}
-
-.diag-badge {
-  font-size: .68rem;
-  font-weight: 700;
-  letter-spacing: .05em;
-  text-transform: uppercase;
-  background: rgba(229, 169, 67, 0.18);
-  color: var(--running);
-  padding: 3px 8px;
-  border-radius: var(--r-sm);
-  border: 1px solid rgba(229, 169, 67, 0.3);
-}
-
-.diag-card-header h4 {
+.auth-error {
   margin: 0;
-  font-size: .92rem;
-  font-weight: 650;
-  color: var(--text);
-}
-
-.diag-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-
-.diag-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.diag-label {
-  font-size: .76rem;
-  font-weight: 600;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .03em;
-}
-
-.diag-text {
-  margin: 0;
-  color: var(--text);
-  line-height: 1.45;
-}
-
-.diag-fix-box {
-  background: rgba(70, 196, 109, 0.08);
-  border: 1px solid rgba(70, 196, 109, 0.25);
-  border-radius: var(--r-sm);
-  padding: var(--sp-3);
-}
-
-.fix-label {
-  color: var(--done);
-  font-weight: 650;
-}
-
-.diag-fix-code {
-  margin: var(--sp-1) 0 0 0;
-  font-family: var(--font-mono);
-  font-size: .8rem;
-  background: var(--surface-3);
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-sm);
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* Bulleted "what you can do" list — the case-card diagnosis block's version of .diag-fix-code,
-   which is a single pre-formatted snippet; this one holds 1-2 short plain-language bullets. */
-.diag-fix-list { margin: var(--sp-1) 0 0 0; padding-left: 1.1em; }
-.diag-fix-list li { color: var(--text); line-height: 1.5; margin: 0 0 4px; }
-.diag-fix-list li:last-child { margin-bottom: 0; }
-
-.diag-tech-details {
-  margin-top: var(--sp-2);
   font-size: .78rem;
-  color: var(--faint);
-}
-
-.diag-tech-details summary {
-  cursor: pointer;
-  user-select: none;
-  color: var(--muted);
-  font-weight: 500;
-}
-
-.diag-tech-details summary:hover {
-  color: var(--text);
-}
-
-.diag-tech-details code {
-  display: block;
-  margin-top: 6px;
-  background: var(--surface-1);
-  padding: 8px 10px;
-  border-radius: var(--r-sm);
-  font-family: var(--font-mono);
-  font-size: .75rem;
   color: var(--failed);
-  white-space: pre-wrap;
-  word-break: break-word;
+  background: var(--failed-bg);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+/* .auth-notice was removed along with the "check your email to confirm" state: sign-up now goes
+   through this server's own /api/auth/signup, which creates a pre-confirmed account and returns a
+   session, so there is no pending-confirmation outcome left to style. */
+
+/* The "already have an account?" / "don't have one?" line under each auth form. */
+.auth-switch {
+  margin: 0;
+  font-size: .76rem;
+  color: var(--muted);
+  text-align: center;
+}
+.auth-switch-btn {
+  border: none; background: none; padding: 0; cursor: pointer;
+  font: inherit; color: var(--accent); text-decoration: underline;
+}
+.auth-switch-btn:hover { color: var(--accent-hover); }
+
+/* Who's signed in, shown in the topbar next to Sign out. */
+.session-badge { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.session-email { font-size: .74rem; color: var(--muted); }
+.session-role {
+  font-family: var(--font-mono);
+  font-size: .6rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--accent-deep);
+  background: var(--accent-soft);
+  border-radius: var(--r-pill);
+  padding: 2px 7px;
+}
+
+/* Role-gated affordances (Step 3.4).
+   Expressed as RESTRICTIONS, never permissions: with no class on <body> nothing is
+   hidden, so the AUTH_ENABLED=off path renders exactly as it always has and there is
+   no flash of hidden controls before app.js runs. app.js adds these only once it
+   knows the signed-in role.
+   These hide controls; they do NOT secure anything. Every action below is enforced
+   server-side in src/server/authz.ts — this is a courtesy so a viewer isn't offered
+   buttons that would only 403. */
+body.role-no-edit .run-btn,
+body.role-no-edit .new-run,
+body.role-no-edit .composer { display: none; }
+body.role-no-admin .history-del,
+body.role-no-admin .hrow-del { display: none; }
+
+/* The login and sign-up screens own the whole window: the sidebar and topbar are
+   chrome for an app the visitor hasn't been let into yet, and leaving them visible
+   would show run history through the "locked" door. */
+body:has(#view-login.view-active) .sidebar,
+body:has(#view-login.view-active) .topbar,
+body:has(#view-signup.view-active) .sidebar,
+body:has(#view-signup.view-active) .topbar { display: none; }
+
+/* ---------------------------------------------------------------------------
+   Team (members management). New classes only — nothing above is renamed or
+   repurposed. Reuses .panel, .field, .dl-btn-inline and the .case-badge/.sdot
+   vocabulary so the screen reads as native rather than bolted on.
+   --------------------------------------------------------------------------- */
+
+.team-add {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-3);
+  padding: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+/* Capped at the same 380px as .auth-card so the email input doesn't stretch to fill a wide
+   screen and leave the Role picker and button stranded at the far right. */
+.team-add .field { flex: 1 1 220px; max-width: 380px; margin: 0; }
+.team-add-actions { display: flex; gap: var(--sp-2); align-items: center; }
+
+.team-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line-soft);
+}
+.team-row:last-child { border-bottom: none; }
+.team-row-main { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 3px; }
+.team-email { font-size: .82rem; }
+.team-meta { font-family: var(--font-mono); font-size: .62rem; color: var(--faint); }
+.team-you {
+  font-family: var(--font-mono);
+  font-size: .58rem; font-weight: 600; letter-spacing: .06em;
+  color: var(--accent-deep); background: var(--accent-soft);
+  border-radius: var(--r-pill); padding: 1px 6px; margin-left: var(--sp-2);
+}
+.team-row-actions { display: flex; gap: var(--sp-2); align-items: center; flex: none; }
+
+/* A role that can't be changed (yours-and-you're-the-last-owner, or someone above
+   you) renders as static text instead of a select, so the UI never offers a
+   control whose every option the server would refuse. */
+.team-role-static {
+  font-family: var(--font-mono);
+  font-size: .6rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-2); background: var(--surface-3);
+  border-radius: var(--r-pill); padding: 3px 9px;
+}
+
+.team-select {
+  font: inherit; font-size: .75rem;
+  padding: 5px var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+.team-select:hover { border-color: var(--line-hover); }
+
+/* Project assignments on a member's row — the second access axis (Step 5.1).
+   Role says what someone may DO; these say what they may SEE. Admins and owners
+   see every project by role, so their row states the rule rather than listing
+   projects that would go stale the moment a new one is created. */
+.team-projects {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+.team-projects-all, .team-projects-none {
+  font-family: var(--font-mono); font-size: .62rem; color: var(--faint);
+}
+.team-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: .7rem;
+  color: var(--text-2); background: var(--surface-3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-pill); padding: 2px 4px 2px 9px;
+}
+.team-chip-x {
+  border: none; background: none; cursor: pointer;
+  font-size: .85rem; line-height: 1; color: var(--muted);
+  padding: 0 4px; border-radius: var(--r-pill);
+}
+.team-chip-x:hover { color: var(--failed); }
+.team-assign { font-size: .7rem; padding: 3px var(--sp-2); }
+
+/* Inline result of the last action. Errors carry the server's own message —
+   "you cannot grant the owner role", "this is the last owner" — because those
+   sentences are the whole point of the guard rails. */
+.team-error, .team-ok {
+  margin: 0; font-size: .78rem;
+  border-radius: var(--r-sm); padding: var(--sp-2) var(--sp-3);
+}
+.team-error { color: var(--failed); background: var(--failed-bg); }
+.team-ok { color: var(--done); background: var(--done-bg); }
+
+/* The Team entry point is hidden for anyone below admin. Belt and braces with the
+   .hidden app.js toggles: if a future change forgets the JS, the class still hides it. */
+body.role-no-admin #teamBtn { display: none; }
+
+/* ---------------------------------------------------------------------------
+   The test-case library — Suite, Case and Compare (Steps 5.2, 5.3, 5.5).
+
+   All new class names. Nothing above is renamed or repurposed: the rows reuse
+   .hrow/.hrow-main/.hrow-meta, the status pills reuse .case-badge/.badge-*, the
+   tabs reuse .seg/.seg-btn and the small buttons reuse .dl-btn-inline, so these
+   screens inherit the app's existing vocabulary rather than starting a parallel
+   one.
+   --------------------------------------------------------------------------- */
+
+.lib-toolbar {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.lib-toolbar-gap { flex: 1; }
+.lib-run-all { height: 32px; padding: 0 var(--sp-3); font-size: .75rem; }
+
+.lib-row { align-items: center; }
+.lib-check { flex: none; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+/* Fixed width so the numbers form a column rather than shifting the titles at 10. */
+.lib-pos {
+  flex: none; width: 20px; text-align: right;
+  font-family: var(--font-mono); font-size: .66rem; color: var(--faint);
+}
+
+.lib-steps { padding: var(--sp-4); }
+.lib-steps-head { font-size: .72rem; font-weight: 600; margin-bottom: var(--sp-3); }
+.lib-step-list {
+  margin: 0 0 var(--sp-3); padding-left: var(--sp-5);
+  display: flex; flex-direction: column; gap: 6px;
+  font-size: .78rem; line-height: 1.55;
+}
+.lib-step-list li { padding-left: 2px; }
+
+.case-save-panel { padding: var(--sp-3) 0 0; }
+.case-save-form {
+  display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: flex-end;
+  margin-bottom: var(--sp-2);
+}
+.case-save-form .field { flex: 1 1 180px; max-width: 260px; margin: 0; }
+
+.cmp-grid { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
+.cmp-col {
+  flex: 1 1 300px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r); overflow: hidden;
+}
+.cmp-col-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line-soft); background: var(--inset);
+}
+.cmp-steps { padding: var(--sp-3); display: flex; flex-direction: column; gap: 3px; }
+.cmp-step {
+  padding: 6px var(--sp-2); border-radius: var(--r-sm);
+  font-size: .76rem; line-height: 1.5;
+  border-left: 3px solid transparent;
+}
+/* Green/red would collide with the pass/fail vocabulary the status pills own — a removed
+   step is not a failure. The two changed states borrow the accent and the "incomplete"
+   hue instead, which carry no verdict meaning anywhere else in the app. */
+.cmp-same { color: var(--text-2); }
+.cmp-added { background: var(--accent-soft); border-left-color: var(--accent); }
+.cmp-removed {
+  background: var(--truncated-bg); border-left-color: var(--truncated);
+  text-decoration: line-through; text-decoration-color: var(--faint);
+}
+
+/* ---------------------------------------------------------------------------
+   Inline step editor (Case screen).
+
+   The steps are structured data, not prose, so each row draws the fields its
+   action actually uses and nothing else — an editor that accepted free text
+   would need a model to parse it back into an IR, which is exactly the cost
+   a replay exists to avoid. Reuses .lib-pos, .dl-btn-inline, .case-badge and
+   .team-error rather than restating them.
+   --------------------------------------------------------------------------- */
+
+.step-edit-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--sp-3); }
+
+.step-edit {
+  border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3); background: var(--surface);
+}
+/* Borrows the "incomplete" hue, not --failed: a step you are still editing has not failed
+   anything, and green/red belong to the run verdict vocabulary. */
+.step-edit-bad { border-color: var(--truncated); background: var(--truncated-bg); }
+
+.step-edit-main { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2); }
+
+.step-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.step-f > span {
+  font-family: var(--font-mono); font-size: .58rem; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--faint);
+}
+.step-f input, .step-f select {
+  height: 28px; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); font-size: .74rem; min-width: 92px;
+}
+/* The name / value / URL fields hold sentences; the role and action fields hold one word. */
+.step-f-wide { flex: 1 1 180px; }
+.step-f-wide input { width: 100%; }
+
+.step-edit-btns { display: flex; gap: 3px; margin-left: auto; }
+.step-edit-btns .dl-btn-inline { min-width: 26px; text-align: center; }
+.step-edit-btns .dl-btn-inline:disabled { opacity: .35; cursor: default; }
+
+.step-edit-err, .step-edit-warn {
+  margin: var(--sp-2) 0 0; font-size: .7rem; line-height: 1.45;
+}
+.step-edit-err { color: var(--failed); }
+.step-edit-warn { color: var(--truncated); }
+
+.step-edit-actions {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap; margin-bottom: var(--sp-3);
+}
+
+/* Sidebar "+ New suite" — sits with the suites it creates, indented to match .tree-suite so the
+   tree keeps one alignment. Reuses .tree-row / .dl-btn-inline rather than restating them. */
+.tree-suite-add { padding-left: 22px; cursor: pointer; }
+.tree-suite-add .tree-label { font-size: .75rem; color: var(--accent); }
+.tree-suite-add:hover { background: var(--surface-hover); }
+
+.tree-suite-new { padding-left: 22px; gap: 4px; cursor: default; }
+.tree-suite-new .suite-new-input {
+  flex: 1; min-width: 0; height: 26px; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); font-size: .74rem;
+}
+.tree-suite-new .dl-btn-inline { flex: none; }
+.suite-new-err {
+  padding: 2px 8px 6px 22px;
+  font-size: .68rem; line-height: 1.4; color: var(--failed);
+}
+
+/* The sidebar's inline project form — create and edit share it. Two stacked fields rather than
+   the suite form's single row, because a base URL needs more width than a name leaves beside it.
+   Reuses .tree-row / .dl-btn-inline; .suite-new-err above carries its error. */
+.tree-project-form {
+  flex-direction: column; align-items: stretch; gap: 4px;
+  padding: var(--sp-2); cursor: default;
+}
+.tree-project-form .project-form-input {
+  width: 100%; height: 26px; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); font-size: .74rem;
+}
+.project-form-actions { display: flex; gap: 4px; justify-content: flex-end; }
+
+/* Only on hover/focus, so the tree stays quiet — the label and count are what you read, Edit is
+   what you reach for. */
+.tree-project-edit { flex: none; opacity: 0; font-size: .66rem; padding: 1px 6px; }
+.tree-project:hover .tree-project-edit,
+.tree-project-edit:focus-visible { opacity: 1; }
+
+/* Same reasoning as #teamBtn: if a future change forgets the JS toggle, the class still hides it. */
+body.role-no-admin #addProjectBtn { display: none; }
+
+/* Suite membership on the Case screen, and the Suite screen's "add cases" picker. Both reuse
+   .lib-check / .hrow-label / .hrow-meta / .case-save-panel rather than restating them. */
+.case-suites {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2);
+  margin: var(--sp-2) 0 var(--sp-3);
+}
+.case-suites-label {
+  font-family: var(--font-mono); font-size: .58rem; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--faint);
+}
+.case-suite-chip {
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-pill); padding: 3px 11px;
+  font: inherit; font-size: .72rem; cursor: pointer; color: var(--text);
+}
+.case-suite-chip:hover { border-color: var(--line-hover); background: var(--surface-hover); }
+.case-suite-pick {
+  height: 26px; padding: 0 var(--sp-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); font-size: .72rem;
+}
+
+.suite-add-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 320px; overflow-y: auto;
+  margin-bottom: var(--sp-3);
+}
+.suite-add-row {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 7px var(--sp-2); border-radius: var(--r-sm); cursor: pointer;
+}
+.suite-add-row:hover { background: var(--surface-hover); }
+.suite-add-row .hrow-label { flex: 1; min-width: 0; }
+
+/* ---------------------------------------------------------------------------
+   Case detail (#/projects/:projectId/cases/:caseId)
+
+   Steps are edited as SENTENCES here, not as role/name fields — `cd-line` is one
+   of them. The row states (.is-pending / .is-verifying / .is-ok / .is-bad) are a
+   contract app.js toggles while a re-ground job runs; renaming one silently stops
+   the progress display without erroring anywhere.
+   --------------------------------------------------------------------------- */
+
+.cd-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--sp-4); }
+.cd-head-main { flex: 1; min-width: 260px; }
+.cd-crumb {
+  font-family: var(--font-mono); font-size: .66rem; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--faint); margin-bottom: 7px;
+}
+.cd-meta {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: var(--sp-2); margin-bottom: var(--sp-2);
+}
+.cd-version { font-family: var(--font-mono); font-size: .64rem; color: var(--muted); }
+
+/* The title doubles as the rename control, as in the reference: a borderless serif
+   input that only looks like a field once you reach for it. */
+.cd-title {
+  width: 100%; max-width: 620px;
+  border: 1px solid transparent; background: transparent;
+  font-family: var(--font-display); font-size: 1.62rem; font-weight: 400; line-height: 1.2;
+  padding: 2px 6px; margin-left: -6px; border-radius: 7px; color: var(--text);
+}
+.cd-title:hover:not([readonly]) { border-color: var(--line); }
+.cd-title[readonly] { cursor: default; }
+.cd-why {
+  font-size: .78rem; line-height: 1.6; color: var(--text-2);
+  margin: var(--sp-2) 0 0; max-width: 640px; text-wrap: pretty;
+}
+.cd-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); flex: none; }
+.cd-actions .dl-btn-inline { padding: 7px var(--sp-3); font-size: .72rem; }
+.cd-save[disabled] { opacity: .45; cursor: default; }
+
+/* Left ~40 / right ~60, per the layout spec. Both flex so a narrow window stacks
+   them rather than crushing the sentence inputs. */
+.cd-cols { display: flex; flex-wrap: wrap; gap: var(--sp-4); align-items: flex-start; }
+/* Equal basis so the 2:3 grow ratio actually lands near 40/60 — differing bases would make the
+   ratio apply only to the leftover and the columns would come out near-equal. */
+.cd-left { flex: 2 1 300px; min-width: 0; }
+.cd-right { flex: 3 1 300px; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+
+.cd-card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: var(--sp-4);
+}
+.cd-card-inset { background: var(--inset); }
+.cd-card-head { font-size: .72rem; font-weight: 600; margin-bottom: var(--sp-3); }
+.cd-card-label {
+  font-family: var(--font-mono); font-size: .64rem; font-weight: 600;
+  letter-spacing: .07em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 9px;
+}
+
+.cd-lines { display: flex; flex-direction: column; gap: var(--sp-2); }
+.cd-line { display: flex; align-items: center; gap: 9px; }
+.cd-line-num {
+  width: 20px; flex: none; text-align: right;
+  font-family: var(--font-mono); font-size: .64rem; color: var(--faint);
+}
+.cd-line-input {
+  flex: 1; min-width: 0; height: 33px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 0 10px; font-size: .78rem; background: var(--surface-2); color: var(--text);
+}
+.cd-line-input:disabled { opacity: .7; cursor: default; }
+.cd-line-btn {
+  width: 28px; height: 28px; flex: none;
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: 7px; font-size: .7rem; cursor: pointer; color: var(--text);
+}
+.cd-line-btn:hover:not(:disabled) { background: var(--surface-hover); }
+.cd-line-btn:disabled { opacity: .35; cursor: default; }
+.cd-line-del { color: var(--failed); }
+
+/* A step this save will pay to re-verify. The marker is what stops "re-checks 2
+   steps" being an abstract number — you can see which two. */
+.cd-line.will-verify .cd-line-input { border-color: var(--accent); background: var(--accent-tint); }
+.cd-line.is-pending .cd-line-input { border-color: var(--line-hover); }
+.cd-line.is-verifying .cd-line-input { border-color: var(--running); background: var(--running-bg); }
+.cd-line.is-ok .cd-line-input { border-color: var(--done); background: var(--done-bg); }
+.cd-line.is-bad .cd-line-input { border-color: var(--failed); background: var(--failed-bg); }
+.cd-line-state {
+  flex: none; font-family: var(--font-mono); font-size: .58rem;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
+  min-width: 58px; text-align: right;
+}
+.cd-line-err {
+  margin: 3px 0 0 29px; font-size: .7rem; line-height: 1.5; color: var(--failed);
+}
+
+.cd-add {
+  margin-top: var(--sp-3); width: 100%;
+  border: 1px dashed var(--line-hover); background: transparent;
+  border-radius: var(--r-sm); padding: 8px var(--sp-3);
+  font: inherit; font-size: .74rem; color: var(--text-2); cursor: pointer;
+}
+.cd-add:hover { background: var(--surface-hover); color: var(--text); }
+
+.cd-expected {
+  margin-top: var(--sp-4); padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+.cd-expected-value {
+  font-size: .78rem; line-height: 1.5; color: var(--text-2);
+  background: var(--surface-2); border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm); padding: 8px 10px;
+}
+
+.cd-ask-text {
+  width: 100%; min-height: 62px; resize: vertical;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 9px 10px; font: inherit; font-size: .78rem; line-height: 1.5;
+  background: var(--surface); color: var(--text);
+}
+.cd-ask-btn {
+  margin-top: 9px; width: 100%; height: 32px;
+  border: none; border-radius: var(--r-sm);
+  background: var(--text); color: var(--bg);
+  font: inherit; font-size: .74rem; font-weight: 500; cursor: pointer;
+}
+.cd-ask-btn:hover:not(:disabled) { background: #000; }
+.cd-ask-btn:disabled { opacity: .5; cursor: default; }
+
+/* A proposal is a DIFF, never a save — Apply only fills the editor. */
+.cd-proposal { margin-top: var(--sp-3); border-top: 1px solid var(--line-soft); padding-top: var(--sp-3); }
+.cd-proposal-note { font-size: .74rem; line-height: 1.5; color: var(--text-2); margin: 0 0 var(--sp-2); }
+.cd-diff { display: flex; flex-direction: column; gap: 2px; margin-bottom: var(--sp-3); }
+.cd-diff-line {
+  font-family: var(--font-mono); font-size: .66rem; line-height: 1.5;
+  padding: 3px 7px; border-radius: 5px; word-break: break-word;
+}
+.cd-diff-same { color: var(--muted); }
+.cd-diff-add { background: var(--done-bg); color: var(--done); }
+.cd-diff-del { background: var(--failed-bg); color: var(--failed); text-decoration: line-through; }
+.cd-proposal-actions { display: flex; gap: var(--sp-2); }
+
+.cd-shot {
+  height: 128px; border-radius: 9px; cursor: zoom-in;
+  border: 1px solid var(--line); overflow: hidden;
+  display: flex; align-items: flex-end; padding: 9px;
+  background: repeating-linear-gradient(135deg, rgba(var(--accent-rgb), .12) 0 7px, #ffffff 7px 14px);
+}
+.cd-shot-img { width: 100%; height: 128px; object-fit: cover; border-radius: 9px; border: 1px solid var(--line); cursor: zoom-in; display: block; }
+.cd-shot-label {
+  font-family: var(--font-mono); font-size: .64rem; color: var(--muted);
+  background: rgba(255, 255, 255, .8); padding: 3px 7px; border-radius: 5px;
+}
+
+/* The job banner. Sits above the steps while a re-ground runs; the right column
+   deliberately stays live underneath it. */
+.cd-job {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3);
+  background: var(--running-bg); border: 1px solid var(--running);
+  border-radius: var(--r); padding: 10px var(--sp-3); margin-bottom: var(--sp-3);
+}
+.cd-job-text { flex: 1; min-width: 160px; font-size: .76rem; color: var(--running); font-weight: 500; }
+
+/* A 409. Never offers a plain overwrite — that silent clobber is what the whole
+   expectedVersion mechanism exists to prevent. */
+.cd-conflict {
+  background: var(--truncated-bg); border: 1px solid var(--truncated);
+  border-radius: var(--r); padding: var(--sp-3); margin-bottom: var(--sp-3);
+}
+.cd-conflict-head { font-size: .76rem; font-weight: 600; color: var(--truncated); margin-bottom: var(--sp-2); }
+.cd-conflict-cols { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+.cd-conflict-col { flex: 1 1 220px; min-width: 0; }
+.cd-conflict-col > h4 {
+  font-family: var(--font-mono); font-size: .6rem; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--muted); margin: 0 0 6px;
+}
+.cd-conflict-col ol { margin: 0; padding-left: 18px; font-size: .7rem; line-height: 1.6; color: var(--text-2); }
+.cd-conflict-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+
+.cd-script-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2);
+  padding: 11px var(--sp-4); border-bottom: 1px solid var(--line-soft); background: var(--inset);
+}
+.cd-script-name { font-family: var(--font-mono); font-size: .72rem; flex: 1; min-width: 160px; }
+.cd-script-body {
+  margin: 0; padding: var(--sp-4) 18px; overflow-x: auto;
+  font-family: var(--font-mono); font-size: .72rem; line-height: 1.85;
+  color: var(--text); white-space: pre;
+}
+.cd-script-foot {
+  padding: 11px var(--sp-4); border-top: 1px solid var(--line-soft);
+  font-size: .72rem; color: var(--muted);
 }

@@ -7,7 +7,7 @@ import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor
 import { toIR, type IRResult } from "./stages/ir.js";
 import { LlmBudget, enterWithBudget } from "./llm/llmBudget.js";
 import {
-  credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars,
+  credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, redactCredentials,
   extractCredentialsFromPrompt,
   type Credentials, type CredentialKind,
 } from "./stages/credentials.js";
@@ -48,8 +48,21 @@ export type AskCredentials = (req: CredentialRequest) => Promise<Credentials | n
 
 export type Coverage = "minimal" | "standard" | "full";
 
+/**
+ * Per-run overrides for behaviour that is otherwise env-configured. The UI has a
+ * Settings popover for these two; a toggle that did not actually reach the
+ * pipeline would be a decorative control, so it reaches it. Both default to the
+ * existing env behaviour when a caller omits them (the CLI does).
+ */
+export interface RunOptions {
+  /** Pause after generating cases so a human can accept/reject them. */
+  gateReview?: boolean;
+  /** Allow one re-snapshot + regenerate + re-run on a selector-drift failure. */
+  selfHeal?: boolean;
+}
+
 export async function runPipeline(
-  { prompt, url, urls, coverage }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage },
+  { prompt, url, urls, coverage, options }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; options?: RunOptions },
   onEvent: OnEvent = () => { },
   presetRunId?: string,
   askCredentials?: AskCredentials
@@ -57,6 +70,7 @@ export async function runPipeline(
   // Normalize: single `url` becomes `urls: [url]`; both provided means `urls` wins.
   const resolvedUrls = urls?.length ? urls : url ? [url] : [];
   if (!resolvedUrls.length) throw new Error("Either url or urls must be provided");
+  const selfHealEnabled = options?.selfHeal ?? true;
   const runId = presetRunId ?? makeRunId();
   const runDir = path.join("runs", runId);
   mkdirSync(runDir, { recursive: true });
@@ -96,21 +110,64 @@ export async function runPipeline(
   }
 
   try {
-    save("00-input.json", { prompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
-    emit("input", "completed", { prompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
+    // Credentials the user typed into the prompt are real credentials. 00-input.json lives under
+    // runs/, which the server exposes as static files (TD-14) — writing the prompt verbatim put
+    // plaintext passwords on a public path. The redacted copy goes to disk and to the event; the
+    // original stays in memory for the stages that need it.
+    const promptCreds = extractCredentialsFromPrompt(prompt);
+    const safePrompt = redactCredentials(prompt, promptCreds);
+    save("00-input.json", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
+    emit("input", "completed", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
 
     const thePlan = await step("plan", "01-plan.json", () => plan(prompt, resolvedUrls[0], coverage));
 
+    // Discovery needs credentials BEFORE it crawls: an app behind a login is otherwise modelled
+    // as its own login page and every generated case becomes a login case. The prompt is one
+    // source; the other is asking the user, which discovery triggers itself the moment it finds
+    // a real password field. That ask cannot live where the one below does — that one is driven
+    // by credentialFieldsNeeded(appModel, cases), which needs discovery's own output.
+    //
+    // Pre-bound because discoverSiteHybrid has neither runId nor the CredentialRequest shape.
+    //
+    // The emit pair is NOT optional. askCredentials only parks a promise server-side; it is the
+    // `credentials`/`started` EVENT that makes the frontend render the form (app.js ->
+    // showCredentialPrompt). Calling askCredentials without emitting leaves the run parked for
+    // the full CREDENTIAL_WAIT_MS against a UI that never offered anywhere to type — which is
+    // exactly what "stuck on asking for credentials, but there is no option to provide them"
+    // looks like. `completed` clears the form again, on every path including a skip.
+    let discoveredCreds: Credentials | undefined = promptCreds;
+    const askForDiscovery = askCredentials
+      ? async (): Promise<Credentials | null> => {
+        const fields: CredentialKind[] = ["username", "password"];
+        emit("credentials", "started", { fields, url: resolvedUrls[0] });
+        // Never emitted, never saved: the answer would land in events.ndjson and 00-input.json,
+        // both under runs/, which the server serves as static files.
+        const supplied = await askCredentials({ runId, url: resolvedUrls[0], fields });
+        emit("credentials", "completed", { provided: !!supplied });
+        discoveredCreds = supplied ?? undefined;
+        return supplied;
+      }
+      : undefined;
+
     const appModel = await step("discovery", "02-appmodel.json", async () =>
-      resolvedUrls.length === 1 ? discoverSiteHybrid(resolvedUrls[0]) : discoverPagesHybrid(resolvedUrls)
+      resolvedUrls.length === 1
+        ? discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery)
+        : discoverPagesHybrid(resolvedUrls)
     );
     console.log("1. Discovery completed");
+    if (appModel.auth) {
+      console.log(`[orchestrator] discovery auth outcome: ${appModel.auth.status}${appModel.auth.detail ? ` — ${appModel.auth.detail}` : ""}`);
+    }
 
     console.log("2. Generating test cases...");
     // The case-selection gate pauses here: it generates a batch, parks the run on a selection
     // prompt, and regenerates on "not satisfied" — while the flag is off or no interactive
     // responder is supplied (CLI mode), the gate is never even imported.
-    const gateUsed = process.env.ENABLE_CASE_SELECTION_GATE === "true" && !!askCredentials;
+    // A per-run override wins over the env default; omitted, the env decides as before.
+    // The interactive-responder check is not overridable — with no way to answer, the gate
+    // would park the run until CASE_SELECTION_WAIT_MS expires with nothing to show for it.
+    const gateRequested = options?.gateReview ?? (process.env.ENABLE_CASE_SELECTION_GATE === "true");
+    const gateUsed = gateRequested && !!askCredentials;
     const cases = await step("testcases", "03-cases.json", async () => {
       if (gateUsed) {
         const { runCaseSelectionGate } = await import("./stages/caseSelectionGate.js");
@@ -154,7 +211,10 @@ export async function runPipeline(
     // prompt didn't already carry credentials, and a login is actually in scope. Anything
     // else would interrupt the user for nothing. A caller with no askCredentials (the CLI)
     // never blocks at all.
-    let runCreds: Credentials | undefined = extractCredentialsFromPrompt(prompt);
+    // Whatever discovery ended up with — from the prompt, or from the ask it triggered itself.
+    // Carrying it here is what stops the user being prompted a second time: the guard below is
+    // `!runCreds`, so a credential already supplied during discovery suppresses the ask.
+    let runCreds: Credentials | undefined = discoveredCreds;
     if (askCredentials && !runCreds && !promptCarriesCredentials(prompt)) {
       const fields = credentialFieldsNeeded(appModel, cases);
       if (fields.length) {
@@ -200,14 +260,14 @@ export async function runPipeline(
     let healed = false;
 
     if (!result.passed) {
-      diagnosis = await step("failure_analysis", "06-diagnosis.json", () => analyzeFailure(ir, result as any));
+      diagnosis = await step("failure_analysis", "06-diagnosis.json", () => analyzeFailure(ir, result as any, appModel.auth?.loginUrl));
 
       // Capped at exactly one attempt total, no loop: attemptHeal only runs once, only on an
       // already-failed run with a matching diagnosis category. Logic lives in stages/heal.ts —
       // shared with suiteRunner.ts's non-primary cases, see that module's own doc comment.
       // isHealable is the same gate attemptHeal applies internally — checked here too only so
       // "heal started" isn't emitted for a category that was never going to attempt anything.
-      if (isHealable(diagnosis, ir)) {
+      if (selfHealEnabled && isHealable(diagnosis, ir)) {
         try {
           emit("heal", "started");
           const healedOutcome = await attemptHeal({
@@ -276,7 +336,7 @@ export async function runPipeline(
 
     // Single selection authority over the merged list — see finalizeCaseSelection's own doc
     // comment for why this branches on gateUsed.
-    const scopedCases = finalizeCaseSelection(allCases, scope, thePlan.coverage, gateUsed);
+    const scopedCases = finalizeCaseSelection(allCases, scope, thePlan.coverage, gateUsed, appModel.auth?.loginUrl);
     console.log(`Cases: ${allCases.length} generated -> ${scopedCases.length} selected`,
       scopedCases.map(c => `${c.category}:${c.title}`));
     save("03-cases.json", scopedCases);
@@ -300,7 +360,7 @@ export async function runPipeline(
       healed,
     };
     console.log("3. Running suite...");
-    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, llmBudget, runCreds);
+    await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, llmBudget, runCreds, selfHealEnabled);
     console.log("✓ Suite finished");
 
     console.log("Pipeline finished");

@@ -4,12 +4,12 @@ import { parseJson } from "../llm/json.js";
 import { isRateLimitError } from "../llm/backoff.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import { AppModel, PageModel, DomForm, Element, toLiteModel, toMicroModel, INTERACTIVE_ROLES } from "../schema/appModel.js";
+import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary } from "../text.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
-  credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded,
+  credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
   NEGATIVE_CATEGORIES, type Credentials,
 } from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
@@ -302,6 +302,107 @@ const FIELD_ACTIONS = new Set(["fill", "select", "check"]);
  *  never onto a textbox. Module-scope because toIR's post-click reveal check needs it too, to
  *  decide whether a re-snapshot actually revealed anything FILLABLE. */
 const FIELD_ROLE_GROUP = new Set(["textbox", "combobox", "searchbox", "checkbox", "radio", "spinbutton"]);
+
+/**
+ * The login steps discovery performed, as IR steps to run before the case's own.
+ *
+ * Why this exists: once discovery signs in, the AppModel holds the authenticated app, so the
+ * model writes a case that starts at `/dashboard` and never logs in. The generated spec then runs
+ * in a **fresh browser with no session**, `/dashboard` bounces to `/login`, and every later step
+ * fails — reported as `element_missing`, which is why it took three sessions to find. Verified in
+ * run 2026-08-22T07-04-23-933Z-04c5704b: IR was `navigate /dashboard` + `click "Admin"`, and
+ * `final-page.txt` was the login screen.
+ *
+ * It goes in the IR rather than into generator.ts and liveExtend.ts separately because BOTH of
+ * them read the IR — one definition, so there is no third copy to drift (TD-07 records exactly
+ * that drift between generator and targetResolver). Placing it before grounding is also what
+ * un-truncates the IR: liveExtend's replay runs the prefix and is therefore authenticated when it
+ * snapshots the page the rest of the case needs.
+ *
+ * Selectors come from `auth.loginSteps`, captured live by `loginOnPage` — never re-derived from
+ * the model, whose `forms[]` is empty on a form-less SPA login (the original defect).
+ */
+export function buildLoginPrefix(auth: AuthOutcome | undefined): Step[] {
+  if (auth?.status !== "authenticated" || !auth.loginUrl || !auth.loginSteps?.length) return [];
+  const steps: Step[] = [
+    { id: "auth-0", action: "navigate", target: { url: auth.loginUrl } },
+  ];
+  auth.loginSteps.forEach((s, i) => {
+    steps.push({
+      id: `auth-${i + 1}`,
+      action: s.action,
+      target: { css: s.css },
+      // Never the literal: runs/ is served publicly (TD-14), so the spec reads process.env at
+      // run time and executor.ts injects the real value into the child process.
+      ...(s.credential ? { value: envValueRef(s.credential) } : {}),
+      ...(s.action === "press" ? { value: s.key ?? "Enter" } : {}),
+    });
+  });
+
+  // WAIT for the login to land before the case's own steps run.
+  //
+  // Without this the prefix submits and immediately navigates on, racing the auth request.
+  // Caught exactly that way: in run 2026-08-22T16-10-40-756Z-04cfa936 the credentials were
+  // filled correctly (step-3.png) and step-4.png shows the "Sign In" button STILL SPINNING,
+  // while the next step had already navigated to /dashboard — which bounced straight back to
+  // /login. Discovery never had this bug because loginOnPage calls waitForAuthSettle(); the
+  // generated spec had no equivalent, and that is the half that was missing when the login
+  // moved into the IR.
+  //
+  // An assertion rather than a `wait`, deliberately: Playwright's toBeHidden() auto-waits, so
+  // it costs nothing on a fast login and still covers a slow one, where any fixed sleep is
+  // either too short or a tax on every run. It also turns a failed login into a loud failure
+  // at the step that caused it, instead of a confusing error three steps later.
+  //
+  // ponytail: the password box vanishing is the signal. Ceiling — generator.ts emits a fixed
+  // 10s timeout for assertions; a login slower than that (a cold serverless start) fails here
+  // rather than hanging, which is the better of the two.
+  const pw = auth.loginSteps.find((s) => s.credential === "password");
+  if (pw) {
+    steps.push({
+      id: `auth-${auth.loginSteps.length + 1}`,
+      action: "assert",
+      target: { css: pw.css },
+      assertion: "hidden",
+    });
+  }
+  return steps;
+}
+
+/**
+ * Should this case be signed in before its own steps run?
+ *
+ * Yes for everything except cases that are ABOUT the login page — the whole app is behind the
+ * gate, so needing a session is the norm, not the exception.
+ *
+ * The gate this replaced asked `credentialPolicyFor(...) === "full"`, which was the wrong
+ * question. That function ends `return category === "valid" ? "full" : "none"` and answers
+ * "should this case's own field values be replaced with real credentials?" — about the case's
+ * CONTENT. Whether a test needs a session first is about its PRECONDITION. Using one for the
+ * other meant only `valid`/`fromPrompt` cases were ever signed in: in run
+ * 2026-08-22T16-10-40-756Z-04cfa936 an `invalid-input` search case and a `state-change` sign-out
+ * case both ran logged out and both failed on the login page.
+ *
+ * `targetUrl` vs the known gate URL is structural — the same comparison testCases.ts uses to cap
+ * login cases — not a regex over the case title (CLAUDE.md's TD-01 rule).
+ */
+export function needsLoginPrefix(testCase: TestCase, auth: AuthOutcome | undefined): boolean {
+  if (auth?.status !== "authenticated" || !auth.loginUrl) return false;
+  // No targetUrl means no reason to think it is a login case — and defaulting to "sign in" is
+  // the safer error, since a spurious login costs a few seconds while a missing one fails.
+  return pageKey(testCase.targetUrl ?? "") !== pageKey(auth.loginUrl);
+}
+
+/** True if the IR already signs in on its own, so the prefix would log in twice. The login page
+ *  is back in the AppModel, so the model can and does write these steps itself for login cases. */
+export function irAlreadyLogsIn(ir: IR, auth: AuthOutcome | undefined, model: AppModel): boolean {
+  const pwCss = auth?.loginSteps?.find((s) => s.credential === "password")?.css?.toLowerCase();
+  const fieldMap = credentialFieldMap(model);
+  return ir.steps.some((s) =>
+    s.action === "fill"
+    && ((pwCss && s.target?.css?.toLowerCase() === pwCss)
+      || credentialKindForTarget(s.target, fieldMap) === "password"));
+}
 
 export function groundingError(
   ir: IR, appModel: AppModel,
@@ -1144,25 +1245,68 @@ Example — handling duplicate selectors with nth:
     // Fallback: if filtering yielded nothing, use the entry page only
     const pagesToSend = relevantPages.length > 0 ? relevantPages : model.pages.slice(0, 1);
 
-    // Entry page always kept first and never dropped below — everything else drops
+    // Lead page always kept first and never dropped below — everything else drops
     // lowest-relevance-last if the prompt is still over budget after toLiteModel's own
     // per-page array caps (see appModel.ts).
-    const entryPage = pagesToSend.find(p => p.url.startsWith(entryOrigin) && entryPath && p.url.includes(entryPath));
-    const orderedPages = entryPage ? [entryPage, ...pagesToSend.filter(p => p !== entryPage)] : pagesToSend;
+    //
+    // WHICH page leads decides everything, because toMicroModel emits exactly ONE page. Two
+    // silent fallbacks used to land on the same wrong answer, and they compounded:
+    //
+    //   1. `p.url.includes(entryPath)` with entryPath "/" is true for EVERY url, so a
+    //      bare-origin entry ("https://site.app", no path) matched whichever page happened to
+    //      be first rather than the entry page. It is not a path test at that point.
+    //   2. toMicroModel then received `currentPageUrl: entryUrl`, matched no page by pageKey,
+    //      and fell back to pages[0] — the same wrong page, chosen a second time.
+    //
+    // Measured on three saved runs (2026-08-24T11-10-01, 2026-08-24T14-52-21,
+    // 2026-08-25T06-51-31): entry "https://learnvibes.vercel.app", pages /dashboard and
+    // /login, case feature "Authentication". Both fallbacks picked /dashboard, so an
+    // Authentication case was compiled with "Sign In", the email box and the password box
+    // absent from the prompt entirely. The relevance filter above had correctly kept /login —
+    // it was discarded afterwards.
+    //
+    // The fix reads the case's own `targetUrl`. That is a schema field (testCases.ts:259),
+    // documented to the model as "when the model has multiple pages, this tells the later
+    // stage which page to start from", and already compared with pageKey elsewhere in this
+    // file (line 393) and in testCases.ts:104. It was simply never read here. Structural, not
+    // a regex over prose.
+    const targetPage = testCase.targetUrl
+      ? pagesToSend.find(p => pageKey(p.url) === pageKey(testCase.targetUrl!))
+      : undefined;
+    // Only trust the path test when there IS a path; otherwise fall back to exact page identity.
+    const entryPage = entryPath !== "/"
+      ? pagesToSend.find(p => p.url.startsWith(entryOrigin) && p.url.includes(entryPath))
+      : pagesToSend.find(p => pageKey(p.url) === pageKey(entryUrl));
+    const leadPage = targetPage ?? entryPage;
+    const orderedPages = leadPage ? [leadPage, ...pagesToSend.filter(p => p !== leadPage)] : pagesToSend;
 
     // Filter elements: only named interactive elements (links, buttons, menuitems,
-    // textboxes, checkboxes, headings). Drops thousands of anonymous list/div/container
-    // nodes that bloat the prompt without helping the LLM generate better IR.
+    // textboxes, checkboxes, headings) that a test could actually act on. Drops thousands of
+    // anonymous list/div/container nodes that bloat the prompt without helping the LLM.
+    //
+    // "Named and interactive" was not enough on its own — TD-62. It let hidden form inputs and
+    // skip-links through as ordinary controls, and toMicroModel then caps at 30, so they competed
+    // for slots against real ones. Measured on the amazon run: 11 of the 30 elements the model
+    // saw were things no test can interact with — two `add-new` inputs, a CSRF token,
+    // `IP2LOCATION`, and six keyboard skip-links — while `link "Electronics"`,
+    // `link "Fashion"`, `link "Prime"` and eight more real category links never reached it.
+    //
+    // `isUsableElement` lives in appModel.ts next to INTERACTIVE_ROLES so this filter and the
+    // test-case projection cannot drift apart; a second copy is how they diverged in the first
+    // place. Playwright would refuse to act on these anyway — its actionability checks require
+    // visibility — so a case written against one could never have passed.
     const withFilteredElements = (pages: PageModel[]) => pages.map(p => ({
       ...p,
-      elements: p.elements.filter(e =>
-        e.name && e.name.trim() && INTERACTIVE_ROLES.has(e.role?.toLowerCase() ?? "")
-      ),
+      elements: p.elements.filter(e => isUsableElement(e, hiddenInputNames(p))),
     }));
+    // Hand toMicroModel the page THIS function already chose, rather than the raw entry URL it
+    // then has to re-resolve. Passing entryUrl let it disagree with the ordering above and drop
+    // to pages[0] whenever the entry was a bare origin — the second of the two fallbacks. The
+    // page that leads `pages` is the page that should survive; say so explicitly.
     const modelJsonFor = (pages: PageModel[]) =>
       JSON.stringify(toMicroModel(
         { ...model, pages: withFilteredElements(pages) },
-        { currentPageUrl: entryUrl }
+        { currentPageUrl: pages[0]?.url ?? entryUrl }
       ));
 
     // Retries previously re-sent a byte-identical prompt and predictably got a
@@ -1343,6 +1487,18 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
 
     parsed.data.meta.baseUrl = origin;
+
+    // Sign in BEFORE grounding. The spec runs in a fresh browser with no session, and so does
+    // liveExtend's grounding replay — without this the flow bounces to the login page and every
+    // step past the first fails to ground.
+    if (needsLoginPrefix(testCase, currentModel.auth)
+      && !irAlreadyLogsIn(parsed.data, currentModel.auth, currentModel)) {
+      const prefix = buildLoginPrefix(currentModel.auth);
+      if (prefix.length) {
+        parsed.data.steps = [...prefix, ...parsed.data.steps];
+        console.log(`[ir] prepended ${prefix.length} login step(s) — the test signs in before its own steps`);
+      }
+    }
 
     /** Longest grounded prefix seen for THIS ungrounded result — updates bestPartial in
      *  place. Called both before each extension attempt and once more after the inner loop

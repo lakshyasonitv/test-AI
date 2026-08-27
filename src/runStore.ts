@@ -2,6 +2,7 @@ import { appendFileSync, readFileSync, existsSync, mkdirSync, readdirSync, statS
 import path from "node:path";
 import type { StageEvent } from "./orchestrator.js";
 import { findScreenshot } from "./stages/executor.js";
+import { shadowCompareRuns } from "./db.js";
 
 /**
  * Durable per-run event log — the one seam that separates "demo" from "product".
@@ -162,55 +163,87 @@ function readJson(runId: string, name: string): any {
 }
 
 /**
- * All runs, newest first. Reads the durable event log where it exists and falls back
- * to the stage json files (00-input.json / 05-result.json) for runs that predate
- * events.ndjson — both are already written by the orchestrator for every run.
+ * Every run directory id on disk, newest first. No cap — `listRuns()` applies its own.
+ *
+ * Split out for Phase 3's backfill, which has to walk ALL runs, not the newest 20.
  */
-export function listRuns(): RunSummary[] {
+export function allRunIds(): string[] {
   const root = "runs";
   if (!existsSync(root)) return [];
 
   return readdirSync(root, { withFileTypes: true })
     .filter((d) => d.isDirectory() && d.name !== "_cache")
     .map((d) => d.name)
-    .sort((a, b) => b.localeCompare(a)) // runId is ISO-prefixed -> lexicographic = chronological
-    .slice(0, 20)                       // only the newest 20 — keeps the history list usable and
-                                        // skips reading every run dir on disk as they accumulate
-    .map((runId) => {
-      const events = store.read(runId);
-      const inputData = events.find((e) => e.stage === "input")?.data as
-        { prompt?: string; url?: string } | undefined;
-      const fallbackInput = inputData ? undefined : readJson(runId, "00-input.json");
+    .sort((a, b) => b.localeCompare(a)); // runId is ISO-prefixed -> lexicographic = chronological
+}
 
-      const last = events[events.length - 1];
-      let status: RunSummary["status"] = "incomplete";
-      if (last?.stage === "done") {
-        const doneData = last.data as { passed?: boolean; status?: string } | undefined;
-        if (doneData?.status === "truncated_no_assertion") {
-          status = "truncated_no_assertion";
-        } else {
-          status = doneData?.passed ? "passed" : "failed";
-        }
-      } else if (last?.stage === "error") {
-        status = "error";
-      } else if (!events.length) {
-        const result = readJson(runId, "05-result.json") as { passed?: boolean; status?: string } | undefined;
-        if (result) {
-          status = result.status === "truncated_no_assertion" ? "truncated_no_assertion" : result.passed ? "passed" : "failed";
-        }
-      }
+/**
+ * Build one run's summary from disk. Reads the durable event log where it exists and falls back
+ * to the stage json files (00-input.json / 05-result.json) for runs that predate events.ndjson —
+ * both are already written by the orchestrator for every run.
+ *
+ * Extracted verbatim from `listRuns()` so the Phase 3 backfill derives a run's
+ * prompt/url/status/startedAt through the EXACT same logic the API already serves, rather than a
+ * second parser that could disagree with it. Two implementations of "what status is this run"
+ * is precisely the divergence Step 3.2's shadow-read comparison exists to catch.
+ */
+export function summariseRun(runId: string): RunSummary {
+  const events = store.read(runId);
+  const inputData = events.find((e) => e.stage === "input")?.data as
+    { prompt?: string; url?: string } | undefined;
+  const fallbackInput = inputData ? undefined : readJson(runId, "00-input.json");
 
-      // Read suite summary if available
-      const suiteSummary = readJson(runId, "07-suite-summary.json") as RunSummary["suite"] | undefined;
+  const last = events[events.length - 1];
+  let status: RunSummary["status"] = "incomplete";
+  if (last?.stage === "done") {
+    const doneData = last.data as { passed?: boolean; status?: string } | undefined;
+    if (doneData?.status === "truncated_no_assertion") {
+      status = "truncated_no_assertion";
+    } else {
+      status = doneData?.passed ? "passed" : "failed";
+    }
+  } else if (last?.stage === "error") {
+    status = "error";
+  } else if (!events.length) {
+    const result = readJson(runId, "05-result.json") as { passed?: boolean; status?: string } | undefined;
+    if (result) {
+      status = result.status === "truncated_no_assertion" ? "truncated_no_assertion" : result.passed ? "passed" : "failed";
+    }
+  }
 
-      return {
-        runId,
-        url: inputData?.url ?? fallbackInput?.url ?? "",
-        prompt: inputData?.prompt ?? fallbackInput?.prompt ?? "",
-        status,
-        startedAt: statSync(path.join(root, runId)).birthtimeMs,
-        hasEvents: events.length > 0,
-        suite: suiteSummary,
-      };
-    });
+  // Read suite summary if available
+  const suiteSummary = readJson(runId, "07-suite-summary.json") as RunSummary["suite"] | undefined;
+
+  return {
+    runId,
+    url: inputData?.url ?? fallbackInput?.url ?? "",
+    prompt: inputData?.prompt ?? fallbackInput?.prompt ?? "",
+    status,
+    startedAt: statSync(path.join("runs", runId)).birthtimeMs,
+    hasEvents: events.length > 0,
+    suite: suiteSummary,
+  };
+}
+
+/**
+ * All runs, newest first — capped at the newest 20, which keeps the history list usable and
+ * skips reading every run dir on disk as they accumulate.
+ *
+ * Step 3.2 adds a shadow read: when DB_ENABLED is on, the same window is fetched from Postgres
+ * and compared against this result, logging any divergence. Disk stays authoritative and the
+ * return value is untouched — deliberately fire-and-forget, so this function stays synchronous
+ * and /api/runs is never delayed (or broken) by a database round-trip. Flipping authority to the
+ * database is Step 3.3, gated on this reporting zero divergence over a few days of real use.
+ *
+ * `ids` exists so the CAP CAN BE APPLIED AFTER ACCESS FILTERING, not before it. That ordering is
+ * not cosmetic. `/api/runs` drops any run whose ownership it cannot prove, so capping first meant
+ * every unfiled run on disk silently consumed one of the twenty visible slots — and the history
+ * shrank toward empty as they accumulated, while looking exactly like "no runs happened". It was
+ * measured at 20 disk directories yielding 2 visible rows. Callers that want the raw disk window
+ * pass nothing and get the old behaviour.
+ */
+export function listRuns(ids: string[] = allRunIds()): RunSummary[] {
+  const diskRuns = ids.slice(0, 20).map(summariseRun);
+  shadowCompareRuns(diskRuns); // no await: never blocks or alters the response
+  return diskRuns;
 }

@@ -5,26 +5,26 @@
 const PHASES = [
   {
     key: "understand",
-    label: "1. Understanding Your Request",
-    desc: "The AI is analyzing your prompt to build an intelligent test plan.",
+    label: "1 · Understanding your request",
+    desc: "Reading the prompt and forming a plan.",
     stages: ["plan"]
   },
   {
     key: "analyze",
-    label: "2. Analyzing the Website",
-    desc: "Exploring web page layout, finding forms, inputs, buttons, and links.",
+    label: "2 · Analyzing the website",
+    desc: "Mapping pages, forms and controls.",
     stages: ["discovery"]
   },
   {
     key: "build_run",
-    label: "3. Building & Running Tests",
-    desc: "Writing the test steps and running them in a real browser, just like a person would.",
+    label: "3 · Building & running tests",
+    desc: "Writing Playwright scripts and executing them.",
     stages: ["testcases", "ir", "generate", "execute"]
   },
   {
     key: "results",
-    label: "4. Checking the Results",
-    desc: "Working out what passed, what didn't, and taking screenshots along the way.",
+    label: "4 · Checking the results",
+    desc: "Diagnosing failures and self-healing.",
     stages: ["failure_analysis", "heal"]
   },
 ];
@@ -60,6 +60,321 @@ const STATUS_LABEL = {
 };
 
 // -----------------------------------------------------------------------------
+// Session (implentationplan.md Step 2.2)
+//
+// Deliberately dependency-free: Supabase Auth is a plain REST API and the rest of this app is
+// offline-safe (see icons.js's header on why no CDN), so pulling in supabase-js just to trade an
+// email/password for a JWT would be the one thing that introduces a network dependency.
+//
+// EVERYTHING here is inert unless the server reports authEnabled:true. With auth off (the
+// default) `required` stays false, `token` stays null, the fetch wrapper adds no header, and the
+// app behaves exactly as it did before this block existed.
+// -----------------------------------------------------------------------------
+
+const AUTH_STORAGE_KEY = "testbench.session";
+
+const auth = {
+  required: false,          // set from GET /api/auth/config
+  url: null,
+  publishableKey: null,
+  token: null,
+  email: null,
+  // Step 3.4. Populated from GET /api/auth/me after sign-in; used ONLY to decide what the UI
+  // draws. Every action these gate is independently enforced server-side — hiding a button is a
+  // courtesy, not a control, and tampering with these values in devtools buys nothing.
+  role: null,
+  organisationId: null,
+  userId: null,
+  // Which credential screen an unauthenticated visitor is looking at: "login" or "signup".
+  screen: "login",
+};
+
+/** Role ladder, mirrored from src/server/authz.ts. Kept in sync by hand — it is only ever used
+ *  to hide controls, so a drift shows up as a visible affordance the server then refuses. */
+const ROLE_RANK = { viewer: 1, tester: 2, admin: 3, owner: 4 };
+const roleAtLeast = (actual, required) => (ROLE_RANK[actual] || 0) >= (ROLE_RANK[required] || 0);
+
+// Restore synchronously, before the first applyRoute() at the bottom of this file — otherwise an
+// already-signed-in user would flash the login view on every reload.
+try {
+  const saved = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "null");
+  if (saved && saved.token) {
+    auth.token = saved.token;
+    auth.email = saved.email || null;
+  }
+} catch { /* corrupt/blocked storage just means "not signed in" */ }
+
+/** The artifact route is hit by <img src>/<video src>, which can't carry an Authorization
+ *  header — so the token also rides along as a cookie for those. Same-site, session-scoped. */
+function writeSessionCookie(token) {
+  document.cookie = token
+    ? `sb-access-token=${encodeURIComponent(token)}; path=/; SameSite=Strict`
+    : "sb-access-token=; path=/; Max-Age=0; SameSite=Strict";
+}
+
+function setSession(token, email) {
+  auth.token = token || null;
+  auth.email = email || null;
+  if (token) localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ token, email: auth.email }));
+  else localStorage.removeItem(AUTH_STORAGE_KEY);
+  writeSessionCookie(token);
+}
+
+if (auth.token) writeSessionCookie(auth.token);
+
+// One wrapper instead of editing ~20 call sites. A per-call edit would eventually miss one, and a
+// missed call site fails only when auth is switched on — the worst time to discover it. With no
+// token this is a pure pass-through: same arguments, same behavior, no header added.
+const rawFetch = window.fetch.bind(window);
+window.fetch = function (input, init) {
+  if (!auth.token) return rawFetch(input, init);
+
+  const url = typeof input === "string" ? input : (input && input.url) || "";
+  // Only attach to this app's own endpoints. A relative path is same-origin by definition; an
+  // absolute one must be checked, so a token can never leak to a third-party host.
+  const sameOrigin = !/^https?:\/\//i.test(url) || url.startsWith(location.origin);
+  if (!sameOrigin) return rawFetch(input, init);
+
+  const next = { ...(init || {}) };
+  const headers = new Headers(next.headers || (typeof input === "object" && input.headers) || {});
+  if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${auth.token}`);
+  next.headers = headers;
+  return rawFetch(input, next);
+};
+
+/**
+ * Reflect the caller's role in what the UI offers.
+ *
+ * Expressed as RESTRICTION classes (`role-no-edit` / `role-no-admin`) rather than permission
+ * classes, so the default — no class, nothing hidden — is exactly today's behaviour. A permission
+ * model would hide every control until JS proved otherwise, which would make the whole UI flicker
+ * on load with auth off.
+ */
+function applyRoleRestrictions() {
+  const body = document.body;
+  // Auth off, or role not yet known: restrict nothing. The server is still the real gate.
+  const unrestricted = !auth.required || !auth.role;
+  body.classList.toggle("role-no-edit", !unrestricted && !roleAtLeast(auth.role, "tester"));
+  body.classList.toggle("role-no-admin", !unrestricted && !roleAtLeast(auth.role, "admin"));
+
+  // Team is an admin/owner screen. With auth off there is no team to manage — the synthetic
+  // user is the only member — so the entry point stays hidden, exactly as before this existed.
+  const teamBtn = document.getElementById("teamBtn");
+  if (teamBtn) {
+    const showTeam = auth.required && !!auth.token && roleAtLeast(auth.role, "admin");
+    teamBtn.classList.toggle("hidden", !showTeam);
+  }
+
+  const badge = document.getElementById("sessionBadge");
+  const emailEl = document.getElementById("sessionEmail");
+  const roleEl = document.getElementById("sessionRole");
+  if (!badge) return;
+  if (auth.required && auth.token && auth.role) {
+    emailEl.textContent = auth.email || "";
+    roleEl.textContent = auth.role;
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+}
+
+/**
+ * Make sure the signed-in account belongs to an organisation, then learn our role in it.
+ *
+ * bootstrap runs after every sign-in, not just after sign-up: an account created directly in the
+ * Supabase dashboard never touches this server, and would otherwise have a working login that
+ * could do nothing at all.
+ */
+async function refreshIdentity() {
+  if (!auth.required || !auth.token) {
+    auth.role = null;
+    auth.organisationId = null;
+    auth.userId = null;
+    applyRoleRestrictions();
+    return;
+  }
+  try {
+    await fetch("/api/auth/bootstrap", { method: "POST" });
+    const me = await fetch("/api/auth/me").then((r) => (r.ok ? r.json() : null));
+    if (me) {
+      auth.role = me.role || null;
+      auth.organisationId = me.organisationId || null;
+      auth.userId = me.userId || null;
+      if (me.email) auth.email = me.email;
+    }
+  } catch {
+    // Non-fatal: an unknown role simply restricts nothing in the UI, and the server still
+    // enforces every action independently.
+  }
+  applyRoleRestrictions();
+  // Which projects are visible follows from the role we just learned — an admin sees every one,
+  // a viewer only what they've been assigned — so the tree has to be re-fetched, not just redrawn.
+  await loadProjects();
+}
+
+async function signOut() {
+  const { url, publishableKey, token } = auth;
+  auth.role = null;
+  auth.organisationId = null;
+  auth.userId = null;
+  auth.screen = "login";
+  // Drop the previous account's visible projects, or the next person to sign in on this browser
+  // sees the last one's sidebar until their own fetch lands.
+  projectsCache = null;
+  projectsUnavailable = false;
+  suitesCache = [];
+  allRunsCache = [];
+  expandedProjects.clear();
+  applyRoleRestrictions();
+  setSession(null, null);
+  // Best-effort server-side revoke; the local session is already gone either way, so a failure
+  // here must not strand the user on a screen they can't leave.
+  if (url && publishableKey && token) {
+    rawFetch(`${url}/auth/v1/logout`, {
+      method: "POST",
+      headers: { apikey: publishableKey, Authorization: `Bearer ${token}` },
+    }).catch(() => {});
+  }
+  applyRoute();
+}
+
+async function initAuth() {
+  let cfg;
+  try {
+    cfg = await rawFetch("/api/auth/config").then((r) => r.json());
+  } catch {
+    return; // config unreachable — leave auth off rather than locking the user out of a working app
+  }
+  if (!cfg || !cfg.authEnabled) return; // the default path: nothing below ever runs
+
+  auth.required = true;
+  auth.url = cfg.url;
+  auth.publishableKey = cfg.publishableKey;
+
+  const signOutBtn = document.getElementById("signOutBtn");
+  if (signOutBtn) {
+    signOutBtn.classList.remove("hidden");
+    signOutBtn.addEventListener("click", signOut);
+  }
+
+  const form = document.getElementById("loginForm");
+  const errorEl = document.getElementById("loginError");
+  const submitEl = document.getElementById("loginSubmit");
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    errorEl.classList.add("hidden");
+    submitEl.disabled = true;
+    submitEl.textContent = "Signing in…";
+    try {
+      const res = await rawFetch(`${auth.url}/auth/v1/token?grant_type=password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: auth.publishableKey },
+        body: JSON.stringify({
+          email: document.getElementById("loginEmail").value,
+          password: document.getElementById("loginPassword").value,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.access_token) {
+        throw new Error(body.error_description || body.msg || "Could not sign in.");
+      }
+      setSession(body.access_token, body.user && body.user.email);
+      document.getElementById("loginPassword").value = "";
+      await refreshIdentity();
+      navigate("#/");
+      applyRoute();
+      loadHistory();
+    } catch (err) {
+      errorEl.textContent = err.message || "Could not sign in.";
+      errorEl.classList.remove("hidden");
+    } finally {
+      submitEl.disabled = false;
+      submitEl.textContent = "Sign in";
+    }
+  });
+
+  // --- sign up -------------------------------------------------------------
+  const signupForm = document.getElementById("signupForm");
+  const signupError = document.getElementById("signupError");
+  const signupSubmit = document.getElementById("signupSubmit");
+
+  signupForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    signupError.classList.add("hidden");
+
+    const email = document.getElementById("signupEmail").value.trim();
+    const password = document.getElementById("signupPassword").value;
+
+    // Client-side checks are UX only — Supabase validates both again server-side.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      signupError.textContent = "Enter a valid email address.";
+      signupError.classList.remove("hidden");
+      return;
+    }
+    if (password.length < 8) {
+      signupError.textContent = "Password must be at least 8 characters.";
+      signupError.classList.remove("hidden");
+      return;
+    }
+
+    signupSubmit.disabled = true;
+    signupSubmit.textContent = "Creating account…";
+    try {
+      // Our own server, NOT Supabase's public /auth/v1/signup. That endpoint 504s on this project
+      // — it tries to send a confirmation email through the free-tier sender, which hangs, and no
+      // account is ever created. The server creates a pre-confirmed account with the Admin API and
+      // hands back a session, so there is no "check your email" state to land in. See
+      // src/server/signup.ts.
+      const res = await rawFetch("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.accessToken) {
+        throw new Error(body.error || "Could not create the account.");
+      }
+
+      // The server already gave the new account its own organisation, so this session is usable
+      // immediately — straight to Home, signed in, rather than back to a login screen.
+      setSession(body.accessToken, (body.user && body.user.email) || email);
+      document.getElementById("signupPassword").value = "";
+      await refreshIdentity();
+      navigate("#/");
+      applyRoute();
+      loadHistory();
+    } catch (err) {
+      signupError.textContent = err.message || "Could not create the account.";
+      signupError.classList.remove("hidden");
+    } finally {
+      signupSubmit.disabled = false;
+      signupSubmit.textContent = "Create account";
+    }
+  });
+
+  // Switching between the two credential screens goes through showView() like every other view
+  // change — applyRoute() reads auth.screen and renders the right one.
+  document.getElementById("goSignup").addEventListener("click", () => {
+    auth.screen = "signup";
+    document.getElementById("loginError").classList.add("hidden");
+    applyRoute();
+  });
+  document.getElementById("goLogin").addEventListener("click", () => {
+    auth.screen = "login";
+    document.getElementById("signupError").classList.add("hidden");
+    applyRoute();
+  });
+
+  // A restored session still needs its role resolved before the UI can reflect it.
+  if (auth.token) await refreshIdentity();
+
+  // Re-run routing now that we know auth is on: a signed-out visitor gets redirected to the
+  // login view they'd otherwise have slipped past while this request was in flight.
+  applyRoute();
+}
+
+// -----------------------------------------------------------------------------
 // DOM references
 // -----------------------------------------------------------------------------
 
@@ -91,6 +406,7 @@ const screenshotToggleEl = document.getElementById("screenshotToggle");
 const screenshotGridEl = document.getElementById("screenshotGrid");
 const screenshotModalEl = document.getElementById("screenshotModal");
 const screenshotModalImgEl = document.getElementById("screenshotModalImg");
+const screenshotModalLabelEl = document.getElementById("screenshotModalLabel");
 const screenshotModalCloseEl = document.getElementById("screenshotModalClose");
 const credPromptEl = document.getElementById("credentialPrompt");
 const credFormEl = document.getElementById("credForm");
@@ -159,7 +475,7 @@ function renderPhases() {
       <div class="phase-header">
         <span class="dot">${icon("clock", { size: 11 })}</span>
         <span class="label">${p.label}</span>
-        <span class="phase-badge pending">Pending</span>
+        <span class="phase-badge pending">PENDING</span>
       </div>
       <p class="phase-desc">${p.desc}</p>
       <p class="summary-text"></p>
@@ -173,6 +489,11 @@ function renderPhases() {
 
 function summarize(stage, data) {
   try {
+    // A replay (Step 5.3) skips planning, discovery and IR compilation, and says so on the card
+    // rather than leaving a blank one. Checked first so any stage can carry the note; purely
+    // additive — a normal run never sets `skipped`, so every case below is reached exactly as
+    // before.
+    if (data && typeof data.skipped === "string") return data.skipped;
     switch (stage) {
       case "plan": return data.goal ? `AI Strategy: ${data.goal}` : "";
       case "discovery": {
@@ -232,10 +553,10 @@ function applyPhaseUI(phaseKey, phaseStatus, summaryText) {
   // Badge wording and the dot glyph are set together \u2014 they describe the same thing, and
   // when they were set in separate places the dot kept showing a clock on finished steps.
   const LOOK = {
-    started: { cls: "running", text: "Working", ic: "loader" },
-    completed: { cls: "done", text: "Done", ic: "check" },
-    failed: { cls: "failed", text: "Failed", ic: "x" },
-    pending: { cls: "pending", text: "Pending", ic: "clock" },
+    started: { cls: "running", text: "WORKING", ic: "loader" },
+    completed: { cls: "done", text: "DONE", ic: "check" },
+    failed: { cls: "failed", text: "FAILED", ic: "x" },
+    pending: { cls: "pending", text: "PENDING", ic: "clock" },
   };
   const look = LOOK[phaseStatus];
   if (look) {
@@ -446,7 +767,11 @@ function renderCaseCard(c, runId, index) {
         <div class="case-downloads">
           <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">${icon("file-text", { size: 13 })} Download test script</a>
           <a href="${escapeHtml(resultUrl)}" download="result.json" class="dl-btn">${icon("download", { size: 13 })} Download full result</a>
+          <!-- Step 5.2's bridge: keep this run's test plan as a reusable case. Offered to
+               testers and above; the server refuses anyone lower regardless of what is drawn. -->
+          <button type="button" class="dl-btn case-save-btn">${icon("plus", { size: 13 })} Save case</button>
         </div>
+        <div class="case-save-panel hidden"></div>
         <details class="case-details">
           <summary>${icon("code", { size: 13 })} Technical details (for developers)</summary>
           <div class="case-details-content">
@@ -490,6 +815,16 @@ function setupCaseCardListeners() {
     img.addEventListener("click", open);
     img.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    });
+  });
+
+  // Save-case (Step 5.2). A viewer never gets the control — and the server refuses them anyway,
+  // which is the actual guarantee.
+  suiteCaseListEl.querySelectorAll(".case-save-btn").forEach((btn) => {
+    if (!roleAtLeast(auth.role, "tester")) { btn.remove(); return; }
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openSaveCasePanel(btn.closest(".case-card"));
     });
   });
 
@@ -565,6 +900,100 @@ function renderSuiteResults(suite, runId) {
   setupCaseCardListeners();
 }
 
+/**
+ * The inline "save this case into the library" panel (Step 5.2).
+ *
+ * Inline rather than a modal: the run's result is the context for the decision, and a modal would
+ * cover the very card being saved. It asks for a project because a case's project is what governs
+ * who can see it afterwards — defaulting silently would file authored work somewhere the author
+ * did not choose.
+ */
+async function openSaveCasePanel(card) {
+  const panel = card.querySelector(".case-save-panel");
+  if (!panel) return;
+  if (!panel.classList.contains("hidden")) { panel.classList.add("hidden"); return; }
+
+  panel.classList.remove("hidden");
+  panel.innerHTML = `<p class="hrow-meta">Loading projects…</p>`;
+
+  let projects = [], suites = [];
+  try {
+    [projects, suites] = await Promise.all([
+      api("/api/projects").then((r) => r.projects ?? []),
+      api("/api/suites").then((r) => r.suites ?? []),
+    ]);
+  } catch (err) {
+    panel.innerHTML = `<p class="team-error">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  if (!projects.length) {
+    panel.innerHTML = `<p class="team-error">You're not in any project yet, so there's nowhere to save this.</p>`;
+    return;
+  }
+
+  const runId = suiteResultsEl.dataset.runId;
+  const caseId = card.dataset.caseId;
+  const title = card.querySelector(".case-title")?.textContent ?? "";
+
+  panel.innerHTML = `
+    <div class="case-save-form">
+      <label class="field">
+        <span class="field-label">Project</span>
+        <select class="team-select" data-role="project">
+          ${projects.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Suite (optional)</span>
+        <select class="team-select" data-role="suite">
+          <option value="">— none —</option>
+          ${suites.map((s) => `<option value="${escapeHtml(s.id)}" data-project="${escapeHtml(s.projectId)}">${escapeHtml(s.name)}</option>`).join("")}
+        </select>
+      </label>
+      <button type="button" class="dl-btn" data-role="confirm">Save to library</button>
+    </div>
+    <p class="hrow-meta">Saved cases re-run with no AI calls at all.</p>
+    <div data-role="feedback"></div>`;
+
+  const projectSel = panel.querySelector('[data-role="project"]');
+  const suiteSel = panel.querySelector('[data-role="suite"]');
+
+  // Only offer suites belonging to the chosen project — the server refuses a cross-project pair,
+  // so offering one would be offering a guaranteed error.
+  const syncSuites = () => {
+    [...suiteSel.options].forEach((o) => {
+      if (!o.value) return;
+      o.hidden = o.dataset.project !== projectSel.value;
+    });
+    const chosen = suiteSel.selectedOptions[0];
+    if (chosen && chosen.value && chosen.hidden) suiteSel.value = "";
+  };
+  syncSuites();
+  projectSel.addEventListener("change", syncSuites);
+
+  panel.querySelector('[data-role="confirm"]').addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const saved = await api(`/api/runs/${encodeURIComponent(runId)}/cases/${encodeURIComponent(caseId)}/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: projectSel.value,
+          title,
+          ...(suiteSel.value ? { suiteId: suiteSel.value } : {}),
+        }),
+      });
+      panel.querySelector('[data-role="feedback"]').innerHTML =
+        `<p class="team-ok">Saved. <a href="${caseHash(projectSel.value, saved.id)}">Open the case</a></p>`;
+    } catch (err) {
+      panel.querySelector('[data-role="feedback"]').innerHTML =
+        `<p class="team-error">${escapeHtml(err.message)}</p>`;
+      btn.disabled = false;
+    }
+  });
+}
+
 function hideSuiteResults() {
   currentSuite = null;
   suiteResultsEl.classList.add("hidden");
@@ -595,16 +1024,18 @@ function hideSuiteResults() {
 function verdictFor(data, stage, error) {
   const status = data?.status;
   if (stage === "error") {
-    return { cls: "failed", ic: "alert-circle", head: "Something went wrong while running this",
-             detail: error || "" };
+    return { cls: "blocked", ic: "alert-circle", head: "Couldn’t run this",
+             detail: error
+               ? error + " This is a problem on our side, not a result about your site."
+               : "The run stopped before it could test anything. This is a problem on our side, not a result about your site." };
   }
   if (status === "blocked") {
     return { cls: "blocked", ic: "slash-circle", head: "Couldn’t finish — the site needs something a test can’t provide",
              detail: `${data?.blockedBy ?? "The flow hit a step automation can’t pass."} The screenshot below is where it stopped.` };
   }
   if (status === "truncated_no_assertion") {
-    return { cls: "incomplete", ic: "minus-circle", head: "Ran, but couldn’t confirm the result",
-             detail: "It stopped before it got far enough to check the outcome, so this isn’t a pass or a failure." };
+    return { cls: "incomplete", ic: "minus-circle", head: "Ran, but couldn’t confirm everything",
+             detail: "One or more cases finished without a conclusive assertion — usually a step the test could not reach. That is neither a pass nor a failure." };
   }
   if (status === "no_cases_selected") {
     return { cls: "incomplete", ic: "minus-circle", head: "No test cases were selected",
@@ -619,10 +1050,11 @@ function verdictFor(data, stage, error) {
              detail: "Everything it was able to reach behaved correctly." };
   }
   if (data?.passed) {
-    return { cls: "passed", ic: "check", head: "Passed", detail: "Everything checked out." };
+    return { cls: "passed", ic: "check", head: "Passed",
+             detail: "Everything checked out. Every selected case reached its expected outcome." };
   }
   return { cls: "failed", ic: "x", head: "Failed",
-           detail: "The site didn’t do what this test expected. Details below." };
+           detail: "The site did not do what at least one test expected. Open the failing case below for the diagnosis." };
 }
 
 /** Paint the verdict heading from that description. */
@@ -787,6 +1219,7 @@ function openScreenshotModal(src, alt) {
   modalPreviouslyFocused = document.activeElement;
   screenshotModalImgEl.src = src;
   screenshotModalImgEl.alt = alt || "Screenshot, full size";
+  screenshotModalLabelEl.textContent = alt || "";
   screenshotModalEl.classList.remove("hidden");
   document.addEventListener("keydown", handleScreenshotModalKeydown);
   screenshotModalCloseEl.focus();
@@ -795,6 +1228,7 @@ function openScreenshotModal(src, alt) {
 function closeScreenshotModal() {
   screenshotModalEl.classList.add("hidden");
   screenshotModalImgEl.src = "";
+  screenshotModalLabelEl.textContent = "";
   document.removeEventListener("keydown", handleScreenshotModalKeydown);
   // Return focus to whatever opened the modal (the screenshot thumbnail), so a keyboard user
   // isn't dropped back at the top of the page.
@@ -973,7 +1407,7 @@ function renderHistory(runs) {
       li.classList.add("active");
       if (li.dataset.prompt) promptEl.value = li.dataset.prompt;
       if (li.dataset.url) urlEl.value = li.dataset.url;
-      connectToRun(li.dataset.runId);
+      navigate("#/run/" + li.dataset.runId);
     });
   });
   historyListEl.querySelectorAll(".history-del").forEach((btn) => {
@@ -990,10 +1424,72 @@ function renderHistory(runs) {
   });
 }
 
+const RECENT_RUNS_SHOWN = 5;
+
+// Every run ever fetched from /api/runs, kept around so the Projects tree can
+// re-render on expand/collapse (a UI-only state change) without refetching.
+let allRunsCache = [];
+
+// Sidebar tree state. Declared here, beside the run cache they pair with, rather than next to
+// renderProjectsTree() further down: loadHistory() runs at module load and reaches them through
+// loadProjects(), so declaring them later would be a temporal-dead-zone crash waiting on a
+// scheduling change.
+const expandedProjects = new Set();
+/** Projects the server says we may see; null until the first load resolves, and null again if the
+ *  server can't answer (no database configured — see loadProjects()). */
+let projectsCache = null;
+/** True once a load has been attempted and failed, which is how the tree tells "not loaded yet"
+ *  apart from "this deployment has no project rows to serve". */
+let projectsUnavailable = false;
+/** Saved suites, shown under their project in the sidebar (Step 5.5). Always an array — the tree
+ *  renders it inline, and a null here would mean guarding every use. */
+let suitesCache = [];
+
+// The sidebar's inline "new suite" form. Module state rather than DOM state because
+// renderProjectsTree() re-renders wholesale on every history refresh — anything held only in the
+// input would be wiped mid-typing by a background reload.
+let newSuiteFor = null;     // project id whose form is open, or null
+let newSuiteName = "";
+let newSuiteError = "";
+
+// The sidebar's inline project form, for both create and edit — same shape, same two fields, so
+// one form serves both and `projectFormId` is what tells them apart (null = creating). Module
+// state for the same reason as the suite form: a background history refresh re-renders the whole
+// tree and would otherwise wipe what's being typed.
+let projectFormOpen = false;
+let projectFormId = null;   // project being edited, or null when creating
+let projectFormName = "";
+let projectFormUrl = "";
+let projectFormError = "";
+
+/** Creating and editing a project is admin+, and impossible at all without a database — with none
+ *  configured the sidebar is showing URL groupings, not project rows, so there is nothing to edit
+ *  and offering the control would be a lie. */
+function canManageProjects() {
+  return (!auth.required || roleAtLeast(auth.role, "admin")) && !projectsUnavailable;
+}
+
+function closeProjectForm() {
+  projectFormOpen = false;
+  projectFormId = null;
+  projectFormName = "";
+  projectFormUrl = "";
+  projectFormError = "";
+}
+
 async function loadHistory() {
   const res = await fetch("/api/runs");
-  const runs = await res.json();
-  renderHistory(runs);
+  const runs = await res.json().catch(() => null);
+  // /api/runs can legitimately answer with a non-array body — a 401 `{error}` when auth is on and
+  // the visitor hasn't signed in yet, which happens on every cold load before initAuth() resolves.
+  // Bail instead of crashing on .slice(); the login flow calls loadHistory() again once signed in.
+  if (!Array.isArray(runs)) return;
+  allRunsCache = runs;
+  renderHistory(runs.slice(0, RECENT_RUNS_SHOWN));
+  // Projects come from their own endpoint (Step 5.1) — the sidebar can no longer be derived from
+  // the run list, because which projects you may see is a server decision, and a project you can
+  // see may legitimately have no runs in the newest-20 window.
+  await loadProjects();
 }
 
 // -----------------------------------------------------------------------------
@@ -1007,13 +1503,22 @@ async function loadHistory() {
 // The run this prompt belongs to. Also the guard against a stale prompt: the poller replays
 // events, and a second run must never post its answer to the previous run's id.
 let credRunId = null;
+// Where the answer is POSTed. A run and a case-edit park on the SAME server-side waiter table,
+// keyed by run id or job id, so the only thing that differs is this URL — which is why this is one
+// variable rather than a second modal.
+let credPostUrl = null;
 
-function showCredentialPrompt(runId, data) {
+function showCredentialPrompt(runId, data, postUrl) {
   credRunId = runId;
+  credPostUrl = postUrl ?? `/api/runs/${runId}/credentials`;
   const host = (() => { try { return new URL(data?.url).host; } catch { return data?.url ?? "this site"; } })();
-  credWhyEl.textContent =
-    `The tests for ${host} need to sign in, and there's no built-in account for it. ` +
-    `Add credentials to test the flow past the login, or skip to test only what's reachable without one.`;
+  credWhyEl.textContent = data?.caseEdit
+    // Editing says something different on purpose: nothing is being tested yet, and skipping here
+    // does not "test less" — it fails the check outright, because the walk cannot reach the step.
+    ? `Checking this edit means signing in to ${host} first — the step you changed is behind the login. ` +
+      `Add credentials to verify it, or skip and the check will stop at the login.`
+    : `The tests for ${host} need to sign in, and there's no built-in account for it. ` +
+      `Add credentials to test the flow past the login, or skip to test only what's reachable without one.`;
   credUserEl.value = "";
   credPassEl.value = "";
   credFormEl.querySelectorAll("button, input").forEach((el) => { el.disabled = false; });
@@ -1023,6 +1528,7 @@ function showCredentialPrompt(runId, data) {
 
 function hideCredentialPrompt() {
   credRunId = null;
+  credPostUrl = null;
   // Don't leave the password sitting in the DOM once it's been handed over.
   credUserEl.value = "";
   credPassEl.value = "";
@@ -1031,10 +1537,10 @@ function hideCredentialPrompt() {
 
 async function submitCredentials(body) {
   if (!credRunId) return;
-  const runId = credRunId;
+  const url = credPostUrl;
   credFormEl.querySelectorAll("button, input").forEach((el) => { el.disabled = true; });
   try {
-    await fetch(`/api/runs/${runId}/credentials`, {
+    await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -1382,14 +1888,8 @@ let pollGeneration = 0;
 async function connectToRun(runId) {
   const generation = ++pollGeneration;
 
-  // Reset UI
-  renderPhases();
-  hideSingleTestResult();
-  hideSuiteResults();
-  hideSuiteProgress();
-  hideCredentialPrompt();
-  hideCaseSelectionPanel();
-  diagnosisEl.textContent = "";
+  currentRunId = runId;
+  resetRunUI();
 
   let seen = 0;
   let fails = 0;
@@ -1448,12 +1948,12 @@ form.addEventListener("submit", async (e) => {
     const res = await fetch("/api/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prompt, url }),
+      body: JSON.stringify({ prompt, url, coverage, options: runOptions }),
     });
     if (!res.ok) throw new Error(`Server responded with HTTP ${res.status}`);
     const { runId } = await res.json();
     if (!runId) throw new Error("Server didn't return a run id");
-    connectToRun(runId);
+    navigate("#/run/" + runId);
   } catch (err) {
     // A failed POST previously left the button stuck on "Running\u2026" forever. Reset it and
     // surface the reason instead of silently swallowing the error.
@@ -1473,55 +1973,19 @@ form.addEventListener("submit", async (e) => {
 // Static chrome icons — set once, here, so index.html stays free of inline SVG.
 document.getElementById("brandMark").innerHTML = icon("zap", { size: 18 });
 document.getElementById("newRunIcon").innerHTML = icon("plus", { size: 15 });
-document.getElementById("urlIcon").innerHTML = icon("globe", { size: 15 });
 document.getElementById("runIcon").innerHTML = icon("play", { size: 14 });
 document.getElementById("credIcon").innerHTML = icon("key", { size: 18 });
 document.getElementById("caseSelectionIcon").innerHTML = icon("list", { size: 18 });
-document.getElementById("themeIconSun").innerHTML = icon("sun", { size: 14 });
-document.getElementById("themeIconMoon").innerHTML = icon("moon", { size: 14 });
-
-// -----------------------------------------------------------------------------
-// Theme (light/dark)
-// -----------------------------------------------------------------------------
-
-const themeToggleEl = document.getElementById("themeToggle");
-const themeToggleLabelEl = document.getElementById("themeToggleLabel");
-
-function applyTheme(theme) {
-  const isLight = theme === "light";
-  if (isLight) document.documentElement.dataset.theme = "light";
-  else delete document.documentElement.dataset.theme;
-
-  themeToggleEl.classList.toggle("is-light", isLight);
-  themeToggleEl.setAttribute("aria-pressed", String(isLight));
-  themeToggleEl.setAttribute("aria-label", isLight ? "Switch to dark theme" : "Switch to light theme");
-  themeToggleLabelEl.textContent = isLight ? "Light" : "Dark";
-
-  try { localStorage.setItem("theme", theme); } catch {}
-}
-
-// The inline script in index.html's <head> already applied a saved "light" preference
-// before first paint (to avoid a flash of the wrong theme) — this just syncs the toggle's
-// own UI state to match on load, and defaults to dark when nothing is saved yet.
-applyTheme(document.documentElement.dataset.theme === "light" ? "light" : "dark");
-
-themeToggleEl.addEventListener("click", () => {
-  applyTheme(themeToggleEl.classList.contains("is-light") ? "dark" : "light");
-});
 
 // "New run" clears the workspace without a page reload, so an in-flight poll is abandoned
 // (pollGeneration is what stops the old loop touching the DOM again).
 document.getElementById("newRunBtn").addEventListener("click", () => {
   pollGeneration++;
+  currentRunId = null;
   promptEl.value = "";
   urlEl.value = "";
-  renderPhases();
-  hideSingleTestResult();
-  hideSuiteResults();
-  hideSuiteProgress();
-  hideCredentialPrompt();
-  hideCaseSelectionPanel();
-  diagnosisEl.textContent = "";
+  resetRunUI();
+  navigate("#/");
   submitBtn.disabled = false;
   submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
   historyListEl.querySelectorAll(".history-item").forEach(i => i.classList.remove("active"));
@@ -1539,3 +2003,2472 @@ screenshotToggleEl.addEventListener("click", () => {
     ? `${icon("image", { size: 14 })} View all screenshots`
     : `${icon("chevron-down", { size: 14 })} Hide screenshots`;
 });
+
+// -----------------------------------------------------------------------------
+// Shell: views, routing, and the one reset site
+// -----------------------------------------------------------------------------
+
+const sidebarEl = document.getElementById("sidebar");
+const sidebarTreeEl = document.getElementById("sidebarTree");
+const sidebarSearchEl = document.getElementById("sidebarSearch");
+const sidebarOpenEl = document.getElementById("sidebarOpen");
+const sidebarCloseEl = document.getElementById("sidebarClose");
+const scrimEl = document.getElementById("scrim");
+const crumbsEl = document.getElementById("crumbs");
+const crumbRootEl = document.getElementById("crumbRoot");
+const historyBtnEl = document.getElementById("historyBtn");
+const teamBtnEl = document.getElementById("teamBtn");
+const allRunsBtnEl = document.getElementById("allRunsBtn");
+const addProjectBtnEl = document.getElementById("addProjectBtn");
+const settingsBtnEl = document.getElementById("settingsBtn");
+const settingsPopEl = document.getElementById("settingsPop");
+const gateToggleEl = document.getElementById("gateToggle");
+const healToggleEl = document.getElementById("healToggle");
+const coverageSegEl = document.getElementById("coverageSeg");
+const toastEl = document.getElementById("toast");
+const runTitleEl = document.getElementById("runTitle");
+const runScopeLabelEl = document.getElementById("runScopeLabel");
+const runMetaEl = document.getElementById("runMeta");
+
+/**
+ * Backend status -> the vocabulary the UI speaks.
+ *
+ * Two collapses here are deliberate, not tidying:
+ *
+ *  - truncated / truncated_no_assertion / incomplete all become "unconfirmed".
+ *    They are three names for one situation: the test ran and proved nothing.
+ *    Reporting any of them as a pass is what problems.md calls out under
+ *    "a truncated test can report green".
+ *
+ *  - error becomes "blocked", NOT "failed". An invalid API key or a dead model
+ *    id is not the site under test misbehaving, and reporting it as a failure is
+ *    the single most expensive defect in problems.md ("you were told your
+ *    website has failing tests when the truth was that your API key was
+ *    invalid"). --blocked carries its own hue precisely so "we couldn't run"
+ *    can never be read as "your site is broken".
+ */
+const RUN_STATUS = {
+  passed: { key: "passed", label: "Passed" },
+  failed: { key: "failed", label: "Failed" },
+  blocked: { key: "blocked", label: "Blocked" },
+  error: { key: "blocked", label: "Couldn't run" },
+  truncated: { key: "unconfirmed", label: "Unconfirmed" },
+  truncated_no_assertion: { key: "unconfirmed", label: "Unconfirmed" },
+  incomplete: { key: "unconfirmed", label: "Unconfirmed" },
+  no_cases_selected: { key: "blocked", label: "Nothing selected" },
+  running: { key: "running", label: "Running" },
+  pending: { key: "pending", label: "Queued" },
+  draft: { key: "draft", label: "Not run yet" },
+};
+const statusKey = (s) => (RUN_STATUS[s] || RUN_STATUS.pending).key;
+const statusText = (s) => (RUN_STATUS[s] || { label: s }).label;
+
+/** The app's only general notification channel. showNotice() is not one: it
+ *  writes inside #case-selection-panel, so its message is invisible whenever
+ *  that panel is closed. */
+let toastTimer = null;
+function toast(message) {
+  toastEl.textContent = message;
+  toastEl.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.add("hidden"), 3200);
+}
+
+// -----------------------------------------------------------------------------
+// The test-case library — Suite, Case and Compare (Steps 5.2, 5.3, 5.5)
+//
+// These three views existed as empty stubs in the router from the first slice. They render real
+// data now. Everything is scoped by project on the server, so a viewer only ever sees suites and
+// cases inside projects they were added to — this code never has to filter for access, and must
+// not try to: hiding a row is a courtesy, the server's refusal is the control.
+//
+// Execution is always a REPLAY (POST /api/replay): stored IR straight to generateSpec/runSpec,
+// zero LLM calls. Whole suite, a chosen subset, or one case are the same call with a different
+// selection, which is why there is one runReplay() helper below rather than three.
+// -----------------------------------------------------------------------------
+
+const CASE_BADGE = {
+  passed: "badge-passed", failed: "badge-failed", blocked: "badge-blocked",
+  truncated: "badge-truncated", truncated_no_assertion: "badge-partial",
+};
+const caseBadgeClass = (s) => CASE_BADGE[s] ?? "badge-pending";
+const caseStatusLabel = (s) => (s ? (STATUS_LABEL[s] ?? s) : "Not run yet");
+
+/** One line of a step, as plain English. The IR is role+name; a person reads verbs. */
+function stepText(step, i) {
+  const t = step.target ?? {};
+  const what = t.name || t.label || t.text || t.placeholder || t.url || t.css || "";
+  const verb = {
+    navigate: "Go to", click: "Click", fill: "Fill", select: "Select",
+    check: "Check", press: "Press", wait: "Wait for", assert: "Assert",
+  }[step.action] ?? step.action;
+  const value = step.value ? ` with "${step.value}"` : "";
+  const assertion = step.assertion ? ` (${step.assertion.replace(/_/g, " ")})` : "";
+  return `${i + 1}. ${verb}${what ? ` ${what}` : ""}${value}${assertion}`;
+}
+
+/** A timestamp as something readable. Falls back to the raw value rather than "Invalid Date". */
+function formatWhen(ts) {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
+}
+
+async function api(path, init) {
+  const res = await fetch(path, init);
+  if (res.status === 204) return null;
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `That didn't work (${res.status}).`);
+  return body;
+}
+
+/**
+ * Start a replay and follow it on the Run view.
+ *
+ * The run it creates is a first-class run — it appears in history and its artifacts are guarded
+ * exactly like any other — so handing off to the existing Run view is the whole integration.
+ */
+async function startReplay(selection, label) {
+  try {
+    const { runId } = await api("/api/replay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...selection, label }),
+    });
+    toast("Replaying — this costs nothing, the steps are already saved.");
+    navigate("#/run/" + runId);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+// ---------------------------------------------------------------- Suite view
+
+async function renderSuiteView(suiteId) {
+  const body = document.getElementById("suiteViewBody");
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+
+  let suite, cases;
+  try {
+    const suites = (await api("/api/suites")).suites ?? [];
+    suite = suites.find((s) => s.id === suiteId);
+    if (!suite) throw new Error("That suite no longer exists, or you don't have access to it.");
+    cases = (await api(`/api/suites/${encodeURIComponent(suiteId)}/cases`)).cases ?? [];
+  } catch (err) {
+    body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  setCrumbs(["Suite", suite.name]);
+  const canAuthor = roleAtLeast(auth.role, "tester");
+  const canDelete = roleAtLeast(auth.role, "admin");
+
+  body.innerHTML = `
+    <div>
+      <div class="eyebrow">TEST SUITE</div>
+      <h1 class="page-head-title">${escapeHtml(suite.name)}</h1>
+      <p class="tagline">${cases.length} case${cases.length === 1 ? "" : "s"} — they run in the order below.
+      Re-running a saved suite makes no AI calls at all.</p>
+    </div>
+    <div class="lib-toolbar">
+      ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="add-cases">+ Add cases</button>` : ""}
+      ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="rename">Rename suite</button>` : ""}
+      ${canDelete ? `<button type="button" class="dl-btn-inline" data-act="delete-suite">Delete suite</button>` : ""}
+      <span class="lib-toolbar-gap"></span>
+      ${canAuthor ? `
+        <button type="button" class="dl-btn-inline" data-act="run-selected" disabled>▸ Run 0 selected</button>
+        <button type="button" class="run-btn lib-run-all" data-act="run-all">▸ Run all</button>` : ""}
+    </div>
+    <div id="suiteFeedback"></div>
+    <div id="suiteAddPanel"></div>
+    <div class="panel"><div id="suiteRows"></div></div>`;
+
+  const rows = document.getElementById("suiteRows");
+  if (!cases.length) {
+    rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">
+      ${canAuthor
+        ? `No cases in this suite yet. Use <b>+ Add cases</b> above to file saved ones here,
+           or <b>Save case</b> on a finished run's result to make a new one.`
+        : `No cases in this suite yet.`}</div>`;
+  } else {
+    rows.innerHTML = cases.map((c, i) => `
+      <div class="hrow lib-row" data-case-id="${escapeHtml(c.id)}">
+        ${canAuthor ? `<input type="checkbox" class="lib-check" aria-label="Select ${escapeHtml(c.title)}" />` : ""}
+        <span class="lib-pos">${i + 1}</span>
+        <span class="case-badge ${caseBadgeClass(c.lastRunStatus)}">${escapeHtml(caseStatusLabel(c.lastRunStatus))}</span>
+        <div class="hrow-main">
+          <div class="hrow-label">${escapeHtml(c.title)}</div>
+          <div class="hrow-meta">v${c.currentVersion}${c.feature ? ` · ${escapeHtml(c.feature)}` : ""}${c.lastRunAt ? ` · last run ${formatWhen(c.lastRunAt)}` : ""}</div>
+        </div>
+        <div class="hrow-actions">
+          ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="up" title="Move up" ${i === 0 ? "disabled" : ""}>↑</button>` : ""}
+          ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="down" title="Move down" ${i === cases.length - 1 ? "disabled" : ""}>↓</button>` : ""}
+          <button type="button" class="dl-btn-inline" data-act="open">Open</button>
+          ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="run-one">▸ Run</button>` : ""}
+          ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="remove">Remove</button>` : ""}
+        </div>
+      </div>`).join("");
+  }
+
+  const feedback = (msg, isError) => {
+    document.getElementById("suiteFeedback").innerHTML =
+      `<p class="${isError ? "team-error" : "team-ok"}">${escapeHtml(msg)}</p>`;
+  };
+
+  /**
+   * Pick saved cases from this project and file them into this suite.
+   *
+   * Only offers cases NOT already in the suite: `suite_cases` has (suite_id, case_id) as its key,
+   * so re-adding one is a guaranteed error, and offering it would be offering a mistake. Same
+   * reasoning as the Team screen's addable-users list.
+   */
+  const openAddPanel = async () => {
+    const panel = document.getElementById("suiteAddPanel");
+    panel.innerHTML = `<div class="case-save-panel"><p class="hrow-meta">Loading cases…</p></div>`;
+    let pool;
+    try {
+      const all = (await api(`/api/cases?projectId=${encodeURIComponent(suite.projectId)}`)).cases ?? [];
+      const already = new Set(cases.map((c) => c.id));
+      pool = all.filter((c) => !already.has(c.id));
+    } catch (err) {
+      panel.innerHTML = `<div class="case-save-panel"><p class="team-error">${escapeHtml(err.message)}</p></div>`;
+      return;
+    }
+
+    if (!pool.length) {
+      panel.innerHTML = `<div class="case-save-panel">
+        <p class="hrow-meta">Every saved case in this project is already in this suite.
+        Save another from a finished run to add more.</p>
+        <button type="button" class="dl-btn-inline" data-add="close">Close</button>
+      </div>`;
+    } else {
+      panel.innerHTML = `<div class="case-save-panel">
+        <div class="lib-steps-head">Add saved cases to “${escapeHtml(suite.name)}”</div>
+        <div class="suite-add-list">
+          ${pool.map((c) => `
+            <label class="suite-add-row">
+              <input type="checkbox" class="lib-check" value="${escapeHtml(c.id)}" />
+              <span class="hrow-label">${escapeHtml(c.title)}</span>
+              <span class="hrow-meta">v${c.currentVersion}${c.feature ? ` · ${escapeHtml(c.feature)}` : ""}</span>
+            </label>`).join("")}
+        </div>
+        <div class="step-edit-actions">
+          <button type="button" class="dl-btn-inline" data-add="close">Cancel</button>
+          <span class="lib-toolbar-gap"></span>
+          <button type="button" class="run-btn lib-run-all" data-add="confirm" disabled>Add 0 cases</button>
+        </div>
+      </div>`;
+    }
+
+    const picked = () => [...panel.querySelectorAll(".lib-check")].filter((c) => c.checked).map((c) => c.value);
+    const confirmBtn = panel.querySelector('[data-add="confirm"]');
+    panel.querySelectorAll(".lib-check").forEach((cb) => cb.addEventListener("change", () => {
+      const n = picked().length;
+      confirmBtn.textContent = `Add ${n} case${n === 1 ? "" : "s"}`;
+      confirmBtn.disabled = n === 0;
+    }));
+
+    panel.querySelectorAll("[data-add]").forEach((btn) => btn.addEventListener("click", async () => {
+      if (btn.dataset.add === "close") { panel.innerHTML = ""; return; }
+      const ids = picked();
+      btn.disabled = true;
+      try {
+        // Sequential, not Promise.all: each POST appends, so the order they arrive in is the
+        // order they end up in. Parallel requests would land in a nondeterministic order.
+        for (const caseId of ids) {
+          await api(`/api/suites/${encodeURIComponent(suiteId)}/cases`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ caseId }),
+          });
+        }
+        toast(`Added ${ids.length} case${ids.length === 1 ? "" : "s"}.`);
+        await loadProjects();                 // suite case-counts in the sidebar
+        return renderSuiteView(suiteId);
+      } catch (err) {
+        btn.disabled = false;
+        panel.querySelector(".case-save-panel").insertAdjacentHTML(
+          "beforeend", `<p class="team-error">${escapeHtml(err.message)}</p>`);
+      }
+    }));
+  };
+
+  const order = () => [...rows.querySelectorAll(".lib-row")].map((r) => r.dataset.caseId);
+  const selected = () => [...rows.querySelectorAll(".lib-row")]
+    .filter((r) => r.querySelector(".lib-check")?.checked)
+    .map((r) => r.dataset.caseId);
+
+  const refreshSelectedBtn = () => {
+    const btn = body.querySelector('[data-act="run-selected"]');
+    if (!btn) return;
+    const n = selected().length;
+    btn.textContent = `▸ Run ${n} selected`;
+    btn.disabled = n === 0;
+  };
+  rows.querySelectorAll(".lib-check").forEach((cb) => cb.addEventListener("change", refreshSelectedBtn));
+
+  body.querySelectorAll("[data-act]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const act = btn.dataset.act;
+      const row = btn.closest(".lib-row");
+      const caseId = row?.dataset.caseId;
+      try {
+        if (act === "run-all") return startReplay({ suiteId }, `Replayed suite "${suite.name}"`);
+        if (act === "run-selected") {
+          const ids = selected();
+          return startReplay({ suiteId, caseIds: ids },
+            `Replayed ${ids.length} case${ids.length === 1 ? "" : "s"} from "${suite.name}"`);
+        }
+        if (act === "run-one") {
+          const title = row.querySelector(".hrow-label").textContent;
+          return startReplay({ caseIds: [caseId] }, `Replayed "${title}"`);
+        }
+        if (act === "open") return navigate(caseHash(suite.projectId, caseId));
+        if (act === "add-cases") return openAddPanel();
+
+        if (act === "rename") {
+          const name = prompt("Rename this suite", suite.name);
+          if (!name || name === suite.name) return;
+          await api(`/api/suites/${encodeURIComponent(suiteId)}`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          });
+          return renderSuiteView(suiteId);
+        }
+        if (act === "delete-suite") {
+          if (!confirm(`Delete the suite "${suite.name}"? The cases themselves are kept.`)) return;
+          await api(`/api/suites/${encodeURIComponent(suiteId)}`, { method: "DELETE" });
+          toast("Suite deleted — its cases were kept.");
+          return navigate("#/");
+        }
+        if (act === "remove") {
+          await api(`/api/suites/${encodeURIComponent(suiteId)}/cases/${encodeURIComponent(caseId)}`,
+            { method: "DELETE" });
+          return renderSuiteView(suiteId);
+        }
+        if (act === "up" || act === "down") {
+          const ids = order();
+          const i = ids.indexOf(caseId);
+          const j = act === "up" ? i - 1 : i + 1;
+          if (j < 0 || j >= ids.length) return;
+          [ids[i], ids[j]] = [ids[j], ids[i]];
+          await api(`/api/suites/${encodeURIComponent(suiteId)}/order`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ caseIds: ids }),
+          });
+          return renderSuiteView(suiteId);
+        }
+      } catch (err) {
+        feedback(err.message, true);
+      }
+    });
+  });
+}
+
+// ----------------------------------------------------------------- Case view
+
+/** Which tab the Case screen is on. Module-level so a re-render keeps the reader where they were. */
+let caseTab = "steps";
+
+// ------------------------------------------- case step editor (plain English)
+//
+// Steps are edited as the SAME English sentences formatIrStep() renders, and shipped back to the
+// server as strings. The server owns BOTH directions (src/stages/stepText.ts) and parses each
+// sentence *onto* the step it came from, so an untouched line returns the original step object —
+// its grounding, its `${env:...}` value and its `nth` survive by construction rather than by this
+// file remembering to copy them. Nothing here parses a sentence: a second parser is exactly the
+// drift TD-07 records, and it would be worse here because it would show one sentence and save
+// another.
+
+let caseEditor = null;
+
+/** The lines as the API wants them. */
+const caseLinesPayload = () => caseEditor.lines.map((l) => l.text);
+
+function caseEditorDirty() {
+  return !!caseEditor && JSON.stringify(caseLinesPayload()) !== caseEditor.original;
+}
+
+/** A re-ground is in flight — steps are read-only and Save is replaced by Cancel. */
+const caseEditorBusy = () => !!caseEditor?.job;
+
+/** Stop following a job without cancelling it server-side. Used when the view is torn down;
+ *  the job itself keeps going and simply finishes unobserved. */
+function stopFollowingCaseJob() {
+  if (caseEditor?.job?.timer) clearTimeout(caseEditor.job.timer);
+  if (caseEditor?.job) caseEditor.job.timer = null;
+}
+
+/** A fresh line id that cannot collide. Ids are what failing-step reporting names, so a reused
+ *  one would misattribute a failure to the wrong row. */
+function nextLineId(lines) {
+  const used = new Set(lines.map((l) => l.id));
+  let n = lines.length + 1;
+  while (used.has(`s${n}`)) n++;
+  return `s${n}`;
+}
+
+// -------------------------------------------------------------------- estimate
+//
+// /estimate is pure arithmetic over the diff — no browser, no model, no write — so it is cheap
+// enough to run live. It drives the Save button's own LABEL: the cost is stated on the control
+// that spends it, not in a dialog after the fact.
+
+function scheduleCaseEstimate(repaint) {
+  if (!caseEditor) return;
+  clearTimeout(caseEditor.estimateTimer);
+  caseEditor.estimateTimer = setTimeout(() => runCaseEstimate(repaint), 400);
+}
+
+async function runCaseEstimate(repaint) {
+  if (!caseEditor || caseEditorBusy()) return;
+  const editor = caseEditor;
+  const forLines = JSON.stringify(caseLinesPayload());
+
+  if (!caseEditorDirty()) {
+    editor.estimate = null;
+    editor.estimateError = "";
+    return refreshCaseSaveAffordance();
+  }
+
+  try {
+    const est = await api(`/api/cases/${encodeURIComponent(editor.caseId)}/steps/estimate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ steps: JSON.parse(forLines), expectedVersion: editor.currentVersion }),
+    });
+    // The user kept typing while this was in flight — its answer is about older text.
+    if (caseEditor !== editor || JSON.stringify(caseLinesPayload()) !== forLines) return;
+    editor.estimate = est;
+    editor.estimateError = "";
+  } catch (err) {
+    if (caseEditor !== editor) return;
+    editor.estimate = null;
+    // A malformed sentence fails here first, which is the cheapest possible place to learn it.
+    editor.estimateError = err.message;
+  }
+  refreshCaseSaveAffordance();
+}
+
+/** Update just the Save label and the will-verify markers, WITHOUT a repaint — a repaint mid-typing
+ *  would steal focus out of the input the user is still in. */
+function refreshCaseSaveAffordance() {
+  const btn = document.getElementById("cdSave");
+  const hint = document.getElementById("cdSaveHint");
+  if (!btn || !caseEditor) return;
+
+  const dirty = caseEditorDirty();
+  const est = caseEditor.estimate;
+  btn.disabled = !dirty || caseEditorBusy();
+
+  // Typing does not repaint (that would steal the caret), so the UNSAVED badge has to be
+  // toggled here rather than re-rendered — otherwise it only ever appears after a structural
+  // change, which is exactly when the user is least likely to be looking for it.
+  const unsaved = document.getElementById("cdUnsaved");
+  if (unsaved) unsaved.style.display = dirty ? "" : "none";
+
+  if (!dirty) {
+    btn.textContent = "Save";
+    if (hint) hint.textContent = "";
+  } else if (caseEditor.estimateError) {
+    btn.textContent = "Save";
+    if (hint) hint.textContent = "";
+  } else if (!est) {
+    btn.textContent = "Save";
+    if (hint) hint.textContent = "Checking what this will cost…";
+  } else if (est.instant) {
+    btn.textContent = "Save";
+    if (hint) hint.textContent = "No steps need re-checking.";
+  } else {
+    const s = est.stepsToVerify === 1 ? "step" : "steps";
+    btn.textContent = `Save — re-checks ${est.stepsToVerify} ${s} (~${est.estimatedSeconds}s)`;
+    // maxLlmCalls is a CEILING. Grounding is DOM-first and usually spends none, so promising
+    // "N model calls" would make the common zero-cost save read as a bug.
+    if (hint) {
+      const cost = est.maxLlmCalls
+        ? `Opens the site to re-check the marked ${s} · up to ${est.maxLlmCalls} model call${est.maxLlmCalls === 1 ? "" : "s"}.`
+        : `Opens the site to re-check the marked ${s}.`;
+      // Said BEFORE the click. A sign-in request that arrives unannounced mid-save is the kind of
+      // thing people refuse on reflex — and refusing it here means the check simply cannot run.
+      hint.textContent = est.needsCredentials
+        ? `${cost} The step is behind a login, so this will sign in first.`
+        : cost;
+    }
+  }
+
+  const verify = new Set(est?.stepIdsToVerify ?? []);
+  document.querySelectorAll("#cdLines .cd-line").forEach((row) => {
+    row.classList.toggle("will-verify", !caseEditorBusy() && verify.has(row.dataset.sid));
+  });
+
+  const errEl = document.getElementById("cdEstimateError");
+  if (!errEl) return;
+  if (!caseEditor.estimateError) { errEl.innerHTML = ""; return; }
+
+  // The estimate is the cheapest place a badly-worded line surfaces — it runs while the person is
+  // still typing, before any browser or save. So it is also the right place to offer the way out.
+  // Rendered HERE rather than in paintStepsTab because this function deliberately does not
+  // repaint: a repaint mid-typing steals the caret out of the line being fixed.
+  const offer = caseEditor.nlSteps && roleAtLeast(auth.role, "tester");
+  errEl.innerHTML = `
+    <p class="team-error">${escapeHtml(caseEditor.estimateError)}</p>
+    ${offer ? `<button type="button" class="dl-btn-inline" id="cdTranslate">Write it for me</button>` : ""}`;
+  const tb = document.getElementById("cdTranslate");
+  if (tb) tb.addEventListener("click", () => doTranslateSteps(tb));
+}
+
+/**
+ * Ask the server to say the unreadable line(s) in the vocabulary the parser accepts.
+ *
+ * Sends the CURRENT draft, gets back a proposal, and puts it in exactly the same `caseEditor
+ * .proposal` slot the "Ask for a change" card uses — so it renders through the same diff, is
+ * approved with the same Apply button, and Apply still only FILLS the editor. Nothing here is a
+ * shortcut past Save: the sentences still get parsed, still get re-grounded, still mint a version.
+ * A second approval path would be a second set of guarantees.
+ */
+async function doTranslateSteps(btn) {
+  if (!caseEditor) return;
+  const editor = caseEditor;
+  btn.disabled = true;
+  btn.textContent = "Writing…";
+  try {
+    const proposal = await api(`/api/cases/${encodeURIComponent(editor.caseId)}/steps/translate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ steps: caseLinesPayload() }),
+    });
+    if (caseEditor !== editor) return;
+    editor.proposal = proposal;
+    editor.notice = "";
+  } catch (err) {
+    if (caseEditor !== editor) return;
+    editor.proposal = null;
+    editor.estimateError = err.message;
+  }
+  editor.repaint?.();
+}
+
+// ------------------------------------------------------------------------ save
+
+async function saveCaseSteps(c, repaint) {
+  if (!caseEditor || !caseEditorDirty()) return;
+  const editor = caseEditor;
+  editor.errorAt = null;
+  editor.errorMsg = "";
+  editor.notice = "";
+  editor.conflict = null;
+
+  const btn = document.getElementById("cdSave");
+  if (btn) btn.disabled = true;
+
+  let res;
+  try {
+    res = await fetch(`/api/cases/${encodeURIComponent(editor.caseId)}/steps`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        steps: caseLinesPayload(),
+        // Held from the moment the case loaded. This is what turns a silent clobber into a
+        // visible conflict.
+        expectedVersion: editor.currentVersion,
+        changeNote: "Edited steps",
+      }),
+    });
+  } catch (err) {
+    editor.errorMsg = String(err.message ?? err);
+    return repaint();
+  }
+
+  const body = await res.json().catch(() => ({}));
+
+  if (res.status === 409) {
+    editor.conflict = body;
+    return repaint();
+  }
+  if (!res.ok) {
+    editor.errorMsg = body.error || `That didn't work (${res.status}).`;
+    // The server names the offending step, so the message lands on that row rather than
+    // floating above a list of nine.
+    editor.errorAt = typeof body.stepIndex === "number" ? body.stepIndex : null;
+    return repaint();
+  }
+
+  // ---- fast path: nothing pointed anywhere new, so nothing had to be verified.
+  if (res.status === 200) {
+    return finishCaseSave(body, repaint);
+  }
+
+  // ---- job path
+  editor.job = {
+    jobId: body.jobId,
+    total: body.stepsToVerify ?? 0,
+    done: 0,
+    states: {},
+    seen: 0,
+    timer: null,
+    cancelling: false,
+  };
+  (body.stepIdsToVerify ?? []).forEach((id) => { editor.job.states[id] = "pending"; });
+  repaint();
+  pollCaseJob(c, repaint);
+}
+
+/** Shared tail of both save paths. */
+function finishCaseSave(payload, repaint) {
+  const steps = payload.steps ?? payload.case?.steps;
+  const updated = payload.case ?? payload;
+  caseEditor.job = null;
+  caseEditor.lines = (steps ?? caseLinesPayload().map((t, i) => ({ id: `s${i + 1}`, text: t })))
+    .map((s) => ({ id: s.id, text: s.text }));
+  caseEditor.original = JSON.stringify(caseLinesPayload());
+  caseEditor.currentVersion = updated.currentVersion ?? caseEditor.currentVersion;
+  caseEditor.estimate = null;
+  caseEditor.notice = `Saved as v${caseEditor.currentVersion}.`;
+  toast(`Saved as v${caseEditor.currentVersion}.`);
+  caseEditor.reloadNeeded = true;
+  repaint();
+}
+
+/**
+ * Follow a re-ground.
+ *
+ * Polls /state rather than opening an EventSource: this codebase already established that pattern
+ * for runs (SSE buffers behind a Cloudflare tunnel and only flushes on close — see the comment on
+ * /api/runs/:runId/events), and the same reasoning applies unchanged here. The route is offered as
+ * SSE with /state as the poll fallback; this takes the fallback deliberately.
+ */
+async function pollCaseJob(c, repaint) {
+  if (!caseEditor?.job) return;
+  const editor = caseEditor;
+  const job = editor.job;
+
+  let events = [];
+  try {
+    events = await api(
+      `/api/cases/${encodeURIComponent(editor.caseId)}/steps/jobs/${encodeURIComponent(job.jobId)}/state`);
+  } catch (err) {
+    // The server restarted, or the session expired. Job state is in memory, so the edit is simply
+    // not saved — say that rather than spinning forever.
+    if (caseEditor !== editor) return;
+    editor.job = null;
+    editor.errorMsg = `Lost track of this save (${err.message}). Nothing was saved — press Save to try again.`;
+    return repaint();
+  }
+  if (caseEditor !== editor || editor.job !== job) return;
+
+  let terminal = null;
+  for (const ev of events.slice(job.seen)) {
+    job.seen++;
+    if (ev.stage === "ir" && ev.data?.stepId) {
+      const { stepId, done, total, phase } = ev.data;
+      if (phase === "walking" || phase === "grounding") {
+        Object.keys(job.states).forEach((id) => {
+          if (job.states[id] === "verifying") job.states[id] = "ok";
+        });
+        if (job.states[stepId] !== undefined) job.states[stepId] = "verifying";
+        job.done = typeof done === "number" ? done : job.done;
+        if (typeof total === "number" && total) job.total = total;
+      }
+    }
+    // The walk is parked on a login it has no credentials for. Same modal a run uses — it posts
+    // to the job instead of a run, which is the only difference between the two cases.
+    if (ev.stage === "credentials") {
+      if (ev.status === "started") {
+        showCredentialPrompt(job.jobId, ev.data,
+          `/api/cases/${encodeURIComponent(editor.caseId)}/steps/jobs/${encodeURIComponent(job.jobId)}/credentials`);
+      } else {
+        // Answered, skipped, or timed out server-side. Close it either way so a stale form can't
+        // sit over a job that has already moved on.
+        if (credRunId === job.jobId) hideCredentialPrompt();
+      }
+    }
+    if (ev.stage === "done" || ev.stage === "error") terminal = ev;
+  }
+
+  if (!terminal) {
+    job.timer = setTimeout(() => pollCaseJob(c, repaint), 800);
+    paintCaseJobBanner();
+    return;
+  }
+
+  // ---- terminal
+  // However this ended — saved, failed, cancelled — a credential form still open belongs to a job
+  // that no longer exists, and answering it would 409.
+  if (credRunId === job.jobId) hideCredentialPrompt();
+
+  const d = terminal.data ?? {};
+  if (terminal.stage === "done" && d.saved) {
+    return finishCaseSave(d, repaint);
+  }
+
+  editor.job = null;
+
+  if (d.cancelled) {
+    // Cancel is NOT an undo: nothing was written, so there is nothing to undo. Saying "reverted"
+    // would send someone looking for a version that was never created.
+    editor.notice = "Cancelled — nothing was saved. Your edits are still here.";
+    return repaint();
+  }
+  if (d.conflict) {
+    editor.errorMsg =
+      `${terminal.error || "Someone else saved while this was verifying."} Reload to see their version.`;
+    return repaint();
+  }
+
+  editor.errorMsg = terminal.error || "That save could not be verified.";
+  editor.errorAt = typeof d.stepIndex === "number" ? d.stepIndex : null;
+  // Two shapes, two remedies. "could not reach" means an EARLIER step is the real problem, so the
+  // marker belongs on where the walk stopped — not on the step that was edited.
+  editor.errorKind = /could not reach|never arrived|failed to reach/i.test(editor.errorMsg)
+    ? "reach" : "ground";
+  repaint();
+}
+
+/** Repaint only the banner, so progress updates don't tear down the right column. */
+function paintCaseJobBanner() {
+  const el = document.getElementById("cdJob");
+  if (!el || !caseEditor?.job) return;
+  const job = caseEditor.job;
+  el.innerHTML = `
+    <div class="cd-job">
+      <span class="cd-job-text">${job.cancelling
+        ? "Cancelling… the page being checked has to finish first."
+        : `Verifying ${Math.min(job.done + 1, job.total)} of ${job.total}…`}</span>
+      <button type="button" class="dl-btn-inline" id="cdCancel"${job.cancelling ? " disabled" : ""}>Cancel</button>
+    </div>`;
+  const cancel = document.getElementById("cdCancel");
+  if (cancel) cancel.addEventListener("click", cancelCaseJob);
+  document.querySelectorAll("#cdLines .cd-line").forEach((row) => {
+    const st = job.states[row.dataset.sid];
+    row.classList.toggle("is-pending", st === "pending");
+    row.classList.toggle("is-verifying", st === "verifying");
+    row.classList.toggle("is-ok", st === "ok");
+    const stateEl = row.querySelector(".cd-line-state");
+    if (stateEl) stateEl.textContent = st === "verifying" ? "verifying…" : st === "ok" ? "ok" : st === "pending" ? "pending" : "";
+  });
+}
+
+async function cancelCaseJob() {
+  if (!caseEditor?.job || caseEditor.job.cancelling) return;
+  caseEditor.job.cancelling = true;
+  paintCaseJobBanner();
+  try {
+    await api(
+      `/api/cases/${encodeURIComponent(caseEditor.caseId)}/steps/jobs/${encodeURIComponent(caseEditor.job.jobId)}/cancel`,
+      { method: "POST" });
+  } catch { /* the poll will report whatever actually happened */ }
+}
+
+// --------------------------------------------------------------------- the view
+
+/** The canonical hash for a case. Falls back to the legacy shape when the caller has no project
+ *  to hand — applyRoute resolves that one from the case and rewrites the URL in place, so the
+ *  fallback is a working link rather than a dead one. */
+const caseHash = (projectId, caseId) =>
+  projectId
+    ? `#/projects/${encodeURIComponent(projectId)}/cases/${encodeURIComponent(caseId)}`
+    : `#/case/${encodeURIComponent(caseId)}`;
+
+async function renderCaseView(caseId, routeProjectId) {
+  // An editor belongs to exactly one case. Rendering a different one drops it — the route guard
+  // has already asked about unsaved work by this point, so anything still here was abandoned.
+  if (caseEditor && caseEditor.caseId !== caseId) { stopFollowingCaseJob(); caseEditor = null; }
+
+  const body = document.getElementById("caseViewBody");
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+
+  let c, stepsDoc;
+  try {
+    [c, stepsDoc] = await Promise.all([
+      api(`/api/cases/${encodeURIComponent(caseId)}`),
+      api(`/api/cases/${encodeURIComponent(caseId)}/steps`),
+    ]);
+  } catch (err) {
+    // Includes the 503 when there is no database configured — this screen reads library rows, so
+    // it cannot degrade to anything useful. Say why rather than throwing into the console.
+    body.innerHTML =
+      `<div class="tree-empty" style="padding:36px 16px;text-align:center">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  // The route may not carry a project (an old `#/case/:id` link). Resolve it from the case and
+  // quietly make the URL canonical — replaceState fires no hashchange, so this cannot re-render.
+  const projectId = c.projectId;
+  if (routeProjectId !== projectId) {
+    const want = caseHash(projectId, caseId);
+    if (location.hash !== want) {
+      history.replaceState(null, "", want);
+      lastHash = want;
+    }
+  }
+
+  const canAuthor = roleAtLeast(auth.role, "tester");
+  const canDelete = roleAtLeast(auth.role, "admin");
+
+  // Names for the breadcrumb. Both are best-effort: a missing one degrades to a quieter crumb
+  // rather than blocking the screen the user asked for.
+  let projectName = "", suiteName = "";
+  try {
+    const p = (projectsCache ?? []).find((x) => x.id === projectId);
+    projectName = p?.name ?? "";
+    if (c.suiteIds?.length) {
+      const suites = (await api(`/api/suites?projectId=${encodeURIComponent(projectId)}`)).suites ?? [];
+      suiteName = suites.find((s) => c.suiteIds.includes(s.id))?.name ?? "";
+    }
+  } catch { /* breadcrumb only */ }
+
+  setCrumbs([projectName || "Case", c.title]);
+
+  if (!caseEditor) {
+    caseEditor = {
+      caseId,
+      lines: stepsDoc.steps.map((s) => ({ id: s.id, text: s.text })),
+      original: JSON.stringify(stepsDoc.steps.map((s) => s.text)),
+      currentVersion: c.currentVersion,
+      expected: stepsDoc.expected ?? "",
+      estimate: null, estimateTimer: null, estimateError: "",
+      job: null, errorAt: null, errorMsg: "", errorKind: "",
+      conflict: null, askText: "", proposal: null, notice: "", reloadNeeded: false,
+      // Whether this server will translate loosely-typed lines. Comes from the server rather
+      // than being assumed, because the browser has no parser and no Gemini key of its own —
+      // guessing would mean offering a button that 404s.
+      nlSteps: stepsDoc.nlSteps === true,
+    };
+  } else if (caseEditor.reloadNeeded) {
+    // A save landed: adopt the server's canonical version/steps without losing the notice.
+    caseEditor.reloadNeeded = false;
+    caseEditor.currentVersion = c.currentVersion;
+  }
+
+  const repaint = () => {
+    if (caseEditor?.reloadNeeded) return renderCaseView(caseId, projectId);
+    paintCaseScreen();
+  };
+  // Module-scope helpers (refreshCaseSaveAffordance, doTranslateSteps) live outside this
+  // closure and still need a way to redraw. They get the SAME `repaint` the rest of the screen
+  // uses, so a reload-needed editor is honoured identically no matter who triggered the paint.
+  caseEditor.repaint = repaint;
+
+  function paintCaseScreen() {
+    const dirty = caseEditorDirty();
+    const busy = caseEditorBusy();
+
+    body.innerHTML = `
+      <div class="cd-head">
+        <div class="cd-head-main">
+          <div class="cd-crumb">${escapeHtml([projectName, suiteName].filter(Boolean).join(" / ") || "TEST CASE")}</div>
+          <div class="cd-meta">
+            <span class="case-badge ${caseBadgeClass(c.lastRunStatus)}">${escapeHtml(caseStatusLabel(c.lastRunStatus))}</span>
+            <span class="cd-version">v${caseEditor.currentVersion} · ${c.versions.length} version${c.versions.length === 1 ? "" : "s"}</span>
+            <span class="case-badge badge-truncated" id="cdUnsaved"${dirty ? "" : ` style="display:none"`}>UNSAVED</span>
+          </div>
+          <input class="cd-title" id="cdTitle" value="${escapeHtml(c.title)}"
+                 ${canAuthor ? "" : "readonly"} aria-label="Case title" />
+          <p class="cd-why">${escapeHtml(c.ir?.meta?.sourcePrompt || c.feature || "No description recorded for this case.")}</p>
+        </div>
+        <div class="cd-actions">
+          ${canAuthor ? `<button type="button" class="dl-btn-inline cd-save" id="cdSave" disabled>Save</button>` : ""}
+          ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="duplicate">Duplicate</button>` : ""}
+          ${c.versions.length > 1 ? `<button type="button" class="dl-btn-inline" data-act="compare">Compare versions</button>` : ""}
+          ${canDelete ? `<button type="button" class="dl-btn-inline" data-act="delete">Delete case</button>` : ""}
+          ${canAuthor ? `<button type="button" class="run-btn lib-run-all" data-act="run">${icon("play", { size: 13 })} Run case</button>` : ""}
+        </div>
+      </div>
+
+      <div id="caseFeedback">
+        ${caseEditor.notice ? `<p class="team-ok">${escapeHtml(caseEditor.notice)}</p>` : ""}
+        ${caseEditor.errorMsg && caseEditor.errorAt === null
+          ? `<p class="team-error">${escapeHtml(caseEditor.errorMsg)}</p>` : ""}
+      </div>
+      <div id="cdConflict">${caseEditor.conflict ? conflictHtml(caseEditor.conflict) : ""}</div>
+      <div id="caseSuites"></div>
+
+      <div class="seg" id="caseTabs" role="group" aria-label="Case sections">
+        <button type="button" class="seg-btn${caseTab === "steps" ? " active" : ""}" data-tab="steps">Steps</button>
+        <button type="button" class="seg-btn${caseTab === "script" ? " active" : ""}" data-tab="script">Script</button>
+        <button type="button" class="seg-btn${caseTab === "runs" ? " active" : ""}" data-tab="runs">Runs &amp; versions</button>
+      </div>
+      <div id="caseBody"></div>`;
+
+    paintSuites();
+    paintTabBody();
+    wireHeader();
+  }
+
+  function conflictHtml(k) {
+    const mine = caseLinesPayload();
+    const theirs = (k.current?.steps ?? []).map((s) => s.text);
+    return `
+      <div class="cd-conflict">
+        <div class="cd-conflict-head">${escapeHtml(k.error || "This case changed while you were editing it.")}</div>
+        <div class="cd-conflict-cols">
+          <div class="cd-conflict-col">
+            <h4>Your steps</h4>
+            <ol>${mine.map((t) => `<li>${escapeHtml(t)}</li>`).join("")}</ol>
+          </div>
+          <div class="cd-conflict-col">
+            <h4>Theirs — v${k.currentVersion}</h4>
+            <ol>${theirs.map((t) => `<li>${escapeHtml(t)}</li>`).join("")}</ol>
+          </div>
+        </div>
+        <div class="cd-conflict-actions">
+          <button type="button" class="dl-btn-inline" data-conflict="theirs">Discard mine, use theirs</button>
+          <button type="button" class="dl-btn-inline" data-conflict="mine">Keep mine on top of theirs</button>
+        </div>
+      </div>`;
+  }
+
+  function paintTabBody() {
+    const el = document.getElementById("caseBody");
+    if (caseTab === "steps") return paintStepsTab(el);
+    if (caseTab === "script") return paintScriptTab(el);
+    return paintRunsTab(el);
+  }
+
+  // ---------------------------------------------------------------- steps tab
+
+  function paintStepsTab(el) {
+    const busy = caseEditorBusy();
+    const verify = new Set(caseEditor.estimate?.stepIdsToVerify ?? []);
+
+    el.innerHTML = `
+      <div class="cd-cols">
+        <div class="cd-left">
+          <div class="cd-card">
+            <div class="cd-card-head">Steps — edit in plain English</div>
+            <div id="cdJob"></div>
+            <div id="cdEstimateError"></div>
+            <div class="cd-lines" id="cdLines">
+              ${caseEditor.lines.map((l, i) => lineHtml(l, i, verify, busy)).join("")}
+            </div>
+            ${canAuthor && !busy ? `<button type="button" class="cd-add" id="cdAdd">+ Add step</button>` : ""}
+            <div class="cd-expected">
+              <div class="cd-card-head">Expected outcome</div>
+              <div class="cd-expected-value">${escapeHtml(caseEditor.expected || "Not recorded.")}</div>
+            </div>
+            ${canAuthor ? `<p class="hrow-meta" id="cdSaveHint" style="margin-top:10px"></p>` : ""}
+            <p class="hrow-meta" style="margin-top:6px">Target: ${escapeHtml(c.ir?.meta?.baseUrl ?? "")}</p>
+          </div>
+        </div>
+        <div class="cd-right">
+          ${canAuthor ? `
+            <div class="cd-card cd-card-inset">
+              <div class="cd-card-label">Ask for a change</div>
+              <textarea class="cd-ask-text" id="cdAsk" placeholder="also assert the order total is unchanged"
+                        ${busy ? "disabled" : ""}>${escapeHtml(caseEditor.askText)}</textarea>
+              <button type="button" class="cd-ask-btn" id="cdRewrite"${busy ? " disabled" : ""}>Rewrite steps</button>
+              <div id="cdProposal">${caseEditor.proposal ? proposalHtml(caseEditor.proposal) : ""}</div>
+            </div>` : ""}
+          <div class="cd-card">
+            <div class="cd-card-head">Latest result</div>
+            <div class="cd-meta">
+              <span class="case-badge ${caseBadgeClass(c.lastRunStatus)}">${escapeHtml(caseStatusLabel(c.lastRunStatus))}</span>
+              <span class="hrow-meta" id="cdLastMeta">${c.lastRunAt ? escapeHtml(formatWhen(c.lastRunAt)) : "Never run"}</span>
+            </div>
+            <div id="cdShot">
+              <div class="cd-shot"><span class="cd-shot-label">no screenshot yet</span></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    wireSteps();
+    refreshCaseSaveAffordance();
+    if (busy) paintCaseJobBanner();
+    paintLatestResult();
+  }
+
+  function lineHtml(l, i, verify, busy) {
+    const st = caseEditor.job?.states?.[l.id];
+    const bad = caseEditor.errorAt === i;
+    const cls = [
+      "cd-line",
+      !busy && verify.has(l.id) ? "will-verify" : "",
+      st === "pending" ? "is-pending" : st === "verifying" ? "is-verifying" : st === "ok" ? "is-ok" : "",
+      bad ? "is-bad" : "",
+    ].filter(Boolean).join(" ");
+
+    return `
+      <div class="${cls}" data-sid="${escapeHtml(l.id)}">
+        <span class="cd-line-num">${i + 1}</span>
+        <input class="cd-line-input" type="text" data-i="${i}"
+               value="${escapeHtml(l.text)}" ${canAuthor && !busy ? "" : "disabled"} />
+        ${busy ? `<span class="cd-line-state">${st === "verifying" ? "verifying…" : st === "ok" ? "ok" : st === "pending" ? "pending" : ""}</span>` : ""}
+        ${canAuthor && !busy ? `
+          <button type="button" class="cd-line-btn" data-ed="up" data-i="${i}" title="Move up"${i === 0 ? " disabled" : ""}>↑</button>
+          <button type="button" class="cd-line-btn" data-ed="down" data-i="${i}" title="Move down"${i === caseEditor.lines.length - 1 ? " disabled" : ""}>↓</button>
+          <button type="button" class="cd-line-btn cd-line-del" data-ed="del" data-i="${i}" title="Remove">×</button>` : ""}
+      </div>
+      ${bad ? `<p class="cd-line-err">${escapeHtml(caseEditor.errorMsg)}${
+        caseEditor.errorKind === "reach"
+          ? " — an earlier step is the real problem; this is where the walk stopped."
+          : ""}</p>` : ""}`;
+  }
+
+  function wireSteps() {
+    // `input` updates state and re-estimates but does NOT repaint — a repaint mid-typing would
+    // steal the caret. The full repaint happens on structural changes only.
+    document.querySelectorAll("#cdLines .cd-line-input").forEach((input) => {
+      input.addEventListener("input", () => {
+        caseEditor.lines[Number(input.dataset.i)].text = input.value;
+        caseEditor.errorAt = null;
+        caseEditor.errorMsg = "";
+        caseEditor.notice = "";
+        scheduleCaseEstimate(repaint);
+        refreshCaseSaveAffordance();
+      });
+    });
+
+    document.querySelectorAll("#cdLines [data-ed]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const i = Number(btn.dataset.i);
+        const act = btn.dataset.ed;
+        const lines = caseEditor.lines;
+        caseEditor.errorAt = null; caseEditor.errorMsg = ""; caseEditor.notice = "";
+        if (act === "up") [lines[i - 1], lines[i]] = [lines[i], lines[i - 1]];
+        if (act === "down") [lines[i + 1], lines[i]] = [lines[i], lines[i + 1]];
+        if (act === "del") lines.splice(i, 1);
+        scheduleCaseEstimate(repaint);
+        paintTabBody();
+      });
+    });
+
+    const add = document.getElementById("cdAdd");
+    if (add) add.addEventListener("click", () => {
+      caseEditor.lines.push({ id: nextLineId(caseEditor.lines), text: 'Click on button "Submit"' });
+      caseEditor.notice = "";
+      scheduleCaseEstimate(repaint);
+      paintTabBody();
+    });
+
+    const ask = document.getElementById("cdAsk");
+    if (ask) ask.addEventListener("input", () => { caseEditor.askText = ask.value; });
+
+    const rewrite = document.getElementById("cdRewrite");
+    if (rewrite) rewrite.addEventListener("click", () => doRewrite(rewrite));
+
+    document.querySelectorAll("#cdProposal [data-prop]").forEach((b) => {
+      b.addEventListener("click", () => {
+        if (b.dataset.prop === "apply") {
+          // Apply only FILLS the editor. The user still presses Save, still sees the estimate,
+          // still gets the re-ground — one way into the library, whoever wrote the sentences.
+          const proposed = caseEditor.proposal.steps;
+          caseEditor.lines = proposed.map((text, i) => ({
+            id: caseEditor.lines[i]?.id ?? `s${i + 1}`, text,
+          }));
+          caseEditor.notice = "Proposal applied to the editor — nothing is saved until you press Save.";
+          // The line that failed to parse has just been replaced, so the message about it is
+          // already wrong. Clearing it now rather than waiting for the next estimate keeps the
+          // "Write it for me" button from sitting under a proposal the user just accepted.
+          caseEditor.estimateError = "";
+        }
+        caseEditor.proposal = null;
+        scheduleCaseEstimate(repaint);
+        paintCaseScreen();
+      });
+    });
+  }
+
+  async function doRewrite(btn) {
+    const instruction = (caseEditor.askText || "").trim();
+    if (!instruction) { caseEditor.errorMsg = "Say what you would like changed."; return paintCaseScreen(); }
+    btn.disabled = true;
+    btn.textContent = "Asking…";
+    try {
+      caseEditor.proposal = await api(`/api/cases/${encodeURIComponent(caseId)}/rewrite`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction }),
+      });
+      caseEditor.errorMsg = "";
+    } catch (err) {
+      caseEditor.errorMsg = err.message;
+      caseEditor.proposal = null;
+    }
+    paintCaseScreen();
+  }
+
+  function proposalHtml(p) {
+    // Reuses the Compare screen's LCS diff so an inserted step shifts nothing after it.
+    const { left, right } = diffSteps(p.before, p.steps);
+    const rows = [];
+    left.forEach((l) => { if (l.k === "removed") rows.push({ k: "del", t: l.t }); });
+    right.forEach((r) => rows.push({ k: r.k === "added" ? "add" : "same", t: r.t }));
+    // Both the rewrite and the translation land here. `translatedIndexes` is what distinguishes
+    // them, and the heading matters: "we changed your test" and "we spelled your test properly"
+    // deserve different amounts of scrutiny from the person about to approve the diff.
+    const translated = Array.isArray(p.translatedIndexes);
+    return `
+      <div class="cd-proposal">
+        <p class="cd-proposal-note">${translated
+          ? `Re-worded line${p.translatedIndexes.length === 1 ? "" : "s"} ${
+              p.translatedIndexes.map((i) => i + 1).join(", ")} — the rest is untouched.`
+          : "Proposed change"}</p>
+        ${p.note ? `<p class="cd-proposal-note">${escapeHtml(p.note)}</p>` : ""}
+        <div class="cd-diff">
+          ${rows.map((r) => `<div class="cd-diff-line cd-diff-${r.k}">${escapeHtml(r.t)}</div>`).join("")}
+        </div>
+        <div class="cd-proposal-actions">
+          <button type="button" class="dl-btn-inline" data-prop="apply">Apply to editor</button>
+          <button type="button" class="dl-btn-inline" data-prop="discard">Discard</button>
+        </div>
+      </div>`;
+  }
+
+  /** The last run's final screenshot, read from the artifact the run already wrote. */
+  async function paintLatestResult() {
+    const el = document.getElementById("cdShot");
+    const metaEl = document.getElementById("cdLastMeta");
+    if (!el) return;
+    let runs = [];
+    try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; } catch { return; }
+    const last = runs[0];
+    if (!last) return;
+
+    if (metaEl) {
+      metaEl.textContent =
+        `${last.ranAt ? formatWhen(last.ranAt) : ""} · v${caseEditor.currentVersion} · ${last.runId}`;
+    }
+    try {
+      const result = await fetch(`/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/05-result.json`)
+        .then((r) => (r.ok ? r.json() : null));
+      const shot = result?.screenshotUrl;
+      if (!shot) return;
+      el.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="case ${last.caseIndex} · final screenshot" />`;
+      el.querySelector("img").addEventListener("click", () =>
+        openScreenshotModal(shot, `case ${last.caseIndex} · final screenshot`));
+    } catch { /* the hatched placeholder is already correct */ }
+  }
+
+  // --------------------------------------------------------------- script tab
+
+  async function paintScriptTab(el) {
+    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">Loading…</div></div>`;
+    let runs = [];
+    try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; } catch { /* below */ }
+    const last = runs[0];
+
+    // There is no endpoint that generates a spec from a stored IR — the generator runs as part of
+    // a run. So this shows the spec the last run actually emitted, which is the real artifact
+    // rather than a re-derivation that could differ from what executed.
+    let text = "";
+    if (last) {
+      text = await fetch(`/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/generated.spec.ts`)
+        .then((r) => (r.ok ? r.text() : "")).catch(() => "");
+    }
+
+    if (!text) {
+      el.innerHTML = `
+        <div class="panel"><div class="tree-empty" style="padding:34px 16px;text-align:center">
+          No script yet — the spec is written when this case runs.
+          ${canAuthor ? "Press <b>Run case</b> to generate one." : ""}
+        </div></div>`;
+      return;
+    }
+
+    el.innerHTML = `
+      <div class="panel" style="padding:0;overflow:hidden">
+        <div class="cd-script-head">
+          <span class="cd-script-name">generated.spec.ts</span>
+          <a class="dl-btn-inline" href="/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/generated.spec.ts"
+             download="${escapeHtml(c.title)}.spec.ts">Download .spec.ts</a>
+        </div>
+        <pre class="cd-script-body">${escapeHtml(text)}</pre>
+        <div class="cd-script-foot">From the run on ${escapeHtml(last.ranAt ? formatWhen(last.ranAt) : last.runId)}. Edit the steps and press Save to cut a new version.</div>
+      </div>`;
+  }
+
+  // ----------------------------------------------------------- runs & versions
+
+  async function paintRunsTab(el) {
+    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">Loading…</div></div>`;
+    let runs = [];
+    let runsError = "";
+    try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; }
+    catch (err) { runsError = err.message; }
+
+    el.innerHTML = `
+      <div class="cd-cols">
+        <div class="cd-left" style="flex:1 1 320px">
+          <div class="panel" style="padding:0;overflow:hidden">
+            <div class="cd-script-head"><span class="cd-card-head" style="margin:0">Previous runs</span></div>
+            <div id="cdRunRows"></div>
+          </div>
+        </div>
+        <div class="cd-right" style="flex:1 1 300px">
+          <div class="panel" style="padding:0;overflow:hidden">
+            <div class="cd-script-head"><span class="cd-card-head" style="margin:0">Versions</span></div>
+            <div id="cdVersionRows"></div>
+          </div>
+        </div>
+      </div>`;
+
+    const rowsEl = document.getElementById("cdRunRows");
+    rowsEl.innerHTML = runsError
+      ? `<div class="tree-empty" style="padding:24px 16px;text-align:center">${escapeHtml(runsError)}</div>`
+      : runs.length
+      ? runs.map((r) => `
+          <div class="hrow">
+            <span class="case-badge ${caseBadgeClass(r.status)}">${escapeHtml(caseStatusLabel(r.status))}</span>
+            <div class="hrow-main">
+              <div class="hrow-label">${escapeHtml(r.ranAt ? formatWhen(r.ranAt) : r.runId)}</div>
+              <div class="hrow-meta">${escapeHtml(r.runId)} · ${escapeHtml(r.resultPath)}</div>
+            </div>
+            <div class="hrow-actions">
+              <button type="button" class="dl-btn-inline" data-run="${escapeHtml(r.runId)}">Open run</button>
+            </div>
+          </div>`).join("")
+      : `<div class="tree-empty" style="padding:28px 16px;text-align:center">
+           No runs recorded for this case yet. Run history is indexed from the first replay after the
+           case library shipped, so older runs will not appear here.
+         </div>`;
+
+    rowsEl.querySelectorAll("[data-run]").forEach((b) =>
+      b.addEventListener("click", () => navigate("#/run/" + encodeURIComponent(b.dataset.run))));
+
+    const vEl = document.getElementById("cdVersionRows");
+    vEl.innerHTML = c.versions.length
+      ? c.versions.map((v) => `
+          <div class="hrow">
+            <span class="case-badge badge-pending">v${v.version}</span>
+            <div class="hrow-main">
+              <div class="hrow-label">${escapeHtml(v.changeNote || "No note")}</div>
+              <div class="hrow-meta">${escapeHtml(v.savedAt ? formatWhen(v.savedAt) : "")}</div>
+            </div>
+            <div class="hrow-actions">
+              ${v.version !== caseEditor.currentVersion
+                ? `<button type="button" class="dl-btn-inline" data-v="${v.version}">Compare with current</button>`
+                : `<span class="hrow-meta">current</span>`}
+            </div>
+          </div>`).join("")
+      : `<div class="tree-empty" style="padding:24px 16px;text-align:center">No version history yet.</div>`;
+
+    vEl.querySelectorAll("[data-v]").forEach((b) =>
+      b.addEventListener("click", () =>
+        navigate(`#/compare/${encodeURIComponent(caseId)}?from=${b.dataset.v}&to=${caseEditor.currentVersion}`)));
+  }
+
+  // ------------------------------------------------------------------- wiring
+
+  function wireHeader() {
+    document.getElementById("caseTabs").addEventListener("click", (e) => {
+      const btn = e.target.closest(".seg-btn");
+      if (!btn) return;
+      caseTab = btn.dataset.tab;
+      document.querySelectorAll("#caseTabs .seg-btn").forEach((b) => b.classList.toggle("active", b === btn));
+      paintTabBody();
+    });
+
+    const save = document.getElementById("cdSave");
+    if (save) save.addEventListener("click", () => saveCaseSteps(c, repaint));
+
+    const title = document.getElementById("cdTitle");
+    if (title && canAuthor) title.addEventListener("change", async () => {
+      const next = title.value.trim();
+      if (!next || next === c.title) { title.value = c.title; return; }
+      try {
+        await api(`/api/cases/${encodeURIComponent(caseId)}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: next }),
+        });
+        c.title = next;
+        toast("Renamed.");
+        setCrumbs([projectName || "Case", next]);
+      } catch (err) {
+        title.value = c.title;
+        document.getElementById("caseFeedback").innerHTML = `<p class="team-error">${escapeHtml(err.message)}</p>`;
+      }
+    });
+
+    document.querySelectorAll("#cdConflict [data-conflict]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const theirs = (caseEditor.conflict.current?.steps ?? []).map((s) => ({ id: s.id, text: s.text }));
+        const mine = caseEditor.lines;
+        if (b.dataset.conflict === "theirs") {
+          caseEditor.lines = theirs;
+          caseEditor.original = JSON.stringify(theirs.map((l) => l.text));
+          caseEditor.notice = "Using their version. Your edits are gone.";
+        } else {
+          // Re-apply your edits on top of theirs, then save against the version that actually won.
+          caseEditor.lines = mine;
+          caseEditor.original = JSON.stringify(theirs.map((l) => l.text));
+          caseEditor.notice = "Your edits are on top of their version — press Save to write them.";
+        }
+        caseEditor.currentVersion = caseEditor.conflict.currentVersion;
+        caseEditor.conflict = null;
+        caseEditor.reloadNeeded = false;
+        scheduleCaseEstimate(repaint);
+        paintCaseScreen();
+      });
+    });
+
+    body.querySelectorAll(".cd-actions [data-act]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const act = btn.dataset.act;
+        try {
+          if (act === "run") return startReplay({ caseIds: [caseId] }, `Replayed "${c.title}"`);
+          if (act === "compare") {
+            const prev = c.versions.find((v) => v.version !== caseEditor.currentVersion);
+            return navigate(`#/compare/${encodeURIComponent(caseId)}?from=${prev?.version ?? 1}&to=${caseEditor.currentVersion}`);
+          }
+          if (act === "duplicate") {
+            const copy = await api(`/api/cases/${encodeURIComponent(caseId)}/duplicate`, {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+            });
+            toast("Duplicated.");
+            stopFollowingCaseJob();
+            caseEditor = null;
+            await loadProjects();
+            return navigate(caseHash(copy.projectId ?? projectId, copy.id));
+          }
+          if (act === "delete") {
+            if (!confirm(`Delete "${c.title}"? This removes it from every suite it is in.`)) return;
+            await api(`/api/cases/${encodeURIComponent(caseId)}`, { method: "DELETE" });
+            stopFollowingCaseJob();
+            caseEditor = null;
+            toast("Case deleted.");
+            return navigate("#/");
+          }
+        } catch (err) {
+          document.getElementById("caseFeedback").innerHTML =
+            `<p class="team-error">${escapeHtml(err.message)}</p>`;
+        }
+      });
+    });
+  }
+
+  /**
+   * Which suites this case is in, and a way into another one.
+   *
+   * `suite_cases` is a join table precisely so a case can live in several suites at once — a login
+   * case belongs in both "Smoke" and "Auth". Without this the many-to-many is a schema detail
+   * nobody can reach.
+   */
+  async function paintSuites() {
+    const el = document.getElementById("caseSuites");
+    if (!el) return;
+    let all = [];
+    try {
+      all = ((await api(`/api/suites?projectId=${encodeURIComponent(projectId)}`)).suites ?? []);
+    } catch { el.innerHTML = ""; return; }
+
+    const inIds = new Set(c.suiteIds || []);
+    const inSuites = all.filter((s) => inIds.has(s.id));
+    const available = all.filter((s) => !inIds.has(s.id));
+
+    el.innerHTML = `
+      <div class="case-suites">
+        <span class="case-suites-label">Suites</span>
+        ${inSuites.length
+          ? inSuites.map((s) => `
+              <button type="button" class="case-suite-chip" data-goto="${escapeHtml(s.id)}"
+                      title="Open ${escapeHtml(s.name)}">${escapeHtml(s.name)}</button>`).join("")
+          : `<span class="hrow-meta">Not in any suite yet.</span>`}
+        ${canAuthor && available.length ? `
+          <select class="case-suite-pick" id="caseSuitePick" aria-label="Add this case to a suite">
+            <option value="">Add to suite…</option>
+            ${available.map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join("")}
+          </select>` : ""}
+      </div>`;
+
+    el.querySelectorAll("[data-goto]").forEach((b) =>
+      b.addEventListener("click", () => navigate("#/suite/" + encodeURIComponent(b.dataset.goto))));
+
+    const pick = document.getElementById("caseSuitePick");
+    if (pick) pick.addEventListener("change", async () => {
+      const suiteId = pick.value;
+      if (!suiteId) return;
+      pick.disabled = true;
+      try {
+        await api(`/api/suites/${encodeURIComponent(suiteId)}/cases`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ caseId }),
+        });
+        toast("Added to the suite.");
+        c.suiteIds = [...(c.suiteIds ?? []), suiteId];
+        await loadProjects();
+        paintSuites();
+      } catch (err) {
+        pick.disabled = false;
+        document.getElementById("caseFeedback").innerHTML =
+          `<p class="team-error">${escapeHtml(err.message)}</p>`;
+      }
+    });
+  }
+
+  paintCaseScreen();
+  if (caseEditorDirty()) scheduleCaseEstimate(repaint);
+}
+
+
+// -------------------------------------------------------------- Compare view
+
+/** Longest-common-subsequence diff over step lines, so an inserted step shifts nothing after it. */
+function diffSteps(a, b) {
+  const n = a.length, m = b.length;
+  const lcs = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const left = [], right = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { left.push({ t: a[i], k: "same" }); right.push({ t: b[j], k: "same" }); i++; j++; }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) { left.push({ t: a[i], k: "removed" }); i++; }
+    else { right.push({ t: b[j], k: "added" }); j++; }
+  }
+  while (i < n) left.push({ t: a[i++], k: "removed" });
+  while (j < m) right.push({ t: b[j++], k: "added" });
+  return { left, right };
+}
+
+async function renderCompareView(caseId, fromV, toV) {
+  const body = document.getElementById("compareViewBody");
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+
+  let c, A, B;
+  try {
+    c = await api(`/api/cases/${encodeURIComponent(caseId)}`);
+    const from = Number(fromV) || 1;
+    const to = Number(toV) || c.currentVersion;
+    [A, B] = await Promise.all([
+      api(`/api/cases/${encodeURIComponent(caseId)}/versions/${from}`),
+      api(`/api/cases/${encodeURIComponent(caseId)}/versions/${to}`),
+    ]);
+  } catch (err) {
+    body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  setCrumbs(["Compare", c.title]);
+  const aLines = A.ir.steps.map((s, i) => stepText(s, i).replace(/^\d+\.\s*/, ""));
+  const bLines = B.ir.steps.map((s, i) => stepText(s, i).replace(/^\d+\.\s*/, ""));
+  const { left, right } = diffSteps(aLines, bLines);
+  const added = right.filter((r) => r.k === "added").length;
+  const removed = left.filter((r) => r.k === "removed").length;
+
+  const col = (label, note, side) => `
+    <div class="cmp-col">
+      <div class="cmp-col-head">
+        <span class="case-badge badge-pending">v${label}</span>
+        <span class="hrow-meta">${escapeHtml(note || "")}</span>
+      </div>
+      <div class="cmp-steps">
+        ${side.map((s) => `<div class="cmp-step cmp-${s.k}">${escapeHtml(s.t)}</div>`).join("")}
+      </div>
+    </div>`;
+
+  body.innerHTML = `
+    <div>
+      <div class="eyebrow">COMPARE VERSIONS</div>
+      <h1 class="page-head-title">${escapeHtml(c.title)}</h1>
+      <p class="tagline">${added} step${added === 1 ? "" : "s"} added, ${removed} removed
+      between v${A.version} and v${B.version}.</p>
+    </div>
+    <div class="lib-toolbar">
+      <button type="button" class="dl-btn-inline" data-act="back">Back to case</button>
+    </div>
+    <div class="cmp-grid">
+      ${col(A.version, A.changeNote, left)}
+      ${col(B.version, B.changeNote, right)}
+    </div>`;
+
+  body.querySelector('[data-act="back"]').addEventListener("click", () =>
+    navigate(caseHash(c.projectId, caseId)));
+}
+
+const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login", "signup", "team"];
+let currentView = "home";
+
+/**
+ * The ONLY thing that switches screens.
+ *
+ * The pre-router code hid panels from three separate places and already leaked
+ * because of it (preview.js's play() forgot hideCaseSelectionPanel, so switching
+ * scenes left that panel open). With six screens that failure mode multiplies,
+ * so every hide lives here and nowhere else.
+ */
+function showView(name) {
+  if (!VIEWS.includes(name)) name = "home";
+  currentView = name;
+  document.querySelectorAll(".view").forEach((v) => {
+    v.classList.toggle("view-active", v.dataset.view === name);
+  });
+  closeSidebarDrawer();
+  window.scrollTo(0, 0);
+}
+
+/** Clears every run-scoped panel. Called on a new run, on switching runs, and
+ *  by preview.js between scenes — one function, so a new panel is registered
+ *  once instead of in three places that can drift apart. */
+function resetRunUI() {
+  renderPhases();
+  hideSingleTestResult();
+  hideSuiteResults();
+  hideSuiteProgress();
+  hideCredentialPrompt();
+  hideCaseSelectionPanel();
+  diagnosisEl.textContent = "";
+  runTitleEl.textContent = "";
+  runMetaEl.textContent = "";
+}
+
+function setCrumbs(parts) {
+  const tail = parts
+    .map((p) => `<span class="crumb-sep">/</span><span class="crumb-current">${escapeHtml(p)}</span>`)
+    .join("");
+  crumbsEl.innerHTML =
+    `<button type="button" class="crumb crumb-root" id="crumbRoot">Testbench</button>${tail}`;
+  crumbsEl.querySelector("#crumbRoot").addEventListener("click", () => navigate("#/"));
+}
+
+function navigate(hash) {
+  if (location.hash === hash) applyRoute();
+  else location.hash = hash;
+}
+
+// Where we were before the current hash change, so an unsaved edit can put it back.
+let lastHash = location.hash;
+let restoringHash = false;
+
+/** The browser's own guard, for reload / close / an external link — the in-app one below cannot
+ *  see those. The message is the browser's; the string only marks the event as blocking. */
+window.addEventListener("beforeunload", (e) => {
+  if (!caseEditorDirty()) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+
+/** Hash routing: no server routes needed, and express.static already 404s
+ *  anything it doesn't recognise, so a deep link can't hit the backend. */
+function applyRoute() {
+  const raw = (location.hash || "#/").replace(/^#\/?/, "");
+  const parts = raw.split("/");
+  const [head, id] = parts;
+
+  // The case screen has a canonical project-scoped shape and a legacy one. Both land on the same
+  // view — the legacy path learns its project from the case itself and rewrites the URL in place,
+  // so old links and bookmarks keep working rather than 404ing.
+  const caseRoute =
+    head === "projects" && parts[2] === "cases" && parts[3]
+      ? { caseId: parts[3].split("?")[0], projectId: decodeURIComponent(parts[1]) }
+      : head === "case" && id
+      ? { caseId: id.split("?")[0], projectId: null }
+      : null;
+
+  // Unsaved step edits. Leaving the case they belong to would discard them with no warning, and
+  // the back button reaches here too — so the check lives in the router rather than on each link.
+  if (restoringHash) { restoringHash = false; lastHash = location.hash; return; }
+  const stayingOnCase = !!caseRoute && caseRoute.caseId === caseEditor?.caseId;
+  if (caseEditorDirty() && !stayingOnCase) {
+    if (!confirm("You have unsaved step changes. Leave and discard them?")) {
+      // Guarded: if the hash is somehow already correct this would never fire hashchange, and
+      // the flag would poison the next navigation instead.
+      if (location.hash !== lastHash) { restoringHash = true; location.hash = lastHash; }
+      return;
+    }
+    stopFollowingCaseJob();
+    caseEditor = null;
+  }
+  // Left the case entirely with a clean editor — stop the progress poll so an abandoned screen
+  // isn't still talking to the server.
+  if (!stayingOnCase && caseEditor) { stopFollowingCaseJob(); caseEditor = null; }
+  lastHash = location.hash;
+
+  // Auth gate (Step 2.2). `auth.required` is only ever true when the server reported
+  // authEnabled:true, so with auth off this whole branch is dead code and routing behaves
+  // exactly as it always has. Routed through showView() like everything else — never by
+  // toggling .hidden, which is the bug showView()'s own comment documents.
+  if (auth.required && !auth.token) {
+    const wantsSignup = auth.screen === "signup";
+    showView(wantsSignup ? "signup" : "login");
+    setCrumbs([wantsSignup ? "Sign up" : "Sign in"]);
+    return;
+  }
+
+  if (head === "run" && id) {
+    showView("run");
+    setCrumbs(["Run"]);
+    if (id !== currentRunId) connectToRun(id);
+    return;
+  }
+  if (head === "history") {
+    showView("history");
+    setCrumbs(["History"]);
+    renderHistoryView();
+    return;
+  }
+  if (head === "team") {
+    showView("team");
+    setCrumbs(["Team"]);
+    renderTeamView();
+    return;
+  }
+  // The library (Steps 5.2/5.3/5.5). These were empty stubs from the first slice; they render
+  // real data now. Each render sets its own crumbs once it knows the suite/case name, so the
+  // placeholder here is only what shows while the fetch is in flight.
+  //
+  // `id` is split off the hash above, so a query string rides along on it — strip it before use
+  // and read the version pair from it for Compare.
+  if (head === "suite" && id) {
+    showView("suite");
+    setCrumbs(["Suite"]);
+    renderSuiteView(id.split("?")[0]);
+    return;
+  }
+  if (caseRoute) {
+    showView("case");
+    setCrumbs(["Case"]);
+    renderCaseView(caseRoute.caseId, caseRoute.projectId);
+    return;
+  }
+  if (head === "compare" && id) {
+    showView("compare");
+    setCrumbs(["Compare"]);
+    const [bare, query] = id.split("?");
+    const params = new URLSearchParams(query ?? "");
+    renderCompareView(bare, params.get("from"), params.get("to"));
+    return;
+  }
+
+  showView("home");
+  setCrumbs([]);
+}
+
+window.addEventListener("hashchange", applyRoute);
+
+// -----------------------------------------------------------------------------
+// Sidebar drawer (narrow viewports only)
+// -----------------------------------------------------------------------------
+
+function openSidebarDrawer() {
+  sidebarEl.classList.add("open");
+  scrimEl.classList.remove("hidden");
+}
+function closeSidebarDrawer() {
+  sidebarEl.classList.remove("open");
+  scrimEl.classList.add("hidden");
+}
+sidebarOpenEl.addEventListener("click", openSidebarDrawer);
+sidebarCloseEl.addEventListener("click", closeSidebarDrawer);
+scrimEl.addEventListener("click", closeSidebarDrawer);
+
+// -----------------------------------------------------------------------------
+// Run options — the Settings popover
+//
+// These are per-run request options, not persisted server settings. The server
+// reads ENABLE_CASE_SELECTION_GATE from its own env; sending an override with a
+// run is what lets the popover mean anything without a settings backend.
+// -----------------------------------------------------------------------------
+
+// Only keys the user actually toggled are sent. An untouched popover therefore
+// leaves the server on its own env-configured default rather than the client
+// silently overriding it with a hardcoded guess.
+const runOptions = {};
+const optionDefaults = { gateReview: false, selfHeal: true };
+
+function paintToggle(el, on) { el.setAttribute("aria-pressed", String(on)); }
+
+function bindToggle(el, key) {
+  paintToggle(el, optionDefaults[key]);
+  el.addEventListener("click", () => {
+    const next = !(key in runOptions ? runOptions[key] : optionDefaults[key]);
+    runOptions[key] = next;
+    paintToggle(el, next);
+  });
+}
+bindToggle(gateToggleEl, "gateReview");
+bindToggle(healToggleEl, "selfHeal");
+
+fetch("/api/health")
+  .then((r) => r.json())
+  .then((h) => {
+    if (!h || !h.defaults) return;
+    Object.assign(optionDefaults, h.defaults);
+    if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);
+    if (!("selfHeal" in runOptions)) paintToggle(healToggleEl, optionDefaults.selfHeal);
+  })
+  .catch(() => { /* health is a diagnostic; the toggles still work without it */ });
+
+settingsBtnEl.addEventListener("click", () => {
+  const open = settingsPopEl.classList.toggle("hidden");
+  settingsBtnEl.setAttribute("aria-expanded", String(!open));
+});
+document.addEventListener("click", (e) => {
+  if (settingsPopEl.classList.contains("hidden")) return;
+  if (settingsPopEl.contains(e.target) || settingsBtnEl.contains(e.target)) return;
+  settingsPopEl.classList.add("hidden");
+  settingsBtnEl.setAttribute("aria-expanded", "false");
+});
+
+// -----------------------------------------------------------------------------
+// Coverage segmented control
+// -----------------------------------------------------------------------------
+
+let coverage = "standard";
+coverageSegEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".seg-btn");
+  if (!btn) return;
+  coverage = btn.dataset.coverage;
+  coverageSegEl.querySelectorAll(".seg-btn").forEach((b) => {
+    b.classList.toggle("active", b === btn);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Sidebar Projects tree — real projects, from GET /api/projects.
+//
+// This used to group runs by URL client-side because no project entity existed.
+// Step 5.1 made projects real rows, and the server now decides which ones you
+// may see: admins and owners get every project in the organisation, everyone
+// else only the ones they've been added to. So the list must come from the API —
+// grouping locally would show a viewer projects the server would refuse to serve
+// runs for.
+//
+// Run rows still come from allRunsCache (GET /api/runs), which is already scoped
+// the same way, matched to their project by the same normalised URL key the
+// backfill migration used. Depth is padding-left only via .tree-row.tree-*
+// (style.css) — a collapsed project simply never emits its run rows, so this
+// stays one flat array per that existing tree contract.
+// -----------------------------------------------------------------------------
+
+// Run-level status -> the .sdot modifier class (style.css). Run statuses that
+// don't have their own dot color share the nearest semantic one: an infra
+// "error" reads as blocked (couldn't complete), not failed (assertion broke).
+const RUN_SDOT_CLASS = {
+  passed: "passed",
+  failed: "failed",
+  incomplete: "unconfirmed",
+  truncated_no_assertion: "unconfirmed",
+  error: "blocked",
+};
+
+/** MUST match normaliseUrlKey() in src/server/projects.ts and the backfill migration's SQL —
+ *  it's how a run row finds the project row it belongs under. */
+function normalizeUrlKey(url) {
+  return (url || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
+}
+
+/**
+ * Fetch the projects this account may see.
+ *
+ * Never throws. A FAILED load is not the same as "no projects": running with no database
+ * configured at all is a supported mode (it is the default), and in it `/api/projects` can't
+ * answer because project rows live in Postgres. Falling back to the pre-Step-5.1 behaviour —
+ * grouping the run list by URL client-side — keeps that setup's sidebar exactly as it was
+ * instead of emptying it.
+ */
+async function loadProjects() {
+  try {
+    const res = await fetch("/api/projects");
+    const data = res.ok ? await res.json() : null;
+    projectsCache = data && Array.isArray(data.projects) ? data.projects : null;
+  } catch {
+    projectsCache = null;
+  }
+  projectsUnavailable = projectsCache === null;
+
+  // Suites are a separate call and a softer failure: without them the sidebar simply shows no
+  // library, which is strictly better than showing no projects either.
+  try {
+    const res = await fetch("/api/suites");
+    const data = res.ok ? await res.json() : null;
+    suitesCache = data && Array.isArray(data.suites) ? data.suites : [];
+  } catch {
+    suitesCache = [];
+  }
+
+  renderProjectsTree(allRunsCache);
+}
+
+/** Runs sharing a normalised URL become one pseudo-project. The pre-Step-5.1 sidebar, kept as the
+ *  fallback for the no-database case where real project rows are unreachable. */
+function groupRunsByUrl(runs) {
+  const groups = new Map();
+  for (const r of runs || []) {
+    const key = normalizeUrlKey(r.url) || "(no url)";
+    if (!groups.has(key)) groups.set(key, { id: key, name: r.url || "(no url)", runCount: 0 });
+    groups.get(key).runCount++;
+  }
+  return [...groups.values()];
+}
+
+function renderProjectsTree(runs) {
+  if (!sidebarTreeEl) return;
+
+  // Belt-and-braces with `body.role-no-admin #addProjectBtn` in style.css: the class covers the
+  // role, this covers the no-database case, where the sidebar is showing URL groupings rather
+  // than project rows and there is nothing a create button could write to.
+  if (addProjectBtnEl) addProjectBtnEl.classList.toggle("hidden", !canManageProjects());
+
+  if (projectsCache === null && !projectsUnavailable) {
+    sidebarTreeEl.innerHTML = `<div class="tree-empty">Loading projects…</div>`;
+    return;
+  }
+
+  // No database configured: fall back to the client-side URL grouping this sidebar used before
+  // projects were real rows, so that setup looks exactly as it did.
+  const projects = projectsCache === null ? groupRunsByUrl(runs) : projectsCache;
+
+  // The inline create/edit form, rendered wherever it is currently open. One markup path for both
+  // modes — they differ only in which button label and which handler the Save carries.
+  const projectFormHtml = () => `
+    <div class="tree-row tree-project-form">
+      <input type="text" class="project-form-input" id="projectFormName"
+             placeholder="Project name" value="${escapeHtml(projectFormName)}"
+             aria-label="Project name" />
+      <input type="text" class="project-form-input" id="projectFormUrl"
+             placeholder="Base URL (optional)" value="${escapeHtml(projectFormUrl)}"
+             aria-label="Base URL, optional" />
+      <div class="project-form-actions">
+        <button type="button" class="dl-btn-inline" data-project-save="1">${projectFormId ? "Save" : "Create"}</button>
+        <button type="button" class="dl-btn-inline" data-project-cancel="1" title="Cancel">×</button>
+      </div>
+    </div>
+    ${projectFormError ? `<div class="suite-new-err">${escapeHtml(projectFormError)}</div>` : ""}`;
+
+  const creating = projectFormOpen && !projectFormId;
+
+  if (!projects.length) {
+    // Two very different situations, and telling them apart matters: someone who just signed up
+    // has been deliberately given no access yet and needs to know who to ask, whereas an admin
+    // with an empty workspace just hasn't run anything. A bare "No projects yet" reads as a bug
+    // to the first person.
+    const needsAccess = auth.required && auth.role && !roleAtLeast(auth.role, "admin");
+    const emptyMsg = needsAccess
+      ? `<div class="tree-empty">You're not in any project yet. Ask an admin to add you to one.</div>`
+      : `<div class="tree-empty">No projects yet. Use + above to add one.</div>`;
+    // An admin with an empty workspace still needs the form — returning only the message here is
+    // what would leave a brand-new organisation with no way in.
+    sidebarTreeEl.innerHTML = (creating ? projectFormHtml() : "") + emptyMsg;
+    if (creating) bindProjectForm();
+    return;
+  }
+
+  // Bucket the visible runs under their project by URL key.
+  const byKey = new Map();
+  for (const r of runs || []) {
+    const key = normalizeUrlKey(r.url);
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(r);
+  }
+
+  const canManage = canManageProjects();
+
+  sidebarTreeEl.innerHTML = (creating ? projectFormHtml() : "") + projects.map((p) => {
+    const open = expandedProjects.has(p.id);
+    const projectRuns = byKey.get(normalizeUrlKey(p.name) || p.name) || [];
+    // The number on a project row is its SAVED CASE count, because the suite rows nested under it
+    // show case counts in the same `.tree-count` position. It used to show runs, so a project with
+    // 38 runs and 3 cases read as holding 38 cases — two units, one column.
+    //
+    // It counts EVERY case in the project, not the sum of its suites, so a case saved but filed in
+    // no suite still appears in the total. That means this number can legitimately be larger than
+    // its children add up to, and that is correct rather than a discrepancy.
+    //
+    // Defaults to 0, never blank: a project with no saved cases shows "0". The same default covers
+    // the DB-off fallback below, where `groupRunsByUrl` synthesises pseudo-projects that have no
+    // case count because there is no case library in that mode.
+    const caseCount = typeof p.caseCount === "number" ? p.caseCount : 0;
+
+    // The run count is not discarded — it moves into the row's tooltip where it can be LABELLED,
+    // rather than sitting in the tree as a bare number in the wrong unit. The server's figure is
+    // authoritative: it covers every run in the project, while the sidebar's own list is capped at
+    // the newest 20 read off disk.
+    const runCount = typeof p.runCount === "number" ? p.runCount : projectRuns.length;
+    const rowTitle = [
+      p.baseUrl || p.name,
+      `${caseCount} saved case${caseCount === 1 ? "" : "s"}`,
+      `${runCount} run${runCount === 1 ? "" : "s"}`,
+    ].join(" · ");
+    // Editing swaps the row for the form in place, so the project being renamed stays where the
+    // eye already is rather than the form appearing somewhere else in the tree.
+    const projectRow = projectFormId === p.id ? projectFormHtml() : `
+      <div class="tree-row tree-project" data-toggle-key="${escapeHtml(p.id)}">
+        <span class="tree-chevron">${icon(open ? "chevron-down" : "chevron-right", { size: 9 })}</span>
+        <span class="tree-label" title="${escapeHtml(rowTitle)}">${escapeHtml(p.name)}</span>
+        ${canManage ? `<button type="button" class="dl-btn-inline tree-project-edit" data-project-edit="${escapeHtml(p.id)}" title="Rename or set a base URL">Edit</button>` : ""}
+        <span class="tree-count">${caseCount}</span>
+      </div>`;
+    // Saved suites first, then recent runs. The suites are the reusable, zero-cost thing — a
+    // project's library is more useful to reach than its scrollback, so it sits above.
+    const suiteRows = !open ? "" : (suitesCache
+      .filter((s) => s.projectId === p.id)
+      .map((s) => `
+      <div class="tree-row tree-suite" data-suite-id="${escapeHtml(s.id)}">
+        <span class="tree-label" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+        <span class="tree-count">${s.caseCount}</span>
+      </div>`).join(""));
+
+    // Creating a suite belongs where the suites already are — someone looking at a project's
+    // suites and wanting another looks right here. Naming happens inline rather than through a
+    // prompt() so the server's refusal (duplicate name, project you can't see) has somewhere to
+    // land. `tester`+ only; the server enforces it regardless (POST /api/suites).
+    const canAuthorSuites = !auth.required || roleAtLeast(auth.role, "tester");
+    const newSuiteRow = !open || !canAuthorSuites ? "" : (newSuiteFor === p.id
+      ? `<div class="tree-row tree-suite-new">
+           <input type="text" class="suite-new-input" id="newSuiteInput"
+                  placeholder="Suite name" value="${escapeHtml(newSuiteName)}"
+                  aria-label="Name for the new suite" />
+           <button type="button" class="dl-btn-inline" data-suite-create="${escapeHtml(p.id)}">Add</button>
+           <button type="button" class="dl-btn-inline" data-suite-cancel="1" title="Cancel">×</button>
+         </div>
+         ${newSuiteError ? `<div class="suite-new-err">${escapeHtml(newSuiteError)}</div>` : ""}`
+      : `<div class="tree-row tree-suite-add" data-suite-add="${escapeHtml(p.id)}">
+           <span class="tree-label">+ New suite</span>
+         </div>`);
+
+    const caseRows = !open ? "" : (projectRuns.length
+      ? projectRuns.map((r) => `
+      <div class="tree-row tree-case${r.runId === currentRunId ? " active" : ""}" data-run-id="${escapeHtml(r.runId)}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
+        <span class="sdot sdot-sm ${RUN_SDOT_CLASS[r.status] || "pending"}" title="${escapeHtml(STATUS_LABEL[r.status] ?? r.status)}"></span>
+        <span class="tree-label" title="${escapeHtml(r.prompt || "")}">${escapeHtml(r.prompt || "(no prompt)")}</span>
+      </div>`).join("")
+      : `<div class="tree-empty" style="padding-left:40px">No recent runs.</div>`);
+    return projectRow + suiteRows + newSuiteRow + caseRows;
+  }).join("");
+
+  bindProjectForm();
+
+  sidebarTreeEl.querySelectorAll("[data-project-edit]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      // The row itself toggles expand/collapse; without this the tree would open or close every
+      // time someone reached for Edit.
+      e.stopPropagation();
+      const p = projects.find((x) => x.id === btn.dataset.projectEdit);
+      if (!p) return;
+      projectFormOpen = true;
+      projectFormId = p.id;
+      projectFormName = p.name || "";
+      projectFormUrl = p.baseUrl || "";
+      projectFormError = "";
+      renderProjectsTree(allRunsCache);
+      document.getElementById("projectFormName")?.focus();
+    });
+  });
+
+  sidebarTreeEl.querySelectorAll("[data-suite-add]").forEach((row) => {
+    row.addEventListener("click", () => {
+      newSuiteFor = row.dataset.suiteAdd;
+      newSuiteName = "";
+      newSuiteError = "";
+      renderProjectsTree(allRunsCache);
+      document.getElementById("newSuiteInput")?.focus();
+    });
+  });
+  sidebarTreeEl.querySelectorAll("[data-suite-cancel]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
+      renderProjectsTree(allRunsCache);
+    });
+  });
+
+  const createSuite = async (projectId) => {
+    const name = newSuiteName.trim();
+    if (!name) { newSuiteError = "Give the suite a name."; return renderProjectsTree(allRunsCache); }
+    try {
+      const created = await api("/api/suites", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, name }),
+      });
+      newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
+      await loadProjects();                       // refresh suitesCache so the new row appears
+      // Land in the new (empty) suite — adding cases is the obvious next step and it should be
+      // in front of them rather than something they have to go find.
+      navigate("#/suite/" + encodeURIComponent(created.id));
+    } catch (err) {
+      newSuiteError = err.message;
+      renderProjectsTree(allRunsCache);
+      document.getElementById("newSuiteInput")?.focus();
+    }
+  };
+
+  const nameInput = document.getElementById("newSuiteInput");
+  if (nameInput) {
+    nameInput.addEventListener("input", () => { newSuiteName = nameInput.value; });
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); createSuite(newSuiteFor); }
+      if (e.key === "Escape") {
+        newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
+        renderProjectsTree(allRunsCache);
+      }
+    });
+  }
+  sidebarTreeEl.querySelectorAll("[data-suite-create]").forEach((btn) => {
+    btn.addEventListener("click", () => createSuite(btn.dataset.suiteCreate));
+  });
+
+  sidebarTreeEl.querySelectorAll("[data-toggle-key]").forEach((row) => {
+    row.addEventListener("click", () => {
+      const key = row.dataset.toggleKey;
+      if (expandedProjects.has(key)) expandedProjects.delete(key);
+      else expandedProjects.add(key);
+      renderProjectsTree(allRunsCache);
+    });
+  });
+  sidebarTreeEl.querySelectorAll(".tree-row.tree-suite").forEach((row) => {
+    row.addEventListener("click", () => navigate("#/suite/" + encodeURIComponent(row.dataset.suiteId)));
+  });
+  sidebarTreeEl.querySelectorAll(".tree-row.tree-case").forEach((row) => {
+    row.addEventListener("click", () => {
+      if (row.dataset.prompt) promptEl.value = row.dataset.prompt;
+      if (row.dataset.url) urlEl.value = row.dataset.url;
+      navigate("#/run/" + row.dataset.runId);
+    });
+  });
+}
+
+/**
+ * Wire the inline project form, for both create and edit.
+ *
+ * Split out of renderProjectsTree() because the empty-workspace branch returns early and still
+ * needs it — an admin whose organisation has no projects yet is exactly the person who most needs
+ * the create form to work.
+ *
+ * A base URL is OPTIONAL by design: a project can be a bare name with nothing pointed at it yet,
+ * and the server already stores "" for one. Only the name is required, and the server says so too
+ * (POST /api/projects → 400 "name is required") — this doesn't restate that rule, it just avoids
+ * a round-trip for the empty case.
+ */
+function bindProjectForm() {
+  if (!projectFormOpen) return;
+
+  const nameEl = document.getElementById("projectFormName");
+  const urlEl2 = document.getElementById("projectFormUrl");
+  if (!nameEl || !urlEl2) return;
+
+  nameEl.addEventListener("input", () => { projectFormName = nameEl.value; });
+  urlEl2.addEventListener("input", () => { projectFormUrl = urlEl2.value; });
+
+  const submit = async () => {
+    const name = projectFormName.trim();
+    if (!name) {
+      projectFormError = "Give the project a name.";
+      renderProjectsTree(allRunsCache);
+      document.getElementById("projectFormName")?.focus();
+      return;
+    }
+    const editingId = projectFormId;
+    try {
+      if (editingId) {
+        // baseUrl is sent even when blank — that is how a URL gets cleared, and updateProject()
+        // distinguishes "" (set it empty) from undefined (leave it alone).
+        await api(`/api/projects/${encodeURIComponent(editingId)}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, baseUrl: projectFormUrl.trim() }),
+        });
+        closeProjectForm();
+        await loadProjects();
+        toast("Project updated.");
+      } else {
+        const created = await api("/api/projects", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, baseUrl: projectFormUrl.trim() }),
+        });
+        closeProjectForm();
+        await loadProjects();
+        // Land in the new project: expand it so its "+ New suite" row is already on screen. There
+        // is no project screen to navigate to, so this is what "in front of them" means here.
+        if (created?.id) {
+          expandedProjects.add(created.id);
+          renderProjectsTree(allRunsCache);
+          sidebarTreeEl.querySelector(`[data-toggle-key="${CSS.escape(created.id)}"]`)
+            ?.scrollIntoView({ block: "nearest" });
+        }
+        toast(`Project "${name}" created.`);
+      }
+    } catch (err) {
+      projectFormError = err.message;
+      renderProjectsTree(allRunsCache);
+      document.getElementById("projectFormName")?.focus();
+    }
+  };
+
+  for (const el of [nameEl, urlEl2]) {
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); submit(); }
+      if (e.key === "Escape") { closeProjectForm(); renderProjectsTree(allRunsCache); }
+    });
+  }
+  sidebarTreeEl.querySelector("[data-project-save]")?.addEventListener("click", submit);
+  sidebarTreeEl.querySelector("[data-project-cancel]")?.addEventListener("click", () => {
+    closeProjectForm();
+    renderProjectsTree(allRunsCache);
+  });
+}
+
+renderProjectsTree(allRunsCache);
+
+// The "+" beside the PROJECTS heading has existed in the markup since the original template and
+// did nothing until now — no handler referenced it at all.
+addProjectBtnEl?.addEventListener("click", () => {
+  if (!canManageProjects()) return;
+  projectFormOpen = true;
+  projectFormId = null;
+  projectFormName = "";
+  projectFormUrl = "";
+  projectFormError = "";
+  renderProjectsTree(allRunsCache);
+  document.getElementById("projectFormName")?.focus();
+});
+
+historyBtnEl.addEventListener("click", () => navigate("#/history"));
+teamBtnEl.addEventListener("click", () => navigate("#/team"));
+allRunsBtnEl.addEventListener("click", () => navigate("#/history"));
+
+// -----------------------------------------------------------------------------
+// History screen — the full-page list, distinct from the sidebar's recent list.
+//
+// listRuns() on the server is hard-capped at the newest 20 run directories and
+// has no paging, so the heading says 20 rather than claiming "every run".
+// -----------------------------------------------------------------------------
+
+async function renderHistoryView() {
+  const body = document.getElementById("historyViewBody");
+  body.innerHTML = `
+    <div>
+      <div class="eyebrow">RESULTS HISTORY</div>
+      <h1 class="page-head-title">Your 20 most recent runs</h1>
+    </div>
+    <div class="panel"><div id="historyRows"></div></div>`;
+
+  // Same guard as loadHistory(): a 401 resolves successfully with an `{error}` object, so
+  // .catch() alone isn't enough to guarantee an array here.
+  const raw = await fetch("/api/runs").then((r) => r.json()).catch(() => []);
+  const runs = Array.isArray(raw) ? raw : [];
+  const rows = document.getElementById("historyRows");
+  if (!runs.length) {
+    rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">No runs recorded yet.</div>`;
+    return;
+  }
+
+  rows.innerHTML = runs.map((r) => {
+    const st = statusKey(r.status);
+    const suite = r.suite ? `${r.suite.passed}/${r.suite.total} passed` : "";
+    const when = r.startedAt ? new Date(r.startedAt).toLocaleString() : "";
+    return `
+    <div class="hrow" data-run-id="${escapeHtml(r.runId)}">
+      <span class="case-badge badge-${escapeHtml(st)}">${escapeHtml(statusText(r.status))}</span>
+      <div class="hrow-main">
+        <div class="hrow-label">${escapeHtml(r.prompt || "(no prompt)")}</div>
+        <div class="hrow-meta">${escapeHtml([suite, when, r.url].filter(Boolean).join(" · "))}</div>
+      </div>
+      <div class="hrow-actions">
+        <button type="button" class="dl-btn-inline" data-act="view">View</button>
+        <button type="button" class="dl-btn-inline" data-act="rerun">Re-run</button>
+        <button type="button" class="dl-btn-inline hrow-del" data-act="delete">Delete</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  rows.querySelectorAll(".hrow").forEach((row) => {
+    const runId = row.dataset.runId;
+    row.querySelectorAll("[data-act]").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const act = btn.dataset.act;
+        if (act === "view") return navigate("#/run/" + runId);
+        if (act === "rerun") {
+          const src = runs.find((r) => r.runId === runId);
+          if (!src) return;
+          promptEl.value = src.prompt || "";
+          urlEl.value = src.url || "";
+          navigate("#/");
+          toast("Loaded that run into the composer — press Run test to go again");
+          return;
+        }
+        if (!confirm("Delete this run permanently?")) return;
+        await fetch(`/api/runs/${runId}`, { method: "DELETE" }).catch(() => {});
+        renderHistoryView();
+        loadHistory();
+        toast("Run deleted");
+      });
+    });
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Team screen — the members of your organisation, and the controls to manage them.
+//
+// This is the UI for routes that already existed and were already enforced
+// (/api/organisations/:orgId/members, Step 3.4). It adds no permission of its own: every
+// button here maps to a call the server independently authorises, and the two guard rails
+// that matter — nobody grants above themselves, an org always keeps one owner — live in
+// src/server/organisations.ts and are surfaced here by rendering the server's own message.
+//
+// Hiding a control is a courtesy so a tester isn't offered a button that would only 403.
+// It is NOT the control. Tampering with auth.role in devtools changes what is drawn and
+// nothing else.
+// -----------------------------------------------------------------------------
+
+/** Role descriptions, kept next to the picker so an admin assigning one can see what it means. */
+const ROLE_HELP = {
+  viewer: "Read-only — can see runs and results, cannot start or delete them.",
+  tester: "Runs tests — talks to the AI, answers login prompts, picks cases. Cannot delete.",
+  admin: "Manages people and can delete runs.",
+  owner: "Full control of the organisation.",
+};
+
+/** Lowest to highest — the same order as ROLES in src/server/authz.ts. */
+const ROLES_ASC = ["viewer", "tester", "admin", "owner"];
+
+function teamRoleOptions(selected, maxRole) {
+  // Never offer a role the server would refuse to grant — the ladder is mirrored from
+  // src/server/authz.ts, and offering `owner` to an admin only produces a 403 they can't act on.
+  return ROLES_ASC
+    .filter((r) => roleAtLeast(maxRole, r))
+    .map((r) => `<option value="${r}"${r === selected ? " selected" : ""}>${r}</option>`)
+    .join("");
+}
+
+async function renderTeamView() {
+  const body = document.getElementById("teamViewBody");
+  const orgId = auth.organisationId;
+
+  body.innerHTML = `
+    <div>
+      <div class="eyebrow">TEAM</div>
+      <h1 class="page-head-title">Who can use this workspace</h1>
+      <p class="tagline">Roles decide what each person may do. Every role is enforced on the
+      server — hiding a button here is only a convenience.</p>
+    </div>
+    <div id="teamFeedback"></div>
+    <div id="teamAddWrap"></div>
+    <div class="panel"><div id="teamRows"></div></div>`;
+
+  const rows = document.getElementById("teamRows");
+
+  if (!orgId) {
+    rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">
+      Sign in to see your organisation's members.</div>`;
+    return;
+  }
+
+  const isAdmin = roleAtLeast(auth.role, "admin");
+
+  // Add-member form, admins and owners only. The server refuses POST from anyone lower, so
+  // this is purely about not offering a dead control.
+  if (isAdmin) {
+    document.getElementById("teamAddWrap").innerHTML = `
+      <div class="team-add">
+        <label class="field">
+          <span class="field-label">Email of an existing account</span>
+          <input id="teamAddEmail" type="email" placeholder="someone@example.com"
+            autocomplete="off" spellcheck="false" list="teamAddSuggestions" />
+          <!-- Suggestions are filled in below, after the list of addable accounts loads. A
+               datalist is used deliberately: it needs no CSS, no keyboard handling and no new
+               class names, and the field stays plain free text if the list never arrives. -->
+          <datalist id="teamAddSuggestions"></datalist>
+        </label>
+        <label class="field" style="flex:0 0 150px">
+          <span class="field-label">Role</span>
+          <select id="teamAddRole" class="team-select">
+            ${teamRoleOptions("tester", auth.role)}
+          </select>
+        </label>
+        <div class="team-add-actions">
+          <button type="button" id="teamAddBtn" class="dl-btn-inline">Add to team</button>
+        </div>
+      </div>`;
+
+    document.getElementById("teamAddBtn").addEventListener("click", async () => {
+      const email = document.getElementById("teamAddEmail").value.trim();
+      const role = document.getElementById("teamAddRole").value;
+      if (!email) return teamFeedback("Enter the email address of an existing account.", true);
+      await teamCall(
+        `/api/organisations/${encodeURIComponent(orgId)}/members`,
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, role }) },
+        `${email} added as ${role}.`,
+      );
+    });
+
+    // Populate the suggestions without blocking the roster render below. A failure here is
+    // silent by design — the field still works as free text, which is exactly what it did before.
+    fetch(`/api/organisations/${encodeURIComponent(orgId)}/addable-users`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const list = document.getElementById("teamAddSuggestions");
+        if (!list || !data || !Array.isArray(data.emails)) return;
+        list.innerHTML = data.emails
+          .map((e) => `<option value="${escapeHtml(e)}"></option>`)
+          .join("");
+      })
+      .catch(() => { /* suggestions are a convenience, never a requirement */ });
+  }
+
+  rows.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">Loading…</div>`;
+
+  const res = await fetch(`/api/organisations/${encodeURIComponent(orgId)}/members`)
+    .then((r) => r.json())
+    .catch(() => null);
+  const members = res && Array.isArray(res.members) ? res.members : [];
+
+  // Project assignments — what each person may SEE, the second axis alongside their role.
+  // Admin-only endpoints, so only fetched when we're an admin; a non-admin's Team screen is
+  // read-only anyway.
+  let assignments = {};
+  let allProjects = [];
+  if (isAdmin) {
+    const [aRes, pRes] = await Promise.all([
+      fetch(`/api/organisations/${encodeURIComponent(orgId)}/assignments`)
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/projects").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    assignments = (aRes && aRes.assignments) || {};
+    allProjects = (pRes && Array.isArray(pRes.projects)) ? pRes.projects : [];
+  }
+  const projectName = new Map(allProjects.map((p) => [p.id, p.name]));
+
+  if (!members.length) {
+    rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">
+      ${escapeHtml((res && res.error) || "No members found.")}</div>`;
+    return;
+  }
+
+  const ownerCount = members.filter((m) => m.role === "owner").length;
+
+  rows.innerHTML = members.map((m) => {
+    const isYou = m.userId === auth.userId;
+    // Mirrors the server's rules so the UI doesn't offer something guaranteed to 403:
+    //  - you cannot act on someone whose role outranks yours
+    //  - the last owner can be neither demoted nor removed
+    const outranksYou = !roleAtLeast(auth.role, m.role);
+    const lastOwner = m.role === "owner" && ownerCount <= 1;
+    const canEdit = isAdmin && !outranksYou && !lastOwner;
+
+    const roleControl = canEdit
+      ? `<select class="team-select" data-role-for="${escapeHtml(m.userId)}">
+           ${teamRoleOptions(m.role, auth.role)}
+         </select>`
+      : `<span class="team-role-static" title="${escapeHtml(
+            lastOwner ? "The last owner cannot be changed" :
+            outranksYou ? "This member outranks you" : ROLE_HELP[m.role] || "")}">${escapeHtml(m.role)}</span>`;
+
+    const removeBtn = canEdit
+      ? `<button type="button" class="dl-btn-inline hrow-del" data-remove="${escapeHtml(m.userId)}">Remove</button>`
+      : "";
+
+    // Which projects this person may see. Admins and owners see everything by role, so listing
+    // projects for them would be a lie the moment a new one is created — say the rule instead.
+    const seesEverything = roleAtLeast(m.role, "admin");
+    const mine = assignments[m.userId] || [];
+    const projectsCell = !isAdmin ? "" : seesEverything
+      ? `<div class="team-projects"><span class="team-projects-all">Sees every project (by role)</span></div>`
+      : `<div class="team-projects">
+          ${mine.length
+            ? mine.map((pid) => `
+              <span class="team-chip">${escapeHtml(projectName.get(pid) || "project")}
+                <button type="button" class="team-chip-x" data-unassign="${escapeHtml(m.userId)}"
+                  data-project="${escapeHtml(pid)}" title="Remove from this project">&times;</button>
+              </span>`).join("")
+            : `<span class="team-projects-none">No projects yet — they can't see anything.</span>`}
+          ${allProjects.length > mine.length ? `
+          <select class="team-select team-assign" data-assign="${escapeHtml(m.userId)}">
+            <option value="">+ Add to project…</option>
+            ${allProjects.filter((p) => !mine.includes(p.id))
+              .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")}
+          </select>` : ""}
+        </div>`;
+
+    return `
+    <div class="team-row">
+      <div class="team-row-main">
+        <span class="team-email">${escapeHtml(m.email || "(unknown address)")}${
+          isYou ? `<span class="team-you">YOU</span>` : ""}</span>
+        <span class="team-meta">${escapeHtml(ROLE_HELP[m.role] || "")}</span>
+        ${projectsCell}
+      </div>
+      <div class="team-row-actions">${roleControl}${removeBtn}</div>
+    </div>`;
+  }).join("");
+
+  // Project assignment — add and remove. Both are admin-only on the server too.
+  rows.querySelectorAll("[data-assign]").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      if (!sel.value) return;
+      await teamCall(
+        `/api/projects/${encodeURIComponent(sel.value)}/members`,
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: sel.dataset.assign }) },
+        "Added to the project.",
+      );
+    });
+  });
+
+  rows.querySelectorAll("[data-unassign]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await teamCall(
+        `/api/projects/${encodeURIComponent(btn.dataset.project)}/members/${encodeURIComponent(btn.dataset.unassign)}`,
+        { method: "DELETE" },
+        "Removed from the project.",
+      );
+    });
+  });
+
+  rows.querySelectorAll("[data-role-for]").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      const userId = sel.dataset.roleFor;
+      await teamCall(
+        `/api/organisations/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+        { method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: sel.value }) },
+        `Role changed to ${sel.value}.`,
+      );
+    });
+  });
+
+  rows.querySelectorAll("[data-remove]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const userId = btn.dataset.remove;
+      if (!confirm("Remove this person from the organisation?")) return;
+      await teamCall(
+        `/api/organisations/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+        { method: "DELETE" },
+        "Member removed.",
+      );
+    });
+  });
+}
+
+function teamFeedback(message, isError) {
+  const el = document.getElementById("teamFeedback");
+  if (!el) return;
+  el.innerHTML = `<p class="${isError ? "team-error" : "team-ok"}" role="${
+    isError ? "alert" : "status"}">${escapeHtml(message)}</p>`;
+}
+
+/**
+ * One place every member mutation goes through, so the guard rails always surface.
+ *
+ * A 403 ("you cannot grant the owner role — it is above your own") and a 409 ("this is the last
+ * owner") are the two sentences that explain the whole permission model, and swallowing them
+ * would make a refused action look like a broken button. The server's own message is rendered
+ * verbatim rather than being restated here, so the two can never drift apart.
+ */
+async function teamCall(url, init, successMessage) {
+  try {
+    const res = await fetch(url, init);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `That didn't work (${res.status}).`);
+    }
+    // Order matters: renderTeamView() rebuilds the whole view body, #teamFeedback included, so
+    // writing the message first means the re-render silently eats it. The error path below is
+    // unaffected — it throws past the re-render — which is exactly why this was invisible until
+    // a successful add was tried in a browser.
+    await renderTeamView();
+    teamFeedback(successMessage, false);
+    // Our own role may have just changed (an owner promoting someone, or leaving), and the
+    // topbar badge plus the restriction classes are derived from it.
+    await refreshIdentity();
+  } catch (err) {
+    teamFeedback(err.message || "That didn't work.", true);
+  }
+}
+
+let currentRunId = null;
+applyRoute();
+
+// Async, and deliberately AFTER the synchronous applyRoute() above: with auth off this resolves
+// to a no-op, so the first paint is unchanged. With auth on it re-routes to the login view.
+initAuth();

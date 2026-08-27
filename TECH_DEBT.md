@@ -68,7 +68,7 @@ actually making that call.
 | TD-21 | `tests/strategy.test.ts` flakes ~1 run in 6 under parallel load — **fixed**, import hoisted to module scope | Medium | Accidental | Lakshya |
 | TD-22 | LLM disk cache never expires; a key missing an input dimension serves stale results forever | Medium | Strategic | Lakshya |
 | TD-23 | Case-selection-gate progress events briefly corrupt the phase summary text | Low | Accidental | Lakshya |
-| TD-24 | `PLAYWRIGHT_TIMEOUT` env var is set but never read; comment implies otherwise | Low | Accidental | Lakshya |
+| TD-24 | `PLAYWRIGHT_TIMEOUT` env var is set but never read; comment implies otherwise — **fixed** | Low | Accidental | Lakshya |
 | TD-25 | Deleting the currently-viewed run leaves its polling loop running forever | Low | Accidental | Lakshya |
 | TD-26 | Credential prompt fires even when no case in the suite has a login step | Low | Accidental | ? |
 | TD-27 | `caseAccumulator.appendAcceptedCases` doesn't dedup near-duplicate titles within one batch | Low | Accidental | Lakshya |
@@ -83,6 +83,18 @@ actually making that call.
 | TD-37 | "Assert submit button hidden" generalized from login to any form with a preceding fill — **fixed** | High | Accidental | Lakshya |
 | TD-38 | `Diagnosis.suggestedFix`/`explanation` are untrusted free text with no deterministic verification fed back into IR generation or heal | Medium | Accidental | ? |
 | TD-39 | `MESSAGE_LIKE` keyword scan missed gratitude-phrased confirmation copy, leaving a wrong guessed assertion uncorrected — **fixed** | High | Accidental | Lakshya |
+| TD-40 | Login detection read the extracted PageModel, which is lossy on real SPA logins (no `<form>`, placeholder-only naming) — **fixed** (live-DOM detection) | High | Accidental | Lakshya |
+| TD-41 | A shared `BrowserContext` was not enough — sessionStorage is scoped to a tab, not a context — **fixed** (one shared `Page` for the whole crawl) | High | Accidental | Lakshya |
+| TD-42 | "Login succeeded" was inferred from the URL changing, wrong in both directions — **fixed** (verify the login form is actually gone) | High | Accidental | Lakshya |
+| TD-43 | The login prefix was gated by credential-substitution policy instead of the case's target page — **fixed** (`needsLoginPrefix`) | High | Accidental | Lakshya |
+| TD-44 | The login prefix raced its own submit request, navigating on before the session landed — **fixed** (settle assertion) | High | Accidental | Lakshya |
+| TD-45 | Redaction corrupted the AppModel when a credential value collided with an ordinary DOM keyword — **fixed** | High | Accidental | Lakshya |
+| TD-46 | Discovery-time credential prompt could park a run with no UI to answer it — **fixed** (missing `credentials` event pair) | Medium | Accidental | Lakshya |
+| TD-47 | A failed login was cached for up to 30 minutes, silently repeating the failure — **fixed** (never cache `login-failed`) | Medium | Accidental | Lakshya |
+| TD-48 | SPA nav-button click-probe missed anchor-based routes with no `href` (saucedemo shape) — **fixed** (widened + destructive-verb guard) | Medium | Accidental | Lakshya |
+| TD-49 | `discoverPagesHybrid` (multi-URL entry) remains auth-unaware | Medium | Strategic | ? |
+| TD-50 | Click-probe candidate cap is document order, not priority order | Low | Strategic | ? |
+| TD-51 | History screen can only ever show the newest 20 runs — `listRuns()` has no paging and re-reads every run's full event log per call | Medium | Strategic | ? |
 
 ---
 
@@ -134,8 +146,9 @@ step, never investigated further." It is now investigated: it's this.
 
 **Remediation.** Don't kill before the child can flush a report. Either raise
 `CONFIG.TIMEOUTS.TEST_RUN` comfortably above Playwright's own per-test timeout
-(`playwright.config.ts:5`, currently 50s — TD-24 documents that the env var meant to keep these in
-sync is dead), or give the child a bounded grace period after Playwright's own timeout fires before
+(`playwright.config.ts:5`, currently 50s and now genuinely configurable via `PLAYWRIGHT_TIMEOUT`
+per TD-24's fix — the two are no longer at risk of silently drifting apart), or give the child a
+bounded grace period after Playwright's own timeout fires before
 sending `SIGKILL`, so `onEnd` gets a chance to write `results.json` even for a test that legitimately
 timed out. Consider `trace: "on-first-retry"` (cheaper than `retain-on-failure`) if trace/video
 finalization on a large failing case turns out to be what's pushing total time past 60s — worth
@@ -544,22 +557,27 @@ text momentarily.
 **Remediation.** Give `summarize()` a branch for `data.action` before falling through to the
 count-based text, or skip `setPhaseFromStage` entirely for gate `action` events.
 
-### TD-24. `PLAYWRIGHT_TIMEOUT` env var is set but never read; comment implies otherwise — Low / Accidental
+### TD-24. `PLAYWRIGHT_TIMEOUT` env var is set but never read; comment implies otherwise — Low / Accidental — **fixed**
 
-**What it is.** `executor.ts` injects `PLAYWRIGHT_TIMEOUT: String(CONFIG.TIMEOUTS.TEST_RUN)` into
-the child's env. No code anywhere reads `process.env.PLAYWRIGHT_TIMEOUT` —
-`playwright.config.ts:5` hardcodes `timeout: 50_000` instead. The env var's own comment ("Increased
-from 30s to 60s") reads as if it controls Playwright's per-test timeout; it only controls the
-*parent* process's kill timer (TD-02).
+**What it is.** `playwright.config.ts:5` hardcoded `timeout: 50_000`, ignoring
+`process.env.PLAYWRIGHT_TIMEOUT` entirely.
 
-**Why it hurts.** Today 60s (parent kill) > 50s (Playwright's real timeout) by coincidence, so
-Playwright always reports before the parent kills it — except when it doesn't (TD-02). Someone
-editing `CONFIG.TIMEOUTS.TEST_RUN` down, reasonably trusting the env var's name, could invert that
-relationship and make a legitimately-slow-but-passing test get killed and silently retried instead
-of correctly reported.
+**Correction to this entry's own history, found while fixing it (Phase 0, Step 0.4):** this entry
+originally claimed `executor.ts` injects `PLAYWRIGHT_TIMEOUT: String(CONFIG.TIMEOUTS.TEST_RUN)`
+into the spawned Playwright process's env. That is not true of the code as it stands —
+`executePlaywright`'s `spawn(...)` call only sets `...process.env`, `...secretEnv`,
+`PLAYWRIGHT_JSON_OUTPUT_NAME`, and `PLAYWRIGHT_HEADLESS`; `PLAYWRIGHT_TIMEOUT` appears nowhere in
+`src/` before this fix. Either the injection was removed in a later refactor without updating this
+entry, or it never existed and this entry described an intended-but-unshipped change — either way,
+this is itself an instance of the doc-drift pattern `DECISIONS.md` D-01 already covers. `TEST_RUN`
+(currently `100_000`ms) only ever drove the *parent* process's own `setTimeout`/`SIGKILL` kill timer
+(TD-02); it was never actually connected to Playwright's own per-test timeout.
 
-**Remediation.** Either have `playwright.config.ts` actually read `process.env.PLAYWRIGHT_TIMEOUT`,
-or delete the env var and the misleading comment. Resolve together with TD-02.
+**Remediation (done).** `playwright.config.ts` now reads
+`Number(process.env.PLAYWRIGHT_TIMEOUT) || 50_000` — genuinely configurable, and since nothing sets
+that env var today (confirmed: absent from `.env`, and no longer any injection site to remove),
+behavior is unchanged — every run still gets Playwright's own 50s timeout, comfortably under the
+parent's 100s kill timer, exactly as before this fix.
 
 ### TD-25. Deleting the currently-viewed run leaves its polling loop running forever — Low / Accidental
 
@@ -1046,3 +1064,998 @@ fallback, not a replacement). All three guards individually regression-verified 
 one in turn makes its specific test fail with the exact wrong-candidate signature, restored
 after). `npx tsc --noEmit` clean, `npx vitest run` 329/331 (same 2 pre-existing unrelated
 fixture failures).
+
+## Auth-aware discovery — found and fixed across three real sites
+
+Discovery was extended to log into a site before crawling it (`DECISIONS.md` D-22–D-26 record the
+design). Every item below is a real bug caught against an actual target — saucedemo.com,
+learnvibes.vercel.app, assettrack-web.onrender.com — not a hypothetical. Several were only
+visible on a live `npm run serve` run; the corresponding fix is noted where a unit/vitest run
+could not have caught it.
+
+### TD-40. Login detection read the extracted PageModel, which is lossy on real SPA logins — High / Accidental — Fixed
+
+**What it is.** The first version of `loginOnPage` found the password field via
+`credentialFieldMap`, built only from `PageModel.forms[]` — and `extractForms` requires a literal
+`<form>` tag. A React login with bare `<input>`s (no `<form>` wrapper) yields `forms: []`; the
+fallback then matched the element's accessible *name* against `/pass/i`, and on
+assettrack-web.onrender.com that name was the placeholder `"••••••••"`, matching nothing.
+
+**Why it hurts.** No password field found means no login attempted at all, silently — the run
+produced a one-page, login-only AppModel with `auth` absent and no error anywhere, indistinguishable
+from a site that simply has no login. Confirmed directly against `runs/2026-08-22T04-18-57…040dd5ae`.
+
+**Fix applied.** Detect and drive the login against the **live DOM**: the first visible, enabled
+`input[type="password"]` is the anchor, with an escalating selector ladder for the identifier and
+submit control (see D-22). This is immune to a missing `<form>`, a missing label, or a
+placeholder-as-name.
+
+**Verified**: `tests/authCrawl.test.ts`'s `/login-formless` fixture asserts the model-derived path
+finds nothing (`credentialFieldMap(...).size === 0`) while the live-DOM path succeeds. The
+`/login-bare` fixture (inputs with no id/name/data-* at all, only a placeholder — the exact
+learnvibes shape) is covered by the `it.each` login table instead: it does have a `<form>`, so its
+bug isn't a missing-form miss but the selector ladder itself needing a placeholder/aria-label/type
+rung (part of this same fix, see D-22) — proven there by the live-DOM path still reaching a
+verified session.
+
+### TD-41. A shared `BrowserContext` was not enough — sessionStorage is scoped to a tab — High / Accidental — Fixed
+
+**What it is.** The crawl opened a fresh `Page` per hop under one shared `BrowserContext`,
+assuming cookie-based session persistence covered every site. assettrack-web.onrender.com stores
+its session as `sessionStorage` keys (`token`, `user`) with **no cookie at all** — verified
+directly: a second page opened on the same context came back with empty `sessionStorage` and the
+login form.
+
+**Why it hurts.** Every crawl hop after the login started logged out, producing the identical
+symptom as TD-40 (a one-page model) even after the login itself had genuinely succeeded — the two
+bugs were indistinguishable from the outside without reading `server.log`.
+
+**Fix applied.** One long-lived `Page` for the entire crawl (`sharedPage()`), navigating URL to
+URL instead of closing and reopening. Carries cookies, localStorage, and sessionStorage alike —
+see `DECISIONS.md` D-23 for the rejected `storageState()` alternative.
+
+**Verified**: `tests/authCrawl.test.ts`'s sessionStorage fixture asserts both directions in one
+test — the same tab keeps the session across a second `goto`, and a genuinely new tab on the same
+context does not, pinning the exact mechanism rather than just the end symptom.
+
+### TD-42. "Login succeeded" was inferred from the URL changing — High / Accidental — Fixed
+
+**What it is.** `page.url() !== urlBefore` was the sole success signal. Wrong in both directions:
+an SPA that renders its dashboard at the same route (assettrack, confirmed live — the URL stayed
+on `/login` while React swapped the whole page in) reports failure on a login that plainly worked
+("Logged in successfully" was on screen); a site that bounces `/login -> /login?error=1` on a
+rejected attempt reports success.
+
+**Why it hurts.** A false failure here made a working login look broken and fell back to an
+anonymous crawl, discarding a session that was fine. A false success (not observed live, but
+reachable on the bounce-with-query-param shape) would have been worse: crawling a logged-out site
+while believing it was authenticated.
+
+**Fix applied.** `verifySession`: the login form itself must be gone from the page currently
+loaded (`!hasLoginGate(page)`); if the app navigated somewhere, that destination is reloaded in the
+SAME tab (not a fresh one — a fresh tab loses sessionStorage, see TD-41) and checked again.
+
+**Verified**: `tests/authCrawl.test.ts` covers in-place SPA auth (no URL change, must report
+success) and a wrong password (URL unchanged, form still visible, must report failure) as separate
+cases — the two together are what a pure URL-diff check cannot distinguish.
+
+### TD-43. The login prefix was injected into the wrong subset of cases — High / Accidental — Fixed
+
+**What it is.** The prefix-injection gate reused `credentialPolicyFor(testCase, ...) === "full"`,
+which returns `"full"` only for `valid`/`fromPrompt` cases — a check built to answer "should this
+case's field values be replaced with real credentials," not "does this case need a session first."
+
+**Why it hurts.** Verified against a real 5-case suite (`runs/2026-08-22T16-10-40…04cfa936`): an
+`invalid-input` search case and a `state-change` sign-out case both ran with no login prefix and
+both failed on the login page, while the two `valid` cases correctly received one. 3 of 5 cases
+failed; the app being tested was never at fault.
+
+**Fix applied.** `needsLoginPrefix(testCase, auth)` — gates on whether the case's `targetUrl` is
+the login page itself, structurally (same `pageKey` comparison the login-case cap uses), not on
+the case's credential-substitution policy. See `DECISIONS.md` D-26.
+
+**Verified**: `tests/loginPrefix.test.ts` replays the exact category table from that run
+(`valid`/`invalid-input`/`state-change`/`security-injection` all sign in; the login-page case does
+not) and separately confirms artifact replay against that run's own saved `03-cases.json` matches.
+
+### TD-44. The login prefix raced its own submit request — High / Accidental — Fixed
+
+**What it is.** The prefix's last step was the submit click; the case's own steps started
+immediately after, with nothing waiting for the login request to resolve.
+
+**Why it hurts.** Caught directly from a step screenshot on a real run
+(`runs/2026-08-22T16-10-40…04cfa936`, case-1): credentials were filled correctly, and the
+following screenshot shows the "Sign In" button **still displaying its loading spinner** while the
+next step had already fired `navigate /dashboard` — which bounced straight back to `/login`. This
+is a pure timing bug; the login itself was correct.
+
+**Fix applied.** `buildLoginPrefix` appends one more step: assert the password field's own
+selector is `hidden`. `expect(...).toBeHidden({timeout:10000})` auto-waits, so it costs nothing on
+a fast login and still covers a slow one (a cold serverless start) that a fixed
+`page.waitForTimeout` could not size correctly either way.
+
+**Verified**: a dedicated `tests/authCrawl.test.ts` fixture whose login endpoint responds after a
+1.2s delay — every other login fixture in that file resolves instantly, which is exactly why this
+shape reached a live run before anything caught it. The test fails without the settle step and
+passes with it (confirmed both ways while writing it).
+
+### TD-45. Redaction corrupted the AppModel when a credential value collided with an ordinary DOM keyword — High / Accidental — Fixed
+
+**What it is.** `redactCredentials` JSON-stringifies its input and blind-replaces every occurrence
+of a secret credential value, string-wide, with no awareness of what the surrounding field means.
+
+**Why it hurts.** A real run's password was the literal string `"password"`. The saved AppModel
+came back with `inputType: "[redacted]"` (was `"password"`), `id: "[redacted]"`, and
+`css: "#[redacted]"` — eight structural replacements. `credentialFieldMap` could no longer find a
+password field afterward, and the generator would have emitted `#[redacted]`, a selector matching
+nothing. This fires *after* a successful login, so it silently poisons everything downstream of a
+correct discovery run.
+
+**Fix applied.** Refuse to redact a secret value that is itself a common DOM/HTML keyword — see
+`DECISIONS.md` D-25 for why the alternative (a key-aware object walk) was rejected instead
+(it would have broken `executor.ts`'s raw-string redaction of `final-page.txt`).
+
+**Verified**: `tests/credentials.test.ts` pins the exact corruption shape (an `inputType`/`id`/
+`css` all equal to `"password"` survive redaction intact) alongside a case in the *same* model
+proving a real credential value (an email) is still scrubbed — the guard is per-value, not
+all-or-nothing.
+
+### TD-46. The discovery-time credential prompt could park a run with no UI to answer it — Medium / Accidental — Fixed
+
+**What it is.** Moving the credential ask from after case-generation to inside discovery (so
+discovery itself could use the answer) called `askCredentials(...)` directly. `askCredentials`
+only parks a promise server-side; it is the `credentials`/`started` **event**
+(`store.append` -> SSE -> `app.js`'s `showCredentialPrompt`) that makes the frontend render the
+form at all.
+
+**Why it hurts.** Without the event pair, the run held one of `MAX_CONCURRENT_RUNS` slots for the
+full `CREDENTIAL_WAIT_MS` (5 min default) against a UI showing no way to type anything — reported
+directly: "it is stuck on discovering ... but there is no option to provide credentials in the ui."
+
+**Fix applied.** The discovery-side ask emits `credentials`/`started` before parking and
+`credentials`/`completed` on every path, including a skip — mirroring the pre-existing
+post-discovery ask exactly.
+
+**Verified**: live in the browser pane — the credential form rendered mid-`discovery` stage
+(step 2 still showing `WORKING`) for a prompt that carried no credentials, with the existing
+footer copy ("Used for this run only...") still accurate.
+
+### TD-47. A failed login was cached for up to 30 minutes, silently repeating the same failure — Medium / Accidental — Fixed
+
+**What it is.** `discoverSiteHybrid`'s result — including a `login-failed` outcome — was written
+to the AppModel disk cache like any other result, under `APPMODEL_CACHE_TTL_MS` (default 30 min).
+
+**Why it hurts.** Caught directly: after fixing an unrelated selector bug, the very next run
+against the same URL logged `cache hit for ... — skipping login and crawl` and reported the *old*
+`login-failed` outcome, even though the new code would have succeeded. A transient failure (wrong
+value typed, a login form that briefly changed, a slow deploy) should not pin a run to a broken
+model for half an hour.
+
+**Fix applied.** `auth.status === "login-failed"` is never cached; only `authenticated`,
+`no-gate`, and `no-credentials` are.
+
+**Verified**: manually only, once — clearing a stale cache entry and re-running reached the login
+step again instead of short-circuiting. No automated test covers this: the fix is a single
+`if (auth.status === "login-failed")` guard around the existing `cacheSet` call, and nothing in
+this file's test suite currently exercises `discoverSiteHybrid`'s cache path at all.
+
+### TD-48. The SPA nav-button click-probe only considered `nav`-landmark buttons, missing real anchor-based routes — Medium / Accidental — Fixed
+
+**What it is.** `discoverUrlsByClicking` (added to get past a Next.js dashboard whose nav is
+`<button onClick={router.push()}>` with zero `<a href>`) only looked at `role=button` elements
+scoped to a `nav` landmark.
+
+**Why it hurts.** saucedemo.com's inventory page has the opposite shape: its cart link is
+`<a class="shopping_cart_link" data-test="shopping-cart-link">` with **no `href` attribute at
+all**, and its product links are `href="#"` — both `role=link`, and neither inside a `<nav>`
+landmark. `extractLinks`'s `$("a[href]")` skips the cart entirely; the click-probe's
+nav-button-only filter found zero candidates either. Confirmed by replaying the new candidate rule
+against the real captured page model: the old rule found 0 candidates, the new rule finds 12,
+including the shopping cart link.
+
+**Fix applied.** Widen candidates to `(button AND landmark==="nav") OR any link` — anchors need no
+landmark scoping (they are semantically navigation, and the probe only runs once the href pass has
+already returned nothing). Added `DESTRUCTIVE_VERB` (reset/delete/remove/clear/discard/cancel/
+deactivate/archive, anchored) alongside the existing sign-out exclusion, since the widened rule
+also surfaced saucedemo's real "Reset App State" anchor — discovery must stay a read-only pass.
+
+**Verified**: a local `/anchor-spa` fixture in `tests/authCrawl.test.ts` reproduces the exact
+saucedemo shape (no href anywhere) and asserts `internalUrls` is empty first, so the test can't
+silently stop covering the bug it exists for; a second assertion confirms the reset control is
+never among the discovered targets.
+
+### TD-49. `discoverPagesHybrid` (multi-URL entry) remains auth-unaware — Medium / Strategic
+
+**What it is.** All of TD-40 through TD-48 apply to `discoverSiteHybrid`, the single-URL entry
+path. `discoverPagesHybrid`, used when a run is given multiple URLs directly, calls
+`discoverHybrid` per URL with no credentials and no login step at all.
+
+**Why it hurts.** A multi-URL run against a login-gated app gets the pre-auth-aware behaviour —
+each URL modelled as its own login page, same failure mode this whole effort exists to fix.
+
+**Owner.** Undecided whether multi-URL entry is common enough to justify duplicating the auth flow
+there, versus routing it through the same login-aware path `discoverSiteHybrid` uses.
+
+### TD-50. The click-probe's candidate cap is document order, not priority order — Low / Strategic
+
+**What it is.** `MAX_CLICK_PROBES` (default 12) takes the first N qualifying elements in DOM
+order. A page listing many repeated items (a large product grid) before its real navigation
+controls could exhaust the cap before reaching them.
+
+**Why it hurts.** Not yet observed on a real site — saucedemo's nav links happen to precede its
+product grid — but it is a real ceiling with no signal today if it's ever hit silently.
+
+**Owner.** Revisit if a real site's routes get cut off; the fix would be de-duplicating
+structurally-identical repeated candidates (a pattern-detection pass, not attempted here) before
+applying the cap, rather than raising the cap itself.
+
+### TD-51. The History screen can only ever show 20 runs, and costs a full event-log read to do it — Medium / Strategic
+
+**What it is.** `listRuns()` (`src/runStore.ts:177`) hard-caps at `.slice(0, 20)` newest run
+directories, and for each one calls `store.read(runId)` (`:180`), which parses every line of that
+run's `events.ndjson` — files that embed whole AppModels and IRs. `GET /api/runs` is the only
+list endpoint; there is no paging, filtering, or search parameter.
+
+**Why it hurts.** The cap was invisible while the only consumer was a sidebar rail showing recent
+runs. The new History screen is a browsable list of past work, so the cap is now a product
+limitation rather than a rendering detail: runs older than the newest 20 are unreachable from the
+UI even though their directories are still on disk and still served at `/runs/<id>/`. The heading
+says "Your 20 most recent runs" precisely so the screen does not claim more than it delivers —
+that wording is a placeholder for a fix, not the intended end state. The per-call cost is the
+second half: every visit to the screen re-parses up to 20 full event logs to extract a handful of
+summary fields.
+
+**Remediation.** Two independent pieces, either alone helps. (1) Accept `?limit`/`?before` on
+`GET /api/runs` and page the directory listing, so the UI can ask for more. (2) Write a small
+per-run summary file at the end of a run (status, prompt, url, suite counts) and have
+`listRuns()` read *that* instead of replaying the event log — the data it needs is already
+computed at `done` time. (2) also removes the incentive to keep the cap low.
+
+---
+
+
+**Update (TD-54).** The cap is now applied *after* access filtering, so the twenty rows
+are twenty rows the caller may actually see rather than twenty directories that mostly get
+discarded. The remediation below is unchanged and still wanted — this only removed the way
+the cap was silently eating the whole list.
+## The platform layer — found while building the case library and editor
+
+Each of these is recorded in the phase report that found it (`docs/phases/`) and repeated here so
+the ranked list stays the single place to look.
+
+### TD-52. `replayAndSnapshot`'s cache key omits the credentials it was given — Medium / Accidental
+
+**Symptom.** Fix a wrong username or password in the credential prompt, retry the save, and the
+walk returns the **stale failed snapshot** instead of signing in again. The retry appears to run
+and appears to fail the same way, which reads as "the fix did not work" rather than "the fix was
+never tried".
+
+**Cause.** The prefix-replay cache is keyed on `(baseUrl, prefix, policy)`. That is correct for
+what the cache was built for — two edits on the same page sharing one browser walk — but
+credentials are an input to the walk that the key does not mention, so two walks that differ *only*
+in credentials collide.
+
+**Why it matters more than it looks.** The failure is silent and self-reinforcing: the second
+attempt is cheaper and faster than the first, which is exactly what a successful cache hit looks
+like from outside.
+
+**Remediation.** Include a non-reversible fingerprint of the credentials in the key — a hash, never
+the values, since D-09 keeps secrets off disk and the cache key is a plain string. Alternatively,
+bypass the cache entirely for any walk that consumed credentials: those walks are rare and already
+the expensive path, so the lost sharing costs little.
+
+*Found in `PHASE_CASE_CREDENTIALS_REPORT.md`, still open.*
+
+### TD-53. A malformed case id returns 500 with raw Postgres text — Low / Accidental
+
+**Symptom.** `GET /api/cases/xyz/steps` (or any `/api/cases/:caseId/*` route) with a non-UUID id
+returns `500 {"error":"could not read case: invalid input syntax for type uuid: \"xyz\""}`.
+
+**Cause.** `getCase` passes the path parameter straight to the query and lets the driver's error
+text through. A value that cannot be an id is a **client** error — the right answer is 404, the
+same one a well-formed-but-absent id gets.
+
+**Why it matters.** Two small things, neither urgent. It tells an authenticated caller which
+database engine is behind the API, and it turns a routine typo into a 5xx, which is the class of
+error that pages an on-call.
+
+**Remediation.** Validate the parameter shape at the route boundary and 404 on a mismatch, so the
+answer for "no such case" is the same whether the id was malformed or simply absent.
+
+*Found in `PHASE_NL_STEPS_REPORT.md`, out of that phase's scope, not fixed.*
+
+### TD-54. `/api/runs` capped the list BEFORE access-filtering it, so history shrank toward empty — High / Accidental — Fixed
+
+**Symptom.** History showed **2 runs** while **85 run directories** sat on disk and the pipeline was
+writing new ones correctly. From the outside this is indistinguishable from "runs stopped being
+recorded", which is how it was reported.
+
+**Cause.** An ordering that looks equivalent and is not:
+
+```ts
+const diskRuns = listRuns();                       // newest 20 DIRECTORIES off disk
+res.json(await filterRunsForUser(userId, diskRuns)); // then drop what you cannot prove you own
+```
+
+`filterRunsForUser` removes any run with no ownership row — correctly, and by design (TD-49's
+sibling rule: "we cannot tell whose this is" must mean nobody's). But because the cap ran **first**,
+every unfiled directory consumed one of the twenty visible slots before the filter ever saw it.
+Measured directly: of the newest 20 directories, exactly **2** had rows.
+
+**Why it degrades rather than fails.** Unfiled directories accumulate for entirely ordinary
+reasons — runs created before `DB_ENABLED` was switched on, a dual-write that lost its race, a
+stray process, and (TD-55) the test suite itself. Every one of them permanently costs a slot, so
+the visible history shrinks monotonically while every individual component reports success.
+
+**Fix.** Filter first, cap second. `listRuns(ids?)` now takes the id list to summarise, and the
+route hands it only the ids that survived filtering:
+
+```ts
+const visible = await filterRunsForUser(userId, allRunIds().map((runId) => ({ runId })));
+res.json(listRuns(visible.map((r) => r.runId)));
+```
+
+This is also the cheaper order: filtering is one database lookup over an id list, while
+summarising is a full event-log parse per run — so only survivors pay for a parse.
+
+Verified on the real server: **2 rows -> 20 rows**, same data, same response shape. Pinned by three
+cases in `tests/tenancy.test.ts` ("the cap is applied AFTER access filtering"), one of which was
+confirmed to fail against the old ordering before the fix was kept.
+
+**Still open, and related:** TD-51 — there is no paging past 20 in either order.
+
+### TD-55. The test suite leaked two real run directories into `runs/` on every invocation — Medium / Accidental — Fixed
+
+**Symptom.** `ls runs/ | wc -l` grew by exactly 2 on every `npx vitest run`. The directories held
+genuine pipeline output (`generated.spec.ts`, `cases/`, `07-suite-summary.json`) against
+`https://example.com`, labelled "Replayed 2 saved cases" / "Replayed 1 saved case".
+
+**Cause.** Two tests in `tests/library.test.ts` exercise the **real** `POST /api/replay` route,
+which is the point — it is where authorization actually happens. But that route calls
+`makeRunId()` itself, so unlike the file's other run fixtures the id cannot be fixed in advance,
+and nothing recorded what the route returned. The existing `afterAll` cleaned only the two
+hard-coded `TEST_RUN_IDS`.
+
+**Why it mattered more than ordinary debris.** Combined with TD-54, it was actively degrading the
+product: history reads the newest directories off disk, so two fresh unfiled runs per test
+invocation pushed two of the user's real runs out of the visible window every time the suite ran.
+A test that quietly makes the application worse is worse than no test.
+
+**Fix.** `trackMintedRun(res)` records `res.body.runId` from any response that carries one, and
+`afterAll` removes those alongside the fixed ids. Verified: `runs/` count unchanged across a full
+suite run (87 -> 87, previously 85 -> 87).
+
+---
+
+## Site Store / View — Phase 0 measurement result
+
+`SITE_STORE_VIEW_SPEC_v2.md` proposes replacing the AppModel-in-prompt with a Store + retrieval +
+View. Its ground rule 7 gates the whole project on one unmeasured number, and rule 8 says the
+finding is recorded here either way. `scripts/measureView.ts` produced it over **all 38 saved runs
+that have an `02-appmodel.json`**, with a real tokenizer (`gpt-tokenizer`), no browser and no LLM.
+
+**Outcome: the gate was not met. Phases 1, 2.5 and 3 are NOT STARTED, BLOCKED ON EVIDENCE — not
+abandoned, not in progress.** The spec cost two days and prevented seventeen. Read what follows as
+a method that worked, not a project that failed.
+
+### TD-56. The token premise is half stale, and the half that holds is narrower than it looked — High / Strategic
+
+#### A retracted number, first
+
+> ~~`irCoverage` 100% on 38/38 runs~~
+
+**This line measured nothing and must not be quoted.** `04-ir.json` stores `{ir, updatedAppModel}`,
+not a bare IR; reading `.steps` off the wrapper produced zero references, and `coverage()` returned
+`1` for zero references. Every run scored a perfect, empty pass. It is struck rather than quietly
+replaced because it will otherwise be read back out of a diff and believed.
+
+**The distribution figures below never depended on it and stand unchanged.** Reduction compares the
+whole `toLiteModel` JSON against the whole View text; the coverage bug lived in a different
+computation. A blanket "the earlier numbers were wrong" would throw away the good measurements
+along with the bad.
+
+The corrected figure is **`irCoverage` 100% on 28 of the 29 runs that have grounded references**,
+with nine runs recorded as NOT MEASURED rather than counted as passes. The one drop is
+`link "Contact Us"` on `2026-08-25T10-06-10`.
+
+#### The correction that changes the result
+
+The spec's Phase 0 says to measure "the AppModel exactly as it is serialized into the IR prompt
+today" and points at `toLiteModel`. Appendix C says to follow the repo when a name differs, and the
+repo has **two** serializers feeding **two** prompts:
+
+| Stage | Call site | What it emits |
+|---|---|---|
+| test cases | `testCases.ts:427` `toLiteModel(appModel)` | **every** page, capped per page, 3 fields per element |
+| IR | `ir.ts:1263` `toMicroModel(filtered, {currentPageUrl})` | **one** page, at most 30 elements, 3 fields |
+
+`toMicroModel` already does most of what the View was proposed to do. So the spec's problem
+statement — "large, page-unscoped, and full of fields the model cannot use" — is **true of the
+test-case prompt and false of the IR prompt**.
+
+#### The numbers
+
+| Comparison | Result |
+|---|---|
+| purpose `testcases` — View vs `toLiteModel` | **max 80.7% / p95 69.0% / median 39.4%** smaller |
+| — same, as a mean | 32.0% (kept for completeness; the wrong headline for a token-pressure problem) |
+| — worst case | **-35.8%**, and **8 of 38 runs regress** |
+| purpose `ir` — View vs `toMicroModel`, page-for-page | **56.6% LARGER** |
+| retrieval — test View vs generic View | 16,214 vs 16,200 tokens |
+
+Totals: `toLiteModel` 36,005 tokens, `toMicroModel` 9,563, generic View 16,200, single-page IR View
+14,979.
+
+**The IR half fails outright — not "under target", negative.** Building the Store and View for
+`purpose: "ir"` would make that prompt bigger and replace a working path with a costlier one.
+
+**The test-case half is real but uneven.** The win comes from a handful of dense runs while a third
+of the corpus measures negative, which is why it is reported as max/p95 rather than as a mean.
+
+**Retrieval was not measured, and this records a CORPUS LIMITATION, not a verdict against
+retrieval.** 34 of the 38 runs are single-page (3 have two pages, 1 has five), so
+`retrieveSubgraph` had nothing to choose between and the retrieved View is the generic View.
+**Re-measure when at least 10 saved runs have 4 or more crawled pages.**
+
+#### Why these numbers can be trusted where the first set could not
+
+The harness shipped **four** bugs, none of which threw — each produced a confident, wrong table.
+Three were arithmetic on the wrong data; the fourth is the one worth naming:
+
+1. `04-ir.json` unwrapping, above.
+2. **Keys joined on `\u0000` in some functions and on a space in others.** A NUL key never equals a
+   space key, so every comparison returned "missing" — 29/29 runs "truncating", 0/0 "covered".
+3. Live-extended elements scored as truncations, blaming `toMicroModel` for elements that did not
+   exist when it ran.
+4. Coverage counted `elements[]` only, while the prompt also carries a `navigation` tree and a
+   `forms` block. Three nav links were reported as dropped by the element cap while the nav tree
+   listed all three, as links, with hrefs.
+
+Bugs 2 and 4 are **the same failure class**: a key or a prompt modelled incompletely, compared
+confidently. A further instance was then caught *by the guard written for bug 2* — a hand-rolled
+`(role, name)` joiner still sitting inside `elementId`, which nothing had noticed. That is four
+occurrences of one root cause inside a single piece of work.
+
+So it is not fixed, it is **guarded**, in `tests/measureView.test.ts`:
+
+- `coverage()` **throws** on zero references instead of returning `1`. The caller decides "not
+  measured"; the function refuses to invent a score. This is TD-01's shape — a check that passes
+  because it never looked.
+- the source is scanned for any hand-rolled `(role, name)` key, for raw NUL bytes, and for a second
+  `NUL_SEP` declaration
+- exact counts throughout — a fixture of 5 references with 3 present asserts **3/5**, never
+  "greater than zero" and never "did not throw"
+- an element present only in the nav tree, and one present only as a form label, each assert as
+  covered
+
+**Those two guards are the reason the rewritten figures are quotable and the originals are not.**
+
+#### The threshold: 70 chars per element, and the band it sits in
+
+Baseline **size** does not separate winners from losers — 87 elements in 15.5k chars reduces 69%,
+while 108 elements in 6.1k chars regresses 25%, and size buckets stay mixed at every level.
+Baseline **density** separates cleanly, and the mechanism is understood: `toLiteModel` also carries
+forms, navigation trees, buttons, headings and breadcrumbs, all of which the View drops. A baseline
+that is mostly bare elements has nothing to give up, so the View's per-element ids cost more than
+compact JSON.
+
+**Record the band, not just the number:**
+
+| | |
+|---|---|
+| highest density that still **regresses** | **56.4** ch/el |
+| lowest density that **improves** | **72.6** ch/el |
+| empty band between them | **56.4 to 72.6**, containing no run of any kind |
+
+`VIEW_MIN_CHARS_PER_ELEMENT = 70` therefore **sits inside a gap, not on a curve**. It clears the
+worst regressor by 13.6 ch/el and keeps a cluster of seven runs at +39.4% that a higher setting
+inside the same band would have forfeited for no gain in safety. A threshold chosen for margin is
+the right instinct against a cliff; against an empty band it only forfeits value.
+
+The threshold is **fitted to this corpus**. `tests/appModelText.test.ts`'s per-run assertion
+therefore passes by construction and is a regression guard, not evidence of generalisation.
+
+**Re-check trigger — point it at the BAND, not the number: re-fit when 15 saved runs postdate the
+threshold's selection.** As runs accumulate inside 56.4–72.6 the band acquires a shape, and the
+threshold should be re-fitted against that shape rather than defended as a chosen constant. **A run
+above the threshold that regresses means the threshold is wrong**, not that the per-run test is too
+strict — the per-run assertion stays per-run.
+
+Chars track tokens closely across the corpus (ratio 3.49–4.38, median 4.15), so gating in
+characters is sound and no runtime tokenizer dependency is needed. `ir.ts:1294` already gates on
+`prompt.length` for the same kind of decision.
+
+#### What this work produced besides a negative
+
+The Store/View **artifact** failed its gate. The **harness built to measure it** did not: replaying
+saved runs offline surfaced TD-57 (an Authentication case compiled without the login page — fixed,
+truncation misses 10 to 2 corpus-wide), TD-58, TD-59 and TD-60, none of which anyone was looking
+for. Recorded so the negative headline does not bury it.
+
+#### Recommendation
+
+Do not build Phases 1–3 as specified. Build the narrow projection of the test-case prompt only,
+above the threshold above, and re-measure retrieval when the corpus can support it.
+
+**Re-run with:** `npx tsx scripts/measureView.ts`. Touches no shipped file, costs nothing.
+`VIEW_TOKEN_BUDGET` overrides the 2500-token default.
+
+**Caveat on the tokenizer.** `gpt-tokenizer` counts GPT tokens; this pipeline sends Gemini. The
+ratios the gate turns on hold across tokenizers, but the absolute counts are not Gemini's.
+
+### TD-57. A bare-origin entry URL sent the IR prompt the wrong page — an Authentication case never saw the login form — High / Accidental — Fixed
+
+**Symptom.** Three saved runs (`2026-08-24T11-10-01`, `2026-08-24T14-52-21`,
+`2026-08-25T06-51-31`), all identical in shape: entry `https://learnvibes.vercel.app`, two
+discovered pages `/dashboard` and `/login`, primary case feature `"Authentication"`. The IR prompt
+was built from `/dashboard`. `"Sign In"`, the email box and the password box appear **nowhere** in
+it — not in `elements`, not in the `navigation` tree, not in `forms`. The IR still grounded against
+all three, because `groundingError()` validates against the *full* model rather than the prompt.
+
+**Cause — two silent fallbacks compounding onto the same wrong page.** `toMicroModel` emits exactly
+ONE page, so the lead page decides what the model can see at all.
+
+1. `ir.ts` tested `p.url.startsWith(entryOrigin) && entryPath && p.url.includes(entryPath)`. For a
+   bare origin `entryPath` is `"/"`, and every URL contains `"/"` — so the test matched whichever
+   page came first in the array. It stops being a path test at that point.
+2. `toMicroModel` then received `{ currentPageUrl: entryUrl }`, matched no page by `pageKey`, and
+   fell back to `model.pages[0]` — the same wrong page, chosen a second time.
+
+**The relevance filter was never at fault.** It correctly kept `/login` (its `concepts` are
+`["Authentication", "Registration"]`, which the filter matches against the case's feature). The page
+was discarded *after* the filter deliberately kept it.
+
+**Fix.** Read `testCase.targetUrl` when choosing the lead page. That is a Zod schema field
+(`testCases.ts:259`), documented to the model as *"when the model has multiple pages, this tells the
+later stage which page to start from"*, and already compared with `pageKey` at `ir.ts:393` and
+`testCases.ts:104`. It was simply never read here — structural, not a regex over prose. Two smaller
+changes with it: the path test is only trusted when there *is* a path, and `toMicroModel` is told
+which page `ir.ts` chose rather than left to re-resolve the entry URL and disagree with it.
+
+**Measured, over all 29 runs with a saved IR: page-filter misses 9 → 1.** Two runs fully fixed
+(3 missing → 0 each). The third went 4 → 1 — see TD-59.
+
+Pinned by `tests/irPagePick.test.ts`, with `/dashboard` deliberately first in the fixture because
+that ordering is what made the old code look correct. Verified failing against the old code.
+
+### TD-58. `toMicroModel`'s 30-element cap dropped one grounded element — Low / Accidental — Filed, not fixed; NOT closed by TD-62
+
+**Symptom.** On `2026-08-25T10-06-10` (87 elements, one page), `toMicroModel` logs
+`capped 73 -> 30 elements`, and `link "custom logo link"` — which that run's IR grounds against —
+reaches the prompt in no form: not as an element, not in the nav tree, not as a form label.
+
+**Scope, and why it is Low.** This is **one element, on one run, across the whole 38-run corpus.**
+The first measurement reported four, but three of those (`"Who We Are"`, `"Services"`,
+`"Contact Us"`) were listed in the `navigation` tree as links with hrefs — the check was reading
+`elements[]` only and ignoring two thirds of the prompt. The remaining one is the WordPress
+custom-logo anchor.
+
+**Deliberately not fixed.** The proposed fix was to make the cap rank before it cuts, reusing the
+View's Pass 3 priority function. That would change how *every* IR prompt is built, on evidence of
+one logo anchor on one run — the same disproportion that killed Phases 1–3 of
+`SITE_STORE_VIEW_SPEC_v2.md`. **Do not fix by raising the cap**; if this is ever fixed, rank before
+cutting and keep the cap at 30.
+
+**Promote to Medium when:** a run grounds against an element the cap dropped *and* that element is
+load-bearing for the case (a form field, a submit control), rather than a decorative logo link.
+`scripts/measureView.ts` reports this per run under `element-cap`.
+
+**TD-62 did NOT close this, though it was expected to.** The theory was that hidden inputs were
+competing for the 30 slots, so evicting them would let the missing element back in. Measured after
+the fix: on `2026-08-25T10-06-10` the cap emits 30 elements and `link "custom logo link"` is
+**still absent** — that page had **zero** junk slots to recover, so nothing was freed. The recovery
+TD-62 produced (11 slots) was entirely on a different run. Ranking the cap before it cuts remains
+the only route, and on evidence of one decorative anchor it is still not worth taking.
+
+### TD-59. `toMicroModel` sends one page, so a case spanning two pages cannot see both — Medium / Strategic
+
+**Symptom.** `2026-08-24T14-52-21` grounds against four targets: `"Sign In"`, the email box and the
+password box on `/login`, and `"Sign out"` on `/dashboard`. `toMicroModel` emits exactly one page,
+so whichever is chosen, one target is invisible to the model. After TD-57's fix the run improved
+from 4 missing to 1, and that last one is not reachable by any choice of single page.
+
+**Why it is left standing.** The one-page reduction is what makes the IR prompt the most compressed
+artifact in the pipeline — Phase 0 measured it at 9,563 tokens against `toLiteModel`'s 36,005, and a
+projected View was **56.6% larger** than it. Widening the page pick to fix this is the token problem
+returning by another door.
+
+**Remediation, when it earns its way in.** Send the lead page in full and a *name-only* digest of
+the other pages the relevance filter kept — enough for the model to reference an element on a second
+page without carrying that page's whole element list. Measure before and after; if the digest costs
+more than a few hundred tokens it is not worth it.
+
+### TD-60. Grounding validates against the full model while the prompt shows a subset — Medium / Strategic — Theoretical, with a trigger
+
+**The gap.** `groundingError()` (`ir.ts:1472`) checks a target against the complete `AppModel`.
+The prompt shows a reduced projection: one page, ≤30 elements, plus a capped nav tree and form
+block. So a target naming anything that exists *anywhere* on the site is accepted, whether or not
+the model was ever shown it. Real by construction.
+
+**Undemonstrated.** The run that prompted this note turned out not to be evidence: three of the four
+elements were in the prompt's nav tree, and the fourth (TD-58) is a single decorative anchor. Across
+29 runs with a saved IR there is currently **no** confirmed case of the model naming a load-bearing
+element it was never shown.
+
+**Why it is worth writing down anyway.** The failure it would produce is silent and would look like
+a good IR: the model guesses a plausible name, grounding accepts it because it exists on some other
+page, and the test fails at run time against the page it is actually on.
+
+**Trigger — promote to a bug when:** any run grounds a target absent from the prompt in **all three**
+blocks (elements, navigation tree, form labels) *and* that target is load-bearing. This is not
+something to remember to check — `scripts/measureView.ts` §3.0 computes exactly this and attributes
+each miss to its cause. A non-`live-extended` miss on a form or submit control is the signal.
+
+### TD-61. The identity hypothesis was never a token argument, and has never been measured — Medium / Strategic — Open
+
+`SITE_STORE_VIEW_SPEC_v2.md` bundled two independent claims. Phase 0 tested one of them.
+
+- **Token argument** — the View is smaller than what ships today. Tested. Fails on the IR prompt,
+  partially holds on the test-case prompt. That is TD-56.
+- **Identity argument** — the model addresses elements by **id** rather than authoring a name, so
+  grounding becomes a dictionary lookup; `nth` is computed from the Store instead of invented; and
+  repeated-group discriminators disambiguate the duplicate `(role, name)` pairs that make grounding
+  ambiguous today (TD-05). **Never a token argument, and never measured.**
+
+Filed separately so it cannot re-enter under the token banner. Phase 0's negative says nothing about
+it either way — a smaller prompt and an unambiguous one are different goods, and this one was never
+on the scale.
+
+**If it is revived it needs its own hypothesis and its own measurement**, stated before any code:
+what fraction of grounding failures in saved runs are caused by ambiguous `(role, name)` pairs, and
+would id-addressing have prevented them? `runs/` already holds the evidence, and answering it costs
+nothing.
+
+### TD-62. Hidden form inputs and a live CSRF token reach the model as if they were controls — High / Accidental — Fixed
+
+**Both paths are fixed.** The View was where it was noticed, because the View promotes the junk to
+its most prominent line, but the defect was in the element filter both stages share.
+`isUsableElement` now lives in `appModel.ts` next to `INTERACTIVE_ROLES` and is called by
+`ir.ts`'s `withFilteredElements` and by the projection, so the two cannot drift apart again — a
+second copy is how they diverged in the first place.
+
+**A narrower leak on a different path remains: see TD-63.** Filtering elements does not touch the
+`forms` block, which is emitted verbatim with every hidden field's name and value.
+
+**Symptom, on `2026-08-14T07-13-38` (amazon.in).** `toLiteModel`'s output — the block sent to the
+test-case model — carries **55 hidden form inputs out of 440 elements**, including a live CSRF
+token, each presented as an ordinary `textbox`:
+
+```
+textbox "SIGNIN_CLAIM_COLLECT"   textbox "FullPageUnifiedClaimCollect"   textbox "true"
+textbox "claimType"   textbox "countryCode"   textbox "1"
+textbox "hLJv+ZAi/ZCOz9pLnTdj9vNiN9BjFZcn/4qCiyrYi8cPAAAAAGp+wC0AAAAB"
+```
+
+**Cause.** `withFilteredElements` (`ir.ts`) keeps an element when it has a name and its role is in
+`INTERACTIVE_ROLES`. `textbox` is interactive and these all have names, so all 55 survive. The same
+predicate is what the View copied.
+
+**Why they appear to have names.** The accessible name of an unlabelled hidden input **is its
+value**, which is why a CSRF token looks like it is named after its own contents:
+
+| hidden field `name` | `value`, which becomes the element's "name" |
+|---|---|
+| `appAction` | `SIGNIN_CLAIM_COLLECT` |
+| `anti-csrftoken-a2z` | `hEj/Wh8642+o8zAEP15lt9A5gFAdyyTAqoNqg9Fa9jHD` |
+| `metadata1` | `true` |
+
+**Two signals are needed; neither is sufficient alone.**
+
+- `Element` carries **no `tag` and no `inputType`**, so `type=hidden` cannot be read off the
+  element at all. It *can* be read off `PageModel.forms[].fields[]`, which does carry `inputType` —
+  a schema field, not a guess about wording. Match on the field's **value as well as its name**.
+- `visible === false` catches only part: 30 of the 474 elements carry it, while
+  `SIGNIN_CLAIM_COLLECT`, `claimType` and `countryCode` are all recorded **`visible: true`**.
+
+**Fixed in the View** (`scripts/measureView.ts`), filtered in **two** places — the per-page element
+filter and Pass 1's shared hoist, because the hoist runs first and on raw `p.elements`. Without the
+second, a CSRF token still led the `shared:` line, precisely because appearing on every sign-in
+page makes it look like site chrome. Six tests in `tests/measureView.test.ts`, at four densities
+plus the hoist and the visible-alone case; all six verified failing without the filter.
+
+**What the fix recovered, measured.** `toMicroModel` caps at 30, so junk does not merely add
+noise — it takes slots from real controls. On `2026-08-14T07-13-38` (amazon.in), **11 of the 30
+elements the model saw were things no test can act on**:
+
+| what it was | how many |
+|---|---|
+| keyboard skip-links (`nav top`, `Cart, shift, alt, c`, ...) | 6 |
+| hidden inputs (`add-new` x2, `IP2LOCATION`, a CSRF token, a hidden `Search in` combobox) | 5 |
+
+Eleven real category links took their place — `Electronics`, `Fashion`, `Prime`, `Home & Kitchen`,
+`Computers`, `Toys & Games`, `Beauty & Personal Care` and four more — none of which had reached the
+model before. **Playwright would have refused to act on any of the eleven**, since its actionability
+checks require visibility, so a case written against one could never have passed.
+
+**Honest note on which signal did the work.** On that page all 11 were caught by
+`visible === false`; the `forms[].inputType` signal contributed nothing there, because the hidden
+fields live on the *sign-in* pages that the single-page pick never reaches. `forms[]` is still
+required — it is the only witness for `SIGNIN_CLAIM_COLLECT`, `claimType` and `countryCode`, which
+are all recorded `visible: true` — but it does not show up in these particular numbers.
+
+**Corpus-wide the effect is narrow: 1 run of 38 spent slots on junk, 11 slots in total.** It is
+filed as High because of what it cost on the run where it happened, not because it is widespread.
+
+**Why this was not caught by any measurement.** Token reduction, `irCoverage` and the §6 A/B
+comparison are all structurally blind to it: the junk is present in *both* arms and in *both*
+prompts, so every comparison cancels it out. It was found by reading the View's output during §6 —
+a defect in the INPUT, surfaced by an exercise designed to compare OUTPUTS.
+
+### TD-63. The `forms` block sent every hidden field's name AND value to the model, including CSRF tokens — High / Accidental — Fixed in the prompts; the run artifacts are TD-64
+
+**Distinct from TD-62, and not fixed by it.** TD-62 filters the `elements` array. `toLiteModel` and
+`toMicroModel` also emit a **`forms` block**, copied through with `fields.slice(0, 20)` and no
+regard for `inputType`. So a hidden field excluded from `elements` reappears in `forms`, complete
+with its value.
+
+**Measured across the 38-run corpus, after TD-62's fix:**
+
+| Prompt | Runs still leaking hidden fields |
+|---|---|
+| IR (`toMicroModel`) | **1** — `2026-08-25T10-06-10`, 6 fields |
+| test cases (`toLiteModel`) | **2** — including 53 fields on the amazon run |
+
+What goes out on the amazon run includes `anti-csrftoken-a2z` with its live token value
+(`hEj/Wh8642+o8zAEP15lt9A5gFAdyyTAqoNqg9Fa9jHD`), plus `appAction`, `claimType`, `countryCode` and
+the rest of the OpenID handshake parameters.
+
+**Severity: High, not Medium.** `DECISIONS.md` D-09 is "secrets never reach disk", and this is the
+exact channel that rule exists to close. The value is session-scoped and short-lived, which is why
+it is not Critical — but it left the process to a third-party API, and it was written to disk in a
+publicly-served directory.
+
+**Fixed.** `promptFormFields(form, cap)` in `appModel.ts` filters `inputType === "hidden"` **before**
+the cap, and both serializers call it. Order matters: slicing first spends the field budget on
+entries the model can do nothing with — 30 hidden fields ahead of one real one would emit 20 hidden
+and lose the real field entirely. A hidden field has no label and cannot be typed into, so dropping
+it costs no capability.
+
+Verified across all 38 saved runs: **hidden fields in the IR prompt 1 -> 0, in the test-case prompt
+2 -> 0**, and no token marker survives in either projection.
+
+#### Check 1 — the run artifacts. CONFIRMED EXPOSED, and NOT fixed by this. See TD-64.
+
+`runs/` is served publicly (TD-14). The token is on disk in **two** files of
+`2026-08-14T07-13-38`:
+
+| File | Size | `anti-csrftoken` | token value |
+|---|---|---|---|
+| `02-appmodel.json` | 2.2 MB | 11 | 3 |
+| `events.ndjson` | 2.1 MB | 11 | 3 |
+
+Carried by the `discovery` / `completed` event. This fix does not touch it: both files record the
+**full** AppModel, not a projection, so filtering the projection cannot reach them.
+
+**`scrubServedSecrets` could not have caught it either, and extending it there would not work.**
+That function redacts KNOWN secret values — the operator's `TEST_USERNAME` / `TEST_PASSWORD`. A
+CSRF token is supplied by the *site under test*, so it is on no list to redact against. It also
+covers only `results.json`, `final-page.txt` and error-context files, not these two.
+
+#### Check 2 — the caches. CLEAN, and by construction for one of them.
+
+| Cache | Entries | Contains the token |
+|---|---|---|
+| `runs/_cache/llm` | 311 | **0** |
+| `runs/_cache/appmodels` | 20 | **0** |
+
+**Why the LLM cache is clean, so nobody re-investigates this:** `llmCacheSet` writes only the
+**response**, to a file named after a SHA-1 **hash** of the prompt (`src/kb/llmCache.ts`). Prompt
+text never reaches disk at all. A prompt carrying a secret therefore leaves nothing in the cache,
+by construction rather than by luck — and the "a never-expiring cache turns a leak into a durable
+artifact" concern does not apply to this cache for any secret, present or future.
+
+The AppModel cache stores the full model and therefore *could* hold one; it happens not to today.
+Its 30-minute TTL governs reads only — files stay on disk indefinitely — so a fix that stops the
+value being recorded at all is the durable answer, which is TD-64.
+
+**No purge is required.** Nothing needs deleting from either cache.
+
+### TD-64. Hidden field values were recorded into publicly-served run artifacts — High / Accidental — Fixed at capture; `cleanedHtml` remains, see TD-65
+
+**Split from TD-63, which fixed only the prompts.** `02-appmodel.json` and `events.ndjson` record
+the **full** AppModel, not a projection, so filtering `toLiteModel` / `toMicroModel` cannot reach
+them. On `2026-08-14T07-13-38` both files carry `anti-csrftoken-a2z` and its live token value, and
+`runs/` is served publicly (TD-14).
+
+**Why `scrubServedSecrets` is the wrong tool.** It redacts *known* secret values — the operator's
+`TEST_USERNAME` / `TEST_PASSWORD` pair. A CSRF token comes from the site under test and is on no
+list to redact against, so no amount of extending its file coverage would catch this class. The
+value has to be dropped where it is captured, not where it is served.
+
+**Remediation, in preference order.**
+
+1. **Do not record hidden field values at all.** `domExtract.ts` populates `DomForm.fields[].value`.
+   A hidden field's value is never useful downstream — nothing grounds against it, no step fills
+   it, and `promptFormFields` now strips the whole field before any prompt. Recording `value: ""`
+   for `inputType === "hidden"` closes every channel at once: artifacts, both caches, both prompts.
+   This is the durable fix and it is small.
+2. Failing that, strip hidden field values in `runStore`/the event sink before writing, which
+   closes the artifact channel only.
+
+**Fixed at capture, in two places, because it arrived by two routes.**
+
+| Route | Fix |
+|---|---|
+| `forms[].fields[].value` (`domExtract.ts:238`) | `inputType === "hidden" ? "" : attr($in, "value")` |
+| `elements[].name` — the accname chain fell through to `attr($el, "value")` | that fallback is skipped for `type=hidden` |
+
+The second route is the one that is easy to miss: the element was *named after its own token*, and
+one such element was recorded `visible: true`, so no visibility check would have caught it either.
+A `type=hidden` input is not in the accessibility tree, so it has no accessible name to derive —
+the fallback was wrong independently of this leak.
+
+**Verified before changing it that nothing reads a hidden field's value.** `credentials.ts` reads
+`inputType` / `name` / `placeholder` / `label` / `id`; `ir.ts`'s `formIndicesForName` reads
+`label` / `name` / `placeholder`. No consumer anywhere reads `.value`. The field's *name* is still
+recorded, since it identifies the form and carries nothing sensitive.
+
+#### The affected run directory was DELETED
+
+`runs/2026-08-14T07-13-38-280Z-9ac0738e` (amazon.in, 4.3 MB) is **gone**, removed deliberately on
+2026-08-27 because `02-appmodel.json` and `events.ndjson` both carried a live
+`anti-csrftoken-a2z` value and `runs/` is served publicly (TD-14). The token was session-scoped and
+long expired, so this was hygiene rather than an incident.
+
+**It is recorded here so its absence is not a mystery later.** That run was the densest AppModel in
+the corpus — 5 pages, 474 elements, 133.5 chars/element — and it is cited throughout TD-56 to TD-63
+as the source of the 80.7% reduction figure, the 11 wasted cap slots, and the §6 case-quality
+comparison. Those numbers were measured before deletion and are not reproducible from `runs/` any
+more. The §6 output survives verbatim in `docs/phases/PHASE0_CASE_QUALITY_RUNB.txt`.
+
+After deletion: `grep -rl "anti-csrftoken\|hEj/Wh8642\|hLJv+ZAi" runs/` returns **nothing**.
+
+### TD-65. `cleanedHtml` persists every page's raw HTML into a publicly-served artifact, and nothing reads it — Medium / Strategic
+
+**The route TD-64's field-level fix cannot reach.** `PageModel.cleanedHtml` is the sanitised source
+of the whole page, so it contains `value="..."` verbatim — every hidden input, and anything else the
+page happened to embed. No field-level filter can touch it.
+
+**It has zero readers.** Written at `domDiscovery.ts:199`, declared at `appModel.ts:180`, and never
+read anywhere in `src/` or `public/`. It is not sent to any prompt: neither `toLiteModel` nor
+`toMicroModel` emits it.
+
+**It is most of the artifact.** On the amazon run it was **1,791 KB of a 2,139 KB
+`02-appmodel.json`** — 84%. `runs/` is served publicly (TD-14), and `RUN_RETENTION_DAYS` is the only
+thing that ever removes it.
+
+So it is simultaneously the largest thing on disk, the last uncovered exposure route, and unused.
+
+**Why it is Strategic rather than a bug.** It was presumably kept as debugging evidence, and
+`CLAUDE.md` is explicit that `runs/` is "the primary evidence source this project's own debugging
+relies on". Removing it is a judgement about what evidence is worth keeping, not a defect to fix —
+which is why it is filed rather than deleted.
+
+**Remediation, if taken.** Stop persisting `cleanedHtml` into `02-appmodel.json`. Artifacts shrink
+by roughly 84%, the last raw-value route closes, and nothing loses a reader. If the raw HTML is
+genuinely wanted for debugging, write it to a separate file that the run-artifact route does not
+serve, rather than embedding it in the model.
+
+**Pinned:** `tests/hiddenFieldCapture.test.ts` asserts that `cleaned_html` **does** still contain
+the token — deliberately inverted, the same device used for TD-63. It fails when TD-65 lands, which
+is the signal to flip it.
+
+---
+
+## Where the Site Store / View work ended — read this before picking it up
+
+Written 2026-08-27, at the point the work was deliberately stopped. `SITE_STORE_VIEW_SPEC_v2.md`
+planned 18–19 days across seven phases after a measurement spike. **The spike's gate fired on day
+two and most of the plan was cancelled.** What follows is what shipped, what is parked, and the
+conditions under which each parked thing should be looked at again.
+
+Nothing here is a to-do list. It is a map, so that the next person — including whoever wrote the
+spec — does not re-derive the reasoning or re-litigate a decision that already has evidence behind
+it.
+
+### What merged into `frontend`
+
+| Merged | What it is |
+|---|---|
+| `ir.ts` page pick (TD-57) | An Authentication case was compiled with the login page absent from the prompt. Two silent fallbacks landing on the same wrong page. Misses 9 → 1 across the corpus. |
+| `isUsableElement` (TD-62) | Hidden inputs and skip-links were reaching the model as ordinary controls. On one run, 11 of `toMicroModel`'s 30 slots were spent on things no test can act on; eleven real category links took their place. |
+| `promptFormFields` (TD-63) | The `forms` block carried every hidden field's name **and value** into both prompts, including a live CSRF token. 1 → 0 and 2 → 0 leaking runs. |
+| capture-time fix (TD-64) | A hidden input's value is no longer recorded at all — not in `fields[].value`, not as an element's accessible name. |
+| `scripts/measureView.ts` | The offline harness. Replays every saved run: no browser, no LLM, no cost. |
+
+Every one of those bugs was found **by the measurement, not by the feature it was measuring.**
+
+### What is parked on a branch, and why
+
+**`appmodel-projection`** — the one piece of the spec worth building. `appModelBlock()` projects the
+test-case prompt to text above 70 chars/element: measured **78.1% fewer tokens across 30 of 38
+runs**, byte-identical baseline below the threshold, no run regressing.
+
+It is **held, not abandoned**, for one reason: the evidence that it does not degrade case quality is
+**a single comparison** (§6 — 10 cases vs 11 on the densest run, with auth and form flows surviving
+in both). At n=1, with generation variance visibly present, that says *"did not produce thinner
+cases on the run with the most structure to lose."* It does not say *"is safe."*
+
+**Merge it when:** a handful of real runs have gone through the merged fixes and nothing looks off,
+or a second §6 comparison on a different dense site agrees with the first.
+
+### The cancelled phases, and what would revive them
+
+| Phase | Status | Revive when |
+|---|---|---|
+| 1 — Store, identity, structural fields | Not started | Only if TD-61's measurement says id-addressing prevents real grounding failures |
+| 2 — View builder | **Partially retained** as the projection above | — |
+| 2.5 — Retrieval | Not started, **blocked on corpus** | **≥10 saved runs have ≥4 crawled pages.** 34 of 38 are single-page, so `retrieveSubgraph` had nothing to choose between and its value is unmeasured, not disproved |
+| 3 — Resolver, `elementId?` on `Target` | Not started | With Phase 1 |
+| 4 — Assertion-text grounding | **Untouched by any of this** | Its own hypothesis, never tested: *do live text-assertion corrections drop measurably?* |
+| 5 — Wire into the IR prompt | **Dead** | Never. The IR prompt is already 56.6% smaller than the View would be |
+| 6 — Failure modes | Not applicable | — |
+
+### The re-check triggers, in one place
+
+- **Retrieval (Phase 2.5):** re-measure when ≥10 saved runs have ≥4 crawled pages.
+- **The 70 ch/el threshold (TD-56):** re-fit when **15 saved runs postdate its selection**. It was
+  fitted to this corpus and sits inside an empty band (56.4–72.6). As runs land inside that band it
+  acquires a shape, and the threshold should be re-fitted against it rather than defended as a
+  constant. A run above the threshold that regresses means **the threshold is wrong**, not that the
+  per-run test is too strict.
+- **TD-58 (cap evicting a grounded element):** promote from Low when the dropped element is
+  load-bearing — a form field or a submit control — rather than a decorative anchor.
+- **TD-60 (grounding scope):** promote when any run grounds a target absent from **all three**
+  prompt blocks. `measureView.ts` §3.0 computes exactly this; a non-`live-extended` miss on a form
+  or submit control is the signal.
+
+### Two inverted assertions are deliberately in the test suite
+
+`tests/hiddenFieldCapture.test.ts` asserts that `cleaned_html` **does** still contain a token
+(TD-65). It is not a claim that the junk belongs there — it records that TD-65 is unfixed, and it
+**fails when TD-65 lands**, which is the signal to flip it. TD-63's equivalent already did this job
+and has been flipped.
+
+If one of these fails, do not "repair" it by widening whatever filter is nearby. Read the TD.
+
+### The harness is load-bearing, and it lied five times
+
+Every decision above came out of `scripts/measureView.ts`. It shipped **five** bugs before producing
+a number worth trusting, and **not one of them threw** — each produced a confident, wrong table:
+
+1. `04-ir.json` is `{ir, updatedAppModel}`; reading `.steps` off the wrapper gave zero references,
+   and `coverage()` returned `1` for zero references. "irCoverage 100% on 38/38" measured nothing.
+2. Keys joined on `\u0000` in some functions and a space in others — every comparison said
+   "missing". Reported 29/29 runs truncating and 0/0 covered. Both artefacts.
+3. Live-extended elements scored as truncations, blaming `toMicroModel` for elements that did not
+   exist when it ran.
+4. Coverage counted `elements[]` only, while the prompt also carries a `navigation` tree and a
+   `forms` block.
+5. Junk slots counted on the *emitted* elements, where `toMicroModel` has already stripped
+   `visible`.
+
+Bugs 2, 4 and 5 are one failure class: **a structure modelled incompletely, then compared
+confidently.** `tests/measureView.test.ts` now guards it — `coverage()` throws on zero references
+rather than returning a figure, and the source is scanned for hand-rolled `(role, name)` keys.
+
+**Treat a number from this harness as provisional until a test pins it.** That is not pessimism;
+it is the observed base rate.
+
+### The one thing that is still open and costs nothing to answer
+
+**TD-61 — the identity hypothesis.** The spec bundled two independent arguments and only one was
+ever tested. Tokens: tested, and mostly wrong. Identity — id-addressing instead of the model
+authoring names, `nth` from the Store, group discriminators against TD-05's ambiguous
+`(role, name)` pairs — was **never a token argument and has never been measured.**
+
+The measurement is free, because `runs/` already holds the evidence:
+
+> Across saved runs, in what fraction of grounded targets is `(role, name)` ambiguous within the
+> page the step is on — and in what fraction of those did `targetResolver` resolve to a **different
+> element than the IR intended**?
+
+The second half is the real question. Ambiguity that always resolves correctly is not a bug. If it
+is ambiguous 30% of the time and wrong 0% of the time, TD-61 closes and the Store idea is finished
+for good. If it is wrong even occasionally, that is a correctness bug no amount of prompt
+compression would have fixed — and it is the strongest remaining reason to revisit Phase 1.
+
+**State the hypothesis before touching the data.**
+
+### What this cost, and what it bought
+
+Two days of measurement prevented roughly seventeen days of building the wrong thing, and turned up
+five real defects — one of which was compiling authentication tests that could not see the login
+form, and three of which were sending a live CSRF token to a third-party API and writing it to a
+publicly-served directory.
+
+The gate worked. Record it as a method that worked, not a project that failed.

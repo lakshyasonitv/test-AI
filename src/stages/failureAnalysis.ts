@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import { findScreenshot } from "./executor.js";
@@ -162,8 +163,57 @@ function compressSnapshot(snapshot: string, target?: { role?: string; name?: str
   return ranges.join('\n...\n');
 }
 
-export async function analyzeFailure(ir: IR, result: ExecResult): Promise<Diagnosis> {
+/**
+ * The run ended back on the login page — so it was never authenticated, whatever the Playwright
+ * error happens to say.
+ *
+ * Worth its own branch because the generic classifier is actively misleading here. Run
+ * 2026-08-22T07-04-23-933Z-04c5704b failed with `element_missing` — *"the element may have been
+ * renamed, moved behind another interaction, or removed entirely"* — and sent two debugging
+ * sessions looking for a renamed button. `final-page.txt` said the flow was sitting on
+ * `/login`, showing "Welcome back / Email / Password". Nothing was renamed; the test simply
+ * never signed in.
+ *
+ * Structural on purpose: it compares the final URL against the login URL discovery recorded, and
+ * never reads the page's prose (CLAUDE.md's TD-01 rule). `final-page.txt` is `url + "\n" + text`
+ * — generator.ts writes it in a `test.afterEach`, so it exists on failures too.
+ */
+function endedOnLoginPage(result: ExecResult, loginUrl?: string): string | null {
+  if (!loginUrl) return null;
+  try {
+    const body = readFileSync(path.join(result.artifactsDir, "final-page.txt"), "utf8");
+    const finalUrl = body.split("\n")[0]?.trim();
+    if (!finalUrl) return null;
+    const a = new URL(finalUrl), b = new URL(loginUrl);
+    return a.origin === b.origin && a.pathname === b.pathname ? finalUrl : null;
+  } catch {
+    return null;   // no artifact, or an unparseable URL — not a reliable signal
+  }
+}
+
+export async function analyzeFailure(
+  ir: IR, result: ExecResult,
+  /** `AppModel.auth.loginUrl`. Present only when discovery found a login gate. */
+  loginUrl?: string,
+): Promise<Diagnosis> {
   const errorText = errorTextFrom(result);
+
+  // Before the generic classifier: an un-authenticated run misreports as whatever the first
+  // missing element happened to be, which is the wrong thing to go looking for.
+  const bounced = endedOnLoginPage(result, loginUrl);
+  if (bounced) {
+    return {
+      failingStepId: findFailingStepId(ir, errorText),
+      category: "navigation_error",
+      explanation:
+        `The test was not signed in — it finished on the login page (${bounced}). Every step after ` +
+        `the app redirected there acts on the login screen, so whatever it reported as missing was ` +
+        `simply not on that page.`,
+      suggestedFix:
+        `Check the credentials for this site are still valid, and that discovery's recorded login ` +
+        `steps still match the live login form (AppModel.auth.loginSteps).`,
+    };
+  }
 
   // Deterministic classifier first — free, instant, and anchored to real Playwright error
   // strings. This used to call failure/ruleAnalysis.ts, which was coarser AND hard-coded

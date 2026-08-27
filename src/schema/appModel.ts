@@ -208,9 +208,62 @@ export type PageModel = z.infer<typeof PageModel>;
 // AppModel — unchanged structure, extended PageModel
 // ---------------------------------------------------------------------------
 
+/**
+ * What discovery's login attempt did — reported, not inferred.
+ *
+ * Before this existed, a login that failed produced a normal `discovery completed` event and a
+ * one-page AppModel with no reason attached, indistinguishable from a site that simply has no
+ * login. Three separate debugging sessions were spent working out which of these had happened;
+ * every one of them needed the run's raw artifacts to answer a question the run should have
+ * stated outright.
+ *
+ * `no-gate`        — no password field anywhere; nothing to log into.
+ * `no-credentials` — a login gate, but the run had no credentials to try.
+ * `login-failed`   — credentials were tried and no session resulted.
+ * `authenticated`  — verified: the reached page reloads without a password field.
+ */
+/**
+ * One step of the login discovery actually performed, recorded so nothing downstream has to
+ * work out "which box is the password" a second time.
+ *
+ * That re-derivation is exactly what broke before: `credentialFieldMap` reads only
+ * `PageModel.forms[]`, and a React login with no `<form>` tag yields an empty map, so the
+ * password field became unfindable even though `input[type="password"]` was right there.
+ * `loginOnPage` resolves these against the LIVE DOM; this carries its answer forward verbatim.
+ *
+ * Deliberately not `ir.ts`'s `Step`: appModel.ts must not import from ir.ts (ir.ts imports this
+ * module, and the cycle would be real). `ir.ts` converts these into Steps when it splices them in.
+ */
+export const AuthStep = z.object({
+  action: z.enum(["fill", "click", "press"]),
+  /** Selector discovery verified on the live page — never LLM-invented (DECISIONS.md D-02). */
+  css: z.string(),
+  /** Which credential this field wants. Absent for the submit control. */
+  credential: z.enum(["username", "password"]).optional(),
+  /** For `press` (native form submit when there is no button) — the key to send. */
+  key: z.string().optional(),
+});
+export type AuthStep = z.infer<typeof AuthStep>;
+
+export const AuthOutcome = z.object({
+  status: z.enum(["no-gate", "no-credentials", "login-failed", "authenticated"]),
+  /** Where the login attempt ended up — the evidence for `status`, and the first thing to look
+   *  at when it reads `login-failed`. */
+  url: z.string().optional(),
+  /** The gate itself: the page carrying the login form. Distinct from `url` above, which is
+   *  where the login LANDED — both are needed (the prefix navigates to this one, and
+   *  testCases.ts caps cases that target it). */
+  loginUrl: z.string().optional(),
+  /** Replayable record of the successful login. Present only when status is "authenticated". */
+  loginSteps: z.array(AuthStep).optional(),
+  detail: z.string().optional(),
+});
+export type AuthOutcome = z.infer<typeof AuthOutcome>;
+
 export const AppModel = z.object({
   baseUrl: z.string(),
   pages: z.array(PageModel),
+  auth: AuthOutcome.optional(),
 });
 export type AppModel = z.infer<typeof AppModel>;
 
@@ -221,6 +274,61 @@ export const INTERACTIVE_ROLES = new Set([
   "combobox", "listbox", "option", "tab", "switch", "heading",
   "searchbox", "spinbutton", "slider",
 ]);
+
+/**
+ * Hidden form inputs, read off the page's own `forms` block — `TECH_DEBT.md` TD-62.
+ *
+ * Lives HERE, next to `INTERACTIVE_ROLES`, because two callers need the same answer and a second
+ * copy is how they drift: `ir.ts`'s `withFilteredElements` and the test-case projection both have
+ * to exclude these, and "named + interactive" is not enough on its own to do it.
+ *
+ * WHAT GETS THROUGH WITHOUT THIS. On a real saved run (amazon.in, 474 elements) the filter kept
+ * 440, of which **55 were hidden inputs** — presented to the model as ordinary `textbox`es it
+ * could type into, including a live CSRF token:
+ *
+ *     textbox "SIGNIN_CLAIM_COLLECT"   textbox "claimType"   textbox "true"
+ *     textbox "hLJv+ZAi/ZCOz9pLnTdj9vNiN9BjFZcn/4qCiyrYi8cPAAAAAGp+wC0AAAAB"
+ *
+ * `Element` carries no `tag` and no `inputType`, so `type=hidden` cannot be read off the element
+ * itself. `PageModel.forms[].fields[]` DOES carry `inputType` — a schema field, not a guess about
+ * wording, which is what keeps this on the right side of CLAUDE.md's central rule.
+ *
+ * MATCH THE FIELD'S VALUE AS WELL AS ITS NAME. The accessible name of an unlabelled hidden input
+ * IS its value, which is why a CSRF token appears to be named after its own contents:
+ *
+ *     name "appAction"           value "SIGNIN_CLAIM_COLLECT"
+ *     name "anti-csrftoken-a2z"  value "hEj/Wh8642+o8zAEP15lt9A5gFAdyyTAqoNqg9Fa9jHD"
+ *     name "metadata1"           value "true"
+ *
+ * `visible === false` is checked too and is NOT sufficient alone: on that same run 30 of the 474
+ * elements carry it, while `SIGNIN_CLAIM_COLLECT`, `claimType` and `countryCode` are all recorded
+ * `visible: true`. Either signal on its own leaves roughly half the junk in.
+ */
+export function hiddenInputNames(page: Pick<PageModel, "forms">): Set<string> {
+  const out = new Set<string>();
+  for (const f of page.forms ?? []) {
+    for (const fld of f?.fields ?? []) {
+      if ((fld as { inputType?: string })?.inputType !== "hidden") continue;
+      const name = (fld as { name?: string }).name;
+      const value = (fld as { value?: string }).value;
+      if (name) out.add(String(name));
+      if (value) out.add(String(value));
+    }
+  }
+  return out;
+}
+
+/** True when this element is a hidden input — never something a test can interact with. */
+export const isHiddenInput = (el: Element, hidden: Set<string>): boolean =>
+  el.visible === false || hidden.has(String(el.name ?? ""));
+
+/** The one predicate for "can a generated test act on this element?" — named, interactive, and
+ *  not a hidden input. `ir.ts` and the projection both call this so they cannot disagree. */
+export function isUsableElement(el: Element, hidden: Set<string>): boolean {
+  return !!el.name?.trim()
+    && INTERACTIVE_ROLES.has((el.role ?? "").toLowerCase())
+    && !isHiddenInput(el, hidden);
+}
 
 // Read lazily, per call, NOT as module-level constants — a module-level `const X =
 // Number(process.env.X ?? d)` caches the value at first import, so a test that sets the env var
@@ -273,6 +381,26 @@ function capNavTree(
  *  from producing a 17,000+ line JSON that trips an LLM's context/payload limit — see
  *  ARCHITECTURE.md's "AppModel context explosion" gap. Defaults are calibrated well above every
  *  page observed in this project's own sampled runs, so an ordinary site is unaffected. */
+/**
+ * Project a form's fields for a PROMPT: hidden fields removed, then capped — TD-63.
+ *
+ * Order matters. `fields.slice(0, cap)` on the raw list spends the cap on entries the model can do
+ * nothing with, and worse, carries their VALUES out of the process. On the amazon run 48 of the 54
+ * hidden fields had non-empty values, among them `anti-csrftoken-a2z` and its live token.
+ *
+ * A hidden field has no label, cannot be typed into, and gives the model nothing to write a step
+ * against, so dropping it costs no capability at all.
+ *
+ * WHY THIS IS NOT SOMETHING `scrubServedSecrets` COULD HAVE CAUGHT. That function redacts KNOWN
+ * secret values — the `TEST_USERNAME` / `TEST_PASSWORD` pair the operator supplied. A CSRF token is
+ * supplied by the site under test, so it is not on any list to redact against. The only place it
+ * can be stopped is where it is projected, which is here.
+ */
+export function promptFormFields<T extends { fields?: unknown[] }>(form: T, cap: number): unknown[] {
+  const fields = (form.fields ?? []) as { inputType?: string }[];
+  return fields.filter((f) => f?.inputType !== "hidden").slice(0, cap);
+}
+
 export function toLiteModel(model: AppModel): AppModel {
   const caps = liteCaps();
   return {
@@ -284,7 +412,7 @@ export function toLiteModel(model: AppModel): AppModel {
       elements: capElements(p.elements, caps.elements).map(({ role, name, concept }) => ({ role, name, concept })),
       // Preserve DOM summary fields even in lite model — they're small and useful
       ...(p.forms && p.forms.length > 0 ? {
-        forms: p.forms.slice(0, caps.forms).map((f) => ({ ...f, fields: f.fields.slice(0, caps.formFields) })),
+        forms: p.forms.slice(0, caps.forms).map((f) => ({ ...f, fields: promptFormFields(f, caps.formFields) as typeof f.fields })),
       } : {}),
       ...(p.navigation && p.navigation.length > 0 ? {
         navigation: capNavTree(p.navigation, 0, caps.navDepth, { remaining: caps.navNodes }),
@@ -333,7 +461,8 @@ export function compressRepetitiveSiblings(elements: Element[]): Element[] {
 }
 
 /** Origin + path, ignoring query/hash — same as ir.ts pageKey */
-function pageKey(url: string): string {
+/** Origin + path, ignoring query/hash — enough to decide whether two URLs are the same page. */
+export function pageKey(url: string): string {
   try {
     const u = new URL(url);
     return u.origin + (u.pathname.replace(/\/+$/, "") || "/");
@@ -371,7 +500,7 @@ export function toMicroModel(
         ({ role, name, concept, ...(c ? { compressed: c, count } : {}) })),
       ...(targetPage.forms && targetPage.forms.length > 0 ? {
         forms: targetPage.forms.slice(0, 2).map(f => ({
-          ...f, fields: f.fields.slice(0, 20),
+          ...f, fields: promptFormFields(f, 20) as typeof f.fields,
         })),
       } : {}),
       ...(targetPage.navigation && targetPage.navigation.length > 0 ? {

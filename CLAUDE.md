@@ -9,7 +9,7 @@ here.
 
 A pipeline that turns a natural-language testing request + URL into **executed** Playwright tests:
 Gemini plans -> DOM-first discovery (cheerio, zero LLM tokens on the common path, same-origin site
-crawl) -> Gemini generates a coverage suite -> Groq compiles the chosen case into a strict JSON IR,
+crawl) -> Gemini generates a coverage suite -> Gemini compiles the chosen case into a strict JSON IR,
 deterministically grounded against the live app -> a pure-code generator emits a Playwright spec ->
 the spec runs for real, per-case, in its own browser context -> on failure, a deterministic
 classifier tries first, Gemini vision second.
@@ -23,11 +23,40 @@ classifier tries first, Gemini vision second.
 | What's broken, ranked, with remediation | `TECH_DEBT.md` |
 | Why a design choice was made, what was rejected | `DECISIONS.md` |
 | Working guidance for an agent (this file) | `CLAUDE.md` |
+| What each shipped phase changed, and how to roll it back | `docs/phases/` |
 
 **Before adding a "what's broken" note anywhere, put it in `TECH_DEBT.md` instead.** This doc set
 used to be six files that each kept their own copy of that list, and every copy drifted out of
 sync — that's why it's five files with one job each now, not six with overlap
 (`DECISIONS.md` D-01). Don't recreate the overlap.
+
+`docs/phases/` is a build log, not a sixth topic owner: one report per shipped phase, each ending
+with what it deliberately did **not** fix. Read the report for the area you are about to touch
+before touching it — several of them record a constraint that is not visible in the code.
+
+## The platform layer's own rules
+
+Everything under `docs/phases/` was built to a standing set of rules. They still apply:
+
+1. **Never change an existing route's request or response shape.** `public/app.js` reads these
+   shapes in dozens of places. New functionality gets a NEW route; an existing route may gain
+   **optional** fields only — never renamed, removed or reordered ones.
+2. **Every new capability ships behind an env flag defaulting to OFF.** With every flag off, the
+   tool behaves exactly as it did before any of this existed.
+3. **Never touch `public/style.css` class names.** `app.js` drives the entire UI by toggling
+   documented class contracts (`.hidden`, `li.completed`, `.phase-badge.running`,
+   `.case-card.open`). Reuse an existing class rather than minting one.
+4. **Never switch views by toggling `.hidden` directly.** `showView()` is the only function
+   allowed to do that, and its comment documents a real bug this caused.
+5. **Real credentials never touch disk or the database.** They stay in process memory for the
+   length of one walk. Stored steps keep `${env:...}` references. Do not weaken
+   `scrubServedSecrets` or `redactCredentials`.
+6. **A model proposes, it never writes** (`DECISIONS.md` D-27). Every model-authored change to a
+   saved test comes back as step *text*, is re-checked by the real parser, is shown as a diff, and
+   is approved by a person before it enters the ordinary save path.
+7. **Flag-off must still mean flag-on's code path.** `AUTH_ENABLED=false` substitutes a synthetic
+   local **owner** rather than skipping the checks, so the permission code runs and passes in both
+   modes. A bypass would mean the checks are only ever exercised in production.
 
 ## The project's central design rule
 
@@ -103,6 +132,30 @@ end-to-end confirmation, and say so before doing it, since it costs the user mon
   run afterward still showed the exact pre-fix timing signature, because the server process
   predated the fix by over an hour. Before judging any source change against a live run, check
   whether the server process actually started after the edit.
+- **A `page.evaluate` callback must not contain inner named or `const`-assigned functions.**
+  `tsx` (how the server actually runs) uses esbuild, which wraps every named function in a
+  `__name(...)` call to preserve `.name` — a helper that does not exist inside the code
+  `page.evaluate` serializes and runs in the browser. `vitest`'s own transform does not inject
+  that helper, so this passes every unit test and throws `ReferenceError: __name is not defined`
+  only on a real `npm run serve` run (`TECH_DEBT.md` TD-40). Write evaluate callbacks with
+  everything inlined, duplicated across branches if needed, and say why in a comment.
+- **`sessionStorage` does not survive `context.newPage()`.** It's scoped to the tab, not to
+  Playwright's `BrowserContext` — a shared context keeps cookies and `localStorage` across pages,
+  but a site whose session lives only in `sessionStorage` (a real, mainstream React/Vite pattern)
+  is logged out again on every new page. Verified directly: a second page on an authenticated
+  context came back with empty `sessionStorage` and the login form. If a flow needs to survive
+  across pages, keep it on the SAME page/tab (`TECH_DEBT.md` TD-41, `DECISIONS.md` D-23).
+
+- **The step editor's English format is LOSSY, and that is load-bearing.** A rendered sentence
+  carries a step's semantic target and value, not the `css`/`testId`/`nth` grounding wrote. So
+  `parse(format(step))` cannot reproduce a grounded step on its own — the contract that actually
+  holds is `parseIrStep(formatIrStep(step), step)`, parsing *onto* the original. That is what makes
+  an untouched line free to save and a changed target expensive: the deterministic fields are
+  cleared precisely when the user stops pointing at that element, forcing a re-ground. Do not
+  "fix" the format to be round-trippable; read the header comment in `src/stages/stepText.ts`.
+- **`public/app.js` has its own copy of `formatIrStep`** and cannot import the server's (classic
+  script, no module surface). `tests/stepText.test.ts` extracts and evaluates that copy and asserts
+  it renders identically. If you change one, change both — the test will tell you.
 
 ## Don't
 

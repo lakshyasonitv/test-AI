@@ -4,6 +4,7 @@ import {
   credentialEnvVars, credentialKindForTarget, credentialForTarget, redactCredentials, REDACTED,
   wantsRealCredentials, credentialFieldMap, credentialPolicyFor, lastFillIndexByKind,
   extractCredentialsFromPrompt, looksLikeCompoundLoginCase,
+  credentialsFromEnv, credentialKindsNeeded,
 } from "../src/stages/credentials.js";
 import { generateSpec } from "../src/stages/generator.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -126,6 +127,42 @@ describe("extractCredentialsFromPrompt", () => {
     expect(extractCredentialsFromPrompt("check the password field is masked")).toBeUndefined();
     expect(extractCredentialsFromPrompt("test the login and signup page")).toBeUndefined();
   });
+
+  // Regression, run 2026-08-21T22-02-15-775Z-5e8a577e (learnvibes): this exact prompt extracted
+  // username "flow" / password "-", so discovery tried to log in with garbage, failed, and fell
+  // back to the anonymous crawl — a one-page login-only AppModel, the symptom the auth-aware
+  // crawl exists to remove. Two independent defects, both live in this one sentence.
+  describe("the shapes that produced a garbage credential in a real run", () => {
+    it("reads a dash-separated value instead of capturing the dash itself", () => {
+      // `[:=]?` did not include "-", so `(\S+)` matched the separator. Both halves came back "-".
+      expect(extractCredentialsFromPrompt("email - 'a@b.com' password - '123456'"))
+        .toMatchObject({ username: "a@b.com", password: "123456" });
+      expect(extractCredentialsFromPrompt("email – 'a@b.com' password – '123456'"))
+        .toMatchObject({ username: "a@b.com", password: "123456" });
+    });
+
+    it("prefers a labelled value over a trigger word occurring earlier in prose", () => {
+      // "user" inside "add user flow" matched before "email:" was reached, and .match() is
+      // leftmost-first — so the username became "flow". "user" can't be dropped from the
+      // trigger set the way "login" was; it's how people actually write usernames.
+      expect(extractCredentialsFromPrompt("check the add user flow, email: 'a@b.com' password: '123456'"))
+        .toMatchObject({ username: "a@b.com", password: "123456" });
+      expect(extractCredentialsFromPrompt("user management page, username: alice, password: hunter2"))
+        .toMatchObject({ username: "alice", password: "hunter2" });
+    });
+
+    it("handles the real prompt, which hit both defects at once", () => {
+      expect(extractCredentialsFromPrompt(
+        "i want you to check the add user flow of this website, " +
+        "email - 'vaibhav.parmar@thinkvibes.com' password - '123456'",
+      )).toMatchObject({ username: "vaibhav.parmar@thinkvibes.com", password: "123456" });
+    });
+
+    it("still finds nothing in the same sentence without credentials", () => {
+      expect(extractCredentialsFromPrompt("check the add user flow of this website")).toBeUndefined();
+      expect(extractCredentialsFromPrompt("i want you to check the cart flow of this website")).toBeUndefined();
+    });
+  });
 });
 
 describe("credentialKindForTarget", () => {
@@ -231,6 +268,41 @@ describe("keeping user credentials off disk", () => {
   it("does not shred unrelated text for a very short credential", () => {
     const captured = { pageText: "an ordinary sentence" };
     expect(redactCredentials(captured, { username: "an", password: "x", secret: true })).toEqual(captured);
+  });
+
+  // Regression, run 2026-08-22T04-18-57-530Z-040dd5ae: the user's password was the literal
+  // string "password". Blind replacement rewrote type="password", id="password" and #password
+  // into "[redacted]" — 8 structural hits — so downstream credentialFieldMap could no longer
+  // find a password field and the generator emitted "#[redacted]", a selector matching nothing.
+  it("refuses to redact a secret that is an ordinary DOM keyword", () => {
+    const model = {
+      pageText: "Welcome Back",
+      forms: [{ fields: [{ inputType: "password", id: "password", label: "Password" }] }],
+      elements: [{ role: "textbox", name: "••••••••", css: "#password" }],
+    };
+    const out = redactCredentials(model, { username: "hr@company.com", password: "password", secret: true });
+    expect(out.forms[0].fields[0].inputType).toBe("password");
+    expect(out.forms[0].fields[0].id).toBe("password");
+    expect(out.elements[0].css).toBe("#password");
+    expect(JSON.stringify(out)).not.toContain(REDACTED);
+  });
+
+  it("still redacts the identifier in the same model", () => {
+    // The keyword guard is per-value, not all-or-nothing: a real email alongside a keyword
+    // password must still be scrubbed.
+    const model = { pageText: "Signed in as hr@company.com", elements: [{ css: "#password" }] };
+    const out = redactCredentials(model, { username: "hr@company.com", password: "password", secret: true });
+    expect(out.pageText).not.toContain("hr@company.com");
+    expect(out.elements[0].css).toBe("#password");
+  });
+
+  it("keeps working on raw strings, which executor.ts scrubs through it", () => {
+    // executor.ts passes readFileSync(final-page.txt) straight in. A key-aware object walk was
+    // considered here and rejected for exactly this reason: it finds no keys in a string and
+    // would have silently stopped scrubbing publicly served artifacts.
+    const out = redactCredentials("Signed in as me@real.com", { username: "me@real.com", password: "hunter2", secret: true });
+    expect(out).not.toContain("me@real.com");
+    expect(out).toContain(REDACTED);
   });
 
   it("hands the real values to the test process only for secret credentials", () => {
@@ -598,3 +670,68 @@ describe("looksLikeCompoundLoginCase", () => {
 });
 
 
+
+/**
+ * Reading credentials back out of the environment — the reverse of `credentialEnvVars`, and the
+ * silent path for case editing: an operator who already set these for their runs is never asked.
+ */
+describe("credentialsFromEnv", () => {
+  it("reads the same pair credentialEnvVars writes", () => {
+    const creds = credentialsFromEnv({
+      TEST_USERNAME: "user@example.com", TEST_PASSWORD: "hunter2",
+    } as NodeJS.ProcessEnv);
+    expect(creds).toEqual({ username: "user@example.com", password: "hunter2", secret: true });
+  });
+
+  it("round-trips with credentialEnvVars, so the two names cannot drift apart", () => {
+    const original = { username: "u@e.com", password: "p455", secret: true };
+    const back = credentialsFromEnv(credentialEnvVars(original) as NodeJS.ProcessEnv);
+    expect(back).toEqual(original);
+  });
+
+  it("is always secret — an operator's own credential must never reach disk as a literal", () => {
+    expect(credentialsFromEnv({ TEST_USERNAME: "u", TEST_PASSWORD: "p" } as NodeJS.ProcessEnv)?.secret)
+      .toBe(true);
+  });
+
+  it("returns nothing for half a pair, which could only fail slower", () => {
+    expect(credentialsFromEnv({ TEST_USERNAME: "u" } as NodeJS.ProcessEnv)).toBeUndefined();
+    expect(credentialsFromEnv({ TEST_PASSWORD: "p" } as NodeJS.ProcessEnv)).toBeUndefined();
+    expect(credentialsFromEnv({} as NodeJS.ProcessEnv)).toBeUndefined();
+  });
+
+  it("treats an empty string as absent rather than as a blank username", () => {
+    expect(credentialsFromEnv({ TEST_USERNAME: "", TEST_PASSWORD: "p" } as NodeJS.ProcessEnv))
+      .toBeUndefined();
+  });
+});
+
+/**
+ * Which credentials a step list needs — read off the steps themselves rather than guessed from
+ * field names. `applyCredentials` already rewrote every login fill to the sentinel when the case
+ * was authored, so the sentinel IS the declaration.
+ */
+describe("credentialKindsNeeded", () => {
+  const fill = (value?: string) => ({ value });
+
+  it("sees a login step by its env sentinel", () => {
+    expect(credentialKindsNeeded([fill("${env:TEST_USERNAME}")])).toEqual(["username", "password"]);
+    expect(credentialKindsNeeded([fill("${env:TEST_PASSWORD}")])).toEqual(["username", "password"]);
+  });
+
+  it("asks for both together — half a login cannot authenticate", () => {
+    expect(credentialKindsNeeded([fill("${env:TEST_USERNAME}"), fill("${env:TEST_PASSWORD}")]))
+      .toEqual(["username", "password"]);
+  });
+
+  it("ignores ordinary fills, whose literal value IS the test", () => {
+    expect(credentialKindsNeeded([fill("mug"), fill("94107"), fill(undefined)])).toEqual([]);
+  });
+
+  it("is not fooled by a value that merely mentions an env var", () => {
+    // Only the exact sentinel counts — isEnvValueRef rejects anything else, which is what stops a
+    // crafted case text from claiming it needs a credential.
+    expect(credentialKindsNeeded([fill("my ${env:TEST_PASSWORD} is secret")])).toEqual([]);
+    expect(credentialKindsNeeded([fill("${env:HOME}")])).toEqual([]);
+  });
+});

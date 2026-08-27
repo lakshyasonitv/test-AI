@@ -185,9 +185,11 @@ describe("toIR — post-click reveal check", () => {
   });
 });
 
-// Replay against the artifacts of the real runs this fix came from — the same zero-cost
-// verification the navigate-URL guard used. These read saved JSON off disk rather than
-// reconstructing a fixture by hand, so they can't drift from what actually happened.
+// Replay against fixtures captured from the real runs this fix came from — the same zero-cost
+// verification the navigate-URL guard used. The original runs/<id>/ directories (2026-08-10) have
+// since aged off disk (runs/ is gitignored and not retained forever), so these load committed
+// copies under tests/fixtures/irPostClickReveal/ instead of live paths into runs/ itself — see
+// tests/fixtures/irGroqToGeminiReplay/ for the established convention this follows.
 describe("postClickRevealIndex — replayed against the real saved runs", () => {
   const load = (p: string) => {
     const raw = JSON.parse(readFileSync(new URL(p, import.meta.url), "utf8"));
@@ -195,7 +197,7 @@ describe("postClickRevealIndex — replayed against the real saved runs", () => 
   };
 
   it("flags s10 of the run that shipped the broken ticket test", () => {
-    const ir = load("../runs/2026-08-10T11-15-46-262Z-1279794e/04-ir.json");
+    const ir = load("fixtures/irPostClickReveal/1279794e-04-ir.json");
     const index = postClickRevealIndex(ir);
     // s10 — `fill textbox "Search assets by serial or name..."`, the header search box that
     // was filled instead of the modal's Title field.
@@ -211,7 +213,7 @@ describe("postClickRevealIndex — replayed against the real saved runs", () => 
   // because its target misses grounding and live-extend handles it (pinned in the test above).
   // This asserts the trigger points at the right step, i.e. it isn't firing somewhere arbitrary.
   it("points at the modal's real Title field in the case that was already correct", () => {
-    const ir = load("../runs/2026-08-10T10-18-49-077Z-a5d729b1/cases/case-1/04-ir.json");
+    const ir = load("fixtures/irPostClickReveal/a5d729b1-case1-04-ir.json");
     const index = postClickRevealIndex(ir);
     expect(ir.steps[index].target.name).toBe("E.g., Laptop screen flickering");
     expect(ir.steps[index - 1].target.name).toBe("Raise Ticket");

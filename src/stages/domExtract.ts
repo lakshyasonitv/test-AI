@@ -235,7 +235,15 @@ function extractForms($: CQ, baseUrl: string): CrawlResponse["forms"] {
 
       fields.push({
         tag, input_type: inputType, name: attr($in, "name"), placeholder: attr($in, "placeholder"),
-        label: labelText, required: has($in, "required"), value: attr($in, "value"),
+        label: labelText, required: has($in, "required"),
+        // A hidden input's value is never read by anything downstream — no step fills it, nothing
+        // grounds against it, and `promptFormFields` strips the whole field before any prompt —
+        // but it IS whatever the server put there. On a real crawl of amazon.in that was
+        // `anti-csrftoken-a2z` carrying a live CSRF token, which then reached `02-appmodel.json`
+        // and `events.ndjson`, both served publicly (TD-14). Not recording it closes the artifact,
+        // both caches and both prompts at once, because everything downstream reads this field.
+        // TD-64.
+        value: inputType === "hidden" ? "" : attr($in, "value"),
         options, id: fieldId, aria_label: attr($in, "aria-label"),
       });
     });
@@ -423,9 +431,14 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
 
     // Accessible name in accname precedence order — see roleForField's comment in
     // domDiscovery.ts for why the HTML `name` attribute must come last, not first.
+    // A `type=hidden` input is not in the accessibility tree, so it has no accessible name to
+    // derive — and using its `value` as one is how a CSRF token ended up as an element's NAME in
+    // a publicly-served artifact (TD-64). Its `name` attribute still applies; only the value is
+    // withheld.
+    const isHiddenField = (attr($el, "type") || "").toLowerCase() === "hidden";
     const name0 =
       attr($el, "aria-label") || attr($el, "placeholder") || ownText
-      || attr($el, "value") || attr($el, "title") || attr($el, "name");
+      || (isHiddenField ? "" : attr($el, "value")) || attr($el, "title") || attr($el, "name");
 
     const testId = attr($el, "data-test") || attr($el, "data-testid") || attr($el, "data-qa");
     const id = attr($el, "id");
