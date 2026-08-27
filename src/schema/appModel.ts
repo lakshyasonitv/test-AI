@@ -275,6 +275,61 @@ export const INTERACTIVE_ROLES = new Set([
   "searchbox", "spinbutton", "slider",
 ]);
 
+/**
+ * Hidden form inputs, read off the page's own `forms` block — `TECH_DEBT.md` TD-62.
+ *
+ * Lives HERE, next to `INTERACTIVE_ROLES`, because two callers need the same answer and a second
+ * copy is how they drift: `ir.ts`'s `withFilteredElements` and the test-case projection both have
+ * to exclude these, and "named + interactive" is not enough on its own to do it.
+ *
+ * WHAT GETS THROUGH WITHOUT THIS. On a real saved run (amazon.in, 474 elements) the filter kept
+ * 440, of which **55 were hidden inputs** — presented to the model as ordinary `textbox`es it
+ * could type into, including a live CSRF token:
+ *
+ *     textbox "SIGNIN_CLAIM_COLLECT"   textbox "claimType"   textbox "true"
+ *     textbox "hLJv+ZAi/ZCOz9pLnTdj9vNiN9BjFZcn/4qCiyrYi8cPAAAAAGp+wC0AAAAB"
+ *
+ * `Element` carries no `tag` and no `inputType`, so `type=hidden` cannot be read off the element
+ * itself. `PageModel.forms[].fields[]` DOES carry `inputType` — a schema field, not a guess about
+ * wording, which is what keeps this on the right side of CLAUDE.md's central rule.
+ *
+ * MATCH THE FIELD'S VALUE AS WELL AS ITS NAME. The accessible name of an unlabelled hidden input
+ * IS its value, which is why a CSRF token appears to be named after its own contents:
+ *
+ *     name "appAction"           value "SIGNIN_CLAIM_COLLECT"
+ *     name "anti-csrftoken-a2z"  value "hEj/Wh8642+o8zAEP15lt9A5gFAdyyTAqoNqg9Fa9jHD"
+ *     name "metadata1"           value "true"
+ *
+ * `visible === false` is checked too and is NOT sufficient alone: on that same run 30 of the 474
+ * elements carry it, while `SIGNIN_CLAIM_COLLECT`, `claimType` and `countryCode` are all recorded
+ * `visible: true`. Either signal on its own leaves roughly half the junk in.
+ */
+export function hiddenInputNames(page: Pick<PageModel, "forms">): Set<string> {
+  const out = new Set<string>();
+  for (const f of page.forms ?? []) {
+    for (const fld of f?.fields ?? []) {
+      if ((fld as { inputType?: string })?.inputType !== "hidden") continue;
+      const name = (fld as { name?: string }).name;
+      const value = (fld as { value?: string }).value;
+      if (name) out.add(String(name));
+      if (value) out.add(String(value));
+    }
+  }
+  return out;
+}
+
+/** True when this element is a hidden input — never something a test can interact with. */
+export const isHiddenInput = (el: Element, hidden: Set<string>): boolean =>
+  el.visible === false || hidden.has(String(el.name ?? ""));
+
+/** The one predicate for "can a generated test act on this element?" — named, interactive, and
+ *  not a hidden input. `ir.ts` and the projection both call this so they cannot disagree. */
+export function isUsableElement(el: Element, hidden: Set<string>): boolean {
+  return !!el.name?.trim()
+    && INTERACTIVE_ROLES.has((el.role ?? "").toLowerCase())
+    && !isHiddenInput(el, hidden);
+}
+
 // Read lazily, per call, NOT as module-level constants — a module-level `const X =
 // Number(process.env.X ?? d)` caches the value at first import, so a test that sets the env var
 // afterward would silently have no effect without vi.resetModules()+re-import. This mirrors

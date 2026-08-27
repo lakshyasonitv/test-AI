@@ -4,7 +4,7 @@ import { parseJson } from "../llm/json.js";
 import { isRateLimitError } from "../llm/backoff.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES } from "../schema/appModel.js";
+import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary } from "../text.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import {
@@ -1281,13 +1281,23 @@ Example — handling duplicate selectors with nth:
     const orderedPages = leadPage ? [leadPage, ...pagesToSend.filter(p => p !== leadPage)] : pagesToSend;
 
     // Filter elements: only named interactive elements (links, buttons, menuitems,
-    // textboxes, checkboxes, headings). Drops thousands of anonymous list/div/container
-    // nodes that bloat the prompt without helping the LLM generate better IR.
+    // textboxes, checkboxes, headings) that a test could actually act on. Drops thousands of
+    // anonymous list/div/container nodes that bloat the prompt without helping the LLM.
+    //
+    // "Named and interactive" was not enough on its own — TD-62. It let hidden form inputs and
+    // skip-links through as ordinary controls, and toMicroModel then caps at 30, so they competed
+    // for slots against real ones. Measured on the amazon run: 11 of the 30 elements the model
+    // saw were things no test can interact with — two `add-new` inputs, a CSRF token,
+    // `IP2LOCATION`, and six keyboard skip-links — while `link "Electronics"`,
+    // `link "Fashion"`, `link "Prime"` and eight more real category links never reached it.
+    //
+    // `isUsableElement` lives in appModel.ts next to INTERACTIVE_ROLES so this filter and the
+    // test-case projection cannot drift apart; a second copy is how they diverged in the first
+    // place. Playwright would refuse to act on these anyway — its actionability checks require
+    // visibility — so a case written against one could never have passed.
     const withFilteredElements = (pages: PageModel[]) => pages.map(p => ({
       ...p,
-      elements: p.elements.filter(e =>
-        e.name && e.name.trim() && INTERACTIVE_ROLES.has(e.role?.toLowerCase() ?? "")
-      ),
+      elements: p.elements.filter(e => isUsableElement(e, hiddenInputNames(p))),
     }));
     // Hand toMicroModel the page THIS function already chose, rather than the raw entry URL it
     // then has to re-resolve. Passing entryUrl let it disagree with the ordering above and drop
