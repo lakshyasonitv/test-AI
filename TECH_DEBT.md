@@ -1933,3 +1933,129 @@ serve, rather than embedding it in the model.
 **Pinned:** `tests/hiddenFieldCapture.test.ts` asserts that `cleaned_html` **does** still contain
 the token — deliberately inverted, the same device used for TD-63. It fails when TD-65 lands, which
 is the signal to flip it.
+
+---
+
+## Where the Site Store / View work ended — read this before picking it up
+
+Written 2026-08-27, at the point the work was deliberately stopped. `SITE_STORE_VIEW_SPEC_v2.md`
+planned 18–19 days across seven phases after a measurement spike. **The spike's gate fired on day
+two and most of the plan was cancelled.** What follows is what shipped, what is parked, and the
+conditions under which each parked thing should be looked at again.
+
+Nothing here is a to-do list. It is a map, so that the next person — including whoever wrote the
+spec — does not re-derive the reasoning or re-litigate a decision that already has evidence behind
+it.
+
+### What merged into `frontend`
+
+| Merged | What it is |
+|---|---|
+| `ir.ts` page pick (TD-57) | An Authentication case was compiled with the login page absent from the prompt. Two silent fallbacks landing on the same wrong page. Misses 9 → 1 across the corpus. |
+| `isUsableElement` (TD-62) | Hidden inputs and skip-links were reaching the model as ordinary controls. On one run, 11 of `toMicroModel`'s 30 slots were spent on things no test can act on; eleven real category links took their place. |
+| `promptFormFields` (TD-63) | The `forms` block carried every hidden field's name **and value** into both prompts, including a live CSRF token. 1 → 0 and 2 → 0 leaking runs. |
+| capture-time fix (TD-64) | A hidden input's value is no longer recorded at all — not in `fields[].value`, not as an element's accessible name. |
+| `scripts/measureView.ts` | The offline harness. Replays every saved run: no browser, no LLM, no cost. |
+
+Every one of those bugs was found **by the measurement, not by the feature it was measuring.**
+
+### What is parked on a branch, and why
+
+**`appmodel-projection`** — the one piece of the spec worth building. `appModelBlock()` projects the
+test-case prompt to text above 70 chars/element: measured **78.1% fewer tokens across 30 of 38
+runs**, byte-identical baseline below the threshold, no run regressing.
+
+It is **held, not abandoned**, for one reason: the evidence that it does not degrade case quality is
+**a single comparison** (§6 — 10 cases vs 11 on the densest run, with auth and form flows surviving
+in both). At n=1, with generation variance visibly present, that says *"did not produce thinner
+cases on the run with the most structure to lose."* It does not say *"is safe."*
+
+**Merge it when:** a handful of real runs have gone through the merged fixes and nothing looks off,
+or a second §6 comparison on a different dense site agrees with the first.
+
+### The cancelled phases, and what would revive them
+
+| Phase | Status | Revive when |
+|---|---|---|
+| 1 — Store, identity, structural fields | Not started | Only if TD-61's measurement says id-addressing prevents real grounding failures |
+| 2 — View builder | **Partially retained** as the projection above | — |
+| 2.5 — Retrieval | Not started, **blocked on corpus** | **≥10 saved runs have ≥4 crawled pages.** 34 of 38 are single-page, so `retrieveSubgraph` had nothing to choose between and its value is unmeasured, not disproved |
+| 3 — Resolver, `elementId?` on `Target` | Not started | With Phase 1 |
+| 4 — Assertion-text grounding | **Untouched by any of this** | Its own hypothesis, never tested: *do live text-assertion corrections drop measurably?* |
+| 5 — Wire into the IR prompt | **Dead** | Never. The IR prompt is already 56.6% smaller than the View would be |
+| 6 — Failure modes | Not applicable | — |
+
+### The re-check triggers, in one place
+
+- **Retrieval (Phase 2.5):** re-measure when ≥10 saved runs have ≥4 crawled pages.
+- **The 70 ch/el threshold (TD-56):** re-fit when **15 saved runs postdate its selection**. It was
+  fitted to this corpus and sits inside an empty band (56.4–72.6). As runs land inside that band it
+  acquires a shape, and the threshold should be re-fitted against it rather than defended as a
+  constant. A run above the threshold that regresses means **the threshold is wrong**, not that the
+  per-run test is too strict.
+- **TD-58 (cap evicting a grounded element):** promote from Low when the dropped element is
+  load-bearing — a form field or a submit control — rather than a decorative anchor.
+- **TD-60 (grounding scope):** promote when any run grounds a target absent from **all three**
+  prompt blocks. `measureView.ts` §3.0 computes exactly this; a non-`live-extended` miss on a form
+  or submit control is the signal.
+
+### Two inverted assertions are deliberately in the test suite
+
+`tests/hiddenFieldCapture.test.ts` asserts that `cleaned_html` **does** still contain a token
+(TD-65). It is not a claim that the junk belongs there — it records that TD-65 is unfixed, and it
+**fails when TD-65 lands**, which is the signal to flip it. TD-63's equivalent already did this job
+and has been flipped.
+
+If one of these fails, do not "repair" it by widening whatever filter is nearby. Read the TD.
+
+### The harness is load-bearing, and it lied five times
+
+Every decision above came out of `scripts/measureView.ts`. It shipped **five** bugs before producing
+a number worth trusting, and **not one of them threw** — each produced a confident, wrong table:
+
+1. `04-ir.json` is `{ir, updatedAppModel}`; reading `.steps` off the wrapper gave zero references,
+   and `coverage()` returned `1` for zero references. "irCoverage 100% on 38/38" measured nothing.
+2. Keys joined on `\u0000` in some functions and a space in others — every comparison said
+   "missing". Reported 29/29 runs truncating and 0/0 covered. Both artefacts.
+3. Live-extended elements scored as truncations, blaming `toMicroModel` for elements that did not
+   exist when it ran.
+4. Coverage counted `elements[]` only, while the prompt also carries a `navigation` tree and a
+   `forms` block.
+5. Junk slots counted on the *emitted* elements, where `toMicroModel` has already stripped
+   `visible`.
+
+Bugs 2, 4 and 5 are one failure class: **a structure modelled incompletely, then compared
+confidently.** `tests/measureView.test.ts` now guards it — `coverage()` throws on zero references
+rather than returning a figure, and the source is scanned for hand-rolled `(role, name)` keys.
+
+**Treat a number from this harness as provisional until a test pins it.** That is not pessimism;
+it is the observed base rate.
+
+### The one thing that is still open and costs nothing to answer
+
+**TD-61 — the identity hypothesis.** The spec bundled two independent arguments and only one was
+ever tested. Tokens: tested, and mostly wrong. Identity — id-addressing instead of the model
+authoring names, `nth` from the Store, group discriminators against TD-05's ambiguous
+`(role, name)` pairs — was **never a token argument and has never been measured.**
+
+The measurement is free, because `runs/` already holds the evidence:
+
+> Across saved runs, in what fraction of grounded targets is `(role, name)` ambiguous within the
+> page the step is on — and in what fraction of those did `targetResolver` resolve to a **different
+> element than the IR intended**?
+
+The second half is the real question. Ambiguity that always resolves correctly is not a bug. If it
+is ambiguous 30% of the time and wrong 0% of the time, TD-61 closes and the Store idea is finished
+for good. If it is wrong even occasionally, that is a correctness bug no amount of prompt
+compression would have fixed — and it is the strongest remaining reason to revisit Phase 1.
+
+**State the hypothesis before touching the data.**
+
+### What this cost, and what it bought
+
+Two days of measurement prevented roughly seventeen days of building the wrong thing, and turned up
+five real defects — one of which was compiling authentication tests that could not see the login
+form, and three of which were sending a live CSRF token to a third-party API and writing it to a
+publicly-served directory.
+
+The gate worked. Record it as a method that worked, not a project that failed.
