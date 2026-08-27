@@ -1838,10 +1838,11 @@ covers only `results.json`, `final-page.txt` and error-context files, not these 
 | `runs/_cache/llm` | 311 | **0** |
 | `runs/_cache/appmodels` | 20 | **0** |
 
-The LLM cache is clean *structurally*, not by luck: `llmCacheSet` stores only the **response**,
-under a SHA-1 **hash** of the prompt. The prompt text is never written, so a prompt containing a
-token puts nothing on disk. The "never-expiring cache keeps the leak forever" concern does not
-materialise.
+**Why the LLM cache is clean, so nobody re-investigates this:** `llmCacheSet` writes only the
+**response**, to a file named after a SHA-1 **hash** of the prompt (`src/kb/llmCache.ts`). Prompt
+text never reaches disk at all. A prompt carrying a secret therefore leaves nothing in the cache,
+by construction rather than by luck — and the "a never-expiring cache turns a leak into a durable
+artifact" concern does not apply to this cache for any secret, present or future.
 
 The AppModel cache stores the full model and therefore *could* hold one; it happens not to today.
 Its 30-minute TTL governs reads only — files stay on disk indefinitely — so a fix that stops the
@@ -1849,7 +1850,7 @@ value being recorded at all is the durable answer, which is TD-64.
 
 **No purge is required.** Nothing needs deleting from either cache.
 
-### TD-64. Hidden field values are recorded into publicly-served run artifacts — High / Accidental
+### TD-64. Hidden field values were recorded into publicly-served run artifacts — High / Accidental — Fixed at capture; `cleanedHtml` remains, see TD-65
 
 **Split from TD-63, which fixed only the prompts.** `02-appmodel.json` and `events.ndjson` record
 the **full** AppModel, not a projection, so filtering `toLiteModel` / `toMicroModel` cannot reach
@@ -1871,10 +1872,64 @@ value has to be dropped where it is captured, not where it is served.
 2. Failing that, strip hidden field values in `runStore`/the event sink before writing, which
    closes the artifact channel only.
 
-**Existing artifacts still contain the token.** The affected run is `2026-08-14T07-13-38`
-(amazon.in). It is one run, the token is session-scoped and long expired, and the file is 2.2 MB —
-but if `runs/` is ever exposed beyond localhost it should be deleted or scrubbed first. Deleting
-that run directory is sufficient and costs nothing but the artifact.
+**Fixed at capture, in two places, because it arrived by two routes.**
 
-**Verify with:** `grep -rl "anti-csrftoken" runs/` — should return nothing once the run is removed
-and the capture fix is in.
+| Route | Fix |
+|---|---|
+| `forms[].fields[].value` (`domExtract.ts:238`) | `inputType === "hidden" ? "" : attr($in, "value")` |
+| `elements[].name` — the accname chain fell through to `attr($el, "value")` | that fallback is skipped for `type=hidden` |
+
+The second route is the one that is easy to miss: the element was *named after its own token*, and
+one such element was recorded `visible: true`, so no visibility check would have caught it either.
+A `type=hidden` input is not in the accessibility tree, so it has no accessible name to derive —
+the fallback was wrong independently of this leak.
+
+**Verified before changing it that nothing reads a hidden field's value.** `credentials.ts` reads
+`inputType` / `name` / `placeholder` / `label` / `id`; `ir.ts`'s `formIndicesForName` reads
+`label` / `name` / `placeholder`. No consumer anywhere reads `.value`. The field's *name* is still
+recorded, since it identifies the form and carries nothing sensitive.
+
+#### The affected run directory was DELETED
+
+`runs/2026-08-14T07-13-38-280Z-9ac0738e` (amazon.in, 4.3 MB) is **gone**, removed deliberately on
+2026-08-27 because `02-appmodel.json` and `events.ndjson` both carried a live
+`anti-csrftoken-a2z` value and `runs/` is served publicly (TD-14). The token was session-scoped and
+long expired, so this was hygiene rather than an incident.
+
+**It is recorded here so its absence is not a mystery later.** That run was the densest AppModel in
+the corpus — 5 pages, 474 elements, 133.5 chars/element — and it is cited throughout TD-56 to TD-63
+as the source of the 80.7% reduction figure, the 11 wasted cap slots, and the §6 case-quality
+comparison. Those numbers were measured before deletion and are not reproducible from `runs/` any
+more. The §6 output survives verbatim in `docs/phases/PHASE0_CASE_QUALITY_RUNB.txt`.
+
+After deletion: `grep -rl "anti-csrftoken\|hEj/Wh8642\|hLJv+ZAi" runs/` returns **nothing**.
+
+### TD-65. `cleanedHtml` persists every page's raw HTML into a publicly-served artifact, and nothing reads it — Medium / Strategic
+
+**The route TD-64's field-level fix cannot reach.** `PageModel.cleanedHtml` is the sanitised source
+of the whole page, so it contains `value="..."` verbatim — every hidden input, and anything else the
+page happened to embed. No field-level filter can touch it.
+
+**It has zero readers.** Written at `domDiscovery.ts:199`, declared at `appModel.ts:180`, and never
+read anywhere in `src/` or `public/`. It is not sent to any prompt: neither `toLiteModel` nor
+`toMicroModel` emits it.
+
+**It is most of the artifact.** On the amazon run it was **1,791 KB of a 2,139 KB
+`02-appmodel.json`** — 84%. `runs/` is served publicly (TD-14), and `RUN_RETENTION_DAYS` is the only
+thing that ever removes it.
+
+So it is simultaneously the largest thing on disk, the last uncovered exposure route, and unused.
+
+**Why it is Strategic rather than a bug.** It was presumably kept as debugging evidence, and
+`CLAUDE.md` is explicit that `runs/` is "the primary evidence source this project's own debugging
+relies on". Removing it is a judgement about what evidence is worth keeping, not a defect to fix —
+which is why it is filed rather than deleted.
+
+**Remediation, if taken.** Stop persisting `cleanedHtml` into `02-appmodel.json`. Artifacts shrink
+by roughly 84%, the last raw-value route closes, and nothing loses a reader. If the raw HTML is
+genuinely wanted for debugging, write it to a separate file that the run-artifact route does not
+serve, rather than embedding it in the model.
+
+**Pinned:** `tests/hiddenFieldCapture.test.ts` asserts that `cleaned_html` **does** still contain
+the token — deliberately inverted, the same device used for TD-63. It fails when TD-65 lands, which
+is the signal to flip it.
