@@ -10,6 +10,8 @@ import {
   remainingCapacity,
   MAX_ACCUMULATED_CASES,
 } from "../server/caseAccumulator.js";
+import { applyGateEdits } from "../server/gateCaseEdits.js";
+import { gateRewriteEnabled } from "../server/rewrite.js";
 import {
   appendRoundToHistory,
   buildHistoryPromptBlock,
@@ -120,17 +122,32 @@ export async function runCaseSelectionGate({
         action: "case_round_requested",
         prompt: promptThatGeneratedCurrentBatch,
         history: buildHistoryPromptBlock(runId, promptThatGeneratedCurrentBatch),
+        // Whether this server will answer an ask-for-a-change for these cases. Additive, and it
+        // rides on the round rather than costing the panel a second request just to decide
+        // whether to draw a button.
+        gateRewrite: gateRewriteEnabled(),
       },
       ts: Date.now(),
     });
 
     const decision = await awaitCaseSelection(runId, batch, attempt);
 
+    // The reviewer may have rewritten a case's steps or written one of their own. Folding those
+    // into the batch HERE, before anything is persisted, is what makes the rest of the gate
+    // correct without changing it: the two calls below both address cases by position, so they
+    // read the edited case simply because it is what now sits at that position. See
+    // gateCaseEdits.ts for why nothing is ever spliced out of the array.
+    const effectiveBatch = applyGateEdits(batch, decision, {
+      alreadyHasPrimary: hasAcceptedPrimary(runId),
+    });
+
     store.append({
       runId,
       stage: "testcases",
       status: "completed",
-      data: { batch, attempt, action: "case_round_resolved", decision },
+      // The edited batch, not the offered one: this event records what the round RESOLVED to, and
+      // the offered batch is already preserved verbatim in case_round_requested above.
+      data: { batch: effectiveBatch, attempt, action: "case_round_resolved", decision },
       ts: Date.now(),
     });
 
@@ -138,10 +155,10 @@ export async function runCaseSelectionGate({
       runId,
       attempt,
       promptThatGeneratedCurrentBatch,
-      batch,
+      effectiveBatch,
       decision.selectedIndexes
     );
-    appendRoundToHistory(runId, attempt, promptThatGeneratedCurrentBatch, batch, decision.selectedIndexes, overflowIndexes);
+    appendRoundToHistory(runId, attempt, promptThatGeneratedCurrentBatch, effectiveBatch, decision.selectedIndexes, overflowIndexes);
 
     if (decision.action === "done") break;
 
@@ -223,22 +240,30 @@ export async function runReactiveCaseRound(
     runId,
     stage: "testcases",
     status: "started",
-    data: { batch, attempt, action: "case_round_requested", prompt: roundPrompt, reactive: true },
+    data: { batch, attempt, action: "case_round_requested", prompt: roundPrompt, reactive: true,
+            gateRewrite: gateRewriteEnabled() },
     ts: Date.now(),
   });
 
   const decision = await awaitCaseSelection(runId, batch, attempt);
 
+  // Same fold as the upfront gate. A reactive round is reviewed through the identical panel, so
+  // it has to accept the identical edits; the upfront gate has already finalized by now, which is
+  // why alreadyHasPrimary is effectively always true here and no promotion can fire.
+  const effectiveBatch = applyGateEdits(batch, decision, {
+    alreadyHasPrimary: hasAcceptedPrimary(runId),
+  });
+
   store.append({
     runId,
     stage: "testcases",
     status: "completed",
-    data: { batch, attempt, action: "case_round_resolved", decision },
+    data: { batch: effectiveBatch, attempt, action: "case_round_resolved", decision },
     ts: Date.now(),
   });
 
-  const { overflowIndexes } = appendAcceptedCases(runId, attempt, roundPrompt, batch, decision.selectedIndexes);
-  appendRoundToHistory(runId, attempt, roundPrompt, batch, decision.selectedIndexes, overflowIndexes);
+  const { overflowIndexes } = appendAcceptedCases(runId, attempt, roundPrompt, effectiveBatch, decision.selectedIndexes);
+  appendRoundToHistory(runId, attempt, roundPrompt, effectiveBatch, decision.selectedIndexes, overflowIndexes);
 
   // Closes the panel again — it was reopened for this round after the upfront gate's own
   // "finalized" event already closed it once.

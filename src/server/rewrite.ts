@@ -310,3 +310,112 @@ export async function proposeStepTranslation(ir: IR, drafts: unknown): Promise<T
 export function nlStepsEnabled(): boolean {
   return process.env.NL_STEPS_ENABLED === "true";
 }
+
+// ---------------------------------------------------------------------------
+// The case-selection gate -- "ask for a change" BEFORE anything is grounded
+// ---------------------------------------------------------------------------
+
+/**
+ * The third proposer, and the only one that runs on cases which do not exist yet.
+ *
+ * `proposeRewrite` and `proposeStepTranslation` both operate on a SAVED case: there is an IR, the
+ * steps are grounded against a real page, and every proposed line is re-checked by `parseIrStep`
+ * before a person sees it. None of that is available at the selection gate. A case there is a
+ * batch of plain English the model has just written, hours before anything is compiled or a
+ * browser is opened -- there is no IR to parse onto, no page to ground against, and no version to
+ * conflict with.
+ *
+ * So this deliberately does NOT call `parseIrStep`, and deliberately does NOT constrain the model
+ * to `STEP_VOCABULARY`. Gate steps read like "Type an invalid email into the Email field", not
+ * like the eleven sentence shapes the executor's grammar accepts, and forcing the executor's
+ * grammar here would reject the model's own output. The vocabulary check has not been skipped --
+ * it still happens, later, in the place that owns it: whatever survives this review is compiled
+ * to IR by `toIR` and grounded against the live page exactly as an unedited case is. This
+ * function cannot widen what the pipeline accepts because it is upstream of every check.
+ *
+ * It keeps the two rules that DO transfer, for the same reasons (D-27):
+ *   - it never saves -- it returns a proposal that fills the editor, and the batch is only
+ *     persisted when a person approves the round;
+ *   - it returns step TEXT, never IR.
+ *
+ * Unlike the translation path it MAY add, remove or reorder steps. That restriction exists there
+ * to protect positional re-basing against a stored IR; here there is no stored anything, and
+ * restructuring a case before it is compiled is exactly the edit a reviewer wants to make.
+ */
+function buildGatePrompt(title: string, current: string[], instruction: string): string {
+  return [
+    `You are revising a browser test case that has been proposed to a tester but not yet built.`,
+    `The case is called "${title}".`,
+    ``,
+    `Its steps, one per line, numbered:`,
+    ...current.map((s, i) => `${i + 1}. ${s}`),
+    ``,
+    `The tester asked for the following change:`,
+    instruction,
+    ``,
+    `Rewrite the FULL step list with that change applied.`,
+    ``,
+    `RULES`,
+    `- Write each step as one plain English sentence describing a single action a person would`,
+    `  take in a browser, in the same style as the steps above. Do not number them yourself.`,
+    `- Keep every step the request does not affect worded EXACTLY as it is above.`,
+    `- Refer to things on the page the way a person would: the visible label of a button, field`,
+    `  or link. Never write a CSS selector, an XPath or an element id.`,
+    `- You may add, remove or reorder steps if the request calls for it.`,
+    `- Do not write a real password or any other credential into a step.`,
+    ``,
+    `Reply with JSON only, no markdown fence:`,
+    `{"steps":["...","..."],"note":"one short sentence on what you changed"}`,
+  ].join("\n");
+}
+
+/**
+ * Enabled separately from the gate itself. The gate's manual editing costs nothing and works
+ * whenever the gate is on; THIS spends a Gemini call per press, so a deployment without a key
+ * would otherwise draw a button that always fails -- the same reason `NL_STEPS_ENABLED` exists.
+ * Read at call time, not at import, so tests can flip it.
+ */
+export function gateRewriteEnabled(): boolean {
+  return String(process.env.GATE_CASE_EDIT_AI ?? "").toLowerCase() === "true";
+}
+
+export async function proposeGateRewrite(
+  title: string, steps: string[], instruction: string,
+): Promise<RewriteProposal> {
+  const trimmed = String(instruction ?? "").trim();
+  if (!trimmed) throw new AccessError(400, "say what you would like changed");
+  if (trimmed.length > 2000) throw new AccessError(400, "that instruction is too long -- keep it under 2000 characters");
+
+  const before = (Array.isArray(steps) ? steps : [])
+    .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+    .map((s) => s.trim());
+  if (before.length === 0) throw new AccessError(400, "this case has no steps to change");
+
+  const budget = new LlmBudget();
+  enterWithBudget(budget);
+
+  const { content } = await gemini(buildGatePrompt(String(title ?? "").trim() || "Untitled case", before, trimmed), {
+    model: process.env.GEMINI_MODEL,
+    stage: "rewrite",
+  });
+
+  const parsed = extractJson(content);
+  const proposed = Array.isArray(parsed?.steps)
+    ? parsed.steps.filter((s: unknown) => typeof s === "string" && s.trim()).map((s: string) => s.trim())
+    : [];
+  if (proposed.length === 0) {
+    throw new AccessError(502, "the model returned no steps -- try rephrasing the request");
+  }
+  // The editor renders one row per step and the batch caps step counts at 50; a model that
+  // returned hundreds would blow past what a person can review, which is the actual failure.
+  if (proposed.length > 50) {
+    throw new AccessError(502, "the model returned too many steps to review -- try a narrower request");
+  }
+
+  return {
+    steps: proposed,
+    before,
+    note: typeof parsed?.note === "string" ? parsed.note.trim() : "",
+    usage: budget.snapshot(),
+  };
+}

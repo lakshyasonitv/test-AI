@@ -680,3 +680,47 @@ regardless of who wrote the sentences. The worst a misbehaving model can do is f
 costs one call and no writes. It also means neither feature can ever restructure a test on its own:
 translation fixes *wording*, and anything that adds or removes a step goes through the rewrite
 card, where the person sees the inserted line in the diff before approving it.
+
+## D-28
+
+**Editing a generated case is applied to the batch, not to the accumulator or the ledger.**
+
+`caseSelectionGate.ts` resolves a round and then calls `appendAcceptedCases` and
+`appendRoundToHistory`, both of which address cases by position in `batch`. Folding the reviewer's
+edits into that array between the decision and those two calls makes all of it correct at once:
+the accumulator persists the edited case because that is what is at `batch[i]`, the pool cap counts
+user-written cases because they are real members of the batch, and the ledger records final titles.
+`caseAccumulator.ts` and `caseHistoryLedger.ts` were not modified.
+
+**Rejected: an `origin` field on `TestCase`.** Any stage that needed to know whether a case was
+model-written or hand-written would be a stage behaving differently for the same input, which is
+the thing the gate exists to prevent. A written case is built through the real `TestCase` schema
+and carries exactly the keys a generated one does; `tests/caseSelectionGate.test.ts` asserts the
+key sets are equal so this stays true.
+
+**Rejected: splicing a removed case out of the batch.** `selectedIndexes` means positions, so
+deleting one would renumber everything after it and silently change what an index refers to.
+Removal is "not selected" plus a client-side hide, which also gets the right ledger outcome:
+the case is recorded as rejected, and rejection is what stops a later round proposing it again.
+
+**The ledger records the EDITED case, as one record.** `getAllAcceptedCases` already returns edited
+titles, so a second record for the original wording would let the pool and the ledger describe the
+same case differently. The price, recorded rather than hidden: renaming a case unblocks the model's
+original title, which a later round may then re-propose.
+
+## D-29
+
+**A model-proposed edit at the gate is not run through `parseIrStep`, and this does not weaken
+D-27.**
+
+`proposeRewrite` edits a saved case: an IR exists, its steps are grounded, and every proposed line
+is re-checked by the real parser before a person sees it. A case at the selection gate has none of
+those — it is plain English written minutes earlier, with nothing compiled and no page opened.
+Constraining it to `STEP_VOCABULARY` would reject the model's own output, and parsing it would mean
+parsing onto an IR that does not exist.
+
+The vocabulary check is not skipped, only deferred to the stage that owns it: whatever survives
+review is compiled by `toIR` and grounded against the live page exactly as an unedited case is.
+`proposeGateRewrite` therefore cannot widen what the pipeline accepts, because it sits upstream of
+every check in it. What it keeps from D-27 is what matters — it proposes, it returns sentences not
+IR, and a person approves the round before anything is persisted.

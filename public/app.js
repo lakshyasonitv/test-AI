@@ -420,6 +420,7 @@ const casePoolCounterEl = document.getElementById("case-pool-counter");
 const caseSelectionListEl = document.getElementById("case-selection-list");
 const caseSelectAllBtnEl = document.getElementById("case-select-all-btn");
 const caseSelectNoneBtnEl = document.getElementById("case-select-none-btn");
+const caseWriteOwnBtnEl = document.getElementById("case-write-own-btn");
 const caseRefineInputWrapEl = document.getElementById("case-refine-input-wrap");
 const caseNewPromptInputEl = document.getElementById("case-new-prompt-input");
 const caseNoticeEl = document.getElementById("caseNotice");
@@ -1579,36 +1580,250 @@ let acceptedSoFarCount = 0;
 const CASE_POOL_CAP = 5; // MAX_ACCUMULATED_CASES
 const MAX_CASE_REGEN_ATTEMPTS_LOCAL = 3; // MAX_CASE_REGEN_ATTEMPTS
 
-function renderCaseSelectionPanel(batch, attempt, acceptedCount) {
+// --- Drafts -----------------------------------------------------------------
+//
+// Everything a reviewer types here is a DRAFT until the round is approved. Nothing is sent as it
+// is typed, which is the same promise the saved-case editor makes: a model proposes, a person
+// approves, and only then does anything travel.
+//
+// Drafts live in localStorage because the panel is rebuilt from the run's replayed event stream,
+// and that event carries the batch the model ORIGINALLY produced. Without this, refreshing the
+// page while the round is still parked and waiting would silently throw the reviewer's work away.
+// Keyed by run AND attempt, so a refine round starts clean instead of inheriting edits aimed at
+// cases that no longer exist.
+let gateAttempt = 0;
+let gateDrafts = emptyGateDrafts();
+let gateAiAvailable = false;
+const gateProposals = {};   // index -> proposal. Transient: a proposal is never a draft.
+
+function emptyGateDrafts() {
+  return { edits: {}, added: [], removed: {}, checked: {} };
+}
+
+function gateDraftKey(runId, attempt) { return `testbench.gate.${runId}.${attempt}`; }
+
+function loadGateDrafts(runId, attempt) {
+  gateDrafts = emptyGateDrafts();
+  try {
+    const raw = localStorage.getItem(gateDraftKey(runId, attempt));
+    if (!raw) return;
+    const p = JSON.parse(raw);
+    const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+    gateDrafts = {
+      edits: obj(p.edits),
+      added: Array.isArray(p.added) ? p.added : [],
+      removed: obj(p.removed),
+      checked: obj(p.checked),
+    };
+  } catch {
+    // Corrupt or unavailable storage (private mode, quota, a hand-edited value) must never stop
+    // the round being reviewable. No drafts just means "show what the model proposed".
+  }
+}
+
+function saveGateDrafts() {
+  if (!caseRunId) return;
+  try {
+    localStorage.setItem(gateDraftKey(caseRunId, gateAttempt), JSON.stringify(gateDrafts));
+  } catch {
+    // Storage full or blocked. The edits still work for this page view, they just will not
+    // survive a refresh. Failing loudly here would be worse than losing a draft.
+  }
+}
+
+/** Drop every attempt's drafts for a run once its gate is over, so storage does not accumulate
+ *  one entry per round per run forever. */
+function clearGateDrafts(runId) {
+  if (!runId) return;
+  try {
+    const prefix = `testbench.gate.${runId}.`;
+    Object.keys(localStorage).filter((k) => k.startsWith(prefix)).forEach((k) => localStorage.removeItem(k));
+  } catch { /* nothing to clean up if storage is unavailable */ }
+}
+
+// --- The case list, as it currently stands ----------------------------------
+
+/**
+ * The batch merged with the reviewer's drafts: model cases with their edits applied, then the
+ * cases the reviewer wrote, with anything removed filtered out.
+ *
+ * `index` is the one number that matters. It is the position the server addresses this case by,
+ * and it is deliberately the same index space `selectedIndexes` already used: model cases keep
+ * their original position, and written cases follow at the end in the order they were added,
+ * which is the order the server appends them in. Nothing is ever renumbered.
+ */
+function gateCases() {
+  const out = [];
+  currentBatch.forEach((base, i) => {
+    if (gateDrafts.removed[i]) return;
+    const edit = gateDrafts.edits[i] || {};
+    const fields = Object.keys(edit);
+    out.push({ index: i, c: { ...base, ...edit }, isAdded: false, isEdited: fields.length > 0 });
+  });
+  gateDrafts.added.forEach((a, j) => {
+    out.push({ index: currentBatch.length + j, c: a, isAdded: true, isEdited: false });
+  });
+  return out;
+}
+
+/** The mutable draft object for one case: the patch for a model case, the case itself for one
+ *  the reviewer wrote. */
+function gateEditFor(index) {
+  if (index >= currentBatch.length) return gateDrafts.added[index - currentBatch.length];
+  if (!gateDrafts.edits[index]) gateDrafts.edits[index] = {};
+  return gateDrafts.edits[index];
+}
+
+/** Steps as they stand for one case: the draft if it has been touched, the model's otherwise. */
+function gateStepsFor(index) {
+  const target = gateEditFor(index);
+  if (target && Array.isArray(target.steps)) return target.steps;
+  const base = currentBatch[index];
+  return Array.isArray(base && base.steps) ? base.steps.slice() : [];
+}
+
+function setGateSteps(index, steps) {
+  const target = gateEditFor(index);
+  if (!target) return;
+  target.steps = steps;
+  saveGateDrafts();
+}
+
+/** Ticked state is a draft too, so it survives a repaint after a structural change and a refresh
+ *  mid-round. Falls back to the rule the panel has always used: the primary case starts ticked. */
+function gateIsChecked(entry) {
+  const stored = gateDrafts.checked[entry.index];
+  if (typeof stored === "boolean") return stored;
+  return entry.isAdded || !!entry.c.fromPrompt;
+}
+
+function setGateChecked(index, value) {
+  gateDrafts.checked[index] = value;
+  saveGateDrafts();
+}
+
+// --- Rendering --------------------------------------------------------------
+
+function gateProposalHtml(index, p) {
+  // The same LCS diff the saved-case editor shows, for the same reason: an inserted step must
+  // shift nothing after it, or the reviewer cannot tell an insertion from a rewrite of the rest.
+  const { left, right } = diffSteps(p.before, p.steps);
+  const rows = [];
+  left.forEach((l) => { if (l.k === "removed") rows.push({ k: "del", t: l.t }); });
+  right.forEach((r) => rows.push({ k: r.k === "added" ? "add" : "same", t: r.t }));
+  return `
+    <div class="cd-proposal">
+      <p class="cd-proposal-note">Proposed change &mdash; nothing is saved until you approve this round.</p>
+      ${p.note ? `<p class="cd-proposal-note">${escapeHtml(p.note)}</p>` : ""}
+      <div class="cd-diff">
+        ${rows.map((r) => `<div class="cd-diff-line cd-diff-${r.k}">${escapeHtml(r.t)}</div>`).join("")}
+      </div>
+      <div class="cd-proposal-actions">
+        <button type="button" class="dl-btn-inline" data-act="prop-apply" data-index="${index}">Apply to editor</button>
+        <button type="button" class="dl-btn-inline" data-act="prop-discard" data-index="${index}">Discard</button>
+      </div>
+    </div>`;
+}
+
+function gateStepRowsHtml(index) {
+  const steps = gateStepsFor(index);
+  return steps.map((text, k) => `
+    <div class="cd-line">
+      <span class="cd-line-num">${k + 1}</span>
+      <input type="text" class="cd-line-input" data-field="step" data-index="${index}" data-step="${k}"
+             value="${escapeHtml(text)}" aria-label="Step ${k + 1}" />
+      <button type="button" class="cd-line-btn" data-act="step-up" data-index="${index}" data-step="${k}"
+              ${k === 0 ? "disabled" : ""} title="Move up" aria-label="Move step ${k + 1} up">&uarr;</button>
+      <button type="button" class="cd-line-btn" data-act="step-down" data-index="${index}" data-step="${k}"
+              ${k === steps.length - 1 ? "disabled" : ""} title="Move down" aria-label="Move step ${k + 1} down">&darr;</button>
+      <button type="button" class="cd-line-del" data-act="step-del" data-index="${index}" data-step="${k}"
+              title="Delete step" aria-label="Delete step ${k + 1}">&times;</button>
+    </div>`).join("");
+}
+
+/**
+ * One case as an editable card.
+ *
+ * The wrapper div exists for a layout reason worth stating, so nobody deletes it as redundant
+ * markup. The list item is a flex ROW: the checkbox and every sibling after it divide the width
+ * between them. Left as direct children, the step editor rendered as a ~300px column beside the
+ * summary, giving a step sentence about 160px to be typed into. `case-narrative` is the existing
+ * class for "the stacked content column of a case" (flex: 1, column, gap) — as the single flex
+ * child it hands the editor the full row and stacks summary, actions and editor vertically, with
+ * no CSS change and no new class. It also keeps the inner <label> a flex item, which is what
+ * blockifies it and keeps the summary lines on separate rows.
+ */
+function gateCardHtml(entry) {
+  const { index: i, c, isAdded, isEdited } = entry;
+  const open = isAdded || isEdited;          // authoring or already changed: start expanded
+  const primary = c.fromPrompt ? `<span class="case-primary-badge">Primary</span>` : "";
+  const written = isAdded ? `<span class="case-badge">Your case</span>` : "";
+  const edited = isEdited ? `<span class="case-badge" data-edited="${i}">Edited</span>` : "";
+  const why = c.whyItMatters || c.intent || c.expected || "";
+  const expected = c.expected || "";
+  return `
+    <li data-case="${i}">
+      <input type="checkbox" id="case-pick-${i}" data-index="${i}" ${gateIsChecked(entry) ? "checked" : ""} />
+      <div class="case-narrative">
+      <label for="case-pick-${i}" class="case-label">
+        <span class="case-label-row">
+          <span class="case-title" data-title-for="${i}">${escapeHtml(c.title || `Case ${i + 1}`)}</span>${primary}${written}${edited}
+        </span>
+        ${why ? `<span class="case-intent">${escapeHtml(why)}</span>` : ""}
+        ${expected && expected !== why ? `<span class="case-expected"><b>What should happen:</b> ${escapeHtml(expected)}</span>` : ""}
+      </label>
+      <div class="case-selection-bulk">
+        <button type="button" class="case-selection-link" data-act="toggle-edit" data-index="${i}">${open ? "Hide steps" : "Edit steps"}</button>
+        <button type="button" class="case-selection-link" data-act="remove-case" data-index="${i}">Remove case</button>
+      </div>
+      <div class="cd-card-inset ${open ? "" : "hidden"}" data-editor="${i}">
+        <div class="cd-card-label">Title</div>
+        <input type="text" class="cd-line-input" data-field="title" data-index="${i}"
+               value="${escapeHtml(c.title || "")}" aria-label="Case title" />
+
+        <div class="cd-card-label">Steps</div>
+        <div class="cd-lines">${gateStepRowsHtml(i)}</div>
+        <button type="button" class="cd-add" data-act="step-add" data-index="${i}">+ Add step</button>
+
+        <div class="cd-card-label">Expected outcome</div>
+        <input type="text" class="cd-line-input" data-field="expected" data-index="${i}"
+               value="${escapeHtml(c.expected || "")}" aria-label="Expected outcome" />
+
+        <div class="cd-card-label">Why it matters</div>
+        <input type="text" class="cd-line-input" data-field="whyItMatters" data-index="${i}"
+               value="${escapeHtml(c.whyItMatters || "")}" aria-label="Why it matters" />
+        ${gateAiAvailable ? `
+        <div class="cd-card">
+          <div class="cd-card-label">Ask for a change</div>
+          <textarea class="cd-ask-text" data-field="ask" data-index="${i}" rows="2"
+                    placeholder="e.g. also check that the error message is visible"></textarea>
+          <button type="button" class="cd-ask-btn" data-act="ask" data-index="${i}">Ask for a change</button>
+        </div>` : ""}
+        <div data-proposal="${i}">${gateProposals[i] ? gateProposalHtml(i, gateProposals[i]) : ""}</div>
+      </div>
+      </div>
+    </li>`;
+}
+
+function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
   currentBatch = Array.isArray(batch) ? batch : [];
   acceptedSoFarCount = acceptedCount || 0;
+  if (opts && typeof opts.ai === "boolean") gateAiAvailable = opts.ai;
+
+  // Reload drafts only when the round actually changes. The poller replays this event, and
+  // re-reading storage on every replay would stamp on whatever the reviewer is mid-way through
+  // typing.
+  if (attempt !== gateAttempt) {
+    gateAttempt = attempt;
+    loadGateDrafts(caseRunId, attempt);
+    Object.keys(gateProposals).forEach((k) => delete gateProposals[k]);
+  }
 
   caseRoundLabelEl.textContent = `Round ${attempt} — review the test cases`;
   casePoolCounterEl.textContent =
     `${acceptedSoFarCount} of ${CASE_POOL_CAP} case${acceptedSoFarCount === 1 ? "" : "s"} accepted so far`;
 
-  caseSelectionListEl.innerHTML = currentBatch.map((c, i) => {
-    const primary = c.fromPrompt ? `<span class="case-primary-badge">Primary</span>` : "";
-    const title = escapeHtml(c.title || `Case ${i + 1}`);
-    // whyItMatters (required since this redesign) is what a person picking cases actually
-    // needs to judge one: a plain consequence, not QA phrasing. `expected` — the concrete,
-    // technical outcome — sits underneath as a second, smaller line, still visible because
-    // it IS useful, just not the thing to read first.
-    const whyItMatters = c.whyItMatters || c.intent || c.expected || "";
-    const expected = c.expected || "";
-    const checked = c.fromPrompt ? "checked" : "";
-    return `
-      <li>
-        <input type="checkbox" id="case-pick-${i}" data-index="${i}" ${checked} />
-        <label for="case-pick-${i}" class="case-label">
-          <span class="case-label-row">
-            <span class="case-title">${title}</span>${primary}
-          </span>
-          ${whyItMatters ? `<span class="case-intent">${escapeHtml(whyItMatters)}</span>` : ""}
-          ${expected && expected !== whyItMatters ? `<span class="case-expected"><b>What should happen:</b> ${escapeHtml(expected)}</span>` : ""}
-        </label>
-      </li>`;
-  }).join("");
+  repaintCaseList();
 
   caseRefineInputWrapEl.classList.add("hidden");
   caseNewPromptInputEl.value = "";
@@ -1626,10 +1841,40 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount) {
   caseSelectionPanelEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+/** Redraw the list. Ticked state comes from the drafts rather than the DOM, so a structural
+ *  change (reordering a step, adding a case) cannot silently untick anything. Focus is put back
+ *  where it was, because adding a step should leave the caret in the field you were using. */
+function repaintCaseList() {
+  const active = document.activeElement;
+  const key = active && active.dataset && active.dataset.field
+    ? { field: active.dataset.field, index: active.dataset.index, step: active.dataset.step,
+        start: active.selectionStart }
+    : null;
+
+  caseSelectionListEl.innerHTML = gateCases().map(gateCardHtml).join("");
+
+  if (key) {
+    const sel = `[data-field="${key.field}"][data-index="${key.index}"]` +
+                (key.step === undefined ? "" : `[data-step="${key.step}"]`);
+    const again = caseSelectionListEl.querySelector(sel);
+    if (again) {
+      again.focus();
+      if (key.start != null && again.setSelectionRange) {
+        try { again.setSelectionRange(key.start, key.start); } catch { /* not a text input */ }
+      }
+    }
+  }
+  updateDoneButtonState();
+}
+
 function hideCaseSelectionPanel() {
+  clearGateDrafts(caseRunId);
   caseRunId = null;
   currentBatch = [];
   acceptedSoFarCount = 0;
+  gateAttempt = 0;
+  gateDrafts = emptyGateDrafts();
+  Object.keys(gateProposals).forEach((k) => delete gateProposals[k]);
   caseSelectionPanelEl.classList.add("hidden");
 }
 
@@ -1648,34 +1893,84 @@ function updateDoneButtonState() {
     : `Run ${total} test${total === 1 ? "" : "s"}`;
 }
 
-async function postCaseSelectionDecision(runId, decision) {
-  try {
-    const res = await fetch(`/api/runs/${runId}/case-selection`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(decision),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showError(err.error ?? "Failed to submit case selection");
-      return false;
+// --- Turning drafts into the request ----------------------------------------
+
+/**
+ * Build the two optional fields the decision route accepts, sending only what actually differs
+ * from what the model proposed. A round nobody edited produces neither field, so the request is
+ * byte-identical to the one this panel sent before any of this existed.
+ */
+function gateEditPayload() {
+  const editedCases = [];
+  Object.keys(gateDrafts.edits).forEach((key) => {
+    const i = Number(key);
+    const base = currentBatch[i];
+    if (!base || gateDrafts.removed[i]) return;
+    const edit = gateDrafts.edits[i];
+    const patch = { index: i };
+    const str = (v) => (typeof v === "string" ? v.trim() : "");
+    if (str(edit.title) && str(edit.title) !== base.title) patch.title = str(edit.title);
+    if (Array.isArray(edit.steps)) {
+      const steps = edit.steps.map((t) => String(t).trim()).filter(Boolean);
+      if (steps.length && steps.join("\n") !== (base.steps || []).join("\n")) patch.steps = steps;
     }
-    return true;
-  } catch {
-    showError("Failed to submit case selection");
-    return false;
+    if (str(edit.expected) && str(edit.expected) !== base.expected) patch.expected = str(edit.expected);
+    if (str(edit.whyItMatters) && str(edit.whyItMatters) !== base.whyItMatters) {
+      patch.whyItMatters = str(edit.whyItMatters);
+    }
+    if (Object.keys(patch).length > 1) editedCases.push(patch);
+  });
+
+  const addedCases = gateDrafts.added.map((a) => {
+    const out = {
+      title: String(a.title || "").trim(),
+      steps: (a.steps || []).map((t) => String(t).trim()).filter(Boolean),
+      expected: String(a.expected || "").trim(),
+    };
+    const why = String(a.whyItMatters || "").trim();
+    if (why) out.whyItMatters = why;
+    return out;
+  });
+
+  const payload = {};
+  if (editedCases.length) payload.editedCases = editedCases;
+  if (addedCases.length) payload.addedCases = addedCases;
+  return payload;
+}
+
+/** What the server's schema would reject, said in the panel instead of coming back as a 400.
+ *  Only checks cases the reviewer actually intends to run — an unfinished draft they left
+ *  unticked is not an error. */
+function gateValidationError(selectedIndexes) {
+  const picked = new Set(selectedIndexes);
+  for (const entry of gateCases()) {
+    if (!picked.has(entry.index)) continue;
+    const c = entry.c;
+    const steps = gateStepsFor(entry.index).map((t) => String(t).trim()).filter(Boolean);
+    if (!String(c.title || "").trim()) return `Case ${entry.index + 1} needs a title.`;
+    if (steps.length === 0) return `"${c.title}" needs at least one step.`;
+    if (!String(c.expected || "").trim()) return `"${c.title}" needs an expected outcome.`;
   }
+  return null;
 }
 
 caseSelectAllBtnEl.addEventListener("click", () => {
-  caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => { cb.checked = true; });
+  caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.checked = true;
+    gateDrafts.checked[Number(cb.dataset.index)] = true;
+  });
+  saveGateDrafts();
   updateDoneButtonState();
 });
 
 caseSelectNoneBtnEl.addEventListener("click", () => {
   const primaryWasChecked = Array.from(caseSelectionListEl.querySelectorAll('input[type="checkbox"]'))
     .some((cb) => cb.checked && currentBatch[Number(cb.dataset.index)]?.fromPrompt);
-  caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => { cb.checked = false; });
+  caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.checked = false;
+    gateDrafts.checked[Number(cb.dataset.index)] = false;
+  });
+  saveGateDrafts();
   if (primaryWasChecked) {
     showNotice("Primary case unselected — if you refine again, the next round will generate a new primary case.");
   }
@@ -1686,7 +1981,11 @@ caseDoneBtnEl.addEventListener("click", async () => {
   if (!caseRunId) return;
   const selectedIndexes = getCheckedCaseIndexes();
   if (acceptedSoFarCount + selectedIndexes.length === 0) return;
-  const ok = await postCaseSelectionDecision(caseRunId, { action: "done", selectedIndexes });
+  const problem = gateValidationError(selectedIndexes);
+  if (problem) return showError(problem);
+  const ok = await postCaseSelectionDecision(caseRunId, {
+    action: "done", selectedIndexes, ...gateEditPayload(),
+  });
   if (ok) hideCaseSelectionPanel();
 });
 
@@ -1704,13 +2003,180 @@ caseNotSatisfiedBtnEl.addEventListener("click", async () => {
     return;
   }
   const selectedIndexes = getCheckedCaseIndexes();
-  const ok = await postCaseSelectionDecision(caseRunId, { action: "not_satisfied", selectedIndexes, newPrompt });
+  const problem = gateValidationError(selectedIndexes);
+  if (problem) return showError(problem);
+  const ok = await postCaseSelectionDecision(caseRunId, {
+    action: "not_satisfied", selectedIndexes, newPrompt, ...gateEditPayload(),
+  });
   if (ok) hideCaseSelectionPanel();
 });
 
 caseSelectionListEl.addEventListener("change", (e) => {
-  if (e.target.matches('input[type="checkbox"]')) updateDoneButtonState();
+  if (!e.target.matches('input[type="checkbox"]')) return;
+  setGateChecked(Number(e.target.dataset.index), e.target.checked);
+  updateDoneButtonState();
 });
+
+// Typing never re-renders: that would pull the caret out from under the reviewer. The draft is
+// recorded and the summary line above the editor is nudged to match.
+caseSelectionListEl.addEventListener("input", (e) => {
+  const el = e.target;
+  const field = el.dataset && el.dataset.field;
+  if (!field || field === "ask") return;
+  const i = Number(el.dataset.index);
+  const target = gateEditFor(i);
+  if (!target) return;
+  if (field === "step") {
+    const steps = gateStepsFor(i).slice();
+    steps[Number(el.dataset.step)] = el.value;
+    target.steps = steps;
+  } else {
+    target[field] = el.value;
+  }
+  saveGateDrafts();
+  if (field === "title") {
+    const label = caseSelectionListEl.querySelector(`[data-title-for="${i}"]`);
+    if (label) label.textContent = el.value || `Case ${i + 1}`;
+  }
+  markGateEdited(i);
+});
+
+/** Show the "Edited" badge the moment a model-written case diverges, without a full repaint. */
+function markGateEdited(i) {
+  if (i >= currentBatch.length) return;                 // a case you wrote is not an "edit"
+  if (caseSelectionListEl.querySelector(`[data-edited="${i}"]`)) return;
+  const title = caseSelectionListEl.querySelector(`[data-title-for="${i}"]`);
+  if (!title || !title.parentElement) return;
+  const badge = document.createElement("span");
+  badge.className = "case-badge";
+  badge.dataset.edited = String(i);
+  badge.textContent = "Edited";
+  title.parentElement.appendChild(badge);
+}
+
+caseSelectionListEl.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  const i = Number(btn.dataset.index);
+  const k = Number(btn.dataset.step);
+
+  if (act === "toggle-edit") {
+    const box = caseSelectionListEl.querySelector(`[data-editor="${i}"]`);
+    if (!box) return;
+    box.classList.toggle("hidden");
+    btn.textContent = box.classList.contains("hidden") ? "Edit steps" : "Hide steps";
+    return;
+  }
+
+  if (act === "remove-case") {
+    // Removing a case you wrote drops it entirely. Removing one the model wrote only hides it,
+    // and it reaches the server as "not selected" — deliberately, because splicing it out of the
+    // batch would renumber every case after it, and those positions are exactly what
+    // selectedIndexes means. Left in place it is recorded as rejected, which is also what stops
+    // a later refine round proposing it straight back.
+    if (i >= currentBatch.length) gateDrafts.added.splice(i - currentBatch.length, 1);
+    else gateDrafts.removed[i] = true;
+    delete gateDrafts.checked[i];
+    delete gateProposals[i];
+    saveGateDrafts();
+    repaintCaseList();
+    return;
+  }
+
+  if (act === "step-add") {
+    setGateSteps(i, [...gateStepsFor(i), ""]);
+    repaintCaseList();
+    const rows = caseSelectionListEl.querySelectorAll(`[data-field="step"][data-index="${i}"]`);
+    const last = rows[rows.length - 1];
+    if (last) last.focus();
+    return;
+  }
+  if (act === "step-del") {
+    const steps = gateStepsFor(i).slice();
+    steps.splice(k, 1);
+    setGateSteps(i, steps);
+    repaintCaseList();
+    return;
+  }
+  if (act === "step-up" || act === "step-down") {
+    const steps = gateStepsFor(i).slice();
+    const to = act === "step-up" ? k - 1 : k + 1;
+    if (to < 0 || to >= steps.length) return;
+    const moved = steps[k];
+    steps[k] = steps[to];
+    steps[to] = moved;
+    setGateSteps(i, steps);
+    repaintCaseList();
+    return;
+  }
+
+  if (act === "prop-apply") {
+    // D-27, unchanged: applying fills the editor. It sends nothing and accepts nothing — the
+    // round still has to be approved by a person afterwards.
+    const p = gateProposals[i];
+    if (!p) return;
+    setGateSteps(i, p.steps.slice());
+    delete gateProposals[i];
+    repaintCaseList();
+    showNotice("Applied to the editor — nothing is saved until you run or refine this round.");
+    return;
+  }
+  if (act === "prop-discard") {
+    delete gateProposals[i];
+    repaintCaseList();
+    return;
+  }
+
+  if (act === "ask") {
+    const box = caseSelectionListEl.querySelector(`[data-field="ask"][data-index="${i}"]`);
+    const instruction = ((box && box.value) || "").trim();
+    if (!instruction) return showError("Say what you would like changed.");
+    const entry = gateCases().find((x) => x.index === i);
+    if (!entry) return;
+    btn.disabled = true;
+    btn.textContent = "Asking…";
+    try {
+      const res = await fetch(`/api/runs/${caseRunId}/case-selection/rewrite`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // The steps come from the editor, not from the batch: the reviewer may already have
+        // changed them by hand, and asking about the model's original wording would quietly
+        // throw that away.
+        body: JSON.stringify({ title: entry.c.title, steps: gateStepsFor(i), instruction }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showError(typeof body.error === "string" ? body.error : "Could not propose a change.");
+        return;
+      }
+      gateProposals[i] = body;
+      repaintCaseList();
+    } catch {
+      showError("Could not propose a change.");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Ask for a change";
+    }
+  }
+});
+
+if (caseWriteOwnBtnEl) {
+  caseWriteOwnBtnEl.addEventListener("click", () => {
+    // The same field shape the model produces, so from here on a case a person wrote and a case
+    // the model wrote are the same kind of thing. Pre-ticked: you did not type it out in order
+    // to leave it behind.
+    gateDrafts.added.push({ title: "", steps: [""], expected: "", whyItMatters: "" });
+    saveGateDrafts();
+    repaintCaseList();
+    const idx = currentBatch.length + gateDrafts.added.length - 1;
+    const field = caseSelectionListEl.querySelector(`[data-field="title"][data-index="${idx}"]`);
+    if (field) {
+      field.focus();
+      field.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  });
+}
 
 function applyEvent(event, runId) {
   setPhaseFromStage(event.stage, event.status, event.data);
@@ -1727,10 +2193,14 @@ function applyEvent(event, runId) {
     caseRunId = runId;
     const batch = event.data.batch ?? [];
     const attempt = event.data.attempt ?? 1;
+    // `gateRewrite` rides on the round event rather than costing a second request: the browser
+    // has no way of its own to know whether this server will answer an ask-for-a-change, and
+    // drawing a button that always 404s is worse than not drawing one.
+    const opts = { ai: event.data.gateRewrite === true };
     fetch(`/api/runs/${runId}/accepted-cases`)
       .then((res) => res.json())
-      .then(({ count }) => renderCaseSelectionPanel(batch, attempt, count))
-      .catch(() => renderCaseSelectionPanel(batch, attempt, 0));
+      .then(({ count }) => renderCaseSelectionPanel(batch, attempt, count, opts))
+      .catch(() => renderCaseSelectionPanel(batch, attempt, 0, opts));
     return false;
   }
 

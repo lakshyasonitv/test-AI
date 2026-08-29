@@ -74,7 +74,8 @@ import { runReplay } from "../stages/replay.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
 import { credentialsFromEnv, credentialKindsNeeded, type Credentials } from "../stages/credentials.js";
-import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsEnabled } from "./rewrite.js";
+import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsEnabled,
+         proposeGateRewrite, gateRewriteEnabled } from "./rewrite.js";
 import {
   cancelJob, createJob, emitJobEvent, getJob, isCancelled, jobEvents, subscribeJob,
 } from "./regroundJobs.js";
@@ -304,6 +305,55 @@ app.post("/api/runs/:runId/case-selection", requireRunRole("tester"), express.js
     return res.status(409).json({ error: "This round was already resolved or timed out" });
   }
   res.status(200).json({ ok: true });
+});
+
+/**
+ * "Ask for a change" for a case that is still only a proposal.
+ *
+ * The gate's counterpart to /api/cases/:caseId/rewrite, and separate from it because the two act
+ * on different things. That route edits a SAVED case: it has an IR, its steps are grounded, and
+ * every proposed line is re-checked by the real parser before anyone sees it. A case at the gate
+ * has none of those -- it is plain English the model wrote minutes ago, and nothing has been
+ * compiled or opened in a browser yet. Pointing the saved-case route at it would mean parsing
+ * against an IR that does not exist.
+ *
+ * What survives from that route is the part that matters: this PROPOSES and never writes. The
+ * reply fills the reviewer's editor; the case is persisted only when the round is approved
+ * through POST /case-selection like any hand-typed edit. Nothing here reaches the pipeline
+ * without passing back through that one door (D-27).
+ *
+ * The steps come from the REQUEST, not from the pending batch, because the reviewer may have
+ * already edited them by hand -- asking the model to revise the batch's original wording would
+ * silently discard those edits. Requiring a pending round is still the authorisation boundary:
+ * no round parked, no proposal.
+ *
+ * Behind GATE_CASE_EDIT_AI, default OFF, for the same reason NL_STEPS_ENABLED exists -- it spends
+ * a Gemini call per press. Editing cases by hand at the gate needs no flag and costs nothing.
+ * Shares the rewrite rate limiter so a user cannot double their model spend by alternating
+ * buttons between the two editors.
+ */
+app.post("/api/runs/:runId/case-selection/rewrite", requireRunRole("tester"), express.json(), async (req, res) => {
+  if (!gateRewriteEnabled()) {
+    return res.status(404).json({ error: "ask-for-a-change is not available here — this server has GATE_CASE_EDIT_AI off" });
+  }
+  if (!getPendingSelection(req.params.runId)) {
+    return res.status(409).json({ error: "No case-selection round is pending for this run" });
+  }
+  const userId = req.user?.id ?? LOCAL_USER_ID;
+  if (!consumeRewriteAttempt(userId)) {
+    return res.status(429).json({ error: "too many rewrite requests — try again in a few minutes" });
+  }
+  const { title, steps, instruction } = req.body ?? {};
+  if (!Array.isArray(steps)) {
+    return res.status(400).json({ error: "steps must be an array of sentences" });
+  }
+  try {
+    res.json(await proposeGateRewrite(
+      typeof title === "string" ? title : "",
+      steps,
+      typeof instruction === "string" ? instruction : ""
+    ));
+  } catch (err) { sendAccessError(res, err); }
 });
 
 // Current accumulated pool state, for the frontend to render accepted cases and how much

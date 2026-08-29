@@ -182,6 +182,7 @@ const RUN_SCOPED_ROUTES: { name: string; method: "get" | "post" | "delete"; path
   { name: "GET  case-selection-status", method: "get",    path: `/api/runs/${RUN_A}/case-selection-status` },
   { name: "POST credentials",           method: "post",   path: `/api/runs/${RUN_A}/credentials`, body: { skip: true } },
   { name: "POST case-selection",        method: "post",   path: `/api/runs/${RUN_A}/case-selection`, body: { action: "done", selectedIndexes: [0] } },
+  { name: "POST case-selection/rewrite", method: "post",  path: `/api/runs/${RUN_A}/case-selection/rewrite`, body: { title: "t", steps: ["s"], instruction: "change it" } },
   { name: "DEL  run",                   method: "delete", path: `/api/runs/${RUN_A}` },
   // Step 5.2's bridge from a run into the library. Doubly scoped — the SOURCE run must be
   // reachable and the DESTINATION project must be too — so it belongs in this table like any
