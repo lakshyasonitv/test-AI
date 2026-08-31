@@ -25,7 +25,7 @@ generated — before anything is compiled, grounded, or run.
 | `tests/tenancy.test.ts` | +1 row: the new run-scoped route joins the cross-tenant isolation table. |
 | `.env.example` | `GATE_CASE_EDIT_AI`, documented, `false`. |
 
-**758 passing** (was 743, +15). `tsc --noEmit` clean. `node --check public/app.js` clean.
+**761 passing** across 49 files (was 743/48 — +18, including the three guard tests from section 9b). `tsc --noEmit` clean. `node --check public/app.js` clean.
 
 ## 2. THE STRUCTURAL POINT
 
@@ -177,6 +177,42 @@ gives the editor the full row: measured 163px → 924px per step input. It also 
   `0` and `2`, no renumbering), a written case lands at `batch.length + 0`, an untouched round
   produces `{}`, and **every edit survived an actual page reload**. Click-to-toggle still fires
   from the summary and not from the editor.
+
+## 9b. A REGRESSION THIS PHASE SHIPPED, AND WHAT IT COST
+
+Worth recording in full, because every check in section 9 passed while it was live.
+
+Building the editor meant replacing a ~200-line region of `public/app.js` wholesale. The
+replacement silently dropped **`postCaseSelectionDecision`** — the single function through which
+every case-selection decision leaves the browser. Its two call sites survived, pointing at nothing.
+
+**What the user saw:** press "Run test", watch the pipeline reach `2. Generating test cases...`,
+and then nothing, forever. It read as "test cases are not generating". Generation was never the
+problem. The gate produced 11 cases and parked correctly; clicking "Run selected tests" threw
+`ReferenceError: postCaseSelectionDecision is not defined`, so the decision was never sent, the
+round waited out its full `CASE_SELECTION_WAIT_MS` (10 minutes), timed out with
+`noCasesSelected: true`, and the run finished having executed no tests. Two runs died this way
+before it was found, each costing a full plan + discovery + generation cycle.
+
+**Why nothing caught it.** `node --check` validates syntax, not references. `tsc` never looks at
+`app.js`. The suite does not execute `app.js`'s click handlers. And the manual browser check drove
+the panel by calling `gateEditPayload()` and the render helpers **directly instead of pressing the
+button** — so the panel rendered perfectly, every assertion passed, and the only unexercised path
+was the one that was broken. That is this project's own recorded failure mode (`DECISIONS.md`
+D-19): a check that inspects a thing without ever running it.
+
+**The guard now in place:** `tests/appJsDefined.test.ts`. `app.js` is a classic script with no
+module surface and this repo has no JS parser available, so it is a static check of `await NAME(`
+call sites — an unambiguous shape that cannot appear in prose, verified to flag nothing across all
+70 such sites, and exactly where the bug bit. Two more general approaches were tried and rejected
+rather than shipped, both instances of the same trap: regex-stripping literals broke on nested
+template literals and reported the word "call" (from the string `"AI call(s)"`) as a missing
+function; a hand-rolled tokenizer lost 108KB of a 228KB file to regex literals and apostrophes in
+comments, hiding real definitions. The test also pins the gate panel's 23 helpers by name.
+
+**The lesson, stated so it survives this phase:** when a change replaces a region of a file rather
+than editing lines within it, diff the set of definitions before and after. `git diff` showed the
+deletion plainly; nobody read it that way. And verify a button by *clicking* it.
 
 ## 10. WHAT I DID NOT TOUCH
 

@@ -1954,6 +1954,29 @@ function gateValidationError(selectedIndexes) {
   return null;
 }
 
+/**
+ * The one door every gate decision goes through: pick, refine, edits and hand-written cases all
+ * leave the browser here and nowhere else.
+ */
+async function postCaseSelectionDecision(runId, decision) {
+  try {
+    const res = await fetch(`/api/runs/${runId}/case-selection`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(decision),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showError(err.error ?? "Failed to submit case selection");
+      return false;
+    }
+    return true;
+  } catch {
+    showError("Failed to submit case selection");
+    return false;
+  }
+}
+
 caseSelectAllBtnEl.addEventListener("click", () => {
   caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
     cb.checked = true;
