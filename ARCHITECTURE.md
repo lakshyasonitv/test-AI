@@ -326,6 +326,7 @@ timeout.
 | `caseAccumulator.ts` | File-backed pool of accepted cases across gate rounds, capped at `MAX_ACCUMULATED_CASES` |
 | `caseHistoryLedger.ts` | File-backed record of every case title ever shown and its outcome, so rejections never resurface |
 | `gateCaseEdits.ts` | Folds a reviewer's edits and hand-written cases into the batch before it is persisted, so the accumulator and ledger need no changes (`DECISIONS.md` D-28) |
+| `GET /api/runs/:runId/page-elements` | Serves `toElementIndex(appModel)` — role + name only — so the gate editor can show what is really on the page while a case is edited before grounding |
 | `index.ts` | Express: `/api/runs` CRUD, credential-prompt + case-selection endpoints, SSE stream, polling, static files, `/api/health` diagnostic endpoint, entry-URL validation — plus every platform route below |
 
 **The platform layer** (added by the phases in `docs/phases/`; every file is inert with its flag off):

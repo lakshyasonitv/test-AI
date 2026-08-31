@@ -1,6 +1,6 @@
 import express from "express";
 import path from "node:path";
-import { rmSync } from "node:fs";
+import { rmSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
@@ -74,6 +74,8 @@ import { runReplay } from "../stages/replay.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
 import { credentialsFromEnv, credentialKindsNeeded, type Credentials } from "../stages/credentials.js";
+import { resolveCredentialsVia } from "./resolveCredentials.js";
+import { toElementIndex } from "../schema/appModel.js";
 import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsEnabled,
          proposeGateRewrite, gateRewriteEnabled } from "./rewrite.js";
 import {
@@ -354,6 +356,41 @@ app.post("/api/runs/:runId/case-selection/rewrite", requireRunRole("tester"), ex
       typeof instruction === "string" ? instruction : ""
     ));
   } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * What is actually on the discovered pages, by role and name.
+ *
+ * A case being reviewed at the gate has no IR yet -- it is plain English, and IR compilation and
+ * grounding both happen after the round is approved. So while a reviewer edits a step, nothing
+ * knows whether the control they are naming exists. `groundingError()` answers that later, against
+ * the same application model this route reads.
+ *
+ * This closes the gap from the safe side: it does not judge what the reviewer wrote (that would
+ * mean parsing a target out of free English, a regex over model-authored prose and the TD-01
+ * failure this project already has on record). It shows them what is there to write about, and
+ * lets them put the site's own wording into the step.
+ *
+ * Served from the run's saved `02-appmodel.json` rather than threaded through the gate: discovery
+ * writes it before the gate parks, and the model is ~24KB on a real run, which would otherwise be
+ * copied into `events.ndjson` on every single round.
+ *
+ * `requireRunRole("viewer")` -- it is read-only information about a run the caller can already
+ * see, and `toElementIndex` emits only role and name, never a field's value.
+ */
+app.get("/api/runs/:runId/page-elements", requireRunRole("viewer"), (req, res) => {
+  const file = path.join("runs", req.params.runId, "02-appmodel.json");
+  if (!existsSync(file)) {
+    return res.status(404).json({ error: "no application model for this run yet" });
+  }
+  try {
+    const model = JSON.parse(readFileSync(file, "utf8"));
+    res.json({ pages: toElementIndex(model) });
+  } catch {
+    // A half-written or corrupt artifact must not fail a round a person is waiting on: the panel
+    // treats this the same as "nothing to show" and stays fully usable without it.
+    res.status(404).json({ error: "the application model for this run could not be read" });
+  }
 });
 
 // Current accumulated pool state, for the frontend to render accepted cases and how much
@@ -1006,20 +1043,15 @@ async function resolveWalkCredentials(
   needsCredentials: boolean,
 ): Promise<Credentials | undefined> {
   if (!needsCredentials) return undefined;
-
-  const fromEnv = credentialsFromEnv();
-  if (fromEnv) return fromEnv;
-
-  const url = ir.meta?.baseUrl ?? "";
-  const fields = credentialKindsNeeded(ir.steps);
-
-  // The emit is not optional: askCredentials only parks a promise server-side. Without the event
-  // the editor never renders the form, and the job sits for the full CREDENTIAL_WAIT_MS against a
-  // UI that offered nowhere to type — the same trap documented on the run path.
-  emitJobEvent(jobId, "credentials", "started", { url, fields, caseEdit: true });
-  const answered = await askCredentials({ runId: jobId, url, fields });
-  emitJobEvent(jobId, "credentials", "completed", { supplied: !!answered });
-  return answered ?? undefined;
+  return resolveCredentialsVia(
+    jobId,
+    ir.meta?.baseUrl ?? "",
+    credentialKindsNeeded(ir.steps),
+    // `caseEdit: true` on the STARTED event only, exactly as before: app.js reads it to choose the
+    // editor's wording, and adding it to the completed event would change a shape the UI reads.
+    (status, data) => emitJobEvent(jobId, "credentials", status,
+      status === "started" ? { ...data, caseEdit: true } : data),
+  );
 }
 
 /**
@@ -1363,7 +1395,36 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
       }
     };
 
-    runLimit.run(() => runReplay({ runId, cases, label: runLabel }, onEvent))
+    // A saved case's login steps carry ${env:TEST_USERNAME} / ${env:TEST_PASSWORD} rather than
+    // literals, and NOTHING used to resolve them on this path: `runReplay` accepts `creds`, but
+    // this - its only caller - never passed any. `credentialEnvVars(undefined)` is `{}`, so the
+    // generated spec's `process.env.TEST_USERNAME ?? ""` typed an EMPTY STRING into the login
+    // form, the sign-in silently failed, and the case died several steps later on whatever
+    // assertion first noticed it was still logged out. A fresh run never had this problem because
+    // the orchestrator asks. Confirmed on run 2026-08-31T06-30-26-597Z-1c2a719e, which failed at
+    // `expect(Sign In).toBeHidden()` with an edit three steps further down that never ran.
+    //
+    // Resolved INSIDE the scheduled work, after the 202 below: the browser needs the runId in
+    // hand before it can render the prompt or post an answer to it.
+    runLimit.run(async () => {
+      const fields = credentialKindsNeeded(cases.flatMap((c) => c.ir.steps));
+      const creds = fields.length === 0
+        // No case in this replay signs in. Nothing is asked, no event is emitted, and the run is
+        // byte-for-byte the one that ran before this change.
+        ? undefined
+        : await resolveCredentialsVia(runId, cases[0]?.ir.meta.baseUrl ?? "", fields,
+          // The same event shape a run emits, so app.js draws the same prompt with no change:
+          // its postUrl already defaults to /api/runs/<runId>/credentials, and a replay's runId
+          // is a real run id that the existing route settles.
+          (status, data) => onEvent({
+            runId, stage: "credentials", status,
+            data: status === "started"
+              ? { url: data.url, fields: data.fields }
+              : { provided: !!data.supplied },
+            ts: Date.now(),
+          } as Parameters<typeof record>[0]));
+      return runReplay({ runId, cases, label: runLabel, creds }, onEvent);
+    })
       .then((outcome) => {
         // Surface each case's latest verdict on the library row, so the Suite screen can show a
         // status without joining through run history.

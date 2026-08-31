@@ -1247,6 +1247,25 @@ body:has(#view-login.view-active) .topbar,
 body:has(#view-signup.view-active) .sidebar,
 body:has(#view-signup.view-active) .topbar { display: none; }
 
+/* ...and, owning the window, they centre in it. Scoped BY ID to these two views, so
+   `.view.view-active` stays `display: block` for every other screen and no other layout
+   can be affected. No class is added, renamed or removed.
+   The negative margins cancel `.main-inner`'s asymmetric padding (24px top, 96px bottom):
+   without them "centred" lands ~36px above the true centre, and simply growing the box
+   instead would make the page scroll. Safe to use 100vh here precisely because the rule
+   above has already removed the topbar and sidebar on these two views. */
+#view-login.view-active,
+#view-signup.view-active {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  margin-top: calc(var(--sp-5) * -1);
+  margin-bottom: -96px;
+}
+#view-login .col,
+#view-signup .col { align-items: center; }
+
 /* ---------------------------------------------------------------------------
    Team (members management). New classes only — nothing above is renamed or
    repurposed. Reuses .panel, .field, .dl-btn-inline and the .case-badge/.sdot

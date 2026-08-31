@@ -511,3 +511,61 @@ export function toMicroModel(
   };
 }
 
+
+// ---------------------------------------------------------------------------
+// Element index -- what the reviewer is shown while editing a case at the gate
+// ---------------------------------------------------------------------------
+
+/** One page's actionable elements, reduced to the two fields a person needs to read. */
+export interface PageElementIndex {
+  url: string;
+  title: string;
+  elements: { role: string; name: string }[];
+}
+
+/** Cap per page. A list nobody can scan is not a reference, and the payload rides on a panel
+ *  that opens for every case in the batch. */
+const ELEMENT_INDEX_CAP = 60;
+
+/**
+ * The page model, reduced to "what can a test actually act on here, by name".
+ *
+ * Cases at the selection gate are edited BEFORE any IR exists, so nothing verifies a step's target
+ * while it is being typed -- `groundingError()` does that later, at IR time, against this same
+ * application model. This projection closes the gap from the other side: rather than judging what
+ * the reviewer wrote, it shows them what is really there to write about.
+ *
+ * WHY IT REUSES `isUsableElement` RATHER THAN FILTERING ITS OWN WAY. That predicate is already how
+ * `ir.ts` decides what a generated test may address. Reusing it means the panel shows exactly the
+ * set the IR stage will later consider actionable, so the two cannot disagree about what is on the
+ * page -- a reviewer is never shown a control that grounding would then reject. A second, private
+ * "named and interactive" filter here is precisely the drift `hiddenInputNames`' own header warns
+ * about a few hundred lines up.
+ *
+ * ONLY `role` AND `name` LEAVE. Never `value`, `css`, `id` or `testId`. The panel has no use for
+ * them, and `PageModel.forms[].fields[].value` is where live secrets sit -- `hiddenInputNames`
+ * documents a real CSRF token captured from amazon.in as an ordinary-looking `textbox`.
+ * `isUsableElement` already excludes hidden inputs, so this is the second of two independent
+ * reasons a token cannot reach the browser: even a regression in that filter could only ever leak
+ * an element's role and its accessible name, never a field's contents.
+ */
+export function toElementIndex(model: AppModel): PageElementIndex[] {
+  return (model.pages ?? []).map((page) => {
+    const hidden = hiddenInputNames(page);
+    const seen = new Set<string>();
+    const elements: { role: string; name: string }[] = [];
+    for (const el of page.elements ?? []) {
+      if (!isUsableElement(el, hidden)) continue;
+      const role = String(el.role ?? "").toLowerCase();
+      const name = String(el.name ?? "").trim();
+      // Discovery legitimately captures the same control more than once (a nav link repeated in a
+      // mobile menu, a compressed group). The reviewer wants one chip per thing they can name.
+      const key = role + "\u0000" + name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      elements.push({ role, name });
+      if (elements.length >= ELEMENT_INDEX_CAP) break;
+    }
+    return { url: page.url, title: page.title ?? "", elements };
+  });
+}

@@ -1702,6 +1702,111 @@ function setGateChecked(index, value) {
   saveGateDrafts();
 }
 
+// --- What's on the page -----------------------------------------------------
+//
+// A case at the gate has no IR: it is plain English, and both compilation and grounding happen
+// only after the round is approved. So while a step is being typed, nothing can tell the reviewer
+// whether the control they just named exists. `groundingError()` answers that later, minutes
+// later, against the same application model these chips are built from.
+//
+// This closes the gap from the safe side. It deliberately does NOT check what was typed — deciding
+// whether a sentence names a real element means pulling a target out of free English, a regex over
+// model-authored prose, which is the TD-01 failure this project already has on record. A false
+// warning on a correct step is worse than no warning at all. Showing what IS there carries no such
+// risk, and clicking a chip puts the site's own wording into the sentence, which is the thing that
+// actually makes a step ground cleanly.
+let gatePageElements = null;      // [{ url, title, elements: [{role, name}] }] for the current run
+let gatePageElementsRunId = null;
+// The step input a chip should insert into: the last one the reviewer touched.
+let gateLastStep = null;          // { index, step }
+
+/** Origin + path, ignoring query and hash.
+ *
+ *  A deliberate duplicate of `pageKey()` in src/schema/appModel.ts. app.js is a classic script
+ *  with no module surface and cannot import from src/, the same reason it carries its own copy of
+ *  `formatIrStep`. `tests/gatePageElements.test.ts` evaluates this copy and asserts it agrees with
+ *  the server's on the URL shapes that matter, so the two cannot drift silently. If you change one,
+ *  change both — the test will tell you.
+ */
+function gatePageKey(url) {
+  try {
+    const u = new URL(url);
+    return u.origin + (u.pathname.replace(/\/+$/, "") || "/");
+  } catch { return url; }
+}
+
+/** Load the run's page elements once per round. Silent on failure: the panel is fully usable
+ *  without them, and a missing application model must never block a round someone is waiting on. */
+async function loadGatePageElements(runId) {
+  if (gatePageElementsRunId === runId && gatePageElements) return;
+  gatePageElementsRunId = runId;
+  gatePageElements = null;
+  try {
+    const res = await fetch(`/api/runs/${runId}/page-elements`);
+    if (!res.ok) return;
+    const body = await res.json();
+    gatePageElements = Array.isArray(body.pages) ? body.pages : null;
+  } catch {
+    // Offline, 404 before discovery wrote the artifact, or a corrupt model. Nothing to show.
+  }
+}
+
+/** The page a case is about: its own targetUrl when it has one, otherwise every page. */
+function gatePagesFor(testCase) {
+  if (!gatePageElements || gatePageElements.length === 0) return [];
+  const target = testCase && testCase.targetUrl;
+  if (target) {
+    const key = gatePageKey(target);
+    const match = gatePageElements.filter((p) => gatePageKey(p.url) === key);
+    if (match.length) return match;
+  }
+  return gatePageElements;   // no target, or a target that matches nothing discovered
+}
+
+// Roles grouped the way a person looks for them, rather than the way the accessibility tree
+// reports them. Anything unrecognised still shows, under "Other", so a control is never hidden
+// just because this list did not anticipate its role.
+const GATE_ROLE_GROUPS = [
+  { label: "Buttons", roles: ["button", "menuitem", "tab"] },
+  { label: "Fields", roles: ["textbox", "searchbox", "combobox", "listbox", "checkbox", "radio", "switch", "spinbutton", "slider", "option"] },
+  { label: "Links", roles: ["link"] },
+  { label: "Headings", roles: ["heading"] },
+];
+
+function gateElementsHtml(index, testCase) {
+  const pages = gatePagesFor(testCase);
+  if (pages.length === 0) return "";
+
+  const sections = pages.map((page) => {
+    const grouped = GATE_ROLE_GROUPS.map((g) => ({
+      label: g.label,
+      items: page.elements.filter((e) => g.roles.includes(e.role)),
+    }));
+    const claimed = new Set(GATE_ROLE_GROUPS.flatMap((g) => g.roles));
+    const other = page.elements.filter((e) => !claimed.has(e.role));
+    if (other.length) grouped.push({ label: "Other", items: other });
+
+    const rows = grouped.filter((g) => g.items.length).map((g) => `
+      <div class="case-suites">
+        <span class="case-suites-label">${escapeHtml(g.label)}</span>
+        ${g.items.map((e) => `<button type="button" class="case-suite-chip" data-act="insert-el"
+           data-index="${index}" data-name="${escapeHtml(e.name)}"
+           title="${escapeHtml(e.role)} &mdash; click to put this wording in the step you are editing"
+           >${escapeHtml(e.name)}</button>`).join("")}
+      </div>`).join("");
+    if (!rows) return "";
+    const label = page.title ? `${page.title} (${page.url})` : page.url;
+    return `${pages.length > 1 ? `<div class="cd-card-label">${escapeHtml(label)}</div>` : ""}${rows}`;
+  }).join("");
+
+  if (!sections.trim()) return "";
+  return `
+    <div class="cd-card">
+      <div class="cd-card-label">What's on this page &mdash; click to use the site's own wording</div>
+      ${sections}
+    </div>`;
+}
+
 // --- Rendering --------------------------------------------------------------
 
 function gateProposalHtml(index, p) {
@@ -1792,6 +1897,7 @@ function gateCardHtml(entry) {
         <div class="cd-card-label">Why it matters</div>
         <input type="text" class="cd-line-input" data-field="whyItMatters" data-index="${i}"
                value="${escapeHtml(c.whyItMatters || "")}" aria-label="Why it matters" />
+        ${gateElementsHtml(i, c)}
         ${gateAiAvailable ? `
         <div class="cd-card">
           <div class="cd-card-label">Ask for a change</div>
@@ -1824,6 +1930,11 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
     `${acceptedSoFarCount} of ${CASE_POOL_CAP} case${acceptedSoFarCount === 1 ? "" : "s"} accepted so far`;
 
   repaintCaseList();
+  // Fetched after the first paint, not before it: the round is reviewable immediately, and the
+  // chips fill in a moment later if the run has an application model to offer.
+  loadGatePageElements(caseRunId).then(() => {
+    if (gatePageElements && !caseSelectionPanelEl.classList.contains("hidden")) repaintCaseList();
+  });
 
   caseRefineInputWrapEl.classList.add("hidden");
   caseNewPromptInputEl.value = "";
@@ -2042,6 +2153,13 @@ caseSelectionListEl.addEventListener("change", (e) => {
 
 // Typing never re-renders: that would pull the caret out from under the reviewer. The draft is
 // recorded and the summary line above the editor is nudged to match.
+caseSelectionListEl.addEventListener("focusin", (e) => {
+  const el = e.target;
+  if (el && el.dataset && el.dataset.field === "step") {
+    gateLastStep = { index: Number(el.dataset.index), step: Number(el.dataset.step) };
+  }
+});
+
 caseSelectionListEl.addEventListener("input", (e) => {
   const el = e.target;
   const field = el.dataset && el.dataset.field;
@@ -2083,6 +2201,26 @@ caseSelectionListEl.addEventListener("click", async (e) => {
   const act = btn.dataset.act;
   const i = Number(btn.dataset.index);
   const k = Number(btn.dataset.step);
+
+  if (act === "insert-el") {
+    // Insert only. Nothing here reads what the reviewer typed, so there is no prose to
+    // misinterpret and no way to produce a wrong suggestion about a correct step.
+    const name = btn.dataset.name || "";
+    const target = gateLastStep && gateLastStep.index === i
+      ? caseSelectionListEl.querySelector(`[data-field="step"][data-index="${i}"][data-step="${gateLastStep.step}"]`)
+      : null;
+    const rows = caseSelectionListEl.querySelectorAll(`[data-field="step"][data-index="${i}"]`);
+    const input = target || rows[rows.length - 1];
+    if (!input) return;
+    const at = input.selectionStart == null ? input.value.length : input.selectionStart;
+    const quoted = `"${name}"`;
+    input.value = input.value.slice(0, at) + quoted + input.value.slice(at);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+    const caret = at + quoted.length;
+    if (input.setSelectionRange) { try { input.setSelectionRange(caret, caret); } catch { /* not a text input */ } }
+    return;
+  }
 
   if (act === "toggle-edit") {
     const box = caseSelectionListEl.querySelector(`[data-editor="${i}"]`);
