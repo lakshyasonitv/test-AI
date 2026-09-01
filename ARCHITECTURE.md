@@ -245,6 +245,35 @@ decision on a parked round is bounded by `CASE_SELECTION_WAIT_MS` (default 10 mi
 round times out as `"done"` with nothing new accepted, same shape as the credential prompt's
 timeout.
 
+
+### Editing a case at the gate
+
+A round is not read-only. Each proposed case can be opened and its title, steps and expected
+outcome changed, removed, or written from scratch, before anything is compiled or a browser is
+opened. `POST /api/runs/:runId/case-selection` gained two **optional** fields for this,
+`editedCases` and `addedCases`; a client that sends neither behaves exactly as it did before.
+
+`applyGateEdits` (`gateCaseEdits.ts`) folds those into the batch between the decision and the two
+calls that persist it. Because `appendAcceptedCases` and `appendRoundToHistory` both address cases
+by position, that one substitution makes the accumulator store the edited case, the pool cap count
+hand-written ones, and the ledger record final titles — with no change to either module
+(`DECISIONS.md` D-28). Removal is "not in `selectedIndexes`" plus a client-side hide, never a
+splice, so batch positions never renumber.
+
+**Scope, stated because it is easy to assume otherwise:** only the CURRENT round's batch is
+editable. Cases accepted in an earlier round live in `accepted-cases.json` and are not in a later
+round's batch, so they render as a count, not as cards.
+
+Two supporting routes, both additive:
+
+| Route | Purpose |
+|---|---|
+| `GET /api/runs/:runId/page-elements` | `toElementIndex(appModel)` — each page's discovered controls as **role + name only**, so the editor can show what actually exists while a case is edited before grounding. Never emits `value`, `css`, `id` or `testId`; hidden inputs are excluded by the same `isUsableElement` predicate `ir.ts` uses, so the panel shows exactly the set grounding will later accept |
+| `POST /api/runs/:runId/case-selection/rewrite` | "Ask for a change" for a case that has no IR yet. Behind `GATE_CASE_EDIT_AI` (default off) because it spends a model call. Deliberately does NOT run `parseIrStep` or constrain the model to `STEP_VOCABULARY` — gate steps are prose, and the vocabulary check happens later at IR time, in the stage that owns it. It proposes; it never writes (D-27) |
+
+Full walkthrough of the editing flow, saved cases and gate cases both:
+[docs/EDITABLE_IR.md](docs/EDITABLE_IR.md).
+
 ---
 
 ## Source Files
@@ -326,7 +355,7 @@ timeout.
 | `caseAccumulator.ts` | File-backed pool of accepted cases across gate rounds, capped at `MAX_ACCUMULATED_CASES` |
 | `caseHistoryLedger.ts` | File-backed record of every case title ever shown and its outcome, so rejections never resurface |
 | `gateCaseEdits.ts` | Folds a reviewer's edits and hand-written cases into the batch before it is persisted, so the accumulator and ledger need no changes (`DECISIONS.md` D-28) |
-| `GET /api/runs/:runId/page-elements` | Serves `toElementIndex(appModel)` — role + name only — so the gate editor can show what is really on the page while a case is edited before grounding |
+| `resolveCredentials.ts` | The one place the env-first/prompt-second credential policy lives (`DECISIONS.md` D-30): environment first, then the shared `askCredentials` waiter. Used by the case editor's re-ground walk and by replay, so the two cannot drift. Emits only the URL and which fields are wanted — never a value |
 | `index.ts` | Express: `/api/runs` CRUD, credential-prompt + case-selection endpoints, SSE stream, polling, static files, `/api/health` diagnostic endpoint, entry-URL validation — plus every platform route below |
 
 **The platform layer** (added by the phases in `docs/phases/`; every file is inert with its flag off):

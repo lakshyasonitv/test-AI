@@ -411,6 +411,16 @@ be checked live.
 entry-URL allow-list (`isAllowedEntryUrl`) narrows what an unauthenticated request can *reach*, but
 nothing gates who can submit one at all.
 
+**UPDATE 2026-09-01 — partially overtaken by events; re-verify before acting on this entry.**
+`AUTH_ENABLED` now exists, and the blanket `app.use("/runs", express.static("runs"))` has been
+replaced by `app.get("/runs/:runId/*")` sitting behind `canAccessRun`. Verified live: with
+`AUTH_ENABLED=true`, `/api/runs` answers **401** and `/runs/<id>/events.ndjson` answers **403** to
+an unauthenticated caller. The exposure described above is therefore closed **when the flag is on**.
+It is NOT closed with the flag off (the default): `canAccessRun` then resolves the synthetic local
+owner and returns true unconditionally, which the code comments describe as "identical to the
+blanket mount this route replaced". So this entry now reads: *the default posture is still open,
+the configured posture is not.*
+
 **Why it hurts.** `README.md`'s own "Sharing Over the Internet" section recommends exposing the
 server via a Cloudflare tunnel, which compounds the exposure rather than mitigating it.
 
@@ -437,8 +447,9 @@ before calling `applyEvent`.
 
 ### TD-16. `runs/` grows unbounded and is served publicly with no pruning — Medium / Strategic
 
-**What it is.** `app.use("/runs", express.static("runs"))` with no authentication (TD-14) serves
-every screenshot, trace, generated spec, and `results.json` ever produced. `runStore` caps the
+**What it is.** `runs/` holds every screenshot, trace, generated spec and `results.json` ever
+produced. (The "served with no authentication" half of this entry is out of date — see the update
+on TD-14: the static mount is now a guarded route. The unbounded-growth half below still stands.) `runStore` caps the
 *history list* shown in the UI at 20 but never prunes the underlying files. Measured at 344MB
 across 27 run directories at time of writing — a moving number; don't trust this doc's figure
 without re-measuring, that's exactly the drift `DECISIONS.md` D-01 exists to prevent.
@@ -446,8 +457,10 @@ without re-measuring, that's exactly the drift `DECISIONS.md` D-01 exists to pre
 **Why it hurts.** Disk usage and exposure both grow forever, unbounded by the same 20-run cap that
 governs what the UI even shows a user.
 
-**Remediation.** Prune on write — keep only the N newest run directories on disk, not just in the
-history list.
+**Remediation.** Partly shipped: `src/server/retention.ts` ages directories off on a schedule when
+`RUN_RETENTION_DAYS` is set, and is a no-op when it is unset or `0` — which is the default, so on a
+default install nothing is pruned and this entry stands as written. Setting that variable is the
+whole fix for age-based pruning; a count-based "keep the N newest" cap is still unbuilt.
 
 ### TD-17. `store.read()` / `listRuns()` have no per-entry error isolation — Medium / Accidental
 
@@ -461,6 +474,17 @@ its own.
 **Why it hurts.** A torn write (crash mid-append) in any single run's `events.ndjson`, or a delete
 racing a list, 500s the shared `/api/runs` endpoint every connected client polls — not scoped to
 the one bad or deleted run.
+
+**Now observed, not just theorised (2026-09-01).** `tests/apiContract.test.ts`'s
+`GET /api/runs` case fails intermittently — roughly one full-suite run in six, never in isolation
+(5/5 clean when run alone). Mechanism confirmed by replay: `summariseRun` on a directory that no
+longer exists throws `ENOENT`, and six test files create and delete real directories under `runs/`
+while vitest runs files in parallel. `allRunIds()` sorts descending, and test directories are named
+`test-run-*` — `"t"` sorts above every digit — so they land inside the `slice(0, 20)` window every
+time, which makes the race window maximal rather than incidental. Adding tests to
+`tests/caseSelectionGate.test.ts` tripled how often one of those directories is created and
+deleted, which is why it began surfacing. The fix is unchanged (per-entry try/catch); this note
+only records that the defect is real and reproducible, not hypothetical.
 
 **Remediation.** Try/catch the `JSON.parse` (skip/flag the bad line rather than throwing);
 try/catch each `.map()` entry in `listRuns()` so one bad/missing run drops from the list instead of
@@ -496,7 +520,7 @@ model changes.
 
 ### TD-20. No CI runs the test suite — High / Strategic
 
-**What it is.** 301 tests across 27 files exist (a moving number — re-check with `npx vitest run`
+**What it is.** 790 tests across 51 files exist (a moving number — re-check with `npx vitest run`
 rather than trusting this doc) and nothing executes them automatically. The only GitHub Actions
 workflow, `.github/workflows/directory-tree.yml`, regenerates a directory tree and pushes to
 `main`.
@@ -2084,3 +2108,65 @@ form, and three of which were sending a live CSRF token to a third-party API and
 publicly-served directory.
 
 The gate worked. Record it as a method that worked, not a project that failed.
+
+---
+
+### TD-66. A replay never collected credentials, so every saved login case failed at the login — High / Accidental — Fixed
+
+**What it was.** `runReplay` has always accepted a `creds` argument and always passed it to
+`credentialEnvVars`, but its only caller — the `/api/replay` route — never supplied one.
+`credentialEnvVars(undefined)` returns `{}`, so `TEST_USERNAME` / `TEST_PASSWORD` never reached the
+spec's environment, and the generated `process.env.TEST_USERNAME ?? ""` typed an **empty string**
+into the login form. The sign-in silently failed and the case died several steps later on whichever
+assertion first noticed it was still logged out.
+
+**Why it was hard to see.** The symptom lands far from the cause. On run
+`2026-08-31T06-30-26-597Z-1c2a719e` the reported failure was
+`expect(getByRole('button', {name:'Sign In'})).toBeHidden()` timing out — step 5 — while the user's
+actual edit sat three steps further down and never ran. The representative screenshot is the login
+page with empty fields, which reads as "step 1 broke". It also looked like editing had caused it:
+the same case had just been edited, and a fresh run of the same site worked, because the
+orchestrator asks for credentials and a replay never did. Diagnosed by artifact replay: the
+replay's `events.ndjson` has no `credentials` stage at all.
+
+**Fix.** `/api/replay` now resolves credentials before running — env first, prompt second — through
+the same `askCredentials` waiter a run uses, and passes them to `runReplay`'s existing parameter.
+The policy lives in one place (`src/server/resolveCredentials.ts`) shared with the case editor's
+re-ground walk, so the two cannot drift. A replay whose cases contain no `${env:...}` prompts for
+nothing and behaves exactly as before. No frontend change was needed: `showCredentialPrompt`
+already defaults its post URL to `/api/runs/<runId>/credentials`, and a replay's runId is a real
+run id. Pinned by `tests/replayCredentials.test.ts`.
+
+### TD-67. The library can store a literal credential, and nothing on the save path stops it — High / Strategic — OPEN, security
+
+**What it is.** `DECISIONS.md` D-09 ("secrets never reach disk") was designed around the run
+pipeline: a user-supplied credential becomes an `${env:...}` reference in the IR and the generated
+spec, and the real value is injected only into the Playwright child process. The **library is a
+newer persistent store and that rule was never extended to it.**
+
+The step editor renders a fill step's value as editable text. When that value is an `${env:...}`
+reference, nothing prevents a person replacing it with a real credential, and nothing on the save
+path notices: `parseIrStep` faithfully stores what was typed, `parseIr` validates shape only, and
+`updateCase` writes it to `test_cases.ir` **and** to an immutable `test_case_versions` row. From
+there it also reaches any generated spec produced from that version under `runs/`.
+
+**Confirmed to have happened.** A database audit on 2026-09-01 found one case whose login steps
+went from `${env:...}` at v1 to literal values at v2 and v3, both with the change note
+`Edited steps`. Values were never printed: the audit classified them in SQL
+(`value LIKE '$%{env:%}'`) rather than selecting them. A query for the same
+reference-became-literal transition across every case and version returned only that one case, so
+this is contained rather than systemic — every other literal found was legitimate test data
+(SQL-injection payloads, deliberate wrong-password cases).
+
+**Remediation, in order.** (1) Rotate the affected credential — scrubbing the store does not
+un-leak a value. (2) Overwrite the live row and the affected version rows with the reference,
+recording in the change note that the value was *scrubbed*, not edited. (3) Delete the affected
+`runs/` directories rather than scrubbing them in place. (4) Close the gap: refuse a save where a
+step's stored value matches `${env:...}` and the submitted value does not. That is a structural
+check on IR values, not a regex over prose. **None of (1)-(4) is done as of this entry.**
+
+**The general lesson, which outlives this instance.** D-09's invariant is "no secret reaches any
+persistent store", and each store has to name its own enforcement point. Run artifacts have
+`scrubServedSecrets`; generated specs have the `${env:...}` indirection; the database has
+**nothing**. `scrubServedSecrets` cannot help here by construction — it redacts values it is *told*
+are credentials via `secretEnv`, and a literal typed into an editor was never registered as one.

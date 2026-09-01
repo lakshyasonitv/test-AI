@@ -1,6 +1,6 @@
 # Testbench — self-contained briefing for an LLM with no repo access
 
-**Snapshot date: 2026-08-31.** Everything below was true of the codebase on that date.
+**Snapshot date: 2026-09-01.** Everything below was true of the codebase on that date.
 
 **Read this first, and say it back to the user if it matters:** this file is a *copy* of facts that
 live elsewhere, written for a model that cannot open the repository. It will drift. If you can read
@@ -175,10 +175,16 @@ forever, because the cache never expires. This has caused real bugs more than on
 - **A generated Playwright expression that looks right is not verified until it has been run once.**
   A fix once shipped that passed typechecking and a unit test and was a silent no-op, because both
   checks only inspected the emitted *string* and neither executed it.
-- **Roughly 39 of 64 recorded tech-debt items are still open.** Notable open ones: no CI runs the
-  test suite; `runs/` grows unbounded and is served publicly; the generated spec's locator helpers
-  have already drifted from the resolver they were copied from; wording-based detection is used in
-  more places than it should be.
+- **Roughly 40 of 66 recorded tech-debt items are still open.** Notable open ones: no CI runs the
+  test suite; `runs/` grows unbounded unless `RUN_RETENTION_DAYS` is set; the generated spec's
+  locator helpers have already drifted from the resolver they were copied from; wording-based
+  detection is used in more places than it should be; and a literal credential can be stored in the
+  case library, because the "secrets never reach disk" rule was written for the run pipeline and
+  never extended to the database.
+- **`runs/` is no longer an unauthenticated static mount**, despite what older notes say: it is a
+  guarded route now. With `AUTH_ENABLED=true` an unauthenticated caller gets 403. With the flag off
+  (the default) the guard resolves a synthetic local owner and allows everything, so the default
+  posture is still open.
 
 ## 9. How to be useful in a conversation about this project
 

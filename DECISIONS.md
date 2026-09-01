@@ -724,3 +724,41 @@ review is compiled by `toIR` and grounded against the live page exactly as an un
 `proposeGateRewrite` therefore cannot widen what the pipeline accepts, because it sits upstream of
 every check in it. What it keeps from D-27 is what matters — it proposes, it returns sentences not
 IR, and a person approves the round before anything is persisted.
+
+## D-30. Credential resolution is env-first, prompt-second, and lives in exactly one place
+
+**Context.** Three callers need the same answer to the same question — "this is about to sign in;
+where does the password come from?" A fresh run asks it in the orchestrator, the case editor's
+re-ground walk asks it before walking, and a replay asks it before executing saved cases. The
+replay path was built without asking at all, which is `TECH_DEBT.md` TD-66: every saved login case
+failed at the login, with the reported error several steps away from the cause.
+
+**Decision.** One helper, `resolveCredentialsVia` (`src/server/resolveCredentials.ts`), owns the
+policy: `credentialsFromEnv()` first, and only when that is empty does it emit a `credentials`
+event and park on the shared `askCredentials` waiter. Callers differ only in which event channel
+tells the browser to draw the form, which the `emit` callback abstracts.
+
+Three properties follow, and are the reason it is one function rather than three:
+
+1. **One waiter table, one timeout, one set of guarantees.** A second parking mechanism would mean
+   a second `CREDENTIAL_WAIT_MS` and a second way to leak a wedged promise.
+2. **An operator who has already set `TEST_USERNAME` / `TEST_PASSWORD` is never prompted**, on any
+   path. That has to be true everywhere or it is a surprise somewhere.
+3. **The emit is not optional.** `askCredentials` only parks a promise server-side; without the
+   event the UI never renders the form and the caller waits out the full timeout against a screen
+   that offered nowhere to type. This project has hit that trap on more than one path, which is why
+   the emit is inside the shared helper rather than left to each caller.
+
+**Rejected: reading the environment inside `runReplay`.** It would have fixed the replay bug with
+less code, but it silently drops the prompt half — an operator with no env vars set would get the
+same empty-string failure, just later. The prompt is the half that makes a saved login case usable
+by someone who is not the person who configured the server.
+
+**Rejected: prompting unconditionally on replay.** A replay whose cases contain no `${env:...}` has
+nothing to ask about. `credentialKindsNeeded` over every case's steps decides, so a replay that
+does not sign in emits no event and behaves byte-for-byte as it did before D-30.
+
+**Consequences.** No frontend change was required: `showCredentialPrompt` already defaults its post
+URL to `/api/runs/<runId>/credentials`, and a replay's runId is a real run id that the existing
+route settles. Any future execution path that runs stored steps inherits this obligation — if it
+can reach a login, it must resolve credentials through this helper, not around it.

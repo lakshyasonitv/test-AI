@@ -168,6 +168,7 @@ behind a flag; with all flags off the tool behaves exactly as it did before any 
 | Cost shown before it is spent | The editor says how many steps will be re-checked and roughly how long, *before* Save is pressed. Re-grounding runs as a cancellable job with live per-step progress |
 | "Write it for me" | A step line typed in loose English is translated into the vocabulary the parser accepts — as a **proposal** you approve. `NL_STEPS_ENABLED`, see [docs/phases/PHASE_NL_STEPS_REPORT.md](docs/phases/PHASE_NL_STEPS_REPORT.md) |
 | "Ask for a change" | Describe a change in a sentence and get a proposed step list back, as a diff. Also a proposal — approving it goes through the ordinary parse/re-ground/version path |
+| Editing cases at the review gate | With the gate on, a proposed case can be opened and its title, steps and expected outcome changed, removed, or written from scratch — before anything is compiled or a browser opens. The editor lists the page's real controls so you can use the site's own wording. Only the current round's batch is editable |
 | Run retention | `RUN_RETENTION_DAYS` ages off `runs/` directories on a schedule |
 | History is access-scoped | `GET /api/runs` returns the newest 20 runs **you may see** — filtering happens before the cap, so unfiled runs on disk cannot crowd out your own (`TECH_DEBT.md` TD-54) |
 
@@ -236,6 +237,7 @@ are in `.env.example`.
 | `MAX_CASE_REGEN_ATTEMPTS` | No | "Not satisfied" regeneration rounds allowed (default: 3) |
 | `MAX_ACCUMULATED_CASES` | No | Cap on cases accepted into the gate's pool across all rounds (default: 5) |
 | `CASE_SELECTION_WAIT_MS` | No | How long a gate round waits for your pick before timing out (default: 600000 / 10 min) |
+| `GATE_CASE_EDIT_AI` | No | Set `true` to offer "Ask for a change" on a case at the review gate. Editing cases there by hand needs no flag and spends nothing; this gates only the model call (default: off) |
 | `PORT` | No | Web UI port (default: 3000) |
 | `PLAYWRIGHT_TIMEOUT` | No | Per-test timeout in ms, read by `playwright.config.ts` (default: 50000) |
 
