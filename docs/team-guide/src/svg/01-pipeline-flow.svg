@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1090" viewBox="0 0 1000 1090" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="ar" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <polygon points="0,0 10,4 0,8" fill="#0b63ce"/>
+    </marker>
+  </defs>
+  <rect width="1000" height="1090" fill="#ffffff"/>
+
+  <text x="40" y="42" font-size="22" font-weight="700" fill="#0b3a78">The pipeline: 7 stages, 9 artifacts</text>
+  <text x="40" y="68" font-size="14" fill="#5a6b80">Every box below is one call to step(name, artifact, fn) in src/orchestrator.ts. It emits started, runs, saves, emits completed.</text>
+
+  <!-- legend -->
+  <rect x="40" y="86" width="14" height="14" rx="3" fill="#fde8c8" stroke="#d98b1f"/>
+  <text x="62" y="98" font-size="13" fill="#4a5568">calls Gemini (costs money)</text>
+  <rect x="248" y="86" width="14" height="14" rx="3" fill="#dff0e2" stroke="#3d8a52"/>
+  <text x="270" y="98" font-size="13" fill="#4a5568">pure code (no LLM)</text>
+  <rect x="426" y="86" width="14" height="14" rx="3" fill="#e6ecf5" stroke="#7d8fa8"/>
+  <text x="448" y="98" font-size="13" fill="#4a5568">launches a real browser</text>
+
+  <g font-size="15">
+    <!-- 1 plan -->
+    <rect x="40" y="120" width="560" height="76" rx="8" fill="#fde8c8" stroke="#d98b1f" stroke-width="2"/>
+    <text x="60" y="147" font-size="17" font-weight="700" fill="#0b3a78">1. plan</text>
+    <text x="60" y="170" fill="#374151">Turns your sentence into an ordered list of intentions.</text>
+    <text x="60" y="188" font-size="13" fill="#6b7280">planner.ts — plan(prompt, url, coverage)</text>
+    <rect x="640" y="134" width="320" height="48" rx="6" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="656" y="153" font-family="Consolas, monospace" font-size="14" fill="#0b3a78">01-plan.json</text>
+    <text x="656" y="172" font-size="12" fill="#6b7280">goal, steps[], testTypeScope, coverage</text>
+    <line x1="320" y1="196" x2="320" y2="224" stroke="#0b63ce" stroke-width="2" marker-end="url(#ar)"/>
+
+    <!-- 2 discovery -->
+    <rect x="40" y="228" width="560" height="86" rx="8" fill="#e6ecf5" stroke="#7d8fa8" stroke-width="2"/>
+    <text x="60" y="255" font-size="17" font-weight="700" fill="#0b3a78">2. discovery</text>
+    <text x="60" y="278" fill="#374151">Opens the real site in Chromium and reads what is on it.</text>
+    <text x="60" y="296" font-size="13" fill="#6b7280">hybridDiscovery.ts — DOM first (free), Gemini vision only as fallback.</text>
+    <text x="60" y="310" font-size="13" fill="#6b7280">Logs in first if the site has a gate. Crawls up to MAX_DISCOVERY_PAGES (5).</text>
+    <rect x="640" y="248" width="320" height="48" rx="6" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="656" y="267" font-family="Consolas, monospace" font-size="14" fill="#0b3a78">02-appmodel.json</text>
+    <text x="656" y="286" font-size="12" fill="#6b7280">baseUrl, pages[], auth</text>
+    <line x1="320" y1="314" x2="320" y2="342" stroke="#0b63ce" stroke-width="2" marker-end="url(#ar)"/>
+
+    <!-- 3 testcases -->
+    <rect x="40" y="346" width="560" height="76" rx="8" fill="#fde8c8" stroke="#d98b1f" stroke-width="2"/>
+    <text x="60" y="373" font-size="17" font-weight="700" fill="#0b3a78">3. testcases</text>
+    <text x="60" y="396" fill="#374151">Writes a suite of readable QA cases against what was found.</text>
+    <text x="60" y="414" font-size="13" fill="#6b7280">testCases.ts — pauses here for your review if the gate is on.</text>
+    <rect x="640" y="360" width="320" height="48" rx="6" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="656" y="379" font-family="Consolas, monospace" font-size="14" fill="#0b3a78">03-cases.json</text>
+    <text x="656" y="398" font-size="12" fill="#6b7280">written twice: batch, then final scoped list</text>
+    <line x1="320" y1="422" x2="320" y2="450" stroke="#0b63ce" stroke-width="2" marker-end="url(#ar)"/>
+
+    <!-- 4 ir -->
+    <rect x="40" y="454" width="560" height="96" rx="8" fill="#fde8c8" stroke="#d98b1f" stroke-width="2"/>
+    <text x="60" y="481" font-size="17" font-weight="700" fill="#0b3a78">4. ir  — the hard one (1,818 lines)</text>
+    <text x="60" y="504" fill="#374151">Compiles ONE case into strict JSON, then proves every target exists.</text>
+    <text x="60" y="522" font-size="13" fill="#6b7280">ir.ts — groundingError() checks each step against the real page.</text>
+    <text x="60" y="538" font-size="13" fill="#6b7280">If a target is missing it replays the steps live and looks again.</text>
+    <rect x="640" y="466" width="320" height="66" rx="6" fill="#fff4f4" stroke="#e0b4b4"/>
+    <text x="656" y="485" font-family="Consolas, monospace" font-size="14" fill="#0b3a78">04-ir.json</text>
+    <text x="656" y="504" font-size="12" fill="#9c2a2a">WRAPPER: { ir, updatedAppModel }</text>
+    <text x="656" y="522" font-size="12" fill="#6b7280">but cases/case-N/04-ir.json is a bare IR</text>
+    <line x1="320" y1="550" x2="320" y2="578" stroke="#0b63ce" stroke-width="2" marker-end="url(#ar)"/>
+
+    <!-- 5 generate -->
+    <rect x="40" y="582" width="560" height="76" rx="8" fill="#dff0e2" stroke="#3d8a52" stroke-width="2"/>
+    <text x="60" y="609" font-size="17" font-weight="700" fill="#0b3a78">5. generate</text>
+    <text x="60" y="632" fill="#374151">Turns the JSON into a real Playwright .ts file. No model involved.</text>
+    <text x="60" y="650" font-size="13" fill="#6b7280">generator.ts — deliberately pure code, so output is reproducible.</text>
+    <rect x="640" y="596" width="320" height="48" rx="6" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="656" y="615" font-family="Consolas, monospace" font-size="14" fill="#0b3a78">generated.spec.ts</text>
+    <text x="656" y="634" font-size="12" fill="#6b7280">no numbered artifact for this stage</text>
+    <line x1="320" y1="658" x2="320" y2="686" stroke="#0b63ce" stroke-width="2" marker-end="url(#ar)"/>
+
+    <!-- 6 execute -->
+    <rect x="40" y="690" width="560" height="86" rx="8" fill="#e6ecf5" stroke="#7d8fa8" stroke-width="2"/>
+    <text x="60" y="717" font-size="17" font-weight="700" fill="#0b3a78">6. execute</text>
+    <text x="60" y="740" fill="#374151">Runs that file as a child process and reads the JSON report back.</text>
+    <text x="60" y="758" font-size="13" fill="#6b7280">executor.ts — real credentials go in via child env, never into a file.</text>
+    <text x="60" y="772" font-size="13" fill="#6b7280">Scrubs secrets out of everything before it is served.</text>
+    <rect x="640" y="710" width="320" height="48" rx="6" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="656" y="729" font-family="Consolas, monospace" font-size="14" fill="#0b3a78">05-result.json</text>
+    <text x="656" y="748" font-size="12" fill="#6b7280">passed, exitCode, artifactsDir, raw</text>
+    <line x1="320" y1="776" x2="320" y2="804" stroke="#0b63ce" stroke-width="2" marker-end="url(#ar)"/>
+
+    <!-- 7 failure_analysis -->
+    <rect x="40" y="808" width="560" height="86" rx="8" fill="#fde8c8" stroke="#d98b1f" stroke-width="2"/>
+    <text x="60" y="835" font-size="17" font-weight="700" fill="#0b3a78">7. failure_analysis</text>
+    <text x="60" y="858" fill="#374151">Only runs if the test failed. Explains why, in plain English.</text>
+    <text x="60" y="876" font-size="13" fill="#6b7280">classify.ts tries first for free; Gemini vision only if that is inconclusive.</text>
+    <text x="60" y="890" font-size="13" fill="#6b7280">failureAnalysis.ts</text>
+    <rect x="640" y="828" width="320" height="48" rx="6" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="656" y="847" font-family="Consolas, monospace" font-size="14" fill="#0b3a78">06-diagnosis.json</text>
+    <text x="656" y="866" font-size="12" fill="#6b7280">absent when the run passed</text>
+  </g>
+
+  <!-- footer band -->
+  <rect x="40" y="918" width="920" height="142" rx="8" fill="#f7f9fc" stroke="#c9d9ee"/>
+  <text x="60" y="944" font-size="15" font-weight="700" fill="#0b3a78">Not stages — but they appear in the same event stream</text>
+  <text x="60" y="968" font-size="13" fill="#374151">input · credentials · heal · done · error   — these emit events but are not step() calls, so they write no numbered artifact of their own.</text>
+  <text x="60" y="990" font-size="13" fill="#374151">credentials is not positional: it can fire inside discovery, and again after testcases if nothing was supplied yet.</text>
+  <text x="60" y="1012" font-size="13" fill="#374151">After the primary case, suiteRunner.ts runs every remaining case into cases/case-N/ and writes 07-suite-summary.json.</text>
+  <text x="60" y="1034" font-size="13" fill="#374151">08-llm-usage.json is written last — on the success path AND on the error path. It is your receipt for what the run spent.</text>
+  <text x="60" y="1052" font-size="12" fill="#9c2a2a">A run that dies early leaves only some of these files. Which ones are missing tells you how far it got.</text>
+</svg>

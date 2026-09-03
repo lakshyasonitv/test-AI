@@ -1,0 +1,691 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+<head>
+<meta charset="utf-8">
+<title>Volume 2 — The Pipeline</title>
+<style>
+@page { size: A4; margin: 2cm 1.8cm 2cm 1.8cm; }
+body { font-family: "Segoe UI", Calibri, Arial, sans-serif; font-size: 11pt; color: #1a1a1a; line-height: 1.45; }
+h1 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 26pt; color: #0b3a78; margin: 0 0 4pt 0; }
+h2 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 17pt; color: #0b63ce; margin: 22pt 0 7pt 0; border-bottom: 1px solid #c9d9ee; padding-bottom: 3pt; }
+h3 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 13pt; color: #14213d; margin: 15pt 0 5pt 0; }
+h4 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 11.5pt; color: #0b3a78; margin: 12pt 0 4pt 0; }
+p { margin: 0 0 8pt 0; }
+ul, ol { margin: 0 0 10pt 0; padding-left: 20pt; }
+li { margin: 0 0 4pt 0; }
+table { border-collapse: collapse; width: 100%; margin: 8pt 0 14pt 0; }
+th { background: #e8f1fc; border: 1px solid #9dbfe8; padding: 5pt 7pt; text-align: left; font-size: 9.5pt; color: #0b3a78; }
+td { border: 1px solid #c9d9ee; padding: 5pt 7pt; font-size: 9.5pt; vertical-align: top; }
+pre { font-family: Consolas, "Courier New", monospace; font-size: 9pt; background: #f5f7fa; border: 1px solid #d6dee8; padding: 7pt 9pt; margin: 6pt 0 12pt 0; white-space: pre; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt; color: #9c2a2a; }
+.sub { font-size: 12pt; color: #5a6b80; margin: 0 0 3pt 0; }
+.meta { font-size: 9pt; color: #6b7280; margin: 0 0 16pt 0; }
+.caption { font-size: 8.5pt; color: #5a6b80; margin: 2pt 0 14pt 0; }
+.note { background: #f7f9fc; border: 1px solid #c9d9ee; border-left: 4px solid #0b63ce; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.warn { background: #fff8e8; border: 1px solid #d98b1f; border-left: 4px solid #d98b1f; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.danger { background: #fff4f4; border: 1px solid #c0392b; border-left: 4px solid #c0392b; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.file { background: #eef3f9; border: 1px solid #9dbfe8; padding: 4pt 8pt; margin: 14pt 0 6pt 0; font-family: Consolas, monospace; font-size: 10.5pt; color: #0b3a78; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>Volume 2 — The Pipeline</h1>
+<p class="sub">How a sentence becomes a test that has already run</p>
+<p class="meta">Describes commit <code>57e6261</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026 &nbsp;·&nbsp; Volume 2 of 5</p>
+
+<div class="note">
+This volume covers <code>src/orchestrator.ts</code>, all 22 files in <code>src/stages/</code>, the three schemas in <code>src/schema/</code>, the five files in <code>src/llm/</code>, and the three in <code>src/kb/</code> — about 11,000 lines in total.
+<br><br>
+Big, central files get full treatment. Small helpers get a paragraph. Nothing is skipped.
+<br><br>
+This is a teaching narrative. <code>ARCHITECTURE.md</code> still owns the formal file map, <code>DECISIONS.md</code> the reasoning, <code>TECH_DEBT.md</code> the defect list.
+</div>
+
+<p>[[TOC]]</p>
+
+<h2>1. Three tiers of code, and why confusing them hurts</h2>
+
+<p>Before any individual file, get this distinction straight. It is the most common source of confusion when reading this directory.</p>
+
+<table>
+<tr><th style="width:18%">Tier</th><th>What it means</th><th style="width:38%">Files</th></tr>
+<tr><td><b>Main path</b></td><td>Stages the orchestrator calls directly, in order.</td><td><code>planner</code>, <code>hybridDiscovery</code>, <code>testCases</code>, <code>ir</code>, <code>generator</code>, <code>executor</code>, <code>failureAnalysis</code>, <code>heal</code>, <code>suiteRunner</code></td></tr>
+<tr><td><b>Internals</b></td><td>Called by a main-path stage, but the orchestrator never imports them.</td><td><code>discovery</code>, <code>domDiscovery</code>, <code>domExtract</code>, <code>targetResolver</code>, <code>promptSelectors</code>, <code>authSettle</code>, <code>liveExtend</code>, <code>classify</code>, <code>credentials</code></td></tr>
+<tr><td><b>Off-path</b></td><td>Driven by the HTTP server, not by <code>runPipeline()</code> at all.</td><td><code>stepText</code>, <code>caseEdit</code>, <code>replay</code>, and <code>caseSelectionGate</code> (a conditional dynamic import)</td></tr>
+</table>
+
+<div class="warn">
+<b>The filename trap.</b> <code>src/stages/discovery.ts</code> is <b>not</b> the discovery stage. There is no <code>discover()</code> function in it. It holds helpers for the vision fallback path. The real discovery entry point is <code>hybridDiscovery.ts</code>, which replaced it.
+</div>
+
+<h2>2. The orchestrator — the spine</h2>
+
+<p class="file">src/orchestrator.ts — 437 lines</p>
+
+<p>One function runs the whole pipeline. If you read one file in this repository, read this one: it calls everything else in order, and every other file makes more sense afterwards.</p>
+
+<pre>export async function runPipeline(
+  { prompt, url, urls, coverage, options },
+  onEvent    = () =&gt; {},
+  presetRunId?,
+  askCredentials?
+): Promise&lt;{ runId, runDir, result, diagnosis }&gt;</pre>
+
+<h3>The two helpers that govern everything</h3>
+
+<pre>const save = (name, data) =&gt;
+  writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));
+
+async function step&lt;T&gt;(stage, filename, fn): Promise&lt;T&gt; {
+  emit(stage, "started");
+  try {
+    const result = await fn();
+    if (filename) save(filename, result);
+    emit(stage, "completed", result);
+    return result;
+  } catch (err) {
+    emit(stage, "failed", undefined, err?.message);
+    throw err;
+  }
+}</pre>
+
+<p>Every numbered artifact you find in <code>runs/</code> was written by that one <code>save</code> call. Every event the UI renders came from that one <code>emit</code>. Seven <code>step()</code> calls make up the pipeline:</p>
+
+<table>
+<tr><th style="width:8%">Line</th><th style="width:20%">Stage</th><th style="width:24%">Artifact</th><th>Function called</th></tr>
+<tr><td>122</td><td><code>plan</code></td><td><code>01-plan.json</code></td><td><code>plan(prompt, url, coverage)</code></td></tr>
+<tr><td>152</td><td><code>discovery</code></td><td><code>02-appmodel.json</code></td><td><code>discoverSiteHybrid()</code> or <code>discoverPagesHybrid()</code></td></tr>
+<tr><td>171</td><td><code>testcases</code></td><td><code>03-cases.json</code></td><td><code>toTestCases()</code> or <code>runCaseSelectionGate()</code></td></tr>
+<tr><td>231</td><td><code>ir</code></td><td><code>04-ir.json</code></td><td><code>toIR(primary, appModel, prompt, entryUrl, budget, creds)</code></td></tr>
+<tr><td>238</td><td><code>generate</code></td><td><i>null</i></td><td><code>generateSpec(ir, stepShots)</code></td></tr>
+<tr><td>245</td><td><code>execute</code></td><td><code>05-result.json</code></td><td><code>runSpec(spec, runDir, credentialEnvVars(creds))</code></td></tr>
+<tr><td>263</td><td><code>failure_analysis</code></td><td><code>06-diagnosis.json</code></td><td><code>analyzeFailure(ir, result, loginUrl)</code></td></tr>
+</table>
+
+<h3>Order surprises that a linear read gets wrong</h3>
+
+<ul>
+<li><b><code>credentials</code> is not positional.</b> It can fire <i>inside</i> the discovery step, and again after testcases. The guard against asking twice is simply <code>!runCreds</code> — if discovery got credentials, the second ask is skipped.</li>
+<li><b><code>testcases</code> emits <code>completed</code> twice</b>, with two different payload shapes: once for the generated batch, once after the final scoped list is settled.</li>
+<li><b><code>03-cases.json</code> and <code>05-result.json</code> are each written twice</b> on some paths. The last write wins.</li>
+<li><b><code>blocked</code> overrides <code>passed</code> in the <code>done</code> event but does not rewrite <code>05-result.json</code></b> — so the file and the UI can legitimately disagree.</li>
+<li><b>The event is written to disk before the UI is told.</b> <code>store.append(event)</code> runs before <code>onEvent(event)</code>, so a crash inside the callback still leaves the event recorded.</li>
+</ul>
+
+<div class="note">
+<b>Why the CLI can never trigger the review gate.</b> <code>gateUsed = gateRequested &amp;&amp; !!askCredentials</code>. The CLI (<code>src/cli.ts</code>, 42 lines) does not pass an <code>askCredentials</code> callback, so it can neither prompt for credentials nor open the gate — regardless of what <code>ENABLE_CASE_SELECTION_GATE</code> says. That is intentional: there is nobody to answer.
+</div>
+
+<h2>3. Stage 1 — plan</h2>
+
+<p class="file">src/stages/planner.ts — 71 lines</p>
+
+<p>Turns your sentence into an ordered list of intentions.</p>
+
+<pre>export async function plan(prompt: string, url: string, coverage: Coverage = "standard"): Promise&lt;Plan&gt;
+
+export const Plan = z.object({
+  goal:          z.string(),
+  steps:         z.array(z.string()).min(1),
+  testTypeScope: z.array(z.string()).default(ALL_SCOPES),
+  coverage:      z.enum([...]).default("standard"),
+});</pre>
+
+<div class="warn">
+<b>Two of the four fields the model returns are thrown away.</b> After parsing, <code>testTypeScope</code> and <code>coverage</code> are overwritten — scope comes from <code>classifyScope(prompt)</code>, a plain keyword heuristic, and coverage comes from what you selected in the UI. The model's opinion on those two is discarded.
+<br><br>
+This is the central design rule in miniature: the model is allowed to be creative about the <i>plan</i>, but not about anything the system can determine for itself.
+</div>
+
+<p>Two attempts, then it throws. The result is cached on disk under a key that includes the prompt, URL, coverage, scope, model name <b>and the system prompt itself</b> — see §14 for why that last one matters enormously.</p>
+
+<h2>4. Stage 2 — discovery</h2>
+
+<p>Four files cooperate here. This is where the platform earns its reliability, so it is worth understanding properly.</p>
+
+<h3>The strategy: cheap first, expensive last</h3>
+
+<ol>
+<li><b>DOM extraction</b> — parse the HTML with cheerio. Free, no model, no tokens.</li>
+<li><b>Live re-check in the browser</b> — some things (a <code>&lt;div&gt;</code> styled as a button, whether an element is really visible) cannot be known from an HTML string.</li>
+<li><b>Gemini vision</b> — only if the first two found nothing useful.</li>
+</ol>
+
+<p class="file">src/stages/hybridDiscovery.ts — 1,023 lines</p>
+
+<p>The real entry point, and the only discovery module the orchestrator imports.</p>
+
+<pre>export async function discoverSiteHybrid(url, creds?, askCredentials?): Promise&lt;AppModel&gt;
+export async function discoverPagesHybrid(urls: string[]): Promise&lt;AppModel&gt;
+export async function discoverHybrid(url: string): Promise&lt;AppModel&gt;
+export async function hasLoginGate(page: Page): Promise&lt;boolean&gt;
+export async function loginOnPage(page: Page, creds: Credentials): Promise&lt;AuthStep[] | null&gt;
+export async function verifySession(page: Page, loginUrl: string): Promise&lt;boolean&gt;
+export function isAllowedEntryUrl(urlStr: string): { ok: boolean; reason?: string }
+export const MAX_DISCOVERY_PAGES = Number(process.env.MAX_DISCOVERY_PAGES ?? 5)</pre>
+
+<h4>Four phases, and the order is load-bearing</h4>
+
+<ol>
+<li><b>Detect the login gate</b> on the live page. If the entry page has none, follow one link whose text looks like "Sign in" and check there.</li>
+<li><b>Resolve credentials</b> via the callback (which may prompt you in the browser).</li>
+<li><b>Only now, check the cache.</b></li>
+<li><b>Log in, and prove it worked</b> with <code>verifySession</code>.</li>
+</ol>
+
+<div class="note">
+<b>Why the cache lookup sits in the middle rather than at the top.</b> The cache key hashes credential identity. Checking before credentials were resolved meant reading under a different key from the one the result would later be written under — so an authenticated run never once hit its own cache.
+</div>
+
+<h4>Three hard-won constraints in this file</h4>
+
+<div class="danger">
+<b>1. One browser tab for the entire crawl.</b> Not one page per hop, and not merely a shared <code>BrowserContext</code>. <code>sessionStorage</code> is scoped to the <i>tab</i>, not the context — so a second page on the same authenticated context comes back logged out and modelling the login screen. This was verified directly. Any site whose session lives in <code>sessionStorage</code> (a mainstream React/Vite pattern) breaks the moment someone "tidies" this into a page-per-URL loop.
+</div>
+
+<div class="danger">
+<b>2. A <code>login-failed</code> result is never cached.</b> Caching one pinned the run to a broken login for the whole cache TTL.
+</div>
+
+<div class="danger">
+<b>3. No named or <code>const</code>-assigned inner functions inside a <code>page.evaluate</code> callback.</b> The server runs through <code>tsx</code>, which uses esbuild, which wraps every named function in a <code>__name(...)</code> call to preserve <code>.name</code>. That helper does not exist inside the browser. Vitest's transform does not inject it — so this passes every unit test and throws <code>ReferenceError: __name is not defined</code> only on a real <code>npm run serve</code>. Write those callbacks fully inlined, duplicating code across branches if you must, and leave a comment saying why.
+</div>
+
+<p>Page order in the resulting model is <code>[entry, loginPage]</code> — the authenticated page first, the login page last, because every downstream truncation drops from the end.</p>
+
+<p class="file">src/stages/domExtract.ts — 708 lines</p>
+
+<p>Pure cheerio: HTML string in, structured <code>CrawlResponse</code> out. No network, no browser, completely deterministic. It has exactly one export:</p>
+
+<pre>export function extractCrawlResponse(html: string, url: string, statusCode: number): CrawlResponse</pre>
+
+<p>Everything else — forms, links, buttons, navigation, tables, images, accessibility, UI-pattern detection — is private to the file.</p>
+
+<h4>The clever bit: <code>proximityLabel</code></h4>
+
+<p>Plenty of real forms look like this, with no <code>&lt;label&gt;</code> at all:</p>
+<pre>&lt;div&gt;Full Name&lt;/div&gt;
+&lt;input type="text"&gt;</pre>
+
+<p>Without help that field has no name and is unaddressable. <code>proximityLabel</code> looks at the previous sibling, then the wrapper's previous sibling — deliberately shallow, capped at 60 characters, and it skips a preceding form control (that is a sibling field, not a label). It only runs when the field has no placeholder and no aria-label, because otherwise the same control was emitted twice under two different names.</p>
+
+<div class="danger">
+<b>Security detail worth knowing.</b> Hidden inputs have their <code>value</code> forced to <code>""</code>. A live <code>anti-csrftoken</code> once reached <code>02-appmodel.json</code> and <code>events.ndjson</code> — both of which are served publicly. See <code>TECH_DEBT.md</code> TD-64.
+</div>
+
+<p class="file">src/stages/domDiscovery.ts — 581 lines</p>
+
+<pre>export async function extractDomModelFromPage(page: Page, url: string): Promise&lt;AppModel | null&gt;
+export async function discoverUsingCrawler(url: string): Promise&lt;AppModel | null&gt;
+export function needsVisionFallback(appModel: AppModel): boolean</pre>
+
+<p>Note the return type: <code>AppModel | null</code>. These functions <b>never throw</b>, so the caller can always fall back to vision.</p>
+
+<h4>Hydration polling — a detail that fixed a whole class of failure</h4>
+
+<p>Finding zero elements is ambiguous: it could be an auth wall, or a single-page app that has not finished rendering. So the code re-reads the page every second for up to <code>DISCOVERY_HYDRATION_POLL_MS</code> (default 6,000 ms). The measurement that motivated it, on a real page — <b>recorded in <code>TECH_DEBT.md</code> TD-31; re-check before quoting</b>:</p>
+
+<table>
+<tr><th style="width:26%">Time after load</th><th>Elements found</th></tr>
+<tr><td>+800 ms</td><td>0</td></tr>
+<tr><td>+2.8 s</td><td>347</td></tr>
+<tr><td>+4 s</td><td>576 (stable)</td></tr>
+</table>
+
+<p>Before this, an SPA was routinely modelled as an empty page and cached that way.</p>
+
+<div class="note">
+<b>Element names must be the <i>accessible</i> name</b> — aria-label, then label, then placeholder, then title, with the HTML <code>name</code> attribute last. An earlier version preferred the <code>name</code> attribute and produced <code>"user-name"</code> on a well-known demo site, which no locator could ever match.
+</div>
+
+<p class="file">src/stages/discovery.ts — 367 lines</p>
+
+<p>Helpers for the vision fallback, plus the in-page interactive-element scanner. Key exports: <code>detectInteractiveElements(page)</code>, <code>attachElementIdentity(model, detected)</code>, <code>modelFromAria(url, title, aria, screenshotBase64?)</code>.</p>
+
+<p>Two details worth carrying:</p>
+<ul>
+<li><b>Visibility uses geometry plus computed style, never <code>offsetParent</code>.</b> <code>offsetParent</code> is <code>null</code> for <code>position: fixed</code>, which silently excluded every fixed header — exactly where cart and search buttons live.</li>
+<li><b><code>attachElementIdentity</code> only attaches a selector when a role+name pair matches exactly one element.</b> Six "Add to cart" buttons each need their own selector; attaching the first one to all six would make every click add the same product.</li>
+</ul>
+
+<h2>5. Stage 3 — testcases</h2>
+
+<p class="file">src/stages/testCases.ts — 533 lines</p>
+
+<pre>export async function toTestCases(p: Plan, appModel: AppModel, extend?, opts?): Promise&lt;TestCase[]&gt;
+export function finalizeCaseSelection(allCases, scope, coverage, gateUsed, loginUrl?): TestCase[]
+export function selectCases(all, budget, loginUrl?): TestCase[]
+export function filterNovelCases(all, seenTitles): TestCase[]
+export const budgetFor = (coverage: Coverage): number</pre>
+
+<h3><code>selectCases</code> — four filters, in this order</h3>
+
+<ol>
+<li><b>Dedup</b> — on title overlap only, at a 0.7 threshold.</li>
+<li><b>Login cap</b> — at most <code>MAX_LOGIN_CASES</code> (default 1) cases targeting the login page itself.</li>
+<li><b>Diversity</b> — spread across features rather than piling onto one.</li>
+<li><b>Priority fill</b> — fill the remaining budget by priority.</li>
+</ol>
+
+<div class="note">
+<b>Why dedup groups on title and nothing else.</b> Grouping on category plus target URL also looked reasonable — and wrongly discarded a login case as a duplicate of a signup case, because both are "authentication on the same page".
+<br><br>
+<b>Why the login cap is structural.</b> It matches on <code>pageKey(targetUrl) === pageKey(loginUrl)</code>, not on a regex over the title. Without the cap, a suite about a shop tests the login form five times and never reaches the shop.
+</div>
+
+<div class="warn">
+<b><code>finalizeCaseSelection</code> skips <code>selectCases</code> entirely when the gate was used.</b> If a human explicitly picked which cases to run, silently re-applying a budget over that decision would override them in both directions. A person's choice wins.
+</div>
+
+<h3>Categories are a closed set</h3>
+
+<pre>CATEGORY_IDS = ["valid", "invalid-input", "empty-boundary", "state-change",
+                "security-injection", "security-xss", "functional-other"]</pre>
+
+<p>The model's free-text category is coerced into one of these by <code>normalizeCategory</code> inside a Zod <code>preprocess</code>. Free-form categories were the shared root cause of three separate bugs: credential substitution overwriting an attack payload, security cases surviving a functional-only run, and duplicate detection having nothing to group on.</p>
+
+<p class="file">src/stages/caseSelectionGate.ts — 279 lines</p>
+
+<p>The optional human review loop: generate a batch, park the run, regenerate if you are not satisfied. Loaded by dynamic import only when enabled.</p>
+
+<p>It writes no numbered artifact. Instead it appends events with an <code>action</code> field — <code>case_round_requested</code>, <code>case_round_resolved</code>, <code>case_regen_limit_reached</code>, <code>case_selection_finalized</code>. If you are debugging the gate, that is where to look.</p>
+
+<h2>6. Stage 4 — ir, and the grounding machinery</h2>
+
+<p class="file">src/stages/ir.ts — 1,818 lines, the largest file in the project</p>
+
+<p>This file compiles one test case into strict JSON and then proves, step by step, that every element it mentions actually exists. Almost every hard-won lesson in this codebase is encoded somewhere in here.</p>
+
+<pre>export async function toIR(testCase, appModel, sourcePrompt, entryUrl, budget?, runCreds?): Promise&lt;IRResult&gt;
+export interface IRResult { ir: IR; updatedAppModel: AppModel }
+
+export function groundingError(ir, appModel): { index, message, kind? } | null
+export function vacuousAssertion(ir, appModel?): { stepIds, message } | null
+export function urlAssertionError(ir, appModel): { index, message } | null
+export function assertionContradictsCase(ir, testCase): { stepIds, message } | null
+export function clickedElementHiddenAssertion(ir, appModel, testCase): {...} | null
+export function crossFormBleedError(ir, appModel): { stepIds, message } | null
+export function missingActions(ir, testCase): { message } | null
+export function buildLoginPrefix(auth): Step[]
+export function needsLoginPrefix(testCase, auth): boolean</pre>
+
+<h3>The compile loop</h3>
+
+<p>Up to <code>MAX_IR_ATTEMPTS</code> (default 4) times:</p>
+
+<ol>
+<li>Check the budget. Out of calls? Stop.</li>
+<li>Ask Gemini for JSON, at <code>temperature: 0.2</code>.</li>
+<li>Parse and validate against the Zod <code>IR</code> schema.</li>
+<li>Prepend the login steps if this case needs a signed-in session and does not already log in.</li>
+<li><b>Ground it</b> — and if grounding fails, try live-extend (below) before spending another attempt.</li>
+<li>Run the rejection checks, cheapest first.</li>
+<li>Return.</li>
+</ol>
+
+<h3>Grounding, step by step</h3>
+
+<p><img src="../diagrams/05-grounding.png" width="660"></p>
+<p class="caption">Figure 1 — the five checks inside <code>groundingError()</code>, in the order they run.</p>
+
+<div class="danger">
+<b>The single most important thing to know about <code>groundingError</code>: it is a mutator, not just a validator.</b>
+<br><br>
+Returning <code>null</code> does not only mean "this IR is fine". It means "this IR is fine <i>and I have corrected it in place</i>" — it rewrites <code>role</code> and <code>name</code> to the real values and attaches the real <code>css</code> and <code>testId</code> to the target.
+<br><br>
+This is why <code>caseEdit.ts</code> deep-copies every target before calling it. If you call this function on data you did not intend to modify, you will modify it.
+</div>
+
+<h3>Live extend — reaching pages discovery never saw</h3>
+
+<p>Discovery crawls at most five pages, and it cannot click through a checkout flow. So grounding will legitimately fail on steps that point at pages further in. Rather than give up, the code does this:</p>
+
+<ol>
+<li>Take the steps that <i>did</i> ground — the prefix.</li>
+<li>Replay them in a real browser.</li>
+<li>Snapshot whatever page that lands on.</li>
+<li>Merge it into the AppModel.</li>
+<li>Ground the <b>same</b> IR again — no new model call, no attempt consumed.</li>
+</ol>
+
+<p>Up to <code>MAX_LIVE_EXTENSIONS</code> (default 5) times. This is why the IR stage is the slowest and most expensive part of a run: it can drive a real browser several times.</p>
+
+<h3>The rejection checks, cheapest first</h3>
+
+<table>
+<tr><th style="width:30%">Check</th><th>Catches</th></tr>
+<tr><td><code>vacuousAssertion</code></td><td>An assertion that cannot fail — e.g. <code>url_contains "/"</code>.</td></tr>
+<tr><td><code>urlAssertionError</code></td><td>A URL assertion pointing somewhere the flow never goes.</td></tr>
+<tr><td><code>clickedElementHiddenAssertion</code></td><td>Asserting an element is hidden when the test just clicked it.</td></tr>
+<tr><td><code>crossFormBleedError</code></td><td>Filling fields from two different forms as if they were one.</td></tr>
+<tr><td><code>missingActions</code></td><td>An IR with far fewer actions than the case described.</td></tr>
+<tr><td><code>postClickRevealIndex</code></td><td>Content that only appears after a click. <b>Costs a browser launch</b> — deliberately last, and runs at most once per <code>toIR</code>.</td></tr>
+<tr><td><code>assertionContradictsCase</code></td><td>An assertion that contradicts the case's own stated expectation.</td></tr>
+</table>
+
+<div class="warn">
+<b>The project's own recorded failure mode, and it lives in this file.</b> <code>missingActions</code> works by running a regular expression over <i>prose written by the model</i> — case titles and step text. That is not deterministic; it inherits whatever the model happened to say. It once rejected a perfectly correct IR because the page's own heading contained the word "Click".
+<br><br>
+The lesson, recorded as <code>TECH_DEBT.md</code> TD-01: <b>when you write a new guard, check structure — a role, a discovered element, a schema field — not text.</b>
+</div>
+
+<h3>When it cannot fully succeed</h3>
+
+<p>Rather than fail outright, the compiler degrades in a defined order:</p>
+
+<ul>
+<li><b>Text-target on the last attempt</b> — ships unverified, because the field helper can often still resolve it at runtime.</li>
+<li><b>Truncation</b> — ships the longest grounded prefix, sets <code>meta.truncated</code> and <code>meta.truncationNote</code>.</li>
+<li><b>Contradiction</b> — drops just the offending assertion step.</li>
+<li><b>Best partial</b> — the longest prefix seen across all attempts.</li>
+<li>Otherwise it throws.</li>
+</ul>
+
+<div class="danger">
+<b>Truncation is why a test can pass without testing anything.</b> If every step after step 2 was dropped, the test runs two steps and reports success. Always check <code>meta.truncated</code> before believing a green result.
+</div>
+
+<h3>Two more traps in this file</h3>
+
+<p><b><code>trackPages</code> goes stale.</b> It follows which page each step is on, but after a click it cannot follow, it reports <code>null</code>. Leaving the cursor parked on the last known page truncated a real admin flow, because every post-login step was being grounded against <code>/login</code>.</p>
+
+<p><b>Prompt size is capped at 30,000 characters.</b> When over, it drops the least relevant pages one at a time, then cuts the model JSON — and it pretty-prints that JSON purely so the cut has a line break to land on. It never cuts the assembled prompt, which used to shear the instructions off the end.</p>
+
+<h2>7. Stage 5 — generate</h2>
+
+<p class="file">src/stages/generator.ts — 589 lines</p>
+
+<pre>export function generateSpec(ir: IR, screenshotDir = "artifacts"): string</pre>
+
+<p>One export. No LLM, by explicit design (<code>DECISIONS.md</code> D-06) — the output must be deterministic, reviewable and reproducible.</p>
+
+<p>The emitted file contains: helper functions (spliced in only if used), header comments naming the feature and priority, an <code>afterEach</code> that dumps the final page text, and then one <code>await test.step(...)</code> per IR step, each followed by a screenshot.</p>
+
+<h3>Four details worth knowing</h3>
+
+<p><b><code>"networkidle"</code> is replaced with <code>"domcontentloaded"</code> in the final string.</b> A blanket <code>.replace()</code> on the way out, because <code>networkidle</code> hangs forever on real sites with analytics or polling.</p>
+
+<p><b>An empty comparison value throws rather than emitting.</b> Emitting <code>toHaveURL(new RegExp(""))</code> would match anything and pass — a false pass is worse than a hard failure.</p>
+
+<div class="danger">
+<b>The <code>.filter({ visible: true })</code> incident — the reason a rule exists.</b> A fix shipped using <code>.filter({ visible: true })</code>. It type-checked. It passed a unit test. It was a <b>silent no-op</b>, because <code>Locator.filter()</code> has no <code>visible</code> option in this project's pinned Playwright version — the option is ignored, not rejected.
+<br><br>
+Both checks only inspected the emitted <i>string</i>; neither executed it. The correct form is <code>.and(page.locator(':visible'))</code>, and it must come <i>before</i> any trailing <code>.first()</code>.
+<br><br>
+<b>The resulting rule:</b> if a change touches the Playwright API surface of generated code, run it for real once. A synthetic HTML page in a headless browser is enough. See <code>DECISIONS.md</code> D-19.
+</div>
+
+<p><b>The screenshot helper waits for real content and for one observed change.</b> Two identical blank frames used to satisfy the "page has settled" rule, which is how <code>step-1.png</code> came out blank in 23 of 38 saved runs at the time — at a constant 4,331 bytes every time. <i>(Counts from the screenshot forensics recorded in <code>TECH_DEBT.md</code>; the ratio was a snapshot, not a constant.)</i></p>
+
+<h2>8. Stage 6 — execute</h2>
+
+<p class="file">src/stages/executor.ts — 346 lines</p>
+
+<pre>export async function runSpec(specCode, runDir, secretEnv = {}): Promise&lt;ExecResult&gt;
+export function scrubServedSecrets(raw, artifactsDir, resultsJson, errorContextFiles, secretEnv): any
+export function detectBlocked(artifactsDir, appOrigin?): BlockedInfo | null
+export function findScreenshot(dir: string): string | null
+export function findVideo(dir: string): string | null</pre>
+
+<p>It spawns Playwright as a child process rather than importing it:</p>
+
+<pre>spawn(process.execPath, [
+  cliPath, "test", specPath, "--reporter=json", `--output=${artifactsDir}`
+], { env: { ...process.env, ...secretEnv, PLAYWRIGHT_JSON_OUTPUT_NAME: resultsJson } })</pre>
+
+<div class="note">
+<b>The retry loop retries infrastructure failures only.</b> The condition is <code>if (result.passed || result.raw) return result</code> — <i>a parsed report is the verdict</i>, pass or fail. An earlier version checked <code>exitCode === 1</code>, which never retried anything real (Playwright exits 1 for any failure) while re-running genuine assertion failures, doubling cost and disguising real defects as flakiness.
+</div>
+
+<div class="warn">
+<b>The 100-second kill timer is a backstop, not the timeout.</b> Playwright's own per-test timeout is 50 s; this one sits above it with slack for trace and video finalisation. It was once set to 60 s, which killed the child <i>before it could write its report</i> — so failures produced no diagnosable output at all. See TD-02 and TD-36.
+</div>
+
+<h3>Where secrets get cleaned up</h3>
+
+<p>The live page is contaminated even when the files are not — a password may be typed into a field and appear in an error message. So after the run, <code>scrubServedSecrets</code> rewrites <code>results.json</code>, <code>artifacts/final-page.txt</code>, and every Playwright error-context attachment.</p>
+
+<div class="danger">
+<b>The redaction function deliberately skips DOM keywords, and this is not a bug.</b> A user whose password was literally <code>password</code> turned <code>inputType: "password"</code> into <code>"[redacted]"</code> and <code>css: "#password"</code> into <code>"#[redacted]"</code> — eight structural replacements, and the generator then emitted a selector matching nothing. Values shorter than four characters are skipped for the same reason.
+</div>
+
+<h2>9. Stage 7 — failure analysis, and self-heal</h2>
+
+<p><img src="../diagrams/08-failure-handling.png" width="660"></p>
+<p class="caption">Figure 2 — three tiers of diagnosis, then at most one repair attempt.</p>
+
+<p class="file">src/stages/classify.ts — 167 lines</p>
+
+<p>Deterministic, zero-token classification from the error text alone. Returns <code>null</code> when inconclusive, which is the signal to escalate.</p>
+
+<pre>KNOWN_CATEGORIES = ["selector_changed", "element_missing", "element_not_interactable",
+                    "element_hidden", "multiple_matches", "detached", "timeout",
+                    "assertion_failed", "navigation_error", "network", "other"]</pre>
+
+<div class="note">
+<b>Two ordering lessons live in this file.</b>
+<br><br>
+Playwright reports an assertion timeout in <b>two different wordings</b> — <code>"toBeVisible() failed"</code> and <code>"Timed out Nms waiting for expect(...)"</code>. Only the first was matched, so real visibility timeouts fell through to Gemini and came back misdiagnosed.
+<br><br>
+<code>resolved to 0</code> versus <code>resolved to [1-9]</code> is what separates <i>element missing</i> from <i>timeout</i>. A single <code>/resolved to/</code> pattern matched both, which made <code>element_missing</code> unreachable — and therefore made the entire self-heal path dead code.
+</div>
+
+<p class="file">src/stages/failureAnalysis.ts — 289 lines</p>
+
+<p>Three tiers, in order: <code>endedOnLoginPage</code> (structural — did we bounce back to the login page?), then <code>classify</code>, then Gemini vision with the failure screenshot attached.</p>
+
+<p><code>verifiedText</code> is kept as a separate field from <code>explanation</code>, deliberately: "the model's guess" and "confirmed against the captured DOM" must stay visibly distinct.</p>
+
+<p class="file">src/stages/heal.ts — 98 lines</p>
+
+<pre>export function isHealable(diagnosis: Diagnosis, ir: IR): boolean
+export async function attemptHeal(args: HealArgs): Promise&lt;HealResult | null&gt;</pre>
+
+<p>Healable means: the category is <code>selector_changed</code> or <code>element_missing</code>, <b>and</b> the failure was not on the very first step. Exactly one attempt, ever.</p>
+
+<div class="warn">
+<b>A truncating heal is rejected.</b> <code>if (healedIr.meta.truncated) return null</code> — running only a prefix would "pass" without exercising the thing that broke.
+</div>
+
+<div class="danger">
+<b>A failed heal leaves a half-written folder, and this confuses people.</b> <code>runSpec</code> runs <i>before</i> the <code>if (!healedRun.passed) return null</code> guard, and both <code>writeFileSync</code> calls come after it.
+<br><br>
+So a heal that ran and failed leaves <code>healed/artifacts/</code>, <code>healed/results.json</code> and <code>healed/generated/test.spec.ts</code> — with <b>no</b> <code>healed/ir.json</code>. That absence is how you tell the two apart. (Note also that this one file is <code>ir.json</code>, not <code>04-ir.json</code> — the only artifact in the tree that breaks the numbering convention.)
+</div>
+
+<h2>10. Running the rest of the suite</h2>
+
+<p class="file">src/stages/suiteRunner.ts — 384 lines</p>
+
+<p>Takes every selected case through the same compile-generate-execute cycle into <code>cases/case-N/</code>, reusing the primary's already-executed result rather than running it twice.</p>
+
+<div class="note">
+<b>The primary is identified by object identity</b> (<code>tc === primaryResult.testCase</code>), not by the <code>fromPrompt</code> flag. Reactive case generation can produce a second flagged case, and matching on the flag grafted the primary's result onto both of them.
+</div>
+
+<p>Status precedence: <code>blocked</code> → <code>truncated_no_assertion</code> → <code>truncated</code> → <code>passed</code>/<code>failed</code>.</p>
+
+<div class="warn">
+<b>A truncated case is recorded as passed in <code>05-result.json</code>.</b> The field is literally <code>passed: status === "passed" || status === "truncated"</code>. The richer status lives in <code>07-suite-summary.json</code>. If you are counting passes from the wrong file you will overcount.
+</div>
+
+<h2>11. Supporting modules</h2>
+
+<p class="file">src/stages/targetResolver.ts — 168 lines</p>
+
+<p>The single definition of "IR Target → Playwright locator", in two forms: <code>resolveCode()</code> returns a string for the generator; <code>resolveLive()</code> returns a real <code>Locator</code> for replay.</p>
+
+<p>Precedence: <code>css</code> → field helper → <code>role + name</code> → the fallback ladder (label, placeholder, text, testId).</p>
+
+<div class="warn">
+<b>A known duplication.</b> <code>resolveRoleWithFallback</code> here and <code>LOCATE_HELPER</code> in <code>generator.ts</code> are the same algorithm written twice, deliberately (the generated spec must be self-contained). <b>Nothing pins them equal, and they have already drifted once.</b> See <code>TECH_DEBT.md</code> TD-07.
+</div>
+
+<p class="file">src/stages/liveExtend.ts — 453 lines</p>
+
+<p>Replays a grounded step prefix in a real browser and merges a fresh snapshot back into the AppModel. Never mutates — always returns a new model.</p>
+
+<ul>
+<li><code>extendAppModel</code> <b>throws</b> if the page it reaches is already in the model. That is what routes the IR stage into <code>refreshPageModel</code> instead of looping forever.</li>
+<li>It snapshots using the replay's <b>own page handle</b>. Launching a fresh browser would hit the login redirect, model the login page, and cache that wrong answer.</li>
+<li>It skips <code>assert</code> steps during replay — assertions observe state, they do not advance it.</li>
+</ul>
+
+<p class="file">src/stages/credentials.ts — 631 lines</p>
+
+<p>Everything about credentials: which field wants which kind, whether a given case may receive real ones, and how they stay off disk.</p>
+
+<h4>The policy is opt-in, and the check order matters</h4>
+
+<p><code>credentialPolicyFor</code> returns <code>"full"</code>, <code>"identifier-only"</code> or <code>"none"</code>, and <b>defaults to <code>none</code></b>.</p>
+
+<div class="danger">
+<b>Why it is opt-in rather than opt-out.</b> The old version used a blocklist. A test case named "Security — SQL Injection" had its <code>' OR '1'='1</code> payload silently overwritten with the user's real email address, because nothing in the blocklist matched it. The case then tested nothing at all.
+<br><br>
+And the order within the check is load-bearing: <code>fromPrompt</code> used to be evaluated <i>first</i> and short-circuit. That meant "log in with invalid credentials" received working credentials, logged in successfully, and then failed its own assertion.
+</div>
+
+<p><b>Only the last fill of each kind is substituted.</b> One case can legitimately register an account and then log in with it; blanket substitution breaks that.</p>
+
+<p class="file">src/stages/authSettle.ts — 49 lines</p>
+
+<p>The shared "is this an auth submit, and has it landed" vocabulary. Two phases: wait up to 3 s for a URL change, then up to 4 s for network idle. <b>Never throws</b> — on timeout it simply proceeds, so the caller's normal retry path still applies.</p>
+
+<p class="file">src/stages/promptSelectors.ts — 98 lines</p>
+
+<p>Extracts CSS selectors you wrote in your own prompt, verifies them against the discovered model, and renders them as a permitted exception. This is the <i>only</i> sanctioned way a CSS selector enters an IR from text rather than from grounding.</p>
+
+<p>Unknown selectors are dropped with a log line: <code>[ir] ignoring selector(s) from the request</code>. If a user says "my selector didn't work", check that log.</p>
+
+<h2>12. The schemas</h2>
+
+<p class="file">src/schema/appModel.ts — 571 lines</p>
+
+<p>Defines <code>AppModel</code> and every projection of it used to build a prompt: <code>toLiteModel</code> (for case generation), <code>toMicroModel</code> (for IR — one page, 30 elements max), <code>toElementIndex</code> (for the gate's editor).</p>
+
+<div class="danger">
+<b>Hidden inputs are defended in three layers, and the reason is unintuitive.</b> The accessible name of an unlabelled hidden input <i>is its value</i> — so a live CSRF token appeared in the model as <code>textbox "hLJv+ZAi/…"</code>.
+<br><br>
+Filtering on <code>visible === false</code> alone is not enough: on a real run, 55 hidden inputs got through while only 30 elements carried that flag. And <code>promptFormFields</code> filters <b>before</b> slicing, because slicing first spent the cap on unusable entries and carried their values out of the process — 48 of 54 hidden fields had non-empty values. <i>(Both counts are from <code>TECH_DEBT.md</code> TD-64, measured on one run; treat them as illustrative rather than current.)</i>
+<br><br>
+Secret-scrubbing could never have caught this: it redacts <i>known operator secrets</i>, and a CSRF token is supplied by the site.
+</div>
+
+<p class="file">src/schema/ir.ts — 70 lines</p>
+
+<p>Small file, big importance — this is what the generator and executor consume. See Figure 4 in Volume 1 for the shape.</p>
+
+<div class="note">
+<b>Three assertions take no target at all</b> — <code>url_contains</code>, <code>title_contains</code>, <code>title_equals</code>. They are page-level, and their comparison value lives in <code>step.value</code>.
+<br><br>
+The title pair had to be added because there was previously no way to express "check the page title". The model degraded it to a <code>text_contains</code> against the body — searching the rendered page for a string that only exists in <code>&lt;title&gt;</code>. Reproduced against a real site whose title appears zero times in its body text.
+</div>
+
+<p class="file">src/schema/caseSelection.ts — 86 lines</p>
+
+<p>The wire contract for the review gate's decision. Note that <code>GateCaseAddSchema</code> deliberately does <b>not</b> accept <code>fromPrompt</code> or <code>generatedFrom</code> — those are routing state the pipeline stamps itself, and letting a client set them would let a request reclassify what the run thinks it is doing.</p>
+
+<h2>13. The LLM layer</h2>
+
+<table>
+<tr><th style="width:26%">File</th><th style="width:10%">Lines</th><th>Job</th></tr>
+<tr><td><code>llm/gemini.ts</code></td><td>99</td><td>The single HTTP call to Gemini, wrapped in key rotation and spend accounting.</td></tr>
+<tr><td><code>llm/backoff.ts</code></td><td>149</td><td>Retry, exponential backoff, per-attempt timeout, key cooldown.</td></tr>
+<tr><td><code>llm/keyPool.ts</code></td><td>40</td><td>Round-robin over several API keys, with per-key cooldown.</td></tr>
+<tr><td><code>llm/llmBudget.ts</code></td><td>139</td><td>The per-run hard cap on model calls, and the ambient-context plumbing.</td></tr>
+<tr><td><code>llm/json.ts</code></td><td>9</td><td>Strip code fences and leading prose, parse the first JSON value.</td></tr>
+</table>
+
+<h3>Details that will bite you</h3>
+
+<p><b>The key pool is built lazily, on first use.</b> At module scope, a missing key made merely <i>importing</i> anything downstream throw — so pure functions in <code>ir.ts</code> and <code>generator.ts</code> could not be unit-tested without live credentials.</p>
+
+<p><b><code>totalTokens</code> is read from the API, not summed.</b> Gemini's own total includes <code>thoughtsTokenCount</code>; adding prompt and completion tokens would undercount spend on any reasoning model.</p>
+
+<p><b>There is no default temperature.</b> Unlike the retired Groq client, <code>GeminiOpts</code> has none — which is exactly why <code>ir.ts</code> sets <code>temperature: 0.2</code> explicitly. Omit it elsewhere and you silently get Gemini's default.</p>
+
+<div class="warn">
+<b>Two timeout traps in <code>backoff.ts</code>.</b>
+<br><br>
+The timeout value is guarded against <code>NaN</code>, because <code>setTimeout(cb, NaN)</code> fires <i>immediately</i> — aborting every request instantly, which is strictly worse than the hang it was meant to fix.
+<br><br>
+And whether a request timed out is decided by <b>this attempt's own timer flag</b>, not by <code>err.name</code>. An aborted fetch can surface as <code>TypeError: terminated</code> if the abort lands mid-body-read.
+</div>
+
+<p><b>Network and timeout failures do not penalise the key.</b> They are not the key's fault, and penalising would needlessly shrink the rotation pool.</p>
+
+<p><b>The budget must be one per run, never a module singleton</b> — <code>MAX_CONCURRENT_RUNS</code> lets several runs share one Node process. A failed call is still recorded, because the request was already spent.</p>
+
+<h2>14. The knowledge base and the caches</h2>
+
+<p class="file">src/kb/testStrategy.ts — 198 lines</p>
+
+<p>A hand-written QA checklist keyed by concept, plus the closed category list and the scope classifier. It covers six concepts (<code>login</code>, <code>signup</code>, <code>search</code>, <code>checkout</code>, <code>cart</code>, <code>contact</code>) with a generic floor for everything else — <code>unmatchedConcepts</code> exists to tell the model where the checklist has nothing to offer.</p>
+
+<div class="note">
+<b>Order matters in <code>normalizeCategory</code>:</b> the string <code>"invalid"</code> contains <code>"valid"</code>, so negative families must be tested first.
+<br><br>
+<b>And a word-boundary bug worth remembering:</b> the old scope pattern <code>\b(functional|functionalit)\b</code> could never match "functionality", because the trailing "y" blocks the word boundary. So "test the login functionality" classified as <i>both</i> scopes and produced SQL-injection cases nobody asked for. It now matches on stems.
+</div>
+
+<p class="file">src/kb/llmCache.ts — 42 lines &nbsp;·&nbsp; src/kb/cache.ts — 38 lines</p>
+
+<div class="danger">
+<b>The most consequential fact in this section: the LLM disk cache never expires.</b>
+<br><br>
+There is a 30-minute TTL, but it applies to the in-memory tier only. The disk tier under <code>runs/_cache/llm/</code> lives forever.
+<br><br>
+<b>What this means in practice:</b> you change a prompt rule, re-run, and nothing changes — because the old answer is served from disk under an unchanged key. This has cost real debugging time more than once.
+<br><br>
+<b>The fix that stuck:</b> every caller now hashes its <b>system prompt and model name</b> into the cache key. Change a rule, get a new key, automatically. If you add a new input dimension to any prompt — a credential policy, a flag, a model — <b>it must go into the cache key</b>, or the cache will serve a wrong answer forever. See TD-22 and <code>DECISIONS.md</code> D-10.
+</div>
+
+<p>The AppModel cache (<code>kb/cache.ts</code>) does expire, against file mtime, default 30 minutes. Setting <code>APPMODEL_CACHE_TTL_MS=0</code> disables it entirely — which is what you want while iterating against a site you are actively editing. It uses three distinct key namespaces (bare URL, <code>dom:</code>, <code>site:…#auth=</code>); sharing one would let either function hand back the other's differently-shaped result.</p>
+
+<h2>15. Off-path: editing a saved case</h2>
+
+<p>These three are driven by the HTTP server, not by <code>runPipeline()</code>. Volume 3 covers the routes; here is what the stage code does.</p>
+
+<p class="file">src/stages/stepText.ts — 450 lines</p>
+
+<p>The one mapping between IR steps and plain English, plus the arithmetic that decides what an edit will cost.</p>
+
+<div class="danger">
+<b>The English format is lossy, and that is deliberate and load-bearing.</b>
+<br><br>
+A rendered sentence carries the step's semantic target and value. It does <b>not</b> carry <code>css</code>, <code>testId</code>, <code>nth</code>, <code>label</code>, <code>placeholder</code> or <code>preAction</code>. So <code>parse(format(step))</code> cannot reproduce a grounded step on its own.
+<br><br>
+The contract that actually holds is: <code>parseIrStep(formatIrStep(step), step)</code> — <b>parsing onto the original</b>. An untouched line returns the base object byte-identical. A changed line clears the grounded fields precisely because they describe the element the user just stopped pointing at, forcing a re-ground.
+<br><br>
+<b>Do not "fix" the format to be round-trippable.</b> That would remove the mechanism that makes an unedited line free to save and a retargeted line correctly expensive.
+</div>
+
+<p>The split that matters for cost: <code>changedIndexes</code> mints a new version and is free. <code>regroundIndexes</code> is the only thing that costs money — retyping a password is free; changing <i>which box</i> it types into needs a browser.</p>
+
+<p class="file">src/stages/caseEdit.ts — 247 lines &nbsp;·&nbsp; src/stages/replay.ts — 211 lines</p>
+
+<p><code>caseEdit</code> re-grounds an edited case against the live site. If <code>regroundIndexes</code> is empty it does zero browser work — instant and free. It calls only <code>refreshPageModel</code> and <code>groundingError</code>; reimplementing either would be TD-07 happening a third time. It deep-copies targets first, because <code>groundingError</code> mutates.</p>
+
+<p><code>replay</code> is a second entry point into the pipeline that starts from a stored IR: <b>zero LLM calls</b>. It writes <code>08-llm-usage.json</code> with literal zeroes as on-disk proof.</p>
+
+<div class="note">
+<b>Why replay emits stages it did not run.</b> It emits the skipped stages as immediately-completed with a <code>skipped</code> note. The frontend maps stages onto four progress cards and only marks a card complete when every stage it tracks completed — emitting only <code>generate</code> and <code>execute</code> would leave the first two cards pending forever and the run would look hung.
+</div>
+
+<h2>16. Quick reference: symptom to cause</h2>
+
+<table>
+<tr><th style="width:34%">Symptom</th><th style="width:38%">Cause</th><th>Where</th></tr>
+<tr><td><code>04-ir.json</code> will not parse as an IR</td><td>Run-level file is a wrapper; only the per-case one is bare.</td><td><code>orchestrator.ts:231</code></td></tr>
+<tr><td>A prompt change has no effect</td><td>The LLM disk cache never expires. The system prompt must be in the key.</td><td><code>kb/llmCache.ts</code></td></tr>
+<tr><td>Discovery returns only a login page</td><td>Credentials never reached discovery, or the gate was not detected.</td><td><code>hybridDiscovery.ts</code></td></tr>
+<tr><td><code>ReferenceError: __name is not defined</code>, but tests pass</td><td>A named function inside a <code>page.evaluate</code> callback.</td><td><code>hybridDiscovery.ts:548</code></td></tr>
+<tr><td>Test passes but verified nothing</td><td>Truncated IR with no terminal assertion, or a vacuous assertion.</td><td><code>ir.ts</code></td></tr>
+<tr><td>Generated locator matches nothing</td><td>The element's name was proximity-inferred; only <code>css</code> can reach it.</td><td><code>appModel.ts</code></td></tr>
+<tr><td>Credentials silently ignored</td><td>Policy returned <code>none</code>, or the field was not the last fill of its kind.</td><td><code>credentials.ts</code></td></tr>
+<tr><td>The gate never fires from the CLI</td><td><code>gateUsed</code> requires an <code>askCredentials</code> callback.</td><td><code>orchestrator.ts:170</code></td></tr>
+<tr><td><code>healed/</code> exists but has no <code>ir.json</code></td><td>The heal ran, failed, and returned before the writes.</td><td><code>heal.ts:92</code></td></tr>
+<tr><td>A guard rejects a correct IR</td><td>It regexes prose rather than checking structure — the TD-01 pattern.</td><td><code>ir.ts</code></td></tr>
+</table>
+
+</body>
+</html>

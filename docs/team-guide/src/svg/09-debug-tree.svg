@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000" viewBox="0 0 1000 1000" font-family="Segoe UI, Arial, sans-serif">
+  <defs><marker id="a9" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0,0 10,4 0,8" fill="#0b63ce"/></marker></defs>
+  <rect width="1000" height="1000" fill="#ffffff"/>
+  <text x="40" y="40" font-size="22" font-weight="700" fill="#0b3a78">A run failed. What do I look at?</text>
+  <text x="40" y="65" font-size="14" fill="#5a6b80">Work top to bottom. Nearly every failure is identified within two steps, without reading any source code.</text>
+
+  <!-- start -->
+  <rect x="330" y="86" width="340" height="52" rx="26" fill="#0b63ce"/>
+  <text x="500" y="110" text-anchor="middle" font-size="16" font-weight="700" fill="#ffffff">Open the newest folder in runs/</text>
+  <text x="500" y="128" text-anchor="middle" font-size="12" fill="#cfe2fb">sort by name — they are timestamped</text>
+  <line x1="500" y1="138" x2="500" y2="166" stroke="#0b63ce" stroke-width="2" marker-end="url(#a9)"/>
+
+  <!-- Q1 -->
+  <rect x="250" y="170" width="500" height="58" rx="8" fill="#e8f1fc" stroke="#0b63ce" stroke-width="2"/>
+  <text x="500" y="194" text-anchor="middle" font-size="15" font-weight="700" fill="#0b3a78">Q1. Which numbered files are present?</text>
+  <text x="500" y="215" text-anchor="middle" font-size="13" fill="#374151">The highest number reached tells you which stage broke.</text>
+
+  <line x1="500" y1="228" x2="500" y2="252" stroke="#0b63ce" stroke-width="2"/>
+  <line x1="150" y1="252" x2="850" y2="252" stroke="#0b63ce" stroke-width="2"/>
+  <line x1="150" y1="252" x2="150" y2="278" stroke="#0b63ce" stroke-width="2" marker-end="url(#a9)"/>
+  <line x1="385" y1="252" x2="385" y2="278" stroke="#0b63ce" stroke-width="2" marker-end="url(#a9)"/>
+  <line x1="620" y1="252" x2="620" y2="278" stroke="#0b63ce" stroke-width="2" marker-end="url(#a9)"/>
+  <line x1="850" y1="252" x2="850" y2="278" stroke="#0b63ce" stroke-width="2" marker-end="url(#a9)"/>
+
+  <g font-size="12.5">
+    <rect x="46" y="282" width="208" height="116" rx="6" fill="#fff4f4" stroke="#e0b4b4"/>
+    <text x="60" y="302" font-weight="700" font-size="13" fill="#9c2a2a">Stops at 01 or 02</text>
+    <text x="60" y="322" fill="#374151">Discovery could not read</text>
+    <text x="60" y="338" fill="#374151">the site.</text>
+    <text x="60" y="358" font-weight="700" fill="#0b3a78">Look at:</text>
+    <text x="60" y="375" font-family="Consolas, monospace" font-size="11" fill="#374151">02-appmodel.json</text>
+    <text x="60" y="391" fill="#374151">Is pages[] almost empty?</text>
+
+    <rect x="281" y="282" width="208" height="116" rx="6" fill="#fff4f4" stroke="#e0b4b4"/>
+    <text x="295" y="302" font-weight="700" font-size="13" fill="#9c2a2a">Stops at 03</text>
+    <text x="295" y="322" fill="#374151">Cases were written but</text>
+    <text x="295" y="338" fill="#374151">none survived, or the</text>
+    <text x="295" y="354" fill="#374151">review gate timed out.</text>
+    <text x="295" y="374" font-weight="700" fill="#0b3a78">Look at:</text>
+    <text x="295" y="391" font-family="Consolas, monospace" font-size="11" fill="#374151">03-cases.json, events</text>
+
+    <rect x="516" y="282" width="208" height="116" rx="6" fill="#fff4f4" stroke="#e0b4b4"/>
+    <text x="530" y="302" font-weight="700" font-size="13" fill="#9c2a2a">Stops at 04</text>
+    <text x="530" y="322" fill="#374151">The IR would not ground —</text>
+    <text x="530" y="338" fill="#374151">a step pointed at something</text>
+    <text x="530" y="354" fill="#374151">not on the page.</text>
+    <text x="530" y="374" font-weight="700" fill="#0b3a78">Look for:</text>
+    <text x="530" y="391" font-family="Consolas, monospace" font-size="11" fill="#374151">meta.truncationNote</text>
+
+    <rect x="746" y="282" width="208" height="116" rx="6" fill="#dff0e2" stroke="#3d8a52"/>
+    <text x="760" y="302" font-weight="700" font-size="13" fill="#1f5130">Reaches 05</text>
+    <text x="760" y="322" fill="#374151">The test actually ran.</text>
+    <text x="760" y="338" fill="#374151">This is the normal case.</text>
+    <text x="760" y="358" font-weight="700" fill="#0b3a78">Go to Q2. →</text>
+    <text x="760" y="380" fill="#374151">Most failures land here.</text>
+  </g>
+
+  <line x1="850" y1="398" x2="850" y2="418" stroke="#0b63ce" stroke-width="2"/>
+  <line x1="850" y1="418" x2="500" y2="418" stroke="#0b63ce" stroke-width="2"/>
+  <line x1="500" y1="418" x2="500" y2="440" stroke="#0b63ce" stroke-width="2" marker-end="url(#a9)"/>
+
+  <!-- Q2 -->
+  <rect x="230" y="444" width="540" height="62" rx="8" fill="#e8f1fc" stroke="#0b63ce" stroke-width="2"/>
+  <text x="500" y="468" text-anchor="middle" font-size="15" font-weight="700" fill="#0b3a78">Q2. Open 05-result.json and read raw.…errors[0].message</text>
+  <text x="500" y="489" text-anchor="middle" font-size="13" fill="#374151">This is the real Playwright error. The UI does not show it — it shows a screenshot.</text>
+
+  <line x1="500" y1="506" x2="500" y2="528" stroke="#0b63ce" stroke-width="2"/>
+  <line x1="160" y1="528" x2="840" y2="528" stroke="#0b63ce" stroke-width="2"/>
+  <line x1="160" y1="528" x2="160" y2="552" stroke="#0b63ce" stroke-width="2" marker-end="url(#a9)"/>
+  <line x1="387" y1="528" x2="387" y2="552" stroke="#0b63ce" stroke-width="2" marker-end="url(#a9)"/>
+  <line x1="613" y1="528" x2="613" y2="552" stroke="#0b63ce" stroke-width="2" marker-end="url(#a9)"/>
+  <line x1="840" y1="528" x2="840" y2="552" stroke="#0b63ce" stroke-width="2" marker-end="url(#a9)"/>
+
+  <g font-size="12.5">
+    <rect x="46" y="556" width="228" height="150" rx="6" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="60" y="576" font-weight="700" font-size="13" fill="#0b3a78">"Executable doesn't exist"</text>
+    <text x="60" y="596" fill="#374151">Your Playwright browser</text>
+    <text x="60" y="612" fill="#374151">cache is broken or partial.</text>
+    <text x="60" y="632" font-weight="700" fill="#0b3a78">Fix:</text>
+    <text x="60" y="649" font-family="Consolas, monospace" font-size="11" fill="#374151">npx playwright install</text>
+    <text x="60" y="668" fill="#9c2a2a">Check for a stale __dirlock</text>
+    <text x="60" y="684" fill="#9c2a2a">and hung node processes</text>
+    <text x="60" y="699" fill="#9c2a2a">first — see Volume 5.</text>
+
+    <rect x="281" y="556" width="228" height="150" rx="6" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="295" y="576" font-weight="700" font-size="13" fill="#0b3a78">"resolved to 0 elements"</text>
+    <text x="295" y="596" fill="#374151">The locator matched</text>
+    <text x="295" y="612" fill="#374151">nothing on the page.</text>
+    <text x="295" y="632" font-weight="700" fill="#0b3a78">Look at:</text>
+    <text x="295" y="649" fill="#374151">the step-N.png just before</text>
+    <text x="295" y="665" fill="#374151">the failure. Did the page</text>
+    <text x="295" y="681" fill="#374151">look how you expected?</text>
+    <text x="295" y="699" fill="#6b7280">Often: login silently failed.</text>
+
+    <rect x="516" y="556" width="228" height="150" rx="6" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="530" y="576" font-weight="700" font-size="13" fill="#0b3a78">"resolved to 2 elements"</text>
+    <text x="530" y="596" fill="#374151">Ambiguous locator — two</text>
+    <text x="530" y="612" fill="#374151">things share a name.</text>
+    <text x="530" y="632" font-weight="700" fill="#0b3a78">Look at:</text>
+    <text x="530" y="649" fill="#374151">04-ir.json — the step needs</text>
+    <text x="530" y="665" font-family="Consolas, monospace" font-size="11" fill="#374151">nth</text>
+    <text x="530" y="684" fill="#6b7280">This is a known weakness</text>
+    <text x="530" y="699" fill="#6b7280">(TECH_DEBT TD-05).</text>
+
+    <rect x="746" y="556" width="208" height="150" rx="6" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="760" y="576" font-weight="700" font-size="13" fill="#0b3a78">"Timeout … exceeded"</text>
+    <text x="760" y="596" fill="#374151">The element exists but</text>
+    <text x="760" y="612" fill="#374151">never reached the state</text>
+    <text x="760" y="628" fill="#374151">the test waited for.</text>
+    <text x="760" y="648" font-weight="700" fill="#0b3a78">Look at:</text>
+    <text x="760" y="665" font-family="Consolas, monospace" font-size="11" fill="#374151">video.webm</text>
+    <text x="760" y="684" fill="#374151">It only exists on failure —</text>
+    <text x="760" y="699" fill="#374151">watch what actually happened.</text>
+  </g>
+
+  <!-- bottom: not-a-failure box -->
+  <rect x="46" y="728" width="908" height="118" rx="8" fill="#fff8e8" stroke="#d98b1f"/>
+  <text x="64" y="752" font-size="15" font-weight="700" fill="#8a5a10">Before you debug anything: is it actually a test failure?</text>
+  <text x="64" y="776" font-size="13" fill="#374151"><tspan font-weight="700">Passed but verified nothing.</tspan>  Check meta.truncated in 04-ir.json. A truncated IR can report status "truncated" and still count as passed in 05-result.json.</text>
+  <text x="64" y="797" font-size="13" fill="#374151"><tspan font-weight="700">Blocked, not failed.</tspan>  A bot check or OAuth wall. Look for blockedBy in the done event — the site stopped us, the test is fine.</text>
+  <text x="64" y="818" font-size="13" fill="#374151"><tspan font-weight="700">Never ran at all.</tspan>  An empty case folder plus status "failed" usually means an invalid API key. Check 08-llm-usage.json for zero calls.</text>
+  <text x="64" y="838" font-size="13" fill="#374151"><tspan font-weight="700">Stale server.</tspan>  npm run serve has no auto-reload. If you edited src/ and nothing changed, the server predates your edit. Restart it.</text>
+
+  <rect x="46" y="862" width="908" height="112" rx="8" fill="#f7f9fc" stroke="#c9d9ee"/>
+  <text x="64" y="886" font-size="15" font-weight="700" fill="#0b3a78">The four-command triage</text>
+  <g font-family="Consolas, monospace" font-size="12.5" fill="#1a2f4b">
+    <text x="64" y="909">ls -t runs/ | head -1                                  <tspan font-family="Segoe UI, Arial" fill="#6b7280">← newest run</tspan></text>
+    <text x="64" y="929">cat runs/&lt;id&gt;/05-result.json | grep -A2 message        <tspan font-family="Segoe UI, Arial" fill="#6b7280">← the real error</tspan></text>
+    <text x="64" y="949">cat runs/&lt;id&gt;/08-llm-usage.json                        <tspan font-family="Segoe UI, Arial" fill="#6b7280">← did it even call the model?</tspan></text>
+    <text x="64" y="969">tail -5 runs/&lt;id&gt;/events.ndjson                        <tspan font-family="Segoe UI, Arial" fill="#6b7280">← where did it stop?</tspan></text>
+  </g>
+</svg>

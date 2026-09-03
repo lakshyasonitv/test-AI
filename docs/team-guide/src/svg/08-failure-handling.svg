@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="720" viewBox="0 0 1000 720" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="a8" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0,0 10,4 0,8" fill="#0b63ce"/></marker>
+    <marker id="a8g" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0,0 10,4 0,8" fill="#3d8a52"/></marker>
+  </defs>
+  <rect width="1000" height="720" fill="#ffffff"/>
+  <text x="40" y="40" font-size="22" font-weight="700" fill="#0b3a78">When a test fails: diagnose, then maybe heal</text>
+  <text x="40" y="65" font-size="14" fill="#5a6b80">The guiding principle is "free checks first". Gemini is the last resort, not the first.</text>
+
+  <rect x="360" y="86" width="280" height="46" rx="23" fill="#c0392b"/>
+  <text x="500" y="114" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">The spec failed</text>
+  <line x1="500" y1="132" x2="500" y2="154" stroke="#0b63ce" stroke-width="2" marker-end="url(#a8)"/>
+
+  <!-- tier 1 -->
+  <rect x="150" y="158" width="700" height="72" rx="8" fill="#dff0e2" stroke="#3d8a52" stroke-width="2"/>
+  <text x="170" y="182" font-size="15" font-weight="700" fill="#1f5130">Tier 1 — endedOnLoginPage()   ·   free, structural</text>
+  <text x="170" y="204" font-size="13" fill="#374151">Compares the final URL against the known login URL. Nothing else. If we ended up back at the login page,</text>
+  <text x="170" y="222" font-size="13" fill="#374151">the sign-in silently failed. Without it, such runs were reported as "element_missing" and sent people hunting a renamed button.</text>
+  <line x1="500" y1="230" x2="500" y2="252" stroke="#0b63ce" stroke-width="2" marker-end="url(#a8)"/>
+
+  <!-- tier 2 -->
+  <rect x="150" y="256" width="700" height="86" rx="8" fill="#dff0e2" stroke="#3d8a52" stroke-width="2"/>
+  <text x="170" y="280" font-size="15" font-weight="700" fill="#1f5130">Tier 2 — classify()   ·   free, deterministic</text>
+  <text x="170" y="302" font-size="13" fill="#374151">Pattern-matches the raw Playwright error text into one of 11 categories. No model, no tokens.</text>
+  <g font-family="Consolas, monospace" font-size="11.5" fill="#1a2f4b">
+    <text x="170" y="323">selector_changed · element_missing · element_not_interactable · element_hidden · multiple_matches</text>
+    <text x="170" y="338">detached · timeout · assertion_failed · navigation_error · network · other</text>
+  </g>
+  <line x1="500" y1="342" x2="500" y2="364" stroke="#0b63ce" stroke-width="2" marker-end="url(#a8)"/>
+  <text x="516" y="358" font-size="12" fill="#6b7280">only if inconclusive (null)</text>
+
+  <!-- tier 3 -->
+  <rect x="150" y="368" width="700" height="72" rx="8" fill="#fde8c8" stroke="#d98b1f" stroke-width="2"/>
+  <text x="170" y="392" font-size="15" font-weight="700" fill="#8a5a10">Tier 3 — Gemini vision   ·   costs money</text>
+  <text x="170" y="414" font-size="13" fill="#374151">Sends the error text plus the failure screenshot and asks for an explanation in plain English.</text>
+  <text x="170" y="432" font-size="13" fill="#374151">Result is written to <tspan font-family="Consolas, monospace">06-diagnosis.json</tspan>. This is what the UI shows you as the diagnosis.</text>
+
+  <line x1="500" y1="440" x2="500" y2="464" stroke="#0b63ce" stroke-width="2" marker-end="url(#a8)"/>
+
+  <!-- heal gate -->
+  <rect x="270" y="468" width="460" height="66" rx="8" fill="#e8f1fc" stroke="#0b63ce" stroke-width="2"/>
+  <text x="500" y="492" text-anchor="middle" font-size="15" font-weight="700" fill="#0b3a78">isHealable(diagnosis, ir)?</text>
+  <text x="500" y="514" text-anchor="middle" font-size="12.5" fill="#374151">only if category is selector_changed OR element_missing</text>
+  <text x="500" y="529" text-anchor="middle" font-size="12.5" fill="#374151">AND the failure was not on the very first step</text>
+
+  <line x1="270" y1="500" x2="200" y2="500" stroke="#6b7280" stroke-width="2"/>
+  <line x1="200" y1="500" x2="200" y2="560" stroke="#6b7280" stroke-width="2" marker-end="url(#a8)"/>
+  <text x="212" y="530" font-size="12" fill="#6b7280">no</text>
+  <rect x="70" y="564" width="260" height="52" rx="8" fill="#f5f7fa" stroke="#c9d9ee"/>
+  <text x="200" y="588" text-anchor="middle" font-size="13.5" font-weight="700" fill="#374151">Stop. Report the failure.</text>
+  <text x="200" y="606" text-anchor="middle" font-size="12" fill="#6b7280">Most failures end here — correctly.</text>
+
+  <line x1="730" y1="500" x2="800" y2="500" stroke="#3d8a52" stroke-width="2"/>
+  <line x1="800" y1="500" x2="800" y2="560" stroke="#3d8a52" stroke-width="2" marker-end="url(#a8g)"/>
+  <text x="760" y="530" font-size="12" fill="#3d8a52">yes</text>
+  <rect x="620" y="564" width="330" height="132" rx="8" fill="#fff8e8" stroke="#d98b1f" stroke-width="2"/>
+  <text x="640" y="588" font-size="14" font-weight="700" fill="#8a5a10">attemptHeal() — exactly ONE try</text>
+  <text x="640" y="610" font-size="12.5" fill="#374151">1. Re-walk the site up to the failing step</text>
+  <text x="640" y="628" font-size="12.5" fill="#374151">2. Re-compile the IR against what is there now</text>
+  <text x="640" y="646" font-size="12.5" fill="#374151">3. Regenerate the spec and run it again</text>
+  <text x="640" y="668" font-size="12.5" fill="#9c2a2a">Accepted only if it passes AND is not truncated.</text>
+  <text x="640" y="686" font-size="12.5" fill="#374151">Artifacts land in <tspan font-family="Consolas, monospace">healed/</tspan>.</text>
+
+  <rect x="40" y="640" width="560" height="56" rx="8" fill="#fff4f4" stroke="#e0b4b4"/>
+  <text x="58" y="662" font-size="13.5" font-weight="700" fill="#9c2a2a">Reading a healed/ folder correctly</text>
+  <text x="58" y="683" font-size="12.5" fill="#374151">Has <tspan font-family="Consolas, monospace">ir.json</tspan> → the heal worked.  No <tspan font-family="Consolas, monospace">ir.json</tspan> → it was tried and failed.</text>
+</svg>

@@ -1,0 +1,301 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+<head>
+<meta charset="utf-8">
+<title>Volume 4 — The Frontend</title>
+<style>
+@page { size: A4; margin: 2cm 1.8cm 2cm 1.8cm; }
+body { font-family: "Segoe UI", Calibri, Arial, sans-serif; font-size: 11pt; color: #1a1a1a; line-height: 1.45; }
+h1 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 26pt; color: #0b3a78; margin: 0 0 4pt 0; }
+h2 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 17pt; color: #0b63ce; margin: 22pt 0 7pt 0; border-bottom: 1px solid #c9d9ee; padding-bottom: 3pt; }
+h3 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 13pt; color: #14213d; margin: 15pt 0 5pt 0; }
+h4 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 11.5pt; color: #0b3a78; margin: 12pt 0 4pt 0; }
+p { margin: 0 0 8pt 0; }
+ul, ol { margin: 0 0 10pt 0; padding-left: 20pt; }
+li { margin: 0 0 4pt 0; }
+table { border-collapse: collapse; width: 100%; margin: 8pt 0 14pt 0; }
+th { background: #e8f1fc; border: 1px solid #9dbfe8; padding: 4pt 6pt; text-align: left; font-size: 9pt; color: #0b3a78; }
+td { border: 1px solid #c9d9ee; padding: 4pt 6pt; font-size: 9pt; vertical-align: top; }
+pre { font-family: Consolas, "Courier New", monospace; font-size: 9pt; background: #f5f7fa; border: 1px solid #d6dee8; padding: 7pt 9pt; margin: 6pt 0 12pt 0; white-space: pre; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt; color: #9c2a2a; }
+.sub { font-size: 12pt; color: #5a6b80; margin: 0 0 3pt 0; }
+.meta { font-size: 9pt; color: #6b7280; margin: 0 0 16pt 0; }
+.caption { font-size: 8.5pt; color: #5a6b80; margin: 2pt 0 14pt 0; }
+.note { background: #f7f9fc; border: 1px solid #c9d9ee; border-left: 4px solid #0b63ce; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.warn { background: #fff8e8; border: 1px solid #d98b1f; border-left: 4px solid #d98b1f; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.danger { background: #fff4f4; border: 1px solid #c0392b; border-left: 4px solid #c0392b; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.file { background: #eef3f9; border: 1px solid #9dbfe8; padding: 4pt 8pt; margin: 14pt 0 6pt 0; font-family: Consolas, monospace; font-size: 10.5pt; color: #0b3a78; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>Volume 4 — The Frontend</h1>
+<p class="sub">Five files, no framework, no build step</p>
+<p class="meta">Describes commit <code>57e6261</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026 &nbsp;·&nbsp; Volume 4 of 5</p>
+
+<div class="note">
+<b>Scope of this volume.</b> <code>public/app.js</code> is a single 235 KB classic script — <b>5,105 lines and about 124 top-level functions</b>. Cataloguing all 124 would be unreadable and would go stale with the next commit.
+<br><br>
+So this volume documents it <b>by functional area</b>, following the file's own <code>// ---</code> section banners, naming the important functions in each. Then it covers the two things that will actually break if you get them wrong: the CSS class contracts and the <code>showView()</code> rule.
+</div>
+
+<p>[[TOC]]</p>
+
+<h2>1. The shape of it</h2>
+
+<table>
+<tr><th style="width:22%">File</th><th style="width:12%">Size</th><th>What it is</th></tr>
+<tr><td><code>index.html</code></td><td>17.8 KB<br>350 lines</td><td>The static shell. Nine view sections, the modals, the sidebar, the top bar.</td></tr>
+<tr><td><code>app.js</code></td><td>235 KB<br>5,105 lines</td><td>The entire application. Session, routing, rendering, the gate, the step editor.</td></tr>
+<tr><td><code>style.css</code></td><td>80 KB</td><td>The visual system. A single light theme.</td></tr>
+<tr><td><code>icons.js</code></td><td>4.8 KB</td><td>Inline SVG icons on a 24×24 stroke grid, drawn with <code>currentColor</code>.</td></tr>
+<tr><td><code>preview.js</code></td><td>9.4 KB</td><td>A development-only fixture harness. Inert unless the page is loaded with <code>?preview=states</code>.</td></tr>
+</table>
+
+<div class="warn">
+<b>No bundler, no modules, no build step.</b> <code>index.html</code> loads three classic scripts in order and Express serves them raw. That single fact explains several things that otherwise look like bad decisions — most importantly why two functions are duplicated between the server and the browser (§7). A classic script cannot <code>import</code> anything.
+</div>
+
+<h3>The nine screens</h3>
+
+<p>Every screen is a <code>&lt;section class="view" data-view="…"&gt;</code>. Exactly one carries <code>.view-active</code> at any moment.</p>
+
+<table>
+<tr><th style="width:16%">data-view</th><th style="width:30%">Markup</th><th>What it is</th></tr>
+<tr><td><code>login</code></td><td>static</td><td>Sign-in form.</td></tr>
+<tr><td><code>signup</code></td><td>static</td><td>Registration form.</td></tr>
+<tr><td><code>home</code></td><td>static</td><td>The composer: prompt, URL, coverage selector, template chips.</td></tr>
+<tr><td><code>run</code></td><td>static</td><td>The live run screen. By far the densest region of the HTML.</td></tr>
+<tr><td><code>suite</code></td><td>JS-rendered</td><td>A saved suite of cases.</td></tr>
+<tr><td><code>case</code></td><td>JS-rendered</td><td>Case detail and the step editor. The largest region of <code>app.js</code>.</td></tr>
+<tr><td><code>compare</code></td><td>JS-rendered</td><td>Diff two versions of a case.</td></tr>
+<tr><td><code>history</code></td><td>JS-rendered</td><td>Past runs.</td></tr>
+<tr><td><code>team</code></td><td>JS-rendered</td><td>Members and roles.</td></tr>
+</table>
+
+<div class="danger">
+<b>Correction to <code>PROJECT_OVERVIEW.md</code>.</b> That document says there are six views and that <code>suite</code>, <code>case</code> and <code>compare</code> are "reachable stubs with no content… deliberate, not an oversight."
+<br><br>
+That is out of date on both counts. There are <b>nine</b> views, and all three of those named stubs are fully built: the suite view is about 220 lines, the case view about 630 lines including the whole step editor, and compare has a working diff.
+<br><br>
+The same document also puts <code>app.js</code> at "~4400 lines" (it is 5,105) and says the UI uses Server-Sent Events (it does not — see §4). Treat its frontend section as unreliable; the phase reports under <code>docs/phases/</code> are accurate.
+</div>
+
+<h2>2. Routing</h2>
+
+<p><img src="../diagrams/07-frontend-routing.png" width="660"></p>
+<p class="caption">Figure 1 — hash routing, the single switching function, and the contracts that hold it together.</p>
+
+<p>Routing is <code>location.hash</code>. No server routes are involved — everything is one page.</p>
+
+<table>
+<tr><th style="width:36%">Hash</th><th>Action</th></tr>
+<tr><td><code>#/</code></td><td>Home. Also the fallback for anything unrecognised.</td></tr>
+<tr><td><code>#/run/:id</code></td><td>Run view, and starts the poll loop if the ID changed.</td></tr>
+<tr><td><code>#/history</code></td><td>Run history.</td></tr>
+<tr><td><code>#/team</code></td><td>Team management.</td></tr>
+<tr><td><code>#/suite/:id</code></td><td>A suite and its cases.</td></tr>
+<tr><td><code>#/projects/:projectId/cases/:caseId</code></td><td>The canonical case route.</td></tr>
+<tr><td><code>#/case/:id</code></td><td><b>Legacy.</b> Looks up the case's project, then rewrites the URL in place so old bookmarks keep working.</td></tr>
+<tr><td><code>#/compare/:id?from=&amp;to=</code></td><td>Version diff.</td></tr>
+</table>
+
+<h3>Two guards live in the router, not on individual links</h3>
+
+<ul>
+<li><b>The auth gate.</b> If authentication is required and there is no token, the router sends you to login — and it does so <i>through</i> <code>showView()</code>, never by toggling classes directly.</li>
+<li><b>The unsaved-edit confirm.</b> If the case editor is dirty, navigation prompts. A <code>restoringHash</code> flag makes a declined navigation restore the previous hash without poisoning the next one. A separate <code>beforeunload</code> handler covers reload and tab-close, which the in-app guard cannot see.</li>
+</ul>
+
+<h3>The <code>showView()</code> rule</h3>
+
+<p>This is a hard rule in the project, and the comment in the source is the authority. Paraphrasing it:</p>
+
+<div class="danger">
+<b><code>showView()</code> is the only thing that switches screens. Never toggle <code>.hidden</code> yourself to change views.</b>
+<br><br>
+The reason is recorded history, not taste: the pre-router code hid panels from three separate places and had <i>already</i> leaked because of it — one of those places forgot to hide the case-selection gate panel, so switching scenes left it open on top of an unrelated screen. With nine screens that failure mode multiplies.
+<br><br>
+Its partner is <code>resetRunUI()</code> — the one and only place run-scoped panels are cleared. Registering a new panel is therefore a one-line change in one function, rather than three that drift apart.
+</div>
+
+<p>Note the nuance: <code>.hidden</code> is still the correct mechanism for things that are <i>not</i> views — the scrim, the toast, the screenshot grid, the credential modal. The rule is about switching <i>screens</i>.</p>
+
+<h2>3. How the browser talks to the server</h2>
+
+<p>There is no <code>api()</code> wrapper around everything. The real mechanism is a <code>window.fetch</code> monkey-patch installed at start-up:</p>
+
+<pre>const rawFetch = window.fetch.bind(window);
+window.fetch = function (input, init) { /* inject Authorization on same-origin requests */ };</pre>
+
+<p>One wrapper instead of about twenty call sites. Two details matter:</p>
+
+<ul>
+<li><b>The token is attached only to same-origin URLs.</b> Relative paths are same-origin by definition; absolute ones are checked against <code>location.origin</code>, so a token can never leak to a third-party host.</li>
+<li><b>A session cookie is also written</b>, because <code>&lt;img src&gt;</code> and <code>&lt;video src&gt;</code> on the artifact route cannot carry a header. (Volume 3, §3 covers the server half of this.)</li>
+</ul>
+
+<p>On top of that sits <code>api(path, init)</code> — a thin helper that turns 204 into <code>null</code>, parses JSON, and throws the server's error message on failure. The newer library and team screens use it; the older run and gate code calls <code>fetch</code> directly.</p>
+
+<div class="note">
+<b>Role restrictions are expressed as negative classes</b> — <code>role-no-edit</code> and <code>role-no-admin</code> on <code>&lt;body&gt;</code>. So the default state (no class) is exactly the pre-authentication behaviour, which means no flicker on load while identity is still being fetched.
+</div>
+
+<h2>4. Watching a run</h2>
+
+<p><code>connectToRun(runId)</code> is the function that drives the live run screen.</p>
+
+<pre>let pollGeneration = 0;
+async function connectToRun(runId) {
+  const generation = ++pollGeneration;
+  while (generation === pollGeneration) {
+    const res = await fetch(`/api/runs/${runId}/state`);
+    // … slice off events already seen, feed each to applyEvent() …
+    if (done) return;
+    await new Promise((r) =&gt; setTimeout(r, 1000));
+  }
+}</pre>
+
+<div class="danger">
+<b>This is a plain poll loop. It is not Server-Sent Events.</b>
+<br><br>
+The string <code>EventSource</code> appears <b>nowhere</b> in <code>public/</code> as code — the only occurrence is a comment explaining why the opposite pattern was chosen. An SSE route exists on the server and no browser code has ever called it.
+<br><br>
+The reason is recorded in that comment: a Cloudflare Quick Tunnel buffers <code>text/event-stream</code> responses and only flushes them when the connection closes, which a live stream never does. Behind a tunnel, SSE simply appears to hang.
+</div>
+
+<p>Two design details in that loop:</p>
+
+<ul>
+<li><b>Cancellation is by generation counter.</b> Incrementing <code>pollGeneration</code> orphans the old loop, so an abandoned run can never write to the DOM of the run you are now looking at.</li>
+<li><b>Five consecutive failures paint a reconnecting banner</b> rather than dying silently.</li>
+</ul>
+
+<p>There is a second, independent poller — <code>pollCaseJob</code> — for re-ground jobs, for the same tunnel reason.</p>
+
+<p>The single reducer is <code>applyEvent(event, runId)</code>: it takes one orchestrator event and updates the DOM, returning <code>true</code> when the run is terminal.</p>
+
+<h2>5. The functional areas of app.js</h2>
+
+<p>In file order, following the script's own section banners.</p>
+
+<table>
+<tr><th style="width:26%">Area</th><th style="width:12%">Lines</th><th>Key functions</th></tr>
+<tr><td><b>Constants</b></td><td>1–61</td><td><code>PHASES</code> (four cards: understand, analyze, build&amp;run, results), <code>STAGE_TO_PHASE</code>, <code>TEMPLATES</code>, <code>STATUS_LABEL</code></td></tr>
+<tr><td><b>Session &amp; auth</b></td><td>62–375</td><td><code>writeSessionCookie</code>, <code>setSession</code>, <code>applyRoleRestrictions</code>, <code>refreshIdentity</code>, <code>signOut</code>, <code>initAuth</code>, <code>roleAtLeast</code>, and the fetch patch</td></tr>
+<tr><td><b>Phase cards</b></td><td>467–636</td><td><code>renderPhases</code>, <code>computePhaseStatus</code>, <code>applyPhaseUI</code>, <code>setPhaseFromStage</code></td></tr>
+<tr><td><b>Suite progress</b></td><td>637–700</td><td><code>renderSuiteProgress</code>, <code>renderSuiteSummaryHeader</code>, <code>renderScreenshotGrid</code></td></tr>
+<tr><td><b>Case cards</b></td><td>701–1008</td><td><code>renderCaseCard</code>, <code>toggleCaseCard</code>, <code>loadCaseDetails</code>, <code>renderSuiteResults</code>, <code>openSaveCasePanel</code></td></tr>
+<tr><td><b>Verdict &amp; diagnosis</b></td><td>1009–1210</td><td><code>verdictFor</code>, <code>paintVerdict</code>, <code>formatIrStep</code>, <code>buildStepNarrative</code>, <code>renderCaseDiagnosisBlock</code></td></tr>
+<tr><td><b>Screenshot modal</b></td><td>1211–1253</td><td><code>openScreenshotModal</code>, <code>closeScreenshotModal</code></td></tr>
+<tr><td><b>History sidebar</b></td><td>1382–1495</td><td><code>renderHistory</code>, <code>loadHistory</code>, <code>canManageProjects</code></td></tr>
+<tr><td><b>Credential prompt</b></td><td>1500–1565</td><td><code>showCredentialPrompt</code>, <code>submitCredentials</code></td></tr>
+<tr><td><b>The gate</b></td><td>1566–2341</td><td><b>~25 functions — the largest single area.</b> Drafts in localStorage, the case list, page elements, HTML builders, submit</td></tr>
+<tr><td><b>Events &amp; polling</b></td><td>2342–2563</td><td><code>applyEvent</code>, <code>connectToRun</code></td></tr>
+<tr><td><b>Shell &amp; routing</b></td><td>2638–2707<br>4109–4269</td><td><code>showView</code>, <code>resetRunUI</code>, <code>applyRoute</code>, <code>navigate</code>, <code>setCrumbs</code>, <code>toast</code></td></tr>
+<tr><td><b>Library screens</b></td><td>2708–4120</td><td><code>renderSuiteView</code>, <code>renderCaseView</code>, <code>renderCompareView</code>, <code>diffSteps</code></td></tr>
+<tr><td><b>Step editor</b></td><td>3002–4031</td><td><b>~17 functions.</b> <code>caseEditorDirty</code>, <code>scheduleCaseEstimate</code>, <code>saveCaseSteps</code>, <code>pollCaseJob</code>, <code>cancelCaseJob</code>, <code>doTranslateSteps</code></td></tr>
+<tr><td><b>Projects tree</b></td><td>4348–4748</td><td><code>loadProjects</code>, <code>groupRunsByUrl</code>, <code>renderProjectsTree</code>, <code>normalizeUrlKey</code></td></tr>
+<tr><td><b>History &amp; team</b></td><td>4749–5105</td><td><code>renderHistoryView</code>, <code>renderTeamView</code>, <code>teamCall</code></td></tr>
+</table>
+
+<h3>The gate area, in brief</h3>
+
+<p>Drafts are held in <code>localStorage</code> under <code>testbench.gate.&lt;runId&gt;.&lt;attempt&gt;</code>, so a refresh mid-review does not lose your edits. Everything else is list state, HTML builders, and one submit function that posts the decision.</p>
+
+<h3>The step editor, in brief</h3>
+
+<p>The shape of the interaction is worth understanding because it maps directly onto the cost model from Volume 2:</p>
+
+<ol>
+<li>You edit steps as plain-English lines.</li>
+<li>A debounced <b>live estimate</b> tells you what re-grounding will cost — this is free, no browser, no model.</li>
+<li>You save. If nothing needs re-grounding, it saves instantly.</li>
+<li>Otherwise a background <b>job</b> starts, which you follow with a progress banner and can cancel.</li>
+</ol>
+
+<p><code>doTranslateSteps</code> is the "Write it for me" feature behind <code>NL_STEPS_ENABLED</code>. It proposes parser-legal sentences; it never writes an IR.</p>
+
+<h2>6. CSS class names are a contract</h2>
+
+<p><code>style.css</code> declares this in its own header, and it is worth quoting because it is easy to dismiss:</p>
+
+<div class="danger">
+<i>"The controller in app.js drives state through class names, so every one of these is a contract, not a styling choice. Renaming any of them silently breaks a feature."</i>
+<br><br>
+The protected set:
+<pre>.hidden                     .view-active
+li.started / .completed / .failed
+.phase-badge.running        .badge-*
+.case-card.open             .history-item.active
+.suite-progress-item.&lt;status&gt;
+.tree-*                     .role-no-edit / .role-no-admin</pre>
+<b>Nothing will throw if you rename one.</b> A feature will simply stop working, in a way that looks like a logic bug in JavaScript that has not changed.
+</div>
+
+<p>The practical rule: <b>reuse an existing class rather than minting a new one.</b></p>
+
+<p>One note on the visual system: <code>style.css</code> is a single light theme (a blue, white and black palette, with every other surface being that blue or black at low opacity). A previous dark/light token pair and its toggle were deliberately removed rather than half-maintained.</p>
+
+<h2>7. Two functions duplicated on purpose</h2>
+
+<p>Both exist because <code>app.js</code> is a classic script and physically cannot import from <code>src/</code>.</p>
+
+<table>
+<tr><th style="width:24%">Function</th><th style="width:34%">Also lives in</th><th>Held equal by</th></tr>
+<tr><td><code>formatIrStep</code></td><td><code>src/stages/stepText.ts</code></td><td><code>tests/stepText.test.ts</code> — it reads <code>app.js</code> as text, extracts this function, evaluates it, and asserts identical output.</td></tr>
+<tr><td><code>normalizeUrlKey</code></td><td><code>src/server/projects.ts</code> (as <code>normaliseUrlKey</code>)</td><td><b>Nothing.</b> Convention only.</td></tr>
+</table>
+
+<div class="warn">
+<b>The second one is the risk.</b> If the two URL-key implementations drift, new runs get filed under a near-duplicate project and the sidebar quietly grows two entries for the same site. There is no test to catch it. If you touch either, touch both.
+</div>
+
+<h2>8. The only automated checks on this code</h2>
+
+<p><code>tsconfig.json</code> has <code>include: ["src"]</code>. So <code>npm run typecheck</code> covers neither <code>tests/</code> nor <code>public/</code>. The entire front end has exactly two automated checks, both of which read it as text from Node:</p>
+
+<h4><code>tests/appJsDefined.test.ts</code> — "app.js must not call a function it does not have"</h4>
+
+<p>This test exists because of a real shipped bug, and the story is instructive.</p>
+
+<div class="note">
+Adding the gate's case editor replaced a ~200-line region wholesale and silently dropped <code>postCaseSelectionDecision</code> — <b>the only function through which a gate decision leaves the browser</b> — while both call sites survived, pointing at nothing.
+<br><br>
+The symptom looked like "test cases aren't generating". In fact the gate simply waited out its full ten-minute timeout and then ran nothing.
+<br><br>
+Nothing caught it: <code>node --check</code> validates syntax, not references; <code>tsc</code> never looks at <code>app.js</code>; and the unit suite does not execute click handlers.
+</div>
+
+<p>The test reads <code>app.js</code> as text and matches every <code>await someFunction(</code> against the set of declared names. It also asserts that all 23 gate-panel helpers still exist by name.</p>
+
+<h4><code>tests/stepText.test.ts</code> — no drift with the server</h4>
+
+<p>Reads <code>app.js</code>, extracts its private copy of <code>formatIrStep</code>, evaluates it, and asserts it renders identically to the server's. This is the only thing standing between the two copies.</p>
+
+<h2>9. Working on the frontend</h2>
+
+<div class="danger">
+<b>Hard-reload after every change to <code>public/</code>.</b> Changing the URL hash is a same-document navigation and keeps the old JavaScript alive. This has cost two documented false negatives, where a fix looked missing because the browser was still running the previous <code>app.js</code>.
+<br><br>
+If a plain reload is not enough, run <code>await fetch('/app.js', {cache:'reload'})</code> in the console first, then reload.
+</div>
+
+<h3>The preview harness</h3>
+
+<p>Load the page with <code>?preview=states</code> and <code>preview.js</code> wakes up. It feeds <code>applyEvent()</code> a fixture sequence copied from a real <code>events.ndjson</code>, so you can eyeball every UI state — including <code>blocked</code>, <code>unconfirmed</code>, and the "lost contact with the server" banner — without spending a single model call or launching a browser.</p>
+
+<p>This is the fastest way to work on run-screen rendering, and it is underused.</p>
+
+<h3>A checklist before you commit a frontend change</h3>
+
+<ol>
+<li>Did you switch views through <code>showView()</code>?</li>
+<li>Did you reuse an existing class rather than minting one?</li>
+<li>If you added a panel, did you register it in <code>resetRunUI()</code>?</li>
+<li>If you touched <code>formatIrStep</code> or <code>normalizeUrlKey</code>, did you change both copies?</li>
+<li>Did you run <code>node --check public/app.js</code> and <code>npx vitest run</code>?</li>
+<li>Did you hard-reload before deciding it did not work?</li>
+</ol>
+
+</body>
+</html>
