@@ -665,6 +665,7 @@ function hideSuiteProgress() {
 function renderSuiteSummaryHeader(suite) {
   if (!suite) return "";
   return `
+    ${currentRunPrompt ? `<p class="case-narrative-line"><b>You asked:</b> ${escapeHtml(currentRunPrompt)}</p>` : ""}
     <div class="suite-summary-stats">
       <span class="suite-stat">${suite.total} checks</span>
       <span class="suite-stat suite-stat-passed">${icon("check", { size: 13 })} ${suite.passed} passed</span>
@@ -995,7 +996,18 @@ async function openSaveCasePanel(card) {
   });
 }
 
+/**
+ * The natural-language request that produced the run currently on screen.
+ *
+ * NOT fetched: it already arrives on the run's own event stream. The `input` event carries
+ * `{ prompt, url, urls, coverage }` — the same field `summariseRun` reads to build a RunSummary —
+ * and `applyEvent` sees every event, replayed ones included, so this survives a page reload with
+ * no request and no route change.
+ */
+let currentRunPrompt = "";
+
 function hideSuiteResults() {
+  currentRunPrompt = "";
   currentSuite = null;
   suiteResultsEl.classList.add("hidden");
   suiteResultsEl.removeAttribute("data-run-id");
@@ -1926,8 +1938,13 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
   }
 
   caseRoundLabelEl.textContent = `Round ${attempt} — review the test cases`;
-  casePoolCounterEl.textContent =
-    `${acceptedSoFarCount} of ${CASE_POOL_CAP} case${acceptedSoFarCount === 1 ? "" : "s"} accepted so far`;
+  // "2 of 5 cases accepted so far" read as progress toward a target of five, so people pressed
+  // refine to "finish". Five is MAX_ACCUMULATED_CASES — a ceiling on what the pool will hold,
+  // not a number to reach. The wording now says what you can do rather than how far along you are.
+  casePoolCounterEl.textContent = acceptedSoFarCount === 0
+    ? `Tick the cases you want to run. You can run as few as one — up to ${CASE_POOL_CAP} in total.`
+    : `${acceptedSoFarCount} case${acceptedSoFarCount === 1 ? "" : "s"} accepted — enough to run now. ` +
+      `${CASE_POOL_CAP} is the most this run will hold, not a target.`;
 
   repaintCaseList();
   // Fetched after the first paint, not before it: the round is reviewable immediately, and the
@@ -1936,9 +1953,8 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
     if (gatePageElements && !caseSelectionPanelEl.classList.contains("hidden")) repaintCaseList();
   });
 
-  caseRefineInputWrapEl.classList.add("hidden");
+  setRefineOpen(false);
   caseNewPromptInputEl.value = "";
-  caseNotSatisfiedBtnEl.textContent = "Not satisfied — refine";
   caseRegenAttemptsLeftEl.textContent =
     `Refine attempts left: ${Math.max(0, MAX_CASE_REGEN_ATTEMPTS_LOCAL - attempt)} of ${MAX_CASE_REGEN_ATTEMPTS_LOCAL}`;
   caseNoticeEl.classList.add("hidden");
@@ -2002,6 +2018,27 @@ function updateDoneButtonState() {
   caseDoneBtnEl.textContent = total === 0
     ? "Run selected tests"
     : `Run ${total} test${total === 1 ? "" : "s"}`;
+
+  // A disabled button with no reason left "Not satisfied — refine" as the only control that
+  // responded, which is how unintended extra rounds were being generated. Say why, next to it,
+  // and say that refining is not the way out.
+  refineHintEl().textContent = total === 0
+    ? "Nothing is ticked, so there is nothing to run. Tick at least one case above — you do not need to refine."
+    : "";
+}
+
+/** The inline reason under the final actions. Created once, in code, because this task may not
+ *  add markup to index.html; `.case-regen-note` is the existing style for a line in this slot. */
+function refineHintEl() {
+  let el = document.getElementById("case-done-hint");
+  if (!el) {
+    el = document.createElement("p");
+    el.id = "case-done-hint";
+    el.className = "case-regen-note case-done-hint";
+    el.setAttribute("role", "status");
+    caseDoneBtnEl.closest(".case-selection-final-actions").insertAdjacentElement("beforebegin", el);
+  }
+  return el;
 }
 
 // --- Turning drafts into the request ----------------------------------------
@@ -2123,26 +2160,79 @@ caseDoneBtnEl.addEventListener("click", async () => {
   if (ok) hideCaseSelectionPanel();
 });
 
-caseNotSatisfiedBtnEl.addEventListener("click", async () => {
-  if (!caseRunId) return;
-  if (caseRefineInputWrapEl.classList.contains("hidden")) {
-    caseRefineInputWrapEl.classList.remove("hidden");
-    caseNotSatisfiedBtnEl.textContent = "Confirm refine";
+/**
+ * Open or close the refine box. Nothing here submits.
+ *
+ * The trigger used to be a two-click submit: the first click revealed the box, the second sent
+ * the round. Clicking it twice — to look, then to dismiss — generated a refine nobody asked for.
+ * The trigger is now a pure disclosure, and the only thing that submits is the confirm control
+ * inside the box.
+ *
+ * `.hidden` ships on this element from index.html, which this change may not edit. Rather than
+ * add another `.hidden` toggle outside showView(), the class is cleared once here and the
+ * open/closed state is carried by `.case-refine-collapsed`, which belongs to this feature.
+ */
+function setRefineOpen(open) {
+  caseRefineInputWrapEl.classList.remove("hidden");
+  caseRefineInputWrapEl.classList.toggle("case-refine-collapsed", !open);
+  caseNotSatisfiedBtnEl.textContent = open ? "Cancel refine" : "Not satisfied — refine";
+  caseNotSatisfiedBtnEl.setAttribute("aria-expanded", String(open));
+  if (open) {
+    ensureRefineConfirmBtn();
     caseNewPromptInputEl.focus();
-    return;
   }
+}
+
+/** The confirm control, inside the box so the trigger can never submit. Created once, in code,
+ *  because this change may not add markup to index.html. */
+function ensureRefineConfirmBtn() {
+  let btn = document.getElementById("case-refine-confirm-btn");
+  if (btn) return btn;
+  btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "case-refine-confirm-btn";
+  btn.className = "case-refine-confirm";
+  btn.textContent = "Generate another round";
+  caseRefineInputWrapEl.appendChild(btn);
+  btn.addEventListener("click", submitRefine);
+  return btn;
+}
+
+/** Send the refine. The only path that posts `not_satisfied`. */
+async function submitRefine() {
+  if (!caseRunId) return;
   const newPrompt = caseNewPromptInputEl.value.trim();
   if (!newPrompt) {
     showError("Describe what should change before refining.");
+    caseNewPromptInputEl.focus();
     return;
   }
   const selectedIndexes = getCheckedCaseIndexes();
   const problem = gateValidationError(selectedIndexes);
   if (problem) return showError(problem);
+
+  // Anything not ticked is recorded `rejected` by the history ledger, and getRejectedTitles()
+  // then excludes it from every later round of this run. That is not obvious from the screen and
+  // it cannot be undone, so it is stated before the round is spent rather than discovered after.
+  const unticked = gateCases().filter((c) => !selectedIndexes.includes(c.index)).length;
+  const warning = unticked === 0
+    ? "Generate another round of cases?"
+    : `Generate another round?
+
+${unticked} case${unticked === 1 ? "" : "s"} you have not ` +
+      `ticked will be recorded as rejected, and cannot be offered again in this run.`;
+  if (!confirm(warning)) return;
+
   const ok = await postCaseSelectionDecision(caseRunId, {
     action: "not_satisfied", selectedIndexes, newPrompt, ...gateEditPayload(),
   });
   if (ok) hideCaseSelectionPanel();
+}
+
+// The trigger only discloses — open, or close again with nothing sent.
+caseNotSatisfiedBtnEl.addEventListener("click", () => {
+  if (!caseRunId) return;
+  setRefineOpen(caseRefineInputWrapEl.classList.contains("case-refine-collapsed"));
 });
 
 caseSelectionListEl.addEventListener("change", (e) => {
@@ -2296,7 +2386,8 @@ caseSelectionListEl.addEventListener("click", async (e) => {
     const entry = gateCases().find((x) => x.index === i);
     if (!entry) return;
     btn.disabled = true;
-    btn.textContent = "Asking…";
+    btn.classList.add("ai-busy");
+    btn.innerHTML = `${SPIN_ICON} Asking…`;
     try {
       const res = await fetch(`/api/runs/${caseRunId}/case-selection/rewrite`, {
         method: "POST",
@@ -2317,6 +2408,7 @@ caseSelectionListEl.addEventListener("click", async (e) => {
       showError("Could not propose a change.");
     } finally {
       btn.disabled = false;
+      btn.classList.remove("ai-busy");
       btn.textContent = "Ask for a change";
     }
   }
@@ -2341,6 +2433,13 @@ if (caseWriteOwnBtnEl) {
 
 function applyEvent(event, runId) {
   setPhaseFromStage(event.stage, event.status, event.data);
+
+  // The first event of every run. Recorded, not rendered here: the results header is drawn later,
+  // from renderSuiteResults, and by then this has been seen — on a live run and on a reload alike,
+  // because the poller replays the whole stream through this function.
+  if (event.stage === "input" && typeof event.data?.prompt === "string") {
+    currentRunPrompt = event.data.prompt;
+  }
 
   if (event.stage === "credentials") {
     if (event.status === "started") showCredentialPrompt(runId, event.data);
@@ -3018,6 +3117,11 @@ function caseEditorDirty() {
   return !!caseEditor && JSON.stringify(caseLinesPayload()) !== caseEditor.original;
 }
 
+/** The inline spinner shown inside a button waiting on an AI proposal. One definition so the
+ *  three AI entry points cannot drift apart. Purely visual — the button's own label change is
+ *  what a screen reader announces. */
+const SPIN_ICON = icon("loader", { size: 13, cls: "ai-spin" });
+
 /** A re-ground is in flight — steps are read-only and Save is replaced by Cancel. */
 const caseEditorBusy = () => !!caseEditor?.job;
 
@@ -3159,7 +3263,11 @@ async function doTranslateSteps(btn) {
   if (!caseEditor) return;
   const editor = caseEditor;
   btn.disabled = true;
-  btn.textContent = "Writing…";
+  // Same direct-DOM approach, and here it is required rather than merely preferred: the
+  // function that renders this button documents that it must NOT repaint, because a repaint
+  // mid-typing steals the caret out of the line being fixed.
+  btn.classList.add("ai-busy");
+  btn.innerHTML = `${SPIN_ICON} Writing…`;
   try {
     const proposal = await api(`/api/cases/${encodeURIComponent(editor.caseId)}/steps/translate`, {
       method: "POST",
@@ -3188,7 +3296,14 @@ async function saveCaseSteps(c, repaint) {
   editor.conflict = null;
 
   const btn = document.getElementById("cdSave");
-  if (btn) btn.disabled = true;
+  if (btn) {
+    btn.disabled = true;
+    // Covers the POST window only. Once the server answers with a job, the `.cd-job` banner
+    // and the per-row verifying states take over. Every exit from this function ends in a
+    // repaint that rebuilds this button, so the spinner cannot get stuck.
+    btn.classList.add("ai-busy");
+    btn.innerHTML = `${SPIN_ICON} Saving…`;
+  }
 
   let res;
   try {
@@ -3360,7 +3475,7 @@ function paintCaseJobBanner() {
   const job = caseEditor.job;
   el.innerHTML = `
     <div class="cd-job">
-      <span class="cd-job-text">${job.cancelling
+      <span class="cd-job-text ai-busy">${SPIN_ICON}${job.cancelling
         ? "Cancelling… the page being checked has to finish first."
         : `Verifying ${Math.min(job.done + 1, job.total)} of ${job.total}…`}</span>
       <button type="button" class="dl-btn-inline" id="cdCancel"${job.cancelling ? " disabled" : ""}>Cancel</button>
@@ -3702,7 +3817,12 @@ async function renderCaseView(caseId, routeProjectId) {
     const instruction = (caseEditor.askText || "").trim();
     if (!instruction) { caseEditor.errorMsg = "Say what you would like changed."; return paintCaseScreen(); }
     btn.disabled = true;
-    btn.textContent = "Asking…";
+    // Presentation only. Deliberately still a direct DOM write rather than a state flag +
+    // repaint: paintCaseScreen() rebuilds this button from scratch when the request settles,
+    // so the busy look cannot outlive the request, and a pre-request repaint would be a
+    // behaviour change nobody asked for.
+    btn.classList.add("ai-busy");
+    btn.innerHTML = `${SPIN_ICON} Asking…`;
     try {
       caseEditor.proposal = await api(`/api/cases/${encodeURIComponent(caseId)}/rewrite`, {
         method: "POST", headers: { "Content-Type": "application/json" },

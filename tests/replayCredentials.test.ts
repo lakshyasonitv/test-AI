@@ -37,7 +37,7 @@ afterEach(() => {
   if (SAVED_PASS === undefined) delete process.env.TEST_PASSWORD; else process.env.TEST_PASSWORD = SAVED_PASS;
 });
 
-describe("resolveCredentialsVia — env first, prompt second", () => {
+describe("resolveCredentialsVia — the default order (env-first), used by the editor walk", () => {
   it("uses the environment and never prompts when the pair is already set", async () => {
     process.env.TEST_USERNAME = "ops@example.com";
     process.env.TEST_PASSWORD = "s3cret";
@@ -150,5 +150,113 @@ describe("the two callers keep their distinct event shapes", () => {
   it("the replay actually passes creds through to runReplay", () => {
     // The whole bug was that it did not.
     expect(SRC).toMatch(/runReplay\(\{ runId, cases, label: runLabel, creds \}/);
+  });
+});
+
+/**
+ * Resolution ORDER, which is per-caller and deliberately not a shared default.
+ *
+ * A replay is started by a person, on a server whose `TEST_USERNAME` / `TEST_PASSWORD` may belong
+ * to someone else entirely. What that person types has to win. The case editor's re-ground walk
+ * takes the opposite order for the opposite reason: it runs inside a save the person already
+ * asked for, so an operator who configured the environment should not be interrupted by it.
+ */
+describe("resolveCredentialsVia \u2014 prompt-first (replay)", () => {
+  it("uses what the user typed EVEN WHEN the environment is set", async () => {
+    process.env.TEST_USERNAME = "server@example.com";
+    process.env.TEST_PASSWORD = "server-secret";
+    askCredentialsMock.mockResolvedValueOnce({ username: "me@example.com", password: "mine", secret: true });
+    const emit = vi.fn();
+
+    const creds = await resolveCredentialsVia("run-p1", "https://x.test", ["username", "password"] as any, emit, "prompt-first");
+
+    // The whole point of the order.
+    expect(creds).toMatchObject({ username: "me@example.com", password: "mine" });
+    expect(creds!.username).not.toBe("server@example.com");
+    expect(askCredentialsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("prompts even when the environment could have answered", async () => {
+    process.env.TEST_USERNAME = "server@example.com";
+    process.env.TEST_PASSWORD = "server-secret";
+    askCredentialsMock.mockResolvedValueOnce(null);
+    const emit = vi.fn();
+
+    await resolveCredentialsVia("run-p2", "https://x.test", ["username"] as any, emit, "prompt-first");
+
+    // env-first would have returned without ever emitting. This is the cost of the order.
+    expect(emit.mock.calls.map((c) => c[0])).toEqual(["started", "completed"]);
+  });
+
+  it("falls back to the environment when the user skips or times out", async () => {
+    process.env.TEST_USERNAME = "server@example.com";
+    process.env.TEST_PASSWORD = "server-secret";
+    askCredentialsMock.mockResolvedValueOnce(null);          // skipped / timed out
+    const emit = vi.fn();
+
+    const creds = await resolveCredentialsVia("run-p3", "https://x.test", ["username"] as any, emit, "prompt-first");
+
+    expect(creds).toMatchObject({ username: "server@example.com" });
+    // The event reports what the PERSON did, not what the run ended up with.
+    expect(emit.mock.calls[1][1]).toEqual({ supplied: false });
+  });
+
+  it("returns undefined when the user skips and the environment is empty", async () => {
+    askCredentialsMock.mockResolvedValueOnce(null);
+    const creds = await resolveCredentialsVia("run-p4", "https://x.test", ["username"] as any, vi.fn(), "prompt-first");
+    expect(creds).toBeUndefined();
+  });
+
+  it("still does not prompt at all when no step needs a credential", () => {
+    // The route decides this before calling; pinned here because it is the back-compat guarantee.
+    expect(credentialKindsNeeded([{ action: "click" }] as any)).toEqual([]);
+  });
+});
+
+describe("resolveCredentialsVia \u2014 env-first (the editor's walk) is unchanged", () => {
+  it("never prompts when the environment answers", async () => {
+    process.env.TEST_USERNAME = "ops@example.com";
+    process.env.TEST_PASSWORD = "s3cret";
+    const emit = vi.fn();
+
+    const creds = await resolveCredentialsVia("run-e1", "https://x.test", ["username"] as any, emit, "env-first");
+
+    expect(creds).toMatchObject({ username: "ops@example.com" });
+    expect(askCredentialsMock).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("defaults to env-first when no order is given", async () => {
+    process.env.TEST_USERNAME = "ops@example.com";
+    process.env.TEST_PASSWORD = "s3cret";
+    const creds = await resolveCredentialsVia("run-e2", "https://x.test", ["username"] as any, vi.fn());
+    expect(creds).toMatchObject({ username: "ops@example.com" });
+    expect(askCredentialsMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The containment guarantee, asserted rather than trusted: a credential value leaves this module
+ * only as the return value. It must not appear in any event payload on EITHER order \u2014 events are
+ * written to `runs/<id>/events.ndjson`, which is on disk and served over HTTP.
+ */
+describe("a credential value never leaves through an event", () => {
+  it.each(["prompt-first", "env-first"] as const)("holds under %s", async (order) => {
+    process.env.TEST_USERNAME = "leak-canary@example.com";
+    process.env.TEST_PASSWORD = "leak-canary-password";
+    askCredentialsMock.mockResolvedValueOnce({
+      username: "typed-canary@example.com", password: "typed-canary-password", secret: true,
+    });
+    const emit = vi.fn();
+
+    await resolveCredentialsVia("run-leak", "https://x.test", ["username", "password"] as any, emit, order);
+
+    const emitted = JSON.stringify(emit.mock.calls);
+    for (const canary of [
+      "leak-canary@example.com", "leak-canary-password",
+      "typed-canary@example.com", "typed-canary-password",
+    ]) {
+      expect(emitted).not.toContain(canary);
+    }
   });
 });

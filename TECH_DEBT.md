@@ -2129,7 +2129,8 @@ the same case had just been edited, and a fresh run of the same site worked, bec
 orchestrator asks for credentials and a replay never did. Diagnosed by artifact replay: the
 replay's `events.ndjson` has no `credentials` stage at all.
 
-**Fix.** `/api/replay` now resolves credentials before running — env first, prompt second — through
+**Fix.** `/api/replay` now resolves credentials before running — prompt first, with the
+environment as the fallback when the person supplies nothing (`DECISIONS.md` D-30) — through
 the same `askCredentials` waiter a run uses, and passes them to `runReplay`'s existing parameter.
 The policy lives in one place (`src/server/resolveCredentials.ts`) shared with the case editor's
 re-ground walk, so the two cannot drift. A replay whose cases contain no `${env:...}` prompts for

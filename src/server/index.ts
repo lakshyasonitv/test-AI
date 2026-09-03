@@ -70,7 +70,7 @@ import {
   saveCaseFromRun,
   updateCase,
 } from "./library.js";
-import { runReplay } from "../stages/replay.js";
+import { runReplay, originOf } from "../stages/replay.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
 import { credentialsFromEnv, credentialKindsNeeded, type Credentials } from "../stages/credentials.js";
@@ -81,7 +81,7 @@ import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsE
 import {
   cancelJob, createJob, emitJobEvent, getJob, isCancelled, jobEvents, subscribeJob,
 } from "./regroundJobs.js";
-import { recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
+import { deleteRunRow, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
@@ -469,6 +469,10 @@ app.delete("/api/runs/:runId", requireRunRole("admin"), (req, res) => {
   if (!RUN_ID.test(runId)) return res.status(400).json({ error: "invalid runId" });
   try {
     rmSync(path.join("runs", runId), { recursive: true, force: true });
+    // Symmetry: the row goes with the files. Without this every deletion left an orphan row that
+    // showed up in the startup shadow report forever. Fire-and-forget by design — the 204 below
+    // reports the file deletion, which has already succeeded.
+    deleteRunRow(runId);
     res.status(204).end();
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? "delete failed" });
@@ -503,6 +507,17 @@ app.get("/api/health", (_req, res) => {
     // implentationplan.md Rule 2. The UI branches on this to decide whether a login view exists
     // at all; with auth off it's `false` and the frontend behaves exactly as it always has.
     authEnabled: isAuthEnabled(),
+    // ADDITIVE field — appended, nothing above reordered or replaced. Exists because the
+    // "run created, all four phases PENDING, no work starts" report is indistinguishable from
+    // a hung server without it: a queued run emits no stage events, so the UI has nothing to
+    // show and the logs say nothing. `inFlight === max` with `queued > 0` names it outright.
+    // Slots are held for the duration of the work, so a run in LLM backoff or parked on a
+    // credential/case-selection prompt is holding one legitimately.
+    concurrency: {
+      inFlight: runLimit.inFlight,
+      queued: runLimit.queued,
+      max: runLimit.capacity,
+    },
   });
 });
 
@@ -1043,6 +1058,8 @@ async function resolveWalkCredentials(
   needsCredentials: boolean,
 ): Promise<Credentials | undefined> {
   if (!needsCredentials) return undefined;
+  // ENV FIRST for the re-ground walk, unchanged: this runs inside a save the person already
+  // asked for, so an operator who configured the environment should not be interrupted by it.
   return resolveCredentialsVia(
     jobId,
     ir.meta?.baseUrl ?? "",
@@ -1051,6 +1068,7 @@ async function resolveWalkCredentials(
     // editor's wording, and adding it to the completed event would change a shape the UI reads.
     (status, data) => emitJobEvent(jobId, "credentials", status,
       status === "started" ? { ...data, caseEdit: true } : data),
+    "env-first",
   );
 }
 
@@ -1364,6 +1382,36 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
       caseIds: Array.isArray(caseIds) ? caseIds.filter((c) => typeof c === "string") : undefined,
     });
 
+    // A replay is scoped to a PROJECT, not a site, and one credential prompt covers the whole
+    // replay: it shows `cases[0]`'s baseUrl and hands what you type to every case via
+    // `credentialEnvVars`. So a project holding two sites would mean being shown site A, typing
+    // site A's password, and having it typed into site B's login form with nothing saying so.
+    // D-30 made replay prompt-first, so that credential is now usually a real one, freshly typed.
+    //
+    // Refused HERE, before makeRunId/recordRunStarted, so a rejected replay leaves no run row, no
+    // directory and no artifacts behind — the request simply does not start.
+    //
+    // Order matters for cost: a replay with no login has nothing to misdirect, so it is allowed
+    // across as many sites as it likes and never pays for the origin scan.
+    const credentialFields = credentialKindsNeeded(cases.flatMap((c) => c.ir.steps));
+    if (credentialFields.length > 0) {
+      // Origins, not raw baseUrls: two cases on the same host with different paths are the same
+      // site and must not be refused.
+      const origins = [...new Set(
+        cases.map((c) => originOf(c.ir.meta.baseUrl ?? "")).filter((o): o is string => !!o)
+      )];
+      if (origins.length > 1) {
+        return res.status(400).json({
+          error:
+            `This selection signs in, and its cases span ${origins.length} sites ` +
+            `(${origins.join(", ")}). One replay collects one set of credentials and uses it for ` +
+            `every case, so running these together would send the same login to all of them. ` +
+            `Replay each site separately.`,
+          origins,
+        });
+      }
+    }
+
     const runId = makeRunId();
     const runLabel = typeof label === "string" && label.trim()
       ? label.trim()
@@ -1407,7 +1455,7 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
     // Resolved INSIDE the scheduled work, after the 202 below: the browser needs the runId in
     // hand before it can render the prompt or post an answer to it.
     runLimit.run(async () => {
-      const fields = credentialKindsNeeded(cases.flatMap((c) => c.ir.steps));
+      const fields = credentialFields;   // computed above, with the same input
       const creds = fields.length === 0
         // No case in this replay signs in. Nothing is asked, no event is emitted, and the run is
         // byte-for-byte the one that ran before this change.
@@ -1422,7 +1470,11 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
               ? { url: data.url, fields: data.fields }
               : { provided: !!data.supplied },
             ts: Date.now(),
-          } as Parameters<typeof record>[0]));
+          } as Parameters<typeof record>[0]),
+          // PROMPT FIRST for a replay. A replay is started by a person, on a server whose
+          // TEST_USERNAME/TEST_PASSWORD may belong to someone else entirely, so what they type
+          // must win. The environment is the fallback for a skipped or timed-out prompt.
+          "prompt-first");
       return runReplay({ runId, cases, label: runLabel, creds }, onEvent);
     })
       .then((outcome) => {
