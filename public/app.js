@@ -526,7 +526,9 @@ function summarize(stage, data) {
       case "generate": return "Test script ready";
       case "execute": return data.passed ? "The test ran and everything it checked was correct" : "The test ran and something didn’t match what was expected";
       case "heal": return data.healed
-        ? "An element had moved on the page — the test found it again and carried on"
+        ? data.deterministicHeal
+          ? "An element had moved on the page — the test matched it against the crawled model (no model call) and carried on"
+          : "An element had moved on the page — the test found it again and carried on"
         : "Tried to recover from a step that broke";
       case "suite": return data.summary ? `Suite Progress: ${data.summary.passed}/${data.summary.total} tests passed` : "";
       default: return "";
@@ -743,7 +745,8 @@ function renderCaseCard(c, runId, index) {
           ${expected && expected !== whyItMatters ? `<p class="case-expected"><span>What should happen:</span> ${escapeHtml(expected)}</p>` : ""}
         </span>
         <span class="case-badge ${statusBadge}">${escapeHtml(STATUS_LABEL[c.status] ?? c.status)}</span>
-        ${c.healed && c.status === "passed" ? `<span class="case-badge case-badge-healed" title="This failed on the first attempt; the system automatically found a fix and re-ran it, and it passed.">${icon("refresh", { size: 11 })} Fixed automatically</span>` : ""}
+        ${c.healed && c.status === "passed" ? `<span class="case-badge case-badge-healed" title="This failed on the first attempt; the system automatically found a fix and re-ran it, and it passed.${c.deterministicHeal ? " This fix was found deterministically, without a model call." : ""}">${icon("refresh", { size: 11 })} Fixed automatically${c.deterministicHeal ? ` ${icon("zap", { size: 10 })}` : ""}</span>` : ""}
+        ${c.deterministicHeal ? `<span class="case-badge case-badge-deterministic" title="The fix was found by matching the element's structure in the crawled page model — no model call, essentially free.">${icon("zap", { size: 10 })} Healed deterministically</span>` : ""}
         <span class="case-expand-icon">${icon("chevron-down", { size: 14 })}</span>
       </div>
       <div class="case-card-body">
@@ -1044,7 +1047,9 @@ function verdictFor(data, stage, error) {
   }
   if (data?.passed && data?.healed) {
     return { cls: "passed", ic: "check", head: "Passed",
-             detail: "One element had moved on the page — the test found it again and carried on." };
+             detail: data?.deterministicHeal
+               ? "One element had moved on the page — the test matched it against the crawled model deterministically (no model call) and carried on."
+               : "One element had moved on the page — the test found it again and carried on." };
   }
   if (data?.passed && data?.partial) {
     return { cls: "passed", ic: "check", head: "Passed, as far as it could go",

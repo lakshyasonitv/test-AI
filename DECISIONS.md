@@ -762,3 +762,35 @@ does not sign in emits no event and behaves byte-for-byte as it did before D-30.
 URL to `/api/runs/<runId>/credentials`, and a replay's runId is a real run id that the existing
 route settles. Any future execution path that runs stored steps inherits this obligation — if it
 can reach a login, it must resolve credentials through this helper, not around it.
+
+## D-31. Deterministic structural healing comes before the LLM heal
+
+**Context.** `attemptHeal` (D-20) was the only self-heal, and it is expensive: it re-snapshots the
+page in a real browser and regenerates a fresh IR through `toIR` (an LLM call) before re-running.
+But the most common healable failure — a `selector_changed` / `element_missing` on an element that
+still exists, just under a slightly different name or role — needs none of that. The AppModel
+`groundingError` already has is the same structure heal would re-snapshot; if the element is still
+there under a renamed accessible name, the fix is a structural re-match, not a model call.
+
+**Decision.** Add a pure-code, feature-flagged pass ahead of the LLM path: `DETERMINISTIC_HEAL`
+(default off). `attemptHeal` first tries `deterministicHeal.ts`'s `healStepTarget`, which re-matches
+the failing step's role/name against the existing AppModel using the same tiered name matching as
+`ir.ts`'s `bestNameMatch` (exact → glyph-stripped → prefix/suffix → substring), then regenerates the
+spec and re-runs. Only when no structural match is found — or a deterministic re-run still fails —
+does it fall through to the existing LLM re-snapshot path.
+
+**Why this is the right order.** It follows CLAUDE.md's central rule: a deterministic guard over
+AppModel *structure* (role, name, discovered css/testId) beats a text-based heuristic. It is also
+cheap — zero LLM tokens, zero extra browser launch on the common path — so the heal becomes a
+free fast-path instead of a budget-costing last resort. The returned `HealResult.deterministic`
+flag lets the UI and `08`-style logs distinguish "healed for free" from "healed with a model call".
+
+**Rejected: skipping the re-run entirely on a deterministic match.** Confidence in a structural
+match (especially a weak substring match, tier 3) is not proof the healed spec passes. Re-running
+with the corrected locator is what makes the heal honest — a heal only "counts" once its retry
+passes, same rule as D-20.
+
+**Consequences.** The flag is off by default, so flag-off runs behave byte-for-byte as before.
+`deterministicHeal.ts` shares its name-matching shape with `ir.ts`'s `bestNameMatch` — a deliberate
+TD-07-style duplication pinned by `tests/deterministicHeal.test.ts`, since extracting a shared
+helper out of `ir.ts`'s closure is disproportionate for the size of the function.

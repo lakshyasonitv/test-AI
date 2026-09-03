@@ -976,6 +976,9 @@ figcaption { font-size: .69rem; color: var(--muted); margin-top: 6px; }
 .badge-blocked, .case-status-icon.badge-blocked { background: var(--blocked-bg); color: var(--blocked); }
 .badge-pending, .case-status-icon.badge-pending { background: var(--pending-bg); color: var(--text-2); }
 .case-badge-healed { background: var(--running-bg); color: var(--running); }
+/* Deterministic (no-LLM) auto-fix: visually distinct green tint from the healer-blue above,
+   so "I fixed myself cheaply" reads differently from "I fixed myself with a model call". */
+.case-badge-deterministic { background: var(--done-bg); color: var(--done); }
 
 .case-narrative { flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: 11px; }
 .case-narrative-line { font-size: .78rem; line-height: 1.65; color: rgba(var(--ink-rgb), .75); text-wrap: pretty; }

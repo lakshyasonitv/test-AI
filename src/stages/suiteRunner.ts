@@ -24,6 +24,8 @@ export interface PrimaryCaseResult {
   result: ExecResult;
   specCode: string;
   healed: boolean;
+  /** True when `healed` is set and the heal used the deterministic (no-LLM) path. */
+  deterministicHeal?: boolean;
 }
 
 export interface CaseRunResult {
@@ -53,6 +55,11 @@ export interface CaseRunResult {
    *  self-heal (src/stages/heal.ts) produced a passing retry — see runSuite's non-primary
    *  branch. Absent/false for every other case, including a passing case that never failed. */
   healed?: boolean;
+  /** True when `healed` is set AND the heal used the deterministic (structural, no-LLM)
+   *  path rather than the LLM-based re-snapshot path. Lets the UI distinguish a cheap heal
+   *  from an expensive one without inspecting the heal artifact directory. Absent when the
+   *  case didn't heal, or when the heal went through the LLM path. */
+  deterministicHeal?: boolean;
 }
 
 export interface SuiteSummary {
@@ -72,6 +79,8 @@ export interface SuiteSummary {
     screenshotUrl?: string;
     /** Set only for a failed/blocked case with a retained Playwright video — see findVideo. */
     videoUrl?: string;
+    /** Distinguishes a deterministic (no-LLM) heal from an LLM-based one. See CaseRunResult. */
+    deterministicHeal?: boolean;
   }[];
 }
 
@@ -136,6 +145,7 @@ export function buildSuiteSummary(results: CaseRunResult[], runDir: string): Sui
         intent: r.intent,
         expected: r.expected,
         healed: r.healed,
+        deterministicHeal: r.deterministicHeal,
       };
     }),
   };
@@ -250,8 +260,9 @@ export async function runSuite(
           // Reflects whatever orchestrator.ts's own heal already did for the primary case —
           // this branch reuses that result, not a second heal attempt.
           healed: primaryResult.healed,
+          ...(primaryResult.deterministicHeal ? { deterministicHeal: true } : {}),
         });
-        emit(runId, "suite", "completed", { caseId, title: tc.title, status, reused: true, healed: primaryResult.healed }, undefined, onEvent);
+        emit(runId, "suite", "completed", { caseId, title: tc.title, status, reused: true, healed: primaryResult.healed, deterministicHeal: primaryResult.deterministicHeal }, undefined, onEvent);
       } catch (err: any) {
         results.push({ caseId, title: tc.title, status: "failed", irPath: "", resultPath: "" });
         emit(runId, "suite", "failed", { caseId, title: tc.title }, err?.message ?? String(err), onEvent);
@@ -300,6 +311,7 @@ export async function runSuite(
 
         let diagnosisPath: string | undefined;
         let healed = false;
+        let deterministicHeal = false;
         if (!result.passed) {
           const diagnosis = await analyzeFailure(ir, result, appModel.auth?.loginUrl);
           diagnosisPath = path.join(caseDir, "06-diagnosis.json");
@@ -321,6 +333,7 @@ export async function runSuite(
                 result = healedOutcome.result;
                 spec = healedOutcome.specCode;
                 healed = true;
+                deterministicHeal = healedOutcome.deterministic === true;
                 // Unlike orchestrator.ts's primary case — which also has a live "done" event
                 // payload carrying the healed ir/spec directly — a suite case's ONLY channel to
                 // the frontend is these on-disk files (loadCaseDetails fetches 04-ir.json and
@@ -358,9 +371,10 @@ export async function runSuite(
           caseId, title: tc.title, status, irPath, resultPath, diagnosisPath, llmCalls, llmTokens, healed,
           whyItMatters: tc.whyItMatters, intent: tc.intent, expected: tc.expected,
           blockedBy: blocked?.reason, blockedScreenshot: blocked?.screenshot ?? undefined,
+          ...(deterministicHeal ? { deterministicHeal: true } : {}),
         });
 
-        emit(runId, "suite", "completed", { caseId, title: tc.title, status, healed }, undefined, onEvent);
+        emit(runId, "suite", "completed", { caseId, title: tc.title, status, healed, deterministicHeal }, undefined, onEvent);
       } catch (err: any) {
         results.push({
           caseId, title: tc.title, status: "failed",

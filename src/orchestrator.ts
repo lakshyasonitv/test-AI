@@ -258,6 +258,7 @@ export async function runPipeline(
     let finalResult = result;
     let finalIr = ir;
     let healed = false;
+    let deterministicHeal = false;
 
     if (!result.passed) {
       diagnosis = await step("failure_analysis", "06-diagnosis.json", () => analyzeFailure(ir, result as any, appModel.auth?.loginUrl));
@@ -284,8 +285,9 @@ export async function runPipeline(
             finalIr = healedOutcome.ir;
             finalSpecCode = healedOutcome.specCode;
             healed = true;
+            deterministicHeal = healedOutcome.deterministic === true;
           }
-          emit("heal", "completed", { healed });
+          emit("heal", "completed", { healed, deterministicHeal });
         } catch (err: any) {
           // Original diagnosis stands unchanged — a failed heal attempt never masks the
           // real failure with a different error, and never retries.
@@ -358,6 +360,7 @@ export async function runPipeline(
       result: { passed: finalResult.passed, exitCode: finalResult.exitCode, artifactsDir: finalResult.artifactsDir, resultsJsonPath: finalResult.resultsJsonPath, raw: finalResult.raw },
       specCode: finalSpecCode,
       healed,
+      ...(deterministicHeal ? { deterministicHeal: true } : {}),
     };
     console.log("3. Running suite...");
     await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, llmBudget, runCreds, selfHealEnabled);
@@ -402,6 +405,7 @@ export async function runPipeline(
       screenshotUrl: blockedScreenshotUrl ?? screenshotUrl,
       videoUrl,
       partial: finalIr.meta.truncated ?? false, healed,
+      deterministicHeal,
       status: blocked ? "blocked" : (finalResult as any).status,
       blockedBy: blocked?.reason,
       truncationNote: finalIr.meta.truncationNote,

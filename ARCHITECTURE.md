@@ -278,7 +278,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 
 ## Source Files
 
-### `src/stages/` — Pipeline Stages (18 files)
+### `src/stages/` — Pipeline Stages (19 files)
 
 | File | LLM? | Purpose |
 |------|:-----:|---------|
@@ -286,6 +286,8 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `planner.ts` | Gemini | NL request -> structured Plan |
 | `promptSelectors.ts` | No | Honors selectors the user wrote directly into their prompt |
 | `classify.ts` | No | Deterministic failure classifier |
+| `heal.ts` | Gemini (LLM path only) | Bounded, one-shot self-heal: try the deterministic structural fix first (see `deterministicHeal.ts`, gated on `DETERMINISTIC_HEAL`), then fall back to re-snapshot + regenerate + re-run |
+| `deterministicHeal.ts` | No | Pure-code structural target matcher: re-matches a failing step's IR target (role/name) against the AppModel — no LLM, no browser relaunch. Tiered name matching shared in shape with `ir.ts`'s `bestNameMatch` |
 | `targetResolver.ts` | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`) |
 | `failureAnalysis.ts` | Gemini + Vision | Failure diagnosis; deterministic auth-bounce check runs first |
 | `caseSelectionGate.ts` | Gemini (via testCases) | Optional human-review loop over generated case batches, incl. reactive-case rounds |
