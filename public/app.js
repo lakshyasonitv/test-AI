@@ -2754,7 +2754,6 @@ const settingsBtnEl = document.getElementById("settingsBtn");
 const settingsPopEl = document.getElementById("settingsPop");
 const gateToggleEl = document.getElementById("gateToggle");
 const healToggleEl = document.getElementById("healToggle");
-const coverageSegEl = document.getElementById("coverageSeg");
 const toastEl = document.getElementById("toast");
 const runTitleEl = document.getElementById("runTitle");
 const runScopeLabelEl = document.getElementById("runScopeLabel");
@@ -4587,18 +4586,21 @@ document.addEventListener("keydown", (e) => {
 });
 
 // -----------------------------------------------------------------------------
-// Coverage segmented control
+// Coverage
+//
+// The Minimal/Standard/Full segmented control was removed from the composer. The
+// VALUE stays, pinned to the default the control shipped selected, because it is
+// still part of the POST /api/runs body and the server still validates it and
+// sizes the run from it (budgetFor() in src/stages/testCases.ts: minimal 2,
+// standard 4, full 5 cases). Dropping the field would change an existing route's
+// request shape; pinning it means every run behaves exactly as an untouched
+// control did.
+//
+// .seg/.seg-btn stay in style.css on purpose — the case-detail tabs (Steps /
+// Script / Runs & versions) reuse both classes.
 // -----------------------------------------------------------------------------
 
-let coverage = "standard";
-coverageSegEl.addEventListener("click", (e) => {
-  const btn = e.target.closest(".seg-btn");
-  if (!btn) return;
-  coverage = btn.dataset.coverage;
-  coverageSegEl.querySelectorAll(".seg-btn").forEach((b) => {
-    b.classList.toggle("active", b === btn);
-  });
-});
+const coverage = "standard";
 
 // -----------------------------------------------------------------------------
 // Sidebar Projects tree — real projects, from GET /api/projects.
