@@ -1639,6 +1639,14 @@ body.role-no-admin #teamBtn { display: none; }
 .tree-project:hover .tree-project-edit,
 .tree-project-edit:focus-visible { opacity: 1; }
 
+/* Delete sits beside Edit and follows the same reveal-on-hover rule, so the destructive
+   control is never what the eye lands on first. Kept keyboard-reachable via :focus-visible
+   for the same reason Edit is. Red only on hover, matching .history-del. */
+.tree-project-del { flex: none; opacity: 0; font-size: .66rem; padding: 1px 6px; }
+.tree-project:hover .tree-project-del,
+.tree-project-del:focus-visible { opacity: 1; }
+.tree-project-del:hover { color: var(--failed); border-color: var(--failed); }
+
 /* Same reasoning as #teamBtn: if a future change forgets the JS toggle, the class still hides it. */
 body.role-no-admin #addProjectBtn { display: none; }
 

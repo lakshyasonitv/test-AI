@@ -4775,6 +4775,7 @@ function renderProjectsTree(runs) {
         <span class="tree-chevron">${icon(open ? "chevron-down" : "chevron-right", { size: 9 })}</span>
         <span class="tree-label" title="${escapeHtml(rowTitle)}">${escapeHtml(p.name)}</span>
         ${canManage ? `<button type="button" class="dl-btn-inline tree-project-edit" data-project-edit="${escapeHtml(p.id)}" title="Rename or set a base URL">Edit</button>` : ""}
+        ${canManage ? `<button type="button" class="dl-btn-inline tree-project-del" data-project-delete="${escapeHtml(p.id)}" title="Delete this project">Delete</button>` : ""}
         <span class="tree-count">${caseCount}</span>
       </div>`;
     // Saved suites first, then recent runs. The suites are the reusable, zero-cost thing — a
@@ -4831,6 +4832,29 @@ function renderProjectsTree(runs) {
       projectFormError = "";
       renderProjectsTree(allRunsCache);
       document.getElementById("projectFormName")?.focus();
+    });
+  });
+
+  // Delete a project. The route (DELETE /api/projects/:id, admin+) and its rules already
+  // existed; the sidebar simply never offered a way to reach them, so an owner had no control
+  // to click. The server REFUSES with 409 while the project still holds runs and says how many
+  // (deleteProject in src/server/projects.ts) — that refusal is deliberate, so this surfaces the
+  // server's own sentence rather than second-guessing it or offering to cascade the runs away.
+  sidebarTreeEl.querySelectorAll("[data-project-delete]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      // Same reason as Edit above: the row itself toggles expand/collapse.
+      e.stopPropagation();
+      const p = projects.find((x) => x.id === btn.dataset.projectDelete);
+      if (!p) return;
+      if (!confirm(`Delete the project "${p.name}"? Its saved suites and cases go with it.`)) return;
+      try {
+        await api(`/api/projects/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+        expandedProjects.delete(p.id);
+        await loadProjects();
+        toast(`Project "${p.name}" deleted.`);
+      } catch (err) {
+        toast(err.message);
+      }
     });
   });
 
