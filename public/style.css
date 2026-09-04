@@ -1614,6 +1614,22 @@ body.role-no-admin #teamBtn { display: none; }
   background: var(--surface-2); font-size: .74rem;
 }
 .tree-suite-new .dl-btn-inline { flex: none; }
+
+/* Suite Rename/Delete mirror the project row's Edit/Delete exactly: revealed on row hover or
+   keyboard focus, so a destructive control is never what the eye lands on first, and red only on
+   hover, matching .history-del. The suite row has no .tree-chevron, so these sit between the
+   flex:1 .tree-label and .tree-count just as the project row's do. */
+.tree-suite-edit, .tree-suite-del { flex: none; opacity: 0; font-size: .66rem; padding: 1px 6px; }
+.tree-suite:hover .tree-suite-edit,
+.tree-suite-edit:focus-visible,
+.tree-suite:hover .tree-suite-del,
+.tree-suite-del:focus-visible { opacity: 1; }
+.tree-suite-del:hover { color: var(--failed); border-color: var(--failed); }
+
+/* The heading-level create form is not nested under a project, so it drops .tree-suite-new's
+   22px indent and lines up with the tree's own left edge. */
+.tree-suite-new-top { padding-left: var(--sp-2); }
+.tree-suite-new select.suite-new-input { cursor: pointer; }
 .suite-new-err {
   padding: 2px 8px 6px 22px;
   font-size: .68rem; line-height: 1.4; color: var(--failed);
@@ -1649,6 +1665,15 @@ body.role-no-admin #teamBtn { display: none; }
 
 /* Same reasoning as #teamBtn: if a future change forgets the JS toggle, the class still hides it. */
 body.role-no-admin #addProjectBtn { display: none; }
+
+/* Same belt-and-braces as #addProjectBtn above, one rung lower: suites are authored at `tester`,
+   so this is role-no-edit (below tester), NOT role-no-admin. */
+body.role-no-edit #addSuiteBtn { display: none; }
+.rail-actions { display: inline-flex; align-items: center; gap: 8px; }
+.rail-add-suite {
+  font-family: var(--font-mono);
+  font-size: .58rem; letter-spacing: .06em; text-transform: uppercase;
+}
 
 /* Suite membership on the Case screen, and the Suite screen's "add cases" picker. Both reuse
    .lib-check / .hrow-label / .hrow-meta / .case-save-panel rather than restating them. */
