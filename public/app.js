@@ -1458,14 +1458,14 @@ let projectsUnavailable = false;
  *  renders it inline, and a null here would mean guarding every use. */
 let suitesCache = [];
 
+// What is typed in the sidebar's search box. Module state rather than read from the input at
+// render time, for the same reason the form fields below are: renderProjectsTree() rebuilds the
+// tree wholesale on a poll, and anything held only in the DOM would not survive that.
+let sidebarQuery = "";
+
 // The sidebar's inline "new suite" form. Module state rather than DOM state because
 // renderProjectsTree() re-renders wholesale on every history refresh — anything held only in the
 // input would be wiped mid-typing by a background reload.
-// What is typed in the sidebar's search box. Module state rather than read from the input at
-// render time, for the same reason the form fields are: renderProjectsTree() rebuilds the tree
-// wholesale on a poll, and anything held only in the DOM would not survive that.
-let sidebarQuery = "";
-
 let newSuiteFor = null;     // project id whose form is open, NEW_SUITE_ANY, or null
 let newSuiteName = "";
 let newSuiteError = "";
@@ -5271,8 +5271,6 @@ addProjectBtnEl?.addEventListener("click", () => {
   document.getElementById("projectFormName")?.focus();
 });
 
-// "New suite" from the Projects heading — creating a suite without first expanding the project it
-// belongs to. The project is picked in the form; everything after that is the existing create path.
 // Sidebar search. This only records what was typed and asks for a re-render — all the filtering
 // lives in renderProjectsTree(), so there is exactly one place that decides what a query means.
 // `input` rather than `keyup` so that the native clear (the × on type="search") and pasting both
@@ -5288,6 +5286,8 @@ sidebarSearchEl?.addEventListener("keydown", (e) => {
   renderProjectsTree(allRunsCache);
 });
 
+// "New suite" from the Projects heading — creating a suite without first expanding the project it
+// belongs to. The project is picked in the form; everything after that is the existing create path.
 addSuiteBtnEl?.addEventListener("click", () => {
   if (!canAuthorSuites()) return;
   renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";   // one suite form at a time
