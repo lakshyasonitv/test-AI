@@ -491,6 +491,18 @@ textarea:focus, input:focus {
 }
 .seg-btn.active { background: var(--surface); color: var(--text); font-weight: 500; box-shadow: 0 1px 2px rgba(var(--ink-rgb), .08); }
 
+/* Demo scoping: the coverage control is hidden from the run form for now. Presentation
+   only — the markup, the click handler and the `coverage` field on POST /api/runs are
+   all untouched, so the form still submits "standard", exactly what the Standard
+   segment (which already carries .active in the markup) sends today.
+
+   Hidden here rather than by adding .hidden in app.js: .hidden is toggled only by
+   showView(), and this is not a view switch — it is a control that is always off.
+   Same pattern as `body.role-no-admin #teamBtn` further down. Scoped to #coverageSeg
+   because .seg/.seg-btn are reused by the test-library tabs, which must stay visible.
+   Delete this one rule to bring the control back. */
+#coverageSeg { display: none; }
+
 .run-btn {
   height: 34px; padding: 0 16px; flex: none;
   border: none; border-radius: 9px;

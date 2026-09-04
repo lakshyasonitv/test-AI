@@ -4453,6 +4453,11 @@ document.addEventListener("click", (e) => {
 
 // -----------------------------------------------------------------------------
 // Coverage segmented control
+//
+// Hidden from the run form for demo scoping — see the `#coverageSeg { display: none }`
+// rule in style.css. The control is hidden, not removed: this handler stays live and
+// `coverage` keeps its "standard" default, so the POST /api/runs body below is byte-for
+// byte what a Standard run sends today. Nothing here needs to change to bring it back.
 // -----------------------------------------------------------------------------
 
 let coverage = "standard";
