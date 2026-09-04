@@ -724,3 +724,61 @@ review is compiled by `toIR` and grounded against the live page exactly as an un
 `proposeGateRewrite` therefore cannot widen what the pipeline accepts, because it sits upstream of
 every check in it. What it keeps from D-27 is what matters — it proposes, it returns sentences not
 IR, and a person approves the round before anything is persisted.
+
+## D-30. One credential waiter, but the resolution ORDER is per-caller
+
+**Context.** Three callers need the same answer to the same question — "this is about to sign in;
+where does the password come from?" A fresh run asks it in the orchestrator, the case editor's
+re-ground walk asks it before walking, and a replay asks it before executing saved cases. The
+replay path was built without asking at all, which is `TECH_DEBT.md` TD-66: every saved login case
+failed at the login, with the reported error several steps away from the cause.
+
+**Decision, part one — one waiter.** `resolveCredentialsVia`
+(`src/server/resolveCredentials.ts`) owns parking: every caller reaches `askCredentials` through
+it, so there is one waiter table, one `CREDENTIAL_WAIT_MS`, and one way to settle. A second parking
+mechanism would mean a second timeout and a second way to leak a wedged promise. The emit is inside
+the helper rather than left to each caller for the same reason: `askCredentials` only parks a
+promise server-side, so without the event the UI never draws the form and the caller waits out the
+full timeout against a screen that offered nowhere to type.
+
+**Decision, part two — the order is a parameter, named at each call site.** The first version of
+this file asserted a single policy ("env first, prompt second") for all callers. That was wrong,
+and the two callers want opposite things for good reasons:
+
+- **Replay uses `"prompt-first"`.** A replay is started deliberately by a person, on a server whose
+  `TEST_USERNAME` / `TEST_PASSWORD` may be someone else's account entirely. **A credential someone
+  types must beat one the server happens to be holding.** The environment is the fallback for a
+  skipped or timed-out prompt.
+- **The re-ground walk uses `"env-first"`.** It runs inside a save the person already asked for, so
+  a prompt there is an interruption they did not initiate. An operator who has configured the
+  environment gets a silent save.
+
+Both are passed explicitly. A hidden default that silently suits one caller is exactly how the
+first version went wrong.
+
+**The cost of `"prompt-first"`, recorded rather than discovered later.** A replay of a login case
+now always prompts, even when the environment could have answered, and an unanswered prompt parks
+for the full `CREDENTIAL_WAIT_MS` **while holding one of the `MAX_CONCURRENT_RUNS` slots**. That is
+a direct amplifier of the saturation described on `/api/health`'s `concurrency` block: three
+ignored replay prompts wedge the default cap of three. The trade was made knowingly — correctness
+about *whose* credential is used beats convenience — but if replays start queueing, this is the
+first thing to look at.
+
+**Rejected: reading the environment inside `runReplay`.** Fewer lines, but it drops the prompt half
+entirely: an operator with nothing set gets the same empty-string failure, just later. The prompt
+is what makes a saved login case usable by someone who is not the person who configured the server.
+
+**Rejected: prompting unconditionally on replay.** A replay whose cases contain no `${env:...}` has
+nothing to ask about. `credentialKindsNeeded` over every case's steps decides, so such a replay
+emits no event and behaves byte-for-byte as it did before any of this.
+
+**Containment, on both orders.** The value lives in the returned promise and in the caller's
+process memory for the length of one run. It reaches the Playwright child process only through
+`credentialEnvVars`, and never touches the IR, the generated spec, `runs/`, the database, or a log
+line: the events carry only the URL and *which* fields are wanted, and the one log line on this
+path prints a runId. Asserted, not assumed — `tests/replayCredentials.test.ts` plants canary values
+in both the environment and the prompt answer and requires neither to appear in any emitted
+payload, under both orders.
+
+**Consequences.** Any future execution path that runs stored steps inherits this: if it can reach a
+login, it resolves through this helper and names its own order.

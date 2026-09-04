@@ -57,7 +57,10 @@ const ZERO_USAGE = {
   byStage: {} as Record<string, never>,
 };
 
-function originOf(url: string): string | undefined {
+/** Scheme + host + port, or undefined for anything unparseable. Exported because the replay
+ *  ROUTE needs the same answer this module does, and a second URL-parsing helper is exactly the
+ *  drift TD-07 records. */
+export function originOf(url: string): string | undefined {
   try { return new URL(url).origin; } catch { return undefined; }
 }
 

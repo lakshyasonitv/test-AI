@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="800" viewBox="0 0 1000 800" font-family="Segoe UI, Arial, sans-serif">
+  <defs><marker id="a6" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0,0 10,4 0,8" fill="#0b63ce"/></marker></defs>
+  <rect width="1000" height="800" fill="#ffffff"/>
+  <text x="40" y="40" font-size="22" font-weight="700" fill="#0b3a78">Who can see what: two separate axes</text>
+  <text x="40" y="65" font-size="14" fill="#5a6b80">These are deliberately kept apart. Mixing them up is the most common misunderstanding of this part of the system.</text>
+
+  <!-- axis 1 -->
+  <rect x="40" y="88" width="450" height="238" rx="8" fill="#f7f9fc" stroke="#0b63ce" stroke-width="2"/>
+  <rect x="40" y="88" width="450" height="40" rx="8" fill="#0b63ce"/>
+  <text x="60" y="115" font-size="16" font-weight="700" fill="#ffffff">Axis 1 — your ROLE</text>
+  <text x="300" y="115" font-size="12" fill="#cfe2fb">what you may DO</text>
+  <text x="60" y="152" font-size="13" fill="#374151">Stored in <tspan font-family="Consolas, monospace">organisation_members.role</tspan></text>
+  <text x="60" y="172" font-size="13" fill="#374151">It is a <tspan font-weight="700">ladder</tspan>, never string equality —</text>
+  <text x="60" y="190" font-size="13" fill="#374151">a check is always "rank &gt;= required".</text>
+
+  <g font-size="13">
+    <rect x="60" y="204" width="410" height="26" rx="4" fill="#eef3f9" stroke="#c9d9ee"/>
+    <text x="72" y="222" font-family="Consolas, monospace" fill="#0b3a78">viewer</text>
+    <text x="190" y="222" fill="#374151">read runs and cases</text>
+    <text x="450" y="222" text-anchor="end" fill="#6b7280">1</text>
+
+    <rect x="60" y="234" width="410" height="26" rx="4" fill="#eef3f9" stroke="#c9d9ee"/>
+    <text x="72" y="252" font-family="Consolas, monospace" fill="#0b3a78">tester</text>
+    <text x="190" y="252" fill="#374151">start runs, edit cases</text>
+    <text x="450" y="252" text-anchor="end" fill="#6b7280">2</text>
+
+    <rect x="60" y="264" width="410" height="26" rx="4" fill="#eef3f9" stroke="#c9d9ee"/>
+    <text x="72" y="282" font-family="Consolas, monospace" fill="#0b3a78">admin</text>
+    <text x="190" y="282" fill="#374151">projects, members, delete</text>
+    <text x="450" y="282" text-anchor="end" fill="#6b7280">3</text>
+
+    <rect x="60" y="294" width="410" height="26" rx="4" fill="#dff0e2" stroke="#3d8a52"/>
+    <text x="72" y="312" font-family="Consolas, monospace" fill="#1f5130">owner</text>
+    <text x="190" y="312" fill="#374151">everything; cannot be last-removed</text>
+    <text x="450" y="312" text-anchor="end" fill="#6b7280">4</text>
+  </g>
+
+  <!-- axis 2 -->
+  <rect x="520" y="88" width="440" height="238" rx="8" fill="#f7f9fc" stroke="#3d8a52" stroke-width="2"/>
+  <rect x="520" y="88" width="440" height="40" rx="8" fill="#3d8a52"/>
+  <text x="540" y="115" font-size="16" font-weight="700" fill="#ffffff">Axis 2 — project MEMBERSHIP</text>
+  <text x="830" y="115" font-size="12" fill="#d8ecdd">what you may SEE</text>
+  <text x="540" y="152" font-size="13" fill="#374151">Stored in <tspan font-family="Consolas, monospace">project_members</tspan></text>
+  <rect x="540" y="166" width="400" height="46" rx="5" fill="#fff8e8" stroke="#d98b1f"/>
+  <text x="554" y="184" font-size="12.5" font-weight="700" fill="#8a5a10">This table has NO role column, on purpose.</text>
+  <text x="554" y="202" font-size="12.5" fill="#374151">Two places answering one question would drift.</text>
+
+  <text x="540" y="236" font-size="13" font-weight="700" fill="#0b3a78">The rule:</text>
+  <text x="540" y="258" font-size="13" fill="#374151">• admin / owner → see <tspan font-weight="700">every</tspan> project in the org</text>
+  <text x="540" y="278" font-size="13" fill="#374151">• tester / viewer → see <tspan font-weight="700">only</tspan> projects they were</text>
+  <text x="540" y="296" font-size="13" fill="#374151">   explicitly added to</text>
+  <text x="540" y="316" font-size="12.5" fill="#9c2a2a">A run with no project is visible to admin+ only.</text>
+
+  <!-- data model -->
+  <rect x="40" y="342" width="920" height="196" rx="8" fill="#f7f9fc" stroke="#c9d9ee"/>
+  <text x="58" y="366" font-size="15" font-weight="700" fill="#0b3a78">How that looks in the database</text>
+  <g font-size="12.5">
+    <rect x="70" y="382" width="150" height="40" rx="5" fill="#e8f1fc" stroke="#0b63ce"/>
+    <text x="145" y="400" text-anchor="middle" font-weight="700" fill="#0b3a78">organisations</text>
+    <text x="145" y="416" text-anchor="middle" font-size="11" fill="#6b7280">one per company</text>
+
+    <rect x="70" y="452" width="150" height="40" rx="5" fill="#e8f1fc" stroke="#0b63ce"/>
+    <text x="145" y="470" text-anchor="middle" font-weight="700" fill="#0b3a78">auth.users</text>
+    <text x="145" y="486" text-anchor="middle" font-size="11" fill="#6b7280">Supabase-managed</text>
+
+    <rect x="270" y="416" width="180" height="42" rx="5" fill="#fff8e8" stroke="#d98b1f"/>
+    <text x="360" y="434" text-anchor="middle" font-weight="700" fill="#8a5a10">organisation_members</text>
+    <text x="360" y="450" text-anchor="middle" font-size="11" fill="#6b7280">user + org + ROLE</text>
+
+    <rect x="500" y="382" width="150" height="40" rx="5" fill="#e8f1fc" stroke="#0b63ce"/>
+    <text x="575" y="400" text-anchor="middle" font-weight="700" fill="#0b3a78">projects</text>
+    <text x="575" y="416" text-anchor="middle" font-size="11" fill="#6b7280">one per site under test</text>
+
+    <rect x="470" y="452" width="180" height="42" rx="5" fill="#fff8e8" stroke="#d98b1f"/>
+    <text x="560" y="470" text-anchor="middle" font-weight="700" fill="#8a5a10">project_members</text>
+    <text x="560" y="486" text-anchor="middle" font-size="11" fill="#6b7280">user + project (no role)</text>
+
+    <rect x="700" y="368" width="130" height="36" rx="5" fill="#dff0e2" stroke="#3d8a52"/>
+    <text x="765" y="391" text-anchor="middle" font-weight="700" fill="#1f5130">runs</text>
+
+    <rect x="700" y="414" width="130" height="36" rx="5" fill="#dff0e2" stroke="#3d8a52"/>
+    <text x="765" y="437" text-anchor="middle" font-weight="700" fill="#1f5130">test_cases</text>
+
+    <rect x="700" y="460" width="130" height="36" rx="5" fill="#dff0e2" stroke="#3d8a52"/>
+    <text x="765" y="483" text-anchor="middle" font-weight="700" fill="#1f5130">suites</text>
+
+    <rect x="850" y="414" width="100" height="36" rx="5" fill="#dff0e2" stroke="#3d8a52"/>
+    <text x="900" y="437" text-anchor="middle" font-weight="700" fill="#1f5130">versions</text>
+  </g>
+  <line x1="220" y1="404" x2="266" y2="424" stroke="#0b63ce" marker-end="url(#a6)"/>
+  <line x1="220" y1="470" x2="266" y2="444" stroke="#0b63ce" marker-end="url(#a6)"/>
+  <line x1="220" y1="472" x2="466" y2="472" stroke="#0b63ce" marker-end="url(#a6)"/>
+  <line x1="575" y1="422" x2="560" y2="448" stroke="#0b63ce" marker-end="url(#a6)"/>
+  <line x1="650" y1="396" x2="696" y2="388" stroke="#3d8a52" marker-end="url(#a6)"/>
+  <line x1="650" y1="402" x2="696" y2="428" stroke="#3d8a52" marker-end="url(#a6)"/>
+  <line x1="650" y1="408" x2="696" y2="472" stroke="#3d8a52" marker-end="url(#a6)"/>
+  <line x1="830" y1="432" x2="846" y2="432" stroke="#3d8a52" marker-end="url(#a6)"/>
+
+  <!-- flag off -->
+  <rect x="40" y="554" width="920" height="124" rx="8" fill="#e8f1fc" stroke="#0b63ce" stroke-width="2"/>
+  <text x="58" y="578" font-size="15" font-weight="700" fill="#0b3a78">With AUTH_ENABLED unset (the shipped default) — the single most important rule here</text>
+  <text x="58" y="602" font-size="13" fill="#374151">The permission checks are <tspan font-weight="700">not skipped</tspan>. Instead a synthetic user is injected who genuinely IS an owner of the default org:</text>
+  <text x="58" y="626" font-family="Consolas, monospace" font-size="12.5" fill="#1a2f4b">    resolveUser()  →  LOCAL_USER  (never null)        assertOrgAccess()  →  "owner"</text>
+  <text x="58" y="650" font-size="13" fill="#374151">So every check runs its normal code path and passes. <tspan font-weight="700">Single-user mode is multi-user mode with exactly one member.</tspan></text>
+  <text x="58" y="670" font-size="13" fill="#9c2a2a">Never add an "if (authDisabled) return true" branch — then the real path would only ever be exercised in production.</text>
+
+  <rect x="40" y="694" width="920" height="90" rx="8" fill="#fff4f4" stroke="#c0392b" stroke-width="2"/>
+  <text x="58" y="718" font-size="15" font-weight="700" fill="#9c2a2a">Know this before you expose the port</text>
+  <text x="58" y="741" font-size="13" fill="#374151">1. <tspan font-family="Consolas, monospace">GET /runs/:runId/*</tspan> serves screenshots, video, traces and specs. With the default config it is <tspan font-weight="700">unauthenticated</tspan>.</text>
+  <text x="58" y="762" font-size="13" fill="#374151">2. <tspan font-family="Consolas, monospace">SIGNUP_ENABLED</tspan> is the one flag that defaults <tspan font-weight="700">ON</tspan>, and signup creates real accounts with the service-role key.</text>
+  <text x="58" y="779" font-size="13" fill="#374151">3. <tspan font-family="Consolas, monospace">SUPABASE_SERVICE_ROLE_KEY</tspan> bypasses row-level security. It is server-only and must never reach a browser.</text>
+</svg>

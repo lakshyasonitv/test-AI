@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="860" viewBox="0 0 1000 860" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="a5" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0,0 10,4 0,8" fill="#0b63ce"/></marker>
+    <marker id="a5r" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0,0 10,4 0,8" fill="#c0392b"/></marker>
+  </defs>
+  <rect width="1000" height="860" fill="#ffffff"/>
+  <text x="40" y="40" font-size="22" font-weight="700" fill="#0b3a78">Grounding — how a made-up step gets caught</text>
+  <text x="40" y="65" font-size="14" fill="#5a6b80">groundingError() in src/stages/ir.ts. Runs on every step, in this exact order. This is the safety net that makes the whole approach work.</text>
+
+  <rect x="40" y="86" width="920" height="52" rx="8" fill="#fff8e8" stroke="#d98b1f"/>
+  <text x="58" y="108" font-size="14" font-weight="700" fill="#8a5a10">Read this before anything else about grounding</text>
+  <text x="58" y="128" font-size="13" fill="#374151">groundingError is a <tspan font-weight="700">validator AND a mutator</tspan>. Returning null means "grounded AND I fixed the target in place" — it writes css/testId onto it.</text>
+
+  <rect x="330" y="156" width="340" height="46" rx="23" fill="#0b63ce"/>
+  <text x="500" y="184" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">For each step in the IR…</text>
+  <line x1="500" y1="202" x2="500" y2="226" stroke="#0b63ce" stroke-width="2" marker-end="url(#a5)"/>
+
+  <g font-size="13">
+    <!-- check 1 -->
+    <rect x="130" y="230" width="740" height="58" rx="8" fill="#f7f9fc" stroke="#0b63ce" stroke-width="2"/>
+    <text x="150" y="252" font-size="14" font-weight="700" fill="#0b3a78">1. Does the target already carry a css we know?</text>
+    <text x="150" y="274" fill="#374151">If the css is in knownSelectors, it is already grounded. Skip. (This is how selectors you wrote in your prompt get through.)</text>
+    <line x1="500" y1="288" x2="500" y2="308" stroke="#0b63ce" stroke-width="2" marker-end="url(#a5)"/>
+
+    <!-- check 2 -->
+    <rect x="130" y="312" width="740" height="66" rx="8" fill="#f7f9fc" stroke="#0b63ce" stroke-width="2"/>
+    <text x="150" y="334" font-size="14" font-weight="700" fill="#0b3a78">2. Is it a navigate to a URL we never saw?</text>
+    <text x="150" y="356" fill="#374151">Allowed if: off-origin, a page we discovered, a real link href, or a path <tspan font-style="italic">you typed in your prompt</tspan>.</text>
+    <text x="150" y="373" fill="#9c2a2a">Otherwise REJECT — kind: "navigate-url". The model invented a URL.</text>
+    <line x1="500" y1="378" x2="500" y2="398" stroke="#0b63ce" stroke-width="2" marker-end="url(#a5)"/>
+
+    <!-- check 3 -->
+    <rect x="130" y="402" width="740" height="76" rx="8" fill="#f7f9fc" stroke="#0b63ce" stroke-width="2"/>
+    <text x="150" y="424" font-size="14" font-weight="700" fill="#0b3a78">3. Is it a bare {text} target on an action step?</text>
+    <text x="150" y="446" fill="#374151">Try to match that text against real element names. On a hit it <tspan font-weight="700">upgrades</tspan> the target: sets role + name, deletes text,</text>
+    <text x="150" y="463" fill="#374151">attaches css. On a miss, REJECT — kind: "text-target".</text>
+    <line x1="500" y1="478" x2="500" y2="498" stroke="#0b63ce" stroke-width="2" marker-end="url(#a5)"/>
+
+    <!-- check 4 -->
+    <rect x="130" y="502" width="740" height="58" rx="8" fill="#f7f9fc" stroke="#0b63ce" stroke-width="2"/>
+    <text x="150" y="524" font-size="14" font-weight="700" fill="#0b3a78">4. Does it have a role but no name?</text>
+    <text x="150" y="546" fill="#9c2a2a">REJECT. Without this guard it used to crash spec generation with no recovery path.</text>
+    <line x1="500" y1="560" x2="500" y2="580" stroke="#0b63ce" stroke-width="2" marker-end="url(#a5)"/>
+
+    <!-- check 5 -->
+    <rect x="130" y="584" width="740" height="76" rx="8" fill="#f7f9fc" stroke="#0b63ce" stroke-width="2"/>
+    <text x="150" y="606" font-size="14" font-weight="700" fill="#0b3a78">5. role + name: is there a real element with that name?</text>
+    <text x="150" y="628" fill="#374151">Ranked match — exact, then ignoring glyphs, then prefix/suffix, then substring; ties broken by closest length.</text>
+    <text x="150" y="645" fill="#9c2a2a">No match → REJECT, with the page URL in the message so you can see where it looked.</text>
+  </g>
+
+  <line x1="500" y1="660" x2="500" y2="682" stroke="#0b63ce" stroke-width="2"/>
+  <line x1="215" y1="682" x2="785" y2="682" stroke="#0b63ce" stroke-width="2"/>
+  <line x1="215" y1="682" x2="215" y2="704" stroke="#3d8a52" stroke-width="2" marker-end="url(#a5)"/>
+  <line x1="785" y1="682" x2="785" y2="704" stroke="#c0392b" stroke-width="2" marker-end="url(#a5r)"/>
+
+  <rect x="70" y="708" width="290" height="66" rx="8" fill="#dff0e2" stroke="#3d8a52" stroke-width="2"/>
+  <text x="215" y="732" text-anchor="middle" font-size="15" font-weight="700" fill="#1f5130">Grounded</text>
+  <text x="215" y="754" text-anchor="middle" font-size="12.5" fill="#374151">Target now carries a real css.</text>
+  <text x="215" y="769" text-anchor="middle" font-size="12.5" fill="#374151">Move to the rejection checks.</text>
+
+  <rect x="640" y="708" width="290" height="66" rx="8" fill="#fff4f4" stroke="#c0392b" stroke-width="2"/>
+  <text x="785" y="732" text-anchor="middle" font-size="15" font-weight="700" fill="#9c2a2a">Not grounded</text>
+  <text x="785" y="754" text-anchor="middle" font-size="12.5" fill="#374151">Replay the steps in a live browser,</text>
+  <text x="785" y="769" text-anchor="middle" font-size="12.5" fill="#374151">re-snapshot, and look again.</text>
+
+  <rect x="40" y="790" width="920" height="56" rx="8" fill="#e8f1fc" stroke="#0b63ce"/>
+  <text x="58" y="812" font-size="14" font-weight="700" fill="#0b3a78">The live-extend loop — why grounding can reach pages discovery never saw</text>
+  <text x="58" y="833" font-size="13" fill="#374151">A miss does not immediately fail. Up to MAX_LIVE_EXTENSIONS (5) times it replays the grounded prefix for real, snapshots wherever it lands, merges that into the AppModel, and re-grounds — <tspan font-weight="700">with no new LLM call</tspan>.</text>
+</svg>

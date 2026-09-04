@@ -1,0 +1,318 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+<head>
+<meta charset="utf-8">
+<title>Volume 5 — Operations and Debugging</title>
+<style>
+@page { size: A4; margin: 2cm 1.8cm 2cm 1.8cm; }
+body { font-family: "Segoe UI", Calibri, Arial, sans-serif; font-size: 11pt; color: #1a1a1a; line-height: 1.45; }
+h1 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 26pt; color: #0b3a78; margin: 0 0 4pt 0; }
+h2 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 17pt; color: #0b63ce; margin: 22pt 0 7pt 0; border-bottom: 1px solid #c9d9ee; padding-bottom: 3pt; }
+h3 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 13pt; color: #14213d; margin: 15pt 0 5pt 0; }
+h4 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 11.5pt; color: #0b3a78; margin: 12pt 0 4pt 0; }
+p { margin: 0 0 8pt 0; }
+ul, ol { margin: 0 0 10pt 0; padding-left: 20pt; }
+li { margin: 0 0 4pt 0; }
+table { border-collapse: collapse; width: 100%; margin: 8pt 0 14pt 0; }
+th { background: #e8f1fc; border: 1px solid #9dbfe8; padding: 4pt 6pt; text-align: left; font-size: 9pt; color: #0b3a78; }
+td { border: 1px solid #c9d9ee; padding: 4pt 6pt; font-size: 9pt; vertical-align: top; }
+pre { font-family: Consolas, "Courier New", monospace; font-size: 9pt; background: #f5f7fa; border: 1px solid #d6dee8; padding: 7pt 9pt; margin: 6pt 0 12pt 0; white-space: pre; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt; color: #9c2a2a; }
+.sub { font-size: 12pt; color: #5a6b80; margin: 0 0 3pt 0; }
+.meta { font-size: 9pt; color: #6b7280; margin: 0 0 16pt 0; }
+.caption { font-size: 8.5pt; color: #5a6b80; margin: 2pt 0 14pt 0; }
+.note { background: #f7f9fc; border: 1px solid #c9d9ee; border-left: 4px solid #0b63ce; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.warn { background: #fff8e8; border: 1px solid #d98b1f; border-left: 4px solid #d98b1f; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.danger { background: #fff4f4; border: 1px solid #c0392b; border-left: 4px solid #c0392b; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+</style>
+</head>
+<body>
+
+<h1>Volume 5 — Operations &amp; Debugging</h1>
+<p class="sub">How to work out what went wrong, yourself</p>
+<p class="meta">Describes commit <code>57e6261</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026 &nbsp;·&nbsp; Volume 5 of 5</p>
+
+<div class="note">
+This volume exists so that when something breaks, the team can read the error and reason about it — rather than pasting it into a chatbot and hoping.
+<br><br>
+Nearly every failure in this system has already written its own explanation to disk. The skill is knowing which file to open.
+</div>
+
+<p>[[TOC]]</p>
+
+<h2>1. The decision tree</h2>
+
+<p>Start here. Work top to bottom. Most failures are identified within two steps and without reading any source code.</p>
+
+<p><img src="../diagrams/09-debug-tree.png" width="660"></p>
+<p class="caption">Figure 1 — from "a run failed" to a cause, using only the files on disk.</p>
+
+<h3>The four-command triage</h3>
+
+<pre>ls -t runs/ | head -1                              # newest run
+cat runs/&lt;id&gt;/05-result.json | grep -A2 message    # the REAL error
+cat runs/&lt;id&gt;/08-llm-usage.json                    # did it even call the model?
+tail -5 runs/&lt;id&gt;/events.ndjson                    # where exactly did it stop?</pre>
+
+<div class="danger">
+<b>The single most important habit in this document.</b>
+<br><br>
+<b>The user interface does not show you the error.</b> It shows a screenshot and a plain-English diagnosis. The actual Playwright error — the one with the locator, the timeout and the stack — lives in:
+<pre>runs/&lt;id&gt;/05-result.json
+  → raw.suites[0].specs[0].tests[0].results[0].errors[0].message</pre>
+People routinely debug from a picture when the exact error was sitting in a file the whole time.
+</div>
+
+<h2>2. Is it even a failure?</h2>
+
+<p>Four situations look like test failures and are not. Check these before investigating anything.</p>
+
+<h3>Passed, but verified nothing</h3>
+
+<p>Check <code>meta.truncated</code> in <code>04-ir.json</code>. If the compiler could only ground the first two steps, the test runs two steps and reports success. Worse: <code>05-result.json</code> records <code>passed: status === "passed" || status === "truncated"</code> — so a truncated case counts as passed <i>in that field</i>. The honest status is in <code>07-suite-summary.json</code>.</p>
+
+<p><code>meta.truncationNote</code> tells you where it gave up and why.</p>
+
+<h3>Blocked, not failed</h3>
+
+<p>A bot check, a CAPTCHA, or an OAuth wall. Look for <code>blockedBy</code> in the <code>done</code> event. The site stopped us; the test is fine. Note that <code>blocked</code> overrides <code>passed</code> in the event but does <b>not</b> rewrite <code>05-result.json</code> — so the file and the UI can legitimately disagree.</p>
+
+<h3>It never ran at all</h3>
+
+<p>An empty case directory alongside a <code>failed</code> status usually means the run never reached the browser. Check <code>08-llm-usage.json</code>: zero calls with a failed status normally means an invalid or exhausted API key.</p>
+
+<div class="danger">
+This class of failure is recorded in <code>problems.md</code> in blunt terms: <i>"You were told your website has failing tests when the truth was that your API key was invalid."</i> Always confirm the run actually executed before you go looking at the site under test.
+</div>
+
+<h3>You are testing a stale server</h3>
+
+<p><code>npm run serve</code> runs <code>tsx</code> once and has no watch or reload. A running server keeps executing whatever code was in memory when it started. Editing <code>src/</code> changes nothing until you restart it.</p>
+
+<p>There is a documented incident where a fix was verified offline, and a live run afterwards still showed the exact pre-fix behaviour — because the server process was over an hour older than the edit. <b>Before judging any source change against a live run, check that the server started after your edit.</b></p>
+
+<h2>3. A worked example</h2>
+
+<p>This is a real diagnosis from 1 September 2026. It is included because the shape of it is typical: the visible symptom was three layers away from the cause, and every clue needed was already on disk.</p>
+
+<h4>The symptom</h4>
+<p>Every test run produced a completely white screenshot. Every run, every case. The same repository worked on a colleague's laptop.</p>
+
+<h4>Layer 1 — what the artifacts said</h4>
+<p><code>05-result.json</code> held the real error:</p>
+<pre>Error: browserContext.newPage: Executable doesn't exist at
+  …\ms-playwright\ffmpeg-1010\ffmpeg-win64.exe</pre>
+
+<p>The chain: <code>playwright.config.ts</code> sets <code>video: "retain-on-failure"</code>, so Playwright spawns ffmpeg the moment a page is created. Missing ffmpeg means <code>newPage()</code> throws in under a second — <b>before any navigation</b>. But <code>screenshot: "on"</code> still fires and photographs a page that was never navigated: a blank 1280×720 PNG, exactly 4,331 bytes, every time.</p>
+
+<p>The UI served that PNG with a valid HTTP 200, so its <code>onerror</code> guard never fired and nothing hid it.</p>
+
+<h4>Layer 2 — why the obvious fix did not work</h4>
+<p><code>npx playwright install</code> refused to start: a lockfile was held by two Node processes from the previous evening, still alive sixteen hours later having used <b>two seconds of CPU between them</b>. They were hung on a stalled download that never timed out. That is why every reinstall attempt for days had silently accomplished nothing.</p>
+
+<h4>Layer 3 — the actual defect</h4>
+<p>After clearing the lock, the error changed to <code>spawn EFTYPE</code>. The binary was present, had a valid executable header, and matched the machine's architecture. It was simply <b>31,190 bytes short</b> — a truncated download from the same stalled installer. Valid header, missing tail; Windows refuses to load it.</p>
+
+<p>Fetching the file directly from the CDN took <b>1.8 seconds</b>, which also proved the network had never been the problem.</p>
+
+<h4>What to take from this</h4>
+<ol>
+<li>The real error was in <code>05-result.json</code> from the first run. The white screenshot was a symptom of a symptom.</li>
+<li>The platform's own failure classifier had already written the correct diagnosis into <code>06-diagnosis.json</code>, days earlier.</li>
+<li>"It works on my machine" pointed at the environment, not the code — the Playwright version is pinned exactly, so drift was impossible; only the browser binary cache could differ.</li>
+<li>A file existing is not the same as a file being usable.</li>
+</ol>
+
+<h2>4. Common errors and what they mean</h2>
+
+<table>
+<tr><th style="width:30%">Error text</th><th style="width:34%">What it means</th><th>What to do</th></tr>
+<tr><td><code>Executable doesn't exist at …</code></td><td>Playwright's browser cache is missing or partial.</td><td><code>npx playwright install</code>. If it hangs, check for a stale <code>__dirlock</code> and hung <code>oopDownloadBrowserMain</code> processes first.</td></tr>
+<tr><td><code>spawn EFTYPE</code> / "not a valid application"</td><td>A binary is present but truncated or corrupt.</td><td>Compare its byte size against a fresh CDN download.</td></tr>
+<tr><td><code>resolved to 0 elements</code></td><td>The locator matched nothing.</td><td>Open the <code>step-N.png</code> just before the failure. Very often the login silently failed and you are looking at a login page.</td></tr>
+<tr><td><code>resolved to 2 elements</code></td><td>Two things share a name — a strict-mode violation.</td><td>The step needs an <code>nth</code>. This is a known weakness (TD-05).</td></tr>
+<tr><td><code>Timeout … exceeded</code></td><td>The element exists but never reached the expected state.</td><td>Watch <code>video.webm</code>. It only exists on failure, which is exactly when you want it.</td></tr>
+<tr><td><code>ReferenceError: __name is not defined</code></td><td>A named function inside a <code>page.evaluate</code> callback.</td><td>Inline it. Note this passes every unit test and only fails on a real server run.</td></tr>
+<tr><td><code>Element is not an &lt;input&gt;</code></td><td>A locator matched the <code>&lt;label&gt;</code> instead of the field.</td><td>Field actions should route through the field helper, not <code>getByText</code>.</td></tr>
+<tr><td><code>No semantic locator for target</code></td><td>A target had no usable identifying information.</td><td>Usually a grounding gap upstream; check <code>04-ir.json</code> for that step.</td></tr>
+<tr><td>503 "the database is not configured"</td><td>No Supabase service-role key.</td><td>Expected without one. Runs still work; the library does not.</td></tr>
+<tr><td>Every run parks forever, no error</td><td><code>MAX_CONCURRENT_RUNS</code> is non-numeric → <code>NaN</code> → silent deadlock.</td><td>Check the value. Empty crashes at boot; <code>abc</code> deadlocks silently.</td></tr>
+<tr><td>A prompt change has no effect</td><td>The LLM disk cache never expires.</td><td>The system prompt must be part of the cache key. Or clear <code>runs/_cache/llm/</code>.</td></tr>
+</table>
+
+<h2>5. Configuration</h2>
+
+<p>All defaults are in <code>.env.example</code>, which is worth reading in full — its comments explain <i>why</i> each limit exists.</p>
+
+<div class="danger">
+<b>Never copy values out of <code>.env</code> into a document, a ticket, or a chat.</b> It holds live API keys. <code>.env.example</code> is the file to share; it holds placeholders.
+</div>
+
+<h3>Models and keys</h3>
+
+<table>
+<tr><th style="width:30%">Variable</th><th style="width:24%">Default</th><th>Notes</th></tr>
+<tr><td><code>GEMINI_API_KEYS</code></td><td>—</td><td>Comma-separated. Keys only stack quota if each is from a <b>distinct Google project</b>; two keys in one project do not.</td></tr>
+<tr><td><code>GEMINI_MODEL</code></td><td><code>gemini-3.6-flash</code></td><td>Used for the expensive stages.</td></tr>
+<tr><td><code>GEMINI_MODEL_LITE</code></td><td><code>gemini-3.1-flash-lite</code></td><td>Plan, concept labelling, failure analysis.</td></tr>
+</table>
+
+<h3>Cost and reliability ceilings</h3>
+
+<table>
+<tr><th style="width:30%">Variable</th><th style="width:16%">Default</th><th>What it bounds</th></tr>
+<tr><td><code>LLM_TIMEOUT_MS</code></td><td>45000</td><td>Per <b>attempt</b>. Worst case per call is this × the retry count.</td></tr>
+<tr><td><code>MAX_LLM_CALLS_PER_RUN</code></td><td>60</td><td>Hard cap across <i>every</i> stage. Actual spend lands in <code>08-llm-usage.json</code>.</td></tr>
+<tr><td><code>MAX_IR_ATTEMPTS</code></td><td>4</td><td>IR compile retries per case.</td></tr>
+<tr><td><code>MAX_LIVE_EXTENSIONS</code></td><td>5</td><td>Browser replays per case. <b>Each also consumes one IR attempt</b> — raising one without the other starves convergence.</td></tr>
+<tr><td><code>MAX_CONCURRENT_RUNS</code></td><td>3</td><td>Concurrent Chromium instances. See the footguns in Volume 3.</td></tr>
+<tr><td><code>MAX_DISCOVERY_PAGES</code></td><td>5</td><td>How far the crawl goes.</td></tr>
+<tr><td><code>CREDENTIAL_WAIT_MS</code></td><td>300000</td><td>5 minutes. <b>Holds a concurrency slot the whole time.</b></td></tr>
+<tr><td><code>CASE_SELECTION_WAIT_MS</code></td><td>600000</td><td>10 minutes. Same caveat.</td></tr>
+<tr><td><code>MAX_LOGIN_CASES</code></td><td>1</td><td>Stops the suite testing the login screen instead of the app behind it.</td></tr>
+<tr><td><code>APPMODEL_CACHE_TTL_MS</code></td><td>30 min</td><td><b>Set to 0 while iterating against a site you are editing.</b></td></tr>
+<tr><td><code>DISCOVERY_HYDRATION_POLL_MS</code></td><td>6000</td><td>How long to keep re-checking a page that extracted zero elements.</td></tr>
+</table>
+
+<div class="warn">
+<b>A gap worth knowing:</b> <code>PLAYWRIGHT_TIMEOUT</code> is read by <code>playwright.config.ts</code> but is <b>not listed in <code>.env.example</code></b>. It defaults to 50,000 ms.
+</div>
+
+<h3>Feature flags</h3>
+
+<p>The rule, stated at the top of that block: <i>every flag defaults to OFF; with all of them unset the server behaves exactly as it did before the phase that introduced them.</i></p>
+
+<table>
+<tr><th style="width:28%">Flag</th><th style="width:12%">Default</th><th>Effect</th></tr>
+<tr><td><code>ENABLE_CASE_SELECTION_GATE</code></td><td>false</td><td>The human review pause after case generation.</td></tr>
+<tr><td><code>AUTH_ENABLED</code></td><td>off</td><td>Supabase auth. <b>Also needs <code>DB_ENABLED</code></b> — alone it logs a warning and everyone sees everything.</td></tr>
+<tr><td><code>DB_ENABLED</code></td><td>off</td><td>Gates only the run-row writes and shadow read. <b>Not</b> the library.</td></tr>
+<tr><td><code>NL_STEPS_ENABLED</code></td><td>false</td><td>"Write it for me" in the step editor.</td></tr>
+<tr><td><code>GATE_CASE_EDIT_AI</code></td><td>false</td><td>"Ask for a change" at the review gate.</td></tr>
+<tr><td><code>RUN_RETENTION_DAYS</code></td><td>0 (off)</td><td>Prunes old terminal runs. <b>Hard 24-hour floor</b> regardless of the value.</td></tr>
+<tr><td><code>TEST_USERNAME</code> / <code>TEST_PASSWORD</code></td><td>—</td><td>Suppresses <b>every</b> credential prompt, everywhere.</td></tr>
+</table>
+
+<div class="danger">
+<b><code>SIGNUP_ENABLED</code> is the one exception — it defaults to ON.</b>
+<br><br>
+Only <code>SIGNUP_ENABLED=false</code> turns it off. The justification is that the sign-up screen only exists when <code>AUTH_ENABLED=true</code>, which is itself off — so the shipped default is still "no sign-up".
+<br><br>
+But <code>POST /api/auth/signup</code> is unauthenticated by necessity and creates <b>real accounts using the service-role key</b>. Its rate limit (5 per 15 minutes per IP, in-process) is described in the source as "a speed bump, not access control".
+<br><br>
+The comment in <code>.env.example</code> is in capitals for a reason: <b>set this to false before exposing this server beyond localhost.</b>
+</div>
+
+<h3>Context caps</h3>
+
+<p>A group of <code>MAX_LITE_*</code> variables bound how much of a site's model goes into a prompt. They exist because a rich site with no caps produced a 17,000-line model JSON and got a <b>413 from Gemini</b>. The defaults sit above every page this project has actually sampled (87 elements, 2 forms, 18 nav nodes), so they only engage on a genuinely richer site.</p>
+
+<h2>6. The test suite</h2>
+
+<div class="danger">
+<b>Two test runners, and confusing them is the most common week-one mistake.</b>
+<br><br>
+<b>Vitest</b> — <code>npm test</code> — runs <code>tests/**</code>. These are the platform's own unit tests.<br>
+<b>Playwright</b> — <code>playwright.config.ts</code> — has its <code>testDir</code> pointed at <code>runs/</code>. It runs the <i>generated</i> tests for the site under test.
+<br><br>
+The directories are deliberately disjoint, and the Vitest config explicitly excludes <code>runs/</code>. "The tests are failing" is an ambiguous sentence here — say which runner.
+</div>
+
+<h3>What is covered</h3>
+
+<table>
+<tr><th style="width:34%">Area</th><th style="width:10%">Files</th><th>Notable</th></tr>
+<tr><td>Discovery &amp; DOM</td><td>5</td><td><code>genericClickables</code> launches real Chromium; <code>authCrawl</code> spins up a local HTTP server</td></tr>
+<tr><td>IR &amp; grounding</td><td>12</td><td><code>grounding.test.ts</code> is the largest file in the suite at ~1,050 lines</td></tr>
+<tr><td>Cases &amp; strategy</td><td>7</td><td>Selection, scoping, the gate</td></tr>
+<tr><td>Generate / execute / diagnose</td><td>6</td><td>Includes secret-scrubbing</td></tr>
+<tr><td>Credentials &amp; secrets</td><td>4</td><td><code>credentials.test.ts</code> ~737 lines</td></tr>
+<tr><td>Server / API / storage</td><td>5</td><td><code>apiContract</code> uses supertest against the real app</td></tr>
+<tr><td>Auth &amp; tenancy</td><td>3</td><td><code>tenancy.test.ts</code> — a two-org isolation matrix, 31 tests</td></tr>
+<tr><td>Step editor</td><td>5</td><td>Round-trip and drift checks</td></tr>
+<tr><td>LLM plumbing</td><td>2</td><td>Backoff, budget</td></tr>
+<tr><td>Frontend contract</td><td>2</td><td>The only automated checks on <code>public/</code> — see Volume 4 §8</td></tr>
+</table>
+
+<div class="warn">
+<b>Pass count:</b> 790 across 51 files, from <code>docs/LLM_CONTEXT_BRIEFING.md</code>, snapshot dated 1 September 2026 — that document flags its own numbers as the most perishable thing in it. <b>Re-check before quoting.</b> The repository has an explicit rule against treating any number in its documentation as current.
+<br><br>
+<b>There is no CI.</b> Nothing runs these automatically (<code>TECH_DEBT.md</code> TD-20). Run them yourself.
+</div>
+
+<h3>Before calling anything done</h3>
+
+<pre>npx tsc --noEmit     # must be clean
+npx vitest run       # note the pass count if it changed</pre>
+
+<div class="note">
+<b>And one rule that has burned this project repeatedly:</b> a passing test does not prove a fix. A generated Playwright expression that looks right is not verified until it has been <i>run once</i>. The <code>.filter({ visible: true })</code> incident (Volume 2, §7) passed type-checking and a unit test while being a complete no-op, because both checks only inspected the emitted string.
+<br><br>
+If a change touches the Playwright API surface of generated code, execute it once against a synthetic HTML page. That costs nothing and is the only check that would have caught it.
+</div>
+
+<h2>7. Known-broken things</h2>
+
+<p><code>TECH_DEBT.md</code> is the single owner of this list — 150 KB, entries TD-01 upward, most citing a real run ID. Do not start a second list anywhere. A sample of the ones most likely to affect you:</p>
+
+<table>
+<tr><th style="width:12%">ID</th><th>What</th></tr>
+<tr><td>TD-01</td><td>A "deterministic" guard written as a regex over model-authored prose is not deterministic. The reference example of a whole class of bug.</td></tr>
+<tr><td>TD-05</td><td>Duplicate <code>(role, name)</code> pairs make grounding ambiguous — the source of most <code>resolved to 2 elements</code> failures.</td></tr>
+<tr><td>TD-07</td><td>The locator algorithm is written twice — in <code>targetResolver.ts</code> and in the generator's injected helper — and nothing pins them equal.</td></tr>
+<tr><td>TD-14</td><td><code>runs/</code> is served publicly. The reason credentials must never touch disk.</td></tr>
+<tr><td>TD-20</td><td>No CI runs the checks.</td></tr>
+<tr><td>TD-22</td><td>The LLM disk cache never expires; a cache key missing a dimension serves a wrong answer forever.</td></tr>
+</table>
+
+<p><code>problems.md</code> is a different kind of document — a dated forensic audit (18 August 2026) of every run directory then on disk, with statistics and root-cause rankings. It is <b>not</b> a second defect register, and its numbers are a snapshot.</p>
+
+<div class="warn">
+<b>Do not read <code>SITE_STORE_VIEW_SPEC_v2.md</code> as a description of the system.</b> It is a 40 KB <i>design specification</i> for a restructuring that has not been implemented. It is easy to mistake for documentation of the current code.
+</div>
+
+<h2>8. Where the documentation lives</h2>
+
+<table>
+<tr><th style="width:28%">File</th><th style="width:10%">Size</th><th>Owns</th></tr>
+<tr><td><code>CLAUDE.md</code></td><td>13 KB</td><td>Working rules and sharp edges. Capped at 200 lines. <b>The best thing to read first.</b></td></tr>
+<tr><td><code>README.md</code></td><td>23 KB</td><td>What this is and how to run it.</td></tr>
+<tr><td><code>ARCHITECTURE.md</code></td><td>38 KB</td><td>The formal file map and data contracts.</td></tr>
+<tr><td><code>DECISIONS.md</code></td><td>55 KB</td><td>Why each choice was made, and what was rejected.</td></tr>
+<tr><td><code>TECH_DEBT.md</code></td><td>151 KB</td><td>What is broken. The largest document in the repository.</td></tr>
+<tr><td><code>docs/phases/</code></td><td>16 reports</td><td>A build log. Each ends with what it deliberately did <i>not</i> fix.</td></tr>
+<tr><td><code>docs/EDITABLE_IR.md</code></td><td>15 KB</td><td>A walkthrough of the case-editing flow.</td></tr>
+</table>
+
+<div class="danger">
+<b>Two documents are known to be out of date.</b>
+<br><br>
+<code>PROJECT_OVERVIEW.md</code>'s frontend section is wrong on three verifiable points: it gives <code>app.js</code> as ~4,400 lines (it is 5,105), says six views exist with three unbuilt stubs (there are nine, and all three are built), and says the UI uses Server-Sent Events (it polls).
+<br><br>
+<code>ARCHITECTURE.md</code> is right about polling but still calls three built routes "not yet built".
+<br><br>
+This is not a criticism of anyone — it is the documented, recurring failure mode of this repository, and the reason <code>CLAUDE.md</code> says plainly: <i>don't treat a number in these docs as current without re-checking it.</i> <b>That applies to this document too.</b>
+</div>
+
+<h2>9. A checklist for a genuinely stuck run</h2>
+
+<ol>
+<li><b>Did it run at all?</b> <code>08-llm-usage.json</code> — zero calls means it never started properly.</li>
+<li><b>Where did it stop?</b> <code>tail -5 events.ndjson</code>.</li>
+<li><b>What is the real error?</b> <code>05-result.json</code>, the <code>errors[0].message</code> path.</li>
+<li><b>Did it verify anything?</b> <code>meta.truncated</code> in <code>04-ir.json</code>.</li>
+<li><b>Was it blocked?</b> <code>blockedBy</code> in the <code>done</code> event.</li>
+<li><b>What did the page look like?</b> The last <code>step-N.png</code>, then <code>video.webm</code> if there is one.</li>
+<li><b>Is the server current?</b> Did it start after your last edit to <code>src/</code>?</li>
+<li><b>Is the cache lying to you?</b> The LLM disk cache never expires. <code>runs/_cache/llm/</code>.</li>
+<li><b>Is the browser cache intact?</b> <code>npx playwright install</code>, and check for a stale lock first.</li>
+<li><b>Is it a known issue?</b> Search <code>TECH_DEBT.md</code> for a keyword from the error.</li>
+</ol>
+
+<div class="note">
+<b>The habit that makes all of this work.</b> This project writes down what it did. Almost every question — what was on the page, what the model was asked, what it answered, what the browser saw, what it cost — has an answer already sitting in <code>runs/&lt;id&gt;/</code>.
+<br><br>
+Read the evidence before reading the code. It is faster, and it is usually enough.
+</div>
+
+</body>
+</html>

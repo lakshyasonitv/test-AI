@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="740" viewBox="0 0 1000 740" font-family="Segoe UI, Arial, sans-serif">
+  <defs><marker id="a7" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0,0 10,4 0,8" fill="#0b63ce"/></marker></defs>
+  <rect width="1000" height="740" fill="#ffffff"/>
+  <text x="40" y="40" font-size="22" font-weight="700" fill="#0b3a78">The front end: nine screens, one switch</text>
+  <text x="40" y="65" font-size="14" fill="#5a6b80">public/app.js is 5,105 lines of plain JavaScript — no framework, no bundler, no build step. It is a classic script served as-is.</text>
+
+  <rect x="40" y="88" width="300" height="56" rx="8" fill="#e8f1fc" stroke="#0b63ce" stroke-width="2"/>
+  <text x="190" y="112" text-anchor="middle" font-size="14" font-weight="700" fill="#0b3a78">location.hash changes</text>
+  <text x="190" y="132" text-anchor="middle" font-size="12" fill="#374151">e.g. #/run/2026-09-01T…</text>
+  <line x1="340" y1="116" x2="392" y2="116" stroke="#0b63ce" stroke-width="2" marker-end="url(#a7)"/>
+
+  <rect x="396" y="88" width="240" height="56" rx="8" fill="#e8f1fc" stroke="#0b63ce" stroke-width="2"/>
+  <text x="516" y="112" text-anchor="middle" font-size="14" font-weight="700" fill="#0b3a78">applyRoute()</text>
+  <text x="516" y="132" text-anchor="middle" font-size="12" fill="#374151">matches the hash, guards</text>
+  <line x1="636" y1="116" x2="688" y2="116" stroke="#0b63ce" stroke-width="2" marker-end="url(#a7)"/>
+
+  <rect x="692" y="88" width="268" height="56" rx="8" fill="#dff0e2" stroke="#3d8a52" stroke-width="2"/>
+  <text x="826" y="112" text-anchor="middle" font-size="14" font-weight="700" fill="#1f5130">showView(name)</text>
+  <text x="826" y="132" text-anchor="middle" font-size="12" fill="#374151">the ONLY place screens switch</text>
+
+  <!-- routes table -->
+  <rect x="40" y="164" width="590" height="330" rx="8" fill="#f7f9fc" stroke="#c9d9ee"/>
+  <text x="58" y="188" font-size="15" font-weight="700" fill="#0b3a78">Every route applyRoute() handles</text>
+  <g font-size="12.5">
+    <rect x="58" y="200" width="554" height="24" fill="#e8f1fc"/>
+    <text x="70" y="217" font-weight="700" fill="#0b3a78" font-family="Consolas, monospace">hash</text>
+    <text x="300" y="217" font-weight="700" fill="#0b3a78">what it shows</text>
+
+    <text x="70" y="242" font-family="Consolas, monospace" fill="#1a2f4b">#/</text>
+    <text x="300" y="242" fill="#374151">the composer — prompt, URL, coverage</text>
+    <text x="70" y="266" font-family="Consolas, monospace" fill="#1a2f4b">#/run/:id</text>
+    <text x="300" y="266" fill="#374151">live run view — starts the 1s poll</text>
+    <text x="70" y="290" font-family="Consolas, monospace" fill="#1a2f4b">#/history</text>
+    <text x="300" y="290" fill="#374151">past runs</text>
+    <text x="70" y="314" font-family="Consolas, monospace" fill="#1a2f4b">#/team</text>
+    <text x="300" y="314" fill="#374151">members and roles</text>
+    <text x="70" y="338" font-family="Consolas, monospace" fill="#1a2f4b">#/suite/:id</text>
+    <text x="300" y="338" fill="#374151">a saved suite of cases</text>
+    <text x="70" y="362" font-family="Consolas, monospace" fill="#1a2f4b">#/projects/:pid/cases/:cid</text>
+    <text x="300" y="362" fill="#374151">case detail + step editor</text>
+    <text x="70" y="386" font-family="Consolas, monospace" fill="#9c2a2a">#/case/:id</text>
+    <text x="300" y="386" fill="#374151">legacy — rewrites itself to the line above</text>
+    <text x="70" y="410" font-family="Consolas, monospace" fill="#1a2f4b">#/compare/:id?from=&amp;to=</text>
+    <text x="300" y="410" fill="#374151">diff two versions of a case</text>
+    <text x="70" y="434" font-family="Consolas, monospace" fill="#1a2f4b">login / signup</text>
+    <text x="300" y="434" fill="#374151">shown by the auth guard, not by a hash</text>
+    <text x="70" y="458" font-family="Consolas, monospace" fill="#6b7280">anything else</text>
+    <text x="300" y="458" fill="#374151">falls back to home</text>
+    <text x="70" y="482" font-size="11.5" fill="#6b7280">Two guards live in the router, not on each link: the auth gate, and an unsaved-edit confirm.</text>
+  </g>
+
+  <!-- showView rule -->
+  <rect x="650" y="164" width="310" height="330" rx="8" fill="#fff4f4" stroke="#c0392b" stroke-width="2"/>
+  <text x="668" y="188" font-size="15" font-weight="700" fill="#9c2a2a">The showView() rule</text>
+  <text x="668" y="212" font-size="12.5" fill="#374151">Exactly one <tspan font-family="Consolas, monospace">&lt;section class="view"&gt;</tspan></text>
+  <text x="668" y="230" font-size="12.5" fill="#374151">carries <tspan font-family="Consolas, monospace">.view-active</tspan> at a time.</text>
+  <text x="668" y="256" font-size="13" font-weight="700" fill="#9c2a2a">Never switch screens by</text>
+  <text x="668" y="274" font-size="13" font-weight="700" fill="#9c2a2a">toggling .hidden yourself.</text>
+  <text x="668" y="300" font-size="12.5" fill="#374151">Why it is a hard rule: the old</text>
+  <text x="668" y="318" font-size="12.5" fill="#374151">code hid panels from three</text>
+  <text x="668" y="336" font-size="12.5" fill="#374151">places and already leaked —</text>
+  <text x="668" y="354" font-size="12.5" fill="#374151">one of them forgot the gate</text>
+  <text x="668" y="372" font-size="12.5" fill="#374151">panel, so it stayed open</text>
+  <text x="668" y="390" font-size="12.5" fill="#374151">across screens.</text>
+  <line x1="668" y1="406" x2="942" y2="406" stroke="#e0b4b4"/>
+  <text x="668" y="428" font-size="12.5" fill="#374151"><tspan font-family="Consolas, monospace">resetRunUI()</tspan> is its partner —</text>
+  <text x="668" y="446" font-size="12.5" fill="#374151">the one place run-scoped panels</text>
+  <text x="668" y="464" font-size="12.5" fill="#374151">get cleared. Register a new</text>
+  <text x="668" y="482" font-size="12.5" fill="#374151">panel there, once.</text>
+
+  <!-- class contracts -->
+  <rect x="40" y="510" width="920" height="106" rx="8" fill="#fff8e8" stroke="#d98b1f"/>
+  <text x="58" y="534" font-size="15" font-weight="700" fill="#8a5a10">CSS class names are a contract, not a styling choice</text>
+  <text x="58" y="556" font-size="13" fill="#374151">app.js drives the entire UI by toggling these. Renaming any of them in style.css silently breaks a feature — nothing will error.</text>
+  <g font-family="Consolas, monospace" font-size="12.5" fill="#1a2f4b">
+    <text x="58" y="580">.hidden    .view-active    li.started / .completed / .failed    .phase-badge.running</text>
+    <text x="58" y="600">.badge-*   .case-card.open  .history-item.active   .suite-progress-item.&lt;status&gt;   .role-no-edit / .role-no-admin</text>
+  </g>
+
+  <rect x="40" y="632" width="920" height="94" rx="8" fill="#f7f9fc" stroke="#c9d9ee"/>
+  <text x="58" y="656" font-size="15" font-weight="700" fill="#0b3a78">Two functions duplicated on purpose — change one, change both</text>
+  <text x="58" y="679" font-size="13" fill="#374151"><tspan font-family="Consolas, monospace" font-weight="700">formatIrStep</tspan> — app.js has its own copy because a classic script cannot import the server's. Pinned by <tspan font-family="Consolas, monospace">tests/stepText.test.ts</tspan>.</text>
+  <text x="58" y="700" font-size="13" fill="#374151"><tspan font-family="Consolas, monospace" font-weight="700">normalizeUrlKey</tspan> — must stay identical to <tspan font-family="Consolas, monospace">normaliseUrlKey</tspan> in src/server/projects.ts, or new runs file under a near-duplicate project.</text>
+  <text x="58" y="719" font-size="12.5" fill="#9c2a2a">Only the first of these two has a test holding it in place.</text>
+</svg>

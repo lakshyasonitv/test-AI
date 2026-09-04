@@ -24,8 +24,9 @@ generated — before anything is compiled, grounded, or run.
 | `tests/caseSelectionGate.test.ts` | +14 cases. |
 | `tests/tenancy.test.ts` | +1 row: the new run-scoped route joins the cross-tenant isolation table. |
 | `.env.example` | `GATE_CASE_EDIT_AI`, documented, `false`. |
+| `src/schema/appModel.ts` | **New** `toElementIndex()` — the page's actionable elements as role + name (section 9c). |
 
-**758 passing** (was 743, +15). `tsc --noEmit` clean. `node --check public/app.js` clean.
+**780 passing** across 50 files (was 743/48 — +37, including the guard tests from 9b and the projection tests from 9c). `tsc --noEmit` clean. `node --check public/app.js` clean.
 
 ## 2. THE STRUCTURAL POINT
 
@@ -177,6 +178,94 @@ gives the editor the full row: measured 163px → 924px per step input. It also 
   `0` and `2`, no renumbering), a written case lands at `batch.length + 0`, an untouched round
   produces `{}`, and **every edit survived an actual page reload**. Click-to-toggle still fires
   from the summary and not from the editor.
+
+## 9b. A REGRESSION THIS PHASE SHIPPED, AND WHAT IT COST
+
+Worth recording in full, because every check in section 9 passed while it was live.
+
+Building the editor meant replacing a ~200-line region of `public/app.js` wholesale. The
+replacement silently dropped **`postCaseSelectionDecision`** — the single function through which
+every case-selection decision leaves the browser. Its two call sites survived, pointing at nothing.
+
+**What the user saw:** press "Run test", watch the pipeline reach `2. Generating test cases...`,
+and then nothing, forever. It read as "test cases are not generating". Generation was never the
+problem. The gate produced 11 cases and parked correctly; clicking "Run selected tests" threw
+`ReferenceError: postCaseSelectionDecision is not defined`, so the decision was never sent, the
+round waited out its full `CASE_SELECTION_WAIT_MS` (10 minutes), timed out with
+`noCasesSelected: true`, and the run finished having executed no tests. Two runs died this way
+before it was found, each costing a full plan + discovery + generation cycle.
+
+**Why nothing caught it.** `node --check` validates syntax, not references. `tsc` never looks at
+`app.js`. The suite does not execute `app.js`'s click handlers. And the manual browser check drove
+the panel by calling `gateEditPayload()` and the render helpers **directly instead of pressing the
+button** — so the panel rendered perfectly, every assertion passed, and the only unexercised path
+was the one that was broken. That is this project's own recorded failure mode (`DECISIONS.md`
+D-19): a check that inspects a thing without ever running it.
+
+**The guard now in place:** `tests/appJsDefined.test.ts`. `app.js` is a classic script with no
+module surface and this repo has no JS parser available, so it is a static check of `await NAME(`
+call sites — an unambiguous shape that cannot appear in prose, verified to flag nothing across all
+70 such sites, and exactly where the bug bit. Two more general approaches were tried and rejected
+rather than shipped, both instances of the same trap: regex-stripping literals broke on nested
+template literals and reported the word "call" (from the string `"AI call(s)"`) as a missing
+function; a hand-rolled tokenizer lost 108KB of a 228KB file to regex literals and apostrophes in
+comments, hiding real definitions. The test also pins the gate panel's 23 helpers by name.
+
+**The lesson, stated so it survives this phase:** when a change replaces a region of a file rather
+than editing lines within it, diff the set of definitions before and after. `git diff` showed the
+deletion plainly; nobody read it that way. And verify a button by *clicking* it.
+
+## 9c. FOLLOW-UP: SHOWING WHAT IS ACTUALLY ON THE PAGE
+
+Prompted by a direct question — does the gate editor have the IR, so edits come out accurate? It
+does not, and it was worse than that: `02-appmodel.json` had no route and no reference anywhere in
+`public/app.js`, so the browser had never been told what exists on the site. A reviewer typed plain
+English into a box with no knowledge of the application, and the first thing to check the result
+was `groundingError()` at IR time, minutes later.
+
+**What was added.** `toElementIndex(model)` in `src/schema/appModel.ts`, and
+`GET /api/runs/:runId/page-elements` (`requireRunRole("viewer")`) serving it from the run's saved
+model — discovery writes that file at `orchestrator.ts:152`, before the gate parks at `:174`.
+Each case's editor shows its page's real controls as chips, chosen by the case's own `targetUrl`;
+clicking one inserts the site's own wording into the step being edited.
+
+**It reuses `isUsableElement` rather than filtering its own way.** That predicate is already how
+`ir.ts` decides what a generated test may address, so the panel shows exactly the set grounding
+will later accept — a reviewer can never be shown a control that would then be rejected. A private
+"named and interactive" filter here is the drift `hiddenInputNames`' own header warns about.
+
+**Only `role` and `name` leave the server.** Never `value`, `css`, `id` or `testId`.
+`PageModel.forms[].fields[].value` is where live secrets sit — `hiddenInputNames` documents a real
+CSRF token captured from amazon.in as an ordinary-looking `textbox`. `isUsableElement` already
+excludes hidden inputs, so the two-field surface is a second, independent reason a token cannot
+reach the browser, and a test asserts both (`Object.keys(el)` is exactly `["name","role"]`, and the
+token string never appears in the payload).
+
+**What was deliberately NOT built: warnings.** Flagging a step that names a non-existent element
+means extracting a target from free English — a regex over model-authored prose, which is exactly
+the `TECH_DEBT.md` TD-01 failure this project already has on record. A false warning on a correct
+step is worse than no warning. Showing what exists carries no such risk: it is a straight read of
+structured data, and it never inspects what the reviewer typed. Grounding at IR time remains the
+single place accuracy is decided; this changes only what the reviewer can *see*.
+
+**Verified** on the real saved model for `2026-08-31T05-13-44-794Z-7e50a91b`: 18 raw elements
+became 17 across two pages in an 830-byte payload, with the login page correctly offering
+`you@thinkvibes.com`, `*********` and `Sign In` — the exact wording the model uses in its own
+steps. In the browser: chips follow `targetUrl` (the login case sees only login controls), a click
+inserts at the caret into the step last focused, falls back to the last step when none was, does
+not leak into a neighbouring case, and the inserted wording travels in the submitted payload.
+Per section 9b's lesson, the chips were **clicked**, not merely rendered.
+
+**One thing that could not be verified here:** whether focus returns to the step field after a
+click. `element.focus()` is a no-op in an unfocused automation tab — `document.activeElement` was
+already `body` before the click — so the assertion would have been meaningless either way. The
+handler calls `focus()` and restores the caret; that specific behaviour rests on code inspection.
+
+`public/app.js` carries its own `gatePageKey`, a deliberate duplicate of the exported `pageKey`,
+for the same reason it duplicates `formatIrStep`: no module surface. `tests/gatePageElements.test.ts`
+extracts the browser copy and asserts the two agree, so they cannot drift silently. Note
+`src/stages/ir.ts:130` has a THIRD private copy — pre-existing, unaddressed here, and worth
+collapsing whenever that file is next touched.
 
 ## 10. WHAT I DID NOT TOUCH
 

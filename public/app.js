@@ -665,6 +665,7 @@ function hideSuiteProgress() {
 function renderSuiteSummaryHeader(suite) {
   if (!suite) return "";
   return `
+    ${currentRunPrompt ? `<p class="case-narrative-line"><b>You asked:</b> ${escapeHtml(currentRunPrompt)}</p>` : ""}
     <div class="suite-summary-stats">
       <span class="suite-stat">${suite.total} checks</span>
       <span class="suite-stat suite-stat-passed">${icon("check", { size: 13 })} ${suite.passed} passed</span>
@@ -995,7 +996,18 @@ async function openSaveCasePanel(card) {
   });
 }
 
+/**
+ * The natural-language request that produced the run currently on screen.
+ *
+ * NOT fetched: it already arrives on the run's own event stream. The `input` event carries
+ * `{ prompt, url, urls, coverage }` — the same field `summariseRun` reads to build a RunSummary —
+ * and `applyEvent` sees every event, replayed ones included, so this survives a page reload with
+ * no request and no route change.
+ */
+let currentRunPrompt = "";
+
 function hideSuiteResults() {
+  currentRunPrompt = "";
   currentSuite = null;
   suiteResultsEl.classList.add("hidden");
   suiteResultsEl.removeAttribute("data-run-id");
@@ -1702,6 +1714,111 @@ function setGateChecked(index, value) {
   saveGateDrafts();
 }
 
+// --- What's on the page -----------------------------------------------------
+//
+// A case at the gate has no IR: it is plain English, and both compilation and grounding happen
+// only after the round is approved. So while a step is being typed, nothing can tell the reviewer
+// whether the control they just named exists. `groundingError()` answers that later, minutes
+// later, against the same application model these chips are built from.
+//
+// This closes the gap from the safe side. It deliberately does NOT check what was typed — deciding
+// whether a sentence names a real element means pulling a target out of free English, a regex over
+// model-authored prose, which is the TD-01 failure this project already has on record. A false
+// warning on a correct step is worse than no warning at all. Showing what IS there carries no such
+// risk, and clicking a chip puts the site's own wording into the sentence, which is the thing that
+// actually makes a step ground cleanly.
+let gatePageElements = null;      // [{ url, title, elements: [{role, name}] }] for the current run
+let gatePageElementsRunId = null;
+// The step input a chip should insert into: the last one the reviewer touched.
+let gateLastStep = null;          // { index, step }
+
+/** Origin + path, ignoring query and hash.
+ *
+ *  A deliberate duplicate of `pageKey()` in src/schema/appModel.ts. app.js is a classic script
+ *  with no module surface and cannot import from src/, the same reason it carries its own copy of
+ *  `formatIrStep`. `tests/gatePageElements.test.ts` evaluates this copy and asserts it agrees with
+ *  the server's on the URL shapes that matter, so the two cannot drift silently. If you change one,
+ *  change both — the test will tell you.
+ */
+function gatePageKey(url) {
+  try {
+    const u = new URL(url);
+    return u.origin + (u.pathname.replace(/\/+$/, "") || "/");
+  } catch { return url; }
+}
+
+/** Load the run's page elements once per round. Silent on failure: the panel is fully usable
+ *  without them, and a missing application model must never block a round someone is waiting on. */
+async function loadGatePageElements(runId) {
+  if (gatePageElementsRunId === runId && gatePageElements) return;
+  gatePageElementsRunId = runId;
+  gatePageElements = null;
+  try {
+    const res = await fetch(`/api/runs/${runId}/page-elements`);
+    if (!res.ok) return;
+    const body = await res.json();
+    gatePageElements = Array.isArray(body.pages) ? body.pages : null;
+  } catch {
+    // Offline, 404 before discovery wrote the artifact, or a corrupt model. Nothing to show.
+  }
+}
+
+/** The page a case is about: its own targetUrl when it has one, otherwise every page. */
+function gatePagesFor(testCase) {
+  if (!gatePageElements || gatePageElements.length === 0) return [];
+  const target = testCase && testCase.targetUrl;
+  if (target) {
+    const key = gatePageKey(target);
+    const match = gatePageElements.filter((p) => gatePageKey(p.url) === key);
+    if (match.length) return match;
+  }
+  return gatePageElements;   // no target, or a target that matches nothing discovered
+}
+
+// Roles grouped the way a person looks for them, rather than the way the accessibility tree
+// reports them. Anything unrecognised still shows, under "Other", so a control is never hidden
+// just because this list did not anticipate its role.
+const GATE_ROLE_GROUPS = [
+  { label: "Buttons", roles: ["button", "menuitem", "tab"] },
+  { label: "Fields", roles: ["textbox", "searchbox", "combobox", "listbox", "checkbox", "radio", "switch", "spinbutton", "slider", "option"] },
+  { label: "Links", roles: ["link"] },
+  { label: "Headings", roles: ["heading"] },
+];
+
+function gateElementsHtml(index, testCase) {
+  const pages = gatePagesFor(testCase);
+  if (pages.length === 0) return "";
+
+  const sections = pages.map((page) => {
+    const grouped = GATE_ROLE_GROUPS.map((g) => ({
+      label: g.label,
+      items: page.elements.filter((e) => g.roles.includes(e.role)),
+    }));
+    const claimed = new Set(GATE_ROLE_GROUPS.flatMap((g) => g.roles));
+    const other = page.elements.filter((e) => !claimed.has(e.role));
+    if (other.length) grouped.push({ label: "Other", items: other });
+
+    const rows = grouped.filter((g) => g.items.length).map((g) => `
+      <div class="case-suites">
+        <span class="case-suites-label">${escapeHtml(g.label)}</span>
+        ${g.items.map((e) => `<button type="button" class="case-suite-chip" data-act="insert-el"
+           data-index="${index}" data-name="${escapeHtml(e.name)}"
+           title="${escapeHtml(e.role)} &mdash; click to put this wording in the step you are editing"
+           >${escapeHtml(e.name)}</button>`).join("")}
+      </div>`).join("");
+    if (!rows) return "";
+    const label = page.title ? `${page.title} (${page.url})` : page.url;
+    return `${pages.length > 1 ? `<div class="cd-card-label">${escapeHtml(label)}</div>` : ""}${rows}`;
+  }).join("");
+
+  if (!sections.trim()) return "";
+  return `
+    <div class="cd-card">
+      <div class="cd-card-label">What's on this page &mdash; click to use the site's own wording</div>
+      ${sections}
+    </div>`;
+}
+
 // --- Rendering --------------------------------------------------------------
 
 function gateProposalHtml(index, p) {
@@ -1792,6 +1909,7 @@ function gateCardHtml(entry) {
         <div class="cd-card-label">Why it matters</div>
         <input type="text" class="cd-line-input" data-field="whyItMatters" data-index="${i}"
                value="${escapeHtml(c.whyItMatters || "")}" aria-label="Why it matters" />
+        ${gateElementsHtml(i, c)}
         ${gateAiAvailable ? `
         <div class="cd-card">
           <div class="cd-card-label">Ask for a change</div>
@@ -1820,14 +1938,23 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
   }
 
   caseRoundLabelEl.textContent = `Round ${attempt} — review the test cases`;
-  casePoolCounterEl.textContent =
-    `${acceptedSoFarCount} of ${CASE_POOL_CAP} case${acceptedSoFarCount === 1 ? "" : "s"} accepted so far`;
+  // "2 of 5 cases accepted so far" read as progress toward a target of five, so people pressed
+  // refine to "finish". Five is MAX_ACCUMULATED_CASES — a ceiling on what the pool will hold,
+  // not a number to reach. The wording now says what you can do rather than how far along you are.
+  casePoolCounterEl.textContent = acceptedSoFarCount === 0
+    ? `Tick the cases you want to run. You can run as few as one — up to ${CASE_POOL_CAP} in total.`
+    : `${acceptedSoFarCount} case${acceptedSoFarCount === 1 ? "" : "s"} accepted — enough to run now. ` +
+      `${CASE_POOL_CAP} is the most this run will hold, not a target.`;
 
   repaintCaseList();
+  // Fetched after the first paint, not before it: the round is reviewable immediately, and the
+  // chips fill in a moment later if the run has an application model to offer.
+  loadGatePageElements(caseRunId).then(() => {
+    if (gatePageElements && !caseSelectionPanelEl.classList.contains("hidden")) repaintCaseList();
+  });
 
-  caseRefineInputWrapEl.classList.add("hidden");
+  setRefineOpen(false);
   caseNewPromptInputEl.value = "";
-  caseNotSatisfiedBtnEl.textContent = "Not satisfied — refine";
   caseRegenAttemptsLeftEl.textContent =
     `Refine attempts left: ${Math.max(0, MAX_CASE_REGEN_ATTEMPTS_LOCAL - attempt)} of ${MAX_CASE_REGEN_ATTEMPTS_LOCAL}`;
   caseNoticeEl.classList.add("hidden");
@@ -1891,6 +2018,27 @@ function updateDoneButtonState() {
   caseDoneBtnEl.textContent = total === 0
     ? "Run selected tests"
     : `Run ${total} test${total === 1 ? "" : "s"}`;
+
+  // A disabled button with no reason left "Not satisfied — refine" as the only control that
+  // responded, which is how unintended extra rounds were being generated. Say why, next to it,
+  // and say that refining is not the way out.
+  refineHintEl().textContent = total === 0
+    ? "Nothing is ticked, so there is nothing to run. Tick at least one case above — you do not need to refine."
+    : "";
+}
+
+/** The inline reason under the final actions. Created once, in code, because this task may not
+ *  add markup to index.html; `.case-regen-note` is the existing style for a line in this slot. */
+function refineHintEl() {
+  let el = document.getElementById("case-done-hint");
+  if (!el) {
+    el = document.createElement("p");
+    el.id = "case-done-hint";
+    el.className = "case-regen-note case-done-hint";
+    el.setAttribute("role", "status");
+    caseDoneBtnEl.closest(".case-selection-final-actions").insertAdjacentElement("beforebegin", el);
+  }
+  return el;
 }
 
 // --- Turning drafts into the request ----------------------------------------
@@ -1954,6 +2102,29 @@ function gateValidationError(selectedIndexes) {
   return null;
 }
 
+/**
+ * The one door every gate decision goes through: pick, refine, edits and hand-written cases all
+ * leave the browser here and nowhere else.
+ */
+async function postCaseSelectionDecision(runId, decision) {
+  try {
+    const res = await fetch(`/api/runs/${runId}/case-selection`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(decision),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showError(err.error ?? "Failed to submit case selection");
+      return false;
+    }
+    return true;
+  } catch {
+    showError("Failed to submit case selection");
+    return false;
+  }
+}
+
 caseSelectAllBtnEl.addEventListener("click", () => {
   caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
     cb.checked = true;
@@ -1989,26 +2160,79 @@ caseDoneBtnEl.addEventListener("click", async () => {
   if (ok) hideCaseSelectionPanel();
 });
 
-caseNotSatisfiedBtnEl.addEventListener("click", async () => {
-  if (!caseRunId) return;
-  if (caseRefineInputWrapEl.classList.contains("hidden")) {
-    caseRefineInputWrapEl.classList.remove("hidden");
-    caseNotSatisfiedBtnEl.textContent = "Confirm refine";
+/**
+ * Open or close the refine box. Nothing here submits.
+ *
+ * The trigger used to be a two-click submit: the first click revealed the box, the second sent
+ * the round. Clicking it twice — to look, then to dismiss — generated a refine nobody asked for.
+ * The trigger is now a pure disclosure, and the only thing that submits is the confirm control
+ * inside the box.
+ *
+ * `.hidden` ships on this element from index.html, which this change may not edit. Rather than
+ * add another `.hidden` toggle outside showView(), the class is cleared once here and the
+ * open/closed state is carried by `.case-refine-collapsed`, which belongs to this feature.
+ */
+function setRefineOpen(open) {
+  caseRefineInputWrapEl.classList.remove("hidden");
+  caseRefineInputWrapEl.classList.toggle("case-refine-collapsed", !open);
+  caseNotSatisfiedBtnEl.textContent = open ? "Cancel refine" : "Not satisfied — refine";
+  caseNotSatisfiedBtnEl.setAttribute("aria-expanded", String(open));
+  if (open) {
+    ensureRefineConfirmBtn();
     caseNewPromptInputEl.focus();
-    return;
   }
+}
+
+/** The confirm control, inside the box so the trigger can never submit. Created once, in code,
+ *  because this change may not add markup to index.html. */
+function ensureRefineConfirmBtn() {
+  let btn = document.getElementById("case-refine-confirm-btn");
+  if (btn) return btn;
+  btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "case-refine-confirm-btn";
+  btn.className = "case-refine-confirm";
+  btn.textContent = "Generate another round";
+  caseRefineInputWrapEl.appendChild(btn);
+  btn.addEventListener("click", submitRefine);
+  return btn;
+}
+
+/** Send the refine. The only path that posts `not_satisfied`. */
+async function submitRefine() {
+  if (!caseRunId) return;
   const newPrompt = caseNewPromptInputEl.value.trim();
   if (!newPrompt) {
     showError("Describe what should change before refining.");
+    caseNewPromptInputEl.focus();
     return;
   }
   const selectedIndexes = getCheckedCaseIndexes();
   const problem = gateValidationError(selectedIndexes);
   if (problem) return showError(problem);
+
+  // Anything not ticked is recorded `rejected` by the history ledger, and getRejectedTitles()
+  // then excludes it from every later round of this run. That is not obvious from the screen and
+  // it cannot be undone, so it is stated before the round is spent rather than discovered after.
+  const unticked = gateCases().filter((c) => !selectedIndexes.includes(c.index)).length;
+  const warning = unticked === 0
+    ? "Generate another round of cases?"
+    : `Generate another round?
+
+${unticked} case${unticked === 1 ? "" : "s"} you have not ` +
+      `ticked will be recorded as rejected, and cannot be offered again in this run.`;
+  if (!confirm(warning)) return;
+
   const ok = await postCaseSelectionDecision(caseRunId, {
     action: "not_satisfied", selectedIndexes, newPrompt, ...gateEditPayload(),
   });
   if (ok) hideCaseSelectionPanel();
+}
+
+// The trigger only discloses — open, or close again with nothing sent.
+caseNotSatisfiedBtnEl.addEventListener("click", () => {
+  if (!caseRunId) return;
+  setRefineOpen(caseRefineInputWrapEl.classList.contains("case-refine-collapsed"));
 });
 
 caseSelectionListEl.addEventListener("change", (e) => {
@@ -2019,6 +2243,13 @@ caseSelectionListEl.addEventListener("change", (e) => {
 
 // Typing never re-renders: that would pull the caret out from under the reviewer. The draft is
 // recorded and the summary line above the editor is nudged to match.
+caseSelectionListEl.addEventListener("focusin", (e) => {
+  const el = e.target;
+  if (el && el.dataset && el.dataset.field === "step") {
+    gateLastStep = { index: Number(el.dataset.index), step: Number(el.dataset.step) };
+  }
+});
+
 caseSelectionListEl.addEventListener("input", (e) => {
   const el = e.target;
   const field = el.dataset && el.dataset.field;
@@ -2060,6 +2291,26 @@ caseSelectionListEl.addEventListener("click", async (e) => {
   const act = btn.dataset.act;
   const i = Number(btn.dataset.index);
   const k = Number(btn.dataset.step);
+
+  if (act === "insert-el") {
+    // Insert only. Nothing here reads what the reviewer typed, so there is no prose to
+    // misinterpret and no way to produce a wrong suggestion about a correct step.
+    const name = btn.dataset.name || "";
+    const target = gateLastStep && gateLastStep.index === i
+      ? caseSelectionListEl.querySelector(`[data-field="step"][data-index="${i}"][data-step="${gateLastStep.step}"]`)
+      : null;
+    const rows = caseSelectionListEl.querySelectorAll(`[data-field="step"][data-index="${i}"]`);
+    const input = target || rows[rows.length - 1];
+    if (!input) return;
+    const at = input.selectionStart == null ? input.value.length : input.selectionStart;
+    const quoted = `"${name}"`;
+    input.value = input.value.slice(0, at) + quoted + input.value.slice(at);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+    const caret = at + quoted.length;
+    if (input.setSelectionRange) { try { input.setSelectionRange(caret, caret); } catch { /* not a text input */ } }
+    return;
+  }
 
   if (act === "toggle-edit") {
     const box = caseSelectionListEl.querySelector(`[data-editor="${i}"]`);
@@ -2135,7 +2386,8 @@ caseSelectionListEl.addEventListener("click", async (e) => {
     const entry = gateCases().find((x) => x.index === i);
     if (!entry) return;
     btn.disabled = true;
-    btn.textContent = "Asking…";
+    btn.classList.add("ai-busy");
+    btn.innerHTML = `${SPIN_ICON} Asking…`;
     try {
       const res = await fetch(`/api/runs/${caseRunId}/case-selection/rewrite`, {
         method: "POST",
@@ -2156,6 +2408,7 @@ caseSelectionListEl.addEventListener("click", async (e) => {
       showError("Could not propose a change.");
     } finally {
       btn.disabled = false;
+      btn.classList.remove("ai-busy");
       btn.textContent = "Ask for a change";
     }
   }
@@ -2180,6 +2433,13 @@ if (caseWriteOwnBtnEl) {
 
 function applyEvent(event, runId) {
   setPhaseFromStage(event.stage, event.status, event.data);
+
+  // The first event of every run. Recorded, not rendered here: the results header is drawn later,
+  // from renderSuiteResults, and by then this has been seen — on a live run and on a reload alike,
+  // because the poller replays the whole stream through this function.
+  if (event.stage === "input" && typeof event.data?.prompt === "string") {
+    currentRunPrompt = event.data.prompt;
+  }
 
   if (event.stage === "credentials") {
     if (event.status === "started") showCredentialPrompt(runId, event.data);
@@ -2857,6 +3117,11 @@ function caseEditorDirty() {
   return !!caseEditor && JSON.stringify(caseLinesPayload()) !== caseEditor.original;
 }
 
+/** The inline spinner shown inside a button waiting on an AI proposal. One definition so the
+ *  three AI entry points cannot drift apart. Purely visual — the button's own label change is
+ *  what a screen reader announces. */
+const SPIN_ICON = icon("loader", { size: 13, cls: "ai-spin" });
+
 /** A re-ground is in flight — steps are read-only and Save is replaced by Cancel. */
 const caseEditorBusy = () => !!caseEditor?.job;
 
@@ -2998,7 +3263,11 @@ async function doTranslateSteps(btn) {
   if (!caseEditor) return;
   const editor = caseEditor;
   btn.disabled = true;
-  btn.textContent = "Writing…";
+  // Same direct-DOM approach, and here it is required rather than merely preferred: the
+  // function that renders this button documents that it must NOT repaint, because a repaint
+  // mid-typing steals the caret out of the line being fixed.
+  btn.classList.add("ai-busy");
+  btn.innerHTML = `${SPIN_ICON} Writing…`;
   try {
     const proposal = await api(`/api/cases/${encodeURIComponent(editor.caseId)}/steps/translate`, {
       method: "POST",
@@ -3027,7 +3296,14 @@ async function saveCaseSteps(c, repaint) {
   editor.conflict = null;
 
   const btn = document.getElementById("cdSave");
-  if (btn) btn.disabled = true;
+  if (btn) {
+    btn.disabled = true;
+    // Covers the POST window only. Once the server answers with a job, the `.cd-job` banner
+    // and the per-row verifying states take over. Every exit from this function ends in a
+    // repaint that rebuilds this button, so the spinner cannot get stuck.
+    btn.classList.add("ai-busy");
+    btn.innerHTML = `${SPIN_ICON} Saving…`;
+  }
 
   let res;
   try {
@@ -3199,7 +3475,7 @@ function paintCaseJobBanner() {
   const job = caseEditor.job;
   el.innerHTML = `
     <div class="cd-job">
-      <span class="cd-job-text">${job.cancelling
+      <span class="cd-job-text ai-busy">${SPIN_ICON}${job.cancelling
         ? "Cancelling… the page being checked has to finish first."
         : `Verifying ${Math.min(job.done + 1, job.total)} of ${job.total}…`}</span>
       <button type="button" class="dl-btn-inline" id="cdCancel"${job.cancelling ? " disabled" : ""}>Cancel</button>
@@ -3541,7 +3817,12 @@ async function renderCaseView(caseId, routeProjectId) {
     const instruction = (caseEditor.askText || "").trim();
     if (!instruction) { caseEditor.errorMsg = "Say what you would like changed."; return paintCaseScreen(); }
     btn.disabled = true;
-    btn.textContent = "Asking…";
+    // Presentation only. Deliberately still a direct DOM write rather than a state flag +
+    // repaint: paintCaseScreen() rebuilds this button from scratch when the request settles,
+    // so the busy look cannot outlive the request, and a pre-request repaint would be a
+    // behaviour change nobody asked for.
+    btn.classList.add("ai-busy");
+    btn.innerHTML = `${SPIN_ICON} Asking…`;
     try {
       caseEditor.proposal = await api(`/api/cases/${encodeURIComponent(caseId)}/rewrite`, {
         method: "POST", headers: { "Content-Type": "application/json" },

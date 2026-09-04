@@ -1,0 +1,273 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+<head>
+<meta charset="utf-8">
+<title>Volume 1 — Orientation</title>
+<style>
+@page { size: A4; margin: 2cm 1.8cm 2cm 1.8cm; }
+body { font-family: "Segoe UI", Calibri, Arial, sans-serif; font-size: 11pt; color: #1a1a1a; line-height: 1.45; }
+h1 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 26pt; color: #0b3a78; margin: 0 0 4pt 0; }
+h2 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 17pt; color: #0b63ce; margin: 22pt 0 7pt 0; border-bottom: 1px solid #c9d9ee; padding-bottom: 3pt; }
+h3 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 13pt; color: #14213d; margin: 15pt 0 5pt 0; }
+h4 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 11.5pt; color: #0b3a78; margin: 12pt 0 4pt 0; }
+p { margin: 0 0 8pt 0; }
+ul, ol { margin: 0 0 10pt 0; padding-left: 20pt; }
+li { margin: 0 0 4pt 0; }
+table { border-collapse: collapse; width: 100%; margin: 8pt 0 14pt 0; }
+th { background: #e8f1fc; border: 1px solid #9dbfe8; padding: 5pt 7pt; text-align: left; font-size: 9.5pt; color: #0b3a78; }
+td { border: 1px solid #c9d9ee; padding: 5pt 7pt; font-size: 9.5pt; vertical-align: top; }
+pre { font-family: Consolas, "Courier New", monospace; font-size: 9pt; background: #f5f7fa; border: 1px solid #d6dee8; padding: 7pt 9pt; margin: 6pt 0 12pt 0; white-space: pre; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt; color: #9c2a2a; }
+.sub { font-size: 12pt; color: #5a6b80; margin: 0 0 3pt 0; }
+.meta { font-size: 9pt; color: #6b7280; margin: 0 0 16pt 0; }
+.caption { font-size: 8.5pt; color: #5a6b80; margin: 2pt 0 14pt 0; }
+.note { background: #f7f9fc; border: 1px solid #c9d9ee; border-left: 4px solid #0b63ce; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.warn { background: #fff8e8; border: 1px solid #d98b1f; border-left: 4px solid #d98b1f; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.danger { background: #fff4f4; border: 1px solid #c0392b; border-left: 4px solid #c0392b; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.lead { font-size: 12pt; color: #14213d; }
+</style>
+</head>
+<body>
+
+<h1>Volume 1 — Orientation</h1>
+<p class="sub">An engineer's guide to the AI Test Platform</p>
+<p class="meta">Describes commit <code>57e6261</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026 &nbsp;·&nbsp; Volume 1 of 5</p>
+
+<div class="note">
+<b>What this document set is.</b> Five volumes that take you from knowing nothing about this project to being able to read its code, follow a request end to end, and work out for yourself what went wrong when something breaks.
+<br><br>
+<b>What it is not.</b> It is a teaching narrative, not the authority. The repository's own documents remain the owners of their topics: <code>ARCHITECTURE.md</code> owns the file map and schemas, <code>DECISIONS.md</code> owns the reasoning behind design choices, <code>TECH_DEBT.md</code> owns the list of known defects. Where this guide and those disagree, <b>they win, and the source code beats all of us.</b>
+<br><br>
+Every fact here was read out of the actual source, not copied from existing documentation — because documentation drift is a recorded, recurring problem in this repository, and two of the existing documents are measurably out of date. Where this guide contradicts them, that is deliberate and flagged.
+</div>
+
+<p>[[TOC]]</p>
+
+<h2>1. What this thing actually does</h2>
+
+<p class="lead">You type a sentence and a web address. It gives you back Playwright tests that have already been run against that site.</p>
+
+<p>That is the whole product in one line. The interesting part is everything that has to happen in between, because the naive version of this idea does not work.</p>
+
+<h3>Why the naive version fails</h3>
+
+<p>The obvious approach is: give the page's HTML to a language model, ask it for a Playwright test, run whatever comes back. People build this in an afternoon and it looks like it works. Then you discover the failure mode.</p>
+
+<p>The model writes a test that clicks a button called <i>"Proceed to checkout"</i>. There is no such button. There is a <i>"Continue to payment"</i> button. The test fails, and you cannot tell whether the site is broken or the test was fiction. Multiply that by fifty test cases and the output is worthless — not because it is often wrong, but because <b>you cannot tell which parts are wrong without checking every one by hand</b>, which is the work you were trying to avoid.</p>
+
+<div class="note">
+<b>The central design rule of this project, and you should read it twice:</b>
+<br><br>
+<b>An instruction given to a language model is a preference, not a constraint.</b> Every rule the prompt asks the model to follow is expected to have a deterministic check behind it in real code.
+<br><br>
+The model is never trusted. It <i>proposes</i>; code <i>verifies</i>. If you understand only one thing about this codebase, make it this one — it explains why the code is shaped the way it is almost everywhere.
+</div>
+
+<p>So the platform does something more careful. Before it asks the model for anything, it opens the real site in a real browser and builds an inventory of what is actually on the page: every button, every field, every link, with its accessible name. Then, after the model produces a test, it checks every single step against that inventory. A step that points at something which does not exist is rejected and the model is asked again.</p>
+
+<p>That check is called <b>grounding</b>, and it is the heart of the system. Volume 2 covers it in detail.</p>
+
+<h3>The other half: it actually runs the tests</h3>
+
+<p>The platform does not hand you a <code>.spec.ts</code> file and wish you luck. It runs the test, captures screenshots of every step, records video when things fail, and — if the test failed — tries to explain why in plain English. Everything it did is written to disk where you can inspect it.</p>
+
+<p>That evidence trail is the single most useful thing about this project when you are debugging. Volume 5 is built around it.</p>
+
+<h2>2. The end-to-end flow</h2>
+
+<p>A run moves through seven stages. Each one takes what the previous stage produced, does one job, and writes its output to a numbered file on disk.</p>
+
+<p><img src="../diagrams/01-pipeline-flow.png" width="660"></p>
+<p class="caption">Figure 1 — the seven pipeline stages, what each produces, and which ones cost money. Source: <code>runPipeline()</code> in <code>src/orchestrator.ts</code>.</p>
+
+<div class="warn">
+<b>A correction you will need.</b> You will hear people say this pipeline has "nine stages", and the repository's own prose says so too. That is a miscount: there are <b>nine numbered artifact files</b> (<code>00-</code> through <code>08-</code>) but only <b>seven stages</b>. The remaining events — <code>input</code>, <code>credentials</code>, <code>heal</code>, <code>done</code>, <code>error</code> — appear in the same event stream but are not stages and write no numbered file of their own.
+<br><br>
+This matters when debugging: it explains why a failed run's folder can contain <code>00</code>, <code>04</code>, <code>05</code>, <code>07</code> and <code>08</code> with nothing in between.
+</div>
+
+<h3>The stages in one sentence each</h3>
+
+<table>
+<tr><th style="width:14%">Stage</th><th style="width:26%">Does what</th><th style="width:22%">Lives in</th><th style="width:20%">Writes</th><th style="width:18%">Costs</th></tr>
+<tr><td><b>plan</b></td><td>Turns your sentence into an ordered list of intentions.</td><td><code>stages/planner.ts</code></td><td><code>01-plan.json</code></td><td>One Gemini call</td></tr>
+<tr><td><b>discovery</b></td><td>Opens the real site and inventories what is on it.</td><td><code>stages/hybridDiscovery.ts</code></td><td><code>02-appmodel.json</code></td><td>A browser; usually no model</td></tr>
+<tr><td><b>testcases</b></td><td>Writes readable QA cases against what was found.</td><td><code>stages/testCases.ts</code></td><td><code>03-cases.json</code></td><td>One Gemini call</td></tr>
+<tr><td><b>ir</b></td><td>Compiles one case to strict JSON and proves every target exists.</td><td><code>stages/ir.ts</code></td><td><code>04-ir.json</code></td><td>Up to 4 calls + browser</td></tr>
+<tr><td><b>generate</b></td><td>Turns that JSON into a real Playwright file.</td><td><code>stages/generator.ts</code></td><td><code>generated.spec.ts</code></td><td>Nothing — pure code</td></tr>
+<tr><td><b>execute</b></td><td>Runs the file and reads the report back.</td><td><code>stages/executor.ts</code></td><td><code>05-result.json</code></td><td>A browser</td></tr>
+<tr><td><b>failure_analysis</b></td><td>Explains a failure in plain English. Only runs on failure.</td><td><code>stages/failureAnalysis.ts</code></td><td><code>06-diagnosis.json</code></td><td>Free check first, then maybe Gemini</td></tr>
+</table>
+
+<h3>What happens after the first case</h3>
+
+<p>Stages 4 to 7 handle one case — the <b>primary</b> case, the one closest to what you asked for. Once that is done, <code>suiteRunner.ts</code> takes every other selected case and puts it through the same compile-generate-execute cycle, writing each into its own <code>cases/case-N/</code> folder. That is where <code>07-suite-summary.json</code> comes from.</p>
+
+<div class="note">
+<b>How the primary case is chosen.</b> It is <code>cases.find(c =&gt; c.fromPrompt)</code> first, and only falls back to the highest-priority case if nothing was flagged. That ordering is deliberate: a "critical"-priority SQL-injection case used to outrank the thing the user actually asked for.
+</div>
+
+<h2>3. How a run starts and how you watch it</h2>
+
+<p><img src="../diagrams/02-run-lifecycle.png" width="660"></p>
+<p class="caption">Figure 2 — the request lifecycle. The HTTP request returns immediately; the work happens in the background.</p>
+
+<p>The important idea: <code>POST /api/runs</code> does almost nothing. It checks your permissions, generates a run ID, kicks the pipeline off in the background, and returns <b>202 Accepted</b> with that ID — all in milliseconds. The actual run takes minutes.</p>
+
+<p>The browser then watches by polling <code>GET /api/runs/:runId/state</code> once a second and replaying any events it has not seen yet into the progress cards.</p>
+
+<div class="warn">
+<b>Correction to the existing docs.</b> <code>PROJECT_OVERVIEW.md</code> says the UI opens a Server-Sent Events stream and falls back to polling. That is not true and has not been for some time. <code>connectToRun()</code> in <code>public/app.js</code> is a plain <code>while</code> loop with a 1-second <code>setTimeout</code>. The string <code>EventSource</code> does not appear anywhere in <code>public/</code>.
+<br><br>
+An SSE route <i>does</i> exist on the server (<code>GET /api/runs/:runId/events</code>) — nothing calls it. It was abandoned because a Cloudflare tunnel buffers <code>text/event-stream</code> responses and only flushes them when the connection closes, which a live stream never does.
+</div>
+
+<h3>A run can pause, and this has consequences</h3>
+
+<p>Two things stop a run mid-flight and wait for a human:</p>
+
+<ul>
+<li><b>Credentials.</b> The site needs a login and nothing supplied one. Default wait: 5 minutes.</li>
+<li><b>The case-selection gate.</b> If <code>ENABLE_CASE_SELECTION_GATE</code> is on, the run stops after writing test cases and waits for you to pick which ones should run. Default wait: 10 minutes.</li>
+</ul>
+
+<div class="danger">
+<b>A paused run is still holding a concurrency slot.</b> The server runs at most <code>MAX_CONCURRENT_RUNS</code> (default <b>3</b>) at once, because each run launches a Chromium instance. Three people starting runs, walking away, and leaving credential prompts unanswered will wedge the entire server for five minutes. This is why those timeouts exist and why you should not raise them without also raising the cap.
+</div>
+
+<h2>4. What a run leaves behind</h2>
+
+<p>This section is the one to remember. When something breaks, the answer is almost always already written to disk.</p>
+
+<p><img src="../diagrams/03-runs-folder.png" width="660"></p>
+<p class="caption">Figure 3 — the anatomy of a run directory, with the traps marked.</p>
+
+<h3>The three traps in that folder</h3>
+
+<h4>1. <code>04-ir.json</code> has two different shapes</h4>
+<pre>runs/&lt;id&gt;/04-ir.json               →  { ir: {...}, updatedAppModel: {...} }   ← a WRAPPER
+runs/&lt;id&gt;/cases/case-0/04-ir.json  →  { meta: {...}, steps: [...] }           ← a bare IR</pre>
+<p>Same filename, two shapes, depending on the folder. If you are writing a script that reads these, handle both — the codebase itself does, with <code>parsed?.ir ?? parsed</code>.</p>
+
+<h4>2. <code>generated.spec.ts</code> is not the file that ran</h4>
+<pre>runs/&lt;id&gt;/generated.spec.ts        ←  a readable copy, for you
+runs/&lt;id&gt;/generated/test.spec.ts   ←  the file Playwright ACTUALLY executed</pre>
+<p>They are written from the same string, so in practice they match — but if you are ever unsure which one is real, it is the second.</p>
+
+<h4>3. A <code>healed/</code> folder does not mean healing worked</h4>
+<p>The self-heal code runs the repaired test first and only writes its <code>ir.json</code> afterwards, if it passed. So:</p>
+<ul>
+<li><code>healed/</code> containing <code>ir.json</code> → the heal succeeded.</li>
+<li><code>healed/</code> with <code>results.json</code> but <b>no</b> <code>ir.json</code> → the heal was attempted and failed.</li>
+</ul>
+
+<h3>Reading a run folder as evidence</h3>
+
+<p>The <b>absence</b> of a file is information. Work backwards from the highest-numbered file present:</p>
+
+<table>
+<tr><th style="width:32%">Highest file present</th><th>What that tells you</th></tr>
+<tr><td><code>01-plan.json</code></td><td>Discovery failed. The site did not load, or blocked us.</td></tr>
+<tr><td><code>02-appmodel.json</code></td><td>Discovery worked but no test cases survived. Check <code>concepts</code> in the appmodel — an almost-empty model usually means we only ever saw a login page.</td></tr>
+<tr><td><code>03-cases.json</code></td><td>The IR would not compile. Some step pointed at something not on the page. Look for <code>meta.truncationNote</code>.</td></tr>
+<tr><td><code>05-result.json</code></td><td>The test ran. <b>This is the normal case</b> — and the real error text is inside this file.</td></tr>
+<tr><td><code>06-diagnosis.json</code></td><td>It failed and the platform has an opinion about why. Read <code>explanation</code>.</td></tr>
+</table>
+
+<div class="note">
+<b>The single most useful habit.</b> When a run fails, open <code>05-result.json</code> and find <code>raw.suites[0].specs[0].tests[0].results[0].errors[0].message</code>. That is the real Playwright error. The user interface does not show it to you — it shows a screenshot — so people routinely debug from a picture when the exact error was sitting in a file the whole time.
+</div>
+
+<h2>5. The two shapes that matter</h2>
+
+<p>Nearly every file in <code>runs/</code> is one of two objects. Learn these and the artifacts stop being opaque.</p>
+
+<p><img src="../diagrams/04-data-shapes.png" width="660"></p>
+<p class="caption">Figure 4 — <code>AppModel</code> (what the site has) and <code>IR</code> (what the test does). Both are Zod schemas in <code>src/schema/</code>.</p>
+
+<ul>
+<li><b>AppModel</b> is the inventory of the site. Its most important field is <code>pages[].elements[]</code> — every interactive thing found, as a <code>role</code> plus a <code>name</code>.</li>
+<li><b>IR</b> is the compiled test: <code>meta</code> plus an array of <code>steps</code>. Each step has an <code>action</code> and usually a <code>target</code>.</li>
+</ul>
+
+<p>The relationship between them is the whole project: grounding walks every <code>Target</code> in the IR and asks whether a matching <code>Element</code> exists in the AppModel.</p>
+
+<div class="warn">
+<b>Always check <code>meta.truncated</code>.</b> If the compiler could not ground every step, it can ship the part it <i>could</i> prove and set this flag. A truncated test runs fewer steps than the case described — and may still report as passing. <code>meta.truncationNote</code> tells you where it gave up.
+</div>
+
+<h2>6. Where the code lives</h2>
+
+<table>
+<tr><th style="width:26%">Path</th><th style="width:12%">Size</th><th>What is in it</th><th style="width:12%">Volume</th></tr>
+<tr><td><code>src/orchestrator.ts</code></td><td>437 lines</td><td>The master pipeline. Start here — it calls everything else in order.</td><td>2</td></tr>
+<tr><td><code>src/stages/</code></td><td>22 files<br>9,560 lines</td><td>The stages themselves, plus the machinery they use.</td><td>2</td></tr>
+<tr><td><code>src/schema/</code></td><td>3 files<br>727 lines</td><td><code>AppModel</code>, <code>IR</code>, and the gate's wire format. The contracts.</td><td>2</td></tr>
+<tr><td><code>src/llm/</code></td><td>5 files<br>436 lines</td><td>The Gemini call, retry/backoff, API-key rotation, per-run spend cap.</td><td>2</td></tr>
+<tr><td><code>src/kb/</code></td><td>3 files<br>278 lines</td><td>The hand-written QA checklist and the two disk caches.</td><td>2</td></tr>
+<tr><td><code>src/server/</code></td><td>18 files<br>4,806 lines</td><td>Express, all 57 routes, authentication, permissions, the case library.</td><td>3</td></tr>
+<tr><td><code>src/db.ts</code></td><td>350 lines</td><td>Supabase Postgres. Identity and the library — never run content.</td><td>3</td></tr>
+<tr><td><code>src/runStore.ts</code></td><td>249 lines</td><td>The <code>runs/</code> folder: the event log and the run summary.</td><td>3</td></tr>
+<tr><td><code>public/</code></td><td>5,349 lines</td><td>The entire front end. Plain JavaScript, no framework, no build step.</td><td>4</td></tr>
+<tr><td><code>tests/</code></td><td>51 files</td><td>Vitest unit tests. <b>Not</b> the generated Playwright tests.</td><td>5</td></tr>
+</table>
+
+<div class="danger">
+<b>The mistake almost everyone makes in week one.</b> There are <b>two different test runners</b> in this repository and they have nothing to do with each other.
+<br><br>
+<b>Vitest</b> (<code>npm test</code>) runs <code>tests/**</code> — the unit tests for the platform's own code. About 790 of them.<br>
+<b>Playwright</b> (<code>playwright.config.ts</code>) has its <code>testDir</code> pointed at <code>runs/</code> — it runs the <i>generated</i> tests the pipeline produces for your site.
+<br><br>
+They are deliberately kept in disjoint directories. "The tests are failing" is an ambiguous sentence here; say which runner you mean.
+</div>
+
+<h2>7. Glossary</h2>
+
+<table>
+<tr><th style="width:22%">Term</th><th>What it means here</th></tr>
+<tr><td><b>AppModel</b></td><td>The inventory of a site produced by discovery: pages, and the interactive elements on them.</td></tr>
+<tr><td><b>IR</b></td><td>"Intermediate Representation" — the compiled test as strict JSON, before it becomes Playwright code.</td></tr>
+<tr><td><b>Grounding</b></td><td>Checking every step of an IR against the real AppModel, and attaching the real selector when it matches. The project's core safety mechanism.</td></tr>
+<tr><td><b>Live extend</b></td><td>When grounding cannot find something, replaying the steps so far in a real browser, looking at wherever that lands, and adding it to the AppModel. This is how the system reaches pages discovery never crawled.</td></tr>
+<tr><td><b>Case</b></td><td>One human-readable test scenario: title, steps in English, expected outcome.</td></tr>
+<tr><td><b>Primary case</b></td><td>The one case that goes through the full pipeline first — normally the one matching what you asked for.</td></tr>
+<tr><td><b>The gate</b></td><td>The optional pause after case generation where you pick which cases actually run.</td></tr>
+<tr><td><b>Coverage</b></td><td><code>minimal</code> / <code>standard</code> / <code>full</code> — how many cases to generate.</td></tr>
+<tr><td><b>Scope</b></td><td><code>functional</code> and/or <code>security</code>. Inferred from your wording, not chosen by the model.</td></tr>
+<tr><td><b>Truncated</b></td><td>An IR where only some steps could be grounded. It ships the provable prefix and flags itself.</td></tr>
+<tr><td><b>Blocked</b></td><td>The site stopped us — a bot check, a CAPTCHA, an OAuth wall. Not a test failure.</td></tr>
+<tr><td><b>Self-heal</b></td><td>One bounded retry after a failure: re-look at the page, recompile, run once more.</td></tr>
+<tr><td><b>Replay</b></td><td>Re-running a saved case from its stored IR. Uses no LLM calls at all.</td></tr>
+<tr><td><b>Shadow mode</b></td><td>Writing to Postgres while still treating disk as the source of truth, and logging any disagreement.</td></tr>
+</table>
+
+<h2>8. Getting it running</h2>
+
+<pre>npm install                  # postinstall also runs: playwright install
+npm run serve                # http://localhost:3000
+npm test                     # vitest — the platform's own unit tests
+npx tsc --noEmit             # must be clean before you call anything done</pre>
+
+<p>You need <code>GEMINI_API_KEYS</code> in a <code>.env</code> file. Everything else has a working default. Copy <code>.env.example</code> and read the comments in it — they are unusually good and explain <i>why</i> each limit exists, not just what it does.</p>
+
+<div class="danger">
+<b>Two things that will waste your afternoon if nobody tells you.</b>
+<br><br>
+<b>1. <code>npm run serve</code> has no auto-reload.</b> It runs <code>tsx</code> once. Editing anything in <code>src/</code> does nothing at all until you stop the server and start it again. There is a documented incident in this repo where a fix was verified offline, then a live run still showed the old behaviour — because the server process was over an hour older than the edit. If a change appears to have no effect, check that first.
+<br><br>
+<b>2. Editing <code>public/</code> needs a hard reload in the browser.</b> Changing the URL hash is a same-document navigation and keeps the old JavaScript alive. Two false "the fix didn't work" reports have been traced to this.
+</div>
+
+<h2>9. Where to go next</h2>
+
+<table>
+<tr><th style="width:20%">Volume</th><th>Read it when…</th></tr>
+<tr><td><b>2 — The Pipeline</b></td><td>…you need to change how tests are generated, or understand why an IR was rejected. The biggest volume, because it is the biggest part of the system.</td></tr>
+<tr><td><b>3 — Server &amp; Data</b></td><td>…you are adding an API route, touching permissions, or wondering why someone cannot see a run.</td></tr>
+<tr><td><b>4 — Frontend</b></td><td>…you are changing the UI. Read the class-contract section before you touch any CSS.</td></tr>
+<tr><td><b>5 — Operations &amp; Debugging</b></td><td>…something is broken right now. Start with the decision tree on the first page.</td></tr>
+</table>
+
+<p>And in the repository itself: <code>CLAUDE.md</code> is the shortest useful thing to read — it is capped at 200 lines and lists the sharp edges. <code>TECH_DEBT.md</code> is the honest list of what is currently broken, with a real run ID cited for nearly every entry.</p>
+
+</body>
+</html>

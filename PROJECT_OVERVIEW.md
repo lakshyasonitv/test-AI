@@ -120,6 +120,8 @@ and with every platform flag off it is the *only* half that exists:
 | `POST /api/runs/:runId/case-selection` | Submit a decision for a paused case-selection gate round. |
 | `GET /api/runs/:runId/accepted-cases` | Current accumulated pool for a gate round, so the UI can render what's been accepted so far. |
 | `GET /api/runs/:runId/case-selection-status` | Snapshot of the currently-pending gate round, for polling it. |
+| `POST /api/runs/:runId/case-selection/rewrite` | "Ask for a change" on a case at the gate, before it has an IR. Behind `GATE_CASE_EDIT_AI`; proposes only. |
+| `GET /api/runs/:runId/page-elements` | The discovered controls of each page, role + name only, so the gate editor can show what actually exists. |
 | `DELETE /api/runs/:runId` | Delete a run's directory permanently. |
 | `GET /api/health` | Diagnostic: which env vars are set (name/length only, never values), and the server's current defaults for the gate/self-heal toggles. |
 
@@ -137,6 +139,11 @@ promise until the browser answers:
   in server memory (never on disk — the values are real passwords, and `runs/` is served
   publicly), with a timeout (`CREDENTIAL_WAIT_MS`) after which the run just continues without
   credentials, same as a `Skip` would produce. This is what backs the UI's credential modal.
+- **Editing at the gate** (`gateCaseEdits.ts`) — a proposed case is not read-only: its title,
+  steps and expected outcome can be changed, it can be removed, or a case can be written from
+  scratch, all before anything is compiled. The decision route gained two optional fields for it,
+  so a client that sends neither behaves exactly as before. Only the CURRENT round's batch is
+  editable — cases accepted in an earlier round show as a count, not as cards.
 - **Case-selection gate** (`pendingCaseSelection.ts`, `caseAccumulator.ts`,
   `caseHistoryLedger.ts`) — when the gate is enabled, `POST /api/runs/:runId/case-selection`
   resolves a parked promise with your accept/reject/refine decision. `caseAccumulator.ts` tracks
@@ -325,3 +332,5 @@ source of truth — don't take this file's word over theirs:
 | Working rules for an agent editing this repo | [CLAUDE.md](CLAUDE.md) |
 | What this is / how to run it / current capabilities | [README.md](README.md) |
 | What each shipped phase changed, and how to roll it back | [docs/phases/](docs/phases/) |
+| How a person edits a compiled test, end to end | [docs/EDITABLE_IR.md](docs/EDITABLE_IR.md) |
+| Briefing an LLM that cannot read this repo | [docs/LLM_CONTEXT_BRIEFING.md](docs/LLM_CONTEXT_BRIEFING.md) |

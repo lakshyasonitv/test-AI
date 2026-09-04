@@ -24,11 +24,26 @@ classifier tries first, Gemini vision second.
 | Why a design choice was made, what was rejected | `DECISIONS.md` |
 | Working guidance for an agent (this file) | `CLAUDE.md` |
 | What each shipped phase changed, and how to roll it back | `docs/phases/` |
+| How a person edits a compiled test, end to end | `docs/EDITABLE_IR.md` (walkthrough, not an owner) |
+| Briefing an LLM that CANNOT read this repo | `docs/LLM_CONTEXT_BRIEFING.md` |
 
 **Before adding a "what's broken" note anywhere, put it in `TECH_DEBT.md` instead.** This doc set
 used to be six files that each kept their own copy of that list, and every copy drifted out of
 sync — that's why it's five files with one job each now, not six with overlap
 (`DECISIONS.md` D-01). Don't recreate the overlap.
+
+`docs/EDITABLE_IR.md` is a **walkthrough**, not a topic owner: the editable-IR flow spans
+`stepText.ts`, `caseEdit.ts`, `replay.ts`, `rewrite.ts`, the editor routes and the gate, and no
+single existing doc explains how they fit together. It states its own subordination at the top —
+`ARCHITECTURE.md` still owns the file map and schema, `DECISIONS.md` the rationale, `TECH_DEBT.md`
+the defects. Extend it for flow; put a defect in TECH_DEBT and a rationale in DECISIONS.
+
+`docs/LLM_CONTEXT_BRIEFING.md` is **not** a topic owner either — it is a dated, self-contained
+export for pasting into a chat with a model that has no access to these files. It necessarily
+restates things the five docs own, which is exactly the duplication D-01 warns about, so it is
+allowed only on those terms: it says so at the top, it defers to the real docs whenever both are
+available, and it is regenerated rather than edited in place. Do not cite it as authority, and do
+not let a fix land there instead of in the file that owns the topic.
 
 `docs/phases/` is a build log, not a sixth topic owner: one report per shipped phase, each ending
 with what it deliberately did **not** fix. Read the report for the area you are about to touch

@@ -698,3 +698,130 @@ describe("a case's own run history", () => {
     expect(res.status).toBe(403);
   });
 });
+
+/**
+ * A replay collects ONE set of credentials and applies it to every case it runs, via
+ * `credentialEnvVars(creds)` into the Playwright child's environment. But a replay is scoped to a
+ * PROJECT, not a site: nothing stops a project holding cases for two different websites.
+ *
+ * Left unguarded that means being shown site A's URL in the prompt, typing site A's password, and
+ * having it typed into site B's login form with nothing on screen saying so. D-30 made replay
+ * prompt-first, so that credential is now usually a real one a person just typed.
+ *
+ * The guard refuses BEFORE the run is created, so a rejected replay leaves no run row, no
+ * directory and no artifacts.
+ */
+describe("a replay that signs in may not span two sites", () => {
+  /** An IR whose login step carries an ${env:...} reference, on a given site. */
+  const loginIr = (title: string, baseUrl: string) => ({
+    meta: { feature: "auth", title, priority: "medium", sourcePrompt: "p", baseUrl },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "${env:TEST_USERNAME}" },
+    ],
+  });
+  /** Same shape, no credential reference. */
+  const plainIr = (title: string, baseUrl: string) => ({
+    meta: { feature: "nav", title, priority: "low", sourcePrompt: "p", baseUrl },
+    steps: [{ id: "s1", action: "navigate", target: { url: "/" } }],
+  });
+
+  it("refuses, and creates no run, when the cases span two sites AND sign in", async () => {
+    db.test_cases[0].ir = loginIr("Login A", "https://site-a.example");
+    db.test_cases[1].ir = loginIr("Login B", "https://site-b.example");
+    const before = db.runs.length;
+
+    const res = await request(app).post("/api/replay").set(as(TESTER))
+      .send({ caseIds: [CASE_LOGIN, CASE_CART] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/two sites|2 sites/i);
+    // Names both sites, so the message is actionable rather than just a refusal.
+    expect(res.body.origins.sort()).toEqual(["https://site-a.example", "https://site-b.example"]);
+    // The point of refusing before makeRunId(): nothing was started.
+    expect(db.runs.length).toBe(before);
+    expect(res.body.runId).toBeUndefined();
+  });
+
+  it("ALLOWS two sites when nothing signs in — there is no credential to misdirect", async () => {
+    db.test_cases[0].ir = plainIr("Nav A", "https://site-a.example");
+    db.test_cases[1].ir = plainIr("Nav B", "https://site-b.example");
+
+    const res = trackMintedRun(
+      await request(app).post("/api/replay").set(as(TESTER)).send({ caseIds: [CASE_LOGIN, CASE_CART] }),
+    );
+    expect(res.status).toBe(202);
+  });
+
+  it("ALLOWS one site reached by different paths — origin is the unit, not the raw baseUrl", async () => {
+    db.test_cases[0].ir = loginIr("Login", "https://site-a.example/app");
+    db.test_cases[1].ir = loginIr("Admin", "https://site-a.example/admin");
+
+    const res = trackMintedRun(
+      await request(app).post("/api/replay").set(as(TESTER)).send({ caseIds: [CASE_LOGIN, CASE_CART] }),
+    );
+    expect(res.status).toBe(202);
+  });
+
+  it("ALLOWS a single-site login replay — today's behaviour, pinned", async () => {
+    db.test_cases[0].ir = loginIr("Login", "https://site-a.example");
+    db.test_cases[1].ir = loginIr("Also login", "https://site-a.example");
+
+    const res = trackMintedRun(
+      await request(app).post("/api/replay").set(as(TESTER)).send({ caseIds: [CASE_LOGIN, CASE_CART] }),
+    );
+    expect(res.status).toBe(202);
+  });
+
+  it("does not throw on a case with a missing or unparseable baseUrl", async () => {
+    db.test_cases[0].ir = loginIr("Login", "https://site-a.example");
+    db.test_cases[1].ir = { ...loginIr("Broken", "not a url"), meta: { ...loginIr("Broken", "x").meta, baseUrl: "not a url" } };
+
+    const res = trackMintedRun(
+      await request(app).post("/api/replay").set(as(TESTER)).send({ caseIds: [CASE_LOGIN, CASE_CART] }),
+    );
+    // Unparseable origins are dropped, leaving one known site — allowed, and no crash.
+    expect([202, 400]).toContain(res.status);
+    expect(res.status).not.toBe(500);
+  });
+});
+
+/**
+ * Deleting a run used to remove the directory and leave the database row, so every deletion became
+ * a permanent "present in database but not on disk" entry in the startup shadow report, pointing
+ * at evidence that no longer existed.
+ */
+describe("deleting a run removes its database row too", () => {
+  const RUN = "2026-01-01T00-00-00-000Z-deadbeef";
+
+  it("removes the row and still answers 204", async () => {
+    db.runs.push({ id: RUN, organisation_id: ORG, started_by: OWNER, prompt: "p", url: null, status: "passed", started_at: new Date().toISOString(), project_id: PROJ_1 });
+
+    const res = await request(app).delete(`/api/runs/${RUN}`).set(as(OWNER));
+
+    expect(res.status).toBe(204);
+    // The assertion that matters: the row is gone, not that a function was called.
+    await vi.waitFor(() => expect(db.runs.find((r) => r.id === RUN)).toBeUndefined(), { timeout: 5000 });
+  });
+
+  it("leaves other runs alone", async () => {
+    const KEEP = "2026-01-01T00-00-00-000Z-0000keep";
+    db.runs.push({ id: RUN, organisation_id: ORG, started_by: OWNER, prompt: "p", url: null, status: "passed", started_at: new Date().toISOString(), project_id: PROJ_1 });
+    db.runs.push({ id: KEEP, organisation_id: ORG, started_by: OWNER, prompt: "p", url: null, status: "passed", started_at: new Date().toISOString(), project_id: PROJ_1 });
+
+    await request(app).delete(`/api/runs/${RUN}`).set(as(OWNER));
+
+    await vi.waitFor(() => expect(db.runs.find((r) => r.id === RUN)).toBeUndefined(), { timeout: 5000 });
+    expect(db.runs.find((r) => r.id === KEEP)).toBeDefined();
+  });
+
+  it("a run with no row is still refused, not deleted — the fail-closed rule is unchanged", async () => {
+    // `requireRunRole("admin")` cannot prove ownership of a run the database has never heard of,
+    // so it refuses rather than guessing (the same rule tenancy.test.ts pins). Which means the
+    // "row already gone" case cannot normally be reached through this route at all — worth
+    // stating, because it is why deleteRunRow needs no not-found handling of its own.
+    const res = await request(app).delete(`/api/runs/2026-01-01T00-00-00-000Z-0badc0de`).set(as(OWNER));
+    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(500);
+  });
+});

@@ -1,0 +1,434 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+<head>
+<meta charset="utf-8">
+<title>Volume 3 — Server and Data</title>
+<style>
+@page { size: A4; margin: 2cm 1.8cm 2cm 1.8cm; }
+body { font-family: "Segoe UI", Calibri, Arial, sans-serif; font-size: 11pt; color: #1a1a1a; line-height: 1.45; }
+h1 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 26pt; color: #0b3a78; margin: 0 0 4pt 0; }
+h2 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 17pt; color: #0b63ce; margin: 22pt 0 7pt 0; border-bottom: 1px solid #c9d9ee; padding-bottom: 3pt; }
+h3 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 13pt; color: #14213d; margin: 15pt 0 5pt 0; }
+h4 { font-family: "Segoe UI Semibold", Calibri, sans-serif; font-size: 11.5pt; color: #0b3a78; margin: 12pt 0 4pt 0; }
+p { margin: 0 0 8pt 0; }
+ul, ol { margin: 0 0 10pt 0; padding-left: 20pt; }
+li { margin: 0 0 4pt 0; }
+table { border-collapse: collapse; width: 100%; margin: 8pt 0 14pt 0; }
+th { background: #e8f1fc; border: 1px solid #9dbfe8; padding: 4pt 6pt; text-align: left; font-size: 9pt; color: #0b3a78; }
+td { border: 1px solid #c9d9ee; padding: 4pt 6pt; font-size: 9pt; vertical-align: top; }
+pre { font-family: Consolas, "Courier New", monospace; font-size: 9pt; background: #f5f7fa; border: 1px solid #d6dee8; padding: 7pt 9pt; margin: 6pt 0 12pt 0; white-space: pre; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt; color: #9c2a2a; }
+.sub { font-size: 12pt; color: #5a6b80; margin: 0 0 3pt 0; }
+.meta { font-size: 9pt; color: #6b7280; margin: 0 0 16pt 0; }
+.caption { font-size: 8.5pt; color: #5a6b80; margin: 2pt 0 14pt 0; }
+.note { background: #f7f9fc; border: 1px solid #c9d9ee; border-left: 4px solid #0b63ce; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.warn { background: #fff8e8; border: 1px solid #d98b1f; border-left: 4px solid #d98b1f; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.danger { background: #fff4f4; border: 1px solid #c0392b; border-left: 4px solid #c0392b; padding: 8pt 10pt; margin: 10pt 0 12pt 0; font-size: 10pt; }
+.file { background: #eef3f9; border: 1px solid #9dbfe8; padding: 4pt 8pt; margin: 14pt 0 6pt 0; font-family: Consolas, monospace; font-size: 10.5pt; color: #0b3a78; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>Volume 3 — Server &amp; Data</h1>
+<p class="sub">Routes, permissions, and where everything is stored</p>
+<p class="meta">Describes commit <code>57e6261</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026 &nbsp;·&nbsp; Volume 3 of 5</p>
+
+<div class="note">
+Covers the 18 files in <code>src/server/</code> (4,806 lines), plus <code>src/db.ts</code> and <code>src/runStore.ts</code>.
+<br><br>
+A teaching narrative. <code>ARCHITECTURE.md</code> owns the formal file map, <code>DECISIONS.md</code> the reasoning, <code>TECH_DEBT.md</code> the defects.
+</div>
+
+<p>[[TOC]]</p>
+
+<h2>1. Two storage systems, deliberately split</h2>
+
+<p>This is the first thing to get straight, because almost every "where does that live?" question resolves to it.</p>
+
+<table>
+<tr><th style="width:22%">Store</th><th style="width:34%">Authoritative for</th><th>Never holds</th></tr>
+<tr><td><b>Disk</b> — <code>runs/</code></td><td>Run <i>content</i>: the event log, artifacts, IR, generated specs, screenshots, video.</td><td>Identity or permissions.</td></tr>
+<tr><td><b>Supabase Postgres</b></td><td>Identity, organisations, roles, projects, and the saved case library.</td><td>Run content. Only a row saying a run exists.</td></tr>
+</table>
+
+<p>The database is in what the code calls <b>shadow mode</b>: it is written to, and read from for comparison, but disk still wins. Making Postgres authoritative for runs is an unshipped future step.</p>
+
+<p>The whole stack is four runtime dependencies: Express 4, Zod 3, <code>@supabase/supabase-js</code>, and cheerio. No ORM, no build step — it runs through <code>tsx</code> directly.</p>
+
+<h2>2. The Express app</h2>
+
+<p class="file">src/server/index.ts — 1,474 lines</p>
+
+<p>The only HTTP surface. It has exactly one export — <code>app</code> — so that <code>supertest</code> can exercise routes without binding a port:</p>
+
+<pre>const isMain = !!process.argv[1] &amp;&amp; fileURLToPath(import.meta.url) === process.argv[1];
+if (isMain) { app.listen(port); startRetentionJob(); }</pre>
+
+<h3>The middleware stack, in order</h3>
+
+<table>
+<tr><th style="width:8%">#</th><th style="width:34%">Middleware</th><th>What it does</th></tr>
+<tr><td>1</td><td><code>express.json()</code></td><td>Body parsing.</td></tr>
+<tr><td>2</td><td><code>express.static("public")</code></td><td>Serves the front end.</td></tr>
+<tr><td>3</td><td><code>app.use("/api", …)</code></td><td>Requires a valid session, unless the path is public.</td></tr>
+<tr><td>4</td><td><code>app.param("runId", …)</code></td><td>400s anything that is not a well-formed run ID.</td></tr>
+</table>
+
+<pre>const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;   // no "/", "." or ".." — cannot escape runs/
+const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup"]);</pre>
+
+<div class="warn">
+<b>A footgun in that set.</b> Those paths are matched against <code>req.path</code> <i>after</i> Express strips the mount point — so entries carry <b>no <code>/api</code> prefix</b>. If you add a public route and write <code>/api/foo</code> instead of <code>/foo</code>, it will silently return 401 the moment authentication is switched on, and work perfectly in development.
+</div>
+
+<h3>The routes, grouped</h3>
+
+<p>There are 57. Rather than list them flat, here is what exists and what guards it.</p>
+
+<table>
+<tr><th style="width:26%">Group</th><th style="width:10%">Count</th><th style="width:22%">Typical guard</th><th>Notable members</th></tr>
+<tr><td><b>Artifacts</b></td><td>1</td><td>custom</td><td><code>GET /runs/:runId/*</code> — see §3, the most security-sensitive route in the server.</td></tr>
+<tr><td><b>Running</b></td><td>5</td><td>tester on that run</td><td><code>POST /api/runs</code>, <code>…/credentials</code>, <code>…/case-selection</code> (+ its AI rewrite)</td></tr>
+<tr><td><b>Watching a run</b></td><td>5</td><td>viewer on that run</td><td><code>…/state</code> (the one the UI uses), <code>…/events</code> (SSE, unused), <code>…/page-elements</code></td></tr>
+<tr><td><b>Run history</b></td><td>2</td><td>viewer / admin</td><td><code>GET /api/runs</code>, <code>DELETE /api/runs/:runId</code></td></tr>
+<tr><td><b>Public</b></td><td>3</td><td>none</td><td><code>/api/health</code>, <code>/api/auth/config</code>, <code>/api/auth/signup</code></td></tr>
+<tr><td><b>Session</b></td><td>2</td><td>authenticated</td><td><code>/api/auth/me</code>, <code>/api/auth/bootstrap</code></td></tr>
+<tr><td><b>Projects</b></td><td>7</td><td>viewer / admin</td><td>CRUD plus member management</td></tr>
+<tr><td><b>Organisations</b></td><td>6</td><td>org admin</td><td>members, roles, addable users</td></tr>
+<tr><td><b>Suites</b></td><td>8</td><td>tester / admin</td><td>CRUD, cases in a suite, reordering</td></tr>
+<tr><td><b>Cases</b></td><td>16</td><td>viewer / tester / admin</td><td>read, edit, versions, steps, re-ground jobs, duplicate, rewrite</td></tr>
+<tr><td><b>Library ↔ runs</b></td><td>2</td><td>tester</td><td><code>POST /api/runs/:runId/cases/:caseId/save</code>, <code>POST /api/replay</code></td></tr>
+</table>
+
+<div class="note">
+<b>Four levels of guard, and which subject each one asks about:</b>
+<ul>
+<li><code>requireAuth</code> — are you signed in at all?</li>
+<li><code>requireRole(x)</code> — do you have role <i>x</i> in <b>your own</b> organisation?</li>
+<li><code>requireRunRole(x)</code> — do you have role <i>x</i> in the organisation that owns <b>that run</b>, and can you see its project?</li>
+<li><code>requireOrgRole(x)</code> — do you have role <i>x</i> in <b>the organisation named in the URL</b>?</li>
+</ul>
+There are three separate middlewares rather than one clever one precisely because the <i>subject</i> differs. Making that explicit at each mount point is what stops a new route defaulting to the weakest interpretation.
+</div>
+
+<h2>3. The artifact route — read this one carefully</h2>
+
+<pre>const RUNS_DIR = path.resolve("runs");
+
+app.get("/runs/:runId/*", async (req, res) =&gt; {
+  const rel = req.params[0] ?? "";
+  const abs = path.resolve(RUNS_DIR, req.params.runId, rel);
+  if (!abs.startsWith(RUNS_DIR + path.sep)) return res.sendStatus(403);   // traversal guard
+  if (!(await canAccessRun(req, req.params.runId))) return res.sendStatus(403);
+  res.sendFile(abs, (err) =&gt; { if (err &amp;&amp; !res.headersSent) res.sendStatus(404); });
+});</pre>
+
+<p>Five things about it:</p>
+
+<ol>
+<li><b>It is not under <code>/api</code></b>, so it never passes through the auth middleware. It resolves the user itself.</li>
+<li><b>It is a wildcard</b> because Playwright nests artifacts arbitrarily deep under a generated slug directory.</li>
+<li><b>The traversal guard is independent</b> — the <code>startsWith</code> check blocks escaping <code>runs/</code> regardless of anything else.</li>
+<li><b>Cookie authentication exists specifically for this route.</b> An <code>&lt;img&gt;</code> or <code>&lt;video&gt;</code> tag cannot send an <code>Authorization</code> header, so the token is also read from an <code>sb-access-token</code> cookie. Without that, every screenshot would 401 the moment auth was enabled.</li>
+</ol>
+
+<div class="danger">
+<b>5. With the shipped defaults, this route is unauthenticated.</b>
+<br><br>
+<code>canAccessRun</code> returns <code>true</code> unconditionally when tenancy cannot be enforced — which is the default, because <code>AUTH_ENABLED</code> is unset. The comment in the source reads <code>// no-op today</code>, and it is literal.
+<br><br>
+That means screenshots, video, traces and generated specs of whatever site you tested — frequently including a login screen mid-flow — are served to anyone who can reach the port.
+<br><br>
+It is a deliberate decision for local use (it replaced a blanket <code>express.static("runs")</code>, which was worse), but treat it as <b>the first thing to fix before exposing this beyond localhost</b>. It is also the reason the "credentials never touch disk" rule exists at all. See <code>TECH_DEBT.md</code> TD-14.
+</div>
+
+<h2>4. Authentication and permissions</h2>
+
+<p><img src="../diagrams/06-auth-tenancy.png" width="660"></p>
+<p class="caption">Figure 1 — the two axes, the tables behind them, and what changes when the flag is off.</p>
+
+<h3>Two axes, deliberately kept apart</h3>
+
+<ul>
+<li><b>Organisation role — what you may DO.</b> A ladder: <code>viewer</code> &lt; <code>tester</code> &lt; <code>admin</code> &lt; <code>owner</code>. Checks are always <code>rank &gt;= required</code>, never string equality, so an owner satisfies every lesser requirement automatically.</li>
+<li><b>Project membership — what you may SEE.</b> A plain join table with <b>no role column</b>. Admins and owners see every project in their organisation by virtue of role; testers and viewers see only projects they were explicitly added to.</li>
+</ul>
+
+<div class="note">
+<b>Why <code>project_members</code> has no role column.</b> Duplicating the role ladder per project would put two places in charge of answering one question, and they would drift. Membership grants <i>visibility</i>, never <i>entry</i> — which is also why adding someone to a project requires that they already be an organisation member.
+</div>
+
+<div class="warn">
+<b>A brand-new account sees an empty history, and that is correct.</b> Sign-up makes you a <code>viewer</code> in the default organisation with zero project assignments. It looks broken. It is the intended state — someone has to add you to a project.
+</div>
+
+<h3>The governing rule of <code>authz.ts</code></h3>
+
+<p>Quoted from its own header, and worth memorising:</p>
+
+<div class="note">
+<i>"Every read joins through membership. Never filter by an org id taken from the request body — take the user from the session, and let the join prove the org is theirs."</i>
+<br><br>
+An organisation id appearing in a URL is only ever the <b>subject</b> of a check, never its <b>authority</b>.
+</div>
+
+<h3>What happens with <code>AUTH_ENABLED</code> unset</h3>
+
+<p>This is the single most important design rule in the server layer, and it is easy to get wrong when adding a feature.</p>
+
+<pre>// auth.ts
+if (!isAuthEnabled()) return LOCAL_USER;      // never null
+
+// authz.ts
+const LOCAL_MEMBERSHIPS = [{ organisationId: DEFAULT_ORG_ID, role: "owner" }];
+if (!canEnforceTenancy()) return "owner";</pre>
+
+<div class="danger">
+<b>The checks are not skipped. A synthetic user is injected who genuinely <i>is</i> an owner.</b>
+<br><br>
+So every permission check runs its normal code path and passes. Single-user mode is multi-user mode with exactly one member.
+<br><br>
+<b>Never add an <code>if (authDisabled) return true</code> branch.</b> That is the documented failure mode: it means the real permission code is only ever exercised in production, where you find out it is wrong.
+</div>
+
+<h3>Everything fails closed</h3>
+
+<ul>
+<li>An unreadable membership table returns <code>[]</code>, not "everything".</li>
+<li>A run with no ownership row is visible to nobody.</li>
+<li>A run whose <code>project_id</code> is <code>null</code> is visible to admins and owners only — nobody can be assigned to "no project", so treating it as public would be a hole that widens as unfiled runs accumulate.</li>
+<li>"Not a member" and "insufficient role" both return <b>403</b>, deliberately indistinguishable to someone probing.</li>
+</ul>
+
+<div class="warn">
+<b>Membership is cached for 5 seconds</b>, because the UI polls. The staleness window is closed where it matters: every member-management route calls <code>invalidateMemberships(userId)</code> directly, so a demotion takes effect immediately.
+<br><br>
+<b>And one subtle API detail:</b> <code>visibleProjectIds</code> returns <code>null</code> to mean "no restriction" (admin/owner) and an empty <code>Set</code> to mean "nothing visible". Getting those two confused inverts the check.
+</div>
+
+<h3>Sign-up</h3>
+
+<p class="file">src/server/signup.ts — 183 lines</p>
+
+<p>Accounts are created server-side because Supabase's public sign-up hangs on this project's free-tier mailer. It uses two different keys on purpose:</p>
+
+<ol>
+<li>The <b>service-role</b> key creates the user with <code>email_confirm: true</code>, so no confirmation mail is ever attempted.</li>
+<li>A <b>separate browser-style client</b> with the publishable key then signs in to mint the session.</li>
+</ol>
+
+<p>The reason for the second step: a session derived from the service-role key would not be a normal user session, and row-level security would not apply to it.</p>
+
+<div class="danger">
+<b><code>SIGNUP_ENABLED</code> defaults to ON.</b> It is the one documented exception to this project's "every flag defaults off" rule. The justification is that the sign-up screen only exists when <code>AUTH_ENABLED=true</code>, which is itself off — so the shipped default is still "no sign-up".
+<br><br>
+But this is an unauthenticated route that <b>writes, using an admin key</b>. The rate limit is 5 attempts per 15 minutes per IP, in-process — a speed bump, not access control, and a second instance has its own counter.
+<br><br>
+<b>Set <code>SIGNUP_ENABLED=false</code> before this port is reachable by anyone else.</b>
+</div>
+
+<h3>Organisation management</h3>
+
+<p class="file">src/server/organisations.ts — 332 lines</p>
+
+<p>Two invariants are enforced here rather than in routes, because they are properties of the data:</p>
+
+<ol>
+<li><b>Nobody grants above themselves.</b> An admin cannot mint an owner, and cannot act on anyone above them — otherwise "demote the owner to viewer" is removal by another name.</li>
+<li><b>An organisation always has at least one owner.</b> The last owner can be neither demoted nor removed.</li>
+</ol>
+
+<div class="warn">
+<b>Two limitations recorded in the source itself.</b>
+<br><br>
+<b>Single-company assumption:</b> every sign-up joins <code>DEFAULT_ORG_ID</code>. This is wrong the moment two unrelated customers share an instance — it needs an invite token or a domain rule first.
+<br><br>
+<b><code>listAddableUsers</code> returns every registered email address to any admin.</b> Fine for one company; a privacy leak in a multi-customer instance. It also pages the user directory at 1,000 accounts per call.
+</div>
+
+<h2>5. The database</h2>
+
+<p class="file">src/db.ts — 350 lines</p>
+
+<p>Supabase-hosted Postgres, accessed only through PostgREST calls — no SQL client, no ORM, and <b>no <code>.sql</code> file anywhere in the repository</b>. The schema lives in the Supabase project and is applied by migrations the code references by name. The table description below was reconstructed from the queries.</p>
+
+<h3>The tables</h3>
+
+<table>
+<tr><th style="width:22%">Table</th><th style="width:36%">Columns as queried</th><th>Notes</th></tr>
+<tr><td><code>organisations</code></td><td><code>id</code>, <code>name</code></td><td>Seeded. Never created at runtime.</td></tr>
+<tr><td><code>organisation_members</code></td><td><code>organisation_id</code>, <code>user_id</code>, <code>role</code>, <code>created_at</code></td><td>The join every authorization read goes through. Ordered by <code>created_at</code> for "primary org".</td></tr>
+<tr><td><code>projects</code></td><td><code>id</code>, <code>organisation_id</code>, <code>name</code>, <code>base_url</code></td><td><code>name</code> doubles as the URL key for auto-filed projects.</td></tr>
+<tr><td><code>project_members</code></td><td><code>project_id</code>, <code>user_id</code></td><td>No role column, on purpose.</td></tr>
+<tr><td><code>runs</code></td><td><code>id</code>, <code>organisation_id</code>, <code>project_id</code> (nullable), <code>started_by</code>, <code>prompt</code>, <code>url</code>, <code>status</code>, <code>started_at</code></td><td><code>id</code> is the run-ID string, not a UUID.</td></tr>
+<tr><td><code>suites</code></td><td><code>id</code>, <code>project_id</code>, <code>name</code>, <code>created_by</code></td><td></td></tr>
+<tr><td><code>suite_cases</code></td><td><code>suite_id</code>, <code>test_case_id</code>, <code>position</code></td><td>Join table — a case can be in several suites. Cascades on suite delete; cases survive.</td></tr>
+<tr><td><code>test_cases</code></td><td><code>id</code>, <code>project_id</code>, <code>title</code>, <code>feature</code>, <code>ir</code> (jsonb), <code>current_version</code>, <code>source_run_id</code>, <code>last_run_status</code>, …</td><td><code>ir</code> is validated by the real Zod schema on every read <i>and</i> write.</td></tr>
+<tr><td><code>test_case_versions</code></td><td><code>test_case_id</code>, <code>version</code>, <code>ir</code>, <code>change_note</code>, <code>saved_by</code>, <code>saved_at</code></td><td>v1 is written with the case, or Compare has nothing to diff.</td></tr>
+<tr><td><code>run_cases</code></td><td><code>run_id</code>, <code>test_case_id</code>, <code>case_index</code>, <code>status</code></td><td>A join table, not a column on <code>runs</code> — one replay runs many cases.</td></tr>
+</table>
+
+<div class="danger">
+<b><code>DB_ENABLED</code> is not the switch it looks like.</b>
+<br><br>
+It gates <b>only five things</b>: the four run-row writes and the shadow comparison. Everything else — the entire library, projects, and organisations surface — goes straight through the service client with no such check.
+<br><br>
+<b>Practical consequence:</b> those routes work whenever <code>SUPABASE_URL</code> and <code>SUPABASE_SERVICE_ROLE_KEY</code> are set, regardless of <code>DB_ENABLED</code> — and return <b>503</b> whenever they are not, regardless of any flag. So "local flag-off mode" means runs, artifacts and polling all work while roughly half the route table 503s. That is expected, not a bug.
+<br><br>
+<b>And a genuinely dangerous combination:</b> <code>AUTH_ENABLED=true</code> with <code>DB_ENABLED=false</code> and a service key present. Tenancy silently switches <i>off</i> (with a warning in the log) while the library keeps reading and writing real rows. The code calls this "a misconfiguration, not a supported mode."
+</div>
+
+<h3>Every database write is fire-and-forget</h3>
+
+<pre>void (async () =&gt; { ... })();   // errors are console.error'd, never thrown</pre>
+
+<p>A run is long, expensive and user-visible. A database hiccup must never fail it, delay it, or lose it.</p>
+
+<div class="warn">
+<b>An ordering consequence.</b> <code>recordRunStarted</code> fires <i>before</i> the concurrency semaphore. So a queued run has a database row and <b>no directory on disk</b> — invisible in history, and the shadow comparison would report it as "in the database but not on disk". Not a bug; worth recognising.
+</div>
+
+<h2>6. Run storage on disk</h2>
+
+<p class="file">src/runStore.ts — 249 lines</p>
+
+<p>Its own header calls it "the one seam that separates demo from product": the entire interface is <code>append()</code> and <code>read()</code>, so swapping the backing store later is a change to this file's body only.</p>
+
+<pre>export const store: RunStore;                       // append(event) / read(runId)
+export function allRunIds(): string[];
+export function summariseRun(runId: string): RunSummary;
+export function listRuns(ids?: string[]): RunSummary[];</pre>
+
+<p>Volume 1, Figure 3 has the full folder map. Three behaviours worth knowing:</p>
+
+<p><b><code>startedAt</code> is the directory's filesystem creation time</b>, not the timestamp in the run ID. Copying or moving a run directory changes where it appears in history.</p>
+
+<p><b>Two synthetic events get invented on read.</b> Legacy runs with no event log get a reconstructed stream. More usefully: a run with an event log but no terminal event, whose ID predates the current process start, gets a synthetic <code>error</code> reading <i>"This run was interrupted — the server restarted before it finished."</i> Without it, the UI would poll such a run forever.</p>
+
+<div class="note">
+<b>History filters first, then caps at 20 — and the order is not cosmetic.</b>
+<pre>const visible = await filterRunsForUser(userId, allRunIds().map(runId =&gt; ({ runId })));
+res.json(listRuns(visible.map(r =&gt; r.runId)));</pre>
+Capping first let every unfiled directory on disk consume one of the twenty visible slots. History then shrank as those accumulated, and read from the outside as "no runs happened" — <b>measured at 20 directories on disk yielding 2 visible rows</b>. Filtering IDs is also the cheap half; summarising means parsing a full event log per run.
+</div>
+
+<h2>7. Concurrency</h2>
+
+<p class="file">src/server/concurrency.ts — 36 lines</p>
+
+<p>One module-level semaphore, default 3, shared by runs and replays. Each run launches Chromium; uncapped, one browser per request means running out of memory.</p>
+
+<p>The subtle part is that a waiting caller <i>inherits</i> the finishing caller's permit rather than re-acquiring:</p>
+
+<pre>finally {
+  const next = this.waiters.shift();
+  if (next) next();      // hand the permit straight over — active is unchanged
+  else this.active--;
+}</pre>
+
+<p>Incrementing after a release-and-reacquire would open a window where a fresh arrival steals the freed slot and concurrency exceeds the maximum.</p>
+
+<div class="danger">
+<b>Two environment-variable footguns, both silent.</b>
+<br><br>
+<code>MAX_CONCURRENT_RUNS=</code> (empty) → <code>??</code> does not catch the empty string → <code>Number("")</code> is <code>0</code> → the constructor throws at module load and <b>the server will not boot</b>.
+<br><br>
+<code>MAX_CONCURRENT_RUNS=abc</code> → <code>NaN</code> → the <code>&lt; 1</code> check passes, so nothing throws, but <code>active &lt; max</code> is never true → <b>every run parks forever. Silent deadlock.</b>
+</div>
+
+<div class="warn">
+<b>Re-ground jobs are not covered by the semaphore.</b> Saving edited steps launches its own browser outside <code>runLimit</code>. N concurrent editors means N unbounded browsers.
+</div>
+
+<h2>8. How credentials stay off disk</h2>
+
+<p>The rule: real credentials never touch disk or the database. They live in process memory for the length of one walk, and stored steps keep an <code>${env:...}</code> reference instead.</p>
+
+<pre>SOURCE (env first, then the browser prompt)
+   ↓  in-memory Map only — never persisted
+applyCredentials()   writes  "${env:TEST_PASSWORD}"   → 04-ir.json holds the SENTINEL
+generateSpec()       emits   process.env.TEST_PASSWORD ?? ""   → the spec holds a REFERENCE
+runSpec()            injects the real value into the CHILD PROCESS ENV only
+   ↓
+scrubServedSecrets() cleans results.json, final-page.txt, and error attachments afterwards</pre>
+
+<div class="note">
+<b>The allowed environment variable names are a fixed pair</b> — <code>TEST_USERNAME</code> and <code>TEST_PASSWORD</code> — never derived from model output or user text, so a crafted prompt cannot smuggle another variable into generated code.
+</div>
+
+<p>What is deliberately never written: the request body is never logged; the credential event carries only <code>{url, fields}</code> and then <code>{provided: true|false}</code>, never a value; and <code>00-input.json</code> stores the <i>redacted</i> prompt. That last one was a real bug — writing the prompt verbatim put plaintext passwords on a publicly served path.</p>
+
+<div class="warn">
+<b>Setting <code>TEST_USERNAME</code> / <code>TEST_PASSWORD</code> in the environment silently suppresses every credential prompt</b> — in runs, in the case editor, and in replay. Convenient for an operator, confusing if you are sitting there waiting for a dialog that will never appear.
+</div>
+
+<div class="danger">
+<b>A replay bug worth learning from.</b> <code>runReplay</code> accepted a credentials argument, but its only caller never passed one. So the spec's <code>process.env.TEST_USERNAME ?? ""</code> typed an <b>empty string</b> into the login form. The sign-in failed silently and the case died several steps later on a completely unrelated assertion. Confirmed on run <code>2026-08-31T06-30-26-597Z-1c2a719e</code>.
+<br><br>
+The lesson: an unpassed optional argument plus a <code>?? ""</code> fallback produces a wrong answer instead of an error.
+</div>
+
+<h2>9. The remaining server modules</h2>
+
+<table>
+<tr><th style="width:26%">File</th><th style="width:8%">Lines</th><th>Job, and what to know</th></tr>
+<tr><td><code>runRegistry.ts</code></td><td>37</td><td>Live SSE fan-out. Holds only open sockets — nothing that matters is lost on restart. Durability is the orchestrator's job.</td></tr>
+<tr><td><code>pendingCredentials.ts</code></td><td>55</td><td>Parks a promise until you answer. In memory <b>on purpose</b> — it holds a resolver and real credentials. Note run IDs and job IDs share one keyspace.</td></tr>
+<tr><td><code>resolveCredentials.ts</code></td><td>39</td><td>The one place the "environment first, prompt second" policy lives. Its comment warns: <b>the emit is not optional</b> — without the event the UI never renders the form and the caller waits out the full timeout against a screen with nowhere to type.</td></tr>
+<tr><td><code>pendingCaseSelection.ts</code></td><td>62</td><td>Same pattern for the review gate. 10-minute default.</td></tr>
+<tr><td><code>caseAccumulator.ts</code></td><td>86</td><td>The accepted-case pool across gate rounds. <code>MAX_ACCUMULATED_CASES</code> is read <b>at module load</b>, unlike most flags — a test cannot flip it.</td></tr>
+<tr><td><code>caseHistoryLedger.ts</code></td><td>99</td><td>Feeds the next round's prompt so it stops re-proposing rejected cases. Note <code>normalizeTitle</code> is duplicated here and in <code>caseAccumulator</code>; identical today, nothing pins them.</td></tr>
+<tr><td><code>gateCaseEdits.ts</code></td><td>126</td><td>Folds your gate edits into the batch <b>by position</b>. Index stability is the invariant: edits address existing slots, additions append, <b>nothing is ever spliced out</b> — "remove this" arrives as "not selected", so the case still occupies its slot and is still recorded as rejected.</td></tr>
+<tr><td><code>regroundJobs.ts</code></td><td>120</td><td>Background re-ground jobs. In memory, not on disk — writing them under <code>runs/</code> would put them in run history and the shadow comparison. Jobs are personal: another account is refused even in the same organisation.</td></tr>
+<tr><td><code>rewrite.ts</code></td><td>421</td><td>Three model proposers, none of which ever write. See below.</td></tr>
+<tr><td><code>retention.ts</code></td><td>73</td><td>Optional pruning of old runs. Three guards: a <b>hard 24-hour floor</b> regardless of setting, older than the window, and the run must be terminal.</td></tr>
+<tr><td><code>projects.ts</code></td><td>354</td><td>Project CRUD and auto-filing by URL. <code>deleteProject</code> refuses with 409 while it still holds runs rather than orphaning them.</td></tr>
+<tr><td><code>library.ts</code></td><td>747</td><td>Suites, cases, versions, replay loading. See below.</td></tr>
+</table>
+
+<h3>The proposer rule</h3>
+
+<p>All three functions in <code>rewrite.ts</code> return step <b>text</b>, never IR. Approval therefore travels the ordinary parse → re-ground → version path. This is the project rule "a model proposes, it never writes" expressed in code.</p>
+
+<div class="note">
+<b>They differ in what they can check, and the difference is principled.</b>
+<br><br>
+Rewriting a <i>saved</i> case is constrained to the parser's vocabulary, and every proposed line is re-run through the real parser before you see it — the model cannot widen the accepted grammar.
+<br><br>
+Rewriting a case <i>at the gate</i> deliberately does neither, because gate steps read like "Type an invalid email into the Email field" and there is no IR yet. Imposing the executor's grammar there would reject the model's own valid output. The check still happens later, in <code>toIR</code>.
+</div>
+
+<h3>Two things in <code>library.ts</code> that will catch you</h3>
+
+<p><b>The IR schema is imported, never restated.</b> <code>parseIr</code> runs the real Zod schema on every read and write. A hand-maintained copy would be documentation drift reappearing as code.</p>
+
+<div class="warn">
+<b>A line that looks like a bug and is not:</b>
+<pre>if (Object.keys(update).length === 2) { /* nothing to update */ }</pre>
+<code>updated_at</code> and <code>updated_by</code> are always set, so two keys means no real change. Adding a third always-set column would silently break this check.
+</div>
+
+<p><b>Optimistic concurrency is re-checked at write time.</b> <code>updateCase</code> re-validates <code>expectedVersion</code> against the row it is about to write, closing the window between the initial check and the write — which can be sixty seconds later, after a browser walk.</p>
+
+<div class="note">
+<b>A counting subtlety:</b> <code>countCasesByProject</code> counts every case in the project, not the sum of its suites — a suite-less case must still appear. So a project's number can legitimately exceed the sum of its children's.
+</div>
+
+<h2>10. Ten things worth knowing on day one</h2>
+
+<ol>
+<li><b><code>npm run serve</code> has no watch.</b> Editing <code>src/</code> does nothing until you restart.</li>
+<li><b>Artifacts under <code>runs/</code> are unauthenticated by default.</b></li>
+<li><b><code>DB_ENABLED</code> does not gate the library.</b> Half the route table 503s without a service-role key, whatever the flags say.</li>
+<li><b><code>AUTH_ENABLED=false</code> runs the same permission code</b>, satisfied by a synthetic owner. Never branch around it.</li>
+<li><b>Never change an existing route's request or response shape.</b> <code>public/app.js</code> reads them in dozens of places. New capability → new route. Existing route → optional additive fields only.</li>
+<li><b>A model proposes, it never writes.</b></li>
+<li><b>Credentials never touch disk.</b> Do not weaken the scrubbing functions.</li>
+<li><b>SSE exists but nothing uses it.</b> The UI polls <code>/state</code>.</li>
+<li><b>A paused run holds its concurrency slot.</b> Three abandoned prompts wedge the default cap.</li>
+<li><b>Two duplications pinned only by convention:</b> <code>normaliseUrlKey</code> (server ↔ <code>app.js</code>) and <code>formatIrStep</code> (server ↔ <code>app.js</code>). Only the second has a test holding it in place.</li>
+</ol>
+
+<p>Before calling anything done: <code>npx tsc --noEmit</code> must be clean, and <code>npx vitest run</code> must pass. No CI runs either of them for you — that is <code>TECH_DEBT.md</code> TD-20.</p>
+
+</body>
+</html>

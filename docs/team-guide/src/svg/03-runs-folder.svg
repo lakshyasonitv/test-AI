@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="930" viewBox="0 0 1000 930" font-family="Segoe UI, Arial, sans-serif">
+  <rect width="1000" height="930" fill="#ffffff"/>
+  <text x="40" y="40" font-size="22" font-weight="700" fill="#0b3a78">What a run leaves on disk</text>
+  <text x="40" y="65" font-size="14" fill="#5a6b80">This is your primary evidence when something goes wrong. Read these files before you read the code.</text>
+
+  <rect x="40" y="84" width="560" height="800" rx="8" fill="#f7f9fc" stroke="#c9d9ee"/>
+  <g font-family="Consolas, monospace" font-size="13.5" fill="#1a2f4b">
+    <text x="58" y="110" font-weight="700" fill="#0b3a78">runs/</text>
+    <text x="58" y="132">├── _cache/</text>
+    <text x="58" y="152">│     ├── appmodels/    <tspan fill="#6b7280">discovered sites</tspan></text>
+    <text x="58" y="172">│     └── llm/          <tspan fill="#9c2a2a">never expires</tspan></text>
+    <text x="58" y="192">│</text>
+    <text x="58" y="212" font-weight="700" fill="#0b3a78">└── 2026-09-01T07-29-30-238Z-a031b900/</text>
+    <text x="58" y="236">      ├── events.ndjson</text>
+    <text x="58" y="258">      ├── 00-input.json</text>
+    <text x="58" y="278">      ├── 01-plan.json</text>
+    <text x="58" y="298">      ├── 02-appmodel.json</text>
+    <text x="58" y="318">      ├── 03-cases.json</text>
+    <text x="58" y="338">      ├── 04-ir.json</text>
+    <text x="58" y="358">      ├── 05-result.json</text>
+    <text x="58" y="378">      ├── 06-diagnosis.json</text>
+    <text x="58" y="398">      ├── 07-suite-summary.json</text>
+    <text x="58" y="418">      ├── 08-llm-usage.json</text>
+    <text x="58" y="440">      ├── accepted-cases.json</text>
+    <text x="58" y="460">      ├── case-history.json</text>
+    <text x="58" y="482">      ├── generated.spec.ts</text>
+    <text x="58" y="502">      ├── generated/test.spec.ts</text>
+    <text x="58" y="522">      ├── results.json</text>
+    <text x="58" y="544">      ├── artifacts/</text>
+    <text x="58" y="564">      │     ├── step-1.png … step-N.png</text>
+    <text x="58" y="584">      │     ├── final-page.txt</text>
+    <text x="58" y="604">      │     └── &lt;playwright-slug&gt;/</text>
+    <text x="58" y="624">      │            ├── test-failed-1.png</text>
+    <text x="58" y="644">      │            ├── trace.zip</text>
+    <text x="58" y="664">      │            └── video.webm</text>
+    <text x="58" y="686">      └── cases/</text>
+    <text x="58" y="706">            └── case-0/ … case-N/</text>
+    <text x="58" y="726">                  ├── 04-ir.json</text>
+    <text x="58" y="746">                  ├── 05-result.json</text>
+    <text x="58" y="766">                  ├── 06-diagnosis.json</text>
+    <text x="58" y="786">                  ├── artifacts/</text>
+    <text x="58" y="806">                  └── healed/</text>
+    <text x="58" y="826">                        ├── results.json</text>
+    <text x="58" y="846">                        ├── ir.json</text>
+    <text x="58" y="866">                        └── generated.spec.ts</text>
+  </g>
+
+  <!-- annotations -->
+  <g font-size="12.5">
+    <rect x="620" y="222" width="345" height="42" rx="5" fill="#e8f1fc" stroke="#0b63ce"/>
+    <text x="634" y="240" font-weight="700" fill="#0b3a78">The durable log — start here</text>
+    <text x="634" y="256" fill="#374151">One JSON event per line. Written BEFORE the UI sees it.</text>
+
+    <rect x="620" y="270" width="345" height="30" rx="5" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="634" y="290" fill="#374151">Your prompt — with any password <tspan fill="#9c2a2a" font-weight="700">redacted</tspan>.</text>
+
+    <rect x="620" y="306" width="345" height="30" rx="5" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="634" y="326" fill="#374151">Everything discovery found on the site.</text>
+
+    <rect x="620" y="342" width="345" height="44" rx="5" fill="#fff4f4" stroke="#e0b4b4"/>
+    <text x="634" y="359" font-weight="700" fill="#9c2a2a">Trap: this one is a wrapper</text>
+    <text x="634" y="376" fill="#374151">Run level = { ir, updatedAppModel }. Case level = bare IR.</text>
+
+    <rect x="620" y="392" width="345" height="30" rx="5" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="634" y="412" fill="#374151"><tspan font-weight="700">The real error lives here.</tspan> Read it first.</text>
+
+    <rect x="620" y="428" width="345" height="30" rx="5" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="634" y="448" fill="#374151">Only exists if the run failed AND analysis ran.</text>
+
+    <rect x="620" y="464" width="345" height="30" rx="5" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="634" y="484" fill="#374151">What the run cost you, per stage.</text>
+
+    <rect x="620" y="500" width="345" height="44" rx="5" fill="#fff4f4" stroke="#e0b4b4"/>
+    <text x="634" y="517" font-weight="700" fill="#9c2a2a">Two different files, similar names</text>
+    <text x="634" y="534" fill="#374151">Playwright actually runs generated/test.spec.ts.</text>
+
+    <rect x="620" y="562" width="345" height="44" rx="5" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="634" y="579" fill="#374151">step-N.png = one per step, taken by the spec itself.</text>
+    <text x="634" y="596" fill="#374151">final-page.txt = the page text at the end. Scrubbed.</text>
+
+    <rect x="620" y="614" width="345" height="44" rx="5" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="634" y="631" fill="#374151">Playwright's own output. video.webm only exists</text>
+    <text x="634" y="648" fill="#374151">when the test FAILED (retain-on-failure).</text>
+
+    <rect x="620" y="690" width="345" height="30" rx="5" fill="#f5f7fa" stroke="#c9d9ee"/>
+    <text x="634" y="710" fill="#374151">One folder per case in the suite.</text>
+
+    <rect x="620" y="800" width="345" height="76" rx="5" fill="#fff4f4" stroke="#e0b4b4"/>
+    <text x="634" y="818" font-weight="700" fill="#9c2a2a">healed/ existing does NOT mean it worked</text>
+    <text x="634" y="836" fill="#374151">A heal writes results.json first, then returns early</text>
+    <text x="634" y="853" fill="#374151">if it failed. So: no ir.json = the heal was ATTEMPTED</text>
+    <text x="634" y="870" fill="#374151">and FAILED. Both files present = it succeeded.</text>
+  </g>
+
+  <line x1="600" y1="236" x2="618" y2="240" stroke="#9dbfe8"/>
+  <line x1="600" y1="258" x2="618" y2="285" stroke="#9dbfe8"/>
+  <line x1="600" y1="298" x2="618" y2="321" stroke="#9dbfe8"/>
+  <line x1="600" y1="338" x2="618" y2="360" stroke="#e0b4b4"/>
+  <line x1="600" y1="358" x2="618" y2="407" stroke="#9dbfe8"/>
+  <line x1="600" y1="378" x2="618" y2="443" stroke="#9dbfe8"/>
+  <line x1="600" y1="418" x2="618" y2="479" stroke="#9dbfe8"/>
+  <line x1="600" y1="502" x2="618" y2="518" stroke="#e0b4b4"/>
+  <line x1="600" y1="564" x2="618" y2="578" stroke="#9dbfe8"/>
+  <line x1="600" y1="624" x2="618" y2="632" stroke="#9dbfe8"/>
+  <line x1="600" y1="706" x2="618" y2="705" stroke="#9dbfe8"/>
+  <line x1="600" y1="826" x2="618" y2="826" stroke="#e0b4b4"/>
+
+  <rect x="40" y="892" width="925" height="30" rx="5" fill="#f7f9fc" stroke="#c9d9ee"/>
+  <text x="58" y="912" font-size="13" fill="#374151">Missing files are information. A run with only 00, 04, 05, 07, 08 died in execute — it never got far enough to write a diagnosis.</text>
+</svg>
