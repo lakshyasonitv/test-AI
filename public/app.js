@@ -1461,6 +1461,11 @@ let suitesCache = [];
 // The sidebar's inline "new suite" form. Module state rather than DOM state because
 // renderProjectsTree() re-renders wholesale on every history refresh — anything held only in the
 // input would be wiped mid-typing by a background reload.
+// What is typed in the sidebar's search box. Module state rather than read from the input at
+// render time, for the same reason the form fields are: renderProjectsTree() rebuilds the tree
+// wholesale on a poll, and anything held only in the DOM would not survive that.
+let sidebarQuery = "";
+
 let newSuiteFor = null;     // project id whose form is open, NEW_SUITE_ANY, or null
 let newSuiteName = "";
 let newSuiteError = "";
@@ -4824,11 +4829,41 @@ function renderProjectsTree(runs) {
 
   const canManage = canManageProjects();
 
+  // ---------------------------------------------------------------------------
+  // Sidebar search
+  //
+  // Filters this tree in place rather than opening a results screen. The tree is already the
+  // index of everything the workspace holds — projects, their suites, their runs — so narrowing
+  // it is the least surprising thing typing can do, and it needs no new route or view.
+  //
+  // A project survives on its OWN name, or because something inside it matched. When the project
+  // itself matched, all of its children are shown: you asked for that project, so hiding its
+  // contents would answer a question you did not ask. When only a child matched, just the
+  // matching children are listed, so the hit is the thing you see.
+  // ---------------------------------------------------------------------------
+  const q = sidebarQuery.trim().toLowerCase();
+  const hit = (text) => (text || "").toLowerCase().includes(q);
+  const searchHits = (p) => {
+    if (!q || hit(p.name)) return { show: true, suites: null, runs: null };
+    const suites = suitesCache.filter((x) => x.projectId === p.id && hit(x.name));
+    const runs = (byKey.get(normalizeUrlKey(p.name) || p.name) || [])
+      .filter((r) => hit(r.prompt) || hit(r.url));
+    return { show: suites.length > 0 || runs.length > 0, suites, runs };
+  };
+  const visible = projects.map((p) => ({ p, m: searchHits(p) })).filter((x) => x.m.show);
+
   sidebarTreeEl.innerHTML = (creating ? projectFormHtml() : "")
     + topLevelSuiteFormHtml(projects)
-    + projects.map((p) => {
-    const open = expandedProjects.has(p.id);
+    + (q && !visible.length
+      ? `<div class="tree-empty">No matches for &ldquo;${escapeHtml(sidebarQuery.trim())}&rdquo;.</div>`
+      : visible.map(({ p, m }) => {
+    // While searching every surviving project renders open — a hit buried inside a collapsed row
+    // is a result you cannot see. `expandedProjects` is left untouched, so the tree goes back to
+    // however it was arranged once the box is cleared.
+    const open = q ? true : expandedProjects.has(p.id);
     const projectRuns = byKey.get(normalizeUrlKey(p.name) || p.name) || [];
+    const shownSuites = m.suites ?? suitesCache.filter((x) => x.projectId === p.id);
+    const shownRuns = m.runs ?? projectRuns;
     // The number on a project row is its SAVED CASE count, because the suite rows nested under it
     // show case counts in the same `.tree-count` position. It used to show runs, so a project with
     // 38 runs and 3 cases read as holding 38 cases — two units, one column.
@@ -4867,8 +4902,7 @@ function renderProjectsTree(runs) {
     // Renaming swaps the row for the form in place, the same way editing a project does, so the
     // suite being renamed stays where the eye already is. Inline rather than prompt() for the same
     // reason the create form is inline (see below): a server refusal needs somewhere to land.
-    const suiteRows = !open ? "" : (suitesCache
-      .filter((s) => s.projectId === p.id)
+    const suiteRows = !open ? "" : (shownSuites
       .map((s) => (renameSuiteId === s.id
       ? `<div class="tree-row tree-suite-new">
            <input type="text" class="suite-new-input" id="renameSuiteInput"
@@ -4889,7 +4923,7 @@ function renderProjectsTree(runs) {
     // suites and wanting another looks right here. Naming happens inline rather than through a
     // prompt() so the server's refusal (duplicate name, project you can't see) has somewhere to
     // land. `tester`+ only; the server enforces it regardless (POST /api/suites).
-    const newSuiteRow = !open || !canAuthorSuites() ? "" : (newSuiteFor === p.id
+    const newSuiteRow = q || !open || !canAuthorSuites() ? "" : (newSuiteFor === p.id
       ? `<div class="tree-row tree-suite-new">
            <input type="text" class="suite-new-input" id="newSuiteInput"
                   placeholder="Suite name" value="${escapeHtml(newSuiteName)}"
@@ -4902,15 +4936,15 @@ function renderProjectsTree(runs) {
            <span class="tree-label">+ New suite</span>
          </div>`);
 
-    const caseRows = !open ? "" : (projectRuns.length
-      ? projectRuns.map((r) => `
+    const caseRows = !open ? "" : (shownRuns.length
+      ? shownRuns.map((r) => `
       <div class="tree-row tree-case${r.runId === currentRunId ? " active" : ""}" data-run-id="${escapeHtml(r.runId)}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
         <span class="sdot sdot-sm ${RUN_SDOT_CLASS[r.status] || "pending"}" title="${escapeHtml(STATUS_LABEL[r.status] ?? r.status)}"></span>
         <span class="tree-label" title="${escapeHtml(r.prompt || "")}">${escapeHtml(r.prompt || "(no prompt)")}</span>
       </div>`).join("")
-      : `<div class="tree-empty" style="padding-left:40px">No recent runs.</div>`);
+      : (q ? "" : `<div class="tree-empty" style="padding-left:40px">No recent runs.</div>`));
     return projectRow + suiteRows + newSuiteRow + caseRows;
-  }).join("");
+  }).join(""));
 
   bindProjectForm();
 
@@ -5239,6 +5273,21 @@ addProjectBtnEl?.addEventListener("click", () => {
 
 // "New suite" from the Projects heading — creating a suite without first expanding the project it
 // belongs to. The project is picked in the form; everything after that is the existing create path.
+// Sidebar search. This only records what was typed and asks for a re-render — all the filtering
+// lives in renderProjectsTree(), so there is exactly one place that decides what a query means.
+// `input` rather than `keyup` so that the native clear (the × on type="search") and pasting both
+// count as typing.
+sidebarSearchEl?.addEventListener("input", () => {
+  sidebarQuery = sidebarSearchEl.value;
+  renderProjectsTree(allRunsCache);
+});
+sidebarSearchEl?.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !sidebarSearchEl.value) return;
+  sidebarSearchEl.value = "";
+  sidebarQuery = "";
+  renderProjectsTree(allRunsCache);
+});
+
 addSuiteBtnEl?.addEventListener("click", () => {
   if (!canAuthorSuites()) return;
   renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";   // one suite form at a time
