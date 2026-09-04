@@ -4452,6 +4452,141 @@ document.addEventListener("click", (e) => {
 });
 
 // -----------------------------------------------------------------------------
+// Header actions menu — the topbar hamburger
+//
+// History, Team, Settings, the session badge and Sign out are authored inline in
+// index.html and wired up above. This block MOVES those exact nodes into a menu
+// panel — appendChild relocates a live node, it does not clone it, so every id,
+// every class and every listener bound earlier in this file is still on the same
+// element. Nothing here rebinds or re-creates a control.
+//
+// Open/closed is a NEW class, .hdr-menu-open, and this block never touches
+// .hidden: showView() owns .hidden, and the .hidden rules already on Team, the
+// badge and Sign out (auth/role gating) must keep meaning exactly what they meant
+// before — a menu that also toggled .hidden would fight them.
+//
+// The Settings popover moves in too, so it renders as an in-flow submenu under
+// its own button instead of a second floating card overlapping this one. Its own
+// toggle and outside-click handler above are unchanged: the popover sits inside
+// the panel, so a click on it is a click inside the menu.
+// -----------------------------------------------------------------------------
+
+const topbarActionsEl = document.querySelector(".topbar-actions");
+
+const hdrMenuWrapEl = document.createElement("div");
+hdrMenuWrapEl.className = "hdr-menu-wrap";
+
+const hdrMenuBtnEl = document.createElement("button");
+hdrMenuBtnEl.type = "button";
+hdrMenuBtnEl.id = "hdrMenuBtn";
+hdrMenuBtnEl.className = "hdr-menu-btn";
+hdrMenuBtnEl.setAttribute("aria-label", "Menu");
+hdrMenuBtnEl.setAttribute("aria-haspopup", "true");
+hdrMenuBtnEl.setAttribute("aria-expanded", "false");
+hdrMenuBtnEl.setAttribute("aria-controls", "hdrMenu");
+// Inlined rather than icon(): icons.js has no hamburger, and the three-bar mark is
+// the one glyph this file needs that the shared set doesn't carry.
+hdrMenuBtnEl.innerHTML =
+  '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.75" stroke-linecap="round" ' +
+  'stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+  '<path d="M4 6h16M4 12h16M4 18h16"/></svg>';
+
+const hdrMenuEl = document.createElement("div");
+hdrMenuEl.id = "hdrMenu";
+hdrMenuEl.className = "hdr-menu";
+hdrMenuEl.setAttribute("aria-label", "Header actions");
+
+// Order is the order they read in the topbar today; settingsPop follows its own
+// button so it opens as a submenu in place.
+["historyBtn", "teamBtn", "settingsBtn", "settingsPop", "sessionBadge", "signOutBtn"]
+  .forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) hdrMenuEl.appendChild(el);
+  });
+
+hdrMenuWrapEl.appendChild(hdrMenuBtnEl);
+hdrMenuWrapEl.appendChild(hdrMenuEl);
+if (topbarActionsEl) topbarActionsEl.appendChild(hdrMenuWrapEl);
+
+function hdrMenuIsOpen() { return hdrMenuEl.classList.contains("hdr-menu-open"); }
+
+/** Every control the panel is currently offering, in DOM order. Filtered on
+ *  offsetParent so a .hidden Team button or a closed Settings popover is skipped —
+ *  arrow keys must not land on something the user cannot see. */
+function hdrMenuItems() {
+  return Array.from(hdrMenuEl.querySelectorAll("button"))
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+}
+
+function openHdrMenu(focusFirst) {
+  hdrMenuEl.classList.add("hdr-menu-open");
+  hdrMenuBtnEl.setAttribute("aria-expanded", "true");
+  if (!focusFirst) return;
+  const items = hdrMenuItems();
+  if (items.length) items[0].focus();
+}
+
+function closeHdrMenu(refocus) {
+  if (!hdrMenuIsOpen()) return;
+  hdrMenuEl.classList.remove("hdr-menu-open");
+  hdrMenuBtnEl.setAttribute("aria-expanded", "false");
+  if (refocus) hdrMenuBtnEl.focus();
+}
+
+// detail === 0 means the click came from Enter/Space, not a pointer: a keyboard
+// user gets focus moved into the panel, a mouse user does not have it stolen.
+hdrMenuBtnEl.addEventListener("click", (e) => {
+  if (hdrMenuIsOpen()) closeHdrMenu(false);
+  else openHdrMenu(e.detail === 0);
+});
+
+hdrMenuBtnEl.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown") return;
+  e.preventDefault();
+  openHdrMenu(true);
+});
+
+// A chosen action closes the menu. Settings is the exception — its popover lives
+// inside this panel, so opening it must leave the panel up.
+hdrMenuEl.addEventListener("click", (e) => {
+  if (settingsBtnEl.contains(e.target) || settingsPopEl.contains(e.target)) return;
+  if (e.target.closest("button")) closeHdrMenu(false);
+});
+
+hdrMenuEl.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  const items = hdrMenuItems();
+  if (!items.length) return;
+  e.preventDefault();
+  const at = items.indexOf(document.activeElement);
+  const next = e.key === "ArrowDown"
+    ? (at + 1) % items.length
+    : (at <= 0 ? items.length - 1 : at - 1);
+  items[next].focus();
+});
+
+// Tab out of the last item closes the menu. relatedTarget null means focus went
+// nowhere at all — a pointer landing on the panel's own padding — which must NOT
+// count as leaving, or clicking inside the menu would dismiss it.
+hdrMenuWrapEl.addEventListener("focusout", (e) => {
+  if (!e.relatedTarget) return;
+  if (hdrMenuWrapEl.contains(e.relatedTarget)) return;
+  closeHdrMenu(false);
+});
+
+document.addEventListener("click", (e) => {
+  if (!hdrMenuIsOpen()) return;
+  if (hdrMenuWrapEl.contains(e.target)) return;
+  closeHdrMenu(false);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !hdrMenuIsOpen()) return;
+  closeHdrMenu(true);
+});
+
+// -----------------------------------------------------------------------------
 // Coverage segmented control
 // -----------------------------------------------------------------------------
 

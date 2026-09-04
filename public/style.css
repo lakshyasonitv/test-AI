@@ -376,6 +376,73 @@ h1, h2, h3, h4 { letter-spacing: -0.015em; margin: 0; }
 .settings-row[aria-pressed="true"] .switch-knob { transform: translateX(14px); }
 
 /* ---------------------------------------------------------------------------
+   Header actions menu — the topbar hamburger
+
+   The five header actions (History, Team, Settings, the session badge, Sign out)
+   are authored inline in index.html and are RELOCATED into this panel by app.js:
+   the same nodes, same ids, same listeners, only a different box. Everything here
+   is a NEW selector — nothing above was renamed, and the moved controls keep their
+   own .topbar-btn / .session-badge / .settings-pop rules, which is why the rules
+   below are descendant overrides rather than replacements.
+
+   Open/closed is .hdr-menu-open, deliberately NOT .hidden: showView() owns .hidden
+   (see its comment in app.js), and a second thing toggling it is the bug that
+   comment exists to prevent.
+   --------------------------------------------------------------------------- */
+
+.hdr-menu-wrap { position: relative; display: flex; align-items: center; flex: none; }
+
+.hdr-menu-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 31px; padding: 0;
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-sm);
+  color: var(--text); cursor: pointer;
+  transition: background .15s var(--ease);
+}
+.hdr-menu-btn:hover,
+.hdr-menu-btn[aria-expanded="true"] { background: var(--surface-hover); }
+
+.hdr-menu {
+  display: none;
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
+  min-width: 212px;
+  flex-direction: column; align-items: stretch;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+.hdr-menu.hdr-menu-open { display: flex; animation: fadeUp .16s var(--ease); }
+
+/* Each moved action becomes a full-width row. The .hidden rules that gate Team,
+   the badge and Sign out still apply untouched — display:none !important wins
+   over everything here. */
+.hdr-menu .topbar-btn {
+  width: 100%; height: 30px; text-align: left;
+  border-color: transparent; background: none;
+}
+.hdr-menu .topbar-btn:hover { background: var(--surface-hover); }
+
+/* The badge is a label, not an action: it reads as the account row that Sign out
+   belongs to, separated from the navigation above it. */
+.hdr-menu .session-badge {
+  flex-wrap: wrap; gap: 6px;
+  margin-top: 4px; padding: 8px 11px 6px;
+  border-top: 1px solid var(--line);
+}
+
+/* The Settings popover was absolutely positioned against .topbar-actions. Inside
+   the menu it is an in-flow submenu directly under its own button, so the menu is
+   one surface rather than two overlapping ones. Its .hidden toggle is unchanged. */
+.hdr-menu .settings-pop {
+  position: static; top: auto; right: auto; width: auto;
+  padding: 2px 11px 8px;
+  background: none; border: none; box-shadow: none;
+  animation: none;
+}
+
+/* ---------------------------------------------------------------------------
    Views — one screen visible at a time
    --------------------------------------------------------------------------- */
 
