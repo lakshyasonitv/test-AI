@@ -1461,9 +1461,24 @@ let suitesCache = [];
 // The sidebar's inline "new suite" form. Module state rather than DOM state because
 // renderProjectsTree() re-renders wholesale on every history refresh — anything held only in the
 // input would be wiped mid-typing by a background reload.
-let newSuiteFor = null;     // project id whose form is open, or null
+let newSuiteFor = null;     // project id whose form is open, NEW_SUITE_ANY, or null
 let newSuiteName = "";
 let newSuiteError = "";
+
+// Sentinel for `newSuiteFor`: the create form was opened from the Projects heading rather than
+// from inside one project, so the project is CHOSEN in the form instead of implied by where the
+// form was opened. Cannot collide with a real id — project ids are UUIDs.
+const NEW_SUITE_ANY = "*";
+
+// Which project the heading-level form is filing the new suite under. Module state, not just the
+// <select>'s DOM value: loadHistory() -> loadProjects() -> renderProjectsTree() fires on a poll and
+// replaces the whole tree, so a choice held only in the DOM would silently snap back to the first
+// project mid-typing — and the suite would be created in the wrong one.
+let newSuiteProject = null;
+
+let renameSuiteId = null;   // suite id whose rename form is open, or null
+let renameSuiteName = "";
+let renameSuiteError = "";
 
 // The sidebar's inline project form, for both create and edit — same shape, same two fields, so
 // one form serves both and `projectFormId` is what tells them apart (null = creating). Module
@@ -1479,6 +1494,25 @@ let projectFormError = "";
  *  configured the sidebar is showing URL groupings, not project rows, so there is nothing to edit
  *  and offering the control would be a lie. */
 function canManageProjects() {
+  return (!auth.required || roleAtLeast(auth.role, "admin")) && !projectsUnavailable;
+}
+
+/**
+ * Suite gates. Two of them, because the server splits the same way: composing the library is
+ * authoring (`tester` — POST/PATCH /api/suites) and destroying authored work is administration
+ * (`admin` — DELETE /api/suites/:id).
+ *
+ * Both keep the `!auth.required ||` escape hatch that canManageProjects() has. With auth off the
+ * server hands the synthetic local user `owner` rather than skipping the check, so a UI gate
+ * without the hatch hides controls the server would happily honour.
+ *
+ * `!projectsUnavailable` because with no database the tree is showing URL groupings synthesised
+ * from run history, not real suites — there is nothing there to rename or delete.
+ */
+function canAuthorSuites() {
+  return (!auth.required || roleAtLeast(auth.role, "tester")) && !projectsUnavailable;
+}
+function canDeleteSuites() {
   return (!auth.required || roleAtLeast(auth.role, "admin")) && !projectsUnavailable;
 }
 
@@ -2740,7 +2774,6 @@ screenshotToggleEl.addEventListener("click", () => {
 
 const sidebarEl = document.getElementById("sidebar");
 const sidebarTreeEl = document.getElementById("sidebarTree");
-const sidebarSearchEl = document.getElementById("sidebarSearch");
 const sidebarOpenEl = document.getElementById("sidebarOpen");
 const sidebarCloseEl = document.getElementById("sidebarClose");
 const scrimEl = document.getElementById("scrim");
@@ -2750,11 +2783,11 @@ const historyBtnEl = document.getElementById("historyBtn");
 const teamBtnEl = document.getElementById("teamBtn");
 const allRunsBtnEl = document.getElementById("allRunsBtn");
 const addProjectBtnEl = document.getElementById("addProjectBtn");
+const addSuiteBtnEl = document.getElementById("addSuiteBtn");
 const settingsBtnEl = document.getElementById("settingsBtn");
 const settingsPopEl = document.getElementById("settingsPop");
 const gateToggleEl = document.getElementById("gateToggle");
 const healToggleEl = document.getElementById("healToggle");
-const coverageSegEl = document.getElementById("coverageSeg");
 const toastEl = document.getElementById("toast");
 const runTitleEl = document.getElementById("runTitle");
 const runScopeLabelEl = document.getElementById("runScopeLabel");
@@ -2889,8 +2922,12 @@ async function renderSuiteView(suiteId) {
   }
 
   setCrumbs(["Suite", suite.name]);
-  const canAuthor = roleAtLeast(auth.role, "tester");
-  const canDelete = roleAtLeast(auth.role, "admin");
+  // The `!auth.required ||` half is not decoration. auth.role is null until GET /api/auth/me
+  // fills it, so with AUTH_ENABLED=false these were both false and this toolbar rendered EMPTY —
+  // no Add cases, no Rename, no Delete, and no Run all — while the server was granting that same
+  // synthetic user `owner`. Flag-off has to exercise flag-on's code path (CLAUDE.md rule 7).
+  const canAuthor = !auth.required || roleAtLeast(auth.role, "tester");
+  const canDelete = !auth.required || roleAtLeast(auth.role, "admin");
 
   body.innerHTML = `
     <div>
@@ -3546,8 +3583,11 @@ async function renderCaseView(caseId, routeProjectId) {
     }
   }
 
-  const canAuthor = roleAtLeast(auth.role, "tester");
-  const canDelete = roleAtLeast(auth.role, "admin");
+  // Same missing escape hatch as the Suite screen above, with the same effect under
+  // AUTH_ENABLED=false. (The Team screen's own roleAtLeast gate is deliberately left alone: it is
+  // only reachable when auth is on, so it has no flag-off path to get wrong.)
+  const canAuthor = !auth.required || roleAtLeast(auth.role, "tester");
+  const canDelete = !auth.required || roleAtLeast(auth.role, "admin");
 
   // Names for the breadcrumb. Both are best-effort: a missing one degrades to a quieter crumb
   // rather than blocking the screen the user asked for.
@@ -4452,18 +4492,156 @@ document.addEventListener("click", (e) => {
 });
 
 // -----------------------------------------------------------------------------
-// Coverage segmented control
+// Header actions menu — the topbar hamburger
+//
+// History, Team, Settings, the session badge and Sign out are authored inline in
+// index.html and wired up above. This block MOVES those exact nodes into a menu
+// panel — appendChild relocates a live node, it does not clone it, so every id,
+// every class and every listener bound earlier in this file is still on the same
+// element. Nothing here rebinds or re-creates a control.
+//
+// Open/closed is a NEW class, .hdr-menu-open, and this block never touches
+// .hidden: showView() owns .hidden, and the .hidden rules already on Team, the
+// badge and Sign out (auth/role gating) must keep meaning exactly what they meant
+// before — a menu that also toggled .hidden would fight them.
+//
+// The Settings popover moves in too, so it renders as an in-flow submenu under
+// its own button instead of a second floating card overlapping this one. Its own
+// toggle and outside-click handler above are unchanged: the popover sits inside
+// the panel, so a click on it is a click inside the menu.
 // -----------------------------------------------------------------------------
 
-let coverage = "standard";
-coverageSegEl.addEventListener("click", (e) => {
-  const btn = e.target.closest(".seg-btn");
-  if (!btn) return;
-  coverage = btn.dataset.coverage;
-  coverageSegEl.querySelectorAll(".seg-btn").forEach((b) => {
-    b.classList.toggle("active", b === btn);
+const topbarActionsEl = document.querySelector(".topbar-actions");
+
+const hdrMenuWrapEl = document.createElement("div");
+hdrMenuWrapEl.className = "hdr-menu-wrap";
+
+const hdrMenuBtnEl = document.createElement("button");
+hdrMenuBtnEl.type = "button";
+hdrMenuBtnEl.id = "hdrMenuBtn";
+hdrMenuBtnEl.className = "hdr-menu-btn";
+hdrMenuBtnEl.setAttribute("aria-label", "Menu");
+hdrMenuBtnEl.setAttribute("aria-haspopup", "true");
+hdrMenuBtnEl.setAttribute("aria-expanded", "false");
+hdrMenuBtnEl.setAttribute("aria-controls", "hdrMenu");
+// Inlined rather than icon(): icons.js has no hamburger, and the three-bar mark is
+// the one glyph this file needs that the shared set doesn't carry.
+hdrMenuBtnEl.innerHTML =
+  '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.75" stroke-linecap="round" ' +
+  'stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+  '<path d="M4 6h16M4 12h16M4 18h16"/></svg>';
+
+const hdrMenuEl = document.createElement("div");
+hdrMenuEl.id = "hdrMenu";
+hdrMenuEl.className = "hdr-menu";
+hdrMenuEl.setAttribute("aria-label", "Header actions");
+
+// Order is the order they read in the topbar today; settingsPop follows its own
+// button so it opens as a submenu in place.
+["historyBtn", "teamBtn", "settingsBtn", "settingsPop", "sessionBadge", "signOutBtn"]
+  .forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) hdrMenuEl.appendChild(el);
   });
+
+hdrMenuWrapEl.appendChild(hdrMenuBtnEl);
+hdrMenuWrapEl.appendChild(hdrMenuEl);
+if (topbarActionsEl) topbarActionsEl.appendChild(hdrMenuWrapEl);
+
+function hdrMenuIsOpen() { return hdrMenuEl.classList.contains("hdr-menu-open"); }
+
+/** Every control the panel is currently offering, in DOM order. Filtered on
+ *  offsetParent so a .hidden Team button or a closed Settings popover is skipped —
+ *  arrow keys must not land on something the user cannot see. */
+function hdrMenuItems() {
+  return Array.from(hdrMenuEl.querySelectorAll("button"))
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+}
+
+function openHdrMenu(focusFirst) {
+  hdrMenuEl.classList.add("hdr-menu-open");
+  hdrMenuBtnEl.setAttribute("aria-expanded", "true");
+  if (!focusFirst) return;
+  const items = hdrMenuItems();
+  if (items.length) items[0].focus();
+}
+
+function closeHdrMenu(refocus) {
+  if (!hdrMenuIsOpen()) return;
+  hdrMenuEl.classList.remove("hdr-menu-open");
+  hdrMenuBtnEl.setAttribute("aria-expanded", "false");
+  if (refocus) hdrMenuBtnEl.focus();
+}
+
+// detail === 0 means the click came from Enter/Space, not a pointer: a keyboard
+// user gets focus moved into the panel, a mouse user does not have it stolen.
+hdrMenuBtnEl.addEventListener("click", (e) => {
+  if (hdrMenuIsOpen()) closeHdrMenu(false);
+  else openHdrMenu(e.detail === 0);
 });
+
+hdrMenuBtnEl.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown") return;
+  e.preventDefault();
+  openHdrMenu(true);
+});
+
+// A chosen action closes the menu. Settings is the exception — its popover lives
+// inside this panel, so opening it must leave the panel up.
+hdrMenuEl.addEventListener("click", (e) => {
+  if (settingsBtnEl.contains(e.target) || settingsPopEl.contains(e.target)) return;
+  if (e.target.closest("button")) closeHdrMenu(false);
+});
+
+hdrMenuEl.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  const items = hdrMenuItems();
+  if (!items.length) return;
+  e.preventDefault();
+  const at = items.indexOf(document.activeElement);
+  const next = e.key === "ArrowDown"
+    ? (at + 1) % items.length
+    : (at <= 0 ? items.length - 1 : at - 1);
+  items[next].focus();
+});
+
+// Tab out of the last item closes the menu. relatedTarget null means focus went
+// nowhere at all — a pointer landing on the panel's own padding — which must NOT
+// count as leaving, or clicking inside the menu would dismiss it.
+hdrMenuWrapEl.addEventListener("focusout", (e) => {
+  if (!e.relatedTarget) return;
+  if (hdrMenuWrapEl.contains(e.relatedTarget)) return;
+  closeHdrMenu(false);
+});
+
+document.addEventListener("click", (e) => {
+  if (!hdrMenuIsOpen()) return;
+  if (hdrMenuWrapEl.contains(e.target)) return;
+  closeHdrMenu(false);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !hdrMenuIsOpen()) return;
+  closeHdrMenu(true);
+});
+
+// -----------------------------------------------------------------------------
+// Coverage
+//
+// The Minimal/Standard/Full segmented control was removed from the composer. The
+// VALUE stays, pinned to the default the control shipped selected, because it is
+// still part of the POST /api/runs body and the server still validates it and
+// sizes the run from it (budgetFor() in src/stages/testCases.ts: minimal 2,
+// standard 4, full 5 cases). Dropping the field would change an existing route's
+// request shape; pinning it means every run behaves exactly as an untouched
+// control did.
+//
+// .seg/.seg-btn stay in style.css on purpose — the case-detail tabs (Steps /
+// Script / Runs & versions) reuse both classes.
+// -----------------------------------------------------------------------------
+
+const coverage = "standard";
 
 // -----------------------------------------------------------------------------
 // Sidebar Projects tree — real projects, from GET /api/projects.
@@ -4543,6 +4721,38 @@ function groupRunsByUrl(runs) {
   return [...groups.values()];
 }
 
+/**
+ * The heading-level "New suite" form, rendered ABOVE the tree because it is not scoped to any one
+ * project. A suite must belong to a project — createSuite() in src/server/library.ts takes a
+ * required projectId — so the picker is what supplies it. The name and the picker are on separate
+ * rows: the sidebar is ~244px wide and a name field plus a project select do not share one.
+ */
+function topLevelSuiteFormHtml(projects) {
+  if (newSuiteFor !== NEW_SUITE_ANY || !canAuthorSuites()) return "";
+  // Defensive: the button is already hidden when there are no projects, since there would be no
+  // valid id to post against.
+  if (!projects.length) return "";
+  // Fall back to the first project when the remembered one has gone (deleted, or no longer
+  // visible) so the form can never post an id that is not in the list it is showing.
+  const chosen = projects.some((p) => p.id === newSuiteProject) ? newSuiteProject : projects[0].id;
+  const options = projects
+    .map((p) => `<option value="${escapeHtml(p.id)}"${p.id === chosen ? " selected" : ""}>${escapeHtml(p.name)}</option>`)
+    .join("");
+  return `
+    <div class="tree-row tree-suite-new tree-suite-new-top">
+      <input type="text" class="suite-new-input" id="newSuiteInput"
+             placeholder="Suite name" value="${escapeHtml(newSuiteName)}"
+             aria-label="Name for the new suite" />
+    </div>
+    <div class="tree-row tree-suite-new tree-suite-new-top">
+      <select class="suite-new-input" id="newSuiteProject"
+              aria-label="Project this suite belongs to">${options}</select>
+      <button type="button" class="dl-btn-inline" data-suite-create-top="1">Add</button>
+      <button type="button" class="dl-btn-inline" data-suite-cancel="1" title="Cancel">&times;</button>
+    </div>
+    ${newSuiteError ? `<div class="suite-new-err">${escapeHtml(newSuiteError)}</div>` : ""}`;
+}
+
 function renderProjectsTree(runs) {
   if (!sidebarTreeEl) return;
 
@@ -4550,6 +4760,14 @@ function renderProjectsTree(runs) {
   // role, this covers the no-database case, where the sidebar is showing URL groupings rather
   // than project rows and there is nothing a create button could write to.
   if (addProjectBtnEl) addProjectBtnEl.classList.toggle("hidden", !canManageProjects());
+
+  // Suites are `tester`+ while projects are `admin`+, so this is NOT the same gate. It also needs
+  // at least one project, because a suite has to be created inside one and the form's picker would
+  // otherwise have nothing to offer. Deliberately ABOVE the loading return below: `projectsCache`
+  // is null on that frame, so the button stays hidden until we know, rather than flashing in.
+  if (addSuiteBtnEl) {
+    addSuiteBtnEl.classList.toggle("hidden", !canAuthorSuites() || !projectsCache?.length);
+  }
 
   if (projectsCache === null && !projectsUnavailable) {
     sidebarTreeEl.innerHTML = `<div class="tree-empty">Loading projects…</div>`;
@@ -4605,7 +4823,9 @@ function renderProjectsTree(runs) {
 
   const canManage = canManageProjects();
 
-  sidebarTreeEl.innerHTML = (creating ? projectFormHtml() : "") + projects.map((p) => {
+  sidebarTreeEl.innerHTML = (creating ? projectFormHtml() : "")
+    + topLevelSuiteFormHtml(projects)
+    + projects.map((p) => {
     const open = expandedProjects.has(p.id);
     const projectRuns = byKey.get(normalizeUrlKey(p.name) || p.name) || [];
     // The number on a project row is its SAVED CASE count, because the suite rows nested under it
@@ -4638,24 +4858,37 @@ function renderProjectsTree(runs) {
         <span class="tree-chevron">${icon(open ? "chevron-down" : "chevron-right", { size: 9 })}</span>
         <span class="tree-label" title="${escapeHtml(rowTitle)}">${escapeHtml(p.name)}</span>
         ${canManage ? `<button type="button" class="dl-btn-inline tree-project-edit" data-project-edit="${escapeHtml(p.id)}" title="Rename or set a base URL">Edit</button>` : ""}
+        ${canManage ? `<button type="button" class="dl-btn-inline tree-project-del" data-project-delete="${escapeHtml(p.id)}" title="Delete this project">Delete</button>` : ""}
         <span class="tree-count">${caseCount}</span>
       </div>`;
     // Saved suites first, then recent runs. The suites are the reusable, zero-cost thing — a
     // project's library is more useful to reach than its scrollback, so it sits above.
+    // Renaming swaps the row for the form in place, the same way editing a project does, so the
+    // suite being renamed stays where the eye already is. Inline rather than prompt() for the same
+    // reason the create form is inline (see below): a server refusal needs somewhere to land.
     const suiteRows = !open ? "" : (suitesCache
       .filter((s) => s.projectId === p.id)
-      .map((s) => `
-      <div class="tree-row tree-suite" data-suite-id="${escapeHtml(s.id)}">
-        <span class="tree-label" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
-        <span class="tree-count">${s.caseCount}</span>
-      </div>`).join(""));
+      .map((s) => (renameSuiteId === s.id
+      ? `<div class="tree-row tree-suite-new">
+           <input type="text" class="suite-new-input" id="renameSuiteInput"
+                  placeholder="Suite name" value="${escapeHtml(renameSuiteName)}"
+                  aria-label="New name for this suite" />
+           <button type="button" class="dl-btn-inline" data-suite-rename-save="${escapeHtml(s.id)}">Save</button>
+           <button type="button" class="dl-btn-inline" data-suite-rename-cancel="1" title="Cancel">&times;</button>
+         </div>
+         ${renameSuiteError ? `<div class="suite-new-err">${escapeHtml(renameSuiteError)}</div>` : ""}`
+      : `<div class="tree-row tree-suite" data-suite-id="${escapeHtml(s.id)}">
+           <span class="tree-label" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+           ${canAuthorSuites() ? `<button type="button" class="dl-btn-inline tree-suite-edit" data-suite-rename="${escapeHtml(s.id)}" title="Rename this suite">Rename</button>` : ""}
+           ${canDeleteSuites() ? `<button type="button" class="dl-btn-inline tree-suite-del" data-suite-delete="${escapeHtml(s.id)}" title="Delete this suite">Delete</button>` : ""}
+           <span class="tree-count">${s.caseCount}</span>
+         </div>`)).join(""));
 
     // Creating a suite belongs where the suites already are — someone looking at a project's
     // suites and wanting another looks right here. Naming happens inline rather than through a
     // prompt() so the server's refusal (duplicate name, project you can't see) has somewhere to
     // land. `tester`+ only; the server enforces it regardless (POST /api/suites).
-    const canAuthorSuites = !auth.required || roleAtLeast(auth.role, "tester");
-    const newSuiteRow = !open || !canAuthorSuites ? "" : (newSuiteFor === p.id
+    const newSuiteRow = !open || !canAuthorSuites() ? "" : (newSuiteFor === p.id
       ? `<div class="tree-row tree-suite-new">
            <input type="text" class="suite-new-input" id="newSuiteInput"
                   placeholder="Suite name" value="${escapeHtml(newSuiteName)}"
@@ -4697,6 +4930,29 @@ function renderProjectsTree(runs) {
     });
   });
 
+  // Delete a project. The route (DELETE /api/projects/:id, admin+) and its rules already
+  // existed; the sidebar simply never offered a way to reach them, so an owner had no control
+  // to click. The server REFUSES with 409 while the project still holds runs and says how many
+  // (deleteProject in src/server/projects.ts) — that refusal is deliberate, so this surfaces the
+  // server's own sentence rather than second-guessing it or offering to cascade the runs away.
+  sidebarTreeEl.querySelectorAll("[data-project-delete]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      // Same reason as Edit above: the row itself toggles expand/collapse.
+      e.stopPropagation();
+      const p = projects.find((x) => x.id === btn.dataset.projectDelete);
+      if (!p) return;
+      if (!confirm(`Delete the project "${p.name}"? Its saved suites and cases go with it.`)) return;
+      try {
+        await api(`/api/projects/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+        expandedProjects.delete(p.id);
+        await loadProjects();
+        toast(`Project "${p.name}" deleted.`);
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+  });
+
   sidebarTreeEl.querySelectorAll("[data-suite-add]").forEach((row) => {
     row.addEventListener("click", () => {
       newSuiteFor = row.dataset.suiteAdd;
@@ -4716,12 +4972,20 @@ function renderProjectsTree(runs) {
   const createSuite = async (projectId) => {
     const name = newSuiteName.trim();
     if (!name) { newSuiteError = "Give the suite a name."; return renderProjectsTree(allRunsCache); }
+    // Only reachable from the heading form, and only if its picker somehow came back empty.
+    if (!projectId) {
+      newSuiteError = "Choose a project for this suite.";
+      return renderProjectsTree(allRunsCache);
+    }
     try {
       const created = await api("/api/suites", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId, name }),
       });
-      newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
+      newSuiteFor = null; newSuiteName = ""; newSuiteError = ""; newSuiteProject = null;
+      // Created from the heading, the project it landed in may well be collapsed — open it so the
+      // new suite is where the eye goes when it comes back to the tree.
+      expandedProjects.add(projectId);
       await loadProjects();                       // refresh suitesCache so the new row appears
       // Land in the new (empty) suite — adding cases is the obvious next step and it should be
       // in front of them rather than something they have to go find.
@@ -4733,11 +4997,23 @@ function renderProjectsTree(runs) {
     }
   };
 
+  // Opened under a project, the project is `newSuiteFor`; opened from the heading it is whatever
+  // the picker says. One function either way, so createSuite() did not have to change.
+  const targetProjectId = () => (newSuiteFor === NEW_SUITE_ANY ? (newSuiteProject || "") : newSuiteFor);
+
+  const projectSelect = document.getElementById("newSuiteProject");
+  if (projectSelect) {
+    // Sync state to what actually rendered — this is what makes the fallback above real rather
+    // than only visual, since the render itself must not write state.
+    newSuiteProject = projectSelect.value;
+    projectSelect.addEventListener("change", () => { newSuiteProject = projectSelect.value; });
+  }
+
   const nameInput = document.getElementById("newSuiteInput");
   if (nameInput) {
     nameInput.addEventListener("input", () => { newSuiteName = nameInput.value; });
     nameInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); createSuite(newSuiteFor); }
+      if (e.key === "Enter") { e.preventDefault(); createSuite(targetProjectId()); }
       if (e.key === "Escape") {
         newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
         renderProjectsTree(allRunsCache);
@@ -4746,6 +5022,104 @@ function renderProjectsTree(runs) {
   }
   sidebarTreeEl.querySelectorAll("[data-suite-create]").forEach((btn) => {
     btn.addEventListener("click", () => createSuite(btn.dataset.suiteCreate));
+  });
+  sidebarTreeEl.querySelectorAll("[data-suite-create-top]").forEach((btn) => {
+    btn.addEventListener("click", () => createSuite(targetProjectId()));
+  });
+
+  // Suite rename + delete. Every one of these calls stopPropagation() because the row they sit in
+  // is itself a click target that opens the suite — without it, reaching for Rename would navigate
+  // away before the form could render.
+  sidebarTreeEl.querySelectorAll("[data-suite-rename]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const s = suitesCache.find((x) => x.id === btn.dataset.suiteRename);
+      if (!s) return;
+      // One suite form at a time: two open forms would mean two inputs competing for focus.
+      newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
+      renameSuiteId = s.id;
+      renameSuiteName = s.name || "";
+      renameSuiteError = "";
+      renderProjectsTree(allRunsCache);
+      document.getElementById("renameSuiteInput")?.focus();
+    });
+  });
+
+  const saveSuiteName = async (suiteId) => {
+    const name = renameSuiteName.trim();
+    if (!name) { renameSuiteError = "Give the suite a name."; return renderProjectsTree(allRunsCache); }
+    // Unchanged name: just close. Mirrors the Suite screen's own rename, which returns early too.
+    const current = suitesCache.find((x) => x.id === suiteId);
+    if (current && name === current.name) {
+      renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";
+      return renderProjectsTree(allRunsCache);
+    }
+    try {
+      await api(`/api/suites/${encodeURIComponent(suiteId)}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";
+      await loadProjects();
+      toast("Suite renamed.");
+      // If that suite is the screen currently open, its heading and crumb still say the old name.
+      // navigate() to the same hash re-runs applyRoute() rather than doing nothing (see :4310).
+      const hash = "#/suite/" + encodeURIComponent(suiteId);
+      if (location.hash === hash) navigate(hash);
+    } catch (err) {
+      renameSuiteError = err.message;
+      renderProjectsTree(allRunsCache);
+      document.getElementById("renameSuiteInput")?.focus();
+    }
+  };
+
+  const renameInput = document.getElementById("renameSuiteInput");
+  if (renameInput) {
+    renameInput.addEventListener("input", () => { renameSuiteName = renameInput.value; });
+    renameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); saveSuiteName(renameSuiteId); }
+      if (e.key === "Escape") {
+        renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";
+        renderProjectsTree(allRunsCache);
+      }
+    });
+  }
+  sidebarTreeEl.querySelectorAll("[data-suite-rename-save]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      saveSuiteName(btn.dataset.suiteRenameSave);
+    });
+  });
+  sidebarTreeEl.querySelectorAll("[data-suite-rename-cancel]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";
+      renderProjectsTree(allRunsCache);
+    });
+  });
+
+  // Deleting a suite is unconditional server-side, unlike deleting a project (which refuses while
+  // runs remain). A suite is a grouping: `suite_cases` cascades, `test_cases` does not, so the
+  // authored cases survive. The confirm says so, in the Suite screen's own words.
+  sidebarTreeEl.querySelectorAll("[data-suite-delete]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const s = suitesCache.find((x) => x.id === btn.dataset.suiteDelete);
+      if (!s) return;
+      if (!confirm(`Delete the suite "${s.name}"? The cases themselves are kept.`)) return;
+      // Read the hash BEFORE the await: loadProjects() can re-render and navigate underneath us.
+      const onThisSuite = location.hash.startsWith("#/suite/" + encodeURIComponent(s.id));
+      if (renameSuiteId === s.id) { renameSuiteId = null; renameSuiteName = ""; renameSuiteError = ""; }
+      try {
+        await api(`/api/suites/${encodeURIComponent(s.id)}`, { method: "DELETE" });
+        await loadProjects();
+        toast("Suite deleted — its cases were kept.");
+        // Don't leave someone standing on the screen of a suite that no longer exists.
+        if (onThisSuite) navigate("#/");
+      } catch (err) {
+        toast(err.message);
+      }
+    });
   });
 
   sidebarTreeEl.querySelectorAll("[data-toggle-key]").forEach((row) => {
@@ -4860,6 +5234,18 @@ addProjectBtnEl?.addEventListener("click", () => {
   projectFormError = "";
   renderProjectsTree(allRunsCache);
   document.getElementById("projectFormName")?.focus();
+});
+
+// "New suite" from the Projects heading — creating a suite without first expanding the project it
+// belongs to. The project is picked in the form; everything after that is the existing create path.
+addSuiteBtnEl?.addEventListener("click", () => {
+  if (!canAuthorSuites()) return;
+  renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";   // one suite form at a time
+  newSuiteFor = NEW_SUITE_ANY;
+  newSuiteName = "";
+  newSuiteError = "";
+  renderProjectsTree(allRunsCache);
+  document.getElementById("newSuiteInput")?.focus();
 });
 
 historyBtnEl.addEventListener("click", () => navigate("#/history"));

@@ -26,7 +26,6 @@
           <span id="newRunIcon"></span> New run
         </button>
 
-        <input type="search" id="sidebarSearch" class="sidebar-search" placeholder="Search projects, cases&hellip;" aria-label="Search projects and cases" />
       </div>
 
       <!-- Projects > Suites > Cases. Populated in a later slice; the empty state
@@ -34,7 +33,10 @@
       <nav class="sidebar-tree" aria-label="Projects">
         <h2 class="rail-heading">
           Projects
-          <button type="button" id="addProjectBtn" class="rail-add" title="New project" aria-label="New project">+</button>
+          <span class="rail-actions">
+            <button type="button" id="addSuiteBtn" class="rail-add rail-add-suite" title="New suite" aria-label="New suite">+ Suite</button>
+            <button type="button" id="addProjectBtn" class="rail-add" title="New project" aria-label="New project">+</button>
+          </span>
         </h2>
         <div id="sidebarTree"></div>
       </nav>
@@ -182,12 +184,6 @@
                     <input id="url" type="text" placeholder="example.com/page" />
                   </span>
                 </label>
-
-                <div class="seg" id="coverageSeg" role="group" aria-label="Coverage">
-                  <button type="button" class="seg-btn" data-coverage="minimal">Minimal</button>
-                  <button type="button" class="seg-btn active" data-coverage="standard">Standard</button>
-                  <button type="button" class="seg-btn" data-coverage="full">Full</button>
-                </div>
 
                 <button type="submit" class="run-btn">
                   <span id="runIcon"></span> <span class="run-btn-text">Run test</span>

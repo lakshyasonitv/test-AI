@@ -376,6 +376,73 @@ h1, h2, h3, h4 { letter-spacing: -0.015em; margin: 0; }
 .settings-row[aria-pressed="true"] .switch-knob { transform: translateX(14px); }
 
 /* ---------------------------------------------------------------------------
+   Header actions menu — the topbar hamburger
+
+   The five header actions (History, Team, Settings, the session badge, Sign out)
+   are authored inline in index.html and are RELOCATED into this panel by app.js:
+   the same nodes, same ids, same listeners, only a different box. Everything here
+   is a NEW selector — nothing above was renamed, and the moved controls keep their
+   own .topbar-btn / .session-badge / .settings-pop rules, which is why the rules
+   below are descendant overrides rather than replacements.
+
+   Open/closed is .hdr-menu-open, deliberately NOT .hidden: showView() owns .hidden
+   (see its comment in app.js), and a second thing toggling it is the bug that
+   comment exists to prevent.
+   --------------------------------------------------------------------------- */
+
+.hdr-menu-wrap { position: relative; display: flex; align-items: center; flex: none; }
+
+.hdr-menu-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 31px; padding: 0;
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-sm);
+  color: var(--text); cursor: pointer;
+  transition: background .15s var(--ease);
+}
+.hdr-menu-btn:hover,
+.hdr-menu-btn[aria-expanded="true"] { background: var(--surface-hover); }
+
+.hdr-menu {
+  display: none;
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
+  min-width: 212px;
+  flex-direction: column; align-items: stretch;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+.hdr-menu.hdr-menu-open { display: flex; animation: fadeUp .16s var(--ease); }
+
+/* Each moved action becomes a full-width row. The .hidden rules that gate Team,
+   the badge and Sign out still apply untouched — display:none !important wins
+   over everything here. */
+.hdr-menu .topbar-btn {
+  width: 100%; height: 30px; text-align: left;
+  border-color: transparent; background: none;
+}
+.hdr-menu .topbar-btn:hover { background: var(--surface-hover); }
+
+/* The badge is a label, not an action: it reads as the account row that Sign out
+   belongs to, separated from the navigation above it. */
+.hdr-menu .session-badge {
+  flex-wrap: wrap; gap: 6px;
+  margin-top: 4px; padding: 8px 11px 6px;
+  border-top: 1px solid var(--line);
+}
+
+/* The Settings popover was absolutely positioned against .topbar-actions. Inside
+   the menu it is an in-flow submenu directly under its own button, so the menu is
+   one surface rather than two overlapping ones. Its .hidden toggle is unchanged. */
+.hdr-menu .settings-pop {
+  position: static; top: auto; right: auto; width: auto;
+  padding: 2px 11px 8px;
+  background: none; border: none; box-shadow: none;
+  animation: none;
+}
+
+/* ---------------------------------------------------------------------------
    Views — one screen visible at a time
    --------------------------------------------------------------------------- */
 
@@ -1547,6 +1614,22 @@ body.role-no-admin #teamBtn { display: none; }
   background: var(--surface-2); font-size: .74rem;
 }
 .tree-suite-new .dl-btn-inline { flex: none; }
+
+/* Suite Rename/Delete mirror the project row's Edit/Delete exactly: revealed on row hover or
+   keyboard focus, so a destructive control is never what the eye lands on first, and red only on
+   hover, matching .history-del. The suite row has no .tree-chevron, so these sit between the
+   flex:1 .tree-label and .tree-count just as the project row's do. */
+.tree-suite-edit, .tree-suite-del { flex: none; opacity: 0; font-size: .66rem; padding: 1px 6px; }
+.tree-suite:hover .tree-suite-edit,
+.tree-suite-edit:focus-visible,
+.tree-suite:hover .tree-suite-del,
+.tree-suite-del:focus-visible { opacity: 1; }
+.tree-suite-del:hover { color: var(--failed); border-color: var(--failed); }
+
+/* The heading-level create form is not nested under a project, so it drops .tree-suite-new's
+   22px indent and lines up with the tree's own left edge. */
+.tree-suite-new-top { padding-left: var(--sp-2); }
+.tree-suite-new select.suite-new-input { cursor: pointer; }
 .suite-new-err {
   padding: 2px 8px 6px 22px;
   font-size: .68rem; line-height: 1.4; color: var(--failed);
@@ -1572,8 +1655,25 @@ body.role-no-admin #teamBtn { display: none; }
 .tree-project:hover .tree-project-edit,
 .tree-project-edit:focus-visible { opacity: 1; }
 
+/* Delete sits beside Edit and follows the same reveal-on-hover rule, so the destructive
+   control is never what the eye lands on first. Kept keyboard-reachable via :focus-visible
+   for the same reason Edit is. Red only on hover, matching .history-del. */
+.tree-project-del { flex: none; opacity: 0; font-size: .66rem; padding: 1px 6px; }
+.tree-project:hover .tree-project-del,
+.tree-project-del:focus-visible { opacity: 1; }
+.tree-project-del:hover { color: var(--failed); border-color: var(--failed); }
+
 /* Same reasoning as #teamBtn: if a future change forgets the JS toggle, the class still hides it. */
 body.role-no-admin #addProjectBtn { display: none; }
+
+/* Same belt-and-braces as #addProjectBtn above, one rung lower: suites are authored at `tester`,
+   so this is role-no-edit (below tester), NOT role-no-admin. */
+body.role-no-edit #addSuiteBtn { display: none; }
+.rail-actions { display: inline-flex; align-items: center; gap: 8px; }
+.rail-add-suite {
+  font-family: var(--font-mono);
+  font-size: .58rem; letter-spacing: .06em; text-transform: uppercase;
+}
 
 /* Suite membership on the Case screen, and the Suite screen's "add cases" picker. Both reuse
    .lib-check / .hrow-label / .hrow-meta / .case-save-panel rather than restating them. */
