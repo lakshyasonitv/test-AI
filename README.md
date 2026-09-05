@@ -29,14 +29,22 @@ roll back, and what was found but not fixed.
 ## Quick Start
 
 ```bash
-npm install                  # installs deps + playwright install chromium (postinstall)
-cp .env.example .env         # fill in GEMINI_API_KEYS / GROQ_API_KEYS
+npm install                  # installs deps + `playwright install` (postinstall — all browsers)
+cp .env.example .env         # fill in GEMINI_API_KEYS
 npm run serve                # starts server on http://localhost:3000
 ```
 
-Open the UI, enter a prompt + URL, and watch the phase panel update with live progress. A
-sidebar carries the Projects tree and your recent runs; the topbar carries History and a Settings
-is remembered across visits.
+Open the UI, enter a prompt + URL, and watch the phase panel update with live progress. A sidebar
+carries the Projects tree (with controls to add a project or a suite) and your recent runs; the
+topbar carries a hamburger menu holding History, Team and a Settings popover. The two Settings
+toggles — review cases before running, self-heal broken selectors — are **per-session and reset on
+reload**; they are held in a plain in-memory object, not in storage.
+
+> **If `npm install` appears to hang,** the `playwright install` postinstall is the usual culprit.
+> Check for an `oopDownloadBrowserMain.js` process and a stale `__dirlock` directory under
+> `%LOCALAPPDATA%\ms-playwright` (or `~/.cache/ms-playwright`) before assuming anything else is
+> wrong — that installer can stall indefinitely without timing out, and it can leave a truncated
+> binary behind that looks present but will not execute.
 
 **CLI mode:**
 
@@ -130,7 +138,7 @@ Full technical detail, file by file: [ARCHITECTURE.md](ARCHITECTURE.md).
 | Auth-aware discovery | Signs into a live login gate (email + password) before crawling, verified against the real page state, not inferred from a URL change. Works on logins with no `<form>` tag, no labelled inputs, or session state kept only in `sessionStorage`. See [ARCHITECTURE.md](ARCHITECTURE.md#auth-aware-discovery) |
 | Generated tests start authenticated | Discovery's recorded login is replayed at the start of every relevant case's own fresh browser session — the test signs in itself, it doesn't rely on discovery's session. At most one case targets the login page itself (`MAX_LOGIN_CASES`), so the rest of the suite tests the app behind it |
 | Auth-failure diagnosis | A run that ends back on the login page is reported as an authentication failure, not a misleading "element may have been renamed" |
-| Full coverage suite generation | Up to 5 cases per run by default (`MAX_CASES_PER_RUN`): valid path, invalid input, empty fields, boundaries, security. The checklist itself is filtered by scope before it reaches the model |
+| Full coverage suite generation | Up to **4** cases on the default `standard` coverage — `CASE_BUDGET` is `{minimal: 2, standard: 4, full: 5}` and `MAX_CASES_PER_RUN` (default 5) is the *ceiling above* that budget, not the budget itself. Since the composer pins `standard`, 5 is now reachable only from the CLI with `--coverage full`. Kinds: valid path, invalid input, empty fields, boundaries, security. The checklist itself is filtered by scope before it reaches the model |
 | Case-selection gate (optional) | `ENABLE_CASE_SELECTION_GATE=true` pauses a run after generating a batch so you can accept/reject cases and ask for a refined regeneration; a rejected or already-accepted title is hard-excluded from every later batch |
 | All suite cases executed | Every selected case runs in its own Playwright `test()` / browser context, with per-case artifacts |
 | Per-step screenshots | Each IR step gets its own `test.step()` block and `step-N.png` screenshot; the case's representative screenshot is the LAST step, not the first |
@@ -191,8 +199,8 @@ The headline items, for orientation:
 |---|---|
 | Duplicate-named elements can still make a locator ambiguous | Partial mitigation shipped, real fix (page-scoping) still open — `TECH_DEBT.md` TD-05 |
 | No blocking-interstitial detection (CAPTCHA/bot walls) at discovery time | `TECH_DEBT.md` TD-04 |
-| No server authentication | Anyone with the URL can start runs and browse artifacts (`TECH_DEBT.md` TD-14) |
-| No CI | The test suite exists; nothing runs it automatically (`TECH_DEBT.md` TD-20) |
+| Authentication is off by default | It **exists** — Supabase Auth, four roles, project-scoped visibility — but `AUTH_ENABLED` defaults off, and with it off every guard resolves a synthetic local owner and allows everything. An unconfigured server is open to anyone who can reach the port (`TECH_DEBT.md` TD-14) |
+| CI is not a merge gate | `.github/workflows/test.yml` **does** run `tsc --noEmit` and `npm test` on every push and PR. What is missing is branch protection, so a red run can still merge (`TECH_DEBT.md` TD-20) |
 
 Fixed since first written up, kept here only so the fix isn't re-discovered as new: a correct test
 could be rejected outright (TD-01), a failing test's report could be destroyed before diagnosis
@@ -215,8 +223,11 @@ UI the moment discovery finds a live login gate (or times out and continues with
 
 ### Environment Variables
 
-All optional except the API key variable. Full descriptions and cost/reliability tradeoffs
-are in `.env.example`.
+All optional except the API key variable. **Most** descriptions and cost/reliability tradeoffs are
+in `.env.example` — but that file is not a complete index of this table. `MAX_CASES_PER_RUN`,
+`MAX_DISCOVERY_PAGES`, `PLAYWRIGHT_TIMEOUT`, `MAX_SUITE_HEALS`, `APPMODEL_CACHE_TTL_MS`,
+`REGROUND_TIMEOUT_MS` and the `SCREENSHOT_*` group are read by the code and documented here only.
+(The reverse also holds: `.env.example` lists `GEMINI_EMBED_MODEL`, which nothing in `src/` reads.)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -238,8 +249,15 @@ are in `.env.example`.
 | `MAX_ACCUMULATED_CASES` | No | Cap on cases accepted into the gate's pool across all rounds (default: 5) |
 | `CASE_SELECTION_WAIT_MS` | No | How long a gate round waits for your pick before timing out (default: 600000 / 10 min) |
 | `GATE_CASE_EDIT_AI` | No | Set `true` to offer "Ask for a change" on a case at the review gate. Editing cases there by hand needs no flag and spends nothing; this gates only the model call (default: off) |
+| `MAX_SUITE_HEALS` | No | Cap on self-heal attempts across one suite run (default: 3) |
+| `APPMODEL_CACHE_TTL_MS` | No | How long a discovered site model stays cached, against file mtime (default: 1800000 / 30 min). **Set to `0` to disable caching entirely** — what you want while iterating against a site you are actively editing |
+| `REGROUND_TIMEOUT_MS` | No | Ceiling on one edited-case re-ground walk (default: 180000 / 3 min) |
+| `SCREENSHOT_SETTLE_MS` | No | Gap between frames when detecting the page has stopped animating (default: 150) |
+| `SCREENSHOT_MAX_SAMPLES` | No | Ceiling on those frames (default: 10) |
+| `SCREENSHOT_PAINT_TIMEOUT_MS` | No | How long a step screenshot waits for real rendered content before giving up (default: 8000) |
+| `TEST_USERNAME` / `TEST_PASSWORD` | No | Credentials for the site under test. **Setting these suppresses every credential prompt** — in runs, in the case editor and in replay. Convenient for an operator, confusing if you are waiting for a dialog that will never appear. The only two variable names a generated spec may reference |
 | `PORT` | No | Web UI port (default: 3000) |
-| `PLAYWRIGHT_TIMEOUT` | No | Per-test timeout in ms, read by `playwright.config.ts` (default: 50000) |
+| `PLAYWRIGHT_TIMEOUT` | No | Per-test timeout in ms, read by `playwright.config.ts` (default: 50000). Note this one is **not** listed in `.env.example` |
 
 #### Platform flags — every one defaults OFF
 
@@ -274,13 +292,18 @@ cloudflared tunnel --url http://localhost:3000
 
 This prints a random `https://<words>.trycloudflare.com` URL. Ephemeral, free, no sign-up.
 
-**Note:** Quick Tunnels buffer SSE responses, so the UI uses polling (`GET /api/runs/:id/state`)
-instead of streaming. Both routes exist; SSE works fine on localhost.
+**Note:** Quick Tunnels buffer SSE responses, so the UI uses polling (`GET /api/runs/:id/state`,
+once a second) instead of streaming. Both routes exist, but **no browser code consumes the SSE one
+anywhere** — `EventSource` does not appear in `public/` at all, on localhost or behind a tunnel. The
+same applies to the re-ground job routes, where `pollCaseJob` polls `/state` every 800 ms.
 
-**Security:** The server has no authentication (`TECH_DEBT.md` TD-14). Anyone with the URL can
-start runs and browse artifacts. Fine for trusted audiences; know this before sharing widely. The
-entry URL itself is validated — non-`http(s)` schemes and loopback/link-local/private-range hosts
-are rejected — but nothing gates who can submit a run at all.
+**Security:** authentication exists but is **off by default** (`TECH_DEBT.md` TD-14). With
+`AUTH_ENABLED=false` every guard resolves a synthetic local owner and allows everything, so an
+unconfigured server lets anyone with the URL start runs and browse artifacts. Before sharing
+widely, set `AUTH_ENABLED=true` **and** `SIGNUP_ENABLED=false` — sign-up defaults *on* and creates
+real accounts with the service-role key. The entry URL itself is always validated — non-`http(s)`
+schemes and loopback/link-local/private-range hosts are rejected — but that is input validation,
+not access control.
 
 ## Deployment
 

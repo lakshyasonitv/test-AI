@@ -24,11 +24,30 @@ classifier tries first, Gemini vision second.
 | Why a design choice was made, what was rejected | `DECISIONS.md` |
 | Working guidance for an agent (this file) | `AGENTS.md` |
 | What each shipped phase changed, and how to roll it back | `docs/phases/` |
+| How a person edits a compiled test, end to end | `docs/EDITABLE_IR.md` (walkthrough, not an owner) |
+| Briefing an LLM that CANNOT read this repo | `docs/LLM_CONTEXT_BRIEFING.md` |
+| Onboarding a new teammate, end to end | `docs/team-guide/` (five Word volumes, not an owner) |
 
-**Before adding a "what's broken" note anywhere, put it in `TECH_DEBT.md` instead.** This doc set
-used to be six files that each kept their own copy of that list, and every copy drifted out of
-sync — that's why it's five files with one job each now, not six with overlap
-(`DECISIONS.md` D-01). Don't recreate the overlap.
+**Before adding a "what's broken" note anywhere, put it in `TECH_DEBT.md` instead.** Every owner
+above has exactly one job, and the what's-broken list lives in exactly one file — it used to be
+copied into six, and every copy drifted (`DECISIONS.md` D-01). Don't recreate the overlap.
+
+Also present, but not owners — nothing should be filed *into* them: `PROJECT_OVERVIEW.md` (a
+walkthrough), `problems.md` (a dated audit), and `SITE_STORE_VIEW_SPEC_v2.md` — **a spec for work
+that was never built; not a description of the current code** (its gate failed, TD-56).
+
+`docs/EDITABLE_IR.md` is a **walkthrough**, not a topic owner: the editable-IR flow spans
+`stepText.ts`, `caseEdit.ts`, `replay.ts`, `rewrite.ts`, the editor routes and the gate, and no
+single existing doc explains how they fit together. It states its own subordination at the top —
+`ARCHITECTURE.md` still owns the file map and schema, `DECISIONS.md` the rationale, `TECH_DEBT.md`
+the defects. Extend it for flow; put a defect in TECH_DEBT and a rationale in DECISIONS.
+
+`docs/LLM_CONTEXT_BRIEFING.md` is **not** a topic owner either — it is a dated, self-contained
+export for pasting into a chat with a model that has no access to these files. It necessarily
+restates things the five docs own, which is exactly the duplication D-01 warns about, so it is
+allowed only on those terms: it says so at the top, it defers to the real docs whenever both are
+available, and it is regenerated rather than edited in place. Do not cite it as authority, and do
+not let a fix land there instead of in the file that owns the topic.
 
 `docs/phases/` is a build log, not a sixth topic owner: one report per shipped phase, each ending
 with what it deliberately did **not** fix. Read the report for the area you are about to touch
@@ -44,8 +63,10 @@ Everything under `docs/phases/` was built to a standing set of rules. They still
 2. **Every new capability ships behind an env flag defaulting to OFF.** With every flag off, the
    tool behaves exactly as it did before any of this existed.
 3. **Never touch `public/style.css` class names.** `app.js` drives the entire UI by toggling
-   documented class contracts (`.hidden`, `li.completed`, `.phase-badge.running`,
-   `.case-card.open`). Reuse an existing class rather than minting one.
+   documented class contracts (`.hidden`, `.view-active`, `li.completed`, `.phase-badge.running`,
+   `.case-card.open`, `.history-item.active`, `.suite-progress-item.<status>`, `.tree-*`,
+   `.role-no-edit` / `.role-no-admin`, and `.hdr-menu-open` on the header menu). Reuse an existing
+   class rather than minting one.
 4. **Never switch views by toggling `.hidden` directly.** `showView()` is the only function
    allowed to do that, and its comment documents a real bug this caused.
 5. **Real credentials never touch disk or the database.** They stay in process memory for the
@@ -61,7 +82,7 @@ Everything under `docs/phases/` was built to a standing set of rules. They still
 ## The project's central design rule
 
 **An LLM instruction is a preference, not a constraint.** Every prompt-level rule given to Gemini
-or Groq is expected to have a deterministic check behind it in code — `groundingError()` in
+is expected to have a deterministic check behind it in code — `groundingError()` in
 `src/stages/ir.ts` is the reference example (`DECISIONS.md` D-02/D-03): every kind of target the
 model can invent has its own verifier against the real discovered page, not the model's
 self-report.
@@ -88,7 +109,8 @@ back later; the fix that stuck was always the structural one.
   design (`DECISIONS.md` D-06) — a deterministic, reviewable, reproducible spec. Don't add a model
   call there.
 - **Secrets never touch disk.** Credentials become `${env:...}` references in generated specs, not
-  literals — `runs/` is served publicly (`TECH_DEBT.md` TD-14). If you add a new place a
+  literals — `runs/` is served over HTTP behind `canAccessRun`, which allows everything while
+  `AUTH_ENABLED` is off, i.e. by default (`TECH_DEBT.md` TD-14). If you add a new place a
   credential could leak into an artifact, scrub it in `scrubServedSecrets` (`executor.ts`).
 - **Cache keys must include every real input dimension.** The LLM disk cache never expires; a key
   missing a dimension (credential policy, system prompt, model name) serves a wrong answer forever.
@@ -108,17 +130,23 @@ npx tsc --noEmit          # must be clean
 npx vitest run            # note the pass count/file count if it changes from the last known baseline
 ```
 
-No CI runs these automatically yet (`TECH_DEBT.md` TD-20) — run them yourself before calling
-something done. Where a fix touches IR generation or grounding, prefer **artifact replay** against
+CI runs both on every push and pull request — `.github/workflows/test.yml` does `npm ci`,
+`npx tsc --noEmit`, `npm test`. It is **not** a merge gate, so a red run can still land; run them
+yourself before calling something done (`TECH_DEBT.md` TD-20). Where a fix touches IR generation
+or grounding, prefer **artifact replay** against
 a saved `runs/<id>/04-ir.json` / `02-appmodel.json` over a live run — it's free, and it's how most
 findings in `TECH_DEBT.md` were actually confirmed (screenshot-count forensics, event-log timing,
-direct grep against a saved page capture). Spend real Groq/Gemini/browser cost only for a final
+direct grep against a saved page capture). Spend real Gemini/browser cost only for a final
 end-to-end confirmation, and say so before doing it, since it costs the user money.
 
 ## Known sharp edges worth knowing before you start
 
 - `runs/` is gitignored but real — artifacts from actual runs, inspectable directly, and the
   primary evidence source this project's own debugging relies on.
+- **`const coverage = "standard"` in `app.js` is load-bearing, not dead code.** Its control was
+  removed; the field still ships in `POST /api/runs` because dropping it would change that route's
+  request shape (rule 1). Don't tidy it away.
+- **The UI polls, it never streams.** Nothing has ever consumed `/events`.
 - The generated Playwright spec **restates** locator logic from `targetResolver.ts` as a string in
   `generator.ts`, deliberately (`DECISIONS.md` D-06) — but nothing pins the two equal, and they
   have already drifted (`TECH_DEBT.md` TD-07).

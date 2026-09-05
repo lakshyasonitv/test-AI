@@ -278,7 +278,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 
 ## Source Files
 
-### `src/stages/` — Pipeline Stages (18 files)
+### `src/stages/` — Pipeline Stages (22 files)
 
 | File | LLM? | Purpose |
 |------|:-----:|---------|
@@ -300,6 +300,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `domDiscovery.ts` | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility |
 | `domExtract.ts` | No | Cheerio DOM extraction — Node port of the deleted Python parser |
 | `ir.ts` | Gemini | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), login-prefix injection (`buildLoginPrefix`/`needsLoginPrefix`), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
+| `heal.ts` | Gemini | Bounded self-heal, at most once per case: re-snapshot up to the failing step, recompile the IR, regenerate the spec and run it again. Accepted only if it passes **and** is not truncated. `isHealable` gates on category `selector_changed`/`element_missing` and a failure past step 0 |
 
 **Added for the case library and the editor:**
 
@@ -323,8 +324,9 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 |------|---------|
 | `text.ts` | `cutAtBoundary` — cuts text at the last line/word boundary at or before a length cap, never mid-word |
 | `cli.ts` | CLI entry point: parses `--prompt`/`--url`/`--urls`/`--coverage`, calls `runPipeline` |
-| `runStore.ts` | File-backed per-run NDJSON event log with SSE replay + fallback reconstruction + orphaned-run detection |
+| `runStore.ts` | File-backed per-run NDJSON event log with replay + fallback reconstruction + orphaned-run detection |
 | `orchestrator.ts` | Pipeline wiring: plan -> discovery -> test cases (-> optional gate) -> IR -> generate -> execute -> heal -> suite |
+| `db.ts` | Supabase Postgres access. `getServiceClient()` (service role, bypasses RLS by design), `DEFAULT_ORG_ID`, `isDbEnabled()`, the fire-and-forget run-row writes (`recordRunStarted` / `recordRunStatus` / `recordRunProject` / `recordRunCases`) and the shadow comparison against `listRuns()`. **`DB_ENABLED` gates only those five things** — the library, projects and organisations surface goes through the same client with no such check, so it works whenever a service-role key is set and 503s when one is not |
 
 ### `src/llm/` — LLM Layer (5 files)
 
@@ -344,7 +346,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `llmCache.ts` | Two-tier LLM response cache (in-memory, 30-min TTL + disk, no expiry); every stage's cache key also hashes its system prompt + model name (`DECISIONS.md` D-10) |
 | `testStrategy.ts` | Static QA knowledge: coverage taxonomy, scope classification, filtering |
 
-### `src/server/` — Web Server (16 files)
+### `src/server/` — Web Server (18 files)
 
 | File | Purpose |
 |------|---------|
@@ -365,7 +367,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `auth.ts` | Resolves the caller's identity on every `/api/*` route. With `AUTH_ENABLED=false` it returns a synthetic local **owner** — a real identity that passes real checks, not a bypass that skips them |
 | `authz.ts` | The two access axes: org **role** (`viewer` < `tester` < `admin` < `owner`) = what you may do; project **membership** = what you may see. `AccessError` carries the HTTP status |
 | `organisations.ts` | Organisation records and their member roster |
-| `projects.ts` | Projects, their membership, create/update. No delete — deliberately |
+| `projects.ts` | Projects, their membership, and full CRUD. `deleteProject` is admin-only and **refuses with 409 while the project still holds runs** rather than orphaning them — that refusal, not the absence of the operation, is the safeguard |
 | `library.ts` | The test-case library: cases, versions, suites, suite membership, and every access check on them |
 | `signup.ts` | Sign-up through Supabase's Admin API rather than the client SDK — the free tier's confirmation mailer hangs, and a 504 on sign-up is indistinguishable from a broken server. `SIGNUP_ENABLED` defaults **on**, so turn it off before exposing the server |
 | `regroundJobs.ts` | A re-ground is a job, not a blocking request: `POST -> 202 {id}` + SSE + polling + cancel. The same protocol runs use, because a 90-second PATCH can report neither progress nor be stopped |
@@ -378,9 +380,9 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 |------|---------|
 | `icons.js` | Inline SVG icon set |
 | `preview.js` | Static preview/demo states for UI development |
-| `index.html` | Single-page HTML shell, case-selection panel, theme toggle |
-| `style.css` | Dark theme (default) + `[data-theme="light"]` override, responsive design |
-| `app.js` | Single-page app: run form, phase UI, suite cards, history, case-selection panel, theme toggle, renders executed IR steps (not raw case prose) in the results panel. Also the whole platform UI — login/sign-up, projects tree, Team screen, suites, and the case detail screen with its step editor, live estimate, job progress and diff-based proposal cards |
+| `index.html` | Single-page HTML shell (348 lines): nine `<section class="view">` screens, sidebar, topbar, case-selection panel, credential and screenshot modals |
+| `style.css` | Single **light** theme (1,915 lines) — white plus ThinkVibes blue `#0b63ce`, black text, every other surface that blue at low opacity. There is no dark variant and no `[data-theme]` override; the previous dark/light token pair and its toggle were removed rather than half-maintained. Responsive: the sidebar becomes a drawer below 900px |
+| `app.js` | Single-page app (5,611 lines): run form, phase UI, suite cards, history, case-selection panel; renders executed IR steps (not raw case prose) in the results panel. Also the whole platform UI — login/sign-up, projects tree, Team screen, suites, and the case detail screen with its step editor, live estimate, job progress and diff-based proposal cards. Builds the topbar hamburger (`#hdrMenuBtn`) at runtime and applies the `role-no-edit` / `role-no-admin` body classes |
 
 ---
 
@@ -463,9 +465,18 @@ only lives in `<title>` — see `TECH_DEBT.md` TD-06.
 ### Case Selection (the gate's contract)
 
 ```
-CaseSelectionDecision (discriminated on "action")
-  { action: "done", selectedIndexes: number[] }
-  { action: "not_satisfied", selectedIndexes: number[], newPrompt: string }
+CaseSelectionDecision (discriminated on "action"; BOTH arms also carry the two
+optional gate-edit fields, so a client that sends neither behaves exactly as before)
+  { action: "done",          selectedIndexes: number[], editedCases?, addedCases? }
+  { action: "not_satisfied", selectedIndexes: number[], newPrompt: string,
+                             editedCases?, addedCases? }
+
+  editedCases: { index, title?, steps?, expected?, whyItMatters? }[]   (max 50)
+  addedCases:  { title, steps, expected, whyItMatters? }[]             (max 20)
+
+  `editedCases[].index` is the SAME index space as selectedIndexes, which is why
+  editing needed no new addressing scheme. addedCases deliberately does not accept
+  `fromPrompt` or `generatedFrom` — those are routing state the pipeline stamps.
 
 AcceptedCasesFile (runs/<id>/accepted-cases.json)
   runId, hasAcceptedPrimary: boolean
@@ -509,26 +520,62 @@ removed entirely (`TECH_DEBT.md` TD-03's history).
 
 ### Server Architecture
 
+57 routes on Express (port 3000, `PORT` env), grouped by area. Auth column: **public** = no
+credential; **authed** = signed in; **role:X** = `requireRole(X)` on the caller's own org;
+**run:X** = `requireRunRole(X)` on the org owning that run; **org:X** = `requireOrgRole(X)`.
+
 ```
-Express (port 3000, PORT env)
-  POST   /api/runs                              -> starts pipeline (via concurrency semaphore).
-                                                     url/urls validated by isAllowedEntryUrl —
-                                                     http(s) only, loopback/link-local/RFC1918
-                                                     hosts rejected before discovery ever runs
-  POST   /api/runs/:runId/credentials            -> answers a paused run's credential prompt
+RUNNING A TEST
+  POST   /api/runs                               role:tester  starts the pipeline behind the
+                                                     concurrency semaphore; returns 202 {runId}
+                                                     immediately. url/urls validated by
+                                                     isAllowedEntryUrl — http(s) only,
+                                                     loopback/link-local/RFC1918 rejected
+  POST   /api/runs/:runId/credentials            run:tester   answers a paused credential prompt
                                                      (never logged, never written to disk)
-  POST   /api/runs/:runId/case-selection         -> answers a paused run's case-review round
-  GET    /api/runs/:runId/accepted-cases         -> current accepted-pool state (count, cap)
-  GET    /api/runs/:runId/case-selection-status  -> snapshot of the currently-pending round
-  GET    /api/runs/:runId/state                  -> polling endpoint (for Cloudflare tunnels)
-  GET    /api/runs/:runId/events                 -> SSE event stream (for localhost)
-  GET    /api/runs                               -> list all runs (newest first)
-  DELETE /api/runs/:runId                        -> remove a run
-  GET    /api/health                             -> which critical env vars are set (name +
-                                                     length only, never the value) — a deploy
-                                                     diagnostic, not a load-balancer healthcheck
-  /                                              -> static files (public/)
-  /runs                                          -> static files (runs/) — no auth (TECH_DEBT.md TD-14)
+  POST   /api/runs/:runId/case-selection         run:tester   answers a paused case-review round
+  POST   /api/runs/:runId/case-selection/rewrite run:tester   LLM proposes revised gate steps;
+                                                     404 unless GATE_CASE_EDIT_AI
+  POST   /api/replay                             role:tester  re-runs saved cases from stored IR,
+                                                     zero LLM calls
+
+WATCHING A RUN
+  GET    /api/runs/:runId/state                  run:viewer   the full event log as one array —
+                                                     THE channel the UI actually uses
+  GET    /api/runs/:runId/events                 run:viewer   SSE stream. Exists, but NO client
+                                                     consumes it — see Frontend Architecture
+  GET    /api/runs/:runId/accepted-cases         run:viewer   accepted-pool state (count, cap)
+  GET    /api/runs/:runId/case-selection-status  run:viewer   snapshot of the pending round
+  GET    /api/runs/:runId/page-elements          run:viewer   role+name index from 02-appmodel.json
+
+RUN HISTORY
+  GET    /api/runs                               role:viewer  newest first; filtered by access
+                                                     FIRST, then capped at 20
+  DELETE /api/runs/:runId                        run:admin    rmSync of the run directory
+
+PUBLIC / SESSION
+  GET    /api/health                             public       which critical env vars are set
+                                                     (name + length only, never the value)
+  GET    /api/auth/config                        public       Supabase URL + publishable key
+  POST   /api/auth/signup                        public       creates a confirmed account —
+                                                     see SIGNUP_ENABLED in Auth & Tenancy
+  GET    /api/auth/me                            authed       identity + org + role
+  POST   /api/auth/bootstrap                     authed       idempotent join of the default org
+
+PROJECTS (7)          /api/projects  ·  /api/projects/:projectId  ·  …/members[/:userId]
+ORGANISATIONS (6)     /api/organisations/:orgId/{members[/:userId],assignments,addable-users}
+SUITES (8)            /api/suites  ·  /api/suites/:suiteId  ·  …/cases[/:caseId]  ·  …/order
+CASES (16)            /api/cases  ·  /api/cases/:caseId{,/versions/:version,/steps,/steps/estimate,
+                        /steps/translate,/steps/jobs/:jobId/{events,state,cancel,credentials},
+                        /duplicate,/runs,/rewrite}
+LIBRARY <- RUN        POST /api/runs/:runId/cases/:caseId/save   run:tester
+
+STATIC
+  /                                              -> public/
+  /runs/:runId/*                                 -> run artifacts. NOT under /api, so it does not
+                                                     pass through requireAuth; it resolves the user
+                                                     itself and is UNAUTHENTICATED with the shipped
+                                                     defaults (TECH_DEBT.md TD-14)
 ```
 
 Every route taking a `:runId` validates it against `RUN_ID` (`^[\dT-]+Z-[0-9a-f]{8}$`,
@@ -540,29 +587,54 @@ escape `runs/`.
 Multi-screen HTML/JS/CSS app (`public/`), no bundler — served raw by `express.static`, so the
 files on disk are the files the browser runs.
 
-**Shell.** A sidebar (brand, New run, search, Projects tree, recent runs) plus a sticky 52px topbar
-(breadcrumb, History, a Settings popover). Below 900px the sidebar becomes a fixed drawer with a
-scrim.
+**Shell.** A sidebar (`#brandMark`, `#newRunBtn`, the Projects tree with `#addProjectBtn` and
+`#addSuiteBtn`, `#allRunsBtn`, recent runs) plus a sticky 52px topbar (breadcrumb, a session badge,
+and a header **hamburger menu** holding History / Team / Settings). Below 900px the sidebar becomes a
+fixed drawer with a scrim.
+
+The hamburger is built in `app.js`, not in `index.html` — `#hdrMenuBtn` inside a `.hdr-menu-wrap`,
+opened by adding `.hdr-menu-open` to `.hdr-menu`. Those four class names join the contract list
+below.
+
+**Role-based UI.** Restrictions are expressed as *negative* classes on `<body>` —
+`role-no-edit`, `role-no-admin` — so the default (no class) is exactly the pre-auth behaviour and
+there is no flicker while identity is still being fetched.
 
 **Screens.** Each is a `<section class="view" data-view="...">`; exactly one carries
 `.view-active`. `showView(name)` in `app.js` is the *only* thing that moves that class, and it is
 also the only place run-scoped panels are cleared — see `resetRunUI()`. That single-site rule
 exists because the pre-router code hid panels from three places and had already drifted
-(`preview.js` forgot one, so a gate panel leaked across scenes). Routing is `location.hash`
-(`#/`, `#/run/:id`, `#/history`, and the not-yet-built `#/suite/:id`, `#/case/:id`,
-`#/compare/:id`) — no server routes needed.
+(`preview.js` forgot one, so a gate panel leaked across scenes).
 
-- **Home:** prompt, URL, a coverage segmented control, template chips
+**Nine views exist and all nine are built:** `home`, `run`, `suite`, `case`, `compare`, `history`,
+`team`, `login`, `signup`. Routing is `location.hash` — `#/`, `#/run/:id`, `#/history`, `#/team`,
+`#/suite/:id`, `#/projects/:projectId/cases/:caseId`, `#/compare/:id?from=&to=` — no server routes
+needed. `#/case/:id` is a **legacy** route kept working: it looks up the case's project and rewrites
+the URL in place. `login` and `signup` are reached by the router's auth guard rather than by a hash.
+
+- **Home:** prompt, URL, template chips. The Minimal/Standard/Full coverage segmented control was
+  **removed from the composer**; `coverage` is pinned to `"standard"` in `app.js` and is still sent
+  in the `POST /api/runs` body, so the route's request shape is unchanged and `budgetFor()` still
+  sizes the run.
 - **Run:** four phase cards (`PENDING`/`WORKING`/`DONE`), the case-selection gate, live suite
   progress, the verdict banner, per-case results
+- **Suite / Case / Compare:** the library screens — `renderSuiteView`, `renderCaseView` (which
+  carries the whole step editor), `renderCompareView` + `diffSteps`
 - **History:** the newest runs, each viewable / re-runnable / deletable
+- **Team:** members and roles
 - **Credential prompt:** a modal, because the run is genuinely parked on it; submitted values go
   straight into the paused pipeline's memory, never through `runStore`/disk
 - **Settings popover:** two per-run overrides (review-cases-before-running, self-heal). These are
   sent with `POST /api/runs` as `options`; only a toggle the user actually changed is sent, so an
   untouched popover leaves the server on its env default. `GET /api/health` reports those defaults
   so the popover opens in the state the server is actually in.
-- **Polling:** uses `GET /api/runs/:id/state` (works through Cloudflare tunnels; SSE is localhost-only)
+- **Polling, not SSE.** `connectToRun(runId)` is a plain `while` loop polling
+  `GET /api/runs/:id/state` once a second, cancelled by a generation counter so an abandoned run
+  can't write to the DOM of the one you are now watching; five consecutive failures paint a
+  reconnecting banner. **`EventSource` appears nowhere in `public/` as code** — the SSE route
+  exists server-side and no client has ever consumed it, because a Cloudflare Quick Tunnel buffers
+  `text/event-stream` and only flushes when the connection closes, which a live stream never does.
+  A second, independent poller (`pollCaseJob`) follows re-ground jobs for the same reason.
 
 **Status vocabulary.** The UI speaks seven statuses; the backend's are mapped onto them in
 `RUN_STATUS` (`app.js`). Two collapses are deliberate: `truncated`/`truncated_no_assertion`/

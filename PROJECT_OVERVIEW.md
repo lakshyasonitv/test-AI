@@ -128,11 +128,14 @@ and with every platform flag off it is the *only* half that exists:
 **Why both SSE and polling exist for the same data:** a Cloudflare Quick Tunnel (the repo's
 suggested way to share a local instance) buffers `text/event-stream` responses and only flushes
 on connection close — which an open SSE stream never does. So the frontend polls `/state`
-instead when it needs to survive a tunnel; SSE works fine on localhost. Both routes are real and
-kept in sync deliberately.
+**unconditionally**: there is no SSE branch and no runtime fallback, and `EventSource` appears
+nowhere in `public/` as code. `/events` is still implemented and tested server-side, but no client
+has ever consumed it — on localhost or behind a tunnel.
 
 **Pause points — how a run "waits" for you:** two moments in the pipeline can park a run on a
-promise until the browser answers:
+promise until the browser answers. (The third bullet below is not a pause point — it is what the
+gate does with your answer once it arrives; `applyGateEdits` runs *after* the decision resolves and
+parks nothing.)
 
 - **Credentials** (`pendingCredentials.ts`) — the moment discovery finds a live login gate, or
   case generation decides a case needs a login it doesn't have. The promise resolver lives only
@@ -164,9 +167,9 @@ and every part of it is behind an env flag that defaults to **off**.
 
 | Area | Routes | What it is |
 |---|---|---|
-| Identity | `/api/auth/*`, `/api/signup` | Supabase Auth. `AUTH_ENABLED=false` substitutes a synthetic local **owner** — the permission checks still run and still pass, rather than being skipped |
-| Org + team | `/api/organisations/*`, `/api/members/*` | Four roles: `viewer` < `tester` < `admin` < `owner` |
-| Projects | `/api/projects*` | Create and update, never delete. A project may have no URL |
+| Identity | `/api/auth/config`, `/api/auth/signup`, `/api/auth/me`, `/api/auth/bootstrap` | Supabase Auth. `AUTH_ENABLED=false` substitutes a synthetic local **owner** — the permission checks still run and still pass, rather than being skipped |
+| Org + team | `/api/organisations/:orgId/{members[/:userId],assignments,addable-users}`, `/api/projects/:projectId/members[/:userId]` | Four roles: `viewer` < `tester` < `admin` < `owner`. Member management is nested under the org or project — there is no top-level `/api/members` |
+| Projects | `/api/projects`, `/api/projects/:projectId` (GET/POST/PATCH/DELETE) | Full CRUD; delete is admin-only and refuses with 409 while the project still holds runs. A project may have no URL |
 | Library | `/api/cases*`, `/api/suites*` | Saved test cases, their version history, and suites you can run a chosen subset of |
 | Step editing | `/api/cases/:id/steps*` | Read steps as English, estimate what a save costs, save it as a cancellable job |
 | Model help | `/api/cases/:id/rewrite`, `/api/cases/:id/steps/translate` | A model **proposes** a step list; it never writes |
@@ -211,32 +214,42 @@ briefly also a `web/` directory containing a partial Next.js rewrite; it was nev
 most of its source (config, components, a lib layer) was missing from disk and it didn't build —
 so it has since been deleted. Everything below is `public/`.
 
-The three files: `public/index.html` (structure — one `<section class="view" data-view="...">`
-per screen), `public/app.js` (~4400 lines — all behavior, all state, all rendering, including every platform
-screen: login and sign-up, the projects tree, the Team screen, suites, and the case detail screen
-with its step editor, live estimate, job progress and proposal diffs), and
-`public/style.css` (the visual system — a warm cream/terracotta/serif palette, deliberately
-single-theme, with every component class documented as a *contract*: `app.js` drives the UI
-purely by toggling class names like `.hidden`, `li.completed`, `.phase-badge.running`,
-`.case-card.open`, so renaming one silently breaks a feature). `icons.js` is a small inline-SVG
-icon set; `preview.js` is a dev-only helper (inert unless the page is loaded with
-`?preview=states`) for eyeballing every UI state without running a real pipeline.
+The three files: `public/index.html` (348 lines — structure, one
+`<section class="view" data-view="...">` per screen), `public/app.js` (**5,611 lines** — all
+behavior, all state, all rendering, including every platform screen: login and sign-up, the projects
+tree, the Team screen, suites, and the case detail screen with its step editor, live estimate, job
+progress and proposal diffs), and `public/style.css` (1,915 lines — the visual system: a
+deliberately single light theme built from **two colours, white and ThinkVibes blue `#0b63ce`**,
+with black for text and every other surface being that blue at low opacity. Every component class is
+documented as a *contract*: `app.js` drives the UI purely by toggling class names like `.hidden`,
+`.view-active`, `li.completed`, `.phase-badge.running`, `.case-card.open`, `.role-no-edit`, so
+renaming one silently breaks a feature). `icons.js` is a small inline-SVG icon set; `preview.js` is
+a dev-only helper (inert unless the page is loaded with `?preview=states`) for eyeballing every UI
+state without running a real pipeline.
 
 **The shell.** `app.js` runs a tiny hash router: `location.hash` drives `applyRoute()`, which
 calls `showView(name)` — the *only* function allowed to toggle which `.view` section is visible,
 specifically so hiding one screen's leftover panels can't be forgotten in multiple places (the
-comment on `showView` explains a real bug this fixed). Six views exist in the router
-(`home`, `run`, `suite`, `case`, `compare`, `history`), but only `home`, `run`, and `history` are
-actually built out — `suite`, `case`, and `compare` are reachable stubs with no content, because
-they'd need a persisted project/suite/case library the server doesn't have. That's deliberate,
-not an oversight: see "What's not here" below.
+comment on `showView` explains a real bug this fixed). **Nine views exist and all nine are built:**
+`home`, `run`, `suite`, `case`, `compare`, `history`, `team`, `login`, `signup`. The library screens
+have real renderers — `renderSuiteView`, `renderCaseView` (which carries the entire step editor) and
+`renderCompareView` — backed by the persisted project/suite/case library in Postgres.
 
-**Home** (`#/`) — the composer: a prompt textarea, a URL field, a coverage segmented control
-(minimal/standard/full), and a row of one-click prompt templates. Submitting calls
-`POST /api/runs` and navigates to `#/run/<runId>`.
+Topbar actions (History, Team, Settings) live behind a **header hamburger menu** built in `app.js`
+as `#hdrMenuBtn`; role restrictions are applied as negative `role-no-edit` / `role-no-admin` classes
+on `<body>`, so the default state is exactly the pre-auth behaviour.
 
-**Run** (`#/run/:id`) — the live view. `connectToRun()` opens the SSE stream (falling back to
-polling `/state` where SSE doesn't survive a tunnel) and renders, in order: four phase cards
+**Home** (`#/`) — the composer: a prompt textarea, a URL field, and a row of one-click prompt
+templates. Submitting calls `POST /api/runs` and navigates to `#/run/<runId>`. The
+Minimal/Standard/Full coverage segmented control **was removed from this form**; `coverage` is
+pinned to `"standard"` in `app.js` and still travels in the POST body, so the route's request shape
+is unchanged and `budgetFor()` sizes the run exactly as it did for anyone who never touched the
+control.
+
+**Run** (`#/run/:id`) — the live view. `connectToRun()` **polls `GET /api/runs/:id/state` once a
+second** — it is a plain loop with a generation counter, not an `EventSource`; the SSE route exists
+on the server but no browser code consumes it, because a Cloudflare tunnel buffers
+`text/event-stream` until the connection closes. It renders, in order: four phase cards
 (understand → analyze → build & run → check results, driven by `PHASES`/`STAGE_TO_PHASE` in
 `app.js`, mapped from the orchestrator's real stage names), the case-selection gate panel if the
 run pauses for review, a live suite-progress list as cases finish, a verdict banner, and — once
@@ -249,17 +262,20 @@ view when their respective server-side pause point fires.
 20-run cap as the API), each row showing status, prompt, suite pass count, and when it ran, with
 per-row View / Re-run / Delete actions.
 
-**Sidebar.** Two independent, always-visible lists, both fed by the same `GET /api/runs` call
-(`loadHistory()`):
+**Sidebar.** Two lists, from **two different endpoints**:
 
-- **Recent runs** — the newest few, flat, most-recent-first.
-- **Projects tree** — every run *clustered by the URL it targeted*. There's no server-side
-  "project" entity; this is computed client-side (`groupRunsByUrl()` in `app.js`) purely by
-  grouping the same run list by normalized URL. Click a project to expand it and see its past
-  runs; click a run to jump straight to it. This is genuinely new functionality added this
-  session — previously the Projects section was a static "no projects yet" placeholder, even
-  though `style.css` already had a full `.tree-row`/`.tree-project`/`.tree-case` styling system
-  waiting for it.
+- **Projects tree** (`GET /api/projects`) — real project rows, scoped server-side: admins and
+  owners see every project in the org, everyone else only the ones they were added to. Run rows
+  still come from `GET /api/runs` and are matched to their project by normalised URL. The tree
+  header carries `+ Suite` (`#addSuiteBtn`) and `+` (`#addProjectBtn`) controls, hidden by role,
+  and each project row has a Delete action.
+- **Recent runs** (`GET /api/runs`, via `loadHistory()`) — the newest few, flat,
+  most-recent-first.
+
+  > An earlier version of this section said there was "no server-side project entity" and that the
+  > tree was computed client-side by `groupRunsByUrl()`. That stopped being true when projects
+  > became real rows. `groupRunsByUrl()` survives only as the **database-off fallback**, synthesising
+  > pseudo-projects when `/api/projects` is unavailable.
 
 **Settings popover** — two toggles (review cases before running / self-heal broken selectors).
 These are **per-run request options**, not persisted server settings: an untouched toggle leaves
@@ -267,13 +283,14 @@ the server on its own env-configured default (`ENABLE_CASE_SELECTION_GATE`) rath
 client silently overriding it with a guess. The popover reads `GET /api/health`'s `defaults` on
 load so it opens already reflecting whatever the server is actually configured to do.
 
-**What's not here, on purpose:** the reference design this UI was originally built from also
-shows a full test-case *library* — named projects, suites you can save scripts into, cases you
-can edit/duplicate/delete/version, a "run existing cases" picker. None of that exists in the
-server (`src/server/index.ts` only has run-lifecycle routes — nothing for persisting or editing a
-suite or case). Building it would be new backend functionality, not a frontend change, so the
-`suite`/`case`/`compare` views and the "run existing cases" tab were deliberately left as-is
-rather than faked with data that isn't real.
+**The test-case library now exists.** An earlier version of this document said it did not — that the
+`suite`/`case`/`compare` views were deliberate empty stubs because the server had only run-lifecycle
+routes. That has not been true since the library phases shipped. `src/server/index.ts` now carries
+**57 routes**, including full CRUD for projects, suites and cases, per-case version history,
+`POST /api/replay` for re-running saved cases from stored IR with zero LLM calls, and
+`POST /api/runs/:runId/cases/:caseId/save` to promote a run artifact into the library. Persistence
+is Supabase Postgres (`src/db.ts`, `src/server/library.ts`); see `docs/phases/PHASE_LIBRARY_REPORT.md`
+and `PHASE_CASE_UI_REPORT.md`.
 
 ---
 
@@ -288,12 +305,16 @@ directory contains:
 01-plan.json            planner.ts's output
 02-appmodel.json        discovery's output — every page/element it found
 03-cases.json           the generated (and selected) test case suite
-04-ir.json              the primary case's compiled IR
-05-result.json          the primary case's Playwright result
+04-ir.json              the primary case's compiled IR — CAREFUL: at the run root this file is a
+                          WRAPPER, { ir, updatedAppModel }. Only cases/case-N/04-ir.json is a bare
+                          IR. Same filename, two shapes; library.ts handles both with
+                          `parsed?.ir ?? parsed`
+05-result.json          the primary case's Playwright result — the REAL Playwright error lives here,
+                          at raw.suites[0].specs[0].tests[0].results[0].errors[0].message
 06-diagnosis.json       failure diagnosis, if it failed
 07-suite-summary.json   pass/fail counts across the whole suite
 08-llm-usage.json       real LLM spend for this run, every stage
-events.ndjson           the durable, replayable event log (what SSE/polling read from)
+events.ndjson           the durable, replayable event log (what the UI's 1s poll reads from)
 generated.spec.ts       the actual Playwright spec that ran
 artifacts/, cases/      per-step screenshots, trace, video, and per-case subdirectories
 ```

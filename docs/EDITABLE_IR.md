@@ -152,8 +152,12 @@ none of that touches a target, so none of it launches a browser.
 4. failed or cancelled → emit, **write nothing**
 5. succeeded → `updateCase`, emit `done` with the new version and re-rendered steps
 
-Supporting routes: `…/jobs/:jobId/events` (SSE), `/state` (poll fallback), `/cancel`,
-`/credentials`.
+Supporting routes: `…/jobs/:jobId/state`, `/cancel`, `/credentials`, and `…/jobs/:jobId/events`.
+
+**Which one the browser actually uses:** `/state`. `pollCaseJob` in `public/app.js` polls it every
+800 ms; the SSE route exists and no client code consumes it, for the same tunnel-buffering reason
+the run view polls rather than streams. Read "emits SSE events" above as "emits events, which the
+server holds for both routes" — the events are real, the streaming transport is not the one in use.
 
 ## 6. What re-grounding actually does
 
@@ -169,7 +173,7 @@ which means executing steps 1–6.
 That is why the cost is driven by *where* the edit is, not how many edits there are:
 
 - one walk per distinct arrival point; two edits on the same page share a walk
-- prefixes are cached (`replay.ts`), so a deeper walk reuses a shallower one
+- prefixes are cached (`liveExtend.ts`'s `replayAndSnapshot`), so a deeper walk reuses a shallower one
 - an edit at index 0 acts on the entry page and needs no walk at all
 - capped by `MAX_LIVE_EXTENSIONS`
 
@@ -258,7 +262,7 @@ a person approves the round before anything is persisted.
 |---|---|
 | `src/stages/stepText.ts` | `formatIrStep`, `parseIrStep`, `parseIrSteps`, `estimateRegrounding`, `STEP_VOCABULARY`, `GROUNDED_FIELDS`, `sameSemanticTarget`, `mergeTarget` |
 | `src/stages/caseEdit.ts` | `regroundEditedIr` — the walk that re-verifies changed targets |
-| `src/stages/replay.ts` | walks a stored IR prefix and snapshots where it lands; prefix-cached |
+| `src/stages/liveExtend.ts` | `refreshPageModel` / `replayAndSnapshot` — replays a step prefix in a real browser and snapshots where it lands; prefix-cached. **This, not `replay.ts`, is the walker the editor uses** — `caseEdit.ts` imports `refreshPageModel` from here. `src/stages/replay.ts` is a different thing entirely: the zero-LLM path that re-runs a *stored* IR, and it takes no part in editing |
 | `src/server/index.ts` | the editor's routes: `GET/POST /steps`, `/estimate`, job SSE + `/cancel` + `/credentials`, `/rewrite`, `/steps/translate`, `/versions/:v` |
 | `src/server/rewrite.ts` | the three proposers, and the shared 20-per-15-min-per-user rate limit |
 | `src/server/library.ts` | `updateCase`, `CaseConflictError`, `current_version`, `test_case_versions` |
