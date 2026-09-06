@@ -1,9 +1,9 @@
-import { mkdirSync, writeFileSync, cpSync } from "node:fs";
+import { mkdirSync, writeFileSync, cpSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { toIR } from "./ir.js";
 import type { LlmBudget } from "../llm/llmBudget.js";
 import { generateSpec } from "./generator.js";
-import { runSpec, findScreenshot, findVideo, detectBlocked } from "./executor.js";
+import { runSpec, findScreenshot, findVideo, detectBlocked, extractFailureDetail } from "./executor.js";
 import { credentialEnvVars, type Credentials } from "./credentials.js";
 import { analyzeFailure } from "./failureAnalysis.js";
 import { attemptHeal, isHealable } from "./heal.js";
@@ -72,6 +72,16 @@ export interface SuiteSummary {
     screenshotUrl?: string;
     /** Set only for a failed/blocked case with a retained Playwright video — see findVideo. */
     videoUrl?: string;
+    /**
+     * Why a failed case failed, read straight out of Playwright's own report — no model call,
+     * so a replay (which spends nothing by design) says as much as a full run. Additive and
+     * optional: absent on a passing case and on any run whose report could not be read, so
+     * every existing consumer is unaffected (`CLAUDE.md` rule 1). TECH_DEBT.md TD-80.
+     */
+    failedStep?: number;
+    failedStepTitle?: string;
+    error?: string;
+    errorDetail?: string;
   }[];
 }
 
@@ -121,6 +131,20 @@ export function buildSuiteSummary(results: CaseRunResult[], runDir: string): Sui
       // original (failing) attempt, healed or not.
       const video = findVideo(path.join(caseDir, "artifacts")) ?? findVideo(caseDir);
       const videoUrl = video ? "/" + path.relative(".", video).replace(/\\/g, "/") : undefined;
+      // Read the failure out of the case's own saved report. Read from DISK, like the screenshot
+      // and video above, rather than threaded through CaseRunResult: this way every producer of a
+      // summary — full run, suite, replay — gets it without each having to remember to pass it,
+      // which is exactly how `whyItMatters` went missing from three call sites (see this
+      // function's own docstring). Best-effort throughout: a case that never wrote a report, or
+      // wrote one that will not parse, simply has no error to show and still renders.
+      const failure = r.status === "passed"
+        ? {}
+        : (() => {
+          try {
+            const saved = JSON.parse(readFileSync(path.join(caseDir, "05-result.json"), "utf8"));
+            return extractFailureDetail(saved?.raw ?? saved);
+          } catch { return {}; }
+        })();
       return {
         caseId: r.caseId,
         title: r.title,
@@ -136,6 +160,7 @@ export function buildSuiteSummary(results: CaseRunResult[], runDir: string): Sui
         intent: r.intent,
         expected: r.expected,
         healed: r.healed,
+        ...failure,
       };
     }),
   };

@@ -3,6 +3,7 @@ import path from "node:path";
 import { generateSpec } from "./generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked } from "./executor.js";
 import { credentialEnvVars, type Credentials } from "./credentials.js";
+import { regroundEditedIr } from "./caseEdit.js";
 import { buildSuiteSummary, type CaseRunResult } from "./suiteRunner.js";
 import { store } from "../runStore.js";
 import type { IR } from "../schema/ir.js";
@@ -62,6 +63,81 @@ const ZERO_USAGE = {
  *  drift TD-07 records. */
 export function originOf(url: string): string | undefined {
   try { return new URL(url).origin; } catch { return undefined; }
+}
+
+/**
+ * Re-ground the steps that were never grounded, against the page as it is right now.
+ *
+ * WHY A SAVED CASE CAN HAVE UNGROUNDED STEPS AT ALL. Grounding writes `css`/`testId` onto a target
+ * from the discovered model. Anything revealed by a click — a modal, a tab, an accordion, the next
+ * page of a wizard — was never in that model, so its steps carry a role and a name and nothing
+ * else. At run time they fall back to name and geometry, which is how the New User modal's "Email"
+ * step resolved onto the Full Name input on run `2026-09-06T13-05-36-248Z-db2c0b4c`
+ * (`TECH_DEBT.md` TD-72). Better resolution helps; having the real selector helps more.
+ *
+ * This walks the prefix in a real browser, snapshots what is actually on screen, and grounds those
+ * targets against it — the same deterministic role/name matching `groundingError` uses. **Zero LLM
+ * calls**, which is the property a replay exists to have.
+ *
+ * OFF BY DEFAULT (`REPLAY_REGROUND`, platform rule 2). It costs a browser walk before the run, so
+ * a replay that does not need it should not pay for it. With the flag unset this function returns
+ * its input untouched and a replay is byte-for-byte what it was.
+ *
+ * **It does not write back to the library** (rule 6, `DECISIONS.md` D-27). The grounded targets are
+ * used for THIS execution and recorded in the run's own `cases/case-N/04-ir.json` with
+ * `groundedAt: "replay"`, so a person can see what it found and choose to save it. The stored case
+ * is untouched.
+ */
+export function replayRegroundEnabled(): boolean {
+  return process.env.REPLAY_REGROUND === "true";
+}
+
+/** Indexes of steps carrying a target that grounding never resolved to a real element. */
+export function ungroundedStepIndexes(ir: IR): number[] {
+  const out: number[] = [];
+  ir.steps.forEach((s, i) => {
+    const t = s.target;
+    if (!t) return;                                   // wait / page-level assertion
+    if (t.url && !t.role && !t.name) return;          // navigate
+    if (t.css || t.testId) return;                    // already grounded
+    if (t.role || t.name || t.text || t.label || t.placeholder) out.push(i);
+  });
+  return out;
+}
+
+async function maybeRegroundForReplay(
+  ir: IR,
+  creds: Credentials | undefined,
+  onProgress: (p: Record<string, unknown>) => void,
+): Promise<{ ir: IR; regrounded: number }> {
+  if (!replayRegroundEnabled()) return { ir, regrounded: 0 };
+
+  const indexes = ungroundedStepIndexes(ir);
+  if (indexes.length === 0) return { ir, regrounded: 0 };
+
+  try {
+    // No sourceRunId: a replay grounds against what the walk finds, not against a stored model.
+    const res = await regroundEditedIr(ir, indexes, { creds, onProgress });
+    if (!res.ok) {
+      console.warn(`[replay] re-ground did not complete (${res.message}) — running the saved steps as they are`);
+      return { ir, regrounded: 0 };
+    }
+    // Marked, never silently merged: the person decides whether this becomes the saved case.
+    const annotated: IR = {
+      ...res.ir,
+      steps: res.ir.steps.map((s, i) =>
+        indexes.includes(i) && (s.target?.css || s.target?.testId)
+          ? { ...s, target: { ...s.target, groundedAt: "replay" as const } }
+          : s),
+    };
+    const fixed = indexes.filter((i) => annotated.steps[i]?.target?.css || annotated.steps[i]?.target?.testId).length;
+    console.log(`[replay] re-grounded ${fixed}/${indexes.length} previously-ungrounded step(s) against the live page`);
+    return { ir: annotated, regrounded: fixed };
+  } catch (err: any) {
+    // A replay must still run. Re-grounding is an improvement, never a precondition.
+    console.warn(`[replay] re-ground failed (${err?.message ?? err}) — running the saved steps as they are`);
+    return { ir, regrounded: 0 };
+  }
 }
 
 export async function runReplay(
@@ -127,11 +203,21 @@ export async function runReplay(
       emit("suite", "started", { caseId, title: c.title });
 
       try {
+        // Optional pre-pass: ground the steps discovery never saw against the live page.
+        const { ir: irToRun, regrounded } = await maybeRegroundForReplay(c.ir, creds, (p) =>
+          emit("ir", "started", { caseId, title: c.title, ...p }));
+        if (regrounded > 0) {
+          emit("ir", "completed", {
+            caseId, title: c.title, regrounded,
+            skipped: `Re-checked ${regrounded} step${regrounded === 1 ? "" : "s"} against the live page before running.`,
+          });
+        }
+
         const irPath = path.join(caseDir, "04-ir.json");
-        writeFileSync(irPath, JSON.stringify(c.ir, null, 2));
+        writeFileSync(irPath, JSON.stringify(irToRun, null, 2));
 
         emit("generate", "started");
-        const spec = generateSpec(c.ir, path.join(caseDir, "artifacts"));
+        const spec = generateSpec(irToRun, path.join(caseDir, "artifacts"));
         const specPath = path.join(caseDir, "generated.spec.ts");
         writeFileSync(specPath, spec);
         if (i === 0) writeFileSync(path.join(runDir, "generated.spec.ts"), spec);

@@ -286,7 +286,7 @@ load so it opens already reflecting whatever the server is actually configured t
 **The test-case library now exists.** An earlier version of this document said it did not — that the
 `suite`/`case`/`compare` views were deliberate empty stubs because the server had only run-lifecycle
 routes. That has not been true since the library phases shipped. `src/server/index.ts` now carries
-**57 routes**, including full CRUD for projects, suites and cases, per-case version history,
+**58 routes**, including full CRUD for projects, suites and cases, per-case version history,
 `POST /api/replay` for re-running saved cases from stored IR with zero LLM calls, and
 `POST /api/runs/:runId/cases/:caseId/save` to promote a run artifact into the library. Persistence
 is Supabase Postgres (`src/db.ts`, `src/server/library.ts`); see `docs/phases/PHASE_LIBRARY_REPORT.md`

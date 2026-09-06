@@ -55,16 +55,87 @@ Rules:
  * The screenshot is only used as a secondary signal when DOM is ambiguous,
  * not as the primary information source.
  */
+/** Longest accessible name a single element may contribute to the concept-labeling prompt. */
+const LABEL_NAME_MAX = () => {
+  const raw = Number(process.env.LABEL_ELEMENT_NAME_MAX_CHARS ?? 200);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 200;
+};
+/** Ceiling on the whole element list. Comfortably above every non-pathological page measured. */
+const LABEL_LIST_MAX = () => {
+  const raw = Number(process.env.LABEL_ELEMENTS_MAX_CHARS ?? 40_000);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 40_000;
+};
+
+/**
+ * The element list for the concept-labeling prompt, bounded on two axes.
+ *
+ * Exported for the test that replays the real amazon.in AppModel through it — the measurement is
+ * the point, and a test that cannot see this function would have to reimplement it.
+ *
+ * Truncation drops from the END, matching every other prompt-fitting helper in this codebase, so
+ * the elements a page declares first (its chrome and primary navigation) are the ones that
+ * survive. Original indices are preserved on every line the model sees.
+ */
+export function capElementsList(elements: Element[]): string {
+  const nameMax = LABEL_NAME_MAX();
+  const listMax = LABEL_LIST_MAX();
+
+  const lines = elements.map((e, i) => {
+    // Collapse whitespace FIRST. This format is one line per element and the model maps its
+    // answer back by the `[index]` at the start of each line — so a name containing a newline
+    // silently splits one element into several lines, and every index after it reads as
+    // belonging to a row that is really the tail of the previous name. Measured on the amazon.in
+    // homepage: 229 elements produced 273 lines before this collapse.
+    const raw = (e.name ?? "").replace(/\s+/g, " ").trim();
+    // A name this long is never a real accessible name — it is page text or CSS that leaked into
+    // one. Say so inline rather than silently handing the model a truncated blob it might quote
+    // back as an element name.
+    const name = raw.length > nameMax ? `${raw.slice(0, nameMax)}… [+${raw.length - nameMax} chars omitted]` : raw;
+    return `[${i}] ${e.role} "${name}" (visible: ${e.visible ?? true}, section: ${e.pageSection ?? "body"})`;
+  });
+
+  const full = lines.join("\n");
+  if (full.length <= listMax) return full;
+
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    if (used + line.length + 1 > listMax) break;
+    kept.push(line);
+    used += line.length + 1;
+  }
+  console.warn(
+    `[hybrid] concept-labeling element list truncated: ${full.length} -> ${used} chars ` +
+    `(${kept.length}/${lines.length} elements). A page this large usually means an element's ` +
+    `name captured page text or CSS — see TECH_DEBT.md TD-73.`,
+  );
+  return kept.join("\n");
+}
+
 async function labelConceptsWithDOM(
   elements: Element[],
   pageTitle: string,
   markdown: string,
   screenshotBase64?: string,
 ): Promise<{ concepts: string[]; labeledElements: { index: number; concept: string }[] }> {
-  // Build a compact element list
-  const elementsList = elements
-    .map((e, i) => `[${i}] ${e.role} "${e.name}" (visible: ${e.visible ?? true}, section: ${e.pageSection ?? "body"})`)
-    .join("\n");
+  // Build a compact element list.
+  //
+  // "Compact" was aspirational until measured. On run 2026-09-03T11-49-04-132Z-f568ba48
+  // (amazon.in) this line produced **797,356 characters from 229 elements** — because an
+  // element's accessible name can be an inlined stylesheet. That page's `main` element had a
+  // 648,107-character name beginning `.gwm-window-tile:nth-child(9n+1) {background-…`, and two
+  // `listitem`s carried 65K and 63K of CSS each. Median name length on the same page: 15.
+  // Four elements were 99% of the payload, and the resulting discovery call cost 514,427 prompt
+  // tokens — more than every other run in `runs/` combined. See TECH_DEBT.md TD-73.
+  //
+  // Two independent bounds, because either alone still leaks:
+  //   per-name — one runaway element cannot dominate the prompt
+  //   total    — a page with thousands of ordinary elements cannot either
+  //
+  // The ORIGINAL index is preserved on every surviving line: the caller maps the model's answer
+  // back with `labeledElements.find(l => l.index === i)` against the unfiltered `page.elements`,
+  // so renumbering here would silently label the wrong elements.
+  const elementsList = capElementsList(elements);
 
   // Trim markdown at a line boundary so the concept-labeling prompt stays small
   // without cutting a sentence or heading in half.

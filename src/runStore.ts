@@ -64,8 +64,26 @@ export const store: RunStore = {
       const planData = readJson(runId, "01-plan.json");
       if (planData) events.push({ runId, stage: "plan", status: "completed", data: planData, ts: Date.now() });
 
-      const appModel = readJson(runId, "02-appmodel.json");
-      if (appModel) events.push({ runId, stage: "discovery", status: "completed", data: appModel, ts: Date.now() });
+      // Narrowed to the same shape the live path emits (orchestrator.ts's `step` projector), so a
+      // legacy run reconstructed from disk and a fresh one look identical to the UI — and neither
+      // replays a multi-megabyte AppModel on every `/state` poll. The full model stays exactly
+      // where it already is, in 02-appmodel.json. TECH_DEBT.md TD-73.
+      const appModel: any = readJson(runId, "02-appmodel.json");
+      if (appModel) {
+        events.push({
+          runId, stage: "discovery", status: "completed", ts: Date.now(),
+          data: {
+            baseUrl: appModel.baseUrl,
+            pages: (appModel.pages ?? []).map((p: any) => ({
+              url: p.url,
+              title: p.title,
+              concepts: p.concepts ?? [],
+              elementCount: p.elements?.length ?? 0,
+            })),
+            ...(appModel.auth ? { auth: { status: appModel.auth.status, loginUrl: appModel.auth.loginUrl } } : {}),
+          },
+        });
+      }
 
       const cases = readJson(runId, "03-cases.json");
       if (cases) events.push({ runId, stage: "testcases", status: "completed", data: cases, ts: Date.now() });

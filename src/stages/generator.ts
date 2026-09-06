@@ -1,5 +1,9 @@
 import type { IR, Step } from "../schema/ir.js";
-import { resolveCode as locator } from "./targetResolver.js";
+import {
+  resolveCode as locator,
+  DOM_ORDER_FIELD_JS, FIELD_SELECTOR, DIALOG_SELECTOR,
+  SELECTABLE_JS, OPTION_PROBE_JS, MATCH_OPTION_INDEX_JS, OPTION_ERROR_JS, SELECT_TIMEOUT_MS,
+} from "./targetResolver.js";
 import { isAuthTriggeringStep } from "./authSettle.js";
 import { isEnvValueRef } from "./credentials.js";
 
@@ -304,27 +308,242 @@ async function locate(page, role, name, nth) {
 // React form shape — cannot be found by any getBy* name lookup; only its position relative to
 // the visible text can find it. :text() matches on substring, so a request that says "Name"
 // still reaches the field labelled "Full Name".
-const FIELD_HELPER = `
-function nearField(hint) {
-  const anchor = ':text(' + JSON.stringify(hint) + ')';
-  return ['input', 'textarea', 'select'].map(t => t + ':near(' + anchor + ', 120)').join(', ');
+// scopeOf/firstUnique are used by field(), choose() AND safeClick(), so they are their own
+// splice unit — spliced when ANY of the three is present. Living inside FIELD_HELPER meant a
+// spec with a select step but no fill emitted choose() with no scopeOf() to call.
+const SCOPE_HELPER = `
+// Where to look: the open modal if there is one, otherwise the whole page. A modal covers the
+// page it opened over, and that page routinely has a same-named field or button — resolving
+// against the document while a dialog is open can act on something the user cannot even see.
+// Returns a Locator either way, so callers use one uniform API. TECH_DEBT.md TD-72.
+async function scopeOf(page) {
+  const dialogs = page.locator(${JSON.stringify(DIALOG_SELECTOR)} + ':visible');
+  try {
+    if (await dialogs.count() > 0) return dialogs.last();
+  } catch (e) {}
+  return page.locator('body');
 }
 
-async function field(page, hint) {
-  const candidates = [
-    page.getByLabel(hint),
-    page.getByPlaceholder(hint),
-    page.getByRole('textbox', { name: hint }),
-    page.getByRole('combobox', { name: hint }),
-    page.getByRole('checkbox', { name: hint }),
-    page.locator(nearField(hint)),
-  ];
+async function firstUnique(candidates) {
   for (const c of candidates) {
-    if (await c.count() === 1) return c;
+    try {
+      const vis = c.locator(':visible');
+      if (await vis.count() === 1) return vis;
+      if (await c.count() === 1 && await c.isVisible().catch(() => false)) return c;
+    } catch (e) {}
   }
-  // Nothing unique. The positional match is the only candidate that cannot resolve to a
-  // non-fillable node (a <label>, a <div>), so prefer its closest hit.
-  return page.locator(nearField(hint)).first();
+  return null;
+}
+`;
+
+const FIELD_HELPER = `
+function nearField(hint, action) {
+  const anchor = ':text(' + JSON.stringify(hint) + ')';
+  // A 'select' must not fall back onto a plain <input>/<textarea>: selectOption() cannot act on
+  // one, so the nearest-control match turned a resolvable step into a hard failure. role, not
+  // tag, is what says an element can take a choice. Mirrors nearFieldSelector in
+  // targetResolver.ts — tests/selectAction.test.ts pins the two equal (TECH_DEBT.md TD-70/TD-07).
+  const tags = action === 'select'
+    ? ['select', '[role="combobox"]']
+    : ['input', 'textarea', 'select'];
+  return tags.map(t => t + ':near(' + anchor + ', 120)').join(', ');
+}
+
+async function field(page, hint, action) {
+  const scope = await scopeOf(page);
+
+  // Accessible relationships first, exact throughout: a substring match on "Email" also matches
+  // "Email address" and "Confirm Email", which silently binds two steps to one control.
+  const semantic = action === 'select'
+    ? [
+      scope.getByRole('combobox', { name: hint, exact: true }),
+      scope.getByLabel(hint, { exact: true }),
+    ]
+    : [
+      scope.getByLabel(hint, { exact: true }),
+      scope.getByPlaceholder(hint, { exact: true }),
+      scope.getByRole('textbox', { name: hint, exact: true }),
+      scope.getByRole('combobox', { name: hint, exact: true }),
+      scope.getByRole('checkbox', { name: hint, exact: true }),
+    ];
+  const bySemantics = await firstUnique(semantic);
+  if (bySemantics) return bySemantics;
+
+  // DOM ORDER: the control that FOLLOWS the label text. This is the rung that answers "which
+  // control does this label describe" instead of "which is nearest in pixels" — the question
+  // that filled Full Name with an email address on run 2026-09-06T13-05-36-248Z-db2c0b4c.
+  // The body of this callback is authored ONCE, in targetResolver.ts, and interpolated here as
+  // SOURCE, so the two implementations are the same characters rather than two copies kept in
+  // step (TECH_DEBT.md TD-07).
+  //
+  // Interpolated BARE, not via JSON.stringify. A string handed to evaluate() is evaluated as an
+  // expression, so a function literal is constructed, returned, and lost across the wire as
+  // undefined -- the rung then reports "no match" every time and every lookup silently falls
+  // through to geometry. That is TD-78, and it is how this shipped green: field() still
+  // returns the right control on a simple page, because geometry covers for the dead rung.
+  try {
+    // The selector is passed in, not baked in: a select step must never be handed a plain
+    // <input> (TD-70), and the index below indexes THIS list, so both must be the same one.
+    const fieldSel = action === 'select'
+      ? 'select, [role="combobox"]'
+      : ${JSON.stringify(FIELD_SELECTOR)};
+    const idx = await scope.evaluate(${DOM_ORDER_FIELD_JS}, { wanted: hint, fieldSel: fieldSel });
+    if (typeof idx === 'number' && idx >= 0) {
+      return scope.locator(fieldSel).nth(idx);
+    }
+  } catch (e) {}
+
+  // Geometry, last. Still useful where DOM order genuinely does not express the layout (a label
+  // to the RIGHT of its input, a grid). Prefer a control the label sits above or left of.
+  const near = scope.locator(nearField(hint, action));
+  try {
+    const n = await near.count();
+    if (n > 1) {
+      const anchor = await scope.locator(':text-is(' + JSON.stringify(hint) + ')').first()
+        .boundingBox().catch(() => null);
+      if (anchor) {
+        for (let i = 0; i < n; i++) {
+          const box = await near.nth(i).boundingBox().catch(() => null);
+          if (box && (box.y >= anchor.y || box.x >= anchor.x + anchor.width)) return near.nth(i);
+        }
+      }
+    }
+  } catch (e) {}
+  return near.first();
+}
+`;
+
+// A "select" step does NOT imply a <select> element. Grounding matches on ROLE, and a React
+// combobox is an <input> with a popup list — role="combobox", no <option> children and no
+// selectOption() support. Emitting selectOption() unconditionally is how run
+// 2026-09-04T10-38-19-619Z-bf20906d killed a valid case with
+// "locator.selectOption: Error: Element is not a <select> element" (TECH_DEBT.md TD-70).
+//
+// So branch on what the element actually IS at run time rather than on what the IR called it.
+// Pure code, no model call — the generator stays deterministic (DECISIONS.md D-06).
+//
+// The evaluate callback is a bare arrow with nothing named inside it, deliberately: esbuild
+// rewrites named/const-assigned inner functions to call a __name helper that does not exist in
+// the browser (CLAUDE.md sharp edges, TD-40).
+const CHOOSE_HELPER = `
+// Authored once in targetResolver.ts and interpolated here as SOURCE, so the live path and this
+// spec run the same characters (TECH_DEBT.md TD-07). Interpolated BARE: a function handed to
+// evaluate() as a STRING is evaluated as an expression and never called (TD-78).
+const optionProbeJs = ${OPTION_PROBE_JS};
+const matchOptionIndex = ${MATCH_OPTION_INDEX_JS};
+const optionErrorMessage = ${OPTION_ERROR_JS};
+const selectableJs = ${SELECTABLE_JS};
+
+async function choose(page, target, value) {
+  // A role match is not a promise about the tag: the resolved node can be a wrapper div, a
+  // label, or a custom shell with the real <select> hidden behind it. Walk to the control that
+  // can actually be selected before deciding which branch applies. TECH_DEBT.md TD-79.
+  try {
+    const tag0 = (await target.evaluate(el => el.tagName).catch(() => '')) || '';
+    const role0 = (await target.getAttribute('role').catch(() => '')) || '';
+    if (String(tag0).toUpperCase() !== 'SELECT' && role0 !== 'combobox' && role0 !== 'listbox') {
+      const si = await target.evaluate(selectableJs, ${q(FIELD_SELECTOR)}).catch(() => -1);
+      if (typeof si === 'number' && si >= 0) {
+        target = page.locator(${q(FIELD_SELECTOR)}).nth(si);
+      }
+    }
+  } catch (e) {}
+
+  const tag = (await target.evaluate(el => el.tagName).catch(() => '')) || '';
+  if (String(tag).toUpperCase() === 'SELECT') {
+    // selectOption() matches an option's value or label EXACTLY, so "prashant mishra" misses an
+    // <option>Prashant Mishra</option> and Playwright retries for the full timeout reporting only
+    // "did not find some options" — which is what killed run 2026-09-06T13-05-36-248Z-db2c0b4c
+    // at its Manager dropdown. Resolve the index ourselves: trimmed case-insensitive exact
+    // first, then containment, and only then hand the raw value to Playwright so an genuinely
+    // absent option still produces its own clear error. TECH_DEBT.md TD-76.
+    // Options are very often fetched, so the list can still be empty when the step arrives.
+    // Poll, but exit the MOMENT the control is populated and still has no match: waiting the
+    // full timeout on a control that is simply the wrong one is how a resolution bug disguises
+    // itself as a slow network. TECH_DEBT.md TD-79.
+    const deadline = Date.now() + ${SELECT_TIMEOUT_MS};
+    let idx = -1;
+    for (;;) {
+      const probe = await target.evaluate(optionProbeJs, value).catch(() => null);
+      if (probe && probe.index >= 0) { idx = probe.index; break; }
+      if (probe && probe.populated) break;          // real list, genuinely no match
+      if (Date.now() >= deadline) break;
+      await page.waitForTimeout(100);
+    }
+    if (idx >= 0) {
+      await target.selectOption({ index: idx }, { timeout: ${SELECT_TIMEOUT_MS} });
+      return;
+    }
+    // Say what WAS on offer. "did not find some options" names neither the wanted value nor the
+    // available ones, which is the difference between a person fixing a typo in ten seconds and
+    // re-running the whole case to look at a video.
+    const available = await target.evaluate(el => Array.prototype.slice
+      .call(el.options || []).map(o => (o.textContent || '').trim()).filter(t => t.length > 0)
+    ).catch(() => []);
+    throw new Error(optionErrorMessage(value, available));
+  }
+  // Custom dropdown: open it, then pick the option by its accessible name.
+  await target.click({ timeout: ${SELECT_TIMEOUT_MS} });
+  // Scoped like every other lookup: a listbox behind the modal must not win.
+  const optScope = await scopeOf(page);
+  // Wait for the popup's items, which are as likely to be fetched as a <select>'s — but wait on
+  // the OPEN POPUP, not on the whole scope.
+  //
+  // ':visible' is load-bearing, not defensive, and for two reasons. A form with several
+  // dropdowns has several [role="listbox"] nodes and .first() takes the first in DOM order,
+  // which is a CLOSED one. And a native <select> elsewhere on the page contributes its own
+  // <option> elements, which carry an implicit role of "option" — so an unscoped
+  // getByRole('option') count is above zero before this dropdown has rendered anything, the
+  // wait exits instantly, and a late-loading popup fails as though it were empty. Both were
+  // caught by running this against a real browser, not by reading it.
+  const optDeadline = Date.now() + ${SELECT_TIMEOUT_MS};
+  let scope = optScope;
+  for (;;) {
+    const popup = optScope.locator('[role="listbox"]:visible, [role="menu"]:visible');
+    const open = (await popup.count()) > 0 ? popup.first() : null;
+    scope = open ?? optScope;
+    // Ready means "this dropdown has rendered its choices", and role="option" is only one way a
+    // dropdown says so — plenty render plain <div>/<li> items, which the text fallback below
+    // handles. Waiting for a role that will never appear would burn the whole timeout on a
+    // dropdown that was ready immediately, so any rendered text in the open popup counts.
+    if (await scope.getByRole('option').count() > 0) break;
+    if (open && ((await open.textContent().catch(() => '')) || '').trim().length > 0) break;
+    if (Date.now() >= optDeadline) break;
+    await page.waitForTimeout(100);
+  }
+  const byRole = scope.getByRole('option', { name: value, exact: true });
+  if (await byRole.count() > 0) {
+    await byRole.first().click({ timeout: ${SELECT_TIMEOUT_MS} });
+    return;
+  }
+  // Same trimmed, case-insensitive match the native branch uses, so a custom dropdown is not
+  // held to a stricter standard than a <select> for no reason.
+  const allOpts = scope.getByRole('option');
+  const optCount = await allOpts.count();
+  if (optCount > 0) {
+    const texts = [];
+    for (let i = 0; i < optCount; i++) {
+      texts.push(((await allOpts.nth(i).textContent().catch(() => '')) || '').replace(/\\s+/g, ' ').trim());
+    }
+    const pick = matchOptionIndex(texts, value);
+    if (pick >= 0) {
+      await allOpts.nth(pick).click({ timeout: ${SELECT_TIMEOUT_MS} });
+      return;
+    }
+  }
+  // No option role anywhere in the popup — a dropdown whose items are plain divs or <li>s.
+  const exact = scope.getByText(value, { exact: true });
+  if (await exact.count() > 0) {
+    await exact.first().click({ timeout: ${SELECT_TIMEOUT_MS} });
+    return;
+  }
+  // Nothing matched. Report what the open popup was actually offering rather than letting
+  // Playwright time out on a locator that resolves to nothing — same reason as the native
+  // branch: the error is the only thing the person sees on the case card. TD-79.
+  const offered = await scope.locator('[role="option"], li, [role="menuitem"]')
+    .allTextContents().catch(() => []);
+  throw new Error(optionErrorMessage(value, offered.map(t => (t || '').replace(/\\s+/g, ' ').trim())
+    .filter(t => t.length > 0)));
 }
 `;
 
@@ -334,7 +553,15 @@ async function field(page, hint) {
 
 const SAFE_CLICK_HELPER = `
 async function safeClick(page, role, name, nth) {
-  const el = await locate(page, role, name, nth);
+  // A modal's "Save" and the page's own "Save" are different buttons. While a dialog is open,
+  // look inside it first and only fall back to the document when it holds no such control —
+  // otherwise a step can click something the user cannot even see. TECH_DEBT.md TD-72.
+  let el = await locate(page, role, name, nth);
+  try {
+    const scope = await scopeOf(page);
+    const inDialog = await locate(scope, role, name, nth);
+    if (await inDialog.count() > 0) el = inDialog;
+  } catch (e) {}
 
   // For <a> tags: read href and navigate directly — bypasses all
   // hover/visibility/viewport issues from collapsed dropdown menus.
@@ -428,7 +655,9 @@ function emitStep(step: Step, baseUrl: string): string {
       break;
 
     case "select":
-      code += `  await ${locator(step.target!, "select")}.selectOption(${valueCode(step.value)}, { timeout: 10000 });`;
+      // choose() decides selectOption-vs-click-the-option at run time, from the element's real
+      // tag. See CHOOSE_HELPER. Emitting selectOption() here is what TD-70 was.
+      code += `  await choose(page, ${locator(step.target!, "select")}, ${valueCode(step.value)});`;
       break;
 
     case "check":
@@ -539,6 +768,8 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   const needsLocate = body.includes("await locate(") || body.includes("await safeClick(");
   const needsSafeClick = body.includes("await safeClick(");
   const needsField = body.includes("await field(");
+  const needsChoose = body.includes("await choose(");
+  const needsScope = needsField || needsChoose || needsSafeClick;
 
   const needsAuthSettle = body.includes(
     "await waitForAuthSettle(page)"
@@ -550,7 +781,9 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     // a spec that calls an undefined function. Always-on cannot fail that way.
     SHOT_HELPER,
     needsLocate ? LOCATE_HELPER : "",
+    needsScope ? SCOPE_HELPER : "",
     needsField ? FIELD_HELPER : "",
+    needsChoose ? CHOOSE_HELPER : "",
     needsSafeClick ? SAFE_CLICK_HELPER : "",
     needsAuthSettle ? AUTH_SETTLE_HELPER : "",
   ]

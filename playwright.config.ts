@@ -15,6 +15,10 @@ export default defineConfig({
     // need one. screenshot stays "on" — the UI shows it for every result and it's tiny.
     trace: "retain-on-failure",
     screenshot: "on",
-    video: "retain-on-failure",
+    // TD-71: recording starts when the CONTEXT is created, so a missing ffmpeg does not degrade
+    // to "no video" — it stops browserContext.newPage() outright and reports a valid case as a
+    // test failure. executor.ts probes for the binary and sets PLAYWRIGHT_VIDEO=off when it is
+    // absent, so the run still happens. Unset (the normal case) this is unchanged.
+    video: process.env.PLAYWRIGHT_VIDEO === "off" ? "off" : "retain-on-failure",
   },
 });

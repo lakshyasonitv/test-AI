@@ -1,7 +1,7 @@
 import type { Page } from "playwright";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
-import { AppModel } from "../schema/appModel.js";
+import { AppModel, INTERACTIVE_ROLES } from "../schema/appModel.js";
 
 /** One interactive element found by the in-page detector below. */
 export interface DetectedElement {
@@ -248,7 +248,85 @@ export function formatInteractiveElements(elements: DetectedElement[]): string {
     return `- ${el.role}${namePart}${iconNote}${derivedNote}${idNote}${dupNote}`;
   });
 
-  return `\nInteractive elements found on page:\n${lines.join('\n')}`;
+  return `${INTERACTIVE_SECTION_MARKER}\n${lines.join('\n')}`;
+}
+
+/**
+ * The heading that separates the ARIA snapshot from the JS-detected interactive list.
+ *
+ * A constant because `capAriaSnapshot` splits on it and `modelFromAria`'s system prompt quotes it
+ * to the model. Three copies of this string is how the cap would one day start eating the section
+ * it exists to protect.
+ */
+export const INTERACTIVE_SECTION_MARKER = "\nInteractive elements found on page:";
+
+/** Longest ARIA snapshot that may reach the model. */
+const SNAPSHOT_MAX = () => {
+  const raw = Number(process.env.DISCOVERY_SNAPSHOT_MAX_CHARS ?? 40_000);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 40_000;
+};
+
+/**
+ * Roles worth keeping when the snapshot has to be cut. Mirrors `INTERACTIVE_ROLES` in
+ * `appModel.ts` — imported rather than re-listed, since "what can a test act on" must have one
+ * answer.
+ */
+const ARIA_LINE = /^\s*-\s*([a-z]+)\b/;
+
+/**
+ * Bound the accessibility snapshot before it becomes a prompt.
+ *
+ * `modelFromAria` interpolated `${aria}` with no limit at all, so a large or JS-heavy page could
+ * send an unbounded prompt. 40,000 chars is roughly 9,600 tokens at this corpus's measured ~4.15
+ * chars/token, against a largest-observed legitimate discovery call of **3,699 prompt tokens** —
+ * about 2.6x headroom over anything real, and in the same family as `ir.ts`'s existing 30,000-char
+ * prompt budget. See TECH_DEBT.md TD-73.
+ *
+ * TWO things make this more than a `slice()`:
+ *
+ * 1. **The interactive-elements section is never cut.** It is appended AFTER the snapshot, so a
+ *    naive end-truncation would delete the single most valuable part of the prompt — the
+ *    JS-detected controls that the a11y tree missed, which is the whole reason that section
+ *    exists. It is split off, preserved whole, and re-attached.
+ * 2. **Non-interactive nodes go first.** Static text and generic containers are dropped before
+ *    anything a test could act on, so a page whose bulk is prose keeps its buttons.
+ *
+ * Within each pass the drop is from the END, consistent with every other prompt-fitting helper
+ * here (`cutAtBoundary`, `toLiteModel`'s caps, `ir.ts`'s page trimming).
+ */
+export function capAriaSnapshot(combined: string, max = SNAPSHOT_MAX()): string {
+  const at = combined.indexOf(INTERACTIVE_SECTION_MARKER);
+  const aria = at === -1 ? combined : combined.slice(0, at);
+  const tail = at === -1 ? "" : combined.slice(at);
+
+  // The interactive list is preserved whole, so the snapshot's share is what is left of the cap.
+  const budget = Math.max(0, max - tail.length);
+  if (aria.length <= budget) return combined;
+
+  const lines = aria.split("\n");
+  const interactive = (l: string) => {
+    const m = ARIA_LINE.exec(l);
+    return !!m && INTERACTIVE_ROLES.has(m[1]);
+  };
+
+  // Pass 1 — drop non-interactive lines from the end until it fits.
+  const keep = lines.map(() => true);
+  let size = aria.length;
+  for (let i = lines.length - 1; i >= 0 && size > budget; i--) {
+    if (!interactive(lines[i])) { keep[i] = false; size -= lines[i].length + 1; }
+  }
+  // Pass 2 — still over, so interactive lines have to go too, still from the end.
+  for (let i = lines.length - 1; i >= 0 && size > budget; i--) {
+    if (keep[i]) { keep[i] = false; size -= lines[i].length + 1; }
+  }
+
+  const cut = lines.filter((_, i) => keep[i]).join("\n");
+  console.warn(
+    `[discovery] accessibility snapshot truncated for the model: ${aria.length} -> ${cut.length} ` +
+    `chars (cap ${max}, interactive list of ${tail.length} chars kept whole). ` +
+    `See TECH_DEBT.md TD-73.`,
+  );
+  return cut + tail;
 }
 
 
@@ -336,11 +414,15 @@ Example of the exact shape required:
       { "role": "textbox", "name": "Username", "concept": "Login" },
       { "role": "button", "name": "Log in", "concept": "Login" }
     ] } ] }`;
+  // Capped HERE rather than at each call site: hybridDiscovery and liveExtend both reach the
+  // model through this function, and a cap on one of them is a cap on neither.
+  const cappedAria = capAriaSnapshot(aria);
+
   const user =
     `Base URL: ${url}
 Page title: ${title}
 Accessibility snapshot:
-${aria}
+${cappedAria}
 ${screenshotBase64 ? "\nA screenshot of this exact page is attached — use it to label elements more accurately, especially icon-only buttons and unlabeled interactive elements, per the rules above." : ""}
 
 Return ONLY JSON:

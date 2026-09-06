@@ -12,6 +12,82 @@ export interface ExecResult {
   screenshot?: string;
   accessibilitySnapshot?: string;
   currentUrl?: string;
+  /**
+   * Set only when video recording had to be turned off for this run. Additive and optional:
+   * every existing reader of an ExecResult is unaffected when it is absent, which is always
+   * unless ffmpeg is missing.
+   */
+  videoUnavailable?: string;
+}
+
+/**
+ * Is Playwright's bundled ffmpeg actually on disk?
+ *
+ * WHY THIS EXISTS. `playwright.config.ts` records video, and Playwright starts the recorder when
+ * the CONTEXT is created — so a missing ffmpeg does not degrade to "no video", it stops the
+ * context opening at all:
+ *
+ *     browserContext.newPage: Executable doesn't exist at …\ms-playwright\ffmpeg-1010\ffmpeg-win64.exe
+ *
+ * Every case in run `2026-08-31T06-56-52-852Z-7943ebb2` died that way, ~960 ms in, before a single
+ * `page.goto`. `screenshot: "on"` then photographed a page that had never navigated, so the UI
+ * showed a blank white 4,331-byte PNG and reported a test failure. Nothing about the site under
+ * test was wrong. See `TECH_DEBT.md` TD-71.
+ *
+ * HOW IT PROBES. By looking for the binary, not by asking Playwright: the registry that owns this
+ * path is `playwright-core` internals, and reaching into it would couple a shipped code path to a
+ * private module across version bumps. The layout is stable and public — `<browsers>/ffmpeg-<rev>/`
+ * containing a file whose name starts with `ffmpeg` — so a glob over it is both simpler and less
+ * likely to break than the "correct" API.
+ *
+ * Deliberately permissive: an unreadable browsers directory returns `true`. The cost of a false
+ * negative is turning video off for a run that could have had it; the cost of a false positive is
+ * nothing, because the run then behaves exactly as it does today.
+ */
+let ffmpegProbe: { ok: boolean; searched: string } | null = null;
+
+export function ffmpegAvailable(): { ok: boolean; searched: string } {
+  if (ffmpegProbe) return ffmpegProbe;
+
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  const browsers = process.env.PLAYWRIGHT_BROWSERS_PATH
+    || (process.platform === "win32"
+      ? path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "ms-playwright")
+      : process.platform === "darwin"
+        ? path.join(home, "Library", "Caches", "ms-playwright")
+        : path.join(home, ".cache", "ms-playwright"));
+
+  let ok = true;
+  try {
+    if (existsSync(browsers)) {
+      const dirs = readdirSync(browsers).filter((n) => /^ffmpeg[-_]/i.test(n));
+      // A truncated download leaves the directory in place with a short or absent binary, which
+      // is how this failed in practice — the folder existing is not the question, the file is.
+      ok = dirs.some((d) => {
+        try { return readdirSync(path.join(browsers, d)).some((f) => /^ffmpeg/i.test(f)); }
+        catch { return false; }
+      });
+    }
+  } catch { ok = true; }
+
+  ffmpegProbe = { ok, searched: browsers };
+  return ffmpegProbe;
+}
+
+/** Test seam — the probe is memoized so a real run globs the disk once per process. */
+export function resetFfmpegProbe(): void { ffmpegProbe = null; }
+
+/** One line, naming the command that fixes it. Called once at server startup. */
+export function warnIfNoVideo(): void {
+  const { ok, searched } = ffmpegAvailable();
+  if (ok) return;
+  console.warn(
+    `[executor] Playwright's ffmpeg is missing from ${searched} — video recording is OFF for ` +
+    `every run until it is installed. Tests still run and still pass or fail normally.\n` +
+    `[executor] Fix with:  npx playwright install\n` +
+    `[executor] If that hangs, check for a stale __dirlock and a leftover ` +
+    `oopDownloadBrowserMain.js process before retrying.`,
+  );
 }
 
 // Configuration
@@ -140,6 +216,9 @@ async function executePlaywright(
 ): Promise<ExecResult> {
   const exitCode: number = await new Promise((resolve) => {
     console.log("[executor] Spawning Playwright...");
+    // One probe per process (memoized). Decides whether this child records video at all.
+    const video = ffmpegAvailable();
+
     const p = spawn(
       process.execPath,
       [cliPath, "test", specPath.replace(/\\/g, "/"), "--reporter=json", `--output=${artifactsDir}`],
@@ -149,6 +228,10 @@ async function executePlaywright(
           ...secretEnv,
           PLAYWRIGHT_JSON_OUTPUT_NAME: resultsJson,
           PLAYWRIGHT_HEADLESS: 'true',
+          // Read by playwright.config.ts. Missing ffmpeg does not degrade video to "off" on its
+          // own — it stops browserContext.newPage() outright, failing a valid case before it
+          // navigates (TD-71). Turning recording off is what keeps the run runnable.
+          ...(video.ok ? {} : { PLAYWRIGHT_VIDEO: 'off' }),
         },
         stdio: ["pipe", "pipe", "pipe"],
       }
@@ -226,6 +309,7 @@ async function executePlaywright(
   }
 
   console.log("[executor] runSpec() returning, passed:", exitCode === 0);
+  const video = ffmpegAvailable();
   return {
     passed: exitCode === 0,
     exitCode,
@@ -233,7 +317,15 @@ async function executePlaywright(
     artifactsDir,
     raw: scrubServedSecrets(raw, artifactsDir, resultsJson, errorContextFiles, secretEnv),
     screenshot,
-    accessibilitySnapshot
+    accessibilitySnapshot,
+    // Present only when recording was suppressed, so the UI can say "video unavailable" rather
+    // than silently showing no player — and above all so this is never again mistaken for a
+    // test failure (TD-71).
+    ...(video.ok ? {} : {
+      videoUnavailable:
+        "Video was not recorded: Playwright's ffmpeg is not installed. Run `npx playwright install`. "
+        + "The test itself ran normally — this does not affect the result.",
+    }),
   };
 }
 
@@ -259,6 +351,34 @@ export interface BlockedInfo {
 }
 
 /**
+ * Are these two URLs the same site, for the purpose of "did the flow leave the application?"
+ *
+ * Compares HOSTS, not origin string prefixes. The previous check was
+ * `!finalUrl.startsWith(appOrigin)`, which treats a scheme change as leaving the app: a user
+ * entered `http://veterans.my.site.com/s/`, the site redirected to `https://…`, and all three
+ * correct cases in run `2026-09-01T07-17-37-947Z-35c773cf` were reported as
+ * "the flow left the application for veterans.my.site.com, an external sign-in provider" —
+ * naming the app's own host as the external provider. `TECH_DEBT.md` TD-69.
+ *
+ * Scheme and port are irrelevant to "is this still the app", and a leading `www.` is the same
+ * site by universal convention, so both are ignored.
+ *
+ * **Unreadable input returns `true` (same site).** This guard exists to catch a flow leaving for
+ * an external provider; being wrong in that direction marks passing tests as blocked, which is
+ * exactly the defect above. So "I cannot tell" must fall to the permissive side and report
+ * nothing — the caller's own comment already called an unparseable URL "not a reliable signal".
+ */
+export function isSameSite(a: string, b: string): boolean {
+  const hostOf = (u: string): string | null => {
+    try { return new URL(u).hostname.replace(/^www\./i, "").toLowerCase(); } catch { return null; }
+  };
+  const ha = hostOf(a);
+  const hb = hostOf(b);
+  if (!ha || !hb) return true;
+  return ha === hb;
+}
+
+/**
  * Did this test end somewhere automation cannot continue from? Reads the `final-page.txt` the
  * generated spec writes in its afterEach hook (url on the first line, visible text after).
  * Returns null when nothing blocked it, which is the normal case.
@@ -275,7 +395,7 @@ export function detectBlocked(artifactsDir: string, appOrigin?: string): Blocked
   if (VERIFICATION_GATE.test(text)) {
     reason = "the flow reached a verification step that needs a code sent to a real inbox or phone, " +
       "which an automated test can't read";
-  } else if (appOrigin && finalUrl && !finalUrl.startsWith(appOrigin)) {
+  } else if (appOrigin && finalUrl && !isSameSite(finalUrl, appOrigin)) {
     try {
       reason = `the flow left the application for ${new URL(finalUrl).host}, an external sign-in ` +
         `provider the test can't complete`;
@@ -290,6 +410,77 @@ export function detectBlocked(artifactsDir: string, appOrigin?: string): Blocked
     : [];
   const screenshot = shots.length ? path.join(artifactsDir, shots[shots.length - 1]) : findScreenshot(artifactsDir);
   return { reason, screenshot };
+}
+
+/** What a failed case can say for itself with no model call at all. */
+export interface FailureDetail {
+  /** 1-based index of the step that threw, matching the step numbering in the UI and IR. */
+  failedStep?: number;
+  /** That step's own title, e.g. `Select 'prashant mishra' in 'Manager'`. */
+  failedStepTitle?: string;
+  /** First meaningful line of the Playwright error. */
+  error?: string;
+  /** The full message, ANSI stripped — for the "show more" the card can expand into. */
+  errorDetail?: string;
+}
+
+/** Strip ANSI colour codes; Playwright's JSON keeps them in `message`. */
+const noAnsi = (s: string) => s.replace(/\[[0-9;]*m/g, "");
+
+/**
+ * Pull the failure out of Playwright's own JSON report.
+ *
+ * WHY THIS EXISTS. A replay makes zero LLM calls by design, so `analyzeFailure` never runs and
+ * the UI — which only rendered a reason when a diagnosis existed — showed a red X and nothing
+ * else. On run `2026-09-06T14-19-13-154Z-fed833e5` the actual cause was sitting unread in
+ * `05-result.json` the whole time. This is the deterministic floor: every failed case can say
+ * which step died and what the error was, whatever the run type and whatever the budget.
+ * A diagnosis, when there is one, is shown BELOW this rather than instead of it.
+ *
+ * Pure over the parsed report so it is testable without running a browser.
+ */
+export function extractFailureDetail(raw: any): FailureDetail {
+  if (!raw || typeof raw !== "object") return {};
+  let out: FailureDetail = {};
+
+  const visitSuite = (suite: any) => {
+    for (const child of suite?.suites ?? []) visitSuite(child);
+    for (const spec of suite?.specs ?? []) {
+      if (spec?.ok) continue;
+      for (const test of spec?.tests ?? []) {
+        for (const result of test?.results ?? []) {
+          const steps = result?.steps ?? [];
+          // Playwright numbers nothing; the position of the failing step IS the step number,
+          // because generateSpec emits exactly one test.step() per IR step in order.
+          for (let i = 0; i < steps.length; i++) {
+            if (!steps[i]?.error) continue;
+            if (out.failedStep === undefined) {
+              out.failedStep = i + 1;
+              out.failedStepTitle = typeof steps[i].title === "string" ? steps[i].title : undefined;
+            }
+          }
+          for (const err of result?.errors ?? []) {
+            const msg = typeof err?.message === "string" ? noAnsi(err.message) : "";
+            if (!msg.trim()) continue;
+            // "Test timeout of 50000ms exceeded" is the CONSEQUENCE of the first error, not a
+            // second failure — it would otherwise displace the real cause on the card.
+            if (!out.error) {
+              out.error = msg.split("\n").map((l) => l.trim()).filter(Boolean)[0];
+              out.errorDetail = msg;
+            }
+          }
+        }
+      }
+    }
+  };
+  for (const suite of raw.suites ?? []) visitSuite(suite);
+  for (const err of raw.errors ?? []) {
+    if (!out.error && typeof err?.message === "string" && err.message.trim()) {
+      out.error = noAnsi(err.message).split("\n")[0].trim();
+      out.errorDetail = noAnsi(err.message);
+    }
+  }
+  return out;
 }
 
 /**

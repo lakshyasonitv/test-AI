@@ -14,6 +14,17 @@ export const Target = z.object({
   // during grounding, copied from the matching AppModel element that discovery verified
   // exists. It is what makes icon-only controls addressable at all.
   css: z.string().optional(),
+  /**
+   * Provenance, not behaviour. `"replay"` marks a target that was grounded against the LIVE page
+   * during a replay (`REPLAY_REGROUND`) rather than against the model discovery built — the case
+   * of a control revealed by a click, which discovery never saw.
+   *
+   * Additive and optional, so every existing IR parses unchanged. It exists so the grounding is
+   * VISIBLE in the run's `04-ir.json` and a person can choose to save it back: a replay must not
+   * silently rewrite the stored case (`CLAUDE.md` rule 6, `DECISIONS.md` D-27). Nothing branches
+   * on it — the generator and executor never read it.
+   */
+  groundedAt: z.literal("replay").optional(),
 });
 export type Target = z.infer<typeof Target>;
 

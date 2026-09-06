@@ -32,8 +32,16 @@ describe("field locators", () => {
   // path even when role+name are both present.
   it("routes a role+name fill through the field helper too", () => {
     const code = resolveCode({ role: "textbox", name: "Full Name" }, "fill");
-    expect(code).toContain(`field(page, "Full Name")`);
+    // The ACTION travels with the hint. field() narrows its candidates for a `select`, so
+    // dropping this argument would silently restore the TD-70 behaviour where a select could
+    // resolve onto a plain <input>.
+    expect(code).toContain(`field(page, "Full Name", "fill")`);
     expect(code).not.toContain("getByRole");
+  });
+
+  it("passes the action through for a select, not just a fill (TD-70)", () => {
+    const code = resolveCode({ role: "combobox", name: "Manager" }, "select");
+    expect(code).toContain(`field(page, "Manager", "select")`);
   });
 
   // A selector discovery actually verified is stronger than any name guess and still wins.
@@ -63,12 +71,12 @@ describe("field locators", () => {
       { id: "s1", action: "navigate", target: { url: "/" } },
       { id: "s2", action: "fill", target: { text: "Name" }, value: "test" },
     ]));
-    expect(withFill).toContain("async function field(page, hint)");
+    expect(withFill).toContain("async function field(page, hint, action)");
 
     const noFill = generateSpec(ir([
       { id: "s1", action: "navigate", target: { url: "/" } },
       { id: "s2", action: "click", target: { role: "button", name: "Go" } },
     ]));
-    expect(noFill).not.toContain("async function field(page, hint)");
+    expect(noFill).not.toContain("async function field(page, hint, action)");
   });
 });

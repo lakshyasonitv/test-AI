@@ -4,7 +4,8 @@ import { rmSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
-import { allRunIds, listRuns } from "../runStore.js";
+import { allRunIds, listRuns, store } from "../runStore.js";
+import { warnIfNoVideo } from "../stages/executor.js";
 import { Semaphore } from "./concurrency.js";
 import { askCredentials, settle } from "./pendingCredentials.js";
 import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
@@ -56,6 +57,7 @@ import {
   deleteSuite,
   duplicateCase,
   getCase,
+  getCaseScript,
   getCaseVersion,
   listCaseRuns,
   listCases,
@@ -73,7 +75,10 @@ import {
 import { runReplay, originOf } from "../stages/replay.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
-import { credentialsFromEnv, credentialKindsNeeded, type Credentials } from "../stages/credentials.js";
+import {
+  credentialsFromEnv, credentialKindsNeeded, restoreCredentialRefs, isEnvValueRef,
+  type Credentials,
+} from "../stages/credentials.js";
 import { resolveCredentialsVia } from "./resolveCredentials.js";
 import { toElementIndex } from "../schema/appModel.js";
 import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsEnabled,
@@ -929,6 +934,33 @@ app.get("/api/cases/:caseId", requireRole("viewer"), async (req, res) => {
   } catch (err) { sendAccessError(res, err); }
 });
 
+/**
+ * The Playwright script for a saved case — the Script tab's source of truth.
+ *
+ * NEW route rather than a field on `GET /api/cases/:caseId`, per platform rule 1: that response is
+ * read in many places and the spec is large, so it does not belong on every case fetch.
+ *
+ * Optional `?version=N` returns that version's script instead of the current one. Answers for any
+ * case the caller can already read — a script is a rendering of the IR they can see anyway, so it
+ * needs no permission beyond `viewer`, the same gate as `GET /api/cases/:caseId`.
+ *
+ * The Script tab used to read the originating run's artifact folder directly, which meant deleting
+ * a run silently emptied the tab of every case saved from it (`TECH_DEBT.md` TD-68).
+ */
+app.get("/api/cases/:caseId/script", requireRole("viewer"), async (req, res) => {
+  const raw = req.query.version;
+  let version: number | undefined;
+  if (typeof raw === "string" && raw !== "") {
+    version = Number(raw);
+    if (!Number.isInteger(version) || version < 1) {
+      return res.status(400).json({ error: "version must be a positive integer" });
+    }
+  }
+  try {
+    res.json(await getCaseScript(...libraryCtx(req), req.params.caseId, version));
+  } catch (err) { sendAccessError(res, err); }
+});
+
 /** One stored version's steps — what the Compare screen reads for each side. */
 app.get("/api/cases/:caseId/versions/:version", requireRole("viewer"), async (req, res) => {
   const version = Number(req.params.version);
@@ -1030,10 +1062,18 @@ async function prepareEdit(req: express.Request, res: express.Response) {
     return null;
   }
 
+  // A credential the person typed must never be what gets STORED. `restoreCredentialRefs` puts
+  // recognised values back behind `${env:...}` and hands the literals back separately, in memory,
+  // for this save's own walk only (CLAUDE.md rule 5, TECH_DEBT.md TD-67). Applied here rather than
+  // in either branch below, so the fast path and the job path cannot diverge on it.
+  const safe = restoreCredentialRefs(parsed.result.steps, found.ir.steps);
+
   // Structurally valid before it is ever checked against a live site — a malformed plan should
   // fail in milliseconds, not after a browser walk.
-  const validated = parseIr({ ...found.ir, steps: parsed.result.steps }, "the edited test plan");
-  return { ctx, found, parsed: parsed.result, validated };
+  const validated = parseIr({ ...found.ir, steps: safe.steps }, "the edited test plan");
+  // Same IR with the typed literals still in place. NEVER written, never serialised to a client.
+  const liveIr = parseIr({ ...found.ir, steps: safe.live }, "the edited test plan");
+  return { ctx, found, parsed: parsed.result, validated, liveIr, credentialNote: safe.note, typedCreds: safe.creds };
 }
 
 /**
@@ -1112,7 +1152,7 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
   try {
     const prep = await prepareEdit(req, res);
     if (!prep) return;
-    const { ctx, found, parsed, validated } = prep;
+    const { ctx, found, parsed, validated, liveIr, credentialNote, typedCreds } = prep;
     const caseId = req.params.caseId;
     const userId = req.user?.id ?? LOCAL_USER_ID;
 
@@ -1133,6 +1173,8 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
         regrounded: 0,
         snapshots: 0,
         steps: validated.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+        // Optional and absent unless something was rewritten.
+        ...(credentialNote ? { credentialNote } : {}),
       });
     }
 
@@ -1140,14 +1182,17 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
     const jobId = makeRunId();
     createJob(jobId, userId, caseId);
     const estimate = estimateRegrounding(parsed);
-    res.status(202).json({ jobId, mode: "verifying", ...estimate });
+    res.status(202).json({ jobId, mode: "verifying", ...estimate, ...(credentialNote ? { credentialNote } : {}) });
 
     // Deliberately not awaited: the response is already sent. Every outcome ends in a `done` or
     // `error` event, which is what closes the stream.
     void (async () => {
       emitJobEvent(jobId, "ir", "started", { ...estimate, caseId });
       try {
-        const creds = await resolveWalkCredentials(jobId, validated, estimate.needsCredentials);
+        // Prefer what the person just typed — they are demonstrably the right credentials for the
+        // steps being saved. Falls back to the usual env-or-prompt resolution otherwise.
+        const creds = typedCreds
+          ?? await resolveWalkCredentials(jobId, validated, estimate.needsCredentials);
         // Cancelled while the prompt was open, or the prompt timed out into a cancel. Return
         // before any browser launches — there is nothing to close and nothing to write.
         if (isCancelled(jobId)) {
@@ -1156,7 +1201,9 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
           return;
         }
 
-        const grounded = await regroundEditedIr(validated, parsed.regroundIndexes, {
+        // liveIr, not validated: the walk has to actually sign in, so it needs the real values.
+        // Only `validated` — which carries `${env:...}` — is ever written by writeIt() below.
+        const grounded = await regroundEditedIr(liveIr, parsed.regroundIndexes, {
           sourceRunId: found.sourceRunId,
           creds,
           shouldCancel: () => isCancelled(jobId),
@@ -1177,7 +1224,20 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
           return;
         }
 
-        const updated = await writeIt(grounded.ir);
+        // The walk ran against liveIr, so grounded.ir still holds the typed literals. Grounding
+        // only ever rewrites TARGETS (css/testId/nth), never values, so putting the `${env:...}`
+        // references back is a straight per-step restore — and it is what stops the secret being
+        // written one line below. Restored only where the safe IR actually held a reference, so a
+        // non-credential value the walk saw is left exactly as it is.
+        const safeIr = {
+          ...grounded.ir,
+          steps: grounded.ir.steps.map((st, i) => {
+            const ref = validated.steps[i]?.value;
+            return isEnvValueRef(ref) ? { ...st, value: ref } : st;
+          }),
+        };
+
+        const updated = await writeIt(safeIr);
         emitJobEvent(jobId, "done", "completed", {
           saved: true,
           cancelled: false,
@@ -1185,7 +1245,8 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
           regrounded: parsed.regroundIndexes.length,
           snapshots: grounded.snapshots,
           usage: grounded.usage,
-          steps: grounded.ir.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+          steps: safeIr.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+          ...(credentialNote ? { credentialNote } : {}),
         });
       } catch (err: any) {
         // Includes the 409 raised by updateCase if someone else saved during the walk.
@@ -1464,13 +1525,25 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
           // The same event shape a run emits, so app.js draws the same prompt with no change:
           // its postUrl already defaults to /api/runs/<runId>/credentials, and a replay's runId
           // is a real run id that the existing route settles.
-          (status, data) => onEvent({
-            runId, stage: "credentials", status,
-            data: status === "started"
-              ? { url: data.url, fields: data.fields }
-              : { provided: !!data.supplied },
-            ts: Date.now(),
-          } as Parameters<typeof record>[0]),
+          (status, data) => {
+            const ev = {
+              runId, stage: "credentials", status,
+              data: status === "started"
+                ? { url: data.url, fields: data.fields }
+                : { provided: !!data.supplied },
+              ts: Date.now(),
+            } as Parameters<typeof record>[0];
+            // APPEND FIRST, exactly as orchestrator.ts and replay.ts do. `record()` is live SSE
+            // fan-out ONLY — it persists nothing — and no browser has ever consumed the SSE
+            // route; the UI polls `/api/runs/:runId/state`, which reads the store. So an event
+            // that is only recorded is an event the person waiting for the prompt never sees:
+            // the run parks for the full CREDENTIAL_WAIT_MS against a screen with nowhere to
+            // type, which is the exact trap resolveCredentials.ts's own header warns about.
+            // These two events do not travel through runReplay, so nothing else appends them.
+            // TECH_DEBT.md TD-66.
+            store.append(ev);
+            onEvent(ev);
+          },
           // PROMPT FIRST for a replay. A replay is started by a person, on a server whose
           // TEST_USERNAME/TEST_PASSWORD may belong to someone else entirely, so what they type
           // must win. The environment is the fallback for a skipped or timed-out prompt.
@@ -1523,4 +1596,8 @@ if (isMain) {
 
   // No-op unless RUN_RETENTION_DAYS is set (TECH_DEBT.md TD-16) — see src/server/retention.ts.
   startRetentionJob();
+
+  // Silent unless Playwright's ffmpeg is missing, in which case say so ONCE at startup rather
+  // than letting every run discover it as a mystery "test failure" (TECH_DEBT.md TD-71).
+  warnIfNoVideo();
 }

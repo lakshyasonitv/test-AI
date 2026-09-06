@@ -266,6 +266,10 @@
                 <video id="resultVideo" controls preload="none"></video>
                 <figcaption>Recording of the run &mdash; nothing downloads until you press play</figcaption>
               </figure>
+              <!-- Shown only when the server reports that ffmpeg is missing, so "no video" is
+                   never mistaken for "the run failed" (TECH_DEBT.md TD-71). Reuses .tree-empty
+                   rather than minting a class, per the class-name contract. -->
+              <p id="videoUnavailable" class="tree-empty hidden"></p>
               <p id="diagnosis"></p>
               <a id="traceLink" class="hidden" target="_blank" href="#">View the test code &amp; files</a>
             </section>

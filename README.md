@@ -250,13 +250,19 @@ in `.env.example` — but that file is not a complete index of this table. `MAX_
 | `CASE_SELECTION_WAIT_MS` | No | How long a gate round waits for your pick before timing out (default: 600000 / 10 min) |
 | `GATE_CASE_EDIT_AI` | No | Set `true` to offer "Ask for a change" on a case at the review gate. Editing cases there by hand needs no flag and spends nothing; this gates only the model call (default: off) |
 | `MAX_SUITE_HEALS` | No | Cap on self-heal attempts across one suite run (default: 3) |
+| `LLM_MAX_PROMPT_CHARS` | No | **Hard ceiling on any single prompt** (default: 200000). A prompt over this is refused before it is sent, with a typed error naming the stage. A tripwire, not a tuning knob — one discovery call once sent 514,427 prompt tokens (`TECH_DEBT.md` TD-73) |
+| `DISCOVERY_SNAPSHOT_MAX_CHARS` | No | Cap on the accessibility snapshot sent to the vision fallback (default: 40000 ≈ 9.6k tokens, against a largest-observed real call of 3.7k). The JS-detected interactive-elements section is never truncated |
+| `LABEL_ELEMENT_NAME_MAX_CHARS` | No | Longest accessible name one element may contribute to the concept-labeling prompt (default: 200). Guards against a name that is really an inlined stylesheet |
+| `LABEL_ELEMENTS_MAX_CHARS` | No | Cap on that whole element list (default: 40000) |
 | `APPMODEL_CACHE_TTL_MS` | No | How long a discovered site model stays cached, against file mtime (default: 1800000 / 30 min). **Set to `0` to disable caching entirely** — what you want while iterating against a site you are actively editing |
 | `REGROUND_TIMEOUT_MS` | No | Ceiling on one edited-case re-ground walk (default: 180000 / 3 min) |
+| `REPLAY_REGROUND` | No | Set `true` to re-ground a replay's ungrounded steps against the live page before it runs — the steps inside a modal or tab, which discovery never saw (`TECH_DEBT.md` TD-77). Costs a browser walk of the prefix before the run starts and **zero LLM calls**; it never writes back to the saved case, only to the run's own `04-ir.json` marked `groundedAt: "replay"`. Default off |
 | `SCREENSHOT_SETTLE_MS` | No | Gap between frames when detecting the page has stopped animating (default: 150) |
 | `SCREENSHOT_MAX_SAMPLES` | No | Ceiling on those frames (default: 10) |
 | `SCREENSHOT_PAINT_TIMEOUT_MS` | No | How long a step screenshot waits for real rendered content before giving up (default: 8000) |
 | `TEST_USERNAME` / `TEST_PASSWORD` | No | Credentials for the site under test. **Setting these suppresses every credential prompt** — in runs, in the case editor and in replay. Convenient for an operator, confusing if you are waiting for a dialog that will never appear. The only two variable names a generated spec may reference |
 | `PORT` | No | Web UI port (default: 3000) |
+| `SELECT_TIMEOUT_MS` | No | How long a `select` step waits for its options and for the action itself (default: 10000). Server-populated dropdowns are the norm, so the wait is the default — but it exits the moment the control is populated and still has no match, so a wrong-control resolution fails fast instead of looking like a slow network (`TECH_DEBT.md` TD-79) |
 | `PLAYWRIGHT_TIMEOUT` | No | Per-test timeout in ms, read by `playwright.config.ts` (default: 50000). Note this one is **not** listed in `.env.example` |
 
 #### Platform flags — every one defaults OFF

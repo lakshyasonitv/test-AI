@@ -159,6 +159,28 @@ vi.mock("../src/stages/executor.js", async (orig) => ({
   detectBlocked: () => null,
 }));
 
+// The re-ground walk is the third thing that would launch Chromium. Mocked to stand in for the
+// walk's OUTCOME — it returns the IR it was given, with a target grounded — so the save path
+// after it can be driven for real. `regroundCalls` records what the walk was HANDED, which is the
+// only way to check the two-IR split: literals go to the browser, references go to the database.
+const regroundCalls: any[] = [];
+vi.mock("../src/stages/caseEdit.js", async (orig) => ({
+  ...(await orig<any>()),
+  regroundEditedIr: async (ir: any, idxs: number[]) => {
+    regroundCalls.push(structuredClone(ir));
+    return {
+      ok: true,
+      snapshots: 1,
+      usage: { calls: 0, promptTokens: 0, outputTokens: 0, totalTokens: 0, estimatedCostUsd: 0 },
+      ir: {
+        ...ir,
+        steps: ir.steps.map((st: any, i: number) =>
+          idxs.includes(i) ? { ...st, target: { ...st.target, css: "#regrounded" } } : st),
+      },
+    };
+  },
+}));
+
 process.env.AUTH_ENABLED = "true";
 process.env.DB_ENABLED = "true";
 process.env.SUPABASE_URL = "https://example.supabase.co";
@@ -622,6 +644,97 @@ describe("the two save paths — what costs a browser and what does not", () => 
       const res = await request(app).post(p).set(as(VIEWER)).send({ steps });
       expect(res.status).toBe(403);
     }
+  });
+});
+
+/**
+ * A credential typed into the editor must not reach the DATABASE — TECH_DEBT.md TD-67, and the
+ * half of it `tests/credentialLiteralGuard.test.ts` cannot reach. That file tests
+ * `restoreCredentialRefs` in isolation; these two drive the actual save ROUTE and read the stored
+ * row, which is what the defect was about. Remove the wiring in `prepareEdit`, or the per-step
+ * restore before `writeIt` on the job path, and one of these goes red.
+ */
+describe("a typed credential never reaches the stored row", () => {
+  /** The login case as a run would have left it: both credential steps hold `${env:...}`. */
+  const credIr = () => ({
+    meta: { feature: "auth", title: "Login works", priority: "medium", sourcePrompt: "p", baseUrl: "https://one.example.com" },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "you@thinkvibes.com", css: "#email" }, value: "${env:TEST_USERNAME}" },
+      { id: "s3", action: "fill", target: { role: "textbox", name: "*********", css: "#pw" }, value: "${env:TEST_PASSWORD}" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In", css: "#signin" } },
+    ],
+  });
+
+  const EMAIL = "leaked.user@example.com";
+  const PW = "leaked-pw";
+
+  beforeEach(() => {
+    reset();
+    regroundCalls.length = 0;
+    db.test_cases[0].ir = credIr();
+  });
+
+  /** Everything this request could possibly have persisted, as one string to search. */
+  const persisted = () => JSON.stringify({ cases: db.test_cases, versions: db.test_case_versions });
+
+  it("the instant path stores references, and the literals appear nowhere", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [
+        "Go to /login",
+        `Type "${EMAIL}" into textbox "you@thinkvibes.com"`,
+        `Type "${PW}" into textbox "*********"`,
+        `Click on button "Sign In"`,
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.mode).toBe("instant");
+
+    const stored = db.test_cases[0].ir;
+    expect(stored.steps[1].value).toBe("${env:TEST_USERNAME}");
+    expect(stored.steps[2].value).toBe("${env:TEST_PASSWORD}");
+    expect(persisted()).not.toContain(EMAIL);
+    expect(persisted()).not.toContain(PW);
+
+    // And the person is told, on the response, in one line that does not echo the secret.
+    expect(res.body.credentialNote).toMatch(/asked for when the test runs/i);
+    expect(res.body.credentialNote).not.toContain(PW);
+  });
+
+  it("the JOB path hands the literals to the browser and still stores references", async () => {
+    // A TARGET edit on the last step, so `regroundIndexes` is non-empty and the save takes the
+    // job path — the one where the walk's own result, derived from the literals, is what gets
+    // written. This is the line that was wrong in the first wiring of the fix.
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [
+        "Go to /login",
+        `Type "${EMAIL}" into textbox "you@thinkvibes.com"`,
+        `Type "${PW}" into textbox "*********"`,
+        `Click on button "Log In"`,
+      ],
+    });
+    expect(res.status).toBe(202);
+    expect(res.body.mode).toBe("verifying");
+
+    // The job runs after the response; wait for the write.
+    for (let i = 0; i < 200 && db.test_cases[0].current_version === 1; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(db.test_cases[0].current_version).toBe(2);
+
+    // The walk DID get the real values — it has to actually sign in (platform rule 5 keeps them
+    // in memory for the length of one walk, it does not forbid using them).
+    expect(regroundCalls.length).toBe(1);
+    expect(regroundCalls[0].steps[1].value).toBe(EMAIL);
+    expect(regroundCalls[0].steps[2].value).toBe(PW);
+
+    // ...and none of that survived into the row, while the re-grounding did.
+    const stored = db.test_cases[0].ir;
+    expect(stored.steps[1].value).toBe("${env:TEST_USERNAME}");
+    expect(stored.steps[2].value).toBe("${env:TEST_PASSWORD}");
+    expect(stored.steps[3].target.css).toBe("#regrounded");
+    expect(persisted()).not.toContain(EMAIL);
+    expect(persisted()).not.toContain(PW);
   });
 });
 

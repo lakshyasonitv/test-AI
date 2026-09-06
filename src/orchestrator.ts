@@ -95,13 +95,27 @@ export async function runPipeline(
     onEvent(event);
   };
 
-  /** Wrap a stage: emit started -> run -> save -> emit completed (or failed). */
-  async function step<T>(stage: StageName, filename: string | null, fn: () => Promise<T>): Promise<T> {
+  /**
+   * Wrap a stage: emit started -> run -> save -> emit completed (or failed).
+   *
+   * `project` narrows what goes into the EVENT without touching what goes into the FILE. The two
+   * had always been the same object, which meant `events.ndjson` carried a second full copy of
+   * every artifact — on the amazon.in run that made it 10.7 MB, most of it a duplicate of the
+   * 5.5 MB `02-appmodel.json` sitting next to it. The event log is replayed in full on every
+   * `/state` poll, once a second, so the duplicate is paid for repeatedly. Optional and identity
+   * by default, so every other stage is byte-for-byte unchanged. TECH_DEBT.md TD-73.
+   */
+  async function step<T>(
+    stage: StageName,
+    filename: string | null,
+    fn: () => Promise<T>,
+    project: (result: T) => unknown = (r) => r,
+  ): Promise<T> {
     emit(stage, "started");
     try {
       const result = await fn();
       if (filename) save(filename, result);
-      emit(stage, "completed", result);
+      emit(stage, "completed", project(result));
       return result;
     } catch (err: any) {
       emit(stage, "failed", undefined, err?.message ?? String(err));
@@ -152,7 +166,22 @@ export async function runPipeline(
     const appModel = await step("discovery", "02-appmodel.json", async () =>
       resolvedUrls.length === 1
         ? discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery)
-        : discoverPagesHybrid(resolvedUrls)
+        : discoverPagesHybrid(resolvedUrls),
+      // The full model still goes to 02-appmodel.json; only the EVENT is narrowed. `data.pages`
+      // stays an array of objects carrying `url` and `concepts`, which is everything app.js reads
+      // from this event (`Discovered N page(s) — Concepts: …`) and exactly the shape preview.js's
+      // own fixture already uses. `elementCount` is added because it is the number a person
+      // actually wants when a run looks wrong, and it costs one integer per page.
+      (model) => ({
+        baseUrl: model.baseUrl,
+        pages: model.pages.map((p) => ({
+          url: p.url,
+          title: p.title,
+          concepts: p.concepts ?? [],
+          elementCount: p.elements?.length ?? 0,
+        })),
+        ...(model.auth ? { auth: { status: model.auth.status, loginUrl: model.auth.loginUrl } } : {}),
+      }),
     );
     console.log("1. Discovery completed");
     if (appModel.auth) {
@@ -401,6 +430,10 @@ export async function runPipeline(
       passed: blocked ? false : finalResult.passed,
       screenshotUrl: blockedScreenshotUrl ?? screenshotUrl,
       videoUrl,
+      // Optional and usually absent (rule 1: existing routes/events may gain optional fields).
+      // Present only when ffmpeg was missing, so the UI can say why there is no player instead
+      // of leaving a silent gap — and so this is never read as a test failure (TD-71).
+      videoUnavailable: (finalResult as any).videoUnavailable,
       partial: finalIr.meta.truncated ?? false, healed,
       status: blocked ? "blocked" : (finalResult as any).status,
       blockedBy: blocked?.reason,

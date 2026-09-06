@@ -82,7 +82,7 @@ const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup"]);</
 
 <h3>The routes, grouped</h3>
 
-<p>There are 57. Rather than list them flat, here is what exists and what guards it.</p>
+<p>There are 58. Rather than list them flat, here is what exists and what guards it.</p>
 
 <table>
 <tr><th style="width:26%">Group</th><th style="width:10%">Count</th><th style="width:22%">Typical guard</th><th>Notable members</th></tr>
@@ -95,7 +95,7 @@ const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup"]);</
 <tr><td><b>Projects</b></td><td>7</td><td>viewer / admin</td><td>CRUD plus member management</td></tr>
 <tr><td><b>Organisations</b></td><td>6</td><td>org admin</td><td>members, roles, addable users</td></tr>
 <tr><td><b>Suites</b></td><td>8</td><td>tester / admin</td><td>CRUD, cases in a suite, reordering</td></tr>
-<tr><td><b>Cases</b></td><td>16</td><td>viewer / tester / admin</td><td>read, edit, versions, steps, re-ground jobs, duplicate, rewrite</td></tr>
+<tr><td><b>Cases</b></td><td>17</td><td>viewer / tester / admin</td><td>read, edit, versions, steps, re-ground jobs, duplicate, rewrite, and <code>GET /api/cases/:id/script</code> — a saved case's Playwright script, from the spec stored with that version or regenerated from its IR</td></tr>
 <tr><td><b>Library ↔ runs</b></td><td>2</td><td>tester</td><td><code>POST /api/runs/:runId/cases/:caseId/save</code>, <code>POST /api/replay</code></td></tr>
 </table>
 

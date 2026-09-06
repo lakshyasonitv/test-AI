@@ -1409,6 +1409,32 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   /** Longest grounded prefix seen across all attempts — the fallback that keeps a run alive
    *  when the attempt budget is spent extending the model rather than converging. */
   let bestPartial: { ir: IR; steps: Step[]; note: string } | undefined;
+
+  /**
+   * Grounding rejections already seen, so an unfixable one is not paid for four times.
+   *
+   * Keyed on the IR TARGET's own fields, never on the message string — `CLAUDE.md`'s central
+   * design rule, and here it is also simply more correct: the same absent element comes back at a
+   * different step index on the next attempt, so the message differs ("Step s6…" then "Step s8…")
+   * while the thing that cannot be grounded is identical. `server.log` lines 107/124/141 show
+   * exactly that: `button "Add User"` rejected three times with identical feedback, then again as
+   * s8. The index is deliberately NOT part of the key.
+   *
+   * When a target repeats, the model is not going to fix it: the element is absent from the page,
+   * usually because it needs a role the test does not have. At ~3,800 prompt tokens per IR call
+   * (measured across every run in `runs/`), each further attempt buys nothing.
+   */
+  const seenRejections = new Set<string>();
+  const rejectionKey = (u: NonNullable<ReturnType<typeof groundingError>>, ir: IR): string => {
+    const t = ir.steps[u.index]?.target ?? {};
+    return JSON.stringify({
+      kind: u.kind ?? "role-name",
+      role: t.role ?? null,
+      name: t.name ?? null,
+      text: t.text ?? null,
+      url: t.url ?? null,
+    });
+  };
   /** The post-click reveal check (see postClickRevealIndex) runs at most ONCE per toIR call.
    *  It costs a browser launch, and — more importantly — it is the mitigation for its own only
    *  real false-positive risk: a flow where a click reveals new fields but the step legitimately
@@ -1742,9 +1768,25 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
 
     const prefix = trackBestPartial(ungrounded);
-    if (prefix.length && attempt < MAX_ATTEMPTS - 1) {
+
+    // Second time this exact target has been rejected: stop. The page does not have it, and
+    // another generation cannot change that — it can only spend another ~3,800 prompt tokens
+    // arriving at the same answer. Falls through to the truncation path below, which ships the
+    // grounded prefix and records `truncationNote`, so the UI already has the reason and needs
+    // no new status. TECH_DEBT.md TD-74.
+    const key = rejectionKey(ungrounded, parsed.data);
+    const repeated = seenRejections.has(key);
+    seenRejections.add(key);
+
+    if (prefix.length && attempt < MAX_ATTEMPTS - 1 && !repeated) {
       console.log(`[ir] grounding rejected step ("${ungrounded.message}") — retrying with feedback (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
       continue;
+    }
+    if (repeated) {
+      console.log(
+        `[ir] the same target was rejected twice ("${ungrounded.message}") — not retrying: ` +
+        `the element is absent from the page, so more attempts cannot ground it`,
+      );
     }
     if (prefix.length) {
       const truncated: IR = { ...parsed.data, steps: prefix };

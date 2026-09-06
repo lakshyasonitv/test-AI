@@ -286,17 +286,17 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `planner.ts` | Gemini | NL request -> structured Plan |
 | `promptSelectors.ts` | No | Honors selectors the user wrote directly into their prompt |
 | `classify.ts` | No | Deterministic failure classifier |
-| `targetResolver.ts` | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`) |
+| `targetResolver.ts` | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`). `resolveField` tries label -> placeholder -> role -> **the next control after the label in DOM order** -> `:near()` geometry, every rung scoped to the open dialog by `resolveScope` (TD-72). Also owns `chooseLive` — the live twin of the generated `choose()` (TD-79). Exports the shared in-page logic as source strings (`DOM_ORDER_FIELD_JS`, `SELECTABLE_JS`, `OPTION_PROBE_JS`, `MATCH_OPTION_INDEX_JS`, `OPTION_ERROR_JS`) which the generator interpolates **bare** into the emitted spec, alongside `new Function`-materialised twins (`domOrderFieldFn`, ...) for the live path — a string handed to `evaluate()` is never called (TD-78) |
 | `failureAnalysis.ts` | Gemini + Vision | Failure diagnosis; deterministic auth-bounce check runs first |
 | `caseSelectionGate.ts` | Gemini (via testCases) | Optional human-review loop over generated case batches, incl. reactive-case rounds |
-| `suiteRunner.ts` | No | Runs every case in its own browser context, per-case artifacts |
-| `executor.ts` | No | Runs spec, captures artifacts, redacts secrets from served output |
+| `suiteRunner.ts` | No | Runs every case in its own browser context, per-case artifacts. `buildSuiteSummary` also reads each failed case's own `05-result.json` off disk and surfaces the failing step and error onto the case (optional additive fields, TD-80) |
+| `executor.ts` | No | Runs spec, captures artifacts, redacts secrets from served output. `extractFailureDetail` turns Playwright's own JSON report into the failing step number/title and the error line — the deterministic failure reason a replay gets with no model call (TD-80) |
 | `discovery.ts` | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
-| `liveExtend.ts` | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding |
+| `liveExtend.ts` | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding. Its `select` step calls `chooseLive` rather than a bare `selectOption`, sharing option matching and waiting with the generated spec (TD-79) |
 | `testCases.ts` | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist, login-case cap |
 | `generator.ts` | No | IR -> Playwright spec (pure code) |
 | `hybridDiscovery.ts` | Gemini (text) | Discovery orchestrator: DOM first, auth-aware login + session verification, same-origin + click-probed site crawl, vision fallback; also owns `isAllowedEntryUrl`/`isPrivateOrLoopbackHost`, the entry-URL scheme + private-host allow-list |
-| `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry; `redactCredentials` skips DOM-keyword-colliding values |
+| `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry; `redactCredentials` skips DOM-keyword-colliding values. `restoreCredentialRefs` guards the editor save path: a credential typed as a literal step value goes back behind `${env:...}` before anything is written, classified by the step's own history / the DOM's `inputType` / a password-only name check (TD-67) |
 | `domDiscovery.ts` | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility |
 | `domExtract.ts` | No | Cheerio DOM extraction — Node port of the deleted Python parser |
 | `ir.ts` | Gemini | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), login-prefix injection (`buildLoginPrefix`/`needsLoginPrefix`), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
@@ -308,7 +308,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 |------|------|---------|
 | `stepText.ts` | No | **The IR <-> English mapping, in one place.** `formatIrStep` renders a step as the sentence a person edits; `parseIrStep` reads it back, merged onto the step it came from. Also owns `STEP_VOCABULARY` and `estimateRegrounding` (what a save will cost, computed without doing any of it). `public/app.js` has a display-only copy of `formatIrStep` that `tests/stepText.test.ts` pins identical — drift is a failing test, not a silent bug |
 | `caseEdit.ts` | Gemini (ceiling only) | Re-grounds the steps whose **target** changed, by replaying the earlier steps to arrive at the right page. Grounding is DOM-first, so it usually spends no model call at all |
-| `replay.ts` | No | Walks a stored IR prefix in a real browser and snapshots where it lands. Prefix-cached, so two edits on the same page share one walk |
+| `replay.ts` | No | Walks a stored IR prefix in a real browser and snapshots where it lands. Prefix-cached, so two edits on the same page share one walk. Also owns the replay pre-pass: `ungroundedStepIndexes` + `maybeRegroundForReplay` ground a replay's un-grounded steps against the live page behind `REPLAY_REGROUND` (default off, zero LLM calls, never writes back to the saved case — TD-77) |
 
 ### `src/schema/` — Data Contracts (3 files)
 
@@ -441,9 +441,16 @@ IR
   steps: Step[]
     id: string
     action: "navigate" | "click" | "fill" | "select" | "check" | "press" | "wait" | "assert"
-    target?: { url?, role?, name?, nth?, label?, text?, placeholder?, testId?, css? }
+    target?: { url?, role?, name?, nth?, label?, text?, placeholder?, testId?, css?,
+               groundedAt? }
               -- css is written in code during grounding (copied from a verified AppModel
                  element), never produced by the LLM directly
+              -- groundedAt: "replay" is PROVENANCE, not behaviour. It marks a target grounded
+                 against the LIVE page during a replay (REPLAY_REGROUND) rather than against
+                 the discovered model -- the case of a control revealed by a click, which
+                 discovery never saw. Optional and additive; nothing branches on it. It exists
+                 so the grounding is visible in the run's own 04-ir.json and a person can
+                 choose to save it back (TECH_DEBT.md TD-77, CLAUDE.md rule 6)
     value?: string
     assertion?: "visible" | "hidden" | "text_equals" | "text_contains" |
                 "url_contains" | "title_contains" | "title_equals" |
@@ -520,7 +527,7 @@ removed entirely (`TECH_DEBT.md` TD-03's history).
 
 ### Server Architecture
 
-57 routes on Express (port 3000, `PORT` env), grouped by area. Auth column: **public** = no
+58 routes on Express (port 3000, `PORT` env), grouped by area. Auth column: **public** = no
 credential; **authed** = signed in; **role:X** = `requireRole(X)` on the caller's own org;
 **run:X** = `requireRunRole(X)` on the org owning that run; **org:X** = `requireOrgRole(X)`.
 
@@ -565,9 +572,14 @@ PUBLIC / SESSION
 PROJECTS (7)          /api/projects  ·  /api/projects/:projectId  ·  …/members[/:userId]
 ORGANISATIONS (6)     /api/organisations/:orgId/{members[/:userId],assignments,addable-users}
 SUITES (8)            /api/suites  ·  /api/suites/:suiteId  ·  …/cases[/:caseId]  ·  …/order
-CASES (16)            /api/cases  ·  /api/cases/:caseId{,/versions/:version,/steps,/steps/estimate,
-                        /steps/translate,/steps/jobs/:jobId/{events,state,cancel,credentials},
+CASES (17)            /api/cases  ·  /api/cases/:caseId{,/script,/versions/:version,/steps,
+                        /steps/estimate,/steps/translate,
+                        /steps/jobs/:jobId/{events,state,cancel,credentials},
                         /duplicate,/runs,/rewrite}
+                      GET .../script[?version=N] -> { spec, source, version }. A saved case's
+                      Playwright script, from the spec stored with that version or regenerated
+                      from its IR. Deliberately NOT a field on GET /api/cases/:caseId (rule 1,
+                      and the spec is large). TECH_DEBT.md TD-68.
 LIBRARY <- RUN        POST /api/runs/:runId/cases/:caseId/save   run:tester
 
 STATIC

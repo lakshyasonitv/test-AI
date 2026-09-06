@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { getServiceClient } from "../db.js";
 import { IR } from "../schema/ir.js";
+import { generateSpec } from "../stages/generator.js";
 import { AccessError, roleAtLeast, visibleProjectIds, type Role } from "./authz.js";
 import { assertProjectVisible } from "./projects.js";
 
@@ -33,6 +34,35 @@ function requireClient() {
     );
   }
   return client;
+}
+
+/**
+ * Screenshot directory baked into a library spec.
+ *
+ * A real run passes its own per-run path so concurrent runs cannot overwrite each other's frames;
+ * a library spec belongs to no run yet, so it takes the generator's own default. This is a named
+ * constant rather than three string literals because the STORED spec and the REGENERATED fallback
+ * must come out byte-identical — if those call sites drift, a case's script would appear to change
+ * the day its version row is missing a spec, which is precisely the kind of silent difference the
+ * "no script yet" bug taught us to distrust.
+ */
+const LIBRARY_SHOT_DIR = "artifacts";
+
+/**
+ * The spec for a stored IR, never throwing.
+ *
+ * `generateSpec` is pure code with no LLM and no I/O (DECISIONS.md D-06), so this is deterministic
+ * and instant. It is wrapped anyway: this sits on the *write* path of saving a case, and a case
+ * that cannot be saved because its script could not be pre-rendered would be a far worse bug than
+ * the missing script this whole change exists to fix. A null simply means "regenerate on read".
+ */
+function specForStorage(ir: IR): string | null {
+  try {
+    return generateSpec(ir, LIBRARY_SHOT_DIR);
+  } catch (err) {
+    console.error(`[library] could not pre-render spec, storing null: ${(err as Error)?.message}`);
+    return null;
+  }
 }
 
 export interface SuiteRow {
@@ -433,6 +463,73 @@ export async function getCaseVersion(
   };
 }
 
+export interface CaseScript {
+  /** The Playwright spec. Never empty for a case that exists. */
+  spec: string;
+  /** `stored` — read back from the version row. `generated` — re-derived from the IR just now. */
+  source: "stored" | "generated";
+  /** Which version this spec belongs to. */
+  version: number;
+}
+
+/**
+ * The Playwright script for a saved case — always, for any case that exists.
+ *
+ * THE BUG THIS EXISTS TO FIX: the `.spec.ts` used to live only inside the originating run's
+ * artifact folder. `DELETE /api/runs/:runId` does an `rmSync` of that folder, and retention does
+ * the same on a timer, so a case could truthfully report "Passed v1" while its Script tab said
+ * "No script yet" — the evidence had been deleted out from under it. Cloning the repo onto another
+ * machine had the same effect, since `runs/` is gitignored. See `TECH_DEBT.md` TD-68.
+ *
+ * Two sources, in order:
+ *   1. the `spec` stored alongside the version's IR at save time — the exact bytes that version
+ *      was saved with;
+ *   2. failing that, `generateSpec(ir)` right now.
+ *
+ * (2) is not a degraded mode. The generator is pure code with no LLM (DECISIONS.md D-06), so it is
+ * deterministic: the same IR yields the same spec every time. `source` is returned so the UI can
+ * be honest about which one the reader is looking at, not because one of them is untrustworthy.
+ *
+ * **This never throws for a valid, visible case.** A missing `spec` column, an unreadable version
+ * row, a database that has not been migrated yet — all fall through to (2). The only errors it
+ * raises are the access ones every other function here raises: 404 for a case you cannot see.
+ */
+export async function getCaseScript(
+  userId: string, orgId: string, role: Role, caseId: string, version?: number,
+): Promise<CaseScript> {
+  const found = await getCase(userId, orgId, role, caseId);
+  const wanted = version ?? found.currentVersion;
+
+  // A version explicitly asked for must be the one returned, so its IR comes from the version row.
+  // getCaseVersion 404s for a version that does not exist, which is the right answer to `?version=`
+  // naming one — but the CURRENT version is never allowed to fail that way (see the fallback below).
+  let ir = found.ir;
+  if (version !== undefined && version !== found.currentVersion) {
+    ir = (await getCaseVersion(userId, orgId, role, caseId, version)).ir;
+  }
+
+  // Deliberately its own narrow query rather than a new field on getCase/getCaseVersion: those two
+  // back `GET /api/cases/:id` and `GET /api/cases/:id/versions/:v`, and widening their return would
+  // ship the whole spec text on every Compare-screen fetch that has no use for it.
+  let stored: string | null = null;
+  try {
+    const client = requireClient();
+    const { data } = await client
+      .from("test_case_versions")
+      .select("spec")
+      .eq("test_case_id", caseId).eq("version", wanted).maybeSingle();
+    const raw = (data as { spec?: unknown } | null)?.spec;
+    if (typeof raw === "string" && raw.trim()) stored = raw;
+  } catch {
+    // Swallowed on purpose — a script must always come back. Before the column existed this threw
+    // on every read, and the whole point of this function is that it cannot leave a case scriptless.
+  }
+
+  return stored
+    ? { spec: stored, source: "stored", version: wanted }
+    : { spec: generateSpec(ir, LIBRARY_SHOT_DIR), source: "generated", version: wanted };
+}
+
 /**
  * Save a case out of a finished run — the bridge from authoring to library (Step 5.2).
  *
@@ -490,6 +587,7 @@ export async function saveCaseFromRun(
     test_case_id: data.id,
     version: 1,
     ir,
+    spec: specForStorage(ir),
     change_note: `Saved from run ${runId}`,
     saved_by: userId,
   });
@@ -558,6 +656,7 @@ export async function updateCase(
       test_case_id: caseId,
       version: nextVersion,
       ir,
+      spec: specForStorage(ir),
       change_note: patch.changeNote?.trim() || "Edited",
       saved_by: userId,
     });
@@ -619,6 +718,7 @@ export async function duplicateCase(
     test_case_id: data.id,
     version: 1,
     ir,
+    spec: specForStorage(ir),
     change_note: `Duplicated from "${(src as any).title}"`,
     saved_by: userId,
   });

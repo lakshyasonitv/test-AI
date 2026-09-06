@@ -5,7 +5,7 @@ import { extractDomModelFromPage } from "./domDiscovery.js";
 import {
   modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
 } from "./discovery.js";
-import { resolveLive } from "./targetResolver.js";
+import { resolveLive, chooseLive } from "./targetResolver.js";
 import {
   credentialForTarget, redactCredentials, credentialFieldMap, credentialKindForTarget,
   lastFillIndexByKind, type Credentials, type CredentialKind, type CredentialPolicy,
@@ -44,7 +44,13 @@ export async function runStepLive(
       return;
     }
     case "click": await (await resolveLive(page, step.target!)).click(); return;
-    case "select": await (await resolveLive(page, step.target!, "select")).selectOption(step.value ?? ""); return;
+    // Not a bare selectOption(): that is an EXACT match against an option list that is very often
+    // still being fetched, and its failure ("did not find some options") names neither the wanted
+    // value nor the available ones. chooseLive shares its matching and its message with the
+    // generated spec. TECH_DEBT.md TD-76/TD-79.
+    case "select":
+      await chooseLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "");
+      return;
     case "check": await (await resolveLive(page, step.target!, "check")).check(); return;
     case "press": await (await resolveLive(page, step.target!)).press(step.value ?? "Enter"); return;
     case "wait": await page.waitForTimeout(Number(step.value ?? 1000)); return;

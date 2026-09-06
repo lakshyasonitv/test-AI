@@ -1,4 +1,4 @@
-import type { Target } from "../schema/ir.js";
+import type { Step, Target } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
 
@@ -285,6 +285,101 @@ export function envValueRef(kind: CredentialKind): string {
 
 /** Returns the env var name if `value` is an env-reference sentinel, else null. Only the two
  *  known names are accepted, so a crafted prompt can't smuggle another variable through. */
+/**
+ * Put a typed-in credential back behind an `${env:...}` reference before it can be stored.
+ *
+ * THE HOLE THIS CLOSES (TECH_DEBT.md TD-67, seen for real). `DECISIONS.md` D-09 — "no secret
+ * reaches any persistent store" — was built around the RUN pipeline: a credential supplied for a
+ * run becomes an env reference in the IR and the real value only ever enters the Playwright
+ * child's environment. The case EDITOR had no such rule. A person editing the login steps of a
+ * saved case typed their real email and password as step values, the editor accepted them, and
+ * they were written to `test_cases.ir` and into the generated spec under `runs/` — which is served
+ * over HTTP. Confirmed on run `2026-09-06T13-05-36-248Z-db2c0b4c`, whose stored IR carries
+ * `fill "leaked.user@example.com"` and `fill "leaked-pw"` in clear text.
+ *
+ * HOW A CREDENTIAL FIELD IS RECOGNISED, without inventing a new heuristic:
+ *
+ *   1. **The step's own history.** If the value being replaced was already `${env:TEST_PASSWORD}`,
+ *      then this system has ALREADY classified that field as the password box — during the run
+ *      that produced the case, from the live DOM. That is the strongest signal available and it
+ *      needs no pattern matching at all. It is also the one that covers the reported case, whose
+ *      field names are `you@thinkvibes.com` and `*********` and match no word list.
+ *   2. Failing that (a genuinely new step), `credentialKindForTarget` — the existing classifier,
+ *      reused as-is. Given a field map derived from the discovered model it keys on the DOM's own
+ *      `inputType`, not on prose.
+ *
+ * Returns the storable steps AND a separate in-memory copy that still holds the literals, because
+ * the save's own re-ground walk has to actually sign in. The caller must use `live` for the walk,
+ * store `steps`, and let `live` fall out of scope — it is never written and never returned to a
+ * client.
+ */
+export interface CredentialRestoration {
+  /** Safe to persist: every recognised credential value is an `${env:...}` reference. */
+  steps: Step[];
+  /** Same steps with the typed literals intact. For THIS save's walk, in memory, then dropped. */
+  live: Step[];
+  /** What the person typed, for the walk. Never stored, never sent back. */
+  creds?: Credentials;
+  /** One line for the editor, empty when nothing was rewritten. */
+  note: string;
+}
+
+export function restoreCredentialRefs(
+  edited: Step[],
+  originals: Step[],
+  fieldMap?: Map<string, CredentialKind>,
+): CredentialRestoration {
+  const steps = edited.map((s) => ({ ...s }));
+  const live = edited.map((s) => ({ ...s }));
+  const typed: Partial<Record<CredentialKind, string>> = {};
+  const kinds = new Set<CredentialKind>();
+
+  for (let i = 0; i < steps.length; i++) {
+    const value = steps[i].value;
+    if (typeof value !== "string" || !value) continue;
+    if (isEnvValueRef(value)) continue;               // already a reference — nothing to do
+
+    const wasRef = isEnvValueRef(originals[i]?.value);
+    // Signal 2 is deliberately NARROWER than `credentialKindForTarget` on its own. That classifier
+    // is used inside a login flow, where the surrounding logic has already established the context;
+    // used cold it treats any field named "Email" as an identifier, and newsletter signups, contact
+    // forms and search-by-email boxes all have one. Rewriting those to `${env:TEST_USERNAME}` would
+    // break working tests to protect a value that is not a secret.
+    //
+    // So without history, only `password` is accepted from a bare name — a field called "Password"
+    // is essentially never anything else — while a field map (keyed on the DOM's own
+    // `inputType`, not on prose) is trusted for either kind. The asymmetry is intentional: the
+    // password is both the dangerous value and the one that can be identified with certainty.
+    const classified = steps[i].action === "fill"
+      ? credentialKindForTarget(steps[i].target, fieldMap)
+      : undefined;
+    const fromMap = fieldMap?.size ? classified : undefined;
+    const kind: CredentialKind | undefined = wasRef
+      ? (wasRef === "TEST_PASSWORD" ? "password" : "username")
+      : (fromMap ?? (classified === "password" ? "password" : undefined));
+    if (!kind) continue;
+
+    typed[kind] = value;
+    kinds.add(kind);
+    steps[i] = { ...steps[i], value: envValueRef(kind) };
+  }
+
+  if (kinds.size === 0) return { steps, live, note: "" };
+
+  const which = [...kinds].sort().join(" and ");
+  return {
+    steps,
+    live,
+    // Both halves are filled even when only one was typed: applyCredentials and the run-time
+    // prompt both deal in the pair, and half a credential fails slower than none.
+    creds: { username: typed.username ?? "", password: typed.password ?? "", secret: true },
+    note:
+      `The ${which} you typed was not saved with this test. It is stored as a reference and will ` +
+      `be asked for when the test runs, so the real value never reaches the database or the run ` +
+      `files. This save used it once, in memory, to re-check the steps against your site.`,
+  };
+}
+
 export function isEnvValueRef(value: string | undefined): CredentialEnvVar | null {
   if (!value?.startsWith(ENV_VALUE_PREFIX) || !value.endsWith(ENV_VALUE_SUFFIX)) return null;
   const name = value.slice(ENV_VALUE_PREFIX.length, -ENV_VALUE_SUFFIX.length);

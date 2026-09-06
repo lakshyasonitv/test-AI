@@ -673,7 +673,39 @@ function renderSuiteSummaryHeader(suite) {
       ${suite.truncated ? `<span class="suite-stat suite-stat-truncated">${icon("alert-triangle", { size: 13 })} ${suite.truncated} partial</span>` : ""}
       ${suite.truncated_no_assertion ? `<span class="suite-stat suite-stat-partial">${icon("minus-circle", { size: 13 })} ${suite.truncated_no_assertion} unconfirmed</span>` : ""}
       ${suite.blocked ? `<span class="suite-stat suite-stat-blocked">${icon("slash-circle", { size: 13 })} ${suite.blocked} blocked</span>` : ""}
-    </div>`;
+    </div>
+    ${renderUsageLine()}`;
+}
+
+/**
+ * What this run cost, from the terminal event's `llmUsage`.
+ *
+ * A replay is called out explicitly rather than shown as "0 tokens": re-running a saved case for
+ * no model spend at all is the reason the library exists, and a bare zero reads like missing data.
+ *
+ * Reuses `.hrow-meta`, the existing muted-metadata class — no new class name (rule 3).
+ */
+function renderUsageLine() {
+  if (currentRunIsReplay) {
+    return `<div class="hrow-meta">Replayed from saved steps &mdash; <b>0 AI calls</b>, no tokens spent.</div>`;
+  }
+  const u = currentRunUsage;
+  if (!u || !u.calls) return "";
+
+  const stages = Object.entries(u.byStage ?? {})
+    .sort((a, b) => (b[1].totalTokens ?? 0) - (a[1].totalTokens ?? 0));
+  const top = stages[0];
+  const topPart = top
+    ? ` &middot; most of it in <b>${escapeHtml(top[0])}</b> (${top[1].calls} call${top[1].calls === 1 ? "" : "s"}, ${fmtTokens(top[1].totalTokens ?? 0)})`
+    : "";
+  const cap = u.exhausted ? " &middot; <b>budget exhausted</b>" : "";
+  return `<div class="hrow-meta">${u.calls} AI call${u.calls === 1 ? "" : "s"} &middot; ${fmtTokens(u.totalTokens ?? 0)} tokens${topPart}${cap}</div>`;
+}
+
+/** 1234 -> "1.2k". Token counts are for a sense of scale, not accounting. */
+function fmtTokens(n) {
+  if (!Number.isFinite(n)) return "0";
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
 }
 
 function renderScreenshotGrid(suite, runId) {
@@ -749,6 +781,7 @@ function renderCaseCard(c, runId, index) {
       </div>
       <div class="case-card-body">
         ${c.blockedBy ? `<p class="blocked-note">Couldn't finish: ${escapeHtml(c.blockedBy)}. The screenshot below is where it stopped.</p>` : ""}
+        ${renderCaseErrorBlock(c, screenshotUrl)}
         <div class="case-narrative hidden"></div>
         <div class="case-diagnosis-block hidden"></div>
         ${screenshotUrl ? `
@@ -1006,8 +1039,18 @@ async function openSaveCasePanel(card) {
  */
 let currentRunPrompt = "";
 
+/**
+ * The run's LLM spend, from the terminal event's `llmUsage`. Already on `/state` for both a normal
+ * run and a replay (which sends explicit zeroes), so this needs no request and no new route.
+ * Cleared with the rest of the run-scoped state in hideSuiteResults.
+ */
+let currentRunUsage = null;
+let currentRunIsReplay = false;
+
 function hideSuiteResults() {
   currentRunPrompt = "";
+  currentRunUsage = null;
+  currentRunIsReplay = false;
   currentSuite = null;
   suiteResultsEl.classList.add("hidden");
   suiteResultsEl.removeAttribute("data-run-id");
@@ -1183,6 +1226,44 @@ function renderCaseNarrative(container, c, ir) {
     <p class="case-narrative-line"><b>What happened:</b> ${escapeHtml(whatHappened)}</p>
     ${whatImage ? `<p class="case-narrative-line"><b>What the image shows:</b> ${escapeHtml(whatImage)}</p>` : ""}`;
   container.classList.remove("hidden");
+}
+
+/**
+ * What a failed case says for itself, with no model call.
+ *
+ * A replay makes zero LLM calls by design, so `renderCaseDiagnosisBlock` below has nothing to
+ * render — and the card showed a red X and no text at all. The failing step and the Playwright
+ * error were sitting in `05-result.json` unread the whole time. This is the floor every failed
+ * case gets, whatever the run type; a diagnosis, when one exists, renders BELOW it rather than
+ * instead of it. TECH_DEBT.md TD-80.
+ *
+ * Rendered straight from the summary, so it appears with the card instead of waiting on the
+ * per-case fetch the diagnosis block needs. Every class here already exists (rule 3).
+ */
+function renderCaseErrorBlock(c, screenshotUrl) {
+  if (c.status !== "failed" && c.status !== "blocked") return "";
+  if (!c.error && c.failedStep === undefined) return "";
+
+  const where = c.failedStep !== undefined
+    ? `Step ${c.failedStep}${c.failedStepTitle ? ` — ${c.failedStepTitle}` : ""}`
+    : "The test stopped here";
+
+  return `
+    <div class="diag-card">
+      <div class="diag-card-header">
+        <span class="diag-badge">Where it stopped</span>
+        <h4>${escapeHtml(where)}</h4>
+      </div>
+      <div class="diag-card-body">
+        ${c.error ? `<div class="diag-item"><p class="diag-text">${escapeHtml(c.error)}</p></div>` : ""}
+        ${screenshotUrl ? `<div class="diag-item"><p class="diag-text"><a href="${escapeHtml(screenshotUrl)}" target="_blank" rel="noopener">Screenshot at the point it stopped</a></p></div>` : ""}
+        ${c.errorDetail && c.errorDetail !== c.error ? `
+        <details class="diag-tech-details">
+          <summary>Full error (for developers)</summary>
+          <code>${escapeHtml(c.errorDetail)}</code>
+        </details>` : ""}
+      </div>
+    </div>`;
 }
 
 function renderCaseDiagnosisBlock(container, diagnosis) {
@@ -1377,6 +1458,19 @@ function renderSingleTestResult(data, stage, error) {
     videoFigureEl.classList.add("hidden");
     resultVideoEl.removeAttribute("src");
     resultVideoEl.innerHTML = "";
+  }
+
+  // A missing video used to be indistinguishable from a run that simply passed (video is
+  // retain-on-failure). When ffmpeg is absent the server now says so explicitly, so show that
+  // rather than an unexplained gap — reusing .tree-empty, no new class (rule 3). TD-71.
+  const noVid = document.getElementById("videoUnavailable");
+  if (noVid) {
+    if (!vid && data?.videoUnavailable) {
+      noVid.textContent = data.videoUnavailable;
+      noVid.classList.remove("hidden");
+    } else {
+      noVid.classList.add("hidden");
+    }
   }
 }
 
@@ -2523,6 +2617,9 @@ function applyEvent(event, runId) {
     const partial = event.data?.partial;
     const healed = event.data?.healed;
     const status = event.data?.status;
+    // Captured BEFORE renderSuiteResults runs — the header reads it.
+    currentRunUsage = event.data?.llmUsage ?? null;
+    currentRunIsReplay = !!event.data?.replay;
     paintVerdict(verdictFor(event.data, event.stage, event.error));
 
     renderEnterpriseDiagnostic(event.data, event.stage, event.error);
@@ -3404,7 +3501,14 @@ function finishCaseSave(payload, repaint) {
   caseEditor.original = JSON.stringify(caseLinesPayload());
   caseEditor.currentVersion = updated.currentVersion ?? caseEditor.currentVersion;
   caseEditor.estimate = null;
-  caseEditor.notice = `Saved as v${caseEditor.currentVersion}.`;
+  // A credential the person typed was swapped back to an ${env:...} reference before storing
+  // (TECH_DEBT.md TD-67). Say so on the same line as the save confirmation — silently changing
+  // what someone typed is worse than not accepting it, and they need to know the value will be
+  // asked for at run time instead.
+  const credNote = payload.credentialNote ?? payload.case?.credentialNote ?? "";
+  caseEditor.notice = credNote
+    ? `Saved as v${caseEditor.currentVersion}. ${credNote}`
+    : `Saved as v${caseEditor.currentVersion}.`;
   toast(`Saved as v${caseEditor.currentVersion}.`);
   caseEditor.reloadNeeded = true;
   repaint();
@@ -3930,40 +4034,93 @@ async function renderCaseView(caseId, routeProjectId) {
 
   // --------------------------------------------------------------- script tab
 
+  /**
+   * The URL of a run artifact that holds this case's executed spec, or "" if none survives.
+   *
+   * Only ever a SECONDARY link now. Run directories are deleted by `DELETE /api/runs/:runId`, by
+   * retention, and simply by cloning the repo (`runs/` is gitignored) — which is exactly why the
+   * tab itself no longer depends on one.
+   *
+   * Chain: newest `run_cases` row whose file actually responds 200, then the case's own source run.
+   * The `run_cases` paths are exact (`cases/case-N` comes back with the row). The source run has no
+   * stored case index, so it falls back to that run's run-level spec — which is this case's spec
+   * when it was saved from a single-case run, and the run's primary case otherwise. That is why it
+   * is offered as "the spec from run X" rather than silently rendered as this case's script.
+   */
+  async function findRunSpecUrl(runs) {
+    const candidates = runs.map(
+      (r) => `/runs/${encodeURIComponent(r.runId)}/${r.resultPath}/generated.spec.ts`);
+    if (c.sourceRunId && !runs.some((r) => r.runId === c.sourceRunId)) {
+      candidates.push(`/runs/${encodeURIComponent(c.sourceRunId)}/generated.spec.ts`);
+    }
+    for (const url of candidates) {
+      const ok = await fetch(url, { method: "HEAD" }).then((r) => r.ok).catch(() => false);
+      if (ok) return url;
+    }
+    return "";
+  }
+
   async function paintScriptTab(el) {
     el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">Loading…</div></div>`;
+
+    // The script belongs to the CASE, not to a run's artifact folder. `GET /api/cases/:id/script`
+    // returns the spec stored with this version, or regenerates it from the same IR with the same
+    // pure generator (DECISIONS.md D-06) when no stored copy exists. Deleting the run a case came
+    // from used to empty this tab even though the case still reported "Passed v1" — TD-68.
+    let doc = null;
+    let loadError = "";
+    try { doc = await api(`/api/cases/${encodeURIComponent(caseId)}/script`); }
+    catch (err) { loadError = err.message; }
+
     let runs = [];
-    try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; } catch { /* below */ }
-    const last = runs[0];
+    try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; } catch { /* optional */ }
 
-    // There is no endpoint that generates a spec from a stored IR — the generator runs as part of
-    // a run. So this shows the spec the last run actually emitted, which is the real artifact
-    // rather than a re-derivation that could differ from what executed.
-    let text = "";
-    if (last) {
-      text = await fetch(`/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/generated.spec.ts`)
-        .then((r) => (r.ok ? r.text() : "")).catch(() => "");
-    }
-
-    if (!text) {
+    if (!doc || !doc.spec) {
       el.innerHTML = `
         <div class="panel"><div class="tree-empty" style="padding:34px 16px;text-align:center">
-          No script yet — the spec is written when this case runs.
-          ${canAuthor ? "Press <b>Run case</b> to generate one." : ""}
+          ${escapeHtml(loadError || "This case has no readable test plan, so no script could be produced.")}
         </div></div>`;
       return;
     }
+
+    const runSpecUrl = await findRunSpecUrl(runs);
+    const last = runs[0];
+    const provenance = doc.source === "stored"
+      ? `Saved with v${doc.version}.`
+      : `Generated from the steps of v${doc.version}.`;
+    // `download`, not `target="_blank"`: the artifact route serves `.ts` through `res.sendFile`,
+    // and Express's mime table maps that extension to `video/mp2t` — opening it in a tab hands the
+    // browser a broken media file rather than showing the spec. The old code only ever used
+    // `download=` on these links, which is why the mime type never surfaced as a problem before.
+    const runLink = runSpecUrl
+      ? ` <a class="dl-btn-inline" href="${escapeHtml(runSpecUrl)}" download="${escapeHtml(c.title)} (as run).spec.ts">download the spec from the last run${last && last.ranAt ? ` (${escapeHtml(formatWhen(last.ranAt))})` : ""}</a>`
+      : "";
 
     el.innerHTML = `
       <div class="panel" style="padding:0;overflow:hidden">
         <div class="cd-script-head">
           <span class="cd-script-name">generated.spec.ts</span>
-          <a class="dl-btn-inline" href="/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/generated.spec.ts"
-             download="${escapeHtml(c.title)}.spec.ts">Download .spec.ts</a>
+          <a class="dl-btn-inline" id="cdScriptDl" href="#" download="${escapeHtml(c.title)}.spec.ts">Download .spec.ts</a>
         </div>
-        <pre class="cd-script-body">${escapeHtml(text)}</pre>
-        <div class="cd-script-foot">From the run on ${escapeHtml(last.ranAt ? formatWhen(last.ranAt) : last.runId)}. Edit the steps and press Save to cut a new version.</div>
+        <pre class="cd-script-body">${escapeHtml(doc.spec)}</pre>
+        <div class="cd-script-foot">${provenance} Edit the steps and press Save to cut a new version.${runLink}</div>
       </div>`;
+
+    // A Blob rather than an href to the route: the endpoint answers JSON, and downloading that
+    // under a .spec.ts name would hand the user a file that is not a spec. Revoked on click so a
+    // tab left open for a long time is not holding the string alive indefinitely.
+    const dl = el.querySelector("#cdScriptDl");
+    if (dl) {
+      dl.addEventListener("click", (e) => {
+        e.preventDefault();
+        const url = URL.createObjectURL(new Blob([doc.spec], { type: "text/plain" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${c.title || "test"}.spec.ts`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      });
+    }
   }
 
   // ----------------------------------------------------------- runs & versions

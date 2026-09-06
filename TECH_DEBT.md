@@ -114,8 +114,22 @@ authority is its own heading, not this list.
 | TD-63 | The `forms` block sent every hidden field's name AND value to the model, including CSRF tokens — **fixed** | High | Accidental | ? |
 | TD-64 | Hidden field values were recorded into publicly-served run artifacts — **fixed at capture**; `cleanedHtml` remains (TD-65) | High | Accidental | ? |
 | TD-65 | `cleanedHtml` persists every page's raw HTML into a publicly-served artifact, and nothing reads it | Medium | Strategic | ? |
-| TD-66 | A replay never collected credentials, so every saved login case failed at the login — **fixed** | High | Accidental | ? |
-| TD-67 | **The library can store a literal credential, and nothing on the save path stops it — OPEN, security.** None of its four remediation steps is done | High | Strategic | ? |
+| TD-66 | A replay never collected credentials, so every saved login case failed at the login — **fixed**; see the 2026-09-06 follow-up: the fix shipped with a persistence gap that meant the prompt could never render, now also fixed | High | Accidental | ? |
+| TD-67 | The library could store a literal credential typed into the step editor — **fixed on the editor save path** (`restoreCredentialRefs` puts it back behind `${env:...}`); the save-from-run path was never affected | High | Strategic | ? |
+| TD-68 | A saved case lost its script when the run it came from was deleted — the Script tab said "No script yet" beside "Passed v1" — **fixed** (spec stored per version + `GET /api/cases/:id/script`, regenerating from the IR when no stored copy exists) | High | Strategic (root) / Accidental (in effect) | ? |
+| TD-69 | `detectBlocked` compared origins by string prefix, so an http→https or `www.` redirect reported every case as having left for an external provider — **fixed** (`isSameSite` compares hosts) | High | Accidental | ? |
+| TD-70 | A `select` step emitted `selectOption()` unconditionally, so a React combobox (an `<input>` with `role="combobox"`) failed with "Element is not a `<select>` element"; the `:near()` fallback also offered plain inputs for an action that can never act on one — **fixed** (`choose()` branches on the real tag; the fallback is narrowed for `select`) | High | Accidental | ? |
+| TD-71 | A missing Playwright ffmpeg stopped `browserContext.newPage()` outright, so a valid case was reported as a test failure with a blank screenshot instead of simply losing its video — **fixed** (probe + `PLAYWRIGHT_VIDEO=off` + a stated reason in the result) | Medium | Accidental | ? |
+| TD-72 | `:near()` returning several controls resolved via `.first()` (**DOM order, not proximity**), so a modal's `fill "Email"` landed on the Full Name box above it — **fixed** (label→next-control in DOM order, dialog scoping; TD-72 promoted from filed to fixed by run `db2c0b4c`) | High | Accidental | ? |
+| TD-73 | One `discovery` call sent **514,427 prompt tokens** — 40% of all prompt tokens on disk — because an element's accessible name was an inlined 648,107-char stylesheet and the concept-labeling prompt inlines names verbatim — **fixed** (per-name + per-list caps, an ARIA-snapshot cap, and a hard ceiling in `gemini.ts`) | Critical | Accidental | ? |
+| TD-74 | IR grounding retried a rejection the model cannot fix, spending the full 4-attempt budget re-deriving the same refusal — **fixed** (a repeated target signature stops the retries) | High | Accidental | ? |
+| TD-75 | An element's accessible name can be an entire inlined stylesheet, because `<style>` text is read as element text at capture — **the root cause behind TD-73, still open** | High | Accidental | ? |
+| TD-76 | `selectOption()` matches an option EXACTLY, so a step value cased differently from the `<option>` text retried for the full timeout reporting only "did not find some options" — **fixed** (trimmed, case-insensitive, then containment) | Medium | Accidental | ? |
+| TD-77 | Steps inside content revealed by a click (modal, tab, wizard) are never grounded, because discovery never saw it — **mitigated** (better resolution, TD-72) and **optionally fixed** behind `REPLAY_REGROUND`, which grounds them against the live page before a replay | High | Strategic | ? |
+| TD-78 | `Locator.evaluate()` given a function as a STRING evaluates it as an expression and never calls it, returning `undefined` — so TD-72's DOM-order rung reported "no match" on every lookup and silently fell through to geometry. It never ran once, in either implementation — **fixed** | High | Accidental | ? |
+| TD-79 | `choose()` resolved to whatever the step's locator returned and matched options once, immediately: a wrapper/label/custom shell was never walked to the real control, a server-populated list was read before it arrived, and a miss failed with Playwright's "did not find some options", naming neither the wanted value nor the available ones — **fixed** | High | Accidental | ? |
+| TD-80 | A failed case showed a red X and NO text whenever no LLM diagnosis existed — which is every replay, by design. The failing step and the Playwright error sat unread in `05-result.json` — **fixed** (surfaced deterministically, no model call) | High | Strategic | ? |
+| TD-81 | `resolveScope` cannot find a modal that sets no `role="dialog"`, no `aria-modal` and no dialog/modal class — the LMS's New User modal sets none of the three, so every lookup inside it is scoped to `body` and competes with the whole page behind it | Medium | Strategic | ? |
 
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
@@ -2208,7 +2222,44 @@ nothing and behaves exactly as before. No frontend change was needed: `showCrede
 already defaults its post URL to `/api/runs/<runId>/credentials`, and a replay's runId is a real
 run id. Pinned by `tests/replayCredentials.test.ts`.
 
-### TD-67. The library can store a literal credential, and nothing on the save path stops it — High / Strategic — OPEN, security
+#### Follow-up 2026-09-06 — the fix above shipped with a gap, and a later failure had TWO causes
+
+Run `2026-09-04T10-44-48-583Z-a388c88e` ("Search with no results") failed at
+`expect(input[placeholder="*********"]).toBeHidden()` — the password box was still on screen, so
+the login never happened — with **no `credentials` event in its `events.ndjson`** at all. Both of
+the following were true, and only the first was suspected:
+
+**1. That server predated this fix.** Its event log runs `input` → `execute started` in **33 ms**.
+A prompt-first replay parks on `askCredentials` for up to `CREDENTIAL_WAIT_MS`, so 33 ms is proof
+the prompt was never attempted. `tsx` has no watch/reload — the process was simply older than the
+code. This is the `CLAUDE.md` sharp edge, hit again.
+
+**2. The credential events were never persisted, so no browser could ever have shown the prompt.**
+The route emitted them through its `onEvent`, which calls `record()` — and `record()` is **live SSE
+fan-out only**; durability is the caller's job via `store.append`, which `orchestrator.ts` and
+`replay.ts` both do and this call site did not. Since **no client consumes the SSE route** (the UI
+polls `/api/runs/:runId/state`, which reads the store), the prompt would never have rendered even
+on a current server: the run would park for the full five minutes and then fall back to the
+environment — which on a machine with `TEST_USERNAME` unset means empty credentials, i.e. exactly
+the original symptom.
+
+So the "stale server" explanation was correct **and** insufficient. Fixed by appending to the store
+before fanning out, mirroring the two other emit sites.
+
+**Pinned by `tests/replayCredentialPrompt.test.ts`**, which asserts the ordering rather than mere
+presence: `credentials started` (with `fields: ["username","password"]`) must appear **before**
+`execute started`, and the typed values — not empty strings — must reach the Playwright child via
+`credentialEnvVars`. A test that only asserted "a credentials event exists somewhere" would pass
+against a server that asked *after* executing, which is the same bug wearing a different shape.
+
+Two notes for whoever reads this next. `credentialKindsNeeded` inspects `step.value` and never
+looks at `step.action`, so an env reference on a `press` or `click` is seen exactly like one on a
+`fill` — which matters because the LMS login submits with a button. And while writing the test its
+first version read `/state` as `{ events: [...] }` when the route returns the array itself; every
+poll silently returned `[]`, and the test that did not assert ordering still went green. That is
+`CLAUDE.md`'s "don't assume a passing test proves a fix" in miniature.
+
+### TD-67. The library can store a literal credential, and nothing on the save path stops it — High / Strategic — Fixed (editor save path); rotation and scrub still owed
 
 **What it is.** `DECISIONS.md` D-09 ("secrets never reach disk") was designed around the run
 pipeline: a user-supplied credential becomes an `${env:...}` reference in the IR and the generated
@@ -2241,3 +2292,830 @@ persistent store", and each store has to name its own enforcement point. Run art
 `scrubServedSecrets`; generated specs have the `${env:...}` indirection; the database has
 **nothing**. `scrubServedSecrets` cannot help here by construction — it redacts values it is *told*
 are credentials via `secretEnv`, and a literal typed into an editor was never registered as one.
+
+**Fixed on 2026-09-06 — remediation step (4), the structural gap.** `restoreCredentialRefs` in
+`credentials.ts` now runs on the editor save path, before anything is validated or written. It
+converts a typed credential back to `${env:TEST_USERNAME}` / `${env:TEST_PASSWORD}` and tells the
+person in one line what happened.
+
+It reuses the existing classifier rather than adding a second regex over prose (`CLAUDE.md`, the
+central design rule). Three signals, in confidence order:
+
+1. **The step's own history** — the value being replaced was already an `${env:...}` reference, so
+   this system has already classified that field, during the run that produced the case, from the
+   live DOM. This is the primary signal and the only one that catches the reported case: the two
+   fields are named `you@thinkvibes.com` and `*********` (placeholder text), which match neither
+   `/pass/i` nor `/user|email|login|account/i`. **A guard built on naming would have missed the
+   exact leak that prompted this.**
+2. **The DOM's own `inputType`**, via `credentialFieldMap` — strongest where available, needs no
+   naming at all.
+3. **A bare name**, and then **only for a password**. `credentialKindForTarget` calls any field
+   named "Email" an identifier, which is right inside a login form and wrong on a newsletter,
+   contact or search form. Rewriting one of those to `${env:TEST_USERNAME}` would break a working
+   test to protect something that is not a secret — caught by `tests/library.test.ts` while this
+   was being built, and now pinned by two tests of its own.
+
+**The typed value is used for THIS save's re-ground and then discarded** (platform rule 5). The walk
+has to actually sign in, so it cannot be dropped on the spot: `restoreCredentialRefs` hands the
+literals back on a *separate* object (`live`, `creds`) that the request handler uses and lets fall
+out of scope. The two IRs are kept apart deliberately — `validated` (references) is what gets
+written, `liveIr` (literals) is what the browser sees. `writeIt` then re-applies the reference
+per-step from `validated`, because the grounded result the walk returns is derived from `liveIr` and
+would otherwise carry the literal into the row one line later. That was a real hole in the first
+wiring of this fix, found by tracing the job path.
+
+12 tests in `tests/credentialLiteralGuard.test.ts` cover the function, including the assertion
+that matters: the literal appears nowhere in what would be stored, and nowhere in the generated
+spec. Two more in `tests/library.test.ts` drive the actual save **route** and read the stored row —
+one per save path, because they write from different objects. Both were mutation-checked: removing
+the `prepareEdit` wiring reddens both, and swapping `writeIt(safeIr)` back to `writeIt(grounded.ir)`
+reddens the job-path one with `expected 'leaked.user@example.com' to be
+'${env:TEST_USERNAME}'` — the exact leak, caught by the test rather than by reading the code.
+
+**Still owed:** steps (1) rotate, (2) scrub the affected row and version rows, (3) delete the
+affected `runs/` directories. Those are operational, not code, and are the user's to run.
+
+### TD-68. A saved case lost its script when its originating run was deleted — High / Strategic (root) / Accidental (in effect) — Fixed
+
+**What it was.** The Playwright `.spec.ts` for a saved case existed in exactly one place on earth:
+the artifact folder of the run it was saved from. `paintScriptTab()` in `public/app.js` asked
+`/api/cases/:caseId/runs` for the newest `run_cases` row and fetched
+`/runs/<runId>/cases/case-N/generated.spec.ts` off disk. A 404 rendered *"No script yet — the spec
+is written when this case runs."*
+
+Run folders are deleted routinely and by design: `DELETE /api/runs/:runId` does an `rmSync`,
+`retention.ts` does the same on a timer once `RUN_RETENTION_DAYS` is set, and `runs/` is gitignored
+so a fresh clone or a second machine has none at all. The database stored **only the IR**, never
+the spec.
+
+So a case could truthfully report **"Passed v1"** in one tab and **"No script yet"** in the next.
+The message was also actively misleading — it told the reader to run the case to produce a script,
+when the script had already been produced and then deleted.
+
+**Evidence.** Case *"Navigate to the FAQ page"* (project "Salesforce Website") had a single
+`run_cases` row pointing at run `2026-09-01T09-43-27-050Z-e900b8d9`, whose directory no longer
+exists. Its source run `2026-09-01T07-29-30-238Z-a031b900` **does** still exist on disk and does
+contain `cases/case-3/generated.spec.ts` — but nothing ever consulted `source_run_id`, so the tab
+went straight from one missing folder to "No script yet" without trying the copy it had.
+
+**Why it hurt more than a blank tab.** The spec is the artifact a user hands to a colleague, pastes
+into a PR, or reads to understand what a case actually does. Losing it on a schedule made the
+library untrustworthy for its stated purpose — a saved case is supposed to be the durable thing.
+
+**The fix, three parts.**
+
+1. **Schema.** Migration `add_spec_to_test_case_versions` on Supabase project
+   `tvujslcqkykxwenloimg` adds a nullable `spec text` column to `test_case_versions`. Existing
+   rows were **deliberately not backfilled** — a backfill would write today's generator's output
+   onto versions authored by an older one, quietly replacing history with a re-derivation. Row
+   count before and after: 34, unchanged.
+2. **Write.** All three `test_case_versions` insert sites in `src/server/library.ts`
+   (`saveCaseFromRun`, `updateCase`, `duplicateCase`) now also store
+   `generateSpec(ir, LIBRARY_SHOT_DIR)`. The screenshot dir is a named constant precisely so the
+   stored and regenerated specs cannot drift apart.
+3. **Read.** New route `GET /api/cases/:caseId/script` (optional `?version=N`) returning
+   `{ spec, source: "stored" | "generated", version }`, backed by `getCaseScript` in `library.ts`.
+   A stored spec wins; otherwise the IR is re-rendered on the spot.
+
+**Regeneration is not a degraded mode.** `generateSpec` is pure code with no LLM and no I/O
+(`DECISIONS.md` D-06), so the same IR yields the same bytes every time. `tests/caseScript.test.ts`
+asserts exactly that — byte-identity between what a null column regenerates and
+`generateSpec(storedIr, "artifacts")` — with the real generator, not a mock. `source` is returned
+so the UI can be honest about which copy is on screen, not because either is suspect.
+
+**The route cannot leave a case scriptless.** Every failure on the stored-spec path — a column that
+does not exist yet, an unreadable row, a database that has not been migrated — falls through to
+regeneration. The only errors it raises are the access errors every sibling function raises.
+
+**The WRITE path is coupled to the column, and is not symmetrically forgiving. Know this before
+rolling the migration back.** All three insert sites now name `spec`, and the three handle a
+rejected insert differently: `saveCaseFromRun` and `duplicateCase` do not check the insert error
+(pre-existing behaviour) and would silently lose the version row, while `updateCase` *does* check
+it and would fail the user's edit with a 500. That last one is a failure mode this change
+introduced. It is not reachable today — the column exists, and PostgREST resolves it (verified by
+selecting `spec` through the real client, not through raw SQL: reads and writes share one schema
+cache, so a raw-SQL check would have proved nothing about the insert path). It becomes reachable
+only if the column is dropped while the code still names it. **The unit tests cannot catch this
+class at all**: the Supabase mock's `insert` ignores column names entirely, so it accepts a payload
+naming a column that does not exist. A real save against a real database is the only check that
+exercises it.
+
+**What is still true and was not changed.** The run's own `generated.spec.ts` remains the exact
+bytes that executed, and a re-render is not a substitute for that. It is now offered as a secondary
+link ("open the spec from the last run") which simply disappears when the folder does, rather than
+being the tab's only content. The fallback chain is: newest `run_cases` row whose file responds
+200, then the case's `source_run_id`. **`source_run_id` has no stored case index**, so that last
+hop can only offer the run-level spec — correct when the case came from a single-case run, the
+run's primary case otherwise. That is why it is labelled as a link to a run rather than silently
+rendered as this case's script; storing the case index at save time would close it properly.
+
+### TD-69. `detectBlocked` judged "same site" by origin string prefix, so an http→https redirect marked every case blocked — High / Accidental — Fixed
+
+**What it was.** `detectBlocked(artifactsDir, appOrigin)` in `src/stages/executor.ts` decided a run
+had left the application with `!finalUrl.startsWith(appOrigin)`. `appOrigin` comes from `originOf()`
+— `new URL(url).origin` — which includes the scheme.
+
+So any redirect that changes the scheme, adds or drops `www.`, or changes the port reads as leaving
+the site, and the case is reported `blocked` rather than passed or failed.
+
+**Evidence.** Run `2026-09-01T07-17-37-947Z-35c773cf`. The user entered
+`http://veterans.my.site.com/s/`; the site did the ordinary thing and redirected to `https://…`.
+All **3 of 3** cases came back with
+*"the flow left the application for veterans.my.site.com, an external sign-in provider the test
+can't complete"* — naming the application's own host as the external provider it had supposedly
+left for. The message is self-refuting on its face, which is what made it findable.
+
+**Why it hurt.** `blocked` is the one verdict that means "this is not about your site" — it
+suppresses the failure analysis and tells the user nothing was learned. Applying it to correct runs
+against any http-entered or `www.`-redirecting site discards real results and, worse, teaches the
+reader to distrust the verdict that exists to be trustworthy.
+
+**The fix.** A small exported helper, `isSameSite(a, b)` in `executor.ts`, comparing **hostnames**
+after stripping a leading `www.`, case-insensitively, ignoring scheme, port and path.
+`detectBlocked` is its only caller. The three `originOf()` helpers in `orchestrator.ts`,
+`suiteRunner.ts` and `replay.ts` were left exactly as they are — they still return an origin, the
+comparison is what changed, and fixing it in one place is what stops the three copies drifting
+(the `TECH_DEBT.md` TD-07 pattern).
+
+**Unreadable input returns `true` (same site), on purpose.** The failure mode being fixed is a
+false positive; "I cannot parse this" must therefore fall to the side that reports nothing. The
+caller's own pre-existing comment already called an unparseable URL "not a reliable signal" — this
+makes that explicit instead of leaving it to an inner `try/catch`.
+
+**A subdomain is still a different site.** `evil.x.com` vs `x.com` is `false`. That is deliberate,
+not an oversight: an OAuth provider on `accounts.<something>` is exactly the case this guard exists
+to catch, so the conservative direction here is to keep reporting it. `tests/isSameSite.test.ts`
+pins both directions, including that a suffix match (`notx.com` ends with `x.com`) is not a match.
+
+### TD-70. A `select` step emitted `selectOption()` even when the element was not a `<select>` — High / Accidental — Fixed
+
+**What it was.** Grounding matches on **role**. A React combobox has `role="combobox"` and is an
+`<input>` with a popup list — no `<option>` children and no `selectOption()` support. But
+`generator.ts` emitted `selectOption()` unconditionally for the `select` action, so a correctly
+grounded step could not execute.
+
+Run `2026-09-04T10-38-19-619Z-bf20906d`, case *"Admin creates a new user via management
+interface"*, `cases/case-0/05-result.json`:
+
+```
+locator.selectOption: Error: Element is not a <select> element
+waiting for locator('input:near(:text("Manager"), 120), textarea:near(...), select:near(...)').first()
+- locator resolved to <input require…
+```
+
+The saved IR steps were `{"action":"select","target":{"role":"combobox","name":"Manager"},
+"value":"prashant mishra"}` and the same for `"Role"`. Both are correct descriptions of the page.
+
+**Two independent mistakes on that one line, and the error text shows both.**
+
+1. **The action was wrong for the element.** `selectOption()` can only ever act on a `<select>`.
+2. **The fallback offered an element that could never satisfy the action.** `nearFieldSelector`
+   returned `input, textarea, select` for *every* field action, so the positional rung handed back
+   a plain `<input>` for a `select`. The `locator resolved to <input` in the log is that.
+
+**The fix.**
+
+- **`choose(page, target, value)`**, a new injected helper, branches on the element's real
+  `tagName` at run time: `SELECT` goes to `selectOption(value)`; anything else is clicked, then
+  `getByRole('option', { name: value })` is clicked, falling back to an exact text match **scoped
+  to the visible popup**. Pure code, no model call — the generator stays deterministic (D-06).
+- **`nearFieldSelector(hint, action)`** returns `select, [role="combobox"]` for a `select` and is
+  unchanged for everything else. Role, not tag, is what says an element can take a choice — which
+  is why a custom combobox's `<input>` is still reachable, and a bare one is not.
+- The action is threaded through `resolveCode` into the generated `field(page, hint, action)`, and
+  through `resolveLive` into `resolveField`, so the live replay path and the generated path narrow
+  identically.
+
+**Verified in a real browser, not against the emitted string** (D-19, and the
+`.filter({ visible: true })` precedent). `tests/selectAction.test.ts` **extracts the helpers from
+the generated spec text and executes them** against a synthetic page carrying all three shapes: a
+native `<select>`, a combobox with `role="option"` items, and a dropdown whose items carry only
+text. A string assertion could not have distinguished any of them.
+
+**That real run caught a bug in the fix itself, which is the point of running it.** The popup was
+first scoped with `page.locator('[role="listbox"], …').first()`. On a form with more than one
+dropdown that is the first listbox in **DOM order** — a *closed* one — so the text fallback waited
+10 s and timed out. It now scopes to `:visible`. Nothing about reading the code would have shown
+this.
+
+**Also pinned:** `tests/selectAction.test.ts` asserts the generated `nearField()` and
+`targetResolver.ts`'s `nearFieldSelector()` return identical strings for `select` / `fill` /
+`check` / undefined. TD-07 says these two implementations have already drifted once; this stops
+them drifting on the axis that decides whether a select can land on an `<input>`.
+
+### TD-71. A missing ffmpeg failed the whole run instead of just the video — Medium / Accidental — Fixed
+
+**What it was.** `playwright.config.ts` sets `video: "retain-on-failure"`, and Playwright starts
+the recorder when the **context** is created. So a missing ffmpeg does not degrade to "no video" —
+it stops the context opening at all:
+
+```
+browserContext.newPage: Executable doesn't exist at …\ms-playwright\ffmpeg-1010\ffmpeg-win64.exe
+```
+
+Every case in run `2026-08-31T06-56-52-852Z-7943ebb2` died that way about **960 ms** in, before a
+single `page.goto`. `screenshot: "on"` then photographed a page that had never navigated, so the UI
+showed a blank white 4,331-byte PNG **and called it a test failure**. Nothing about the site under
+test was wrong, and nothing on screen said so.
+
+**Why it is worse than a missing video.** The verdict was wrong in the direction that costs the
+most: a person looks at a failing test and goes to investigate their own website.
+
+**The fix.**
+
+- `ffmpegAvailable()` in `executor.ts` probes the browsers directory for an `ffmpeg-*` folder
+  containing a file whose name starts with `ffmpeg`, honouring `PLAYWRIGHT_BROWSERS_PATH`.
+  Memoized — one glob per process, not one per case.
+- When it is absent, `runSpec` sets `PLAYWRIGHT_VIDEO=off` in the child's environment, and
+  `playwright.config.ts` reads it. **Screenshots and traces are untouched** — they are what the UI
+  actually shows.
+- `ExecResult` gains an optional `videoUnavailable` string, carried into the `done` event and
+  rendered by `public/app.js` in a `#videoUnavailable` note (reusing `.tree-empty`, no new class).
+  So the UI says *why* there is no player rather than leaving a silent gap.
+- `warnIfNoVideo()` logs once at server startup, naming `npx playwright install`.
+
+**Deliberately permissive.** An unreadable or absent browsers directory returns "available". A
+false negative costs a run its video; a false positive costs nothing, because the run then behaves
+exactly as it does today.
+
+**Why probing the filesystem rather than asking Playwright.** The registry that owns this path is
+`playwright-core` internals. Coupling a shipped code path to a private module across version bumps
+is a worse bet than a glob over a layout (`<browsers>/ffmpeg-<rev>/ffmpeg*`) that has been stable
+for years.
+
+### TD-72. `:near()` ties are broken by DOM order, not by distance — High / Accidental — Fixed
+
+**What it is.** `nearFieldSelector` builds `<tag>:near(:text("Hint"), 120)`. When more than one
+control falls inside that 120px radius the locator matches them all, and both `resolveField` and
+the generated `field()` fall through to **`.first()`** — which is **document order**, not nearest.
+So the control bound to a step can be one the anchor text does not label.
+
+**Measured while fixing TD-70**, on a synthetic page with three controls inside one radius:
+
+```
+selector: select:near(:text("Manager"), 120), [role="combobox"]:near(:text("Manager"), 120)
+count:    3
+matches:  [ 'role-native:SELECT', 'mgr:INPUT', 'own:INPUT' ]   <- DOM order
+.first():   role-native:SELECT                                  <- the WRONG control
+```
+
+The step wanted `mgr`. It got a `<select>` belonging to a different field, and `selectOption()`
+then waited 10 s for an option that field does not have.
+
+**Why it is filed rather than fixed.** It is a pre-existing property of the positional rung, not
+something TD-70 introduced — and TD-70's narrowing *reduces* the candidate set for `select`. It is
+also not yet known to have caused a real failure: it was reproduced on a deliberately cramped
+synthetic page, and real form rows are usually further apart than 120px. Filing it with the
+measurement is worth more than a speculative fix.
+
+**Remediation when it earns one.** Rank multiple `:near()` matches by actual distance to the anchor
+(a `boundingBox()` comparison in the live path, and the same arithmetic inlined in the generated
+helper) instead of taking `.first()`. Note that would need doing **twice**, in both implementations
+— TD-07.
+
+**It earned one.** The trigger above fired on run `2026-09-06T13-05-36-248Z-db2c0b4c`, case
+`Admin creates a new user`. The New User modal stacks Full Name and Email about 20px apart, and
+`step-11.png` shows the result: **Full Name holds `test@thinkvibes.com`** and Email is empty. The
+`fill "Email"` step resolved onto the input above the one it named — the exact shape predicted here,
+found on a real page rather than a cramped synthetic one. Filed Medium on the assumption real forms
+are further apart than 120px; they are not, inside a dialog.
+
+**Fixed on 2026-09-06 — resolution is now ordered, and geometry is the last rung, not the first
+fallback.** `resolveField` and the generated `field()` try, in order:
+
+1. `getByLabel(name, { exact: true })` — a real `<label for>` / `aria-label` association
+2. `getByPlaceholder(name, { exact: true })`
+3. `getByRole("textbox" | "combobox" | "checkbox", { name, exact: true })`
+4. **the first form control FOLLOWING the label text in document order** — a `<label for>` target
+   first, otherwise the next visible control after the element whose whole text is the name
+5. only then `:near()`, and even there it prefers the control the anchor sits **above or to the
+   left of** rather than taking `.first()`
+
+Rung 4 is what actually fixes the reported failure, and it is the general form of "the label is
+above the box" without knowing anything about this app: it reads the live DOM's own order.
+
+**Every lookup is scoped to the open dialog** — `[role="dialog"]`, `[aria-modal="true"]`, or, last
+resort, a visible element with `dialog`/`modal` in its class. The background page behind that modal
+had its own Email field and its own Save button; without scoping, rungs 1-3 would confidently
+resolve to the wrong page. `safeClick` scopes the same way, so Save and Cancel hit the dialog's
+buttons.
+
+**No site-specific logic.** Accessibility semantics and document order only — nothing about this
+app's markup, class names or layout appears anywhere in the fix.
+
+**One source of truth for the DOM-order logic, for this part of TD-07.** The callback is authored
+once as `DOM_ORDER_FIELD_JS` in `targetResolver.ts` and interpolated into the emitted spec, so the
+live resolver and the standalone spec run the *same characters* rather than two copies kept in step
+by discipline. It returns an **index** into the field list rather than an element, so both callers
+rebuild a real `Locator` — no `ElementHandle` leak, no page mutation. It is written with `for` loops
+and nothing named inside, per TD-40. **The rest of `FIELD_HELPER` is still a restatement**, so
+TD-07 as a whole remains open; `CLAUDE.md`'s sharp-edge note about it still holds.
+
+**Correction, 2026-09-06 — the fills below were real, but rung 4 never ran.** Sharing the source
+worked. *Invoking* it did not: both copies passed the function to `evaluate()` as a **string**,
+which is evaluated as an expression and never called, so the DOM-order rung returned `undefined`
+and every lookup fell through to geometry. See **TD-78**. The improvement this entry claims is
+genuine and visible in `step-11.png` of run `2026-09-06T14-19-13-154Z-fed833e5` — Full Name and
+Email are both correct there, where the earlier run had them swapped — but it came from the
+geometry rung's above/left preference and the dialog scoping, **not** from the rung described
+above. The two copies were identical and identically dead, which is the more useful lesson than
+either "shared" or "drifted".
+
+**Verified in a real browser** (`DECISIONS.md` D-19) — `tests/dialogFieldResolution.test.ts`, 9
+tests on a synthetic page matching the failure exactly: a `role=dialog` with two stacked label+input
+pairs 20px apart, one native `<select>`, one input-based combobox, over a background page carrying
+its own "Email" field and its own "Save" button. The last test replays that run's saved IR steps
+against it and asserts each value lands in its own field. Note what this did **not** catch: on a
+page this simple the geometry rung returns the right answer too, so a dead rung 4 is invisible
+end-to-end. `tests/selectResolution.test.ts` now asserts the rung's return value directly.
+
+
+### TD-73. One discovery call sent 514,427 prompt tokens, because an element's name was a stylesheet — Critical / Accidental — Fixed
+
+**The measurement.** Run `2026-09-03T11-49-04-132Z-f568ba48` (amazon.in),
+`08-llm-usage.json`: `discovery: 1 call, 514,427 prompt tokens`. Across the 27 runs on disk that
+carry a usage file, total prompt tokens are 1,264,848 — so **that one call is 40% of every prompt
+token this project has ever sent**. Every other discovery call in the corpus is 316–3,699 prompt
+tokens. The run's artifacts are correspondingly bloated: `02-appmodel.json` 5.5 MB,
+`04-ir.json` 5.6 MB, `events.ndjson` 10.7 MB.
+
+**It was not the call anyone expected.** The obvious suspect is `modelFromAria`, which
+interpolated an uncapped `${aria}` snapshot. But every page in that run has
+`discoveryMethod: "dom"` — the vision fallback never ran. The cost came from
+`labelConceptsWithDOM`, whose element list is built one line per element with the element's
+accessible NAME inlined verbatim, and which had no cap of any kind.
+
+**The root cause is a single element.** Measured directly from that run's saved AppModel:
+
+| page 0 (amazon.in homepage) | |
+|---|---|
+| elements | 229 |
+| `elementsList` produced | **797,356 chars** |
+| longest element name | **648,107 chars** — `main`, beginning `.gwm-window-tile:nth-child(9n+1) {background-…` |
+| next two | `listitem` 65,488 and 63,692 chars, also CSS |
+| **median** name length | **15** |
+| names over 1,000 chars | 4 |
+
+Four elements were 99% of the payload. The bound that matters is per-NAME, not per-element-count —
+which is why none of the existing `MAX_LITE_*` element-count caps caught it. The names themselves
+are inlined stylesheets read as element text: filed separately as **TD-75**, because fixing capture
+changes what grounding matches against and deserves its own change.
+
+**The fix, in four layers.** Each is independently sufficient for a different failure shape, which
+is the point — the reason this got through is that every existing cap bounded a dimension this
+input did not use.
+
+1. **Per-name cap** (`LABEL_ELEMENT_NAME_MAX_CHARS`, default 200) — a runaway name is truncated
+   with an explicit `[+N chars omitted]` marker rather than silently, so the model does not quote a
+   half-stylesheet back as an element name.
+2. **Per-list cap** (`LABEL_ELEMENTS_MAX_CHARS`, default 40,000) — a page with thousands of
+   ordinary elements cannot leak either. Drops from the END, like every other prompt-fitting helper
+   here, so a page's chrome and primary navigation survive.
+3. **ARIA-snapshot cap** (`DISCOVERY_SNAPSHOT_MAX_CHARS`, default 40,000) in `modelFromAria`. Not
+   this run's cause but a real, unbounded path. 40,000 chars is ~9,600 tokens at this corpus's
+   measured ~4.15 chars/token, against a largest-observed legitimate discovery call of **3,699**
+   prompt tokens — ~2.6x headroom over anything real, and the same order as `ir.ts`'s existing
+   30,000-char prompt budget.
+4. **A hard ceiling in `gemini.ts`** (`LLM_MAX_PROMPT_CHARS`, default 200,000), refusing before
+   sending with a typed `PromptTooLargeError`. This is the layer that would have caught the
+   original incident, and it catches every stage — including ones not yet written. It is a
+   tripwire, not a tuning knob.
+
+**Two details that are load-bearing, both found by measuring rather than reading.**
+
+- **The interactive-elements section is never truncated.** `formatInteractiveElements` appends
+  "Interactive elements found on page:" AFTER the snapshot, so a naive end-truncation deletes
+  exactly the JS-detected controls the accessibility tree missed — the only reason that section
+  exists. It is split off on a shared marker constant, preserved whole, and re-attached. Within the
+  snapshot, non-interactive nodes (static text, generic containers) are dropped before anything a
+  test could act on.
+- **Element names are whitespace-collapsed before being listed.** The format is one line per
+  element and the model maps its answer back by the `[index]` at the start of each line. A name
+  containing a newline split one element across several lines, so every index after it described
+  the tail of the previous name. Measured: that homepage produced **273 lines from 229 elements**
+  before the collapse. This was a silent mislabeling bug, found only because a test asserted line
+  count equals element count.
+
+**Measured result**, replaying the real AppModel through the new code (no live call):
+
+| | before | after |
+|---|---|---|
+| homepage `elementsList` | 797,356 chars / 427,457 tok | 17,075 chars / **6,170 tok** |
+| all 5 pages, prompt tokens | 467,733 | **28,383** |
+| reduction | | **93.9%** |
+
+The homepage needed only the per-name cap — all 229 elements survive, none dropped. Only the
+577-element browse page hit the list cap (404 of 577 kept).
+
+**Also fixed: `events.ndjson` no longer carries a second copy of the AppModel.** The `discovery`
+completed event embedded the entire model, which is why that run's event log was 10.7 MB — and the
+log is replayed in full on every `/state` poll, once a second. `orchestrator.ts`'s `step()` gained
+an optional projector (identity by default, so every other stage is byte-for-byte unchanged) and
+discovery now emits `{ baseUrl, pages: [{ url, title, concepts, elementCount }], auth: { status,
+loginUrl } }`.
+
+**The `/state` response shape is unchanged**, which was checked before changing anything rather
+than asserted afterwards: `public/app.js` reads only `data.pages.length` and `data.pages[].concepts`
+from this event; nothing in `src/` reads its `data` at all; `library.test.ts` asserts only that the
+stage completed; and `public/preview.js`'s own fixture for this event is *already*
+`{ pages: [{ url, concepts }] }` — the trimmed shape. The full model is untouched in
+`02-appmodel.json`, where it always lived. `runStore.ts`'s legacy-reconstruction path emits the
+same narrowed shape so a rebuilt run and a live one look identical.
+
+### TD-74. IR grounding retried a rejection that could never succeed — High / Accidental — Fixed
+
+**What it was.** `server.log` lines 107 / 124 / 141: grounding rejected
+`Step s6 targets role="button" name="Add User", which is not present…` **three times with identical
+feedback**, then rejected the same target again as `s8`. That element is genuinely absent from the
+page — it sits behind an admin role the test does not hold — so no amount of regeneration could
+ground it. The retry budget (`MAX_IR_ATTEMPTS`, 4) was spent re-deriving the same refusal.
+
+**What it cost.** `ir` is 12–24 calls and 70–85% of a run's spend. Per-call prompt size is
+strikingly consistent across the whole corpus — **~3,800 prompt tokens** — because `toMicroModel`
+already scopes the IR prompt to one page and 30 elements:
+
+```
+2026-08-22T07-04   26 calls   99040p  => 3809 tok/call
+2026-08-23T15-48   16 calls   61236p  => 3827 tok/call
+2026-09-01T07-29   14 calls   60062p  => 4290 tok/call
+```
+
+So the waste is call COUNT, not call size, and two dead attempts is ~7,600 prompt tokens per stuck
+case, every time that case runs.
+
+**The fix.** The retry loop now keeps a set of grounding-rejection signatures. On the second
+appearance of the same signature it stops retrying and falls through to the existing truncation
+path, which ships the grounded prefix and records `truncationNote` — so the UI already shows *why*
+and **no new status was added**.
+
+**The signature is structural, and the index is deliberately excluded.** It is built from the IR
+target's own fields — `kind`, `role`, `name`, `text`, `url` — never from the message string
+(`CLAUDE.md`'s central design rule). Here that is not merely principle: the evidence is `s6` then
+`s8`, so the message differs between two rejections of the *same* absent element. Keying on the
+message, or including the step index, would miss the repeat entirely.
+
+**Measured:** `tests/irRetryDedup.test.ts` counts model calls for a permanently-absent target and
+asserts **2, not 4** — including a case where the target moves to a different step id between
+attempts. Outcome quality is unchanged: `bestPartial` still keeps the longest grounded prefix
+across attempts, so stopping early drops the attempts that were re-deriving a refusal, not the ones
+making progress.
+
+**Not changed, having been checked:** the retry does NOT resend an oversized prompt. `buildUser`
+already rebuilds from `toMicroModel(filtered, { currentPageUrl })` — one page, at most 30 elements —
+which is exactly why per-call size is flat at ~3,800 tokens across every run. There was nothing to
+trim, and trimming further would have cost grounding accuracy for no measurable saving.
+
+### TD-75. An element's accessible name can be an entire inlined stylesheet — High / Accidental — Open
+
+**What it is.** On the amazon.in homepage, discovery recorded a `main` element whose `name` is
+**648,107 characters** of CSS beginning
+`.gwm-window-tile:nth-child(9n+1) .theming-card-background.enableColorSequence {background-…`, plus
+two `listitem`s carrying 65,488 and 63,692 chars of the same. The median name on that page is 15
+characters. These are `<style>` contents being read as element text and promoted to an accessible
+name.
+
+**Why it matters beyond the token cost.** TD-73 bounded every place these names reach a *prompt*,
+and that stops the spending. But the names are still wrong in `02-appmodel.json` itself, and that
+file is the input to grounding. An element whose name is a stylesheet is:
+
+- **unmatchable** — `getByRole(role, { name })` can never find it, so any step targeting it is
+  rejected and truncates the case (the TD-74 shape);
+- **bloat** — it is why `02-appmodel.json` is 5.5 MB and `04-ir.json` 5.6 MB on that run, which
+  costs disk and cache-key hashing on every read;
+- **noise in the element budget** — it occupies a slot in `toLiteModel` / `toMicroModel` caps that
+  a real control could have used.
+
+**Why it is filed rather than fixed here.** The fix belongs at capture, in `domExtract.ts`'s text
+extraction — almost certainly excluding `<style>` and `<script>` contents from an element's own
+text, the same way `ownText` is already suppressed for form controls. But name capture is what
+grounding matches against, so changing it changes which elements resolve, and that deserves its own
+change with its own before/after over the saved corpus rather than being folded into a
+prompt-size fix. TD-73's caps mean nothing is on fire in the meantime.
+
+**Remediation.** Exclude `style`/`script`/`noscript` subtree text when deriving an element's text
+in `domExtract.ts`, then re-derive `02-appmodel.json` for a saved run and diff the element list —
+the count should be unchanged and the pathological names should collapse to their real values or to
+empty. Add a capture-time assertion that no element name exceeds a sane bound, so this cannot
+silently return.
+
+**Trigger — promote to a bug when:** a run's `02-appmodel.json` contains any element whose `name`
+exceeds ~1,000 characters. `scripts/measureView.ts` already walks every saved AppModel and is the
+natural place to report it.
+
+### TD-76. `selectOption()` is an exact match, so different casing looked like a missing option — Medium / Accidental — Fixed
+
+**What it was.** Run `2026-09-06T13-05-36-248Z-db2c0b4c`, `cases/case-0/05-result.json`:
+
+```
+TimeoutError: locator.selectOption: Timeout 10000ms exceeded.
+  - waiting for locator('select:near(:text("Manager"), 120), [role="combobox"]:near(…)')
+    - locator resolved to <select>…</select>
+  - attempting select option action
+    2 × waiting for element to be visible and enabled
+      - did not find some options
+```
+
+This answers the question the task asked: **`choose()` did run and did reach the right element.**
+It resolved a native `<select>` and then spent the full ten seconds retrying, because
+`selectOption("prashant mishra")` matches an option's value or label EXACTLY and the option reads
+`Prashant Mishra`. The reported symptom — Manager showing "No manager" in the final screenshot —
+is simply the untouched default.
+
+The error text is also actively unhelpful: *"did not find some options"* names neither the option
+that was wanted nor the ones that exist.
+
+**The fix.** `choose()` now resolves the index itself before delegating: trimmed and
+case-insensitive **exact** on either the option's label or its value, then **containment** in
+either direction, then `selectOption({ index })`. Only if nothing matches at all does it hand the
+raw value to Playwright, so a genuinely absent option still produces Playwright's own error rather
+than a silent no-op.
+
+Case-insensitive is right here rather than lax: a `<select>` with two options differing only in
+case is not a real UI, whereas a step value typed by a person or produced by a model differing in
+case from the rendered text is routine.
+
+**Verified in a real browser** — `tests/dialogFieldResolution.test.ts` selects `prashant mishra`
+against `<option value="u1">Prashant Mishra</option>` and asserts the select's value becomes `u1`.
+
+**Correction, 2026-09-06 — the diagnosis above was right about the mechanism and wrong about this
+run.** The casing bug is real and the fix stands. But the *reason* the next replay
+(`2026-09-06T14-19-13-154Z-fed833e5`) still failed at the same step was not casing: a live probe of
+the modal found the option spelled `prashant mishra`, lowercase, matching the step exactly. The
+step was resolving to the **Role** dropdown, which genuinely has no such option — so this entry's
+own index resolution correctly returned -1 and handed the raw value to Playwright, producing an
+identical-looking error from an entirely different cause. See **TD-79**.
+
+The lesson worth keeping: *"did not find some options" looks the same whether the option is
+missing or the control is wrong.* That ambiguity is exactly why TD-79 makes the error name the
+options that were actually available — which would have made this second failure self-evident
+instead of costing a live probe to diagnose.
+
+Two further defects in this entry's own emitted code, both found later: the matcher shipped as
+`/s+/g` rather than `/\s+/g` (a template literal ate the backslash, so it replaced the letter *s*
+— harmless only because both sides were mangled identically), and it read the option list **once,
+immediately**, which fails on any server-populated dropdown. Both fixed under TD-79.
+
+### TD-77. Steps revealed by a click are never grounded — High / Strategic — Mitigated, and optionally fixed behind a flag
+
+**What it is.** Grounding writes `css`/`testId` onto a target by matching it against the model
+discovery built. Discovery crawls links; it does not click through the UI. So anything a click
+REVEALS — a modal, a tab panel, an accordion body, the next page of a wizard — is never in that
+model, and every step inside it ships with a role and a name and nothing else.
+
+At run time those steps fall back to name matching and then to geometry, which is where TD-72's
+failure came from: the New User modal's `fill "Email"` resolved onto the Full Name input.
+
+**This is the deeper cause behind TD-72, and the two fixes are complementary.** TD-72 makes the
+fallback *correct* (label → next control in DOM order, scoped to the open dialog) and needs no
+extra work at run time. TD-77 removes the need to fall back at all.
+
+**What shipped, behind `REPLAY_REGROUND` (default OFF, platform rule 2).** Before a replay
+executes a case, `ungroundedStepIndexes` finds the steps whose target has no `css`/`testId`, and
+`regroundEditedIr` — the case editor's existing walk — replays the prefix in a real browser,
+snapshots what is actually on screen, and grounds those targets against it.
+
+- **Zero LLM calls.** It is the same deterministic role/name matching `groundingError` already
+  does. A replay's whole economic claim survives intact.
+- **Existing machinery, not a second implementation.** `refreshPageModel` + `groundingError`, which
+  is what the editor's re-ground already uses. A parallel implementation here would be TD-07 a
+  third time.
+- **It never writes back to the library** (`CLAUDE.md` rule 6, `DECISIONS.md` D-27). Targets it
+  grounds are used for THIS execution and recorded in the run's own `cases/case-N/04-ir.json` with
+  `groundedAt: "replay"`, so a person can see what it found and choose to save it. The stored case
+  is untouched.
+- **It can never make a replay worse.** Every failure path — the walk not reaching a step, a
+  timeout, a target that still will not ground — logs and returns the saved steps unchanged. A
+  re-ground is an improvement, never a precondition.
+
+`groundedAt` is an additive optional field on `Target` (`z.literal("replay").optional()`), declared
+in the schema rather than smuggled through, because Zod strips unknown keys and the marker would
+otherwise vanish on the next parse. Nothing branches on it — `tests/replayReground.test.ts` asserts
+the generated spec is byte-identical with and without it.
+
+**Why the flag, and why OFF.** The walk costs a browser launch and up to `MAX_LIVE_EXTENSIONS`
+snapshots before the run starts. A replay whose steps are all grounded — the common case — should
+not pay for it, and with the flag unset this code returns its input untouched.
+
+**Still open, and the reason this is "mitigated" rather than closed.** The same gap exists on a
+FRESH run: `ir.ts` has post-click-reveal handling, but a case whose reveal happens after the
+grounded prefix ends still ships ungrounded steps. The replay pre-pass does not help there. Closing
+it properly means discovery clicking reveal-shaped controls during the crawl, which is a much
+larger change with its own cost and its own risk of unbounded crawling.
+
+### TD-78. A function passed to `evaluate()` as a STRING is never called — High / Accidental — Fixed
+
+**What it was.** TD-72's fix added a DOM-order rung to `resolveField` and to the generated
+`field()`, and shared the in-page callback between them by authoring it once as a string
+(`DOM_ORDER_FIELD_JS`). The live resolver then did:
+
+```ts
+const idx = await scope.evaluate(DOM_ORDER_FIELD_JS, hint);
+```
+
+`Locator.evaluate()` accepts `function | string`, so this type-checks and never throws. But a
+string is evaluated as an **expression**. The expression here is a function literal, so the page
+constructs a function, returns it, and a function cannot cross the CDP boundary — the call
+resolves to `undefined`. `undefined >= 0` is false, so **the rung reported "no match" on every
+lookup and every field fell through to geometry.** It had never executed once.
+
+The generated spec had the same bug by a different route: `${JSON.stringify(DOM_ORDER_FIELD_JS)}`
+emitted a string *literal*, so the spec called `scope.evaluate("...")` and got `undefined` too.
+
+Measured directly, on a page with a Role select followed by a Manager select:
+
+```
+string form, 2 args : undefined      <- what shipped
+string form, simple : undefined      <- even "(root, w) => String(w)"
+real function form  : hello
+new Function form   : 1              <- the correct index (#mgr)
+```
+
+**Why nothing caught it.** It type-checks. It does not throw. And the existing real-browser tests
+exercise `field()` end-to-end, where **geometry silently returns the right answer** on any page
+simple enough to write as a fixture. `DECISIONS.md` D-19 says a generated Playwright expression is
+not verified until it is run once; this is the sharper form of the same lesson — *it is not
+verified until it is run against a page where the wrong answer differs from the right one.*
+
+**The fix.** `domOrderFieldFn`, built once with `new Function`, is what the live path passes; the
+generator interpolates the source **bare**, so the emitted file contains a real arrow-function
+literal. The string remains the single source of truth both are built from, so TD-07 still holds —
+what changed is that both now actually run it. `tests/selectResolution.test.ts` asserts the string
+form returns `undefined` and the function form returns a correct index, so the trap cannot be
+re-entered silently, and asserts the emitted spec matches `scope.evaluate((root, arg) =>` rather
+than `scope.evaluate("`.
+
+**Two further defects fell out of reviving the rung**, both invisible while it was dead:
+
+1. **It re-introduced TD-70.** The rung searched `input, textarea, select, [role=combobox]`
+   regardless of action, so a `select` step was handed the `<input>` after its label —
+   the exact thing `nearFieldSelector` narrows for. Fixed with `fieldSelectorFor(action)`, passed
+   in so the index and the Locator rebuilt from it index the same list. Caught by
+   `selectAction.test.ts`'s existing "does NOT resolve a select step onto a plain input".
+
+2. **First-match-wins picked the wrong label.** See TD-79.
+
+### TD-79. The Manager dropdown: wrong control, read too early, and a useless error — High / Accidental — Fixed
+
+**What it was.** Run `2026-09-06T14-19-13-154Z-fed833e5`, step 12:
+
+```
+TimeoutError: locator.selectOption: Timeout 10000ms exceeded.
+  - waiting for locator('body').locator('select:near(:text("Manager"), 120), [role="combobox"]:near(…)').first()
+    - locator resolved to <select>…</select>
+  - attempting select option action
+    2 × waiting for element to be visible and enabled
+      - did not find some options
+  at choose (…/generated/test.spec.ts:233:18)
+```
+
+**Diagnosed against the live page, not inferred.** A read-only probe opened the modal and dumped
+the Manager control at 0 ms, 500 ms and 2000 ms. The option `prashant mishra` **exists, spelled
+exactly as the step asks, present from the first paint** — so it was neither a late-loading list
+nor an absent option. The probe's last line gave it away:
+
+```
+step-12 locator → count: 2
+  0  SELECT  opts=Select...|Learner|Trainer|Manager|Admin      ← .first() picks THIS
+  1  SELECT  opts=No manager|prashant mishra|udit goyal|…      ← the real Manager control
+```
+
+**The step was selecting into the Role dropdown.** `:near(:text("Manager"), 120)` matched both
+sibling selects and `.first()` is document order. The Role select even contains an
+`<option>Manager</option>`, so the anchor text is not unique either. Line 233 is the raw-value
+fallback, which means TD-76's index resolution had already returned -1 — correctly, since that
+select really has no such option.
+
+**Why it reached geometry at all** is TD-78: the rung that should have answered "which control
+does the Manager label describe" was dead.
+
+**And why reviving it was not enough.** With the rung live, the word "Manager" appears **six times**
+inside the resolution scope: five role badges on the user rows *behind* the modal, and the field's
+own `<label>`. The badges come first in document order, and because a badge sits far above the
+form, *every* control follows it — so first-match-wins returned the first select on the page,
+confidently and wrongly. Two rules fix it, and the split between them matters:
+
+- **a `<label>` beats a generic leaf.** A `<label>` is a statement that this text names a control;
+  a `<span>` with the same text is a guess. A badge is a span.
+- **within generic leaves, the LAST candidate wins; within labels, the first still does.**
+  Scanning backwards is what "nearest" means when the DOM gives no distance, and decoys are
+  overwhelmingly generic — badges, chips and table cells repeat a word many times above a form.
+  Labels keep document order deliberately: **two legitimately identical `<label>`s is a far more
+  common page than a decoy `<label>`** — a login form's "Email" and a footer newsletter's — and
+  the first is the one the flow means. Reversing labels too would have silently rebound every
+  such case to the footer, which is the most common flow this project runs.
+
+Both rules are pinned by mutation-checked tests: lumping labels into the reverse-scanned group
+reddens the two-form test, and the badge tests fail without the reverse scan.
+
+Scoping cannot help here: this modal sets **no `role="dialog"`, no `aria-modal` and no
+dialog/modal class**, so `resolveScope` correctly falls back to `body` (TD-81).
+
+**The other two fixes the brief asked for**, neither of which this run needed but both of which are
+ordinary in the wild:
+
+- **Wait for options.** Server-populated dropdowns are the norm. `choose()` and `chooseLive` poll
+  up to the step timeout — but exit **the moment the control is populated and still has no match**.
+  That distinction matters: an unconditional wait would let a wrong-control resolution spend the
+  full timeout looking like a slow network, which is precisely how this bug hid. Pinned by a test
+  asserting the no-match case fails in under 3 s.
+- **Walk to the real control.** If the resolved node is not selectable, `SELECTABLE_JS` tries a
+  `<select>` inside it, the control its `for=` names, a `[role=combobox]` descendant, then a
+  `<select>` in a nearby ancestor (bounded to three levels). That last step reaches the
+  visually-hidden native select behind a custom shell — the headless-UI pattern — and prefers it,
+  because `selectOption()` on it sets the value the form actually submits. The ancestor step uses
+  `querySelectorAll` and prefers a select that **follows** the element, not `querySelector`, which
+  is first-in-subtree: climbing out of a deeply-nested shell into a container holding both fields'
+  selects would otherwise return the neighbouring field's — the same mistake as the rung above,
+  one level up. Mutation-checked.
+
+**And the error is now useful.** "did not find some options" named neither the wanted value nor the
+available ones, so the only way to learn an option was spelled differently was to re-run the case
+and watch the video. It now reads:
+
+```
+select: no option matching "prashant mishra". Available: "No manager", "udit goyal", …
+```
+
+which is what the case card renders under TD-80.
+
+**A third escaping bug found while fixing this.** The emitted `choose()` contained `/s+/g`, not
+`/\s+/g` — a template literal ate the backslash, so every matcher replaced the letter *s* with a
+space. Both sides of every comparison were mangled identically, so exact matching still worked by
+luck and nothing failed. Now `\\s` in the template, and asserted on the emitted text.
+
+**Verified in a real browser** (`DECISIONS.md` D-19) — `tests/selectResolution.test.ts`, 20 tests
+covering all four shapes the brief names, plus the badges-behind-the-modal shape, plus the TD-70
+guard. **And verified against the live site**: the four steps that failed now land
+
+```
+inputs = ["", "test lakshay", "test@thinkvibes.com"]   selects = ["Learner", "prashant mishra"]
+```
+
+`liveExtend.ts`'s `select` case was a bare `selectOption()` with all the same defects; it now calls
+`chooseLive`, which shares its matching, its waiting and its message with the generated spec
+through the `*_JS` constants rather than restating them (TD-07).
+
+### TD-80. A failed case showed a red X and nothing else — High / Strategic — Fixed
+
+**What it was.** The UI rendered a failure reason only when a `06-diagnosis.json` existed. That
+file is written by `analyzeFailure`, which is a **Gemini call** — and a replay makes zero LLM calls
+by design (`DECISIONS.md`), so a replay never has one. The result: a failing replay's card showed a
+red X and no text whatsoever, while the actual cause sat unread in `05-result.json`:
+
+```
+TimeoutError: locator.selectOption: Timeout 10000ms exceeded.
+```
+
+Nothing was missing from the artifacts. Nothing was even hard to find. The pipeline simply had no
+path from Playwright's own report to the screen that did not go through a model.
+
+**The fix — a deterministic floor, not a cheaper diagnosis.** `extractFailureDetail` (executor.ts)
+reads Playwright's JSON and returns the failing step's **number** and **title**, the first line of
+the error, and the full message. `generateSpec` emits exactly one `test.step()` per IR step in
+order, so the position of the failing step *is* the step number.
+
+- `buildSuiteSummary` reads it **from disk**, beside the screenshot and video probes it already
+  does, so every producer of a summary — full run, suite, replay — gets it without each having to
+  remember to pass it. That is the failure mode that function's own docstring records:
+  `whyItMatters` went missing because three `results.push()` sites did not copy it.
+- The fields are **additive and optional** on the existing case shape (`CLAUDE.md` rule 1), absent
+  on a passing case, so no existing consumer changes. No new route was needed.
+- `renderCaseErrorBlock` in `app.js` renders it **from the summary**, so it appears with the card
+  instead of waiting on the per-case fetch the diagnosis block needs. A diagnosis, when one
+  exists, renders **below** it rather than instead of it.
+- It mints no CSS class names (rule 3) — reuses `diag-card`, `diag-item`, `diag-text`,
+  `diag-tech-details`. A test asserts every class it emits already exists in `style.css`.
+- "Test timeout of 50000ms exceeded" is the *consequence* of the first error, so it is never shown
+  in place of the real cause.
+
+21 tests in `tests/failureDetail.test.ts`, including the extractor against this run's real report
+shape, the summary wiring, and the card renderer lifted out of `app.js` itself.
+
+**One thing to be aware of.** A step title embeds that step's value — `Fill '*********' with
+'leaked-pw'` in this very run. `scrubServedSecrets` redacts values it is *told* are credentials via
+`secretEnv`; a literal typed into the editor was never registered as one, which is TD-67's
+outstanding data-scrub half. The card therefore inherits whatever the report holds. This surfaces
+no value that was not already in `generated.spec.ts` and `05-result.json` under `runs/` (both
+served over HTTP, TD-14) — but it is one more reason the TD-67 scrub is still owed.
+
+### TD-81. A modal with no accessible markup cannot be scoped to — Medium / Strategic — Open
+
+**What it is.** `resolveScope` finds the open dialog by `[role="dialog"]`, `[aria-modal="true"]`,
+or — last resort — a visible element with `dialog`/`modal` in its class. The LMS's New User modal
+sets **none of the three**. A live probe returned `"dialogs": []` while the modal was plainly open
+on screen; its container is an unmarked `<div>` whose only distinguishing class is
+`admin-form-grid`.
+
+So every lookup inside that modal is scoped to `body` and competes with the entire page behind it —
+which is how five role badges on the user rows became candidates for the Manager field (TD-79).
+
+**Why it is filed rather than fixed.** TD-79's fix makes resolution correct *without* scoping, on
+this shape and generally, so nothing is currently broken by it. Closing this properly means
+detecting a modal by behaviour rather than markup — a fixed/absolute-positioned visible container
+with a high stacking order that overlays the document — and that is a heuristic with real
+false-positive risk (sticky headers, toasts, drawers) which would silently narrow scope on pages
+that work today. Not worth it until something needs it.
+
+**Trigger — promote to a bug when:** a step resolves to a control on the page behind an open modal
+*after* TD-79's label/ordering rules have been applied — i.e. when being right without scoping is
+no longer enough.
