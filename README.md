@@ -249,6 +249,7 @@ in `.env.example` — but that file is not a complete index of this table. `MAX_
 | `MAX_ACCUMULATED_CASES` | No | Cap on cases accepted into the gate's pool across all rounds (default: 5) |
 | `CASE_SELECTION_WAIT_MS` | No | How long a gate round waits for your pick before timing out (default: 600000 / 10 min) |
 | `GATE_CASE_EDIT_AI` | No | Set `true` to offer "Ask for a change" on a case at the review gate. Editing cases there by hand needs no flag and spends nothing; this gates only the model call (default: off) |
+| `SELF_HEAL_DEFAULT` | No | Whether a run self-heals when the request does not say (default: `false`). A heal is a second full test run **and** a full IR regeneration, so it is opt-in — the Settings toggle overrides it per run, and the toggle now opens in whatever state this sets (`TECH_DEBT.md` TD-83) |
 | `MAX_SUITE_HEALS` | No | Cap on self-heal attempts across one suite run (default: 3) |
 | `LLM_MAX_PROMPT_CHARS` | No | **Hard ceiling on any single prompt** (default: 200000). A prompt over this is refused before it is sent, with a typed error naming the stage. A tripwire, not a tuning knob — one discovery call once sent 514,427 prompt tokens (`TECH_DEBT.md` TD-73) |
 | `DISCOVERY_SNAPSHOT_MAX_CHARS` | No | Cap on the accessibility snapshot sent to the vision fallback (default: 40000 ≈ 9.6k tokens, against a largest-observed real call of 3.7k). The JS-detected interactive-elements section is never truncated |

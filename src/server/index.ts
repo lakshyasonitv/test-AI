@@ -6,6 +6,7 @@ import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
 import { allRunIds, listRuns, store } from "../runStore.js";
 import { warnIfNoVideo } from "../stages/executor.js";
+import { selfHealDefault } from "../stages/heal.js";
 import { Semaphore } from "./concurrency.js";
 import { askCredentials, settle } from "./pendingCredentials.js";
 import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
@@ -506,7 +507,7 @@ app.get("/api/health", (_req, res) => {
     // actually in, instead of a hardcoded guess that silently disagrees.
     defaults: {
       gateReview: process.env.ENABLE_CASE_SELECTION_GATE === "true",
-      selfHeal: true,
+      selfHeal: selfHealDefault(),
     },
     // ADDITIVE field (Step 2.2) — appended, never reordering or replacing anything above, per
     // implentationplan.md Rule 2. The UI branches on this to decide whether a login view exists

@@ -300,7 +300,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `domDiscovery.ts` | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility |
 | `domExtract.ts` | No | Cheerio DOM extraction — Node port of the deleted Python parser |
 | `ir.ts` | Gemini | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), login-prefix injection (`buildLoginPrefix`/`needsLoginPrefix`), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
-| `heal.ts` | Gemini | Bounded self-heal, at most once per case: re-snapshot up to the failing step, recompile the IR, regenerate the spec and run it again. Accepted only if it passes **and** is not truncated. `isHealable` gates on category `selector_changed`/`element_missing` and a failure past step 0 |
+| `heal.ts` | Gemini | Bounded self-heal, at most once per case: re-snapshot up to the failing step, recompile the IR, regenerate the spec and run it again. Accepted only if it passes **and** is not truncated. `isHealable` gates on category `selector_changed`/`element_missing`, a failure past step 0, and **not** a deterministic grounding rejection (`meta.truncationKind`, TD-83) — a re-snapshot cannot make an invented route real. `selfHealDefault()` is the one definition of the `SELF_HEAL_DEFAULT` fallback, shared by the orchestrator and `/api/health` |
 
 **Added for the case library and the editor:**
 
@@ -394,6 +394,11 @@ Three Zod schemas: `src/schema/appModel.ts`, `src/schema/ir.ts`, `src/schema/cas
 
 ```
 AppModel
+  baseUrl              origin the browser LANDED on, after redirects — NOT necessarily what the
+                       user typed. Everything downstream resolves relative paths and compares
+                       pages against it, so it has to describe reality (TECH_DEBT.md TD-82)
+  enteredUrl?          what the user typed, when its origin differs. Provenance only — never
+                       resolve anything against it
   pages: PageModel[]
     url, title, discoveryMethod: "dom" | "vision" | "hybrid"
     elements: Element[]
@@ -456,6 +461,10 @@ IR
                 "url_contains" | "title_contains" | "title_equals" |
                 "enabled" | "disabled"
     preAction?: { action: "hover" | "click", target: Target }
+
+  meta.truncationKind?   WHICH grounding rejection truncated this IR ("navigate-url", ...), as a
+                         structured value. `truncationNote` is prose written for a model, so
+                         nothing branches on it — `isHealable` reads this instead (TD-83)
 ```
 
 The Generator reads this contract and emits Playwright code (one `test.step()` per Step). The

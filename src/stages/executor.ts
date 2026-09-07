@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { redactCredentials, type Credentials } from "./credentials.js";
+import { siteHost } from "../text.js";
 
 export interface ExecResult {
   passed: boolean;
@@ -369,11 +370,10 @@ export interface BlockedInfo {
  * nothing — the caller's own comment already called an unparseable URL "not a reliable signal".
  */
 export function isSameSite(a: string, b: string): boolean {
-  const hostOf = (u: string): string | null => {
-    try { return new URL(u).hostname.replace(/^www\./i, "").toLowerCase(); } catch { return null; }
-  };
-  const ha = hostOf(a);
-  const hb = hostOf(b);
+  // `siteHost` is shared with ir.ts's `pageKey`, which had to learn the same lesson separately
+  // (TD-82). One definition, so the next comparison that needs it cannot drift from this one.
+  const ha = siteHost(a);
+  const hb = siteHost(b);
   if (!ha || !hb) return true;
   return ha === hb;
 }

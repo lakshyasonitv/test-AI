@@ -261,7 +261,28 @@ export const AuthOutcome = z.object({
 export type AuthOutcome = z.infer<typeof AuthOutcome>;
 
 export const AppModel = z.object({
+  /**
+   * The origin the browser actually LANDED on, after redirects — not necessarily what the user
+   * typed. Everything downstream resolves relative paths and compares pages against this, so it
+   * has to describe reality rather than intent.
+   *
+   * A user typing `http://veterans.my.site.com/s/` against a site that redirects to `https://`
+   * used to leave `http://…` here while every discovered page was `https://…`, and the IR
+   * navigate guard then refused a correct step while listing that same path as known
+   * (`TECH_DEBT.md` TD-82). Set from the first successful navigation in discovery.
+   */
   baseUrl: z.string(),
+  /**
+   * What the user actually typed — the FULL URL, path included — set only when its origin
+   * differs from `baseUrl` after normalisation. Additive and optional, so every AppModel already
+   * on disk still parses and nothing that does not ask for it is affected.
+   *
+   * Provenance only: it exists so a run can say "you entered `http://host/s/`, the site sent you
+   * to `https://host`". Never resolve anything against it — that is exactly the mistake TD-82
+   * records. The origin is derivable from it; the reverse is not, which is why the whole URL is
+   * kept rather than just the origin.
+   */
+  enteredUrl: z.string().optional(),
   pages: z.array(PageModel),
   auth: AuthOutcome.optional(),
 });

@@ -4,6 +4,7 @@ import path from "node:path";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import { findScreenshot } from "./executor.js";
+import { siteHost } from "../text.js";
 import { KNOWN_CATEGORIES, findFailingStepId, classify } from "./classify.js";
 import type { IR } from "../schema/ir.js";
 import type { ExecResult } from "./executor.js";
@@ -184,8 +185,11 @@ function endedOnLoginPage(result: ExecResult, loginUrl?: string): string | null 
     const body = readFileSync(path.join(result.artifactsDir, "final-page.txt"), "utf8");
     const finalUrl = body.split("\n")[0]?.trim();
     if (!finalUrl) return null;
+    // Host + path, not origin + path: both URLs here are normally post-redirect, but a
+    // `loginUrl` carried over from an entered address would differ only by scheme and this
+    // check would silently stop recognising the login page. Same trap as TD-82.
     const a = new URL(finalUrl), b = new URL(loginUrl);
-    return a.origin === b.origin && a.pathname === b.pathname ? finalUrl : null;
+    return siteHost(finalUrl) === siteHost(loginUrl) && a.pathname === b.pathname ? finalUrl : null;
   } catch {
     return null;   // no artifact, or an unparseable URL — not a reliable signal
   }

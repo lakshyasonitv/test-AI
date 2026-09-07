@@ -130,6 +130,8 @@ authority is its own heading, not this list.
 | TD-79 | `choose()` resolved to whatever the step's locator returned and matched options once, immediately: a wrapper/label/custom shell was never walked to the real control, a server-populated list was read before it arrived, and a miss failed with Playwright's "did not find some options", naming neither the wanted value nor the available ones — **fixed** | High | Accidental | ? |
 | TD-80 | A failed case showed a red X and NO text whenever no LLM diagnosis existed — which is every replay, by design. The failing step and the Playwright error sat unread in `05-result.json` — **fixed** (surfaced deterministically, no model call) | High | Strategic | ? |
 | TD-81 | `resolveScope` cannot find a modal that sets no `role="dialog"`, no `aria-modal` and no dialog/modal class — the LMS's New User modal sets none of the three, so every lookup inside it is scoped to `body` and competes with the whole page behind it | Medium | Strategic | ? |
+| TD-82 | The entry URL's SCHEME decided whether a real page existed: a site that redirects `http` -> `https` left `appModel.baseUrl` on the typed scheme while every discovered page carried the landed one, so the IR navigate guard refused a correct step **and listed that same path as known** in its own hint — then paid for 4 retries the model could not satisfy — **fixed** | High | Accidental | ? |
+| TD-83 | Self-heal ran on every run with no way to decline it, and `suiteRunner` emitted nothing while doing it — so the browser re-ran the tests after the run looked finished, with no explanation and no cost attribution — **fixed** | High | Strategic | ? |
 
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
@@ -3119,3 +3121,182 @@ that work today. Not worth it until something needs it.
 **Trigger — promote to a bug when:** a step resolves to a control on the page behind an open modal
 *after* TD-79's label/ordering rules have been applied — i.e. when being right without scoping is
 no longer enough.
+
+### TD-82. The entry URL's scheme decided whether a real page existed — High / Accidental — Fixed
+
+**What it was.** Run `2026-09-06T15-42-48-000Z-61e01731`, `http://veterans.my.site.com/s/`,
+prompt "test this website end to end". Case "Comprehensive end-to-end portal verification" was
+truncated with:
+
+```
+Step s4 navigates to "/s/", which is not a page or link destination present in the
+application model … Known paths: /s/, /vetforce/s/login/.
+```
+
+**The guard refused a path and then listed that same path as known.** Read the artifacts and the
+cause is in two lines of `02-appmodel.json`:
+
+```
+baseUrl : http://veterans.my.site.com          <- what the user typed
+pages   : https://veterans.my.site.com/s/      <- where the browser actually landed
+          https://veterans.my.site.com/vetforce/s/login/
+```
+
+The site redirects to `https`. `navUrlAllowed` resolved `/s/` against the **http** base and looked
+the result up in a set keyed by `pageKey()`, which was `origin + path` — so `http://…/s` missed
+`https://…/s`. The hint was built from `appModel.pages` directly, with no such key, which is why it
+could cheerfully print the path the check had just rejected.
+
+A hint that contradicts its own verdict is worse than no hint: there is nothing for the model to
+change, so it re-sent the same correct answer. That case alone burned retries out of the run's
+**16 IR calls / 45,138 prompt tokens**.
+
+**Same root cause as TD-69, one layer deeper.** TD-69 was `detectBlocked` treating a scheme change
+as "the flow left the application". This is the identical mistake in the grounding guard. The
+lesson recorded there — *scheme and port are irrelevant to "is this the same site"* — was fixed in
+one place and not looked for anywhere else.
+
+**The fix, in four parts.**
+
+1. **`baseUrl` is now where the browser LANDED**, not what was typed. `withLandedBase` sets it from
+   the entry snapshot's `finalUrl` origin, and records the typed URL in a new optional
+   `AppModel.enteredUrl` for provenance only. This also fixed a latent second bug:
+   `discoverPagesHybrid` used `urls[0]` **verbatim**, so `baseUrl` could carry a PATH
+   (`http://host/s/`) and every `resolveHref(baseUrl, "/x")` resolved against a page rather than
+   the site. `baseUrl` is contractually an origin; now it always is one.
+2. **`pageKey` is host+path, not origin+path** — scheme, port and `www.` ignored. This is the
+   second line of defence, and the one that matters for an AppModel cached *before* this fix: a
+   stale model with an http base still grounds correctly.
+3. **The hint is built from the same key the check uses, with the rejected path removed**, and
+   says so plainly when that leaves nothing to suggest rather than printing an empty list.
+4. **`isSameSite` and `pageKey` now share one `siteHost`** in `src/text.ts`, so the next comparison
+   that needs it cannot drift from the other two. That neutral home is deliberate: it lets a pure
+   grounding stage use it without importing the process-spawning executor.
+
+**Three more instances of the same trap, found by grepping for origin comparisons rather than
+waiting for them to fail:**
+
+- `hybridDiscovery`'s click-based discovery kept a destination only if
+  `new URL(after).origin === origin`, where `origin` was the ENTERED origin. On a redirected site
+  that discarded **every** URL it found, so click-discovery silently returned nothing.
+- `ir.ts`'s prompt assembly filtered the entry page with `p.url.startsWith(entryOrigin)` in two
+  places. On a redirected site neither matched, so the entry page — the one page always worth
+  sending — was dropped from the prompt and never became the lead page.
+- `failureAnalysis`'s `endedOnLoginPage` compared origins; hardened to host+path.
+
+**A separate, real cache defect found while checking point 5.** `ir.ts`'s cache key serialises the
+whole `appModel`, so `baseUrl` is in it transitively — normalising it changes the key by
+construction, and no stale pre-fix entry can be served to a post-fix run. **But `entryUrl` was not
+in the key at all**, while `buildUser` derives `entryPath` from it and the system prompt states
+that path as the navigate target. Two runs with the same test case and model but different entry
+pages would share an entry and the second would get an IR built for the first one's page. The disk
+half of this cache never expires, so it could not heal on its own. Added — `CLAUDE.md`'s cache
+rule, TD-22, D-10, the same omission a third time.
+
+**Verified by artifact replay** (no live call, no LLM), `tests/redirectBaseUrl.test.ts`, against
+this run's real `02-appmodel.json` committed as a fixture:
+
+```
+[2] the IR with the REJECTED step restored (s4 navigate "/s/" at index > 0)
+  -> grounded with ZERO rejections
+[3] control — a genuinely invented route ("/not-a-real-route/")
+  -> REJECTED  kind: navigate-url          (hint lists /s/, /vetforce/s/login/ — not the rejected path)
+```
+
+Mutation-checked: reverting `pageKey` to `origin + path` reproduces the original failure
+**verbatim**, self-contradicting hint included.
+
+**Note the shape of the verification.** Grounding the SAVED `04-ir.json` proves nothing — it is the
+truncated prefix, so the rejected step was already dropped and its own navigate sits at index 0,
+which the guard exempts. It "passes" before the fix too. The step had to be reconstructed from the
+truncation note to test anything at all.
+
+**Still open, and worth knowing.** Saved library cases carry `meta.baseUrl` baked in at creation
+time, and replay uses the stored value. Normalising discovery does not retroactively fix a case
+saved before this — those keep whatever base they were created with. Not a regression (they behave
+exactly as they did), but a case saved from a redirected site before this fix will still carry the
+entered scheme.
+
+### TD-83. Self-heal ran uninvited and invisibly — High / Strategic — Fixed
+
+**What it was, precisely.** Three separate problems, and the reported symptom ("the browser runs
+the tests again after the run is over, with no indication why") needs all three to be understood.
+
+1. **No way to decline it.** `selfHeal` defaulted to `true` in two *separately hardcoded* places —
+   `orchestrator.ts`'s `options?.selfHeal ?? true` and `/api/health`'s advertised
+   `defaults.selfHeal: true`. A Settings toggle already existed and was already wired to
+   `options.selfHeal` on `POST /api/runs`, so the route needed no change; what was missing was
+   that the default behind it was not configurable and was on.
+2. **No visibility.** `orchestrator.ts` emits `heal started/completed` for the PRIMARY case.
+   `suiteRunner.ts` — which is where suite cases heal, up to `MAX_SUITE_HEALS` (default 3) —
+   emitted **nothing at all** while healing. The only trace was the "Fixed automatically" badge,
+   and only when the heal succeeded. A silent second browser run that then failed left no
+   explanation anywhere in the UI or the event log.
+3. **No cost attribution.** A heal is a second full test run *plus* a full IR regeneration, but it
+   is invisible in `08-llm-usage.json`: the heal's IR call is folded into the ordinary `ir` stage
+   total. A run that healed twice and one that never healed look identical in the cost line.
+
+**What the cited run actually shows — say it plainly.** Heal **never ran** in
+`2026-09-06T15-42-48-000Z-61e01731`. No `healed/` directories, `healed: false` on all five cases,
+zero heal events, and both failures are `category: "timeout"` with a null `failingStepId`, which
+`isHealable` correctly rejects. The three defects above are all real and all verified from source,
+but the "browser runs again" symptom came from a different run than the one cited.
+
+**The fix.**
+
+- **`SELF_HEAL_DEFAULT`, defaulting OFF** (platform rule 2). One `selfHealDefault()` in `heal.ts`,
+  read by both the orchestrator's fallback and `/api/health`, so the toggle opens in the state the
+  server is actually in — the two hardcoded copies could not disagree once there is only one.
+  The client's explicit choice still wins, and the route's shape is unchanged.
+- **`suiteRunner` now emits before it heals**, carrying `healing`, `healAttempt` and `healMax`.
+  Folded into its existing `suite` stage rather than emitted as `heal`: `heal.ts` documents that
+  the `heal` StageName drives a primary-case-only phase tracker in `app.js`, and a suite case
+  emitting it would corrupt that tracker. The run view renders
+  *"Attempt 2 of 2 — retrying with a fresh page snapshot"* while it runs, and *"Retry 1: passed"*
+  or *"Retry 1: failed"* on completion — **the failed retry is reported too**, which is the half
+  the success-only badge was missing. Reuses `.hrow-meta`; no new CSS class (rule 3).
+
+  **Two different numbers, and the first version of this fix conflated them.** A heal is
+  ONE-SHOT PER CASE — `attemptHeal` has no loop, and orchestrator.ts calls it "exactly one attempt
+  total" — so a case that heals gets its original run plus one retry, *always* attempt 2 of 2.
+  `MAX_SUITE_HEALS` (default 3) is a different thing entirely: `healsUsed` lives OUTSIDE the case
+  loop, so it is a suite-wide budget for how many cases in a run may heal at all. Rendering the
+  budget as a per-case attempt count told the user this one case might be retried three more
+  times, which is true of no case. The event now carries both, separately: `healAttempt`/`healMax`
+  (per case, always 1) and `healsUsedInRun`/`healBudget` (suite-wide).
+- **The cost line breaks retries out**: `20 AI calls · 90k tokens · 2 self-heal retries`. Counted
+  from the events, because `byStage` genuinely cannot distinguish a heal's IR call from any other.
+  Two counters, summed: the primary case heals under its own `heal` stage and emits once per
+  attempt (relative), suite cases carry a running `healsUsedInRun` (absolute). Mixing them would
+  double-count, and counting only the suite path — which the first version did — would show
+  nothing at all for a run where only the primary case healed.
+- **`isHealable` refuses a deterministic grounding rejection.** A `navigate-url` truncation is the
+  guard refusing an invented route; re-snapshotting cannot make a route real, so `toIR` reaches the
+  identical verdict at ~3,800 prompt tokens — and `attemptHeal` discards the result anyway, because
+  "a heal that truncates isn't a heal". Pure waste, twice over.
+
+**On that last point, note what was NOT done.** The brief asked to never heal "a rejected
+navigate-URL or an absent element". Excluding absent elements wholesale would remove heal's
+purpose — `element_missing` is, in `heal.ts`'s own words, "exactly what heal was built for", and a
+runtime element that was present at discovery and gone at run time is the case heal exists to
+recover. So the gate is narrower and, I think, what the brief was reaching for: only a
+**grounding** rejection that already refused deterministically, before the test ever ran. A runtime
+`element_missing` still heals.
+
+**And it reads a STRUCTURED field, not the prose.** `meta.truncationNote` is `ungrounded.message` —
+written for a model to act on and partly shaped by page text. Branching on its wording is exactly
+the failure `CLAUDE.md`'s central rule and TD-01 record. So `toIR` now records
+`meta.truncationKind` (additive, optional, schema-first like `Target.groundedAt`) and `isHealable`
+branches on that. A test pins it: an IR whose *note* mentions navigating but which carries no
+structured kind is still healable.
+
+`tests/selfHeal.test.ts` (14) and the additions to `tests/usageLine.test.ts` (7). The visibility
+half is pinned on both sides — the field names `suiteRunner` emits are asserted to be the ones
+`app.js` reads (renaming `healing` to `isHealing` on one side is exactly how this line would
+silently stop rendering), and `setSuiteRetryNote` is executed against a stub element.
+
+**One thing to be clear about: this is a visible behaviour change, not a new capability shipping
+dark.** Runs that self-healed yesterday will not today unless `SELF_HEAL_DEFAULT=true` is set or
+the Settings toggle is switched on. That is what was asked for, and it is the right default for a
+step that silently costs a second browser run — but it is a change existing users will notice,
+which is a different thing from platform rule 2.

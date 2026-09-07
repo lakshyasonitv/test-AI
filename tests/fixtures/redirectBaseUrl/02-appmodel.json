@@ -1,0 +1,230 @@
+{
+  "baseUrl": "http://veterans.my.site.com",
+  "pages": [
+    {
+      "url": "https://veterans.my.site.com/s/",
+      "title": "Salesforce Military: Learn Tech Skills, Land A Dream Job",
+      "concepts": [
+        "Navigation",
+        "Account Access",
+        "Registration"
+      ],
+      "elements": [
+        {
+          "role": "button",
+          "name": "Cancel and close",
+          "id": "dismissError",
+          "css": "#dismissError",
+          "visible": false,
+          "enabled": true,
+          "genericPath": "html>body>div>div>span>a",
+          "order": 0
+        },
+        {
+          "role": "button",
+          "name": "Refresh",
+          "id": "auraErrorReload",
+          "css": "#auraErrorReload",
+          "visible": false,
+          "enabled": true,
+          "genericPath": "html>body>div>div>div>a",
+          "order": 1
+        },
+        {
+          "role": "link",
+          "name": "Vetforce",
+          "id": "link_2",
+          "visible": true,
+          "enabled": true,
+          "genericPath": "html>body>div>div>header>div>div>div>a",
+          "landmark": "header",
+          "order": 2
+        },
+        {
+          "role": "menuitem",
+          "name": "Home",
+          "concept": "Navigation",
+          "id": "menuitem_3",
+          "visible": true,
+          "enabled": true,
+          "genericPath": "html>body>div>div>header>div>div>span>div>div>div>community_navigation-global-navigation-list>div>nav>ul>li>community_navigation-global-navigation-item>a",
+          "landmark": "nav",
+          "order": 3
+        },
+        {
+          "role": "menuitem",
+          "name": "How it Works",
+          "concept": "Navigation",
+          "id": "menuitem_4",
+          "visible": true,
+          "enabled": true,
+          "genericPath": "html>body>div>div>header>div>div>span>div>div>div>community_navigation-global-navigation-list>div>nav>ul>li>community_navigation-global-navigation-item>a",
+          "landmark": "nav",
+          "order": 4
+        },
+        {
+          "role": "menuitem",
+          "name": "Veterans at Salesforce",
+          "concept": "Navigation",
+          "id": "menuitem_5",
+          "visible": true,
+          "enabled": true,
+          "genericPath": "html>body>div>div>header>div>div>span>div>div>div>community_navigation-global-navigation-list>div>nav>ul>li>community_navigation-global-navigation-item>a",
+          "landmark": "nav",
+          "order": 5
+        }
+      ],
+      "domLinks": [
+        {
+          "text": "Refresh",
+          "href": "https://veterans.my.site.com/s/?nocache=https%3A%2F%2Fveterans.my.site.com%2Fs%2F",
+          "title": "",
+          "ariaLabel": "",
+          "isExternal": false,
+          "role": "link"
+        },
+        {
+          "text": "Vetforce",
+          "href": "https://veterans.my.site.com/s/",
+          "title": "Vetforce",
+          "ariaLabel": "",
+          "isExternal": false,
+          "role": "link"
+        },
+        {
+          "text": "How it Works",
+          "href": "https://veterans.my.site.com/s/how-it-works",
+          "title": "",
+          "ariaLabel": "",
+          "isExternal": false,
+          "role": "link"
+        },
+        {
+          "text": "Veterans at Salesforce",
+          "href": "https://veterans.my.site.com/s/veterans-at-salesforce",
+          "title": "",
+          "ariaLabel": "",
+          "isExternal": false,
+          "role": "link"
+        },
+        {
+          "text": "FAQ",
+          "href": "https://veterans.my.site.com/s/faq",
+          "title": "",
+          "ariaLabel": "",
+          "isExternal": false,
+          "role": "link"
+        },
+        {
+          "text": "Login",
+          "href": "https://veterans.my.site.com/vetforce",
+          "title": "",
+          "ariaLabel": "",
+          "isExternal": false,
+          "role": "link"
+        },
+        {
+          "text": "Register",
+          "href": "https://veterans.my.site.com/s/registration",
+          "title": "",
+          "ariaLabel": "",
+          "isExternal": false,
+          "role": "link"
+        },
+        {
+          "text": "Become a partner",
+          "href": "https://veterans.my.site.com/s/employers",
+          "title": "",
+          "ariaLabel": "",
+          "isExternal": false,
+          "role": "link"
+        }
+      ]
+    },
+    {
+      "url": "https://veterans.my.site.com/vetforce/s/login/",
+      "title": "Login",
+      "concepts": [
+        "Error Notification",
+        "Login Assistance"
+      ],
+      "elements": [
+        {
+          "role": "button",
+          "name": "Cancel and close",
+          "id": "dismissError",
+          "css": "#dismissError",
+          "visible": false,
+          "enabled": true,
+          "genericPath": "html>body>div>div>span>a",
+          "order": 0
+        },
+        {
+          "role": "button",
+          "name": "Refresh",
+          "id": "auraErrorReload",
+          "css": "#auraErrorReload",
+          "visible": false,
+          "enabled": true,
+          "genericPath": "html>body>div>div>div>a",
+          "order": 1
+        },
+        {
+          "role": "link",
+          "name": "Forgot Your Password?",
+          "concept": "Login Assistance",
+          "id": "link_2",
+          "visible": true,
+          "enabled": true,
+          "genericPath": "html>body>div>div>div>div>div>div>div>div>div>p>a",
+          "order": 2
+        },
+        {
+          "role": "dialog",
+          "name": "\u00d7Sorry to interruptCSS ErrorRefresh",
+          "concept": "Error Notification",
+          "id": "auraError",
+          "visible": true,
+          "enabled": true,
+          "genericPath": "html>body>div>div",
+          "order": 3
+        },
+        {
+          "role": "button",
+          "name": "\u00d7",
+          "concept": "Error Notification",
+          "id": "dismissError",
+          "visible": true,
+          "enabled": true,
+          "order": 4
+        },
+        {
+          "role": "link",
+          "name": "Refresh",
+          "concept": "Error Notification",
+          "visible": true,
+          "enabled": true,
+          "order": 5
+        }
+      ],
+      "domLinks": [
+        {
+          "text": "Refresh",
+          "href": "https://veterans.my.site.com/vetforce/s/login/?nocache=https%3A%2F%2Fveterans.my.site.com%2Fvetforce%2Fs%2Flogin%2F",
+          "title": "",
+          "ariaLabel": "",
+          "isExternal": false,
+          "role": "link"
+        },
+        {
+          "text": "Forgot Your Password?",
+          "href": "https://veterans.my.site.com/vetforce/s/login/ForgotPassword",
+          "title": "",
+          "ariaLabel": "",
+          "isExternal": false,
+          "role": "link"
+        }
+      ]
+    }
+  ]
+}

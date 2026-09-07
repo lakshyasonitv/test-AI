@@ -699,7 +699,14 @@ function renderUsageLine() {
     ? ` &middot; most of it in <b>${escapeHtml(top[0])}</b> (${top[1].calls} call${top[1].calls === 1 ? "" : "s"}, ${fmtTokens(top[1].totalTokens ?? 0)})`
     : "";
   const cap = u.exhausted ? " &middot; <b>budget exhausted</b>" : "";
-  return `<div class="hrow-meta">${u.calls} AI call${u.calls === 1 ? "" : "s"} &middot; ${fmtTokens(u.totalTokens ?? 0)} tokens${topPart}${cap}</div>`;
+  // A self-heal is a second full test run AND a full IR regeneration, so it is a real part of
+  // what a run cost — but it is invisible in `byStage`, which folds the heal's IR call into the
+  // ordinary `ir` total. Counted separately from the suite events. TD-83.
+  const healCount = currentRunPrimaryHeals + currentRunSuiteHeals;
+  const heals = healCount > 0
+    ? ` &middot; <b>${healCount} self-heal retr${healCount === 1 ? "y" : "ies"}</b>`
+    : "";
+  return `<div class="hrow-meta">${u.calls} AI call${u.calls === 1 ? "" : "s"} &middot; ${fmtTokens(u.totalTokens ?? 0)} tokens${heals}${topPart}${cap}</div>`;
 }
 
 /** 1234 -> "1.2k". Token counts are for a sense of scale, not accounting. */
@@ -1046,11 +1053,26 @@ let currentRunPrompt = "";
  */
 let currentRunUsage = null;
 let currentRunIsReplay = false;
+/**
+ * Self-heal retries observed in THIS run. Counted from the events rather than read from
+ * 08-llm-usage.json, which records tokens by stage and has no notion of a retry — the heal's IR
+ * regeneration is folded into the `ir` stage total. TD-83.
+ *
+ * TWO counters, because the two heal paths report differently and mixing them double-counts. The
+ * primary case heals under its own "heal" StageName and emits once per attempt (relative, so
+ * increment). Suite cases carry `healsUsedInRun`, which is already a running total (absolute, so
+ * take the max). The primary case is reused by the suite rather than re-healed, so the two never
+ * describe the same retry and summing them is correct.
+ */
+let currentRunPrimaryHeals = 0;
+let currentRunSuiteHeals = 0;
 
 function hideSuiteResults() {
   currentRunPrompt = "";
   currentRunUsage = null;
   currentRunIsReplay = false;
+  currentRunPrimaryHeals = 0;
+  currentRunSuiteHeals = 0;
   currentSuite = null;
   suiteResultsEl.classList.add("hidden");
   suiteResultsEl.removeAttribute("data-run-id");
@@ -1240,6 +1262,24 @@ function renderCaseNarrative(container, c, ir) {
  * Rendered straight from the summary, so it appears with the card instead of waiting on the
  * per-case fetch the diagnosis block needs. Every class here already exists (rule 3).
  */
+/**
+ * The one-line retry note on a suite progress row.
+ *
+ * `.hrow-meta` is the existing muted-metadata class this file already uses for the cost line —
+ * no new CSS class (rule 3). Passing `null` removes the note, so a row that is reused for a
+ * later case cannot inherit a stale one.
+ */
+function setSuiteRetryNote(item, text) {
+  let note = item.querySelector(".hrow-meta");
+  if (text === null) { if (note) note.remove(); return; }
+  if (!note) {
+    note = document.createElement("span");
+    note.className = "hrow-meta";
+    item.appendChild(note);
+  }
+  note.textContent = text;
+}
+
 function renderCaseErrorBlock(c, screenshotUrl) {
   if (c.status !== "failed" && c.status !== "blocked") return "";
   if (!c.error && c.failedStep === undefined) return "";
@@ -2667,6 +2707,13 @@ function applyEvent(event, runId) {
   }
 
   // Suite progress events
+  // The PRIMARY case heals under its own "heal" StageName (orchestrator.ts), not through the
+  // suite events — so without this a run where only the primary case healed would show no retry
+  // count at all, and the cost line would understate what the run actually did.
+  if (event.stage === "heal" && event.status === "started") {
+    currentRunPrimaryHeals += 1;
+  }
+
   if (event.stage === "suite" && event.status === "started" && event.data) {
     const caseId = event.data.caseId;
     if (event.data.total && !caseId) {
@@ -2702,6 +2749,17 @@ function applyEvent(event, runId) {
         if (event.data.title) {
           item.querySelector(".suite-progress-title").textContent = event.data.title;
         }
+        // A heal re-runs the whole case in a real browser, so the user watches the tests run a
+        // second time after the run looked finished. Say why, while it is happening — until now
+        // the only trace was a "Fixed automatically" badge, and only when it worked. TD-83.
+        if (event.data.healing) {
+          // healsUsedInRun is the SUITE-WIDE count (how many cases have healed); healAttempt is
+          // this case's own, and a heal is one-shot so it is always 1. Two different numbers —
+          // the cost line wants the first, this row wants the second.
+          currentRunSuiteHeals = Math.max(currentRunSuiteHeals, event.data.healsUsedInRun ?? 1);
+          setSuiteRetryNote(item,
+            `Attempt ${(event.data.healAttempt ?? 1) + 1} of ${(event.data.healMax ?? 1) + 1} — retrying with a fresh page snapshot`);
+        }
       }
     }
   }
@@ -2718,6 +2776,14 @@ function applyEvent(event, runId) {
         const iconEl = item.querySelector(".suite-progress-icon");
         if (iconEl) {
           iconEl.innerHTML = icon(STATUS_ICON[statusClass] ?? "check", { size: 14 });
+        }
+        // A retry that FAILED has to say so too. Reporting only the successes is how a silent
+        // second browser run looked like the tool misbehaving rather than trying again.
+        if (event.data.healAttempt) {
+          const outcome = statusClass === "passed" || statusClass === "truncated" ? "passed" : "failed";
+          setSuiteRetryNote(item, `Retry ${event.data.healAttempt}: ${outcome}`);
+        } else {
+          setSuiteRetryNote(item, null);
         }
       }
     }
@@ -4612,7 +4678,11 @@ scrimEl.addEventListener("click", closeSidebarDrawer);
 // leaves the server on its own env-configured default rather than the client
 // silently overriding it with a hardcoded guess.
 const runOptions = {};
-const optionDefaults = { gateReview: false, selfHeal: true };
+// Both OFF unless the server says otherwise. /api/health overwrites these with the server's
+// real configured defaults a moment later; hardcoding `selfHeal: true` here meant the toggle
+// showed ON before the server had been asked, and disagreed with it whenever SELF_HEAL_DEFAULT
+// was unset. TD-83.
+const optionDefaults = { gateReview: false, selfHeal: false };
 
 function paintToggle(el, on) { el.setAttribute("aria-pressed", String(on)); }
 

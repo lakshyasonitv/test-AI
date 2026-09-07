@@ -5,7 +5,7 @@ import { isRateLimitError } from "../llm/backoff.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
-import { cutAtBoundary } from "../text.js";
+import { cutAtBoundary, siteHost } from "../text.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
@@ -125,17 +125,28 @@ function resolveHref(base: string, hrefOrPath: string): string | null {
   try { return new URL(hrefOrPath, base).href; } catch { return null; }
 }
 
-/** Origin + path, ignoring query/hash — enough to match a discovered page's URL against a
- *  resolved href without tracking params throwing off the comparison. */
+/**
+ * Host + path, ignoring scheme, port, `www.`, query and hash — enough to match a discovered
+ * page's URL against a resolved href without tracking params throwing off the comparison.
+ *
+ * THE SCHEME IS DELIBERATELY NOT IN THE KEY (TD-82). It used to be `u.origin + path`, and that
+ * is what rejected a correct IR on run `2026-09-06T15-42-48-000Z-61e01731`: the user entered
+ * `http://veterans.my.site.com/s/`, the site redirected to `https://`, so every discovered
+ * `page.url` was `https://…` while `appModel.baseUrl` kept the typed `http://…`. A navigate step
+ * to `/s/` resolved against the base to `http://…/s`, which is not `https://…/s`, so the guard
+ * refused the very path its own hint then listed as known.
+ *
+ * Normalising the base URL at discovery (see `landedOrigin` in hybridDiscovery.ts) fixes the
+ * cause; this is the second line of defence, and the one that keeps an AppModel cached before
+ * that fix from failing the same way. Same normalisation as `isSameSite`, via one shared
+ * `siteHost`.
+ */
 function pageKey(url: string): string {
+  const host = siteHost(url);
+  if (!host) return url;
   try {
-    const u = new URL(url);
-    return u.origin + (u.pathname.replace(/\/+$/, "") || "/");
+    return host + (new URL(url).pathname.replace(/\/+$/, "") || "/");
   } catch { return url; }
-}
-
-function originOf(url: string): string | null {
-  try { return new URL(url).origin; } catch { return null; }
 }
 
 function findPageByUrl(appModel: AppModel, absoluteUrl: string): PageModel | null {
@@ -477,12 +488,15 @@ export function groundingError(
   // redirect, and every later step then grounds against a page that was never really reached.
   // Only destinations the model actually observed are allowed through.
   const knownNav = knownNavigationTargets(appModel);
-  const baseOrigin = originOf(appModel.baseUrl);
   const sourcePrompt = ir.meta?.sourcePrompt ?? "";
+  const baseHost = siteHost(appModel.baseUrl);
   const navUrlAllowed = (url: string): boolean => {
     const resolved = resolveHref(appModel.baseUrl, url);
     if (!resolved) return true;                                  // unparseable — not this guard's business
-    if (!baseOrigin || originOf(resolved) !== baseOrigin) return true; // off-origin is a separate concern
+    // Off-SITE is a separate concern. Compared by host, not by origin string: with the entered
+    // scheme in baseUrl and the landed scheme on every page, an origin comparison answers a
+    // question about redirects rather than about which site this is (TD-82).
+    if (!baseHost || siteHost(resolved) !== baseHost) return true;
     if (knownNav.has(pageKey(resolved))) return true;
     // A path the USER typed themselves is authoritative — they know their own app's routes,
     // and that's a stated fact rather than a guess. Length > 1 so a bare "/" can't match
@@ -490,9 +504,32 @@ export function groundingError(
     const path = (() => { try { return new URL(resolved).pathname.replace(/\/+$/, ""); } catch { return ""; } })();
     return path.length > 1 && sourcePrompt.includes(path);
   };
-  const knownPathsHint = appModel.pages
-    .map(p => { try { return new URL(p.url).pathname || "/"; } catch { return null; } })
-    .filter(Boolean).slice(0, 6).join(", ") || "/";
+  /**
+   * The paths to offer as alternatives when a navigate target is refused.
+   *
+   * Built from the SAME key the check uses, and with the rejected path removed. The old version
+   * did neither, and produced the single most confusing message this pipeline has emitted:
+   *
+   *     Step s4 navigates to "/s/", which is not a page ... Known paths: /s/, /vetforce/s/login/.
+   *
+   * — refusing a path and then listing it as known, on run
+   * `2026-09-06T15-42-48-000Z-61e01731`. A hint that contradicts its own verdict is worse than no
+   * hint: the model cannot act on it, so it re-sends the same answer until the attempt budget is
+   * gone. If removing the rejected path leaves nothing to suggest, say so plainly instead of
+   * offering a list that is now empty. TD-82.
+   */
+  const knownPathsHintFor = (rejectedUrl: string): string => {
+    const rejectedKey = (() => {
+      const resolved = resolveHref(appModel.baseUrl, rejectedUrl);
+      return resolved ? pageKey(resolved) : null;
+    })();
+    const paths = appModel.pages
+      .filter(p => !rejectedKey || pageKey(p.url) !== rejectedKey)
+      .map(p => { try { return new URL(p.url).pathname || "/"; } catch { return null; } })
+      .filter((p): p is string => !!p);
+    const unique = Array.from(new Set(paths)).slice(0, 6);
+    return unique.length ? `Known paths: ${unique.join(", ")}.` : "No other page in the model has a different path.";
+  };
   // Which page the flow is actually on at each step — an element grounded only against
   // some OTHER page (never the current one) shouldn't pass just because it exists
   // somewhere in the model. Falls back to allElements wherever the cursor is unresolved.
@@ -519,7 +556,7 @@ export function groundingError(
           `route usually loads a blank page or redirects, so everything after it runs against ` +
           `the wrong page. Reach that destination the way a user would instead: click the ` +
           `sidebar/menu control that leads there (it is an element in the application model). ` +
-          `Known paths: ${knownPathsHint}.`,
+          `${knownPathsHintFor(t.url)}`,
       };
     }
     const elements = trail.pageAt[index]?.elements ?? allElements;
@@ -1103,8 +1140,17 @@ export async function toIR(
   // (generator.ts appends relative step paths to it), and entryPath is where the
   // actual page under test lives — telling the model both up front heads off the
   // double-path bug ("https://host/login" + "/login" -> 404) at the source.
-  const { origin, pathname, search } = new URL(entryUrl);
+  const { pathname, search } = new URL(entryUrl);
   const entryPath = pathname + search || "/";
+  // The ORIGIN comes from the app model, not from what the user typed: discovery sets
+  // `appModel.baseUrl` to where the browser actually landed, so this is the origin the pages in
+  // the model genuinely live on. Using the entered origin here is what put `http://` into
+  // `meta.baseUrl` — and therefore into the generated `page.goto` — for a site that serves
+  // `https://` (TD-82). The PATH still comes from the entered URL: that is the page the user
+  // asked about, and a redirect of the origin does not change which page they meant.
+  const origin = (() => {
+    try { return new URL(appModel.baseUrl).origin; } catch { return new URL(entryUrl).origin; }
+  })();
 
   // Credentials are decided BEFORE the cache lookup because they belong in the key. The cached
   // IR is stored post-substitution (see finalize below) and a cache hit returns immediately
@@ -1222,20 +1268,33 @@ Example — handling duplicate selectors with nth:
   // made two verification runs look like the fix hadn't worked. Hashing the prompt text is
   // self-maintaining in a way a hand-bumped version constant is not: change a rule, get a new
   // key, with nobody having to remember. The model name is in for the same reason.
+  // `entryUrl` is a REAL input to the prompt — `buildUser` derives `entryPath` from it and the
+  // system prompt states that path as the navigate target — but it was never in the key. Two runs
+  // with the same test case and the same model but different entry pages would therefore share a
+  // cache entry and the second would get an IR built for the first one's page. The disk half of
+  // this cache never expires, so it could not heal on its own. `CLAUDE.md`'s cache rule,
+  // `TECH_DEBT.md` TD-22, `DECISIONS.md` D-10 — the same omission those record, a third time.
+  //
+  // `appModel` is serialised whole, so the normalised `baseUrl` is already in the key
+  // transitively: normalising it changes the key by construction and no stale pre-TD-82 entry
+  // can be served to a post-TD-82 run.
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
-    system, process.env.GEMINI_MODEL ?? "default");
+    entryUrl, system, process.env.GEMINI_MODEL ?? "default");
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
   const buildUser = (model: AppModel, correction?: string) => {
     // Only send pages relevant to this test case: the entry page + pages whose
     // concepts or URL overlap with the test feature. Never send the full model.
-    const entryOrigin = new URL(entryUrl).origin;
+    const entryHost = siteHost(entryUrl);
     const featureLower = testCase.feature.toLowerCase();
     const relevantPages = model.pages.filter(p => {
-      // Always include the entry page
-      if (p.url.startsWith(entryOrigin) && entryPath && p.url.includes(entryPath)) return true;
+      // Always include the entry page. Compared by HOST, not by an origin string prefix: with a
+      // redirected site the entered origin is `http://…` and every page is `https://…`, so
+      // `startsWith` matched nothing and the entry page — the one page always worth sending —
+      // was silently dropped from the prompt (TD-82, same root cause as the navigate guard).
+      if (entryHost && siteHost(p.url) === entryHost && entryPath && p.url.includes(entryPath)) return true;
       // Include pages whose concepts match the test feature
       if (p.concepts.some(c => c.toLowerCase().includes(featureLower))) return true;
       // Include pages whose URL path contains the feature name
@@ -1274,8 +1333,11 @@ Example — handling duplicate selectors with nth:
       ? pagesToSend.find(p => pageKey(p.url) === pageKey(testCase.targetUrl!))
       : undefined;
     // Only trust the path test when there IS a path; otherwise fall back to exact page identity.
+    // Host, not origin prefix — third occurrence of the same scheme trap in this function
+    // (TD-82). With a redirected site this matched nothing, so the entry page never became the
+    // lead page and the model was handed the app's pages in discovery order instead.
     const entryPage = entryPath !== "/"
-      ? pagesToSend.find(p => p.url.startsWith(entryOrigin) && p.url.includes(entryPath))
+      ? pagesToSend.find(p => siteHost(p.url) === entryHost && p.url.includes(entryPath))
       : pagesToSend.find(p => pageKey(p.url) === pageKey(entryUrl));
     const leadPage = targetPage ?? entryPage;
     const orderedPages = leadPage ? [leadPage, ...pagesToSend.filter(p => p !== leadPage)] : pagesToSend;
@@ -1408,7 +1470,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   let lastContradiction: { ir: IR; stepIds: string[]; message: string } | undefined;
   /** Longest grounded prefix seen across all attempts — the fallback that keeps a run alive
    *  when the attempt budget is spent extending the model rather than converging. */
-  let bestPartial: { ir: IR; steps: Step[]; note: string } | undefined;
+  let bestPartial: { ir: IR; steps: Step[]; note: string; kind?: string } | undefined;
 
   /**
    * Grounding rejections already seen, so an unfixable one is not paid for four times.
@@ -1533,7 +1595,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     const trackBestPartial = (u: NonNullable<ReturnType<typeof groundingError>>) => {
       const prefix = parsed.data.steps.slice(0, u.index);
       if (prefix.length && prefix.length > (bestPartial?.steps.length ?? 0)) {
-        bestPartial = { ir: parsed.data, steps: prefix, note: u.message };
+        bestPartial = { ir: parsed.data, steps: prefix, note: u.message, kind: u.kind };
       }
       return prefix;
     };
@@ -1792,6 +1854,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       const truncated: IR = { ...parsed.data, steps: prefix };
       truncated.meta = {
         ...parsed.data.meta, truncated: true, truncationNote: lastErr,
+        // Structured, so isHealable can decide without reading the prose note (TD-83).
+        ...(ungrounded.kind ? { truncationKind: ungrounded.kind } : {}),
         hasTerminalAssertion: hasTerminalAssertion(prefix),
       };
       return { ir: finalize(truncated), updatedAppModel: currentModel };
@@ -1850,6 +1914,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         ...bestPartial.ir.meta,
         truncated: true,
         truncationNote: bestPartial.note,
+        ...(bestPartial.kind ? { truncationKind: bestPartial.kind } : {}),
         hasTerminalAssertion: hasTerminalAssertion(bestPartial.steps),
       },
     };

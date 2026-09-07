@@ -325,6 +325,8 @@ export async function runSuite(
 
         let diagnosisPath: string | undefined;
         let healed = false;
+        /** Which heal attempt this case used, if any — for the completion event's retry line. */
+        let healAttempted = 0;
         if (!result.passed) {
           const diagnosis = await analyzeFailure(ir, result, appModel.auth?.loginUrl);
           diagnosisPath = path.join(caseDir, "06-diagnosis.json");
@@ -336,6 +338,30 @@ export async function runSuite(
           // the original, or a healed-and-passing case would still get reported truncated/failed.
           if (selfHeal && healsUsed < MAX_SUITE_HEALS && isHealable(diagnosis, ir)) {
             healsUsed++;
+            healAttempted = 1;   // per-case: heal is one-shot, so this case is on its retry 1
+            // Say that it is happening, BEFORE it happens.
+            //
+            // A heal re-runs the whole case in a real browser, so the user watches the tests run
+            // again after the run looked finished. Until now suiteRunner emitted nothing at all
+            // while healing — the only trace was a "Fixed automatically" badge, and only when it
+            // WORKED. A silent second run that then fails leaves no explanation anywhere.
+            //
+            // Folded into the "suite" stage rather than emitted as "heal": heal.ts documents that
+            // the "heal" StageName drives a PRIMARY-CASE-ONLY phase tracker in app.js, and a
+            // suite case emitting it would corrupt that tracker.
+            //
+            // TWO DIFFERENT NUMBERS, deliberately kept apart. A heal is ONE-SHOT PER CASE
+            // (`attemptHeal` has no loop; orchestrator.ts calls it "exactly one attempt total"),
+            // so this case gets its original run plus one retry — attempt 2 of 2, always.
+            // `MAX_SUITE_HEALS` is something else entirely: a SUITE-WIDE budget for how many
+            // cases in this run may heal at all, because `healsUsed` lives outside the case loop.
+            // Rendering the budget as a per-case attempt count would tell the user this one case
+            // may be retried three more times, which is not true of any case.
+            emit(runId, "suite", "started", {
+              caseId, title: tc.title, healing: true,
+              healAttempt: 1, healMax: 1,
+              healsUsedInRun: healsUsed, healBudget: MAX_SUITE_HEALS,
+            }, undefined, onEvent);
             try {
               const healedOutcome = await attemptHeal({
                 testCase: tc, ir, appModel, diagnosis, sourcePrompt, entryUrl, llmBudget,
@@ -385,7 +411,12 @@ export async function runSuite(
           blockedBy: blocked?.reason, blockedScreenshot: blocked?.screenshot ?? undefined,
         });
 
-        emit(runId, "suite", "completed", { caseId, title: tc.title, status, healed }, undefined, onEvent);
+        // healAttempt rides along whenever a heal was actually attempted, so the UI can say
+        // "Retry 1: passed" / "Retry 1: failed" instead of only ever showing the success badge.
+        emit(runId, "suite", "completed", {
+          caseId, title: tc.title, status, healed,
+          ...(healAttempted ? { healAttempt: healAttempted, healMax: 1 } : {}),
+        }, undefined, onEvent);
       } catch (err: any) {
         results.push({
           caseId, title: tc.title, status: "failed",

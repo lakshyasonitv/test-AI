@@ -14,7 +14,7 @@ import {
 import { generateSpec } from "./stages/generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
-import { attemptHeal, isHealable } from "./stages/heal.js";
+import { attemptHeal, isHealable, selfHealDefault } from "./stages/heal.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 import { ALL_SCOPES } from "./kb/testStrategy.js";
@@ -70,7 +70,10 @@ export async function runPipeline(
   // Normalize: single `url` becomes `urls: [url]`; both provided means `urls` wins.
   const resolvedUrls = urls?.length ? urls : url ? [url] : [];
   if (!resolvedUrls.length) throw new Error("Either url or urls must be provided");
-  const selfHealEnabled = options?.selfHeal ?? true;
+  // The client's choice wins; otherwise the server's own configured default (SELF_HEAL_DEFAULT,
+  // off unless set). Previously hardcoded `true`, so every run healed whether or not anyone
+  // asked — the browser re-running after a run looked finished, with no way to turn it off.
+  const selfHealEnabled = options?.selfHeal ?? selfHealDefault();
   const runId = presetRunId ?? makeRunId();
   const runDir = path.join("runs", runId);
   mkdirSync(runDir, { recursive: true });

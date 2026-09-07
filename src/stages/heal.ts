@@ -33,10 +33,49 @@ export interface HealResult {
   specCode: string;
 }
 
+/**
+ * Grounding rejections a fresh snapshot cannot resolve, so a heal is pure waste.
+ *
+ * `navigate-url` is the guard refusing an INVENTED route. Re-snapshotting and regenerating cannot
+ * make a route real: `toIR` applies the identical deterministic guard against the new model and
+ * reaches the identical verdict, at the cost of a full IR regeneration (~3.8k prompt tokens
+ * measured across `runs/`). Worse, `attemptHeal` then throws the result away regardless, because
+ * "a heal that truncates isn't a heal" — so the spend buys nothing even in principle.
+ *
+ * Deliberately NARROW. `element_missing` as a RUNTIME diagnosis stays healable: an element that
+ * was there at discovery and gone at run time is precisely what heal exists for. What is excluded
+ * is only the case where GROUNDING already refused, deterministically, before the test ever ran.
+ */
+const UNHEALABLE_TRUNCATIONS = new Set(["navigate-url"]);
+
+/**
+ * Does a run self-heal when the client says nothing about it?
+ *
+ * ONE definition, because two consumers have to agree: the orchestrator uses it as the fallback
+ * for `options.selfHeal`, and `/api/health` advertises it so the Settings toggle opens in the
+ * state the server is actually in. They were separately hardcoded `true`, so the answer was
+ * un-configurable and the user could not turn it off for a demo without touching the toggle
+ * every time.
+ *
+ * Defaults to OFF (platform rule 2: a new capability ships behind a flag defaulting off — and a
+ * heal is a second full test run plus a full IR regeneration, which should be asked for rather
+ * than assumed). Read at call time, not at import, so a test can set the env per case.
+ */
+export function selfHealDefault(): boolean {
+  return process.env.SELF_HEAL_DEFAULT === "true";
+}
+
 /** The same gate `attemptHeal` applies internally, exported so a caller can decide whether to
  *  emit a "heal started" event at all (a UI/observability concern) without duplicating the
  *  condition itself — asking twice would risk the two copies drifting apart. */
 export function isHealable(diagnosis: Diagnosis, ir: IR): boolean {
+  // Read from the structured field, never from `truncationNote` — that note is prose written for
+  // a model, and branching on its wording is the failure CLAUDE.md's central rule and TD-01 both
+  // record. TD-83.
+  if (ir.meta?.truncated && ir.meta.truncationKind
+      && UNHEALABLE_TRUNCATIONS.has(ir.meta.truncationKind)) {
+    return false;
+  }
   const healable = diagnosis.category === "selector_changed" || diagnosis.category === "element_missing";
   const failIdx = diagnosis.failingStepId ? ir.steps.findIndex((s) => s.id === diagnosis.failingStepId) : -1;
   return healable && failIdx > 0;

@@ -75,6 +75,22 @@ export const IR = z.object({
     // Only meaningful when truncated is true — a truncated IR without a terminal assertion
     // cannot report "passed" because the dropped tail may have contained the only assertion.
     hasTerminalAssertion: z.boolean().optional(),
+    /**
+     * WHAT kind of grounding rejection truncated this IR, as a structured value rather than
+     * something to be read back out of `truncationNote`.
+     *
+     * `truncationNote` is `ungrounded.message` — prose, written for a model to act on, and
+     * partly shaped by page text. Pattern-matching it to make a decision is exactly the failure
+     * `CLAUDE.md`'s central rule and `TECH_DEBT.md` TD-01 record, so the decision reads this
+     * instead. Set alongside `truncated`, never on its own.
+     *
+     * Its one consumer today is `isHealable` (TD-83): a heal re-runs `toIR` against a fresh
+     * snapshot, so it can recover a target that genuinely moved — but a `navigate-url` rejection
+     * is the guard refusing an invented route, which a new snapshot cannot make real. Healing
+     * that spends a full IR regeneration to be told the same thing, and `attemptHeal` then
+     * discards the result anyway because a heal that truncates is not a heal.
+     */
+    truncationKind: z.string().optional(),
   }),
   steps: z.array(Step).min(1),
 });

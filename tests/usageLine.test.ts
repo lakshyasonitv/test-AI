@@ -28,13 +28,20 @@ function extractFn(src: string, name: string): string {
   throw new Error(`unbalanced braces extracting ${name}()`);
 }
 
-/** Build the pair with the two module globals they read injected as parameters. */
-function render(usage: unknown, isReplay: boolean): string {
+/**
+ * Build the pair with the module globals they read injected as parameters.
+ *
+ * The heal count is TWO globals, not one: the primary case heals under its own "heal" stage and
+ * reports one event per attempt, while suite cases carry a running total. Injecting them
+ * separately is what lets the summing test below discriminate.
+ */
+function render(usage: unknown, isReplay: boolean, primaryHeals = 0, suiteHeals = 0): string {
   const factory = new Function(
-    "currentRunUsage", "currentRunIsReplay", "escapeHtml",
+    "currentRunUsage", "currentRunIsReplay",
+    "currentRunPrimaryHeals", "currentRunSuiteHeals", "escapeHtml",
     `${extractFn(APP, "fmtTokens")}\n${extractFn(APP, "renderUsageLine")}\nreturn renderUsageLine();`,
   );
-  return factory(usage, isReplay, (s: string) => String(s));
+  return factory(usage, isReplay, primaryHeals, suiteHeals, (s: string) => String(s));
 }
 
 const REAL_USAGE = {
@@ -88,5 +95,59 @@ describe("renderUsageLine", () => {
     expect(fmt(1200)).toBe("1.2k");
     expect(fmt(90305)).toBe("90k");
     expect(fmt(514427)).toBe("514k");   // the amazon discovery call
+  });
+});
+
+/**
+ * Self-heal retries are part of what a run cost — TECH_DEBT.md TD-83.
+ *
+ * A heal is a second full test run PLUS a full IR regeneration, but it is invisible in
+ * `byStage`: the heal's IR call is folded into the ordinary `ir` total, so a run that healed
+ * twice and one that never healed look identical in the cost line. The count comes from the
+ * suite events instead, which is the only place a retry is actually distinguishable.
+ */
+describe("self-heal retries in the cost line", () => {
+  it("says how many retries a run spent", () => {
+    const out = render(REAL_USAGE, false, 2);
+    expect(out).toContain("2 self-heal retries");
+  });
+
+  it("uses the singular for one", () => {
+    expect(render(REAL_USAGE, false, 1)).toContain("1 self-heal retry");
+  });
+
+  it("says nothing at all when nothing healed — the ordinary run is unchanged", () => {
+    const out = render(REAL_USAGE, false, 0);
+    expect(out).not.toContain("self-heal");
+    // And the rest of the line is exactly what it was before this field existed.
+    expect(out).toContain("20 AI calls");
+    expect(out).toContain("90k tokens");
+  });
+
+  it("still mints no new class when it does appear (rule 3)", () => {
+    const classes = Array.from(render(REAL_USAGE, false, 3).matchAll(/class="([^"]+)"/g))
+      .flatMap((m) => m[1].split(/\s+/));
+    expect(classes).toEqual(["hrow-meta"]);
+  });
+
+  it("a replay still reports zero spend, retries or not", () => {
+    // A replay makes no model calls, so it cannot heal — but if the counter were ever set,
+    // the replay line must not start advertising retries it did not pay for.
+    expect(render(null, true, 2)).toContain("0 AI calls");
+    expect(render(null, true, 2)).not.toContain("self-heal");
+  });
+});
+
+describe("the two heal counters are summed, not confused", () => {
+  it("counts a primary-case heal, which reports under its own stage", () => {
+    // orchestrator.ts emits stage "heal" for the primary case; suiteRunner folds suite heals
+    // into "suite". A run where only the primary healed must still show a retry.
+    expect(render(REAL_USAGE, false, 1, 0)).toContain("1 self-heal retry");
+  });
+
+  it("adds them rather than taking one or the other", () => {
+    // The primary case is REUSED by the suite, not re-healed, so the two never describe the same
+    // retry. Taking a max here would silently under-report a run that healed on both paths.
+    expect(render(REAL_USAGE, false, 1, 2)).toContain("3 self-heal retries");
   });
 });
