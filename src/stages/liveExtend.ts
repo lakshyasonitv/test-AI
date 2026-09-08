@@ -7,12 +7,12 @@ import {
 } from "./discovery.js";
 import { resolveLive, chooseLive } from "./targetResolver.js";
 import {
-  credentialForTarget, redactCredentials, credentialFieldMap, credentialKindForTarget,
+  credentialForStep, redactCredentials, credentialFieldMap, credentialKindForStep,
   lastFillIndexByKind, type Credentials, type CredentialKind, type CredentialPolicy,
 } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
-import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
-import { cutAtBoundary } from "../text.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey, credentialFingerprint } from "../kb/llmCache.js";
+import { cutAtBoundary, pageKey } from "../text.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -39,7 +39,12 @@ export async function runStepLive(
       return;
     }
     case "fill": {
-      const val = (creds && isFinalCredentialAttempt ? credentialForTarget(step.target, creds, fieldMap, policy) : undefined) ?? step.value ?? "";
+      // credentialForSTEP, not ForTarget: the kind is decided from the step's `${env:...}` value
+      // first and only then from its target. The executed spec already keys on the value
+      // (generator.ts's `valueCode` compiles it to `process.env.X`); the walk keying on the
+      // target instead is what made it type the literal string `${env:TEST_USERNAME}` into the
+      // login box of any site whose fields are named by placeholder. TECH_DEBT.md TD-84.
+      const val = (creds && isFinalCredentialAttempt ? credentialForStep(step, creds, fieldMap, policy) : undefined) ?? step.value ?? "";
       await (await resolveLive(page, step.target!, "fill")).fill(val);
       return;
     }
@@ -57,6 +62,13 @@ export async function runStepLive(
     case "assert": return; // state check only — skip during replay
   }
 }
+
+/**
+ * Cache namespace for browser walks. Separate from the LLM answers so "Clear verification cache"
+ * can drop the walks — the ones that can go stale in ways their key does not capture — without
+ * discarding model responses that cost money. TECH_DEBT.md TD-85.
+ */
+export const WALK_CACHE_NS = "walks";
 
 /** Visible body text, normalized and capped — used both to ground text-only assertions
  *  against reality and as a cheap, comparable snapshot for logging. */
@@ -90,8 +102,18 @@ async function replayAndSnapshot(
   // Policy is folded in because the fill values it produces differ by policy, and relying on
   // that difference to always change the prefix's own JSON (rather than asserting it) is the
   // exact caching-bug shape that has already bitten this codebase twice.
-  const cacheKey = makeCacheKey(model.baseUrl, JSON.stringify(prefix), policy);
-  const cached = llmCacheGet<ReplayResult>(cacheKey);
+  //
+  // So are the CREDENTIALS, as a digest (TD-85). The prefix carries `${env:TEST_USERNAME}`, not
+  // the value, so a walk run with the wrong password and a walk run with the right one produced
+  // byte-identical keys — and the disk half of this cache never expires. One failed sign-in
+  // therefore pinned the login-page snapshot for every later edit of that case, for good. The
+  // fingerprint is a SHA-1 of the values, never the values: a key is not a place to put a secret.
+  //
+  // Namespaced to "walks" so it can be cleared on its own, without discarding the LLM answers in
+  // the same store that cost real money to obtain.
+  const cacheKey = makeCacheKey(
+    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds));
+  const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
   if (cached) return cached;
 
   const fieldMap = credentialFieldMap(model);
@@ -103,11 +125,18 @@ async function replayAndSnapshot(
   try {
     const page = await browser.newPage();
     let urlBeforeLastStep = model.baseUrl;
+    /** Where the flow was when it last typed a credential, and what it typed it into. Used
+     *  below to tell "signed in" from "still sitting on the sign-in form". */
+    let credentialFill: { url: string; target: Step["target"] } | undefined;
     for (let i = 0; i < prefix.length; i++) {
       if (i === prefix.length - 1) urlBeforeLastStep = page.url();
       const step = prefix[i];
-      const kind = credentialKindForTarget(step.target, fieldMap);
+      // Value-first, matching runStepLive and lastFillIndexByKind. All three have to agree about
+      // which fills are credential fills or `isFinalAttempt` is computed against a different set
+      // of steps than the substitution uses. TD-84.
+      const kind = credentialKindForStep(step, fieldMap);
       const isFinalAttempt = kind ? lastOfKind.get(kind) === i : true;
+      if (kind && creds && isFinalAttempt) credentialFill = { url: page.url(), target: step.target };
       await runStepLive(page, step, model.baseUrl, creds, fieldMap, policy, isFinalAttempt);
       // After an auth‑triggering step (click/press on a login‑verb button),
       // wait for the SPA's own async redirect to settle before evaluating
@@ -149,6 +178,37 @@ async function replayAndSnapshot(
     }
 
     const reachedUrl = page.url();
+
+    // Did the sign-in actually work?
+    //
+    // If the walk typed a credential and then ended on the SAME page it typed it into, with that
+    // same box still sitting there, it did not get in. Snapshotting anyway models the login form
+    // and reports every post-login target as "not present on the page" — a message that blames
+    // the user's edit for a credential problem. Failing here says the true thing instead, and
+    // (with the cache-key change below) stops a login-page snapshot being written to the cache
+    // and served forever. TECH_DEBT.md TD-84.
+    //
+    // Deliberately needs BOTH signals. `pageKey` ignores scheme, port, `www.` and query, so a
+    // post-login redirect that only adds `?next=` still reads as the same page — which is why
+    // "same URL" alone is not enough for a single-page app that legitimately keeps one URL
+    // through sign-in. The credential field still being present is what distinguishes "the form
+    // is still here" from "this app just doesn't change its URL". No site-specific strings, no
+    // dependency on `appModel.auth.loginUrl` — which is precisely absent in the empty-model case
+    // this exists to fix.
+    if (credentialFill && pageKey(reachedUrl) === pageKey(credentialFill.url)) {
+      const stillThere = credentialFill.target
+        ? await resolveLive(page, credentialFill.target, "fill")
+          .then((l) => l.count().then((n) => n > 0))
+          .catch(() => false)
+        : false;
+      if (stillThere) {
+        throw new Error(
+          "sign-in did not succeed during verification — check the credentials for this site. " +
+          "The steps before the edit could not be replayed, so there was no page to verify against.",
+        );
+      }
+    }
+
     const title = await page.title();
     const pageText = await capturePageText(page);
 
@@ -190,8 +250,8 @@ async function replayAndSnapshot(
       if (domEmpty) {
         fresh = visionModel;
       } else {
-        const basePage = fresh!.pages.find((p) => p.url === reachedUrl) ?? fresh!.pages[0];
-        const visionPage = visionModel.pages.find((p) => p.url === reachedUrl) ?? visionModel.pages[0];
+        const basePage = fresh!.pages.find((p) => pageKey(p.url) === pageKey(reachedUrl)) ?? fresh!.pages[0];
+        const visionPage = visionModel.pages.find((p) => pageKey(p.url) === pageKey(reachedUrl)) ?? visionModel.pages[0];
         const known = new Set(basePage.elements.map((e) => `${e.role.toLowerCase()}|${e.name.toLowerCase()}`));
         const extra = (visionPage?.elements ?? []).filter(
           (e) => !known.has(`${e.role.toLowerCase()}|${e.name.toLowerCase()}`)
@@ -209,14 +269,14 @@ async function replayAndSnapshot(
     }
     // Always non-null here: the domEmpty branch above unconditionally assigns it, and the
     // merge branch only runs when it was already non-null.
-    const pageModel = fresh!.pages.find((p) => p.url === reachedUrl) ?? fresh!.pages[0];
+    const pageModel = fresh!.pages.find((p) => pageKey(p.url) === pageKey(reachedUrl)) ?? fresh!.pages[0];
     if (!pageModel) throw new Error(`replay reached ${reachedUrl} but produced no page model`);
     // The replay just typed the user's real credentials into this page, and a logged-in page
     // routinely echoes the identifier back. Scrub before anything persists it: this result is
     // cached under runs/_cache and its pageModel ends up inside 04-ir.json, both of which the
     // server exposes as static files. No-op for the public demo accounts.
     const result = redactCredentials<ReplayResult>({ reachedUrl, pageModel, pageText }, creds);
-    llmCacheSet(cacheKey, result);
+    llmCacheSet(cacheKey, result, WALK_CACHE_NS);
     return result;
   } finally {
     await browser.close();
@@ -252,15 +312,52 @@ export async function extendAppModel(
  * check would throw on exactly that case. Replaces the page at that URL if present (else
  * appends it), so the fresh snapshot wins.
  */
+/**
+ * Put a freshly-snapshotted page into a model, replacing the one it supersedes.
+ *
+ * Matched by `pageKey`, not by exact string (TD-88). Every LOOKUP in this codebase is pageKey-based
+ * — scheme, port, `www.`, trailing slash and query all ignored — so an exact-match filter left
+ * `https://x.app` in place beside a fresh `https://x.app/`, and the next `find` returned whichever
+ * came first: the stale one. The whole point of a refresh is that the new snapshot wins.
+ *
+ * Exported so this is testable without launching a browser — it is the entire substance of the
+ * merge, and a test that re-implemented the filter would be measuring itself.
+ */
+export function mergePageInto(
+  model: AppModel, pageModel: AppModel["pages"][number], reachedUrl: string,
+): AppModel {
+  const pages = model.pages.filter((p) => pageKey(p.url) !== pageKey(reachedUrl));
+  return AppModel.parse({ ...model, pages: [...pages, pageModel] });
+}
+
 export async function refreshPageModel(
   model: AppModel,
   prefix: Step[],
   creds?: Credentials,
   policy: CredentialPolicy = "full",
 ): Promise<AppModel> {
+  return (await refreshPageModelAt(model, prefix, creds, policy)).model;
+}
+
+/**
+ * `refreshPageModel`, but it also tells you WHERE the walk landed.
+ *
+ * The caller needs that to ground an edited step against the page the walk actually reached,
+ * instead of against every page in the model. Without it, a step whose page cursor has gone stale
+ * — which any click that is not a plain link makes it — is matched against all pages at once, so
+ * an untouched "Save" can silently bind to a Save button on a different page (TD-86).
+ *
+ * Additive: `refreshPageModel` keeps its exact signature and return type, so every existing
+ * caller is untouched.
+ */
+export async function refreshPageModelAt(
+  model: AppModel,
+  prefix: Step[],
+  creds?: Credentials,
+  policy: CredentialPolicy = "full",
+): Promise<{ model: AppModel; reachedUrl: string }> {
   const { reachedUrl, pageModel } = await replayAndSnapshot(model, prefix, creds, policy);
-  const pages = model.pages.filter((p) => p.url !== reachedUrl);
-  return AppModel.parse({ ...model, pages: [...pages, pageModel] });
+  return { model: mergePageInto(model, pageModel, reachedUrl), reachedUrl };
 }
 
 // ---------------------------------------------------------------------------

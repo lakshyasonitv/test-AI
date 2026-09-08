@@ -938,3 +938,106 @@ describe("deleting a run removes its database row too", () => {
     expect(res.status).not.toBe(500);
   });
 });
+
+/**
+ * Deleting the last check must not save silently — TECH_DEBT.md TD-89.
+ *
+ * `meta.hasTerminalAssertion` decides whether a truncated case may report "passed", and nothing on
+ * the edit path recomputed it. A case whose final `Check ...` row was deleted saved instantly,
+ * kept the stale `true`, and reported Passed forever while verifying nothing. A test that cannot
+ * fail is worse than no test: it is a green tick someone will trust.
+ */
+describe("removing the last check", () => {
+  /** The login case plus a real assertion at the end. */
+  const withCheck = () => ({
+    meta: { feature: "auth", title: "Login works", priority: "medium", sourcePrompt: "p", baseUrl: "https://one.example.com" },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Email", css: "#email" }, value: "a@b.c" },
+      { id: "s3", action: "click", target: { role: "button", name: "Sign In", css: "#signin" } },
+      { id: "s4", action: "assert", target: { text: "Welcome" }, assertion: "text_contains", value: "Welcome" },
+    ],
+    // Deliberately stale in the other direction on some tests below.
+    hasTerminalAssertion: true,
+  });
+
+  beforeEach(() => {
+    reset();
+    db.test_cases[0].ir = withCheck();
+  });
+
+  const linesWithoutCheck = () => [
+    "Go to /login",
+    `Type "a@b.c" into textbox "Email"`,
+    `Click on button "Sign In"`,
+  ];
+
+  it("is refused, and says why, without writing anything", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER))
+      .send({ steps: linesWithoutCheck() });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/removes the last check/i);
+    // Named so the client can offer "Save anyway" rather than blaming a row.
+    expect(res.body.needsConfirmation).toBe("noAssertion");
+    expect(res.body.stepIndex).toBeUndefined();
+    expect(db.test_cases[0].current_version).toBe(1);
+    expect(db.test_cases[0].ir.steps).toHaveLength(4);
+  });
+
+  it("is accepted once confirmed, and the flag is stored as false", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER))
+      .send({ steps: linesWithoutCheck(), confirmNoAssertion: true });
+    expect(res.status).toBe(200);
+    expect(db.test_cases[0].current_version).toBe(2);
+    expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(false);
+    expect(db.test_cases[0].ir.steps).toHaveLength(3);
+  });
+
+  it("an edit that KEEPS the check needs no confirmation", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [...linesWithoutCheck(), `Check that the text "Welcome" is displayed`]
+        .map((t, i) => i === 1 ? `Type "new@example.com" into textbox "Email"` : t),
+    });
+    expect(res.status).toBe(200);
+    expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(true);
+  });
+
+  it("ADDING a check to a case that had none is always fine", async () => {
+    db.test_cases[0].ir = groundedIr("Login works");           // no assertion at all
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [...linesWithoutCheck(), `Check that the text "Welcome" is displayed`],
+    });
+    expect(res.status).toBe(200);
+    expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(true);
+  });
+
+  it("a case that never had a check is not refused for editing something else", async () => {
+    // The over-reach this fix had at first: keying "did it have one?" off the stale meta flag
+    // refuses every edit to a login case, which asserts nothing by design.
+    db.test_cases[0].ir = { ...groundedIr("Login works"), meta: { ...groundedIr("x").meta, hasTerminalAssertion: true } } as any;
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [
+        "Go to /login",
+        `Type "changed@example.com" into textbox "Email"`,
+        `Click on button "Sign In"`,
+      ],
+    });
+    expect(res.status).toBe(200);
+    // ...and the stale flag is corrected on the way through.
+    expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(false);
+  });
+
+  it("recomputes the flag on every save, not only when it changes", async () => {
+    db.test_cases[0].ir = { ...withCheck(), meta: { ...withCheck().meta, hasTerminalAssertion: false } } as any;
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [
+        "Go to /login",
+        `Type "a@b.c" into textbox "Email"`,
+        `Click on button "Sign In"`,
+        `Check that the text "Welcome" is displayed`,
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(true);
+  });
+});

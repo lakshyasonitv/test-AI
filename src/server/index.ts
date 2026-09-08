@@ -7,6 +7,9 @@ import { record, subscribe, getEvents } from "./runRegistry.js";
 import { allRunIds, listRuns, store } from "../runStore.js";
 import { warnIfNoVideo } from "../stages/executor.js";
 import { selfHealDefault } from "../stages/heal.js";
+import { llmCacheClear } from "../kb/llmCache.js";
+import { hasTerminalAssertion } from "../stages/ir.js";
+import { WALK_CACHE_NS } from "../stages/liveExtend.js";
 import { Semaphore } from "./concurrency.js";
 import { askCredentials, settle } from "./pendingCredentials.js";
 import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
@@ -701,6 +704,31 @@ app.post("/api/projects", requireRole("admin"), async (req, res) => {
   }
 });
 
+/**
+ * Drop every cached browser walk.
+ *
+ * A NEW route, not a change to an existing one (`CLAUDE.md` rule 1). It exists because a walk's
+ * result can go stale in ways its cache key cannot express — most sharply, a walk whose sign-in
+ * failed used to be cached under a key identical to a successful one, and the disk half of that
+ * cache never expires, so one bad sign-in pinned a login-page snapshot for that case forever
+ * (`TECH_DEBT.md` TD-85). The key now includes a credential fingerprint and a failed sign-in is
+ * no longer cached at all, so this is the escape hatch for entries written before that — and for
+ * the ordinary case of a site that changed under a cache that has no reason to know.
+ *
+ * Admin, because it throws away work that other people in the organisation may be relying on
+ * mid-edit. It touches only the `walks` namespace: the LLM answers alongside it cost real money
+ * and have nothing to do with this failure.
+ */
+app.post("/api/cache/walks/clear", requireRole("admin"), (_req, res) => {
+  const removed = llmCacheClear(WALK_CACHE_NS);
+  res.json({
+    removed,
+    message: removed === 1
+      ? "Cleared 1 cached page verification."
+      : `Cleared ${removed} cached page verifications.`,
+  });
+});
+
 app.patch("/api/projects/:projectId", requireRole("admin"), async (req, res) => {
   const { name, baseUrl } = req.body ?? {};
   try {
@@ -1069,11 +1097,48 @@ async function prepareEdit(req: express.Request, res: express.Response) {
   // in either branch below, so the fast path and the job path cannot diverge on it.
   const safe = restoreCredentialRefs(parsed.result.steps, found.ir.steps);
 
+  // Does this edit leave the test checking anything?
+  //
+  // `meta.hasTerminalAssertion` is what tells a run whether a truncated case may report "passed"
+  // — nothing recomputed it on the edit path, so removing the last `Check ...` row saved happily,
+  // kept the stale `true`, and the case reported Passed forever while verifying nothing. A test
+  // that cannot fail is worse than no test: it is a green tick someone will trust. TD-89.
+  //
+  // Recomputed on EVERY save (below), and refused when the edit is what removed it — unless the
+  // person says they meant it. `confirmNoAssertion` is a new OPTIONAL request field, so every
+  // existing client is unaffected (rule 1).
+  // From the STORED STEPS, not from `meta.hasTerminalAssertion` — that flag is precisely the
+  // thing this defect proves untrustworthy (nothing recomputed it on edit, and it is optional so
+  // it is often simply absent). Deriving "did it have one?" from the flag also refuses every edit
+  // to a case that never had an assertion at all, which caught six existing tests: a login case
+  // is navigate/fill/fill/click and asserts nothing, and editing its email should stay instant.
+  //
+  // The refusal is for the edit that REMOVES the last check — not for a case that never had one.
+  const hadAssertion = hasTerminalAssertion(found.ir.steps);
+  const stillAsserts = hasTerminalAssertion(safe.steps);
+  if (hadAssertion && !stillAsserts && req.body?.confirmNoAssertion !== true) {
+    res.status(400).json({
+      error:
+        "this edit removes the last check, so the test would run to the end and report Passed " +
+        "without verifying anything. Save it anyway only if you meant to.",
+      // Named so the client can offer "Save anyway" instead of treating it as a broken row.
+      // Deliberately NOT a `stepIndex`: no single row is at fault.
+      needsConfirmation: "noAssertion",
+    });
+    return null;
+  }
+
   // Structurally valid before it is ever checked against a live site — a malformed plan should
   // fail in milliseconds, not after a browser walk.
-  const validated = parseIr({ ...found.ir, steps: safe.steps }, "the edited test plan");
+  const validated = parseIr(
+    { ...found.ir, steps: safe.steps, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts } },
+    "the edited test plan",
+  );
   // Same IR with the typed literals still in place. NEVER written, never serialised to a client.
-  const liveIr = parseIr({ ...found.ir, steps: safe.live }, "the edited test plan");
+  const liveIr = parseIr(
+    { ...found.ir, steps: safe.live, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts } },
+    "the edited test plan",
+  );
   return { ctx, found, parsed: parsed.result, validated, liveIr, credentialNote: safe.note, typedCreds: safe.creds };
 }
 
@@ -1355,7 +1420,10 @@ app.post("/api/cases/:caseId/rewrite", requireRole("tester"), async (req, res) =
   }
   try {
     const found = await getCase(...libraryCtx(req), req.params.caseId);
-    res.json(await proposeRewrite(found.ir, typeof instruction === "string" ? instruction : ""));
+    // The source run is where the case's own page snapshot lives — without it the model is
+    // guessing element names from the instruction's wording (TD-91).
+    res.json(await proposeRewrite(
+      found.ir, typeof instruction === "string" ? instruction : "", found.sourceRunId ?? null));
   } catch (err) { sendAccessError(res, err); }
 });
 

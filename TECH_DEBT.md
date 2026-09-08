@@ -132,6 +132,14 @@ authority is its own heading, not this list.
 | TD-81 | `resolveScope` cannot find a modal that sets no `role="dialog"`, no `aria-modal` and no dialog/modal class — the LMS's New User modal sets none of the three, so every lookup inside it is scoped to `body` and competes with the whole page behind it | Medium | Strategic | ? |
 | TD-82 | The entry URL's SCHEME decided whether a real page existed: a site that redirects `http` -> `https` left `appModel.baseUrl` on the typed scheme while every discovered page carried the landed one, so the IR navigate guard refused a correct step **and listed that same path as known** in its own hint — then paid for 4 retries the model could not satisfy — **fixed** | High | Accidental | ? |
 | TD-83 | Self-heal ran on every run with no way to decline it, and `suiteRunner` emitted nothing while doing it — so the browser re-ran the tests after the run looked finished, with no explanation and no cost attribution — **fixed** | High | Strategic | ? |
+| TD-84 | The editor's live walk decided which login box was the password from the TARGET, while the executed spec decides from the VALUE — so on a site whose fields are named by placeholder it typed the literal string `${env:TEST_USERNAME}`, never signed in, and reported every post-login step as "not present on the page" — **fixed** | Critical | Accidental | ? |
+| TD-85 | The walk cache keyed on a prefix containing `${env:...}` rather than the credentials used, and its disk half never expires — so one failed sign-in pinned a login-page snapshot for that case forever — **fixed** | High | Accidental | ? |
+| TD-86 | A save re-verified EVERY step against whatever page the walk could reach, so untouched steps on unvisited pages were rejected ("ghost rejections") and an untouched target could silently bind to a same-named element on a different page — **fixed** | High | Strategic | ? |
+| TD-87 | The vitest suite failed 1-3 tests per run on `Test timed out in 5000ms`, on a different set of files each time, all passing in isolation — the 5s default was calibrated for a pure-function suite that now launches real browsers — **fixed** | Medium | Accidental | ? |
+| TD-88 | The walk's page merge removed the stale page by EXACT url while every lookup uses `pageKey`, so `https://x.app` survived beside a fresh `https://x.app/` and `find` returned the stale one — **fixed** | Medium | Accidental | ? |
+| TD-89 | Nothing recomputed `meta.hasTerminalAssertion` on the edit path, so deleting a case's last `Check ...` row saved silently and the case reported **Passed forever while verifying nothing** — **fixed** | High | Strategic | ? |
+| TD-90 | Edited rows were paired with originals BY POSITION, so deleting one row marked the whole tail changed, queued five browser walks, and **renumbered every step below it** — version history and failure reports then pointed at the wrong step — **fixed** | High | Strategic | ? |
+| TD-91 | "Ask for a change" was given the case title, its steps and the instruction — and nothing about the site — so it invented element names from page headings, and unlike the translate path its output was never parse-checked before being shown — **fixed** | Medium | Strategic | ? |
 
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
@@ -3300,3 +3308,350 @@ dark.** Runs that self-healed yesterday will not today unless `SELF_HEAL_DEFAULT
 the Settings toggle is switched on. That is what was asked for, and it is the right default for a
 step that silently costs a second browser run — but it is a change existing users will notice,
 which is a different thing from platform rule 2.
+
+### TD-84. The editor's walk typed `${env:TEST_USERNAME}` into the login box — Critical / Accidental — Fixed
+
+**What it was.** Case "Log in and navigate to the admin panel" (project LMS, v8). Adding
+`Click on button "Admin"` after the login steps was refused with:
+
+```
+Step s6 targets role="button" name="Admin", which is not present under any compatible role
+on page "https://learnvibes.vercel.app".
+```
+
+"Admin" is a real sidebar button on the logged-in dashboard — it appears in every successful walk
+snapshot under `runs/_cache/`. The walk was never getting past the login, so it modelled the login
+page and truthfully reported that a dashboard button is not on it. The message blamed the user's
+edit for a credential problem.
+
+**Two sources of truth that disagreed.** A fill step carries both a target and a value, and this
+codebase decides "is this the password box?" from different ones in different places:
+
+| Where | Decides from | Function |
+|---|---|---|
+| The executed spec | the **value** | `valueCode` (generator.ts) — `${env:X}` compiles to `process.env.X` |
+| The credential prompt | the **value** | `credentialKindsNeeded` |
+| **The live walk** | **the target** | `credentialForTarget` via `runStepLive` |
+
+The walk was the odd one out. `credentialKindForTarget` consults a DOM-derived field map first and
+otherwise falls back to `/user|email|login|account/` and `/pass/` over the accessible name. When a
+case's source run folder has been deleted `baseModel()` returns an empty model, so the map is
+empty — and this site names its login boxes by their placeholder. Reproduced directly:
+
+```
+credentialKindForTarget({role:"textbox", name:"you@thinkvibes.com"}, emptyMap) -> undefined
+credentialKindForTarget({role:"textbox", name:"*********"},          emptyMap) -> undefined
+-> the walk types: "${env:TEST_USERNAME}" and "${env:TEST_PASSWORD}"
+```
+
+So the editor **asked** for the password (the prompt reads the value) and then **did not use it**
+(the typing read the target). That gap is the whole defect.
+
+**The fix.** `credentialKindForStep` / `credentialForStep` resolve the kind from the step's value
+first — via `isEnvValueRef`, the same function the generator and the prompt already use, not a new
+regex — and fall back to the target only for a fill whose value is not an env reference. An
+`${env:...}` value is not a hint about the field: it is this system's own record that grounding
+already identified that box, written by the run that produced the case, from the live DOM.
+
+**Three call sites, not one.** `runStepLive` does the substitution, but `lastFillIndexByKind`
+decides which fills are *final* attempts and `replayAndSnapshot` computes `isFinalAttempt` from
+it. All three now use the same resolution. Leaving the other two target-only would have broken a
+compound login case ("wrong password, then the right one") in a new way: the walk would substitute
+the real password into the leg the test needs to fail. While the field map was the only signal
+that map came back empty and every fill looked final, so the bug was masked rather than
+compounded — pinned now by a test.
+
+**And a failed sign-in is now an error, not a snapshot.** If the walk typed a credential and ended
+on the same page it typed it into, with that box still present, it throws
+*"sign-in did not succeed during verification — check the credentials for this site"* instead of
+modelling the login form. It needs **both** signals: `pageKey` ignores scheme, port, `www.` and
+query, so a redirect that only adds `?next=` still reads as the same page — which is why "same
+URL" alone would fail every walk on a single-page app that legitimately keeps one URL through
+sign-in. The still-present field is what separates "the form is still here" from "this app does
+not change its URL". No site-specific strings, and deliberately not keyed on
+`appModel.auth.loginUrl`, which is precisely what an empty base model does not have.
+
+The message is redacted on the existing path — `regroundEditedIr` already wraps walk failures in
+`redactCredentials` before they leave.
+
+20 tests in `tests/walkCredentials.test.ts`, including a real browser filling a placeholder-named
+login form and asserting the values that land are the credentials rather than the sentinel.
+
+### TD-85. A failed-login walk was cached forever, under the same key as a successful one — High / Accidental — Fixed
+
+**What it was.** `replayAndSnapshot`'s key was
+`makeCacheKey(model.baseUrl, JSON.stringify(prefix), policy)`. The prefix carries
+`${env:TEST_USERNAME}`, never the value — so a walk run with the right credentials and one run
+with the wrong credentials (or, per TD-84, with none at all) produced **byte-identical keys**.
+
+And the store's disk half has no expiry. `llmCacheGet` checks a 30-minute TTL on the in-memory
+copy and then falls through to the file unconditionally. (That is right for LLM answers: they cost
+money and their inputs are all in the key. It is wrong for a browser walk, whose result depends on
+things the key did not cover.) A single failed sign-in therefore pinned the login-page snapshot for
+that case **permanently** — there is a cached landing with 5 elements in `runs/_cache/llm/` from
+exactly this failure, which is why the reported symptom survived retries.
+
+**The fix, three parts.**
+
+1. **The key includes a credential fingerprint** — a SHA-1 of the values, never the values. A key
+   is not a place to reason about secrets, so they are hashed separately rather than passed as a
+   key part. No credentials gives `"anon"`, so an anonymous walk and a credentialled one stay
+   distinct.
+2. **A failed sign-in is never cached**, because TD-84's check throws before `llmCacheSet` is
+   reached. Pinned by a test asserting the throw appears before the write in the source.
+3. **`POST /api/cache/walks/clear`** — a NEW route (rule 1), admin-only, reporting how many
+   entries went. With a Settings button that reuses the existing `.settings-row` markup (rule 3)
+   and shows the count in the row's own description line.
+
+For (3) the cache became **namespaced**. `makeCacheKey` hashes its inputs, so keys are opaque and
+there was no way to say "drop the walks, keep the concept labels" — the only remedy was deleting
+everything, including LLM answers that cost real money. Walks now live under `runs/_cache/walks/`.
+Clearing drops the in-memory copies too, not just the files: a long-running server holds up to 500
+entries for half an hour, so clearing only disk would keep serving the poisoned answer and make
+the button look broken.
+
+Entries already under `runs/_cache/llm/` are simply never read again by a namespaced caller. That
+is the intended outcome, not a migration gap — they were written by the code path this fixes.
+
+### TD-86. A save re-verified every step, against whatever page the walk could reach — High / Strategic — Fixed
+
+**What it was.** `regroundEditedIr` called `groundingError(grounded, model)` over the **whole** IR.
+The function's only skip is "this step's `css` is in the model's `knownSelectors`", and during an
+edit the model is whatever the walk reached — for a case whose source run folder is gone, that
+starts from an empty base model. So the skip essentially never fires, and every untouched step is
+re-matched **by name** against a model that does not contain its page.
+
+The result is a **ghost rejection**: a step inside a modal, or on the login form, reported as "not
+present on the page" for an edit somewhere else entirely. The user is told their edit broke a step
+they did not touch.
+
+There is a quieter failure in the same place. After any click that is not a plain link
+`trackPages` marks the page cursor stale, and a stale cursor falls back to matching against
+**every page's elements at once**. So an untouched "Save" can bind to a Save button on a different
+page — and that one does not raise anything, it just saves the wrong selector.
+
+**The fix, in two halves.**
+
+- **`groundingError` takes an optional `GroundingScope`.** With `onlyIndexes`, a step that is not
+  listed is skipped without any lookup. `regroundEditedIr` passes `regroundIndexes`. **The
+  fresh-run compile path passes nothing and is unchanged** — a freshly-generated IR is a model's
+  invention where every step is equally unverified, and checking all of them is that path's entire
+  purpose. A test asserts every `groundingError(` call in `ir.ts` still has exactly two arguments.
+
+  **Corrected on 2026-09-08 by a live run.** The rule shipped as "not listed **and** already
+  carries `css`/`testId`", on the reasoning that skipping an unlisted ungrounded step would
+  silently accept something unproven. A live check against the LMS showed that too narrow: adding
+  `Click on button "Admin"` to the login case still failed — on **step 2, the email box** —
+  because that case's login steps carry no `css` at all, so the second condition never held and
+  they were re-matched against the post-login dashboard, which naturally has no login form. The
+  edit was still being blamed for a step nobody touched, which is the whole defect.
+
+  Skipping regardless is the right rule for an EDIT: every unlisted step was already in the saved
+  case, so it was accepted once and this save is not the moment to re-litigate it. The concern
+  that motivated the stricter version does not apply, because a genuinely NEW step is a changed
+  row by construction and is therefore always in `onlyIndexes`. **The trade-off, stated plainly:
+  an untouched step that was never grounded stays never grounded.** That is its status quo, and
+  the alternative is refusing edits to any case that has an ungrounded step anywhere in it.
+- **The page the walk reached wins.** `refreshPageModelAt` (additive; `refreshPageModel` keeps its
+  exact signature) returns the landed URL alongside the model, `regroundEditedIr` records it per
+  step index, and `groundingError` resolves an edited step against that page before falling back
+  to the cursor and then to all pages. An observed URL is better evidence than an inference that
+  has already given up.
+
+13 tests in `tests/groundingScope.test.ts`, both halves mutation-checked: removing the skip
+reddens 4, removing the reached-page preference reddens 2.
+
+**Verified live**, with the walk cache cleared and no source run model — the exact reported state:
+
+```
+changed = [5]   reground = [5]
+  [walking]   step 5 (s6)
+  [grounding] step 5 (s6)
+RESULT: GROUNDED on the first try — 1 snapshot, 0 LLM calls
+  admin step: {"role":"button","name":"Admin"}
+```
+
+### TD-87. The test suite was flaky by configuration — Medium / Accidental — Fixed
+
+**What it was.** Full runs failed 1–3 tests on `Test timed out in 5000ms`, on a **different set of
+files each run**, every one of which passed in isolation. Present before this session's changes and
+made more frequent by them.
+
+`vitest.config.ts` set no `testTimeout`, so the 5s default applied — and its own comment said
+"Pure functions only: no network, no browser." That stopped being true some time ago:
+`DECISIONS.md` D-19 ("a generated Playwright expression isn't verified until it's run once") means
+a growing number of these files launch a real Chromium, and several more dynamically import whole
+pipeline stages. Under parallel load a test BODY passes five seconds while it is still importing,
+and vitest kills it.
+
+**The fix.** `testTimeout: 20_000`, `hookTimeout: 30_000`, and the stale comment corrected. Still a
+bound rather than a removal — a genuine hang is caught roughly four times faster than the 100s the
+executor allows a real Playwright run.
+
+Worth stating plainly: this is a config change, not a speed-up. Nothing got faster; what changed is
+that a slow-but-correct test is no longer reported as a failure. Verified by two consecutive clean
+full runs (1028/1028) where the previous configuration failed a different subset each time.
+
+### TD-88. The page merge removed the stale page by exact URL — Medium / Accidental — Fixed
+
+**What it was.** `refreshPageModel` dropped the page it was replacing with
+`model.pages.filter(p => p.url !== reachedUrl)`, while every LOOKUP in the codebase uses `pageKey`
+— host + path, ignoring scheme, port, `www.`, trailing slash and query. So a model holding
+`https://x.app` and a walk reaching `https://x.app/` kept **both**, and the next `find` returned
+whichever came first: the stale one. The whole point of a refresh is that the new snapshot wins.
+
+Three more `find(p => p.url === reachedUrl)` lookups in the same file were converted for
+consistency. Those were safe by construction — the models they search are built from that same
+`reachedUrl` — but string equality where every neighbour uses `pageKey` is how this class of bug
+keeps reappearing (TD-69, TD-82, now this).
+
+**The fix.** `mergePageInto(model, pageModel, reachedUrl)`, extracted as an exported function
+rather than left inline: it is the entire substance of the merge, and a test that re-implemented
+the filter to check it would have been measuring itself. Four tests cover trailing slash, scheme,
+query, and a genuinely different page being left alone.
+
+### TD-89. Deleting the last check saved silently, and the case reported Passed forever — High / Strategic — Fixed
+
+**What it was.** `meta.hasTerminalAssertion` is what tells a run whether a truncated case may
+report "passed". Nothing on the edit path recomputed it — not `prepareEdit`, not `updateCase`. So
+removing a case's final `Check ...` row saved instantly, kept the stale `true`, and the case
+reported **Passed** on every subsequent run while verifying nothing at all.
+
+A test that cannot fail is worse than no test. It is a green tick someone will trust.
+
+**The fix.**
+
+- `meta.hasTerminalAssertion` is recomputed from the parsed steps on **every** save, so a stale
+  flag is corrected on the way through even when the edit is about something else.
+- An edit that REMOVES the last check is refused with 400 and `needsConfirmation: "noAssertion"`,
+  and accepted only when the request carries `confirmNoAssertion: true` — a new OPTIONAL request
+  field, so every existing client is unaffected (rule 1). Deliberately no `stepIndex`: no single
+  row is at fault, and the client branches on that to offer a "Save without a check" button
+  instead of highlighting a row as broken.
+- A case saved that way gets a **NO CHECK** pill, reusing `.case-badge badge-truncated` — the
+  existing "this is partial" pill (rule 3).
+
+**One thing I got wrong first, and it is the more interesting half.** I derived "did it have an
+assertion?" from `found.ir.meta.hasTerminalAssertion !== false`. Six existing library tests went
+red immediately: a login case is navigate/fill/fill/click and asserts nothing by design, its flag
+is simply absent, and every edit to it was suddenly refused. The check has to come from the STORED
+STEPS — which is also the honest source, since the flag is precisely the thing this defect proves
+untrustworthy. The refusal is for the edit that **removes** the last check, not for a case that
+never had one.
+
+Six route-level tests in `tests/library.test.ts` plus two unit tests. Mutation-checked: disabling
+the refusal reddens the "refused, and says why, without writing anything" test.
+
+### TD-90. Rows were matched by position, so a delete re-grounded the tail and renumbered every step — High / Strategic — Fixed
+
+**What it was.** `parseIrSteps` compared `texts[i]` with `originals[i]`. Reproduced against the
+saved "Admin creates a new user" IR, deleting the `Wait briefly` at row 8:
+
+```
+changed  = [8,9,10,11,12,13]      reground = [8,9,10,11,12,13]      snapshots = 5
+s10 -> s9,  s11 -> s10,  s12 -> s11,  s13 -> s12,  s14 -> s13,  s15 -> s14
+```
+
+Deleting a `Wait` cannot move a single element on the page, and it cost five browser walks. But the
+**id shift is the worse half**: the Full Name fill became `s9`, the deleted Wait's id, so from then
+on version history and failure reports point at the wrong step — silently, and permanently.
+
+**The fix — two-pass alignment.**
+
+- **Pass 1, exact text.** Every row whose sentence is byte-identical to an original's rendering
+  pairs with the nearest unclaimed such original, scanning forward. This is what survives a delete
+  or an insert: the rows below still read exactly as they did, so they keep the original they
+  belong to.
+- **Pass 2, leftovers between the anchors pass 1 established.** An edited row (a changed value, a
+  fixed typo) matches nothing exactly but is still that step; pairing it keeps its id and lets
+  `parseIrStep` parse ONTO it, which is what keeps a value edit free. Confining each run of
+  leftovers to the originals lying between its neighbouring anchors is what stops a leftover
+  pairing with a step from a different part of the flow.
+- Within a run, an original of the **same kind** is preferred before falling back to order —
+  matched on the sentence's leading verb ("Type", "Click", "Wait"). Without it, deleting a `Wait`
+  and editing the row below it in one save paired the edited `Type ...` with the now-unclaimed
+  `wait`, and charged a browser walk for a value edit. The verb comes from `STEP_VOCABULARY`, this
+  system's own closed rendering vocabulary — not page text, not model output — so it is not the
+  "regex over prose" trap.
+- **Ids are resolved before any minting.** Every paired row's id is collected first, so a new row
+  cannot claim an id a later paired row is about to keep.
+
+**When a paired row is re-grounded — the rule, stated once.** Only two reasons:
+
+  (a) its own target text changed; or
+  (b) the **set of page-changing steps above it** changed — a `navigate`/`click`/`press` was added,
+      removed, or moved across it.
+
+(b) is about IDENTITY and POSITION, not wording: a page-changing step is keyed by the original it
+came from, so fixing a typo in a click's name is reason (a) for that click alone and does not claim
+every later step now resolves elsewhere. And "moved across it" needs its own test — an **inversion**
+in the pairing — because moving a step past rows that are not page-changing leaves the set above it
+identical. That is the "move a Save click up four rows" case, which the set comparison alone
+silently missed.
+
+`wait`, `fill`, `select`, `check` and `assert` are not page-changing. That single fact is what makes
+the reported case free.
+
+**Result on the reported scenarios:**
+
+```
+DELETE row 8   changed=[]   reground=[]   snapshots=0  instant   ids: s1..s8, s10..s15 (unchanged)
+INSERT row 7   changed=[7]  reground=[7..15]           new row gets s16, every original keeps its id
+```
+
+The insert still re-grounds its tail, and should: a real click above genuinely changes which page
+the later steps resolve on.
+
+19 tests in `tests/stepAlignment.test.ts` — a scenario table covering no-op, value edit, delete
+middle/first/last, delete-and-edit, append, insert, duplicate, role-word change, retype, typo,
+swap, and move-up-four; each asserting `changedIndexes`, `regroundIndexes`, and that every
+unchanged sentence kept its id. Plus the round-trip guarantee
+`parseIrStep(formatIrStep(step), step)` deep-equals `step`, which content matching is exactly what
+could have broken.
+
+**Two of my own expectations were wrong and the tests corrected them**, worth recording because
+both are now the documented behaviour: a **duplicated** row is genuinely new (it has no original
+and no grounding, so it must be verified), and a **moved** row re-grounds along with the rows it
+crossed.
+
+### TD-91. "Ask for a change" could not see the site — Medium / Strategic — Fixed
+
+**What it was.** `buildPrompt(ir.meta.title, before, instruction)` — the case title, its current
+steps, and the instruction. Nothing about the application. Asked to "navigate to the admin panel"
+the model answered `Click on button "Admin Panel"`, which is the page **heading**; the real control
+is `button "Admin"`. It had no way to know that and no way to find out.
+
+And unlike its sibling `proposeStepTranslation`, its output was **never run through the parser**
+before being shown. An unreadable suggestion rendered as a clean diff and only failed when the
+person pressed Save.
+
+**The fix.**
+
+- `caseElementContext` supplies a compact `role "name"` list for the pages the case touches:
+  the source run's model first; failing that, any cached walk snapshot for the same **site**
+  (enumerated from the `walks` namespace and filtered by host, since the keys are opaque hashes);
+  failing that, nothing — and the note says so rather than pretending.
+- Only **actionable** roles. A heading is not something a step can click, and offering it is what
+  produced the wrong answer in the first place.
+- The same two bounds as the concept-labeling prompt (TD-73): a per-name cap so one runaway
+  element name cannot dominate, and a per-list cap (`REWRITE_ELEMENTS_MAX_CHARS`, default 4000)
+  dropping from the end.
+- Every returned line goes through `parseIrStep` — the same parser the save path uses — and
+  unreadable ones come back as `unreadableIndexes` rather than being rejected: a rewrite touches
+  the whole list, so one bad line should not discard the rest.
+- `proposeRewrite` is **not** cached, so adding to the prompt needed no cache-key change. Checked,
+  because adding a prompt input without adding it to the key is TD-22 / D-10 and this codebase has
+  now made that mistake three times.
+
+Rows come back aligned by TD-90's content matching, so an inserted row no longer re-grounds the
+tail.
+
+10 tests in `tests/editorGuards.test.ts`.
+
+**A test-isolation bug worth recording.** The first version of these tests wrote fixture models
+into the real `runs/` directory. vitest runs files in parallel, so an unrelated `/api/runs` test in
+another worker started returning 500 — a failure that passed in isolation and only appeared in a
+full run. `caseElementContext` now takes an optional `runsDir` (defaulting to `"runs"`, never
+passed in production) and the tests use a temp directory. The cache read deliberately does NOT use
+that seam: a cached walk is not a run artifact, and `llmCache` owns where it lives — hence
+`cacheNamespaceDir`, one definition shared by the writer and the reader.

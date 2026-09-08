@@ -5,7 +5,7 @@ import { isRateLimitError } from "../llm/backoff.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
-import { cutAtBoundary, siteHost } from "../text.js";
+import { cutAtBoundary, siteHost, pageKey } from "../text.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
@@ -141,14 +141,6 @@ function resolveHref(base: string, hrefOrPath: string): string | null {
  * that fix from failing the same way. Same normalisation as `isSameSite`, via one shared
  * `siteHost`.
  */
-function pageKey(url: string): string {
-  const host = siteHost(url);
-  if (!host) return url;
-  try {
-    return host + (new URL(url).pathname.replace(/\/+$/, "") || "/");
-  } catch { return url; }
-}
-
 function findPageByUrl(appModel: AppModel, absoluteUrl: string): PageModel | null {
   const key = pageKey(absoluteUrl);
   return appModel.pages.find(p => pageKey(p.url) === key) ?? null;
@@ -415,8 +407,43 @@ export function irAlreadyLogsIn(ir: IR, auth: AuthOutcome | undefined, model: Ap
       || credentialKindForTarget(s.target, fieldMap) === "password"));
 }
 
+/**
+ * Options for grounding an EDIT rather than a fresh compile.
+ *
+ * The fresh-run path never passes these — it is grounding an IR a model just invented, where every
+ * step is equally unverified and checking all of them is the whole point.
+ */
+export interface GroundingScope {
+  /**
+   * The steps this pass is actually verifying. A step NOT listed is skipped — but only if it is
+   * already grounded (carries `css` or `testId`), because that grounding is the proof it was
+   * checked against a real page once and nothing about it has changed since.
+   *
+   * WHY THIS EXISTS (TD-86). `groundingError` walks every step, and the only existing skip is
+   * "this step's css is in the model's `knownSelectors`". During an EDIT the model is whatever
+   * the walk could reach — often near-empty when the case's source run folder is gone — so that
+   * skip essentially never fires, and every untouched step gets re-matched by name against a
+   * model that does not contain its page. Steps inside a modal, or on the login form, are then
+   * reported as "not present on the page" although the user never touched them: a ghost
+   * rejection that blames the edit for the walk's blind spots.
+   *
+   * Both conditions matter. Skipping an unlisted step that is NOT grounded would silently accept
+   * a step nothing has ever verified.
+   */
+  onlyIndexes?: number[];
+  /**
+   * Where the walk actually landed for a given step index, when it walked one.
+   *
+   * `trackPages` gives up ("stale") after any click that is not a plain link, and a stale cursor
+   * falls back to matching against EVERY page's elements at once. That is how an untouched
+   * "Save" can bind to a Save button on a different page. A URL the walk really reached is
+   * strictly better evidence than that fallback, so it wins where it exists.
+   */
+  reachedUrlAt?: Map<number, string>;
+}
+
 export function groundingError(
-  ir: IR, appModel: AppModel,
+  ir: IR, appModel: AppModel, scope?: GroundingScope,
 ): { index: number; message: string; kind?: "navigate-url" | "text-target" } | null {
   const allElements = appModel.pages.flatMap(p => p.elements);
   // Selectors the model is allowed to address directly, because discovery captured them.
@@ -534,9 +561,31 @@ export function groundingError(
   // some OTHER page (never the current one) shouldn't pass just because it exists
   // somewhere in the model. Falls back to allElements wherever the cursor is unresolved.
   const trail = trackPages(ir, appModel);
+  const onlySet = scope?.onlyIndexes ? new Set(scope.onlyIndexes) : null;
   for (let index = 0; index < ir.steps.length; index++) {
     const step = ir.steps[index];
     const t = step.target;
+    // Not one of the steps this pass is verifying. Skip it without any lookup — re-matching it by
+    // name against a model built from wherever the walk happened to land is how an untouched step
+    // gets rejected for being absent from a page it was never on. TD-86.
+    //
+    // THIS WAS ORIGINALLY "not listed AND already grounded", and a live run proved that too
+    // narrow. Adding `Click on button "Admin"` to the LMS login case still failed — on step 2,
+    // the email box — because that case's login steps carry no `css` at all, so the second
+    // condition never held and they were re-matched against the post-login dashboard, which
+    // naturally has no login form on it. The user's edit was blamed for a step they never
+    // touched, which is the entire defect.
+    //
+    // Skipping regardless is correct for an EDIT: every unlisted step was already in the saved
+    // case, so it was accepted once and this save is not the moment to re-litigate it. The
+    // trade-off, stated plainly: an untouched step that was never grounded STAYS never grounded.
+    // That is the status quo for it, not a regression — and the alternative is refusing edits to
+    // any case with an ungrounded step anywhere in it.
+    //
+    // A genuinely NEW step is always listed (it is a changed row by construction), so nothing
+    // unverified enters the case through this door. The fresh-run compile path passes no scope
+    // and still checks every step.
+    if (onlySet && !onlySet.has(index)) continue;
     // A target carrying a selector discovery verified is already grounded — that IS the
     // proof the element exists, and it's stronger than a role+name match. Covers the
     // selectors a user names in their own request.
@@ -559,7 +608,18 @@ export function groundingError(
           `${knownPathsHintFor(t.url)}`,
       };
     }
-    const elements = trail.pageAt[index]?.elements ?? allElements;
+    // Where to look for this step's element, best evidence first:
+    //   1. the page a WALK actually reached for this step (an observed fact)
+    //   2. the page `trackPages` believes the flow is on (an inference)
+    //   3. every page in the model (a fallback that can match the right name on the wrong page)
+    //
+    // (1) exists because (2) gives up after any click that is not a plain link, and (3) is how an
+    // untouched "Save" can silently bind to a Save button somewhere else entirely. TD-86.
+    const reached = scope?.reachedUrlAt?.get(index);
+    const reachedPage = reached
+      ? appModel.pages.find((p) => pageKey(p.url) === pageKey(reached))
+      : undefined;
+    const elements = reachedPage?.elements ?? trail.pageAt[index]?.elements ?? allElements;
 
     // A bare `{ text: ... }` target on an ACTION step. The exemption below it — "no role+name,
     // nothing to check" — is right for an ASSERT (a flash message discovery never saw is the

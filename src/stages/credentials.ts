@@ -126,6 +126,60 @@ export function credentialForTarget(
   return creds[kind];
 }
 
+/**
+ * Which credential a fill step wants, deciding from the step's VALUE first and only then from
+ * its target.
+ *
+ * WHY THE VALUE COMES FIRST. `${env:TEST_USERNAME}` is not a hint about the field — it is this
+ * system's own record that grounding already identified this box as the identifier, written by
+ * the run that produced the case, from the live DOM. Nothing a name-matching heuristic can say
+ * later is better evidence than that.
+ *
+ * And it is what the REAL TEST does. `valueCode` in generator.ts compiles a fill whose value is
+ * an env reference into `process.env.TEST_USERNAME` — the executed spec keys on the value and
+ * never looks at the target. The live walk keyed on the target instead, so the walk and the test
+ * it is verifying disagreed about which box holds the password. The walk was the odd one out.
+ *
+ * WHAT THAT COST (TECH_DEBT.md TD-84). When a case's source run folder has been deleted the
+ * editor's base model is empty, so the DOM-derived field map is empty too, and the fallback is
+ * two regexes over the accessible name. A site whose login boxes are named by their placeholder
+ * — `you@thinkvibes.com`, `*********` — matches neither:
+ *
+ *     credentialKindForTarget({role:"textbox", name:"you@thinkvibes.com"}, emptyMap) -> undefined
+ *     credentialKindForTarget({role:"textbox", name:"*********"},          emptyMap) -> undefined
+ *
+ * so the walk typed the literal string `${env:TEST_USERNAME}` into the login form, failed to log
+ * in, snapshotted the login page, and reported every post-login target as "not present on the
+ * page". Meanwhile `credentialKindsNeeded` reads the VALUE, which is why the editor still asked
+ * for the password it then failed to use: the prompting and the typing disagreed about the
+ * source of truth.
+ *
+ * The env-reference parsing is `isEnvValueRef`, the same function `credentialKindsNeeded` and
+ * the generator use — not a new regex over the value.
+ */
+export function credentialKindForStep(
+  step: { target?: Target; value?: string } | undefined,
+  fieldMap?: Map<string, CredentialKind>,
+): CredentialKind | undefined {
+  const envVar = isEnvValueRef(step?.value);
+  if (envVar === "TEST_USERNAME") return "username";
+  if (envVar === "TEST_PASSWORD") return "password";
+  return credentialKindForTarget(step?.target, fieldMap);
+}
+
+/** `credentialForTarget`, deciding the kind from the step (value first). Same policy rules. */
+export function credentialForStep(
+  step: { target?: Target; value?: string } | undefined,
+  creds: Credentials,
+  fieldMap?: Map<string, CredentialKind>,
+  policy: CredentialPolicy = "full",
+): string | undefined {
+  const kind = credentialKindForStep(step, fieldMap);
+  if (!kind) return undefined;
+  if (policy === "identifier-only" && kind === "password") return undefined;
+  return creds[kind];
+}
+
 // ---------------------------------------------------------------------------
 // Does this run need credentials it doesn't have?
 // ---------------------------------------------------------------------------
@@ -614,7 +668,7 @@ const REGISTRATION_URL = /register|signup|sign-up|create-account|join/i;
  *  username fill step immediately associated with that password field. Post-login fields
  *  (e.g. Email in an Add User or Checkout form) that appear after the login form are excluded. */
 export function lastFillIndexByKind(
-  steps: { action: string; target?: Target }[],
+  steps: { action: string; target?: Target; value?: string }[],
   fieldMap?: Map<string, CredentialKind>,
   legUrlAt?: (string | null | undefined)[],
 ): Map<CredentialKind, number> {
@@ -624,7 +678,13 @@ export function lastFillIndexByKind(
   steps.forEach((step, i) => {
     if (step.action !== "fill") return;
     if (legUrlAt && REGISTRATION_URL.test(legUrlAt[i] ?? "")) return;
-    const kind = credentialKindForTarget(step.target, fieldMap);
+    // Value-first, the same resolution `runStepLive` uses. This MUST match, or the two disagree
+    // about which fills are credential fills: the walk would substitute a real password into a
+    // step this function never classified, which is exactly the compound-login case ("wrong
+    // password, then the right one") whose earlier leg must keep the value it was authored with.
+    // While the field map was the only signal, an unclassifiable box made this map empty and
+    // every fill looked like the final attempt — so the bug was masked rather than compounded.
+    const kind = credentialKindForStep(step, fieldMap);
     if (kind) {
       fillInfos.push({ index: i, kind });
     }

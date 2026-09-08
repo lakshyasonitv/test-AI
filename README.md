@@ -257,6 +257,7 @@ in `.env.example` — but that file is not a complete index of this table. `MAX_
 | `LABEL_ELEMENTS_MAX_CHARS` | No | Cap on that whole element list (default: 40000) |
 | `APPMODEL_CACHE_TTL_MS` | No | How long a discovered site model stays cached, against file mtime (default: 1800000 / 30 min). **Set to `0` to disable caching entirely** — what you want while iterating against a site you are actively editing |
 | `REGROUND_TIMEOUT_MS` | No | Ceiling on one edited-case re-ground walk (default: 180000 / 3 min) |
+| `REWRITE_ELEMENTS_MAX_CHARS` | No | Cap on the element list "Ask for a change" is shown (default: 4000). Without that list the model invents element names from page headings — it once proposed `button "Admin Panel"`, the heading, for a control actually called `button "Admin"` (`TECH_DEBT.md` TD-91) |
 | `REPLAY_REGROUND` | No | Set `true` to re-ground a replay's ungrounded steps against the live page before it runs — the steps inside a modal or tab, which discovery never saw (`TECH_DEBT.md` TD-77). Costs a browser walk of the prefix before the run starts and **zero LLM calls**; it never writes back to the saved case, only to the run's own `04-ir.json` marked `groundedAt: "replay"`. Default off |
 | `SCREENSHOT_SETTLE_MS` | No | Gap between frames when detecting the page has stopped animating (default: 150) |
 | `SCREENSHOT_MAX_SAMPLES` | No | Ceiling on those frames (default: 10) |

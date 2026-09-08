@@ -37,3 +37,22 @@ export function cutAtBoundary(text: string, maxChars: number): string {
 export function siteHost(url: string): string | null {
   try { return new URL(url).hostname.replace(/^www\./i, "").toLowerCase(); } catch { return null; }
 }
+
+/**
+ * A URL reduced to "which page is this?" — normalised host plus path, ignoring scheme, port,
+ * `www.`, query and hash.
+ *
+ * Lives here, beside `siteHost`, because three stages need it and two of them cannot import each
+ * other: `ir.ts` already imports `liveExtend.ts`, so the reverse would be a cycle. One definition
+ * in a neutral module is also what stops the two copies drifting the way TD-07 records.
+ *
+ * Query is deliberately out: a post-login redirect that only adds `?next=/dashboard` is the same
+ * page, and a tracking parameter must not make a discovered page unrecognisable.
+ */
+export function pageKey(url: string): string {
+  const host = siteHost(url);
+  if (!host) return url;
+  try {
+    return host + (new URL(url).pathname.replace(/\/+$/, "") || "/");
+  } catch { return url; }
+}
