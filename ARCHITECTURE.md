@@ -278,7 +278,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 
 ## Source Files
 
-### `src/stages/` — Pipeline Stages (22 files)
+### `src/stages/` — Pipeline Stages (19 files)
 
 | File | LLM? | Purpose |
 |------|:-----:|---------|
@@ -286,7 +286,9 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `planner.ts` | Gemini | NL request -> structured Plan |
 | `promptSelectors.ts` | No | Honors selectors the user wrote directly into their prompt |
 | `classify.ts` | No | Deterministic failure classifier |
-| `targetResolver.ts` | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`). `resolveField` tries label -> placeholder -> role -> **the next control after the label in DOM order** -> `:near()` geometry, every rung scoped to the open dialog by `resolveScope` (TD-72). Also owns `chooseLive` — the live twin of the generated `choose()` (TD-79). Exports the shared in-page logic as source strings (`DOM_ORDER_FIELD_JS`, `SELECTABLE_JS`, `OPTION_PROBE_JS`, `MATCH_OPTION_INDEX_JS`, `OPTION_ERROR_JS`) which the generator interpolates **bare** into the emitted spec, alongside `new Function`-materialised twins (`domOrderFieldFn`, ...) for the live path — a string handed to `evaluate()` is never called (TD-78) |
+| `heal.ts` | Gemini (LLM path only) | Bounded, one-shot self-heal: try the deterministic structural fix first (see `deterministicHeal.ts`, gated on `DETERMINISTIC_HEAL`), then fall back to re-snapshot + regenerate + re-run |
+| `deterministicHeal.ts` | No | Pure-code structural target matcher: re-matches a failing step's IR target (role/name) against the AppModel — no LLM, no browser relaunch. Tiered name matching shared in shape with `ir.ts`'s `bestNameMatch` |
+| `targetResolver.ts` | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`) |
 | `failureAnalysis.ts` | Gemini + Vision | Failure diagnosis; deterministic auth-bounce check runs first |
 | `caseSelectionGate.ts` | Gemini (via testCases) | Optional human-review loop over generated case batches, incl. reactive-case rounds |
 | `suiteRunner.ts` | No | Runs every case in its own browser context, per-case artifacts. `buildSuiteSummary` also reads each failed case's own `05-result.json` off disk and surfaces the failing step and error onto the case (optional additive fields, TD-80) |

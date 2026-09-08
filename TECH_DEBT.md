@@ -3300,3 +3300,24 @@ dark.** Runs that self-healed yesterday will not today unless `SELF_HEAL_DEFAULT
 the Settings toggle is switched on. That is what was asked for, and it is the right default for a
 step that silently costs a second browser run — but it is a change existing users will notice,
 which is a different thing from platform rule 2.
+
+### TD-84. `deterministicHeal.ts` duplicates `ir.ts`'s name-matching, and nothing pins them equal — Medium / Maintainability — OPEN
+
+**What it is.** `src/stages/deterministicHeal.ts` re-implements the tiered name matching that
+`ir.ts`'s `bestNameMatch` (inside `groundingError`) already does: exact → glyph-stripped →
+prefix/suffix → substring. `bestNameMatch` lives inside `groundingError`'s closure and is not
+exported, so the deterministic healer could not reuse it without a refactor. The two are pinned
+only by `tests/deterministicHeal.test.ts` asserting the tier behavior — nothing checks that the
+two implementations stay equivalent. This is `TECH_DEBT.md` TD-07 in miniature: a heuristic
+restated in two places that can drift.
+
+**Why it's accepted for now.** `DECISIONS.md` D-31 deliberately chose duplication over a shared
+helper, because extracting `bestNameMatch` out of `groundingError`'s closure is disproportionate
+for a ~15-line function, and both callers already have a test harness. The risk is confined to the
+tier definitions (which are stable and rarely change).
+
+**Remediation, if it ever drifts.** Extract the tiered matcher into a single exported helper in
+`schema/appModel.ts` (next to `isUsableElement` and `INTERACTIVE_ROLES`, which are already shared)
+and have both `ir.ts` and `deterministicHeal.ts` call it. A `tests/deterministicHeal.test.ts`
+assertion that the two produce identical rankings across a fixture corpus would close the gap
+without the refactor if preferred.

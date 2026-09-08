@@ -5,9 +5,10 @@ import { generateSpec } from "./generator.js";
 import { runSpec, type ExecResult } from "./executor.js";
 import { refreshPageModel } from "./liveExtend.js";
 import { credentialPolicyFor, promptCarriesCredentials, credentialEnvVars, type Credentials } from "./credentials.js";
+import { healStepTarget, type DeterministicHealResult } from "./deterministicHeal.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
-import type { IR } from "../schema/ir.js";
+import type { IR, Step } from "../schema/ir.js";
 import type { Diagnosis } from "./failureAnalysis.js";
 import type { LlmBudget } from "../llm/llmBudget.js";
 
@@ -31,6 +32,10 @@ export interface HealResult {
   ir: IR;
   result: ExecResult;
   specCode: string;
+  /** When true, the heal used the deterministic (structural) path — no LLM call, no
+   *  re-snapshot. Present so callers can distinguish cheap heals from expensive ones
+   *  in logs and UI without inspecting the heal artifact directory. */
+  deterministic?: boolean;
 }
 
 /**
@@ -81,6 +86,57 @@ export function isHealable(diagnosis: Diagnosis, ir: IR): boolean {
   return healable && failIdx > 0;
 }
 
+/** True when the DETERMINISTIC_HEAL env flag is set to "true". Read per-call, not at module
+ *  load, so tests can set the env var without vi.resetModules() (same pattern as
+ *  appModel.ts's liteCaps). */
+export function isDeterministicHealEnabled(): boolean {
+  return process.env.DETERMINISTIC_HEAL === "true";
+}
+
+/**
+ * Deterministic, structural self-heal: re-match the failing step's IR target against
+ * the AppModel without re-snapshotting the page or calling an LLM. Returns a modified
+ * IR + spec that can be re-run directly.
+ *
+ * This is the cheap first pass — no browser relaunch, no model cost. It covers the
+ * common case where an element was renamed, moved, or its role changed but is still
+ * discoverable in the current AppModel. Returns null when no deterministic match is
+ * found, signaling the caller to fall back to the LLM-based path.
+ */
+export async function attemptDeterministicHeal(args: HealArgs): Promise<HealResult | null> {
+  const { testCase, ir, appModel, diagnosis, runCreds, outDir } = args;
+
+  if (!isHealable(diagnosis, ir)) return null;
+  const failIdx = ir.steps.findIndex((s) => s.id === diagnosis.failingStepId);
+  if (failIdx < 0) return null;
+
+  const failingStep = ir.steps[failIdx];
+  const healed = healStepTarget(failingStep, appModel);
+  if (!healed) return null;
+
+  // Build a new IR with the healed step.
+  const healedIr: IR = {
+    ...ir,
+    steps: ir.steps.map((s, i) => (i === failIdx ? healed.step : s)),
+  };
+
+  const healedDir = path.join(outDir, "healed");
+  mkdirSync(healedDir, { recursive: true });
+  const healedSpec = generateSpec(healedIr, path.join(healedDir, "artifacts"));
+  const healedRun = await runSpec(healedSpec, healedDir, credentialEnvVars(runCreds));
+  if (!healedRun.passed) return null;
+
+  writeFileSync(path.join(healedDir, "generated.spec.ts"), healedSpec);
+  writeFileSync(path.join(healedDir, "ir.json"), JSON.stringify(healedIr, null, 2));
+  writeFileSync(path.join(healedDir, "deterministic-heal.json"), JSON.stringify({
+    failingStepId: diagnosis.failingStepId,
+    confidence: healed.confidence,
+    changeDescription: healed.changeDescription,
+    matchedElement: { role: healed.matchedElement.role, name: healed.matchedElement.name },
+  }, null, 2));
+  return { ir: healedIr, result: healedRun, specCode: healedSpec, deterministic: true };
+}
+
 /**
  * One bounded, one-shot self-heal attempt: re-snapshot the live page up to the failing step,
  * regenerate IR fresh against that snapshot, and accept only if the regenerated test both
@@ -111,6 +167,15 @@ export async function attemptHeal(args: HealArgs): Promise<HealResult | null> {
   // A step with no real prefix (first step, or an id toIR never emitted) has nothing to
   // replay from — skip healing, same guard orchestrator.ts's original inline version used.
   if (!isHealable(diagnosis, ir)) return null;
+
+  // When DETERMINISTIC_HEAL is on, try the cheap structural fix first. This avoids a
+  // browser re-snapshot and an LLM call for the common case where an element was renamed
+  // or moved but is still discoverable in the current AppModel. Only falls through to
+  // the expensive LLM path when no deterministic match is found.
+  if (isDeterministicHealEnabled()) {
+    const deterministicResult = await attemptDeterministicHeal(args);
+    if (deterministicResult) return deterministicResult;
+  }
   const failIdx = ir.steps.findIndex((s) => s.id === diagnosis.failingStepId);
 
   const prefix = ir.steps.slice(0, failIdx);
