@@ -294,11 +294,11 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `suiteRunner.ts` | No | Runs every case in its own browser context, per-case artifacts. `buildSuiteSummary` also reads each failed case's own `05-result.json` off disk and surfaces the failing step and error onto the case (optional additive fields, TD-80) |
 | `executor.ts` | No | Runs spec, captures artifacts, redacts secrets from served output. `extractFailureDetail` turns Playwright's own JSON report into the failing step number/title and the error line — the deterministic failure reason a replay gets with no model call (TD-80) |
 | `discovery.ts` | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
-| `liveExtend.ts` | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding. Its `select` step calls `chooseLive` rather than a bare `selectOption`, sharing option matching and waiting with the generated spec (TD-79) |
+| `liveExtend.ts` | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding. Its `select` step calls `chooseLive` rather than a bare `selectOption`, sharing option matching and waiting with the generated spec (TD-79). Credential fills resolve their kind from the step's `${env:...}` VALUE, the same way the compiled spec does (TD-84), and a walk that ends on the page it typed a credential into throws instead of snapshotting the login form. `refreshPageModelAt` additionally returns the landed URL, for TD-86's scoped grounding |
 | `testCases.ts` | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist, login-case cap |
 | `generator.ts` | No | IR -> Playwright spec (pure code) |
 | `hybridDiscovery.ts` | Gemini (text) | Discovery orchestrator: DOM first, auth-aware login + session verification, same-origin + click-probed site crawl, vision fallback; also owns `isAllowedEntryUrl`/`isPrivateOrLoopbackHost`, the entry-URL scheme + private-host allow-list |
-| `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry; `redactCredentials` skips DOM-keyword-colliding values. `restoreCredentialRefs` guards the editor save path: a credential typed as a literal step value goes back behind `${env:...}` before anything is written, classified by the step's own history / the DOM's `inputType` / a password-only name check (TD-67) |
+| `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry; `redactCredentials` skips DOM-keyword-colliding values. `restoreCredentialRefs` guards the editor save path: a credential typed as a literal step value goes back behind `${env:...}` before anything is written, classified by the step's own history / the DOM's `inputType` / a password-only name check (TD-67). `credentialKindForStep`/`credentialForStep` resolve VALUE-first (env reference), falling back to the target only when the value is not one — used by the live walk so it agrees with the compiled spec (TD-84) |
 | `domDiscovery.ts` | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility |
 | `domExtract.ts` | No | Cheerio DOM extraction — Node port of the deleted Python parser |
 | `ir.ts` | Gemini | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), login-prefix injection (`buildLoginPrefix`/`needsLoginPrefix`), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
@@ -308,8 +308,8 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 
 | File | LLM? | Purpose |
 |------|------|---------|
-| `stepText.ts` | No | **The IR <-> English mapping, in one place.** `formatIrStep` renders a step as the sentence a person edits; `parseIrStep` reads it back, merged onto the step it came from. Also owns `STEP_VOCABULARY` and `estimateRegrounding` (what a save will cost, computed without doing any of it). `public/app.js` has a display-only copy of `formatIrStep` that `tests/stepText.test.ts` pins identical — drift is a failing test, not a silent bug |
-| `caseEdit.ts` | Gemini (ceiling only) | Re-grounds the steps whose **target** changed, by replaying the earlier steps to arrive at the right page. Grounding is DOM-first, so it usually spends no model call at all |
+| `stepText.ts` | No | **The IR <-> English mapping, in one place.** `formatIrStep` renders a step as the sentence a person edits; `parseIrStep` reads it back, merged onto the step it came from. `parseIrSteps` aligns edited rows to originals **by content**, in two passes, so a delete or an insert keeps every surviving step's id and re-verifies only what genuinely moved (TD-90). Also owns `STEP_VOCABULARY` and `estimateRegrounding` (what a save will cost, computed without doing any of it). `public/app.js` has a display-only copy of `formatIrStep` that `tests/stepText.test.ts` pins identical — drift is a failing test, not a silent bug |
+| `caseEdit.ts` | Gemini (ceiling only) | Re-grounds the steps whose **target** changed, by replaying the earlier steps to arrive at the right page. Grounding is DOM-first, so it usually spends no model call at all. Passes a `GroundingScope` so only those steps are re-verified, and records the URL each walk reached so an edited step resolves against the page actually visited (TD-86). `caseElementContext` supplies the controls a rewrite may name — source-run model first, then cached walk snapshots for the same site (TD-91) |
 | `replay.ts` | No | Walks a stored IR prefix in a real browser and snapshots where it lands. Prefix-cached, so two edits on the same page share one walk. Also owns the replay pre-pass: `ungroundedStepIndexes` + `maybeRegroundForReplay` ground a replay's un-grounded steps against the live page behind `REPLAY_REGROUND` (default off, zero LLM calls, never writes back to the saved case — TD-77) |
 
 ### `src/schema/` — Data Contracts (3 files)
@@ -345,7 +345,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | File | Purpose |
 |------|---------|
 | `cache.ts` | SHA1-keyed file-based AppModel cache |
-| `llmCache.ts` | Two-tier LLM response cache (in-memory, 30-min TTL + disk, no expiry); every stage's cache key also hashes its system prompt + model name (`DECISIONS.md` D-10) |
+| `llmCache.ts` | Two-tier response cache (in-memory, 30-min TTL + disk, no expiry); every stage's cache key also hashes its system prompt + model name (`DECISIONS.md` D-10). **Namespaced** (`runs/_cache/<ns>/`) so one kind of entry can be cleared alone — browser walks live under `walks` and are cleared by `POST /api/cache/walks/clear`, leaving the LLM answers that cost money (TD-85). `credentialFingerprint` hashes credential values for use as a key part |
 | `testStrategy.ts` | Static QA knowledge: coverage taxonomy, scope classification, filtering |
 
 ### `src/server/` — Web Server (18 files)
@@ -373,7 +373,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `library.ts` | The test-case library: cases, versions, suites, suite membership, and every access check on them |
 | `signup.ts` | Sign-up through Supabase's Admin API rather than the client SDK — the free tier's confirmation mailer hangs, and a 504 on sign-up is indistinguishable from a broken server. `SIGNUP_ENABLED` defaults **on**, so turn it off before exposing the server |
 | `regroundJobs.ts` | A re-ground is a job, not a blocking request: `POST -> 202 {id}` + SSE + polling + cancel. The same protocol runs use, because a 90-second PATCH can report neither progress nor be stopped |
-| `rewrite.ts` | Where a model proposes step text and **never writes**: `proposeRewrite` ("ask for a change") and `proposeStepTranslation` ("write it for me"). Both return sentences, not IR, so approving one re-enters the ordinary parse/re-ground path |
+| `rewrite.ts` | Where a model proposes step text and **never writes**: `proposeRewrite` ("ask for a change") and `proposeStepTranslation` ("write it for me"). Both return sentences, not IR, so approving one re-enters the ordinary parse/re-ground path, and **both** now run every proposed line through `parseIrStep` before it is shown (TD-91). `proposeRewrite` is also given the site's actual controls, or it invents element names from page headings |
 | `retention.ts` | Ages off `runs/` directories on a schedule, per `RUN_RETENTION_DAYS` |
 
 ### `public/` — Frontend (5 files)
@@ -592,6 +592,11 @@ CASES (17)            /api/cases  ·  /api/cases/:caseId{,/script,/versions/:ver
                       from its IR. Deliberately NOT a field on GET /api/cases/:caseId (rule 1,
                       and the spec is large). TECH_DEBT.md TD-68.
 LIBRARY <- RUN        POST /api/runs/:runId/cases/:caseId/save   run:tester
+MAINTENANCE           POST /api/cache/walks/clear                admin
+                      Drops every cached browser walk (the `walks` namespace only, never the
+                      LLM answers beside it) and reports how many went. The escape hatch for a
+                      cached walk that has gone stale in a way its key cannot express.
+                      TECH_DEBT.md TD-85.
 
 STATIC
   /                                              -> public/

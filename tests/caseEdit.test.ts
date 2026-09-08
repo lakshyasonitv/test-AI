@@ -14,9 +14,20 @@ import type { IR } from "../src/schema/ir.js";
 
 const refreshPageModel = vi.fn<(m: AppModel, prefix: any[], creds?: any) => Promise<AppModel>>();
 
+// `caseEdit` calls `refreshPageModelAt`, which returns the reached URL alongside the model so the
+// grounder can prefer the page the walk actually landed on (TD-86). The seam is still one
+// function and the mock still resolves an AppModel — this only adapts the shape, so every
+// assertion below (`mock.calls[0][1]`, `[0][2]`, the rejection cases) is unchanged.
+//
+// `reachedUrl` is the LAST page of the returned model: that is the page `refreshPageModelAt`
+// itself appends for the URL it reached, so this matches the real function's own contract.
 vi.mock("../src/stages/liveExtend.js", async (orig) => ({
   ...(await orig<any>()),
   refreshPageModel: (...a: any[]) => (refreshPageModel as any)(...a),
+  refreshPageModelAt: async (...a: any[]) => {
+    const model = await (refreshPageModel as any)(...a);
+    return { model, reachedUrl: model?.pages?.[model.pages.length - 1]?.url ?? "" };
+  },
 }));
 
 const { regroundEditedIr } = await import("../src/stages/caseEdit.js");

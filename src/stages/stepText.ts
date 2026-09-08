@@ -332,12 +332,122 @@ export interface ParsedSteps {
   regroundIndexes: number[];
 }
 
+/** Actions that can change which page the flow is on, and therefore what a later step resolves
+ *  against. `wait`, `fill`, `select`, `check` and `assert` cannot: they act on the page you are
+ *  already on. This is what makes deleting a `Wait briefly` row free. */
+const PAGE_CHANGING = new Set(["navigate", "click", "press"]);
+
+/**
+ * Pair each edited row with the original it came from.
+ *
+ * PASS 1 — exact text. Every row whose sentence is byte-identical to an original's rendering is
+ * paired with the nearest unclaimed such original, scanning forward. That is what survives a
+ * delete or an insert: the rows below the change still read exactly as they did, so they keep the
+ * original they belong to rather than inheriting whichever one now sits at their index.
+ *
+ * PASS 2 — leftovers, in order, BETWEEN the anchors pass 1 established. An edited row (a changed
+ * value, a fixed typo) matches nothing exactly, but it is still that step: pairing it keeps its
+ * id and lets `parseIrStep` parse ONTO it, which is what makes a value edit free.
+ *
+ * The bound matters. Pairing leftovers positionally with no regard for the anchors — what the old
+ * code effectively did — can hand row `i` an original from a completely different region, and
+ * `parseIrStep` then resolves from the wrong step the fields a sentence cannot carry:
+ * `text_contains` vs `text_equals`, `Wait briefly`'s millisecond value, `Press the Enter key`'s
+ * target. Confining each run of leftovers to the originals lying between its neighbouring anchors
+ * means a leftover can only ever pair with a step from the same place in the flow.
+ *
+ * Anything still unpaired is a genuinely new row and gets a fresh id.
+ */
+function alignRows(texts: string[], originals: Step[]): (number | null)[] {
+  const rendered = originals.map((s) => formatIrStep(s).trim());
+  const pairing: (number | null)[] = texts.map(() => null);
+  const claimed = new Set<number>();
+
+  // Pass 1, in order, so repeated identical sentences pair up first-to-first rather than all
+  // fighting over one original. Scanning forward from 0 keeps the pairing stable and monotonic.
+  for (let i = 0; i < texts.length; i++) {
+    const raw = texts[i].trim();
+    for (let j = 0; j < rendered.length; j++) {
+      if (claimed.has(j) || rendered[j] !== raw) continue;
+      pairing[i] = j;
+      claimed.add(j);
+      break;
+    }
+  }
+
+  // Pass 2. Walk the anchored rows; between each consecutive pair, match the unclaimed rows
+  // against the unclaimed originals that lie strictly between the same two anchors, in order.
+  const anchors: number[] = [];
+  for (let i = 0; i < texts.length; i++) if (pairing[i] !== null) anchors.push(i);
+
+  const runs: { rows: number[]; lo: number; hi: number }[] = [];
+  let cursorRow = 0;
+  let lo = 0;
+  for (const a of [...anchors, texts.length]) {
+    const rows: number[] = [];
+    for (let i = cursorRow; i < a; i++) if (pairing[i] === null) rows.push(i);
+    const hi = a < texts.length ? (pairing[a] as number) : originals.length;
+    if (rows.length) runs.push({ rows, lo, hi });
+    cursorRow = a + 1;
+    lo = a < texts.length ? (pairing[a] as number) + 1 : originals.length;
+  }
+
+  // Within a run, prefer an original of the SAME KIND before falling back to order.
+  //
+  // Without this, deleting a `Wait` and editing the row below it in one save pairs the edited
+  // `Type "..." into textbox "Full Name"` with the now-unclaimed `wait` step simply because the
+  // wait comes first among what is available. `parseIrStep` then parses a fill onto a wait base,
+  // reports the target as changed, and charges a browser walk for a value edit.
+  //
+  // The kind is the sentence's leading verb — "Type", "Click", "Go", "Wait". That is this
+  // system's OWN closed rendering vocabulary (`STEP_VOCABULARY`), not page text and not model
+  // output, so matching on it is not the "regex over prose" trap `CLAUDE.md` warns about.
+  const verb = (s: string) => s.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  for (const run of runs) {
+    const available: number[] = [];
+    for (let j = run.lo; j < run.hi; j++) if (!claimed.has(j)) available.push(j);
+
+    // First pass over the run: same leading verb, in order.
+    const rowsLeft: number[] = [];
+    for (const row of run.rows) {
+      const want = verb(texts[row]);
+      const hit = available.find((j) => !claimed.has(j) && verb(rendered[j]) === want);
+      if (hit === undefined) { rowsLeft.push(row); continue; }
+      pairing[row] = hit;
+      claimed.add(hit);
+    }
+    // Then whatever is left, in order — a row whose verb changed entirely is still that step.
+    const rest = available.filter((j) => !claimed.has(j));
+    for (let k = 0; k < rowsLeft.length && k < rest.length; k++) {
+      pairing[rowsLeft[k]] = rest[k];
+      claimed.add(rest[k]);
+    }
+  }
+  return pairing;
+}
+
 /**
  * Read a whole edited step list back.
  *
- * `originals` are matched positionally, which is what makes an untouched row free: same text at
- * the same index returns the same object. A row that moved is treated as changed, because its
- * target may now be resolved on a different page — position is part of a step's meaning here.
+ * Rows are paired with originals BY CONTENT (see `alignRows`), not by index. Position used to be
+ * the whole story, and it made a delete or an insert far more expensive than it is: on the saved
+ * "Admin creates a new user" case, deleting one `Wait briefly` row marked six rows changed,
+ * queued five browser walks, and **renumbered every step below it** — the Full Name fill became
+ * `s9`, the id the deleted Wait had, so version history and failure reports pointed at the wrong
+ * step from then on (TECH_DEBT.md TD-90).
+ *
+ * WHEN A PAIRED ROW IS RE-GROUNDED. Two reasons, and only two:
+ *
+ *   (a) its own target text changed — it now points at a different element; or
+ *   (b) the set of PAGE-CHANGING steps above it changed — a navigate/click/press was added,
+ *       removed, or moved across it, so it may now resolve on a different page.
+ *
+ * (b) is deliberately about the MULTISET above the row, not "is there a page-changing step
+ * anywhere above". Every row in a login case has clicks above it; what matters is whether those
+ * clicks are the same ones, in the same number, as before. Deleting a `Wait` changes nothing
+ * about them, so the whole tail stays instant — which is the case the defect was reported on.
+ * Inserting a click at row 7 does change them for every row after it, and those rows genuinely
+ * do need re-verifying.
  */
 export function parseIrSteps(
   texts: string[],
@@ -346,32 +456,90 @@ export function parseIrSteps(
   if (!Array.isArray(texts) || texts.length === 0) {
     return { ok: false, index: 0, error: "a test needs at least one step" };
   }
+  const pairing = alignRows(texts, originals);
+
+  // Ids first, before any minting. A paired row keeps the id of the original it matched, so those
+  // ids are spoken for — minting as the loop walks (what the old code did) lets a new row claim
+  // an id a later paired row is about to keep.
+  const preserved = new Set<string>();
+  for (const j of pairing) if (j !== null) preserved.add(originals[j].id);
+  let mintFrom: Step[] = [...originals];
+
   const steps: Step[] = [];
   const changedIndexes: number[] = [];
   const regroundIndexes: number[] = [];
   const usedIds = new Set<string>();
 
+  // Reason (b) is about IDENTITY and POSITION, not wording. A page-changing step is identified by
+  // the original it came from — or, for a brand-new row, by the row itself. So fixing a typo in a
+  // click's name is reason (a) for that click alone; it does not claim that every later step now
+  // resolves somewhere else, which keying on the name would.
+  const pageChangingAbove = (upTo: number, keyAt: (n: number) => string | null): Set<string> => {
+    const out = new Set<string>();
+    for (let n = 0; n < upTo; n++) { const k = keyAt(n); if (k) out.add(k); }
+    return out;
+  };
+  const originalKeyAt = (n: number) =>
+    PAGE_CHANGING.has(originals[n].action) ? `o:${originals[n].id}` : null;
+  const editedKeys: (string | null)[] = [];
+
+  /**
+   * Rows that MOVED — the "or moved past it" half of reason (b).
+   *
+   * A move is an inversion in the pairing: row `i` kept original `j`, but some other row that is
+   * now on the far side of it kept an original that was on the near side. The set of
+   * page-changing steps above cannot see this, because moving a step past rows that are not
+   * page-changing leaves that set identical — which is exactly the "move a Save click up four
+   * rows" case. Both the row that moved and the rows it crossed are re-verified: the mover runs
+   * at a different point in the flow, and they run at a different point relative to it.
+   */
+  const moved = new Set<number>();
+  for (let a = 0; a < texts.length; a++) {
+    const ja = pairing[a];
+    if (ja === null) continue;
+    for (let b = a + 1; b < texts.length; b++) {
+      const jb = pairing[b];
+      if (jb === null) continue;
+      if (jb < ja) { moved.add(a); moved.add(b); }
+    }
+  }
+
   for (let i = 0; i < texts.length; i++) {
-    const base = originals[i];
-    const parsed = parseIrStep(texts[i], base, nextStepId([...originals, ...steps]));
+    const j = pairing[i];
+    const base = j === null ? undefined : originals[j];
+    const parsed = parseIrStep(texts[i], base, nextStepId(mintFrom));
     if (!parsed.ok) return { ok: false, index: i, error: parsed.error };
 
     let step = parsed.step;
-    // Two rows can only share an id if the editor duplicated one; mint a fresh id rather than
-    // letting a failure report point at an ambiguous step.
-    if (usedIds.has(step.id)) step = { ...step, id: nextStepId([...originals, ...steps]) };
+    // An id can still collide when the editor duplicated a row: both copies render identically,
+    // pass 1 pairs the first and the second comes back as new but carrying the base's id.
+    if (usedIds.has(step.id) || (j === null && preserved.has(step.id))) {
+      step = { ...step, id: nextStepId(mintFrom) };
+    }
     usedIds.add(step.id);
+    mintFrom = [...mintFrom, step];
 
     steps.push(step);
+    editedKeys.push(PAGE_CHANGING.has(step.action) ? (j === null ? `n:${i}` : `o:${originals[j].id}`) : null);
     if (parsed.changed) changedIndexes.push(i);
-    // A step that MOVED is caught by this same check without special handling: originals are
-    // matched POSITIONALLY, so a step that shifted is compared against whatever used to sit at
-    // its new index, and a different element there reads as a changed target. That is the right
-    // answer — a step's target resolves on whatever page the steps before it arrive at, so
-    // moving it genuinely does need re-verifying.
-    if (parsed.targetChanged) regroundIndexes.push(i);
+
+    if (parsed.targetChanged) {
+      regroundIndexes.push(i);
+    } else if (j !== null) {
+      // Compare the page-changing steps above this row NOW against those that were above the
+      // original it came from. Deleting a `Wait` changes neither set, so the tail stays free.
+      const now = pageChangingAbove(i, (n) => editedKeys[n]);
+      const then = pageChangingAbove(j, originalKeyAt);
+      if (moved.has(i) || !sameSet(now, then)) regroundIndexes.push(i);
+    }
   }
   return { ok: true, result: { steps, changedIndexes, regroundIndexes } };
+}
+
+function sameSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const k of a) if (!b.has(k)) return false;
+  return true;
 }
 
 export interface RegroundEstimate {

@@ -3492,13 +3492,19 @@ async function doTranslateSteps(btn) {
 
 // ------------------------------------------------------------------------ save
 
-async function saveCaseSteps(c, repaint) {
+/**
+ * @param confirmNoAssertion true only when the person answered the "this removes the last check"
+ *        refusal by pressing "Save without a check". Never sent otherwise, so the server keeps
+ *        refusing by default. TD-89.
+ */
+async function saveCaseSteps(c, repaint, confirmNoAssertion = false) {
   if (!caseEditor || !caseEditorDirty()) return;
   const editor = caseEditor;
   editor.errorAt = null;
   editor.errorMsg = "";
   editor.notice = "";
   editor.conflict = null;
+  editor.needsConfirmation = "";
 
   const btn = document.getElementById("cdSave");
   if (btn) {
@@ -3521,6 +3527,9 @@ async function saveCaseSteps(c, repaint) {
         // visible conflict.
         expectedVersion: editor.currentVersion,
         changeNote: "Edited steps",
+        // Optional and absent unless the person explicitly confirmed — an additive request
+        // field, so nothing that does not send it changes behaviour (rule 1).
+        ...(confirmNoAssertion ? { confirmNoAssertion: true } : {}),
       }),
     });
   } catch (err) {
@@ -3539,6 +3548,9 @@ async function saveCaseSteps(c, repaint) {
     // The server names the offending step, so the message lands on that row rather than
     // floating above a list of nine.
     editor.errorAt = typeof body.stepIndex === "number" ? body.stepIndex : null;
+    // A refusal the person can answer rather than a broken row: no step is at fault, so there is
+    // no `stepIndex`, and the message needs a button beside it instead of a row highlight.
+    editor.needsConfirmation = typeof body.needsConfirmation === "string" ? body.needsConfirmation : "";
     return repaint();
   }
 
@@ -3820,6 +3832,13 @@ async function renderCaseView(caseId, routeProjectId) {
             <span class="case-badge ${caseBadgeClass(c.lastRunStatus)}">${escapeHtml(caseStatusLabel(c.lastRunStatus))}</span>
             <span class="cd-version">v${caseEditor.currentVersion} · ${c.versions.length} version${c.versions.length === 1 ? "" : "s"}</span>
             <span class="case-badge badge-truncated" id="cdUnsaved"${dirty ? "" : ` style="display:none"`}>UNSAVED</span>
+            ${c.ir?.meta?.hasTerminalAssertion === false
+              // A case that checks nothing runs to the end and reports Passed. Saying so on the
+              // case itself is the whole point of TD-89 — the flag exists, it was simply never
+              // recomputed on edit and never surfaced. Reuses `.case-badge badge-truncated`,
+              // the existing "this is partial" pill (rule 3).
+              ? `<span class="case-badge badge-truncated" title="This test runs to the end without verifying anything, so it can only report Passed.">NO CHECK</span>`
+              : ""}
           </div>
           <input class="cd-title" id="cdTitle" value="${escapeHtml(c.title)}"
                  ${canAuthor ? "" : "readonly"} aria-label="Case title" />
@@ -3838,6 +3857,12 @@ async function renderCaseView(caseId, routeProjectId) {
         ${caseEditor.notice ? `<p class="team-ok">${escapeHtml(caseEditor.notice)}</p>` : ""}
         ${caseEditor.errorMsg && caseEditor.errorAt === null
           ? `<p class="team-error">${escapeHtml(caseEditor.errorMsg)}</p>` : ""}
+        ${caseEditor.needsConfirmation === "noAssertion"
+          // A refusal the person can answer, not a dead end. Re-submits the same steps with
+          // `confirmNoAssertion`, which is the only thing the server is waiting for. Reuses the
+          // existing button classes — no new CSS (rule 3). TD-89.
+          ? `<button type="button" class="run-btn lib-run-all" data-act="save-no-assertion">Save without a check</button>`
+          : ""}
       </div>
       <div id="cdConflict">${caseEditor.conflict ? conflictHtml(caseEditor.conflict) : ""}</div>
       <div id="caseSuites"></div>
@@ -4278,6 +4303,13 @@ async function renderCaseView(caseId, routeProjectId) {
     const save = document.getElementById("cdSave");
     if (save) save.addEventListener("click", () => saveCaseSteps(c, repaint));
 
+    // The "save it anyway" answer to the removed-last-check refusal. Delegated on the feedback
+    // container because the button only exists while that refusal is showing, and this block runs
+    // on every repaint. TD-89.
+    const feedback = document.getElementById("caseFeedback");
+    const confirmBtn = feedback?.querySelector('[data-act="save-no-assertion"]');
+    if (confirmBtn) confirmBtn.addEventListener("click", () => saveCaseSteps(c, repaint, true));
+
     const title = document.getElementById("cdTitle");
     if (title && canAuthor) title.addEventListener("change", async () => {
       const next = title.value.trim();
@@ -4711,6 +4743,41 @@ fetch("/api/health")
     if (!("selfHeal" in runOptions)) paintToggle(healToggleEl, optionDefaults.selfHeal);
   })
   .catch(() => { /* health is a diagnostic; the toggles still work without it */ });
+
+/**
+ * Clear the cached browser walks the step editor uses to verify an edit.
+ *
+ * Reports the count back in the row's own description line rather than a toast: the popover is
+ * already open and about to be dismissed, and a toast for a maintenance action nobody is watching
+ * is worse than the number appearing where the button is. Reuses the existing `.settings-row`
+ * markup — no new class (rule 3). TECH_DEBT.md TD-85.
+ */
+const clearWalkCacheBtnEl = document.getElementById("clearWalkCacheBtn");
+const clearWalkCacheNoteEl = document.getElementById("clearWalkCacheNote");
+const CLEAR_WALK_CACHE_IDLE = clearWalkCacheNoteEl?.textContent ?? "";
+if (clearWalkCacheBtnEl) {
+  clearWalkCacheBtnEl.addEventListener("click", async () => {
+    clearWalkCacheBtnEl.disabled = true;
+    clearWalkCacheNoteEl.textContent = "Clearing…";
+    try {
+      // `window.fetch` is wrapped at the top of this file to attach the bearer token to
+      // same-origin requests, so this needs no header of its own.
+      const res = await fetch("/api/cache/walks/clear", { method: "POST" });
+      const body = await res.json().catch(() => null);
+      clearWalkCacheNoteEl.textContent = res.ok
+        ? (body?.message ?? "Cleared.")
+        : (res.status === 403
+          ? "Only an admin can clear the cache."
+          : (body?.error ?? "Could not clear the cache."));
+    } catch {
+      clearWalkCacheNoteEl.textContent = "Could not reach the server.";
+    } finally {
+      clearWalkCacheBtnEl.disabled = false;
+      // Put the description back, so reopening the popover doesn't show a stale result.
+      setTimeout(() => { clearWalkCacheNoteEl.textContent = CLEAR_WALK_CACHE_IDLE; }, 6000);
+    }
+  });
+}
 
 settingsBtnEl.addEventListener("click", () => {
   const open = settingsPopEl.classList.toggle("hidden");

@@ -1,10 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { AppModel } from "../schema/appModel.js";
 import type { IR, Step } from "../schema/ir.js";
 import { groundingError } from "./ir.js";
-import { refreshPageModel } from "./liveExtend.js";
+import { refreshPageModelAt, WALK_CACHE_NS } from "./liveExtend.js";
 import { LlmBudget, enterWithBudget } from "../llm/llmBudget.js";
+import { siteHost } from "../text.js";
+import { cacheNamespaceDir } from "../kb/llmCache.js";
 import { redactCredentials, type Credentials } from "./credentials.js";
 
 /**
@@ -91,10 +93,10 @@ export interface RegroundHooks {
  * step whose target did not change needs no fresh snapshot at all. Falls back to an empty model
  * (the run may have been pruned; `runs/` ages off disk) and lets the walk populate it.
  */
-function baseModel(ir: IR, sourceRunId: string | null): AppModel {
+function baseModel(ir: IR, sourceRunId: string | null, runsDir = RUNS_DIR): AppModel {
   const baseUrl = ir.meta.baseUrl || "";
   if (sourceRunId) {
-    const file = path.join("runs", sourceRunId, "02-appmodel.json");
+    const file = path.join(runsDir, sourceRunId, "02-appmodel.json");
     if (existsSync(file)) {
       try {
         const parsed = AppModel.safeParse(JSON.parse(readFileSync(file, "utf8")));
@@ -105,6 +107,132 @@ function baseModel(ir: IR, sourceRunId: string | null): AppModel {
     }
   }
   return { baseUrl, pages: [] };
+}
+
+/**
+ * Where run artifacts live. A parameter with this default rather than a hardcoded literal, so a
+ * test can point it at a temp directory: writing fixtures into the real `runs/` tree leaks into
+ * whatever else is reading it, and vitest runs files in parallel. Production never passes it.
+ */
+const RUNS_DIR = "runs";
+
+/** Roles a step can actually act on. A heading or a paragraph is not something to click. */
+const ACTIONABLE_ROLES = new Set([
+  "button", "link", "menuitem", "tab", "textbox", "searchbox", "combobox",
+  "checkbox", "radio", "switch", "option",
+]);
+
+/** Same per-list bound the concept-labeling prompt uses (TD-73): one runaway element name must
+ *  not be able to dominate a prompt, and neither must a page with thousands of them. */
+const ELEMENT_NAME_MAX = 200;
+const ELEMENT_LIST_MAX = () => {
+  const raw = Number(process.env.REWRITE_ELEMENTS_MAX_CHARS ?? 4000);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 4000;
+};
+
+export interface CaseElementContext {
+  /** `role "name"` lines, ready to paste into a prompt. Empty when nothing is known. */
+  lines: string[];
+  /** Where they came from, for the note shown above the diff. */
+  source: "run" | "walks" | "none";
+}
+
+/**
+ * The controls a rewrite is allowed to refer to, for the pages this case touches.
+ *
+ * WHY (TD-91). `proposeRewrite` was given the case title, the current steps and the instruction —
+ * and nothing about the site. Asked to "navigate to the admin panel" it answered
+ * `Click on button "Admin Panel"`, which is the page HEADING; the real control is
+ * `button "Admin"`. The model had no way to know that, and no way to find out.
+ *
+ * Sources, best first:
+ *   1. the case's own source run model — what discovery actually saw
+ *   2. any cached browser walk for the same site — what a verification walk actually reached
+ *   3. nothing, and the caller says so in the note rather than pretending
+ *
+ * (2) is possible because the walk cache is namespaced and its entries are `ReplayResult`s
+ * carrying a `pageModel`. The keys are opaque hashes, so they cannot be looked up by case — the
+ * directory is enumerated and entries are filtered by SITE, using the same `pageKey` host
+ * comparison as everything else.
+ */
+export function caseElementContext(
+  ir: IR, sourceRunId: string | null, runsDir = RUNS_DIR,
+): CaseElementContext {
+  const wanted = siteHost(ir.meta.baseUrl || "");
+  const fromModel = (model: AppModel): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const page of model.pages) {
+      for (const el of page.elements ?? []) {
+        const role = (el.role ?? "").toLowerCase();
+        if (!ACTIONABLE_ROLES.has(role)) continue;
+        const name = (el.name ?? "").replace(/\s+/g, " ").trim();
+        if (!name || name.length > ELEMENT_NAME_MAX) continue;
+        const key = `${role}|${name.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(`${role} "${name}"`);
+      }
+    }
+    return out;
+  };
+
+  const model = baseModel(ir, sourceRunId, runsDir);
+  if (model.pages.length > 0) {
+    const lines = cap(fromModel(model));
+    if (lines.length) return { lines, source: "run" };
+  }
+
+  // Fall back to whatever a previous verification walk saw on this site.
+  if (wanted) {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const entry of readWalkSnapshots()) {
+      if (siteHost(entry.reachedUrl ?? "") !== wanted) continue;
+      for (const line of fromModel({ baseUrl: ir.meta.baseUrl, pages: [entry.pageModel] } as AppModel)) {
+        if (seen.has(line)) continue;
+        seen.add(line);
+        out.push(line);
+      }
+    }
+    const lines = cap(out);
+    if (lines.length) return { lines, source: "walks" };
+  }
+  return { lines: [], source: "none" };
+}
+
+/** Trim the list to the char budget, dropping from the END like every other prompt-fitting
+ *  helper here, so a page's primary chrome survives. */
+function cap(lines: string[]): string[] {
+  const max = ELEMENT_LIST_MAX();
+  const kept: string[] = [];
+  let used = 0;
+  for (const l of lines) {
+    if (used + l.length + 1 > max) break;
+    kept.push(l);
+    used += l.length + 1;
+  }
+  return kept;
+}
+
+/** Every cached walk result on disk. Best-effort: an unreadable or half-written entry is skipped,
+ *  never fatal — this is an optional enrichment, not a dependency. */
+function readWalkSnapshots(): { reachedUrl?: string; pageModel: AppModel["pages"][number] }[] {
+  // The CACHE root, not the runs directory a caller may have redirected: a cached walk is not a
+  // run artifact, and `llmCache` owns where it lives.
+  const dir = cacheNamespaceDir(WALK_CACHE_NS);
+  if (!existsSync(dir)) return [];
+  const out: { reachedUrl?: string; pageModel: AppModel["pages"][number] }[] = [];
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith(".json")) continue;
+      try {
+        const parsed = JSON.parse(readFileSync(path.join(dir, f), "utf8"));
+        if (parsed?.pageModel?.elements) out.push(parsed);
+      } catch { /* skip this one */ }
+    }
+  } catch { /* no cache directory, or unreadable */ }
+  return out;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
@@ -147,6 +275,9 @@ export async function regroundEditedIr(
 
   let model = baseModel(ir, opts.sourceRunId ?? null);
   let snapshots = 0;
+  /** Which URL the walk reached for each step index it walked to. Handed to `groundingError` so
+   *  an edited step resolves against the page actually reached, not against every page. TD-86. */
+  const reachedUrlAt = new Map<number, string>();
   let cancelled = false;
 
   try {
@@ -179,7 +310,12 @@ export async function regroundEditedIr(
         });
 
         try {
-          model = await refreshPageModel(model, prefix, opts.creds);
+          // refreshPageModelAt, not refreshPageModel: the URL the walk landed on is recorded per
+          // step index and handed to the grounder, so an edited step is checked against the page
+          // that was actually reached rather than against every page at once. TD-86.
+          const walked = await refreshPageModelAt(model, prefix, opts.creds);
+          model = walked.model;
+          reachedUrlAt.set(index, walked.reachedUrl);
           snapshots++;
         } catch (err: any) {
           // A prefix that will not replay is itself the finding, and it is attributable: the
@@ -227,7 +363,12 @@ export async function regroundEditedIr(
   // The single grounder. Mutates `ir.steps[*].target` in place: corrects role/name to the model's
   // literal values and writes back the css/testId the edit stripped.
   const grounded: IR = { ...ir, steps: ir.steps.map((s) => ({ ...s, target: s.target ? { ...s.target } : s.target })) };
-  const failure = groundingError(grounded, model);
+  // Scoped to the steps this save is actually verifying (TD-86). An untouched step that already
+  // carries css/testId is skipped outright: it was grounded against a real page once, the user
+  // did not touch it, and re-matching it by name against whatever the walk could reach is how a
+  // modal step or a login field gets reported as "not present on the page" for an edit somewhere
+  // else entirely. The fresh-run compile path in ir.ts passes no scope and is unaffected.
+  const failure = groundingError(grounded, model, { onlyIndexes: regroundIndexes, reachedUrlAt });
   if (failure) {
     const step: Step | undefined = grounded.steps[failure.index];
     return {
