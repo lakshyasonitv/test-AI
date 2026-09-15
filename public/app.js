@@ -385,6 +385,153 @@ const form = document.getElementById("runForm");
 const promptEl = document.getElementById("prompt");
 const urlEl = document.getElementById("url");
 const submitBtn = form.querySelector('button[type="submit"]');
+const urlSchemeEl = document.getElementById("urlScheme");
+const urlErrorEl = document.getElementById("urlError");
+
+// -----------------------------------------------------------------------------
+// URL field: scheme lives beside the input, never inside its value
+// -----------------------------------------------------------------------------
+
+/** True once the person has chosen a scheme themselves, so nothing auto-overrides it after. */
+let urlSchemeChosen = false;
+/** True only while a submit is in flight — read by refreshNewRunState(). Declared here, not
+ *  beside currentRunId at the bottom of this file, because init-time calls run earlier and a
+ *  `let` read before its declaration is a TDZ ReferenceError, not undefined. */
+let runInFlight = false;
+
+const urlScheme = () => (urlSchemeEl.textContent.trim() === "http://" ? "http://" : "https://");
+function setUrlScheme(scheme, byUser) {
+  urlSchemeEl.textContent = scheme;
+  if (byUser) urlSchemeChosen = true;
+}
+
+/** Host+path only: no scheme, no surrounding whitespace, no leading slashes. */
+function stripScheme(raw) {
+  return String(raw ?? "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/^\/+/, "");
+}
+
+/** localhost and 127.0.0.1 do not serve https — default the prefix, unless the user chose one. */
+function autoSchemeFor(value) {
+  if (urlSchemeChosen) return null;
+  return /^(localhost|127\.0\.0\.1)(:|\/|$)/i.test(value) ? "http://" : null;
+}
+
+/**
+ * Normalise what is in the field, flipping the prefix when a pasted URL carried its own scheme,
+ * and keeping the caret where the person left it.
+ *
+ * The caret is preserved by applying the SAME transform to the text before the caret and using
+ * its length — which is correct however many characters the strip removed, and needs no counting.
+ */
+function normalizeUrlField(preserveCaret) {
+  const before = urlEl.value;
+  const pasted = before.match(/^\s*([a-z][a-z0-9+.-]*):\/\//i);
+  if (pasted) {
+    const scheme = pasted[1].toLowerCase();
+    // An explicit scheme in what they typed or pasted wins, and counts as their choice.
+    if (scheme === "http" || scheme === "https") setUrlScheme(scheme + "://", true);
+  }
+
+  const after = stripScheme(before);
+  if (after !== before) {
+    const caret = urlEl.selectionStart ?? before.length;
+    const headAfter = stripScheme(before.slice(0, caret));
+    urlEl.value = after;
+    if (preserveCaret && document.activeElement === urlEl) {
+      const pos = Math.min(headAfter.length, after.length);
+      urlEl.setSelectionRange(pos, pos);
+    }
+  }
+
+  const auto = autoSchemeFor(urlEl.value);
+  if (auto) setUrlScheme(auto, false);
+}
+
+/** Put a possibly-absolute URL into the field, splitting the scheme out to the prefix. */
+function setUrlFieldValue(raw) {
+  urlEl.value = String(raw ?? "");
+  normalizeUrlField(false);
+  clearUrlError();
+  refreshComposerState();
+}
+
+/** The absolute URL the pipeline receives — unchanged contract, just assembled here. */
+function absoluteUrl() {
+  return urlScheme() + stripScheme(urlEl.value);
+}
+
+// ---- validation: on blur and submit only, never while typing --------------------
+
+function clearUrlError() {
+  urlErrorEl.textContent = "";
+  urlErrorEl.classList.add("hidden");
+  urlEl.removeAttribute("aria-invalid");
+}
+
+function showUrlError(msg) {
+  urlErrorEl.textContent = msg;
+  urlErrorEl.classList.remove("hidden");
+  urlEl.setAttribute("aria-invalid", "true");
+}
+
+/**
+ * What is wrong with the URL, in words the person can act on — or "" when it is fine.
+ *
+ * Deliberately specific: "Invalid URL" tells someone nothing about which of the several possible
+ * mistakes they made, so each case names the problem and the fix.
+ */
+function urlProblem() {
+  const value = stripScheme(urlEl.value);
+  if (!value) return "Enter the address of the page to test — for example example.com/cart.";
+
+  const host = value.split(/[/?#]/)[0];
+  if (!host) return "That looks like a path with no site — add the domain, like example.com/cart.";
+
+  const bare = host.replace(/:\d+$/, "");
+  const isLocal = /^(localhost|127\.0\.0\.1)$/i.test(bare);
+  const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(bare);
+  if (isLocal || isIp) return "";
+
+  if (!bare.includes(".")) {
+    return `"${host}" is missing a domain ending — did you mean ${bare}.com?`;
+  }
+  if (!/^[a-z0-9.-]+$/i.test(bare) || /^[.-]|[.-]$|\.\./.test(bare)) {
+    return `"${host}" is not a valid domain — use something like example.com.`;
+  }
+  const tld = bare.split(".").pop();
+  if (!/^[a-z]{2,}$/i.test(tld)) {
+    return `"${host}" does not end in a valid domain — did you mean ${bare.split(".").slice(0, -1).join(".")}.com?`;
+  }
+  return "";
+}
+
+/**
+ * "New run" is pointless when the workspace is already new — disable it then.
+ *
+ * Derived from state the page already keeps (CLAUDE.md: no new store): no run being viewed, no
+ * run in flight, and both composer fields empty. `runInFlight` is read off the submit button's
+ * own disabled-while-running state rather than a new flag.
+ */
+function refreshNewRunState() {
+  const btn = document.getElementById("newRunBtn");
+  if (!btn) return;
+  const fresh =
+    !currentRunId &&
+    !runInFlight &&
+    promptEl.value.trim() === "" &&
+    urlEl.value.trim() === "";
+  // Only a real <button> has a meaningful .disabled; guard so this stays a no-op elsewhere.
+  if (typeof btn.disabled === "boolean") btn.disabled = fresh;
+  btn.setAttribute("aria-disabled", fresh ? "true" : "false");
+  btn.title = fresh ? "You're already on a new chat" : "Start a new run";
+}
+
+/** Run test stays disabled until there is both a description and a URL. */
+function refreshComposerState() {
+  const ready = promptEl.value.trim().length > 0 && urlEl.value.trim().length > 0;
+  submitBtn.disabled = !ready;
+  refreshNewRunState();
+}
 const finalResult = document.getElementById("finalResult");
 const verdictEl = document.getElementById("verdict");
 const testSummaryEl = document.getElementById("testSummary");
@@ -460,6 +607,7 @@ function renderTemplates() {
   templatesEl.querySelectorAll(".template-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       promptEl.value = TEMPLATES[Number(btn.dataset.i)].prompt;
+      refreshComposerState();
     });
   });
 }
@@ -1543,7 +1691,7 @@ function renderHistory(runs) {
       <span class="badge ${escapeHtml(r.status)}" title="${escapeHtml(STATUS_LABEL[r.status] ?? r.status)}">${icon(STATUS_ICON[r.status] ?? "circle", { size: 14 })}</span>
       <span class="hprompt">${escapeHtml(r.prompt || "(no prompt)")}</span>
       ${suiteInfo}
-      <span class="hurl">${escapeHtml(r.url)}</span>
+      <span class="hurl" title="${escapeHtml(r.url || "")}">${escapeHtml(displayUrl(r.url))}</span>
       <button type="button" class="history-del" title="Delete this run" aria-label="Delete run">${icon("trash", { size: 13 })}</button>
     </li>`;
   }).join("");
@@ -1553,7 +1701,8 @@ function renderHistory(runs) {
       historyListEl.querySelectorAll(".history-item").forEach(item => item.classList.remove("active"));
       li.classList.add("active");
       if (li.dataset.prompt) promptEl.value = li.dataset.prompt;
-      if (li.dataset.url) urlEl.value = li.dataset.url;
+      refreshComposerState();
+      if (li.dataset.url) setUrlFieldValue(li.dataset.url);
       navigate("#/run/" + li.dataset.runId);
     });
   });
@@ -2865,9 +3014,24 @@ async function connectToRun(runId) {
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const prompt = promptEl.value.trim();
-  const url = urlEl.value.trim();
-  if (!prompt || !url) return;
+  if (!prompt) return;
 
+  // Validation happens here and on blur only — never while typing, so a half-typed host is not
+  // flagged as a mistake mid-keystroke.
+  const problem = urlProblem();
+  if (problem) {
+    showUrlError(problem);
+    urlEl.focus();
+    return;
+  }
+  clearUrlError();
+
+  // The scheme lives beside the field, so the absolute URL is assembled at the last moment. The
+  // request body is byte-for-byte the shape it always was: { prompt, url, coverage, options }.
+  const url = absoluteUrl();
+
+  runInFlight = true;
+  refreshNewRunState();
   submitBtn.disabled = true;
   submitBtn.innerHTML = `${icon("loader", { size: 14 })} <span class="run-btn-text">Running\u2026</span>`;
 
@@ -2880,12 +3044,15 @@ form.addEventListener("submit", async (e) => {
     if (!res.ok) throw new Error(`Server responded with HTTP ${res.status}`);
     const { runId } = await res.json();
     if (!runId) throw new Error("Server didn't return a run id");
+    runInFlight = false;
     navigate("#/run/" + runId);
   } catch (err) {
     // A failed POST previously left the button stuck on "Running\u2026" forever. Reset it and
     // surface the reason instead of silently swallowing the error.
+    runInFlight = false;
     submitBtn.disabled = false;
     submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
+    refreshComposerState();
     finalResult.classList.remove("hidden");
     paintVerdict({ cls: "incomplete", ic: "alert-triangle",
       head: "Couldn't start the run",
@@ -2906,16 +3073,23 @@ document.getElementById("caseSelectionIcon").innerHTML = icon("list", { size: 18
 
 // "New run" clears the workspace without a page reload, so an in-flight poll is abandoned
 // (pollGeneration is what stops the old loop touching the DOM again).
-document.getElementById("newRunBtn").addEventListener("click", () => {
+document.getElementById("newRunBtn").addEventListener("click", (e) => {
+  // No-op when it is not a real button (so aria-disabled is not the only thing stopping a click),
+  // and when it is a button that is already disabled.
+  const btn = e.currentTarget;
+  if (typeof btn.disabled !== "boolean" || btn.disabled) return;
   pollGeneration++;
   currentRunId = null;
+  runInFlight = false;
   promptEl.value = "";
   urlEl.value = "";
+  clearUrlError();
   resetRunUI();
   navigate("#/");
   submitBtn.disabled = false;
   submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
   historyListEl.querySelectorAll(".history-item").forEach(i => i.classList.remove("active"));
+  refreshComposerState();
   promptEl.focus();
 });
 
@@ -3942,7 +4116,7 @@ async function renderCaseView(caseId, routeProjectId) {
               <div class="cd-expected-value">${escapeHtml(caseEditor.expected || "Not recorded.")}</div>
             </div>
             ${canAuthor ? `<p class="hrow-meta" id="cdSaveHint" style="margin-top:10px"></p>` : ""}
-            <p class="hrow-meta" style="margin-top:6px">Target: ${escapeHtml(c.ir?.meta?.baseUrl ?? "")}</p>
+            <p class="hrow-meta" style="margin-top:6px" title="${escapeHtml(c.ir?.meta?.baseUrl ?? "")}">Target: ${escapeHtml(displayUrl(c.ir?.meta?.baseUrl))}</p>
           </div>
         </div>
         <div class="cd-right">
@@ -4987,6 +5161,18 @@ const RUN_SDOT_CLASS = {
   error: "blocked",
 };
 
+/**
+ * A URL as a person reads it: no scheme, no trailing slash.
+ *
+ * Display only. Deliberately NOT normalizeUrlKey() below — that one exists to match
+ * normaliseUrlKey() in src/server/projects.ts so a run finds its project row, and it lowercases
+ * for that reason. Borrowing it here would both mangle a case-sensitive path and couple a cosmetic
+ * choice to a matching rule, so a later tweak to either would silently break the other.
+ */
+function displayUrl(url) {
+  return (url || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+}
+
 /** MUST match normaliseUrlKey() in src/server/projects.ts and the backfill migration's SQL —
  *  it's how a run row finds the project row it belongs under. */
 function normalizeUrlKey(url) {
@@ -5452,7 +5638,7 @@ function renderProjectsTree(runs) {
   sidebarTreeEl.querySelectorAll(".tree-row.tree-case").forEach((row) => {
     row.addEventListener("click", () => {
       if (row.dataset.prompt) promptEl.value = row.dataset.prompt;
-      if (row.dataset.url) urlEl.value = row.dataset.url;
+      if (row.dataset.url) setUrlFieldValue(row.dataset.url);
       navigate("#/run/" + row.dataset.runId);
     });
   });
@@ -5624,7 +5810,7 @@ async function renderHistoryView() {
           const src = runs.find((r) => r.runId === runId);
           if (!src) return;
           promptEl.value = src.prompt || "";
-          urlEl.value = src.url || "";
+          setUrlFieldValue(src.url || "");
           navigate("#/");
           toast("Loaded that run into the composer — press Run test to go again");
           return;
@@ -6035,3 +6221,49 @@ async function renderLlmConfigPanel(orgId) {
     });
   }
 }
+
+// -----------------------------------------------------------------------------
+// Composer field wiring (URL scheme, validation, button states)
+// -----------------------------------------------------------------------------
+// Placed at the end of the file on purpose: refreshNewRunState() reads `currentRunId`, which is a
+// `let` declared further down. Running this any earlier would hit its temporal dead zone.
+
+// Typing never blocks or rejects: the value is only normalised (scheme split out, whitespace and
+// leading slashes dropped) and any existing error is cleared.
+urlEl.addEventListener("input", () => {
+  normalizeUrlField(true);
+  clearUrlError();
+  refreshComposerState();
+});
+
+// Pasting is handled by the same input handler on the next tick, so a pasted scheme flips the
+// prefix rather than landing in the value.
+urlEl.addEventListener("paste", () => setTimeout(() => {
+  normalizeUrlField(true);
+  clearUrlError();
+  refreshComposerState();
+}, 0));
+
+// Validate on blur — the first moment the person has finished a thought.
+urlEl.addEventListener("blur", () => {
+  normalizeUrlField(false);
+  const problem = urlEl.value.trim() ? urlProblem() : "";
+  if (problem) showUrlError(problem); else clearUrlError();
+});
+
+promptEl.addEventListener("input", refreshComposerState);
+
+// The prefix toggles https:// <-> http://. preventDefault because it sits inside a <label>, which
+// would otherwise just forward the click to the input.
+urlSchemeEl.addEventListener("click", (e) => {
+  e.preventDefault();
+  setUrlScheme(urlScheme() === "https://" ? "http://" : "https://", true);
+  urlEl.focus();
+});
+urlSchemeEl.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  e.preventDefault();
+  setUrlScheme(urlScheme() === "https://" ? "http://" : "https://", true);
+});
+
+refreshComposerState();
