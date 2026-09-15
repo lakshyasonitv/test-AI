@@ -3309,7 +3309,6 @@ the Settings toggle is switched on. That is what was asked for, and it is the ri
 step that silently costs a second browser run — but it is a change existing users will notice,
 which is a different thing from platform rule 2.
 
-<<<<<<< HEAD
 ### TD-84. `deterministicHeal.ts` duplicates `ir.ts`'s name-matching, and nothing pins them equal — Medium / Maintainability — OPEN
 
 **What it is.** `src/stages/deterministicHeal.ts` re-implements the tiered name matching that
@@ -3330,7 +3329,7 @@ tier definitions (which are stable and rarely change).
 and have both `ir.ts` and `deterministicHeal.ts` call it. A `tests/deterministicHeal.test.ts`
 assertion that the two produce identical rankings across a fixture corpus would close the gap
 without the refactor if preferred.
-=======
+
 ### TD-84. The editor's walk typed `${env:TEST_USERNAME}` into the login box — Critical / Accidental — Fixed
 
 **What it was.** Case "Log in and navigate to the admin panel" (project LMS, v8). Adding
@@ -3677,4 +3676,24 @@ full run. `caseElementContext` now takes an optional `runsDir` (defaulting to `"
 passed in production) and the tests use a temp directory. The cache read deliberately does NOT use
 that seam: a cached walk is not a run artifact, and `llmCache` owns where it lives — hence
 `cacheNamespaceDir`, one definition shared by the writer and the reader.
->>>>>>> cf596c49188b9a3d77e93da1fe73b5f13d279e57
+
+### TD-92. A real-looking Gemini API key was committed in `.env.example` — High / Accidental — Filed, not fixed
+
+**What it was.** Line 4 of `.env.example` shipped `GEMINI_API_KEYS='AQ.Ab8RN6…'` — lexically a live
+Gemini key in the current `AQ.` format — committed at `HEAD` and visible to anyone who could read
+the repo. It was found by the pre-push audit for the GHCR build phase, not by any tooling. This is
+the **third recorded occurrence** of a credential reaching a committed file: CLAUDE.md's "Don't"
+list records the two prior (a real password once shipped inside a few-shot example, per the C1/C2
+history). The affected key is being **revoked out-of-band**; no history rewriting is planned. The
+value in `.env.example` has been replaced with the placeholder `your-key-here`.
+
+**Remediation — filed, not implemented in this pass.** A pre-commit hook or CI check that scans
+**tracked** files and fails on live-format credentials is needed:
+
+- **Gemini:** `AQ\.[A-Za-z0-9_-]{20,}` (current format) and legacy `AIza[0-9A-Za-z_-]{20,}`, in
+  source, system prompts, and `.env.example`.
+- **Supabase:** `sb_publishable_[A-Za-z0-9_-]{20,}` and `sb_secret_[A-Za-z0-9_-]{20,}` (and the
+  `eyJ…` JWT form, excluding the gzip/base64 false-positive class seen in `Testbench (1).html`).
+
+The check must scope or review false positives rather than blanket-excluding them — a saved-HTML
+page full of base64 blobs is what produced `eyJ…` noise in the audit.

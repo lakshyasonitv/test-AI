@@ -315,17 +315,66 @@ not access control.
 
 ## Deployment
 
-There is no container or hosting config in this repo — run it directly with `npm run serve`.
+### Docker Compose (local)
 
-Two things worth knowing if you re-add a deployment target:
+```bash
+cp .env.example .env         # fill in GEMINI_API_KEY[S]
+docker compose up -d
+curl http://localhost:3000/api/health
+```
 
-- **Pin Playwright to an exact version** matching whatever browser build the host image ships. A
-  caret range lets `npm install` resolve a newer Playwright than the pre-installed Chromium, which
-  then fails to launch with `browserType.launch: Executable doesn't exist`.
+`shm_size: 1g` is set in `docker-compose.yml` so Chromium has enough shared memory; a bare
+`docker run` without it will hang or crash on busy pages.
+
+### Azure Container Apps
+
+The image is built in CI (`.github/workflows/image.yml`) and pushed to GHCR — ACR Tasks is
+blocked on the student subscription (`TasksOperationsNotAllowed`), so Azure just pulls the
+pre-built image.
+
+```bash
+# 0. CI pushes ghcr.io/<github-user>/testbench:v1 on every push to main.
+#    Manual push (override):
+#    docker login ghcr.io -u <github-user>
+#    docker buildx build --push -t ghcr.io/<github-user>/testbench:v1 .
+
+# 1. Create the Container App pulling from GHCR
+az containerapp up \
+  --name ai-test-platform \
+  --resource-group <rg> \
+  --environment <env-name> \
+  --image ghcr.io/<github-user>/testbench:v1 \
+  --target-port 3000 \
+  --ingress external \
+  --min-replicas 1 --max-replicas 1 \
+  --env-vars "GEMINI_API_KEYS=<key>" "CHROMIUM_EXTRA_ARGS=--disable-dev-shm-usage"
+
+# 2. Mount an Azure Files volume at /app/runs
+#    (az containerapp update with volume + volume-mount — see Azure docs for the exact flag set)
+```
+
+GHCR packages are private by default — either publish `testbench` publicly or attach a
+`repo`-scope PAT as the registry credential on the container app so ACA can pull it.
+
+Azure Container Apps cannot resize `/dev/shm` (it is fixed at 64 MB); set
+`CHROMIUM_EXTRA_ARGS="--disable-dev-shm-usage"` so Chromium uses an alternative instead of
+crashing. Locally this var is unset, so bare-metal and `docker compose up` are byte-identical.
+
+### Things worth knowing
+
+- **Pin Playwright to an exact version** matching the pre-installed browser. The base
+  `playwright:v1.49.0-noble` image and `package-lock.json` resolve the same `1.49.0` — a
+  caret range lets `npm install` drift to a newer Playwright than the pre-installed Chromium,
+  which fails with `browserType.launch: Executable doesn't exist`.
 - **`MAX_CONCURRENT_RUNS=1` on a small instance** (≤512 MB RAM) — every run launches its own
-  Chromium.
+  Chromium. The default is 3; reduce it if the container OOMs.
+- **Single replica.** The credential prompt and case-selection gate hold promises in process
+  memory; a reschedule drops the promise and wastes the full timeout. Scaling horizontally
+  requires an external scheduling layer.
+- **`/api/health`** reports which critical env vars are set (name and length, never the value).
+  It is a liveness probe only — it returns 200 regardless of Gemini/DB readiness.
 
-`GET /api/health` reports which critical env vars are set (name and length only, never the value).
+Full phase report: [`docs/phases/PHASE_CONTAINERIZATION_REPORT.md`](docs/phases/PHASE_CONTAINERIZATION_REPORT.md).
 
 ## Further Reading
 

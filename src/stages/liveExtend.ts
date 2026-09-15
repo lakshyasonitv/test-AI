@@ -1,4 +1,5 @@
 import { chromium, type Page } from "playwright";
+import { chromiumLaunchOptions } from "../browserLaunch.js";
 import { AppModel } from "../schema/appModel.js";
 import type { IR, Step } from "../schema/ir.js";
 import { extractDomModelFromPage } from "./domDiscovery.js";
@@ -126,7 +127,7 @@ async function replayAndSnapshot(
   // applyCredentials applies at execution time — computed here too so a compound case's
   // grounding replay doesn't type the real password into its earlier, deliberately-wrong leg.
   const lastOfKind = lastFillIndexByKind(prefix, fieldMap);
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(chromiumLaunchOptions());
   try {
     const page = await browser.newPage();
     let urlBeforeLastStep = model.baseUrl;

@@ -11,6 +11,7 @@
  */
 
 import { chromium, type Page } from "playwright";
+import { chromiumLaunchOptions } from "../browserLaunch.js";
 import { AppModel, PageModel, Element } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 import { extractCrawlResponse, type CrawlResponse } from "./domExtract.js";
@@ -534,7 +535,7 @@ export async function discoverUsingCrawler(url: string): Promise<AppModel | null
   let browser;
   try {
     console.log(`[domDiscovery] extracting DOM structure for ${url}`);
-    browser = await chromium.launch();
+    browser = await chromium.launch(chromiumLaunchOptions());
     const page = await browser.newPage();
     const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: REQUEST_TIMEOUT });
 

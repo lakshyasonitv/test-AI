@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import { chromiumLaunchOptions } from "./src/browserLaunch.js";
 
 export default defineConfig({
   testDir: "./runs",
@@ -20,5 +21,9 @@ export default defineConfig({
     // test failure. executor.ts probes for the binary and sets PLAYWRIGHT_VIDEO=off when it is
     // absent, so the run still happens. Unset (the normal case) this is unchanged.
     video: process.env.PLAYWRIGHT_VIDEO === "off" ? "off" : "retain-on-failure",
+    // Same flags the four in-process chromium.launch() sites get (src/browserLaunch.ts), so
+    // the generated spec's browser — launched by the Playwright runner, not by the pipeline —
+    // carries CHROMIUM_EXTRA_ARGS too. Empty when the var is unset.
+    launchOptions: chromiumLaunchOptions(),
   },
 });

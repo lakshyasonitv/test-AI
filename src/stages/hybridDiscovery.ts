@@ -15,6 +15,7 @@
 
 import crypto from "node:crypto";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { chromiumLaunchOptions } from "../browserLaunch.js";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import { AppModel, AuthOutcome, type AuthStep, Element, PageModel } from "../schema/appModel.js";
@@ -276,7 +277,7 @@ export async function discoverHybrid(url: string): Promise<AppModel> {
  * kept separate so the new DOM path is clean.
  */
 async function discoverUsingVision(url: string): Promise<AppModel> {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(chromiumLaunchOptions());
   try {
     const page = await browser.newPage();
     const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -891,7 +892,7 @@ export async function discoverSiteHybrid(
    * is the entire point.
    */
   const sharedPage = async (): Promise<Page> => {
-    state.browser ??= await chromium.launch();
+    state.browser ??= await chromium.launch(chromiumLaunchOptions());
     state.context ??= await state.browser.newContext();
     state.page ??= await state.context.newPage();
     return state.page;

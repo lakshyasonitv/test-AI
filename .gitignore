@@ -1,5 +1,6 @@
 node_modules
 .env
+.env.*
 # Credentials for `npm run test:rls` — points at a Supabase branch, holds a service-role key.
 .env.rls
 runs/

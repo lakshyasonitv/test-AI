@@ -808,3 +808,58 @@ passes, same rule as D-20.
 `deterministicHeal.ts` shares its name-matching shape with `ir.ts`'s `bestNameMatch` — a deliberate
 TD-07-style duplication pinned by `tests/deterministicHeal.test.ts`, since extracting a shared
 helper out of `ir.ts`'s closure is disproportionate for the size of the function.
+
+## D-32. Containerization: Playwright Docker image, single-replica, tsx at runtime
+
+**Context.** The app has never shipped in a container — `npm run serve` is the only way to run it,
+and `runs/` plus caches live on the local filesystem. The containerization goal is a
+`docker compose up` that is byte-identical to bare metal, plus a clear path to Azure Container
+Apps hosting. Three main decisions clustered here: which base image, whether to compile TS or keep
+tsx, and how to handle `/dev/shm` in ACA's constrained container runtime.
+
+**Decision — base image: `mcr.microsoft.com/playwright:v1.49.0-noble`.** Pins the pre-installed
+browser to the exact `1.49.0` the lockfile resolves (`package-lock.json: node_modules/playwright`).
+`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` is already set; `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`
+makes the root `postinstall` a no-op so `npm ci` never re-downloads or mutates the pre-installed
+browsers. The base image installs browsers with `--with-deps` so system libraries are present
+without further Dockerfile steps.
+
+**Decision — tsx at runtime, no compilation step.** The server runs TypeScript directly via
+`tsx --import`. `tsx` and `@playwright/test` are therefore runtime dependencies; a container
+built with `--omit=dev` breaks both the server and the executor. Docker layer caching makes
+the `npm ci` layer fast after the first build, which justifies skipping a `tsc` pipeline: source
+changes rebuild in seconds and the deployment is a single-layer-authentic copy of what the
+developer runs locally.
+
+**Decision — `CHROMIUM_EXTRA_ARGS` over a hardcoded flag.** Azure Container Apps cannot resize
+`/dev/shm` (64 MB default; Chromium needs `--disable-dev-shm-usage` to avoid crashes on busy
+pages). Rather than hardcoding the flag in the Dockerfile — which diverges bare-metal from the
+container — a new env var is read by `src/browserLaunch.ts` and propagated to all five
+browser-launching consumers identically. Unset locally, the container is byte-identical to
+bare metal; set it in ACA, and every browser receives the flag including the generated spec's
+Playwright runner.
+
+**Decision — volume mount at `/app/runs`, no `RUNS_DIR` refactor.** All code resolves `runs/`
+relative to `process.cwd()`. The Dockerfile sets `WORKDIR /app`; mounting `./runs:/app/runs` makes
+the local and container filesystems identical without touching path resolution logic. A `RUNS_DIR`
+env var would be cleaner but carries real regression risk — deferred to a separate change.
+
+**Decision — single replica.** The credential prompt and case-selection gate both park a promise
+in process memory (`pendingCredentials.ts`, `pendingCaseSelection.ts`). A restart or reschedule
+drops the promise and wedges the slot for the full timeout. Horizontal scaling requires an
+external scheduling layer — a distinct phase.
+
+**Rejected: EmptyDir mount for /dev/shm.** `CHROMIUM_EXTRA_ARGS` achieves the same effect
+portably. ACA does not support EmptyDir-style tmpfs mounts.
+
+**Rejected: non-root `pwuser`.** The Playwright base image bakes in a `pwuser` account. ACA
+volume permissions (Azure Files) require uid-based mount options and careful ownership alignment.
+Root is retained with no current security downside — the container exposes one local HTTP port.
+
+**Rejected: `npm run serve` as CMD.** `--env-file-if-exists=.env` is Node-version-dependent and
+no `.env` exists in the image (`docker-compose.yml` supplies env vars via `env_file`).
+
+**Consequences.** No health-check probe was added: `/api/health` returns 200 with
+variable-presence metadata only and never returns non-200, so it is liveness-only. A meaningful
+readiness check (Gemini key present, DB reachable) is deferred. `docs/phases/PHASE_CONTAINERIZATION_REPORT.md`
+documents verification, rollback, and deferred items.
