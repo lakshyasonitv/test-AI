@@ -29,7 +29,7 @@ code { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt; color:
 
 <h1>Volume 5 — Operations &amp; Debugging</h1>
 <p class="sub">How to work out what went wrong, yourself</p>
-<p class="meta">Describes commit <code>57e6261</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026 &nbsp;·&nbsp; Volume 5 of 5</p>
+<p class="meta">Describes commit <code>eca7dee</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026, revised 5 September 2026 &nbsp;·&nbsp; Volume 5 of 5</p>
 
 <div class="note">
 This volume exists so that when something breaks, the team can read the error and reason about it — rather than pasting it into a chatbot and hoping.
@@ -234,9 +234,9 @@ The directories are deliberately disjoint, and the Vitest config explicitly excl
 </table>
 
 <div class="warn">
-<b>Pass count:</b> 790 across 51 files, from <code>docs/LLM_CONTEXT_BRIEFING.md</code>, snapshot dated 1 September 2026 — that document flags its own numbers as the most perishable thing in it. <b>Re-check before quoting.</b> The repository has an explicit rule against treating any number in its documentation as current.
+<b>Pass count:</b> 816 across 52 files, verified by running the suite on 5 September 2026 — that document flags its own numbers as the most perishable thing in it. <b>Re-check before quoting.</b> The repository has an explicit rule against treating any number in its documentation as current.
 <br><br>
-<b>There is no CI.</b> Nothing runs these automatically (<code>TECH_DEBT.md</code> TD-20). Run them yourself.
+<b>CI exists</b> — <code>.github/workflows/test.yml</code> runs <code>tsc --noEmit</code> and <code>npm test</code> on every push and pull request. It is <b>not a merge gate</b>, so a red run can still merge; run them yourself before calling anything done (<code>TECH_DEBT.md</code> TD-20). An earlier edition of this volume said there was no CI at all — that was wrong, and it was wrong because the claim was taken from the docs instead of from <code>.github/</code>.
 </div>
 
 <h3>Before calling anything done</h3>
@@ -260,7 +260,7 @@ If a change touches the Playwright API surface of generated code, execute it onc
 <tr><td>TD-05</td><td>Duplicate <code>(role, name)</code> pairs make grounding ambiguous — the source of most <code>resolved to 2 elements</code> failures.</td></tr>
 <tr><td>TD-07</td><td>The locator algorithm is written twice — in <code>targetResolver.ts</code> and in the generator's injected helper — and nothing pins them equal.</td></tr>
 <tr><td>TD-14</td><td><code>runs/</code> is served publicly. The reason credentials must never touch disk.</td></tr>
-<tr><td>TD-20</td><td>No CI runs the checks.</td></tr>
+<tr><td>TD-20</td><td>CI runs the checks on every push, but nothing enforces that it passed before a merge.</td></tr>
 <tr><td>TD-22</td><td>The LLM disk cache never expires; a cache key missing a dimension serves a wrong answer forever.</td></tr>
 </table>
 

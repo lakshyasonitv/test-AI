@@ -204,6 +204,32 @@ export function recordRunStatus(runId: string, status: string): void {
   })();
 }
 
+/**
+ * Remove a run's row when its directory is deleted.
+ *
+ * Deleting a run used to remove the files and leave the row, so every deletion became a permanent
+ * entry in the startup shadow report ("present in database but not on disk") and the count only
+ * grew. The row also kept pointing at evidence that no longer existed.
+ *
+ * Fire-and-forget, like every other writer here: disk is authoritative, so a failed row cleanup
+ * must never turn a successful file deletion into a 500. `run_cases.run_id` is ON DELETE CASCADE,
+ * so this one statement takes the case rows with it.
+ */
+export function deleteRunRow(runId: string): void {
+  if (!isDbEnabled()) return;
+  const client = getServiceClient();
+  if (!client) return;
+
+  void (async () => {
+    try {
+      const { error } = await client.from("runs").delete().eq("id", runId);
+      if (error) console.error(`[db] could not delete run ${runId}:`, error.message);
+    } catch (err) {
+      console.error(`[db] deleting run ${runId} threw:`, (err as Error)?.message ?? err);
+    }
+  })();
+}
+
 /** Which organisation AND project each run belongs to. */
 export interface RunScope {
   organisationId: string;

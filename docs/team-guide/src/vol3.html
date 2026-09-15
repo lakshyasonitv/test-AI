@@ -30,10 +30,10 @@ code { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt; color:
 
 <h1>Volume 3 — Server &amp; Data</h1>
 <p class="sub">Routes, permissions, and where everything is stored</p>
-<p class="meta">Describes commit <code>57e6261</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026 &nbsp;·&nbsp; Volume 3 of 5</p>
+<p class="meta">Describes commit <code>eca7dee</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026, revised 5 September 2026 &nbsp;·&nbsp; Volume 3 of 5</p>
 
 <div class="note">
-Covers the 18 files in <code>src/server/</code> (4,806 lines), plus <code>src/db.ts</code> and <code>src/runStore.ts</code>.
+Covers the 18 files in <code>src/server/</code> (4,909 lines), plus <code>src/db.ts</code> and <code>src/runStore.ts</code>.
 <br><br>
 A teaching narrative. <code>ARCHITECTURE.md</code> owns the formal file map, <code>DECISIONS.md</code> the reasoning, <code>TECH_DEBT.md</code> the defects.
 </div>
@@ -82,7 +82,7 @@ const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup"]);</
 
 <h3>The routes, grouped</h3>
 
-<p>There are 57. Rather than list them flat, here is what exists and what guards it.</p>
+<p>There are 58. Rather than list them flat, here is what exists and what guards it.</p>
 
 <table>
 <tr><th style="width:26%">Group</th><th style="width:10%">Count</th><th style="width:22%">Typical guard</th><th>Notable members</th></tr>
@@ -95,7 +95,7 @@ const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup"]);</
 <tr><td><b>Projects</b></td><td>7</td><td>viewer / admin</td><td>CRUD plus member management</td></tr>
 <tr><td><b>Organisations</b></td><td>6</td><td>org admin</td><td>members, roles, addable users</td></tr>
 <tr><td><b>Suites</b></td><td>8</td><td>tester / admin</td><td>CRUD, cases in a suite, reordering</td></tr>
-<tr><td><b>Cases</b></td><td>16</td><td>viewer / tester / admin</td><td>read, edit, versions, steps, re-ground jobs, duplicate, rewrite</td></tr>
+<tr><td><b>Cases</b></td><td>17</td><td>viewer / tester / admin</td><td>read, edit, versions, steps, re-ground jobs, duplicate, rewrite, and <code>GET /api/cases/:id/script</code> — a saved case's Playwright script, from the spec stored with that version or regenerated from its IR</td></tr>
 <tr><td><b>Library ↔ runs</b></td><td>2</td><td>tester</td><td><code>POST /api/runs/:runId/cases/:caseId/save</code>, <code>POST /api/replay</code></td></tr>
 </table>
 
@@ -247,7 +247,7 @@ But this is an unauthenticated route that <b>writes, using an admin key</b>. The
 
 <h2>5. The database</h2>
 
-<p class="file">src/db.ts — 350 lines</p>
+<p class="file">src/db.ts — 348 lines</p>
 
 <p>Supabase-hosted Postgres, accessed only through PostgREST calls — no SQL client, no ORM, and <b>no <code>.sql</code> file anywhere in the repository</b>. The schema lives in the Supabase project and is applied by migrations the code references by name. The table description below was reconstructed from the queries.</p>
 
@@ -428,7 +428,7 @@ Rewriting a case <i>at the gate</i> deliberately does neither, because gate step
 <li><b>Two duplications pinned only by convention:</b> <code>normaliseUrlKey</code> (server ↔ <code>app.js</code>) and <code>formatIrStep</code> (server ↔ <code>app.js</code>). Only the second has a test holding it in place.</li>
 </ol>
 
-<p>Before calling anything done: <code>npx tsc --noEmit</code> must be clean, and <code>npx vitest run</code> must pass. No CI runs either of them for you — that is <code>TECH_DEBT.md</code> TD-20.</p>
+<p>Before calling anything done: <code>npx tsc --noEmit</code> must be clean, and <code>npx vitest run</code> must pass. CI (<code>.github/workflows/test.yml</code>) runs both on every push and pull request — but it is <b>not a merge gate</b>, so a red run can still land. Run them yourself (<code>TECH_DEBT.md</code> TD-20).</p>
 
 </body>
 </html>

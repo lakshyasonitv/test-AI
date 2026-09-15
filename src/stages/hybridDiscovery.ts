@@ -31,7 +31,8 @@ import { AUTH_VERB, waitForAuthSettle } from "./authSettle.js";
 import { runStepLive } from "./liveExtend.js";
 import { resolveLive } from "./targetResolver.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
-import { cutAtBoundary } from "../text.js";
+import { cutAtBoundary, siteHost } from "../text.js";
+import { llmCacheDimension, resolvedModelLite } from "../llm/llmContext.js";
 
 // ---------------------------------------------------------------------------
 // Concept labeling — the ONE remaining Gemini call in the primary path
@@ -55,16 +56,87 @@ Rules:
  * The screenshot is only used as a secondary signal when DOM is ambiguous,
  * not as the primary information source.
  */
+/** Longest accessible name a single element may contribute to the concept-labeling prompt. */
+const LABEL_NAME_MAX = () => {
+  const raw = Number(process.env.LABEL_ELEMENT_NAME_MAX_CHARS ?? 200);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 200;
+};
+/** Ceiling on the whole element list. Comfortably above every non-pathological page measured. */
+const LABEL_LIST_MAX = () => {
+  const raw = Number(process.env.LABEL_ELEMENTS_MAX_CHARS ?? 40_000);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 40_000;
+};
+
+/**
+ * The element list for the concept-labeling prompt, bounded on two axes.
+ *
+ * Exported for the test that replays the real amazon.in AppModel through it — the measurement is
+ * the point, and a test that cannot see this function would have to reimplement it.
+ *
+ * Truncation drops from the END, matching every other prompt-fitting helper in this codebase, so
+ * the elements a page declares first (its chrome and primary navigation) are the ones that
+ * survive. Original indices are preserved on every line the model sees.
+ */
+export function capElementsList(elements: Element[]): string {
+  const nameMax = LABEL_NAME_MAX();
+  const listMax = LABEL_LIST_MAX();
+
+  const lines = elements.map((e, i) => {
+    // Collapse whitespace FIRST. This format is one line per element and the model maps its
+    // answer back by the `[index]` at the start of each line — so a name containing a newline
+    // silently splits one element into several lines, and every index after it reads as
+    // belonging to a row that is really the tail of the previous name. Measured on the amazon.in
+    // homepage: 229 elements produced 273 lines before this collapse.
+    const raw = (e.name ?? "").replace(/\s+/g, " ").trim();
+    // A name this long is never a real accessible name — it is page text or CSS that leaked into
+    // one. Say so inline rather than silently handing the model a truncated blob it might quote
+    // back as an element name.
+    const name = raw.length > nameMax ? `${raw.slice(0, nameMax)}… [+${raw.length - nameMax} chars omitted]` : raw;
+    return `[${i}] ${e.role} "${name}" (visible: ${e.visible ?? true}, section: ${e.pageSection ?? "body"})`;
+  });
+
+  const full = lines.join("\n");
+  if (full.length <= listMax) return full;
+
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    if (used + line.length + 1 > listMax) break;
+    kept.push(line);
+    used += line.length + 1;
+  }
+  console.warn(
+    `[hybrid] concept-labeling element list truncated: ${full.length} -> ${used} chars ` +
+    `(${kept.length}/${lines.length} elements). A page this large usually means an element's ` +
+    `name captured page text or CSS — see TECH_DEBT.md TD-73.`,
+  );
+  return kept.join("\n");
+}
+
 async function labelConceptsWithDOM(
   elements: Element[],
   pageTitle: string,
   markdown: string,
   screenshotBase64?: string,
 ): Promise<{ concepts: string[]; labeledElements: { index: number; concept: string }[] }> {
-  // Build a compact element list
-  const elementsList = elements
-    .map((e, i) => `[${i}] ${e.role} "${e.name}" (visible: ${e.visible ?? true}, section: ${e.pageSection ?? "body"})`)
-    .join("\n");
+  // Build a compact element list.
+  //
+  // "Compact" was aspirational until measured. On run 2026-09-03T11-49-04-132Z-f568ba48
+  // (amazon.in) this line produced **797,356 characters from 229 elements** — because an
+  // element's accessible name can be an inlined stylesheet. That page's `main` element had a
+  // 648,107-character name beginning `.gwm-window-tile:nth-child(9n+1) {background-…`, and two
+  // `listitem`s carried 65K and 63K of CSS each. Median name length on the same page: 15.
+  // Four elements were 99% of the payload, and the resulting discovery call cost 514,427 prompt
+  // tokens — more than every other run in `runs/` combined. See TECH_DEBT.md TD-73.
+  //
+  // Two independent bounds, because either alone still leaks:
+  //   per-name — one runaway element cannot dominate the prompt
+  //   total    — a page with thousands of ordinary elements cannot either
+  //
+  // The ORIGINAL index is preserved on every surviving line: the caller maps the model's answer
+  // back with `labeledElements.find(l => l.index === i)` against the unfiltered `page.elements`,
+  // so renumbering here would silently label the wrong elements.
+  const elementsList = capElementsList(elements);
 
   // Trim markdown at a line boundary so the concept-labeling prompt stays small
   // without cutting a sentence or heading in half.
@@ -78,7 +150,7 @@ async function labelConceptsWithDOM(
     // The prompt and model are real inputs too, and the disk cache never expires — leaving
     // them out means a labeling-rule change never reaches a page already seen.
     LABEL_SYSTEM,
-    process.env.GEMINI_MODEL_LITE ?? "default"
+    resolvedModelLite(), llmCacheDimension()
   );
   const cachedLabels = llmCacheGet<{ concepts: string[]; labeledElements: { index: number; concept: string }[] }>(cacheKey);
   if (cachedLabels) return cachedLabels;
@@ -100,7 +172,7 @@ Return JSON: { "concepts": string[], "labeledElements": { "index": number, "conc
     const { content: raw } = await gemini(user, {
       systemInstruction: system,
       json: true,
-      model: process.env.GEMINI_MODEL_LITE,
+      model: resolvedModelLite(),
       imageBase64: screenshotBase64,
       imageMime: screenshotBase64 ? "image/jpeg" : undefined,
       stage: "discovery",
@@ -260,12 +332,23 @@ async function discoverUsingVision(url: string): Promise<AppModel> {
  */
 export async function discoverPagesHybrid(urls: string[]): Promise<AppModel> {
   const seen = new Set<string>();
-  let merged: AppModel = { baseUrl: urls[0], pages: [] };
+  // `urls[0]` verbatim was wrong twice over: it keeps the entered SCHEME (so a redirected site
+  // leaves every page disagreeing with the base — TD-82) and it keeps the PATH, so a base of
+  // `http://host/s/` made `resolveHref(base, "/x")` and every page comparison resolve against a
+  // page rather than the site. `baseUrl` is contractually an origin.
+  let merged: AppModel = { baseUrl: landedOrigin(undefined, urls[0]), pages: [] };
+  let normalised = false;
 
   for (const url of urls) {
     if (seen.has(url)) continue;
     seen.add(url);
     const model = await discoverHybrid(url);
+    // The first page actually fetched is what says where the browser landed; its own model's
+    // baseUrl already comes from the crawled (post-redirect) URL.
+    if (!normalised && model.pages.length > 0) {
+      merged = withLandedBase(merged, model.pages[0].url ?? model.baseUrl, urls[0]);
+      normalised = true;
+    }
     const newPages = model.pages.filter((p) => !merged.pages.some((mp) => mp.url === p.url));
     merged = AppModel.parse({ ...merged, pages: [...merged.pages, ...newPages] });
   }
@@ -283,6 +366,38 @@ export async function discoverPagesHybrid(urls: string[]): Promise<AppModel> {
  * call, and selection budgets the final case count anyway.
  */
 export const MAX_DISCOVERY_PAGES = Number(process.env.MAX_DISCOVERY_PAGES ?? 5);
+
+/**
+ * The origin an AppModel should carry, given where the browser actually LANDED.
+ *
+ * `baseUrl` is what every relative path downstream resolves against and what pages are compared
+ * to, so it must describe where the browser ended up, not what the user typed. A user entering
+ * `http://veterans.my.site.com/s/` against a site that redirects to `https://` used to leave the
+ * typed scheme in `baseUrl` while every discovered page carried the landed one, and the IR
+ * navigate guard then refused a correct step while listing its path as known (TD-82).
+ *
+ * Also strips any PATH: `baseUrl` is contractually an origin (`resolveHref(baseUrl, "/x")` only
+ * behaves if it is), and `discoverPagesHybrid` was passing the full entry URL including its path.
+ *
+ * Falls back to the entered URL when the landed one cannot be parsed — an unusable base is worse
+ * than a stale one.
+ */
+export function landedOrigin(landedUrl: string | undefined, enteredUrl: string): string {
+  for (const candidate of [landedUrl, enteredUrl]) {
+    if (!candidate) continue;
+    try { return new URL(candidate).origin; } catch { /* try the next */ }
+  }
+  return enteredUrl;
+}
+
+/** Set `baseUrl` to where the browser landed, keeping what the user typed for provenance. */
+export function withLandedBase(model: AppModel, landedUrl: string | undefined, enteredUrl: string): AppModel {
+  const baseUrl = landedOrigin(landedUrl, enteredUrl);
+  const entered = (() => { try { return new URL(enteredUrl).origin; } catch { return enteredUrl; } })();
+  if (baseUrl === entered) return { ...model, baseUrl };
+  console.log(`[hybrid] entry ${entered} redirected to ${baseUrl} — using the landed origin as baseUrl`);
+  return { ...model, baseUrl, enteredUrl };
+}
 
 /** Hash is navigation state, not a new page — a link like /cart#top is the same page. */
 function normUrl(u: string): string {
@@ -474,7 +589,11 @@ export async function discoverUrlsByClicking(
       await (await resolveLive(page, { role: el.role, name: el.name })).click({ timeout: 5000 });
       await page.waitForTimeout(800);
       const after = page.url();
-      if (after !== before && new URL(after).origin === origin) found.push(after);
+      // Same SITE, not the same origin string. `origin` is the ENTERED origin, and on a site
+      // that redirects http -> https every URL a click lands on carries the other scheme — so an
+      // origin comparison discarded every destination this function exists to find, and
+      // click-based discovery silently returned nothing. TD-82.
+      if (after !== before && siteHost(after) === siteHost(origin)) found.push(after);
     } catch {
       // Not resolvable, not clickable, or it opened a modal instead of navigating. Either way
       // there's no destination to record — the next candidate is independent of this one.
@@ -824,8 +943,9 @@ export async function discoverSiteHybrid(
       // DOM succeeded but found no elements (auth wall, not-yet-hydrated) — still a valid,
       // cacheable result. Without this, every call re-launches Chromium and re-crawls instead
       // of hitting the cache, unlike discoverHybrid's equivalent case.
-      cacheSet(siteCacheKey(url, creds), entrySnapshot.appModel);
-      return entrySnapshot.appModel;
+      const emptyModel = withLandedBase(entrySnapshot.appModel, entrySnapshot.finalUrl, url);
+      cacheSet(siteCacheKey(url, creds), emptyModel);
+      return emptyModel;
     }
 
     // ---- Auth: detect the gate on the LIVE page, get credentials, log in, PROVE it ----
@@ -1002,7 +1122,13 @@ export async function discoverSiteHybrid(
     // routinely echoes the identifier back ("Signed in as ..."). This model goes to the shared
     // cache under runs/_cache and onward into run artifacts, both publicly served (TD-14) —
     // scrub before anything persists it. No-op unless the credentials are marked `secret`.
-    const result = redactCredentials(AppModel.parse({ baseUrl: entryOrigin, pages, auth }), creds);
+    // Where the browser LANDED, not what was typed — the entry navigation may have redirected
+    // (http -> https, apex -> www, a locale prefix). Every relative path, every page comparison
+    // and the generated spec's own page.goto all resolve against this. TD-82.
+    const result = redactCredentials(
+      AppModel.parse(withLandedBase({ baseUrl: entryOrigin, pages, auth }, entrySnapshot.finalUrl, url)),
+      creds,
+    );
     // Never cache a failed login. A failure is usually transient — wrong value typed, the site
     // briefly down, a login form that changed — and caching it pins the whole run to a
     // login-page-only model for APPMODEL_CACHE_TTL_MS, so the immediate retry silently gets the

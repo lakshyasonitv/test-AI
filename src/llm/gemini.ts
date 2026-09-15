@@ -1,6 +1,27 @@
 import { poolFromEnv } from "./keyPool.js";
 import { callWithPool } from "./backoff.js";
 import { recordAmbient } from "./llmBudget.js";
+import { currentLlmConfig } from "./llmContext.js";
+
+/**
+ * The models this server offers in the admin panel's dropdown.
+ *
+ * ONE list, exported, so the UI, the validator and the documentation cannot drift apart — a
+ * second hand-maintained copy of this is `DECISIONS.md` D-01's failure mode reappearing as code.
+ *
+ * It is a convenience, NOT the authority: a hardcoded list goes stale every time Google ships a
+ * model, so `verifyGeminiCredentials` below asks the provider what THIS key can actually use and
+ * refuses a save that the provider would reject. The list stops typos; the live check stops the
+ * list from lying. That is this project's standing rule — a stated preference always has a
+ * deterministic check behind it (`CLAUDE.md`, D-02/D-03).
+ */
+export const GEMINI_MODELS = [
+  "gemini-3.6-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-3-flash-preview",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+] as const;
 
 // Built on first use, not at import. KeyPool throws when no keys are configured, and at
 // module scope that made merely *importing* anything downstream of this file fail — so pure
@@ -27,13 +48,64 @@ export interface GeminiOpts {
 export interface GeminiUsage { promptTokens: number; completionTokens: number; totalTokens: number; }
 export interface GeminiResult { content: string; usage: GeminiUsage; }
 
+/**
+ * Raised when a single prompt exceeds `LLM_MAX_PROMPT_CHARS`. Typed so callers can tell a
+ * refusal-before-sending apart from a provider error: nothing was spent, and retrying the same
+ * prompt cannot help.
+ */
+export class PromptTooLargeError extends Error {
+  readonly isPromptTooLarge = true;
+  constructor(readonly stage: string, readonly chars: number, readonly limit: number) {
+    super(
+      `The ${stage} stage tried to send a prompt of ${chars.toLocaleString()} characters, over the ` +
+      `${limit.toLocaleString()} limit, so it was refused before being sent. This is a bug in how ` +
+      `that prompt is built — usually one page element whose text ran away — not something wrong ` +
+      `with the site under test. Raise LLM_MAX_PROMPT_CHARS only if you know why the prompt is ` +
+      `this big.`,
+    );
+    this.name = "PromptTooLargeError";
+  }
+}
+
+/**
+ * Last line of defence against a runaway prompt, checked before anything is sent.
+ *
+ * Every stage caps its own inputs, and every one of those caps is a place a new input dimension
+ * can be added without anyone remembering to bound it. That happened: a single `discovery` call on
+ * run `2026-09-03T11-49-04-132Z-f568ba48` sent **514,427 prompt tokens** — 40% of all prompt tokens
+ * across every run on disk — because one element's accessible name was an inlined stylesheet
+ * (648,107 characters). No per-stage cap caught it because none of them looked at that dimension.
+ *
+ * So the bound lives here too, where every stage passes through exactly once. Generous by design:
+ * it is not a tuning knob, it is a tripwire. `TECH_DEBT.md` TD-73.
+ */
+const DEFAULT_MAX_PROMPT_CHARS = 200_000;
+const maxPromptChars = (): number => {
+  const raw = Number(process.env.LLM_MAX_PROMPT_CHARS ?? DEFAULT_MAX_PROMPT_CHARS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_PROMPT_CHARS;
+};
+
 export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<GeminiResult> {
-  let model = opts.model ?? process.env.GEMINI_MODEL ?? "gemini-3.6-flash";
+  // Per-run configuration, if this call is inside a run that entered one. Absent (CLI, unit test,
+  // feature flag off) means the process-wide env pool and GEMINI_MODEL, exactly as before.
+  const runConfig = currentLlmConfig();
+  let model = opts.model ?? runConfig?.model ?? process.env.GEMINI_MODEL ?? "gemini-3.6-flash";
   console.log("[gemini] calling model:", model, "| prompt length:", prompt.length);
   const stage = opts.stage ?? "unknown";
 
+  // Before the pool, before the budget: a refused call spends nothing, so it must not be
+  // recorded as a call either.
+  const limit = maxPromptChars();
+  if (prompt.length > limit) {
+    console.error(
+      `[gemini] REFUSED: ${stage} prompt is ${prompt.length} chars, over the ${limit} limit. ` +
+      `Nothing was sent. See TECH_DEBT.md TD-73.`,
+    );
+    throw new PromptTooLargeError(stage, prompt.length, limit);
+  }
+
   try {
-    const result = await callWithPool(getPool(), async (apiKey, signal) => {
+    const result = await callWithPool(runConfig?.pool ?? getPool(), async (apiKey, signal) => {
       const parts: any[] = [{ text: prompt }];
       if (opts.imageBase64) {
         parts.push({ inline_data: { mime_type: opts.imageMime ?? "image/png", data: opts.imageBase64 } });

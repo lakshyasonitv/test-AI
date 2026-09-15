@@ -14,6 +14,17 @@ export const Target = z.object({
   // during grounding, copied from the matching AppModel element that discovery verified
   // exists. It is what makes icon-only controls addressable at all.
   css: z.string().optional(),
+  /**
+   * Provenance, not behaviour. `"replay"` marks a target that was grounded against the LIVE page
+   * during a replay (`REPLAY_REGROUND`) rather than against the model discovery built — the case
+   * of a control revealed by a click, which discovery never saw.
+   *
+   * Additive and optional, so every existing IR parses unchanged. It exists so the grounding is
+   * VISIBLE in the run's `04-ir.json` and a person can choose to save it back: a replay must not
+   * silently rewrite the stored case (`CLAUDE.md` rule 6, `DECISIONS.md` D-27). Nothing branches
+   * on it — the generator and executor never read it.
+   */
+  groundedAt: z.literal("replay").optional(),
 });
 export type Target = z.infer<typeof Target>;
 
@@ -64,6 +75,22 @@ export const IR = z.object({
     // Only meaningful when truncated is true — a truncated IR without a terminal assertion
     // cannot report "passed" because the dropped tail may have contained the only assertion.
     hasTerminalAssertion: z.boolean().optional(),
+    /**
+     * WHAT kind of grounding rejection truncated this IR, as a structured value rather than
+     * something to be read back out of `truncationNote`.
+     *
+     * `truncationNote` is `ungrounded.message` — prose, written for a model to act on, and
+     * partly shaped by page text. Pattern-matching it to make a decision is exactly the failure
+     * `CLAUDE.md`'s central rule and `TECH_DEBT.md` TD-01 record, so the decision reads this
+     * instead. Set alongside `truncated`, never on its own.
+     *
+     * Its one consumer today is `isHealable` (TD-83): a heal re-runs `toIR` against a fresh
+     * snapshot, so it can recover a target that genuinely moved — but a `navigate-url` rejection
+     * is the guard refusing an invented route, which a new snapshot cannot make real. Healing
+     * that spends a full IR regeneration to be told the same thing, and `attemptHeal` then
+     * discards the result anyway because a heal that truncates is not a heal.
+     */
+    truncationKind: z.string().optional(),
   }),
   steps: z.array(Step).min(1),
 });

@@ -6,6 +6,7 @@ import { discoverSiteHybrid, discoverPagesHybrid } from "./stages/hybridDiscover
 import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
 import { LlmBudget, enterWithBudget } from "./llm/llmBudget.js";
+import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import {
   credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, redactCredentials,
   extractCredentialsFromPrompt,
@@ -14,7 +15,7 @@ import {
 import { generateSpec } from "./stages/generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
-import { attemptHeal, isHealable } from "./stages/heal.js";
+import { attemptHeal, isHealable, selfHealDefault } from "./stages/heal.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 import { ALL_SCOPES } from "./kb/testStrategy.js";
@@ -59,6 +60,18 @@ export interface RunOptions {
   gateReview?: boolean;
   /** Allow one re-snapshot + regenerate + re-run on a selector-drift failure. */
   selfHeal?: boolean;
+  /**
+   * This run's LLM credentials and model, already resolved by the caller.
+   *
+   * Passed IN rather than looked up here on purpose: resolving it needs the database and the
+   * organisation of the requester, and this module is also the CLI's entry point. Importing
+   * `server/orgLlmConfig.ts` from here would drag Supabase into `npm run generate`, which has no
+   * database and no organisation. The server resolves it; the CLI passes nothing and gets the
+   * env-driven behaviour it has always had.
+   */
+  llmConfig?: LlmConfig;
+  /** This run's call ceiling. Omitted means the shared `MAX_LLM_CALLS_PER_RUN`. */
+  maxLlmCalls?: number;
 }
 
 export async function runPipeline(
@@ -70,7 +83,10 @@ export async function runPipeline(
   // Normalize: single `url` becomes `urls: [url]`; both provided means `urls` wins.
   const resolvedUrls = urls?.length ? urls : url ? [url] : [];
   if (!resolvedUrls.length) throw new Error("Either url or urls must be provided");
-  const selfHealEnabled = options?.selfHeal ?? true;
+  // The client's choice wins; otherwise the server's own configured default (SELF_HEAL_DEFAULT,
+  // off unless set). Previously hardcoded `true`, so every run healed whether or not anyone
+  // asked — the browser re-running after a run looked finished, with no way to turn it off.
+  const selfHealEnabled = options?.selfHeal ?? selfHealDefault();
   const runId = presetRunId ?? makeRunId();
   const runDir = path.join("runs", runId);
   mkdirSync(runDir, { recursive: true });
@@ -78,13 +94,19 @@ export async function runPipeline(
   // One budget per run, shared across every LLM-calling stage (plan, discovery, test-case
   // generation, IR, failure diagnosis, self-heal, and every suite case) — never a
   // module-level singleton (MAX_CONCURRENT_RUNS lets several runs share one process).
-  const llmBudget = new LlmBudget();
+  // A per-organisation ceiling when one was resolved, otherwise the shared env default that
+  // LlmBudget's own constructor applies.
+  const llmBudget = new LlmBudget(options?.maxLlmCalls);
   // Makes llmBudget ambiently available to every gemini() call for the rest of this run,
   // however many layers deep (discovery's labelConceptsWithDOM in particular) — see
   // llmBudget.ts's own doc comment for why this is `enterWith`, not a wrapping callback, and
   // why it's still safe across MAX_CONCURRENT_RUNS. ir.ts/heal.ts/suiteRunner.ts still take
   // `llmBudget` as an explicit parameter below — this is additive, not a replacement.
   enterWithBudget(llmBudget);
+  // The same rail, for the same reason, entered in the same place: which credentials and which
+  // model this run uses. Absent means the process-wide env pool, i.e. exactly the behaviour every
+  // run had before per-organisation configuration existed.
+  if (options?.llmConfig) enterWithLlmConfig(options.llmConfig);
 
   const save = (name: string, data: unknown) =>
     writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));
@@ -95,13 +117,27 @@ export async function runPipeline(
     onEvent(event);
   };
 
-  /** Wrap a stage: emit started -> run -> save -> emit completed (or failed). */
-  async function step<T>(stage: StageName, filename: string | null, fn: () => Promise<T>): Promise<T> {
+  /**
+   * Wrap a stage: emit started -> run -> save -> emit completed (or failed).
+   *
+   * `project` narrows what goes into the EVENT without touching what goes into the FILE. The two
+   * had always been the same object, which meant `events.ndjson` carried a second full copy of
+   * every artifact — on the amazon.in run that made it 10.7 MB, most of it a duplicate of the
+   * 5.5 MB `02-appmodel.json` sitting next to it. The event log is replayed in full on every
+   * `/state` poll, once a second, so the duplicate is paid for repeatedly. Optional and identity
+   * by default, so every other stage is byte-for-byte unchanged. TECH_DEBT.md TD-73.
+   */
+  async function step<T>(
+    stage: StageName,
+    filename: string | null,
+    fn: () => Promise<T>,
+    project: (result: T) => unknown = (r) => r,
+  ): Promise<T> {
     emit(stage, "started");
     try {
       const result = await fn();
       if (filename) save(filename, result);
-      emit(stage, "completed", result);
+      emit(stage, "completed", project(result));
       return result;
     } catch (err: any) {
       emit(stage, "failed", undefined, err?.message ?? String(err));
@@ -152,7 +188,22 @@ export async function runPipeline(
     const appModel = await step("discovery", "02-appmodel.json", async () =>
       resolvedUrls.length === 1
         ? discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery)
-        : discoverPagesHybrid(resolvedUrls)
+        : discoverPagesHybrid(resolvedUrls),
+      // The full model still goes to 02-appmodel.json; only the EVENT is narrowed. `data.pages`
+      // stays an array of objects carrying `url` and `concepts`, which is everything app.js reads
+      // from this event (`Discovered N page(s) — Concepts: …`) and exactly the shape preview.js's
+      // own fixture already uses. `elementCount` is added because it is the number a person
+      // actually wants when a run looks wrong, and it costs one integer per page.
+      (model) => ({
+        baseUrl: model.baseUrl,
+        pages: model.pages.map((p) => ({
+          url: p.url,
+          title: p.title,
+          concepts: p.concepts ?? [],
+          elementCount: p.elements?.length ?? 0,
+        })),
+        ...(model.auth ? { auth: { status: model.auth.status, loginUrl: model.auth.loginUrl } } : {}),
+      }),
     );
     console.log("1. Discovery completed");
     if (appModel.auth) {
@@ -404,6 +455,10 @@ export async function runPipeline(
       passed: blocked ? false : finalResult.passed,
       screenshotUrl: blockedScreenshotUrl ?? screenshotUrl,
       videoUrl,
+      // Optional and usually absent (rule 1: existing routes/events may gain optional fields).
+      // Present only when ffmpeg was missing, so the UI can say why there is no player instead
+      // of leaving a silent gap — and so this is never read as a test failure (TD-71).
+      videoUnavailable: (finalResult as any).videoUnavailable,
       partial: finalIr.meta.truncated ?? false, healed,
       deterministicHeal,
       status: blocked ? "blocked" : (finalResult as any).status,

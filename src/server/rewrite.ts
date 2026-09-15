@@ -2,6 +2,7 @@ import { gemini } from "../llm/gemini.js";
 import { LlmBudget, enterWithBudget } from "../llm/llmBudget.js";
 import { IR, type Step } from "../schema/ir.js";
 import { STEP_VOCABULARY, formatIrStep, parseIrStep } from "../stages/stepText.js";
+import { caseElementContext } from "../stages/caseEdit.js";
 import { AccessError } from "./authz.js";
 
 /**
@@ -54,19 +55,37 @@ export interface RewriteProposal {
   before: string[];
   /** What the model says it did — shown above the diff, never trusted as a description of safety. */
   note: string;
+  /**
+   * Lines the save path's own parser cannot read. Additive and optional in practice — an existing
+   * client that ignores it sees exactly what it saw before, and the diff still renders. TD-91.
+   */
+  unreadableIndexes?: number[];
   usage: ReturnType<LlmBudget["snapshot"]>;
 }
 
 /** The one list, owned by the parser that defines it — never a second copy in a prompt file. */
 const VOCABULARY = STEP_VOCABULARY.join("\n");
 
-function buildPrompt(title: string, current: string[], instruction: string): string {
+function buildPrompt(
+  title: string, current: string[], instruction: string, elements: string[],
+): string {
   return [
     `You are editing an automated browser test called "${title}".`,
     ``,
     `Its steps, one per line, numbered:`,
     ...current.map((s, i) => `${i + 1}. ${s}`),
     ``,
+    // Without this the model is guessing at element names from the instruction's wording alone.
+    // Asked to "navigate to the admin panel" it answered `Click on button "Admin Panel"` — the
+    // page HEADING — when the real control is `button "Admin"`. It had no way to know. TD-91.
+    ...(elements.length
+      ? [
+        `These are the controls that actually exist on the pages this test touches. When the`,
+        `change needs an element, use one of these EXACTLY as written — role and name:`,
+        ...elements,
+        ``,
+      ]
+      : []),
     `The person testing this app asked for the following change:`,
     instruction,
     ``,
@@ -111,7 +130,7 @@ function extractJson(raw: string): any {
  * way an IR compilation is and the caller can show what it cost.
  */
 export async function proposeRewrite(
-  ir: IR, instruction: string,
+  ir: IR, instruction: string, sourceRunId: string | null = null,
 ): Promise<RewriteProposal> {
   const trimmed = String(instruction ?? "").trim();
   if (!trimmed) throw new AccessError(400, "say what you would like changed");
@@ -121,7 +140,8 @@ export async function proposeRewrite(
   enterWithBudget(budget);
 
   const before = ir.steps.map((s: Step) => formatIrStep(s));
-  const { content } = await gemini(buildPrompt(ir.meta.title, before, trimmed), {
+  const context = caseElementContext(ir, sourceRunId);
+  const { content } = await gemini(buildPrompt(ir.meta.title, before, trimmed, context.lines), {
     model: process.env.GEMINI_MODEL,
     stage: "rewrite",
   });
@@ -134,10 +154,27 @@ export async function proposeRewrite(
     throw new AccessError(502, "the model returned no steps — try rephrasing the request");
   }
 
+  // Every proposed line must satisfy the SAME parser the save path uses — the check
+  // `proposeStepTranslation` has always done and this path never did, so an unreadable suggestion
+  // was shown as a clean diff and only failed when the person pressed Save. Flagged rather than
+  // rejected: a rewrite touches the whole list, so one bad line should not discard the rest.
+  // TD-91.
+  const unreadableIndexes: number[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    if (!parseIrStep(steps[i], ir.steps[i]).ok) unreadableIndexes.push(i);
+  }
+
+  const provenance =
+    context.source === "run" ? ""
+      : context.source === "walks"
+        ? " (element names taken from earlier verification snapshots of this site)"
+        : " (no page snapshot was available, so element names are unverified)";
+
   return {
     steps,
     before,
-    note: typeof parsed?.note === "string" ? parsed.note.trim() : "",
+    unreadableIndexes,
+    note: (typeof parsed?.note === "string" ? parsed.note.trim() : "") + provenance,
     usage: budget.snapshot(),
   };
 }

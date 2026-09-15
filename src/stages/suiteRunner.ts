@@ -1,9 +1,9 @@
-import { mkdirSync, writeFileSync, cpSync } from "node:fs";
+import { mkdirSync, writeFileSync, cpSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { toIR } from "./ir.js";
 import type { LlmBudget } from "../llm/llmBudget.js";
 import { generateSpec } from "./generator.js";
-import { runSpec, findScreenshot, findVideo, detectBlocked } from "./executor.js";
+import { runSpec, findScreenshot, findVideo, detectBlocked, extractFailureDetail } from "./executor.js";
 import { credentialEnvVars, type Credentials } from "./credentials.js";
 import { analyzeFailure } from "./failureAnalysis.js";
 import { attemptHeal, isHealable } from "./heal.js";
@@ -130,6 +130,20 @@ export function buildSuiteSummary(results: CaseRunResult[], runDir: string): Sui
       // original (failing) attempt, healed or not.
       const video = findVideo(path.join(caseDir, "artifacts")) ?? findVideo(caseDir);
       const videoUrl = video ? "/" + path.relative(".", video).replace(/\\/g, "/") : undefined;
+      // Read the failure out of the case's own saved report. Read from DISK, like the screenshot
+      // and video above, rather than threaded through CaseRunResult: this way every producer of a
+      // summary — full run, suite, replay — gets it without each having to remember to pass it,
+      // which is exactly how `whyItMatters` went missing from three call sites (see this
+      // function's own docstring). Best-effort throughout: a case that never wrote a report, or
+      // wrote one that will not parse, simply has no error to show and still renders.
+      const failure = r.status === "passed"
+        ? {}
+        : (() => {
+          try {
+            const saved = JSON.parse(readFileSync(path.join(caseDir, "05-result.json"), "utf8"));
+            return extractFailureDetail(saved?.raw ?? saved);
+          } catch { return {}; }
+        })();
       return {
         caseId: r.caseId,
         title: r.title,
@@ -323,6 +337,30 @@ export async function runSuite(
           // the original, or a healed-and-passing case would still get reported truncated/failed.
           if (selfHeal && healsUsed < MAX_SUITE_HEALS && isHealable(diagnosis, ir)) {
             healsUsed++;
+            healAttempted = 1;   // per-case: heal is one-shot, so this case is on its retry 1
+            // Say that it is happening, BEFORE it happens.
+            //
+            // A heal re-runs the whole case in a real browser, so the user watches the tests run
+            // again after the run looked finished. Until now suiteRunner emitted nothing at all
+            // while healing — the only trace was a "Fixed automatically" badge, and only when it
+            // WORKED. A silent second run that then fails leaves no explanation anywhere.
+            //
+            // Folded into the "suite" stage rather than emitted as "heal": heal.ts documents that
+            // the "heal" StageName drives a PRIMARY-CASE-ONLY phase tracker in app.js, and a
+            // suite case emitting it would corrupt that tracker.
+            //
+            // TWO DIFFERENT NUMBERS, deliberately kept apart. A heal is ONE-SHOT PER CASE
+            // (`attemptHeal` has no loop; orchestrator.ts calls it "exactly one attempt total"),
+            // so this case gets its original run plus one retry — attempt 2 of 2, always.
+            // `MAX_SUITE_HEALS` is something else entirely: a SUITE-WIDE budget for how many
+            // cases in this run may heal at all, because `healsUsed` lives outside the case loop.
+            // Rendering the budget as a per-case attempt count would tell the user this one case
+            // may be retried three more times, which is not true of any case.
+            emit(runId, "suite", "started", {
+              caseId, title: tc.title, healing: true,
+              healAttempt: 1, healMax: 1,
+              healsUsedInRun: healsUsed, healBudget: MAX_SUITE_HEALS,
+            }, undefined, onEvent);
             try {
               const healedOutcome = await attemptHeal({
                 testCase: tc, ir, appModel, diagnosis, sourcePrompt, entryUrl, llmBudget,

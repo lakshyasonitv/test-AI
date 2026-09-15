@@ -3,6 +3,7 @@ import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import { classifyScope, ALL_SCOPES } from "../kb/testStrategy.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
+import { llmCacheDimension, resolvedModelLite } from "../llm/llmContext.js";
 
 export type Coverage = "minimal" | "standard" | "full";
 
@@ -42,7 +43,7 @@ Example of the exact shape required:
   // this prompt gains would otherwise never reach a request already seen.
   const cacheKey = makeCacheKey(
     prompt, url, coverage, testTypeScope.join(","),
-    process.env.GEMINI_MODEL_LITE ?? "default", system);
+    resolvedModelLite(), llmCacheDimension(), system);
   const cached = llmCacheGet<Plan>(cacheKey);
   if (cached) return cached;
 
@@ -50,7 +51,7 @@ Example of the exact shape required:
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { content: raw } = await gemini(user, { systemInstruction: system, json: true, model: process.env.GEMINI_MODEL_LITE, stage: "plan" });
+    const { content: raw } = await gemini(user, { systemInstruction: system, json: true, model: resolvedModelLite(), stage: "plan" });
     try {
       const parsed = parseJson(raw);
       // Override the LLM's scope with our heuristic — the heuristic is authoritative.

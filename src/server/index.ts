@@ -4,7 +4,12 @@ import { rmSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
-import { allRunIds, listRuns } from "../runStore.js";
+import { allRunIds, listRuns, store } from "../runStore.js";
+import { warnIfNoVideo } from "../stages/executor.js";
+import { selfHealDefault } from "../stages/heal.js";
+import { llmCacheClear } from "../kb/llmCache.js";
+import { hasTerminalAssertion } from "../stages/ir.js";
+import { WALK_CACHE_NS } from "../stages/liveExtend.js";
 import { Semaphore } from "./concurrency.js";
 import { askCredentials, settle } from "./pendingCredentials.js";
 import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
@@ -29,15 +34,15 @@ import {
   addMember,
   bootstrapUser,
   changeMemberRole,
+  createOrganisation,
   findUserByEmail,
-  listAddableUsers,
   listMembers,
   removeMember,
   roleOfMember,
 } from "./organisations.js";
 import {
   addProjectMember,
-  assertProjectInOrg,
+  assertProjectVisible,
   assignmentsByUser,
   createProject,
   deleteProject,
@@ -50,12 +55,14 @@ import {
 import { consumeSignupAttempt, createAccount, isSignupEnabled } from "./signup.js";
 import {
   addCaseToSuite,
+  assertCanAuthor,
   CaseConflictError,
   createSuite,
   deleteCase,
   deleteSuite,
   duplicateCase,
   getCase,
+  getCaseScript,
   getCaseVersion,
   listCaseRuns,
   listCases,
@@ -68,12 +75,21 @@ import {
   renameSuite,
   reorderSuite,
   saveCaseFromRun,
+  scriptOverrideEnabled,
+  setScriptOverride,
   updateCase,
 } from "./library.js";
-import { runReplay } from "../stages/replay.js";
+import { runReplay, originOf } from "../stages/replay.js";
+import {
+  describeOrgLlmConfig, llmConfigForOrg, maxCallsForOrg, orgLlmConfigEnabled, setOrgLlmConfig,
+} from "./orgLlmConfig.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
+import { enterWithLlmConfig } from "../llm/llmContext.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
-import { credentialsFromEnv, credentialKindsNeeded, type Credentials } from "../stages/credentials.js";
+import {
+  credentialsFromEnv, credentialKindsNeeded, restoreCredentialRefs, isEnvValueRef,
+  type Credentials,
+} from "../stages/credentials.js";
 import { resolveCredentialsVia } from "./resolveCredentials.js";
 import { toElementIndex } from "../schema/appModel.js";
 import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsEnabled,
@@ -81,13 +97,33 @@ import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsE
 import {
   cancelJob, createJob, emitJobEvent, getJob, isCancelled, jobEvents, subscribeJob,
 } from "./regroundJobs.js";
-import { recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
+import { deleteRunRow, isDbEnabled, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
+
+/**
+ * The two things a `:caseId` is ever allowed to be.
+ *
+ * `:caseId` names two different kinds of id depending on the route, and both must be validated
+ * because Express decides a parameter's value AFTER matching, not before:
+ *
+ *   - LIBRARY_CASE_ID — `test_cases.id`, a uuid. Every `/api/cases/:caseId/...` route.
+ *   - RUN_CASE_ID     — a run directory's `cases/case-N`. Only `/api/runs/:runId/cases/:caseId/save`,
+ *                       which is the one place a caseId becomes a PATH SEGMENT (library.ts:549).
+ *
+ * That last one is why this exists. Express 4 matches `:caseId` against the raw, still-encoded
+ * segment and only then decodes it, so `..%2F..%2F<otherRun>%2Fcases%2Fcase-0` arrives at the
+ * handler as a single parameter containing separators — and `path.join()` then walks straight out
+ * of the run directory into another organisation's run. Validating in the handler would work; a
+ * `app.param` is used instead so the rule covers every current AND future `:caseId` route by
+ * construction, which is the same reason `:runId` already has one.
+ */
+const LIBRARY_CASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RUN_CASE_ID = /^case-\d+$/;
 
 // Bound concurrent runs (each launches Chromium). Tune via env as the box grows.
 const runLimit = new Semaphore(Number(process.env.MAX_CONCURRENT_RUNS ?? 3));
@@ -165,6 +201,15 @@ app.param("runId", (_req, res, next, runId) => {
   next();
 });
 
+// Same, for :caseId. Neither accepted shape can contain "/", "\" or ".", so no value that reaches
+// a handler can traverse out of the directory it is joined into — see the constants above.
+app.param("caseId", (_req, res, next, caseId) => {
+  if (!LIBRARY_CASE_ID.test(caseId) && !RUN_CASE_ID.test(caseId)) {
+    return res.status(400).json({ error: "invalid caseId" });
+  }
+  next();
+});
+
 // Start a run: generate the runId up front so we can hand it back immediately,
 // then let the pipeline run in the background, pushing events into the registry.
 //
@@ -232,8 +277,15 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
     try {
       const explicit = typeof projectId === "string" && projectId ? projectId : null;
       const resolved = explicit
-        ? (await assertProjectInOrg(req.organisationId!, explicit).then((p) => p.id).catch(() => null))
-        : await resolveProjectForUrl(req.organisationId!, primaryUrl);
+        // assertProjectVisible, not assertProjectInOrg: being in the caller's organisation is not
+        // the same as being a project the caller may see, and filing a run into a project they
+        // were never added to produces a run its own author is then refused (the same failure
+        // resolveProjectForUrl now avoids). The two entry points must agree on what "your project"
+        // means, or the guarantee only holds on one of them.
+        ? (await assertProjectVisible(
+            req.user?.id ?? LOCAL_USER_ID, req.organisationId!, req.organisationRole!, explicit,
+          ).then((p) => p.id).catch(() => null))
+        : await resolveProjectForUrl(req.organisationId!, primaryUrl, req.user?.id ?? LOCAL_USER_ID);
       if (resolved) recordRunProject(runId, resolved);
     } catch (err) {
       console.error(`[projects] could not file run ${runId}:`, (err as Error)?.message ?? err);
@@ -257,7 +309,25 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
 
   // Hand back the runId immediately; the run waits for a free slot, then executes.
   // Over-cap runs sit queued (UI shows pending) until a slot frees — no dropped requests.
-  runLimit.run(() => runPipeline({ prompt, url, urls, coverage, options: runOptions }, onEvent, runId, askCredentials))
+  // Resolve this organisation's own credentials/model/budget, if it has any and the feature is on.
+  // Resolved HERE rather than inside the pipeline because it needs the database and the caller's
+  // organisation, neither of which the CLI entry point has. Both calls degrade to null/undefined
+  // for an unconfigured org, which is exactly the env-driven behaviour that predates this.
+  runLimit.run(async () => {
+    const orgId = req.organisationId ?? null;
+    const [llmConfig, maxLlmCalls] = await Promise.all([
+      llmConfigForOrg(orgId),
+      maxCallsForOrg(orgId),
+    ]);
+    return runPipeline({
+      prompt, url, urls, coverage,
+      options: {
+        ...runOptions,
+        ...(llmConfig ? { llmConfig } : {}),
+        ...(maxLlmCalls !== null ? { maxLlmCalls } : {}),
+      },
+    }, onEvent, runId, askCredentials);
+  })
     .catch(() => { /* failure already emitted as an "error" event */ });
   res.status(202).json({ runId });
 });
@@ -469,6 +539,10 @@ app.delete("/api/runs/:runId", requireRunRole("admin"), (req, res) => {
   if (!RUN_ID.test(runId)) return res.status(400).json({ error: "invalid runId" });
   try {
     rmSync(path.join("runs", runId), { recursive: true, force: true });
+    // Symmetry: the row goes with the files. Without this every deletion left an orphan row that
+    // showed up in the startup shadow report forever. Fire-and-forget by design — the 204 below
+    // reports the file deletion, which has already succeeded.
+    deleteRunRow(runId);
     res.status(204).end();
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? "delete failed" });
@@ -497,12 +571,23 @@ app.get("/api/health", (_req, res) => {
     // actually in, instead of a hardcoded guess that silently disagrees.
     defaults: {
       gateReview: process.env.ENABLE_CASE_SELECTION_GATE === "true",
-      selfHeal: true,
+      selfHeal: selfHealDefault(),
     },
     // ADDITIVE field (Step 2.2) — appended, never reordering or replacing anything above, per
     // implentationplan.md Rule 2. The UI branches on this to decide whether a login view exists
     // at all; with auth off it's `false` and the frontend behaves exactly as it always has.
     authEnabled: isAuthEnabled(),
+    // ADDITIVE field — appended, nothing above reordered or replaced. Exists because the
+    // "run created, all four phases PENDING, no work starts" report is indistinguishable from
+    // a hung server without it: a queued run emits no stage events, so the UI has nothing to
+    // show and the logs say nothing. `inFlight === max` with `queued > 0` names it outright.
+    // Slots are held for the duration of the work, so a run in LLM backoff or parked on a
+    // credential/case-selection prompt is holding one legitimately.
+    concurrency: {
+      inFlight: runLimit.inFlight,
+      queued: runLimit.queued,
+      max: runLimit.capacity,
+    },
   });
 });
 
@@ -644,6 +729,32 @@ app.post("/api/auth/bootstrap", async (req, res) => {
   }
 });
 
+/**
+ * Create a new organisation, with the caller as its owner.
+ *
+ * NO ROLE GATE, DELIBERATELY. Every other route in this file asks "what may you do *within* an
+ * organisation", and this one is the only thing that happens outside every organisation — there is
+ * no org to check a role against, and requiring one would mean only an existing tenant could create
+ * a tenant. The gate that does apply is `requireAuth` on `/api/*`: you must be a real signed-in
+ * account. A caller only ever gains an organisation of their own here, never any access to anyone
+ * else's, so this widens nothing.
+ *
+ * It is therefore also the self-serve tenant-creation endpoint, and it inherits sign-up's exposure:
+ * with `SIGNUP_ENABLED` on and this port reachable, strangers can create tenants. See
+ * bootstrapUser's header.
+ */
+app.post("/api/organisations", async (req, res) => {
+  const { name } = req.body ?? {};
+  if (typeof name !== "string" || !name.trim()) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  try {
+    res.status(201).json(await createOrganisation(req.user?.id ?? LOCAL_USER_ID, name));
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
 // --------------------------------------------------------------------------
 // Projects (Step 5.1) — the second axis of access.
 //
@@ -678,6 +789,31 @@ app.post("/api/projects", requireRole("admin"), async (req, res) => {
   } catch (err) {
     sendAccessError(res, err);
   }
+});
+
+/**
+ * Drop every cached browser walk.
+ *
+ * A NEW route, not a change to an existing one (`CLAUDE.md` rule 1). It exists because a walk's
+ * result can go stale in ways its cache key cannot express — most sharply, a walk whose sign-in
+ * failed used to be cached under a key identical to a successful one, and the disk half of that
+ * cache never expires, so one bad sign-in pinned a login-page snapshot for that case forever
+ * (`TECH_DEBT.md` TD-85). The key now includes a credential fingerprint and a failed sign-in is
+ * no longer cached at all, so this is the escape hatch for entries written before that — and for
+ * the ordinary case of a site that changed under a cache that has no reason to know.
+ *
+ * Admin, because it throws away work that other people in the organisation may be relying on
+ * mid-edit. It touches only the `walks` namespace: the LLM answers alongside it cost real money
+ * and have nothing to do with this failure.
+ */
+app.post("/api/cache/walks/clear", requireRole("admin"), (_req, res) => {
+  const removed = llmCacheClear(WALK_CACHE_NS);
+  res.json({
+    removed,
+    message: removed === 1
+      ? "Cleared 1 cached page verification."
+      : `Cleared ${removed} cached page verifications.`,
+  });
 });
 
 app.patch("/api/projects/:projectId", requireRole("admin"), async (req, res) => {
@@ -737,6 +873,49 @@ app.delete("/api/projects/:projectId/members/:userId", requireRole("admin"), asy
 });
 
 /** Every project assignment in the org — one call so the Team screen renders in one pass. */
+/**
+ * Per-organisation LLM configuration — the admin panel's read and write.
+ *
+ * TENANCY. `requireOrgRole("admin")` proves the caller is an admin OF THE ORGANISATION IN THE
+ * PATH, not merely an admin somewhere; `describeOrgLlmConfig`/`setOrgLlmConfig` then re-assert it
+ * with `assertOrgAccess` before touching a row. An admin of org A naming org B is refused by both.
+ *
+ * THE KEY IS WRITE-ONLY. The GET returns `keySet` and a four-character hint and nothing else —
+ * there is no shape in `OrgLlmConfigView` that could carry a key, and no route that reveals one.
+ * The only decryption in the codebase happens in `llmConfigForOrg`, straight into an in-memory
+ * KeyPool for one run.
+ *
+ * Additive: new paths, no existing route's request or response shape changes (rule 1).
+ */
+app.get("/api/organisations/:orgId/llm-config", requireOrgRole("admin"), async (req, res) => {
+  if (!orgLlmConfigEnabled()) {
+    return res.status(404).json({ error: "per-organisation LLM configuration is not available — this server has ORG_LLM_CONFIG_ENABLED off" });
+  }
+  try {
+    res.json(await describeOrgLlmConfig(req.user?.id ?? LOCAL_USER_ID, req.params.orgId));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.put("/api/organisations/:orgId/llm-config", requireOrgRole("admin"), async (req, res) => {
+  if (!orgLlmConfigEnabled()) {
+    return res.status(404).json({ error: "per-organisation LLM configuration is not available — this server has ORG_LLM_CONFIG_ENABLED off" });
+  }
+  const { apiKey, model, modelLite, maxCallsPerRun } = req.body ?? {};
+  try {
+    // `apiKey` is read here and never again: it goes into setOrgLlmConfig, is encrypted, and the
+    // view that comes back cannot express it. It is deliberately not logged, not echoed in an
+    // error, and not included in any event.
+    res.json(await setOrgLlmConfig(req.user?.id ?? LOCAL_USER_ID, req.params.orgId, {
+      ...(apiKey === undefined ? {} : { apiKey: apiKey === null ? null : String(apiKey) }),
+      ...(model === undefined ? {} : { model: model === null ? null : String(model) }),
+      ...(modelLite === undefined ? {} : { modelLite: modelLite === null ? null : String(modelLite) }),
+      ...(maxCallsPerRun === undefined ? {} : {
+        maxCallsPerRun: maxCallsPerRun === null ? null : Number(maxCallsPerRun),
+      }),
+    }));
+  } catch (err) { sendAccessError(res, err); }
+});
+
 app.get("/api/organisations/:orgId/assignments", requireOrgRole("admin"), async (req, res) => {
   try {
     const map = await assignmentsByUser(req.params.orgId);
@@ -749,21 +928,6 @@ app.get("/api/organisations/:orgId/assignments", requireOrgRole("admin"), async 
 app.get("/api/organisations/:orgId/members", requireOrgRole("viewer"), async (req, res) => {
   try {
     res.json({ members: await listMembers(req.params.orgId) });
-  } catch (err) {
-    sendAccessError(res, err);
-  }
-});
-
-/**
- * Registered accounts that aren't in this organisation yet — suggestions for the add-member field.
- *
- * `admin`, matching POST .../members: the only thing you can do with this list is add someone, so
- * anyone who can't add shouldn't be able to enumerate. Enforced through the same
- * `requireOrgRole`/`assertOrgAccess` path as every other member route — no new permission concept.
- */
-app.get("/api/organisations/:orgId/addable-users", requireOrgRole("admin"), async (req, res) => {
-  try {
-    res.json({ emails: await listAddableUsers(req.params.orgId) });
   } catch (err) {
     sendAccessError(res, err);
   }
@@ -914,6 +1078,33 @@ app.get("/api/cases/:caseId", requireRole("viewer"), async (req, res) => {
   } catch (err) { sendAccessError(res, err); }
 });
 
+/**
+ * The Playwright script for a saved case — the Script tab's source of truth.
+ *
+ * NEW route rather than a field on `GET /api/cases/:caseId`, per platform rule 1: that response is
+ * read in many places and the spec is large, so it does not belong on every case fetch.
+ *
+ * Optional `?version=N` returns that version's script instead of the current one. Answers for any
+ * case the caller can already read — a script is a rendering of the IR they can see anyway, so it
+ * needs no permission beyond `viewer`, the same gate as `GET /api/cases/:caseId`.
+ *
+ * The Script tab used to read the originating run's artifact folder directly, which meant deleting
+ * a run silently emptied the tab of every case saved from it (`TECH_DEBT.md` TD-68).
+ */
+app.get("/api/cases/:caseId/script", requireRole("viewer"), async (req, res) => {
+  const raw = req.query.version;
+  let version: number | undefined;
+  if (typeof raw === "string" && raw !== "") {
+    version = Number(raw);
+    if (!Number.isInteger(version) || version < 1) {
+      return res.status(400).json({ error: "version must be a positive integer" });
+    }
+  }
+  try {
+    res.json(await getCaseScript(...libraryCtx(req), req.params.caseId, version));
+  } catch (err) { sendAccessError(res, err); }
+});
+
 /** One stored version's steps — what the Compare screen reads for each side. */
 app.get("/api/cases/:caseId/versions/:version", requireRole("viewer"), async (req, res) => {
   const version = Number(req.params.version);
@@ -1015,10 +1206,55 @@ async function prepareEdit(req: express.Request, res: express.Response) {
     return null;
   }
 
+  // A credential the person typed must never be what gets STORED. `restoreCredentialRefs` puts
+  // recognised values back behind `${env:...}` and hands the literals back separately, in memory,
+  // for this save's own walk only (CLAUDE.md rule 5, TECH_DEBT.md TD-67). Applied here rather than
+  // in either branch below, so the fast path and the job path cannot diverge on it.
+  const safe = restoreCredentialRefs(parsed.result.steps, found.ir.steps);
+
+  // Does this edit leave the test checking anything?
+  //
+  // `meta.hasTerminalAssertion` is what tells a run whether a truncated case may report "passed"
+  // — nothing recomputed it on the edit path, so removing the last `Check ...` row saved happily,
+  // kept the stale `true`, and the case reported Passed forever while verifying nothing. A test
+  // that cannot fail is worse than no test: it is a green tick someone will trust. TD-89.
+  //
+  // Recomputed on EVERY save (below), and refused when the edit is what removed it — unless the
+  // person says they meant it. `confirmNoAssertion` is a new OPTIONAL request field, so every
+  // existing client is unaffected (rule 1).
+  // From the STORED STEPS, not from `meta.hasTerminalAssertion` — that flag is precisely the
+  // thing this defect proves untrustworthy (nothing recomputed it on edit, and it is optional so
+  // it is often simply absent). Deriving "did it have one?" from the flag also refuses every edit
+  // to a case that never had an assertion at all, which caught six existing tests: a login case
+  // is navigate/fill/fill/click and asserts nothing, and editing its email should stay instant.
+  //
+  // The refusal is for the edit that REMOVES the last check — not for a case that never had one.
+  const hadAssertion = hasTerminalAssertion(found.ir.steps);
+  const stillAsserts = hasTerminalAssertion(safe.steps);
+  if (hadAssertion && !stillAsserts && req.body?.confirmNoAssertion !== true) {
+    res.status(400).json({
+      error:
+        "this edit removes the last check, so the test would run to the end and report Passed " +
+        "without verifying anything. Save it anyway only if you meant to.",
+      // Named so the client can offer "Save anyway" instead of treating it as a broken row.
+      // Deliberately NOT a `stepIndex`: no single row is at fault.
+      needsConfirmation: "noAssertion",
+    });
+    return null;
+  }
+
   // Structurally valid before it is ever checked against a live site — a malformed plan should
   // fail in milliseconds, not after a browser walk.
-  const validated = parseIr({ ...found.ir, steps: parsed.result.steps }, "the edited test plan");
-  return { ctx, found, parsed: parsed.result, validated };
+  const validated = parseIr(
+    { ...found.ir, steps: safe.steps, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts } },
+    "the edited test plan",
+  );
+  // Same IR with the typed literals still in place. NEVER written, never serialised to a client.
+  const liveIr = parseIr(
+    { ...found.ir, steps: safe.live, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts } },
+    "the edited test plan",
+  );
+  return { ctx, found, parsed: parsed.result, validated, liveIr, credentialNote: safe.note, typedCreds: safe.creds };
 }
 
 /**
@@ -1043,6 +1279,8 @@ async function resolveWalkCredentials(
   needsCredentials: boolean,
 ): Promise<Credentials | undefined> {
   if (!needsCredentials) return undefined;
+  // ENV FIRST for the re-ground walk, unchanged: this runs inside a save the person already
+  // asked for, so an operator who configured the environment should not be interrupted by it.
   return resolveCredentialsVia(
     jobId,
     ir.meta?.baseUrl ?? "",
@@ -1051,6 +1289,7 @@ async function resolveWalkCredentials(
     // editor's wording, and adding it to the completed event would change a shape the UI reads.
     (status, data) => emitJobEvent(jobId, "credentials", status,
       status === "started" ? { ...data, caseEdit: true } : data),
+    "env-first",
   );
 }
 
@@ -1094,7 +1333,7 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
   try {
     const prep = await prepareEdit(req, res);
     if (!prep) return;
-    const { ctx, found, parsed, validated } = prep;
+    const { ctx, found, parsed, validated, liveIr, credentialNote, typedCreds } = prep;
     const caseId = req.params.caseId;
     const userId = req.user?.id ?? LOCAL_USER_ID;
 
@@ -1115,6 +1354,8 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
         regrounded: 0,
         snapshots: 0,
         steps: validated.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+        // Optional and absent unless something was rewritten.
+        ...(credentialNote ? { credentialNote } : {}),
       });
     }
 
@@ -1122,14 +1363,17 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
     const jobId = makeRunId();
     createJob(jobId, userId, caseId);
     const estimate = estimateRegrounding(parsed);
-    res.status(202).json({ jobId, mode: "verifying", ...estimate });
+    res.status(202).json({ jobId, mode: "verifying", ...estimate, ...(credentialNote ? { credentialNote } : {}) });
 
     // Deliberately not awaited: the response is already sent. Every outcome ends in a `done` or
     // `error` event, which is what closes the stream.
     void (async () => {
       emitJobEvent(jobId, "ir", "started", { ...estimate, caseId });
       try {
-        const creds = await resolveWalkCredentials(jobId, validated, estimate.needsCredentials);
+        // Prefer what the person just typed — they are demonstrably the right credentials for the
+        // steps being saved. Falls back to the usual env-or-prompt resolution otherwise.
+        const creds = typedCreds
+          ?? await resolveWalkCredentials(jobId, validated, estimate.needsCredentials);
         // Cancelled while the prompt was open, or the prompt timed out into a cancel. Return
         // before any browser launches — there is nothing to close and nothing to write.
         if (isCancelled(jobId)) {
@@ -1138,7 +1382,9 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
           return;
         }
 
-        const grounded = await regroundEditedIr(validated, parsed.regroundIndexes, {
+        // liveIr, not validated: the walk has to actually sign in, so it needs the real values.
+        // Only `validated` — which carries `${env:...}` — is ever written by writeIt() below.
+        const grounded = await regroundEditedIr(liveIr, parsed.regroundIndexes, {
           sourceRunId: found.sourceRunId,
           creds,
           shouldCancel: () => isCancelled(jobId),
@@ -1159,7 +1405,20 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
           return;
         }
 
-        const updated = await writeIt(grounded.ir);
+        // The walk ran against liveIr, so grounded.ir still holds the typed literals. Grounding
+        // only ever rewrites TARGETS (css/testId/nth), never values, so putting the `${env:...}`
+        // references back is a straight per-step restore — and it is what stops the secret being
+        // written one line below. Restored only where the safe IR actually held a reference, so a
+        // non-credential value the walk saw is left exactly as it is.
+        const safeIr = {
+          ...grounded.ir,
+          steps: grounded.ir.steps.map((st, i) => {
+            const ref = validated.steps[i]?.value;
+            return isEnvValueRef(ref) ? { ...st, value: ref } : st;
+          }),
+        };
+
+        const updated = await writeIt(safeIr);
         emitJobEvent(jobId, "done", "completed", {
           saved: true,
           cancelled: false,
@@ -1167,7 +1426,8 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
           regrounded: parsed.regroundIndexes.length,
           snapshots: grounded.snapshots,
           usage: grounded.usage,
-          steps: grounded.ir.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+          steps: safeIr.steps.map((s) => ({ id: s.id, text: formatIrStep(s) })),
+          ...(credentialNote ? { credentialNote } : {}),
         });
       } catch (err: any) {
         // Includes the 409 raised by updateCase if someone else saved during the walk.
@@ -1261,6 +1521,81 @@ app.get("/api/cases/:caseId/runs", requireRole("viewer"), async (req, res) => {
 });
 
 /**
+ * What a caller must be told before overriding a case's script, and what the UI's confirmation
+ * repeats back. Served so the wording lives next to the rule it describes rather than only in
+ * `app.js`, where it would drift from the behaviour it warns about.
+ */
+const SCRIPT_OVERRIDE_WARNING =
+  "An overridden script is not grounded. No locator in it is verified against a real discovered " +
+  "element, so nothing checks that the things it clicks and fills actually exist on the page. " +
+  "When it breaks it will not fail the way a generated test fails — it will fail silently rather " +
+  "than loudly, often several steps later and blaming the wrong thing. The steps panel will keep " +
+  "showing this case's steps, but they will no longer describe what runs.";
+
+/**
+ * Replace a case's generated script with a hand-written one, or remove that override.
+ *
+ * **Permission: tester or above**, via the same `assertCanAuthor` that gates every other authoring
+ * action in the library — composing tests is authoring, not administration. `requireRole("tester")`
+ * is the route-level gate; `assertCanAuthor` is re-asserted inside the handler so the rule holds
+ * for any future caller that does not come through this route.
+ *
+ * PUT with `{ script }` sets it; PUT with `{ script: null }` clears it. Both mint a version with
+ * author and timestamp, so an override is as revertible as any other change and shows up in the
+ * same history. New route, new fields only — no existing route's shape changes (rule 1).
+ *
+ * `confirm: true` is required in the body. The point is not security — the role check is the
+ * security — but that a client cannot set an override without having been handed
+ * `SCRIPT_OVERRIDE_WARNING` to show, which is what makes "the person was told" true rather than
+ * assumed.
+ */
+/**
+ * Deliberately NOT mounted under `/api/cases/:caseId`. The warning is a fixed statement of policy
+ * — it names no case, reads no row, and is identical for every caller. Hanging it off a case id
+ * would make it *look* tenant-scoped while returning 200 to anyone, which is a worse lie than
+ * having no route at all.
+ */
+app.get("/api/script-override/warning", requireRole("viewer"), (_req, res) => {
+  if (!scriptOverrideEnabled()) {
+    return res.status(404).json({ error: "script overrides are not available — this server has SCRIPT_OVERRIDE_ENABLED off" });
+  }
+  res.json({ warning: SCRIPT_OVERRIDE_WARNING });
+});
+
+app.put("/api/cases/:caseId/script-override", requireRole("tester"), async (req, res) => {
+  if (!scriptOverrideEnabled()) {
+    return res.status(404).json({ error: "script overrides are not available — this server has SCRIPT_OVERRIDE_ENABLED off" });
+  }
+  const { script, changeNote, expectedVersion, confirm } = req.body ?? {};
+  try {
+    const [userId, orgId, role] = libraryCtx(req);
+    // Authoring-level check, stated again at the point of effect. Redundant with the route guard
+    // today, and deliberately so: this is the rule, not the routing table.
+    assertCanAuthor(role);
+
+    const clearing = script === null;
+    if (!clearing && typeof script !== "string") {
+      return res.status(400).json({ error: "send a script string to override, or null to remove the override" });
+    }
+    // Setting an override needs the acknowledgement; removing one restores the grounded path and
+    // therefore needs no warning.
+    if (!clearing && confirm !== true) {
+      return res.status(400).json({
+        error: "an override must be confirmed — resend with confirm: true",
+        warning: SCRIPT_OVERRIDE_WARNING,
+      });
+    }
+
+    const row = await setScriptOverride(userId, orgId, role, req.params.caseId, {
+      script: clearing ? null : (script as string),
+      changeNote: typeof changeNote === "string" ? changeNote : undefined,
+      expectedVersion: typeof expectedVersion === "number" ? expectedVersion : undefined,
+    });
+    res.json({ case: row, overridden: !clearing, warning: clearing ? null : SCRIPT_OVERRIDE_WARNING });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
  * "Ask for a change" — a model PROPOSES an edit. It never saves.
  *
  * Approving a proposal sends it back through POST /steps like any hand-typed edit, so it is
@@ -1275,7 +1610,20 @@ app.post("/api/cases/:caseId/rewrite", requireRole("tester"), async (req, res) =
   }
   try {
     const found = await getCase(...libraryCtx(req), req.params.caseId);
-    res.json(await proposeRewrite(found.ir, typeof instruction === "string" ? instruction : ""));
+    // Refused rather than answered for an overridden case. The proposal itself would be perfectly
+    // valid — and perfectly inert: approving it fills the editor, saving mints a new IR version,
+    // and the hand-written script still runs. The user would get a diff, an approval and a version
+    // bump with no change in behaviour, which is indistinguishable from it having worked.
+    if (found.scriptOverridden && scriptOverrideEnabled()) {
+      return res.status(409).json({
+        error: "this case runs a script override, so editing its steps would not change what runs — " +
+          "remove the override first if you want the steps to take effect",
+      });
+    }
+    // The source run is where the case's own page snapshot lives — without it the model is
+    // guessing element names from the instruction's wording (TD-91).
+    res.json(await proposeRewrite(
+      found.ir, typeof instruction === "string" ? instruction : "", found.sourceRunId ?? null));
   } catch (err) { sendAccessError(res, err); }
 });
 
@@ -1323,6 +1671,12 @@ app.delete("/api/cases/:caseId", requireRole("admin"), async (req, res) => {
  */
 app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async (req, res) => {
   const { projectId, title, suiteId } = req.body ?? {};
+  // Narrower than the app.param above, which has to admit a library uuid too: on THIS route the
+  // id is a run directory name, so only `case-N` is meaningful. Belt-and-braces in the same shape
+  // the runId checks in this file already use — the param layer is what actually stops traversal.
+  if (!RUN_CASE_ID.test(req.params.caseId)) {
+    return res.status(400).json({ error: "invalid caseId" });
+  }
   if (typeof projectId !== "string" || !projectId) {
     return res.status(400).json({ error: "projectId is required" });
   }
@@ -1363,6 +1717,36 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
       suiteId: typeof suiteId === "string" ? suiteId : undefined,
       caseIds: Array.isArray(caseIds) ? caseIds.filter((c) => typeof c === "string") : undefined,
     });
+
+    // A replay is scoped to a PROJECT, not a site, and one credential prompt covers the whole
+    // replay: it shows `cases[0]`'s baseUrl and hands what you type to every case via
+    // `credentialEnvVars`. So a project holding two sites would mean being shown site A, typing
+    // site A's password, and having it typed into site B's login form with nothing saying so.
+    // D-30 made replay prompt-first, so that credential is now usually a real one, freshly typed.
+    //
+    // Refused HERE, before makeRunId/recordRunStarted, so a rejected replay leaves no run row, no
+    // directory and no artifacts behind — the request simply does not start.
+    //
+    // Order matters for cost: a replay with no login has nothing to misdirect, so it is allowed
+    // across as many sites as it likes and never pays for the origin scan.
+    const credentialFields = credentialKindsNeeded(cases.flatMap((c) => c.ir.steps));
+    if (credentialFields.length > 0) {
+      // Origins, not raw baseUrls: two cases on the same host with different paths are the same
+      // site and must not be refused.
+      const origins = [...new Set(
+        cases.map((c) => originOf(c.ir.meta.baseUrl ?? "")).filter((o): o is string => !!o)
+      )];
+      if (origins.length > 1) {
+        return res.status(400).json({
+          error:
+            `This selection signs in, and its cases span ${origins.length} sites ` +
+            `(${origins.join(", ")}). One replay collects one set of credentials and uses it for ` +
+            `every case, so running these together would send the same login to all of them. ` +
+            `Replay each site separately.`,
+          origins,
+        });
+      }
+    }
 
     const runId = makeRunId();
     const runLabel = typeof label === "string" && label.trim()
@@ -1407,7 +1791,7 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
     // Resolved INSIDE the scheduled work, after the 202 below: the browser needs the runId in
     // hand before it can render the prompt or post an answer to it.
     runLimit.run(async () => {
-      const fields = credentialKindsNeeded(cases.flatMap((c) => c.ir.steps));
+      const fields = credentialFields;   // computed above, with the same input
       const creds = fields.length === 0
         // No case in this replay signs in. Nothing is asked, no event is emitted, and the run is
         // byte-for-byte the one that ran before this change.
@@ -1416,13 +1800,34 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
           // The same event shape a run emits, so app.js draws the same prompt with no change:
           // its postUrl already defaults to /api/runs/<runId>/credentials, and a replay's runId
           // is a real run id that the existing route settles.
-          (status, data) => onEvent({
-            runId, stage: "credentials", status,
-            data: status === "started"
-              ? { url: data.url, fields: data.fields }
-              : { provided: !!data.supplied },
-            ts: Date.now(),
-          } as Parameters<typeof record>[0]));
+          (status, data) => {
+            const ev = {
+              runId, stage: "credentials", status,
+              data: status === "started"
+                ? { url: data.url, fields: data.fields }
+                : { provided: !!data.supplied },
+              ts: Date.now(),
+            } as Parameters<typeof record>[0];
+            // APPEND FIRST, exactly as orchestrator.ts and replay.ts do. `record()` is live SSE
+            // fan-out ONLY — it persists nothing — and no browser has ever consumed the SSE
+            // route; the UI polls `/api/runs/:runId/state`, which reads the store. So an event
+            // that is only recorded is an event the person waiting for the prompt never sees:
+            // the run parks for the full CREDENTIAL_WAIT_MS against a screen with nowhere to
+            // type, which is the exact trap resolveCredentials.ts's own header warns about.
+            // These two events do not travel through runReplay, so nothing else appends them.
+            // TECH_DEBT.md TD-66.
+            store.append(ev);
+            onEvent(ev);
+          },
+          // PROMPT FIRST for a replay. A replay is started by a person, on a server whose
+          // TEST_USERNAME/TEST_PASSWORD may belong to someone else entirely, so what they type
+          // must win. The environment is the fallback for a skipped or timed-out prompt.
+          "prompt-first");
+      // A replay can spend real LLM calls (REPLAY_REGROUND), so it bills to the same organisation
+      // a fresh run would. Entered here because runReplay is not runPipeline and has no options
+      // object of its own; the ambient config covers everything downstream of this point.
+      const replayConfig = await llmConfigForOrg(req.organisationId ?? null);
+      if (replayConfig) enterWithLlmConfig(replayConfig);
       return runReplay({ runId, cases, label: runLabel, creds }, onEvent);
     })
       .then((outcome) => {
@@ -1452,6 +1857,69 @@ app.get("/", (_req, res) => {
 
 const port = Number(process.env.PORT ?? 3000);
 
+/**
+ * Every env var the code compares against the string `"true"` or `"false"`.
+ *
+ * Kept as data, not scattered `if`s, so that adding a flag without adding it here is the only way
+ * to get an unchecked flag — and `.env.example` can be diffed against this list.
+ */
+export const BOOLEAN_ENV_FLAGS = [
+  "AUTH_ENABLED",
+  "DB_ENABLED",
+  "ENABLE_CASE_SELECTION_GATE",
+  "NL_STEPS_ENABLED",
+  "ORG_LLM_CONFIG_ENABLED",
+  "REPLAY_REGROUND",
+  "SCRIPT_OVERRIDE_ENABLED",
+  "SELF_HEAL_DEFAULT",
+  "SIGNUP_ENABLED",
+] as const;
+
+/** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */
+export interface InvalidBooleanFlag {
+  name: string;
+  found: string;
+}
+
+/**
+ * Find every boolean flag that is SET to something other than exactly `"true"` or `"false"`.
+ *
+ * Why this exists: every one of these flags is read as `x === "true"` (or, for `SIGNUP_ENABLED`,
+ * `x !== "false"`). That is a silent coercion — `AUTH_ENABLED=truebro` shipped in a real `.env`
+ * and read as `false`, so the server booted with authentication off, resolved every visitor as
+ * the synthetic local owner, and said nothing. A typo in a security flag must not be survivable.
+ *
+ * **An ABSENT variable is not an error**: unset is the documented default-OFF contract that
+ * `CLAUDE.md` rule 2 depends on ("every new capability ships behind an env flag defaulting to
+ * OFF"), and `.env.example` documents it. What is rejected is a variable that is *present and
+ * malformed* — including present-but-empty (`FLAG=`), which is the case that most looks
+ * deliberate and reads as false. Case matters too: `TRUE`, `1` and `yes` are all rejected rather
+ * than guessed at, because guessing is how a flag ends up meaning the opposite of what was typed.
+ *
+ * Pure and exported so each flag can be tested without booting a server; the process-killing
+ * call lives inside `isMain` below.
+ */
+export function findInvalidBooleanFlags(env: NodeJS.ProcessEnv = process.env): InvalidBooleanFlag[] {
+  const bad: InvalidBooleanFlag[] = [];
+  for (const name of BOOLEAN_ENV_FLAGS) {
+    const raw = env[name];
+    if (raw === undefined) continue; // absent = documented default, not a misconfiguration
+    if (raw !== "true" && raw !== "false") bad.push({ name, found: raw });
+  }
+  return bad;
+}
+
+/** The fatal message for `findInvalidBooleanFlags()` output — names each variable and its value. */
+export function formatInvalidBooleanFlags(bad: InvalidBooleanFlag[]): string {
+  return [
+    `[startup] FATAL: boolean environment flag(s) set to a value that is neither "true" nor "false".`,
+    ...bad.map((b) => `  ${b.name}=${JSON.stringify(b.found)} — expected exactly "true" or "false"`),
+    `  These flags are compared against the literal string "true", so any other value is silently`,
+    `  read as false — which is how a server ships with AUTH_ENABLED=truebro and no authentication.`,
+    `  Set each to exactly "true" or "false", or remove it entirely to take its documented default.`,
+  ].join("\n");
+}
+
 export { app };
 
 // Only actually start listening (and run startup-only diagnostics/jobs) when this file is
@@ -1459,6 +1927,47 @@ export { app };
 // via supertest — importing must never bind a real port or spin up background timers.
 const isMain = !!process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
+  /**
+   * Runs BEFORE the AUTH/DB combination check below, and that order is load-bearing: the M-3
+   * check reads `isAuthEnabled()`, which resolves a malformed value to `false`. Validating the
+   * combination first would mean reasoning about a value nobody actually typed.
+   */
+  const invalidFlags = findInvalidBooleanFlags();
+  if (invalidFlags.length > 0) {
+    console.error(formatInvalidBooleanFlags(invalidFlags));
+    process.exit(1);
+  }
+
+  /**
+   * Refuse to start in the one combination that looks configured and isn't.
+   *
+   * Membership lives in the database and nowhere else, so `canEnforceTenancy()` returns false when
+   * `DB_ENABLED` is off — every role check passes and every organisation boundary disappears. With
+   * `AUTH_ENABLED` also off that is correct and intended: one synthetic local owner, nothing to
+   * isolate. With `AUTH_ENABLED` ON it is the worst of both: a login screen, real accounts, and a
+   * server where every signed-in user sees and does everything.
+   *
+   * It used to log an error and carry on, which made it survivable — and therefore survivable in
+   * production. The library, projects and team surfaces do NOT consult `DB_ENABLED` at all (they
+   * go straight to the service client), so the app keeps working and looking correct while the
+   * isolation it appears to enforce is switched off. Nothing about the running system says so
+   * except one line that scrolled past at boot.
+   *
+   * Deliberately inside `isMain`: importing `app` for tests must never throw, and several test
+   * files legitimately set one flag without the other.
+   */
+  if (isAuthEnabled() && !isDbEnabled()) {
+    console.error(
+      "[startup] FATAL: AUTH_ENABLED=true with DB_ENABLED unset or false.\n" +
+      "  Membership and roles live in the database, so organisation isolation cannot be enforced\n" +
+      "  in this combination — every signed-in user would see and do everything, while the team,\n" +
+      "  project and library screens carried on working as if they were scoped.\n" +
+      "  Set DB_ENABLED=true (with SUPABASE_SERVICE_ROLE_KEY) to run with authentication,\n" +
+      "  or AUTH_ENABLED=false to run single-user with the synthetic local owner.",
+    );
+    process.exit(1);
+  }
+
   // Startup diagnostic — log which key env vars are detected so Render's deploy
   // log immediately shows whether secrets were injected.
   console.log("[startup] Environment variable check:");
@@ -1471,4 +1980,8 @@ if (isMain) {
 
   // No-op unless RUN_RETENTION_DAYS is set (TECH_DEBT.md TD-16) — see src/server/retention.ts.
   startRetentionJob();
+
+  // Silent unless Playwright's ffmpeg is missing, in which case say so ONCE at startup rather
+  // than letting every run discover it as a mystery "test failure" (TECH_DEBT.md TD-71).
+  warnIfNoVideo();
 }

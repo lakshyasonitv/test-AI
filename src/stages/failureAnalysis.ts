@@ -4,11 +4,13 @@ import path from "node:path";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import { findScreenshot } from "./executor.js";
+import { siteHost } from "../text.js";
 import { KNOWN_CATEGORIES, findFailingStepId, classify } from "./classify.js";
 import type { IR } from "../schema/ir.js";
 import type { ExecResult } from "./executor.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { cutAtBoundary } from "../text.js";
+import { llmCacheDimension, resolvedModelLite } from "../llm/llmContext.js";
 
 // Falls back to "other" for anything outside the known set (e.g. Gemini describing a
 // real Playwright error like "strict mode violation" accurately but outside our
@@ -184,8 +186,11 @@ function endedOnLoginPage(result: ExecResult, loginUrl?: string): string | null 
     const body = readFileSync(path.join(result.artifactsDir, "final-page.txt"), "utf8");
     const finalUrl = body.split("\n")[0]?.trim();
     if (!finalUrl) return null;
+    // Host + path, not origin + path: both URLs here are normally post-redirect, but a
+    // `loginUrl` carried over from an entered address would differ only by scheme and this
+    // check would silently stop recognising the login page. Same trap as TD-82.
     const a = new URL(finalUrl), b = new URL(loginUrl);
-    return a.origin === b.origin && a.pathname === b.pathname ? finalUrl : null;
+    return siteHost(finalUrl) === siteHost(loginUrl) && a.pathname === b.pathname ? finalUrl : null;
   } catch {
     return null;   // no artifact, or an unparseable URL — not a reliable signal
   }
@@ -234,7 +239,7 @@ export async function analyzeFailure(
   // the disk cache has no expiry, so anything left out is served stale permanently.
   const cacheKey = makeCacheKey(
     errorText, JSON.stringify(ir.steps.slice(-5)),
-    SYSTEM, process.env.GEMINI_MODEL_LITE ?? "default");
+    SYSTEM, resolvedModelLite(), llmCacheDimension());
   const cached = llmCacheGet<Diagnosis>(cacheKey);
   if (cached) return cached;
 
@@ -267,7 +272,7 @@ Return JSON: { "failingStepId", "category", "explanation", "suggestedFix" }`;
     const { content: raw } = await gemini(user, {
       systemInstruction: system,
       json: true,
-      model: process.env.GEMINI_MODEL_LITE,
+      model: resolvedModelLite(),
       imageBase64: shot ? readFileSync(shot).toString("base64") : undefined,
       imageMime: "image/png",
       stage: "failure_analysis",

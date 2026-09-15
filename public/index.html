@@ -26,7 +26,6 @@
           <span id="newRunIcon"></span> New run
         </button>
 
-        <input type="search" id="sidebarSearch" class="sidebar-search" placeholder="Search projects, cases&hellip;" aria-label="Search projects and cases" />
       </div>
 
       <!-- Projects > Suites > Cases. Populated in a later slice; the empty state
@@ -34,7 +33,10 @@
       <nav class="sidebar-tree" aria-label="Projects">
         <h2 class="rail-heading">
           Projects
-          <button type="button" id="addProjectBtn" class="rail-add" title="New project" aria-label="New project">+</button>
+          <span class="rail-actions">
+            <button type="button" id="addSuiteBtn" class="rail-add rail-add-suite" title="New suite" aria-label="New suite">+ Suite</button>
+            <button type="button" id="addProjectBtn" class="rail-add" title="New project" aria-label="New project">+</button>
+          </span>
         </h2>
         <div id="sidebarTree"></div>
       </nav>
@@ -79,11 +81,17 @@
                 <span>Pause to approve the AI&rsquo;s test cases</span>
               </span>
             </button>
-            <button type="button" class="settings-row" id="healToggle" aria-pressed="true">
+            <button type="button" class="settings-row" id="healToggle" aria-pressed="false">
               <span class="switch"><span class="switch-knob"></span></span>
               <span class="settings-row-text">
                 <b>Self-heal broken selectors</b>
                 <span>Retry once after re-reading the page</span>
+              </span>
+            </button>
+            <button type="button" class="settings-row" id="clearWalkCacheBtn">
+              <span class="settings-row-text">
+                <b>Clear verification cache</b>
+                <span id="clearWalkCacheNote">Forget saved page snapshots used when editing steps</span>
               </span>
             </button>
           </div>
@@ -177,22 +185,19 @@
 
               <div class="composer-foot">
                 <label class="field field-url">
-                  <span class="field-label">https://</span>
+                  <span class="field-label" id="urlScheme" role="button" tabindex="0"
+                    title="Click to switch between https:// and http://">https://</span>
                   <span class="input-wrap">
-                    <input id="url" type="text" placeholder="example.com/page" />
+                    <input id="url" type="text" placeholder="example.com/page"
+                      aria-describedby="urlError" autocomplete="off" spellcheck="false" />
                   </span>
                 </label>
-
-                <div class="seg" id="coverageSeg" role="group" aria-label="Coverage">
-                  <button type="button" class="seg-btn" data-coverage="minimal">Minimal</button>
-                  <button type="button" class="seg-btn active" data-coverage="standard">Standard</button>
-                  <button type="button" class="seg-btn" data-coverage="full">Full</button>
-                </div>
 
                 <button type="submit" class="run-btn">
                   <span id="runIcon"></span> <span class="run-btn-text">Run test</span>
                 </button>
               </div>
+              <p id="urlError" class="team-error hidden" role="alert" aria-live="polite"></p>
             </form>
 
             <div class="templates-row">
@@ -270,6 +275,10 @@
                 <video id="resultVideo" controls preload="none"></video>
                 <figcaption>Recording of the run &mdash; nothing downloads until you press play</figcaption>
               </figure>
+              <!-- Shown only when the server reports that ffmpeg is missing, so "no video" is
+                   never mistaken for "the run failed" (TECH_DEBT.md TD-71). Reuses .tree-empty
+                   rather than minting a class, per the class-name contract. -->
+              <p id="videoUnavailable" class="tree-empty hidden"></p>
               <p id="diagnosis"></p>
               <a id="traceLink" class="hidden" target="_blank" href="#">View the test code &amp; files</a>
             </section>

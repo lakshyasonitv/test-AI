@@ -116,14 +116,31 @@ that sentence is the system's own closed-vocabulary rendering — not page copy 
 When a target changes, `mergeTarget` drops `css`, `testId`, `nth`, `label`, `placeholder`. That is
 the mechanism by which "the user retargeted this step" becomes "grounding must re-derive it".
 
-**Rows are matched positionally.** `parseIrSteps(texts, originals)` pairs `texts[i]` with
-`originals[i]`. Two consequences worth knowing:
+**Rows are matched by CONTENT, not by index.** `parseIrSteps(texts, originals)` aligns in two
+passes: every row whose sentence exactly equals an original's rendering pairs with the nearest
+unclaimed such original, then leftovers pair with the originals lying between their neighbouring
+anchors (preferring the same leading verb). Anything still unpaired is a genuinely new row and
+gets a fresh id from `nextStepId`.
 
-- A step that **moved** reads as changed, because it is compared against whatever used to sit at
-  its new index. That is the right answer — a target resolves on whatever page the preceding steps
-  arrive at, so moving a step genuinely does need re-verifying.
-- A step that was **deleted** shifts every row after it, so the whole tail reads as changed and
-  gets re-grounded. Conservative, not incorrect. Rows *before* the deletion are untouched.
+This used to be positional — `texts[i]` against `originals[i]` — and it made structural edits far
+more expensive than they are. Deleting one `Wait briefly` row from a 15-step case marked six rows
+changed, queued five browser walks, and **renumbered every step below it**, so version history and
+failure reports pointed at the wrong step from then on (`TECH_DEBT.md` TD-90).
+
+**A paired row is re-verified for exactly two reasons:**
+
+1. its own target text changed — it now points at a different element; or
+2. the set of **page-changing** steps above it changed: a `navigate`, `click` or `press` was
+   added, removed, or moved across it.
+
+Rule 2 is about identity and position, not wording — a page-changing step is keyed by the original
+it came from, so fixing a typo in a click's name is rule 1 for that click alone and does not claim
+every later step now resolves elsewhere. "Moved across it" is detected as an inversion in the
+pairing, because moving a step past rows that are *not* page-changing leaves the set above it
+identical.
+
+`wait`, `fill`, `select`, `check` and `assert` cannot change the page. That is what makes deleting
+a `Wait` cost nothing at all, and a step that genuinely moved still cost a walk.
 
 ## 5. The save path
 
@@ -134,6 +151,11 @@ prepareEdit
   ├ 409 if expectedVersion !== currentVersion        (someone else saved while you were editing)
   ├ parseIrSteps(texts, found.ir.steps)              → 400 with stepIndex + stepId if unreadable
   └ parseIr(...)                                     → structural validation, milliseconds, no browser
+
+  ├ recompute meta.hasTerminalAssertion, and REFUSE (400, needsConfirmation:"noAssertion")
+  │   if this edit removed the last check — unless the body carries confirmNoAssertion:true.
+  │   Nothing recomputed that flag before, so deleting a case's final `Check ...` row saved
+  │   silently and the case reported Passed forever while verifying nothing (TD-89).
 
   regroundIndexes.length === 0 ?
     ├ YES → FAST PATH: write immediately, respond { mode: "instant", regrounded: 0, snapshots: 0 }
@@ -146,30 +168,52 @@ none of that touches a target, so none of it launches a browser.
 **The job path**, once it has answered 202, emits SSE events and ends in exactly one `done` or
 `error`:
 
-1. `resolveWalkCredentials` — env first, prompt second (see §7)
+1. `resolveWalkCredentials` — env first, prompt second (see §7).
+   The walk decides which box each credential goes into from the step's **`${env:...}` value**,
+   not from its field name — the same thing the compiled spec does. Deciding from the name meant
+   a site whose login boxes are named by their placeholder got the literal sentinel typed into
+   them: the walk never signed in, and every later step looked absent (TD-84). A walk that ends
+   on the page it typed a credential into now fails saying so, rather than snapshotting the
+   login form and blaming the edit.
 2. cancelled while the prompt was open? stop before any browser launches
 3. `regroundEditedIr(validated, regroundIndexes, { sourceRunId, creds, shouldCancel, onProgress })`
 4. failed or cancelled → emit, **write nothing**
 5. succeeded → `updateCase`, emit `done` with the new version and re-rendered steps
 
-Supporting routes: `…/jobs/:jobId/events` (SSE), `/state` (poll fallback), `/cancel`,
-`/credentials`.
+Supporting routes: `…/jobs/:jobId/state`, `/cancel`, `/credentials`, and `…/jobs/:jobId/events`.
+
+**Which one the browser actually uses:** `/state`. `pollCaseJob` in `public/app.js` polls it every
+800 ms; the SSE route exists and no client code consumes it, for the same tunnel-buffering reason
+the run view polls rather than streams. Read "emits SSE events" above as "emits events, which the
+server holds for both routes" — the events are real, the streaming transport is not the one in use.
 
 ## 6. What re-grounding actually does
 
 `regroundEditedIr` (`caseEdit.ts`) verifies the edited IR against the live site and fills the
 deterministic fields back in.
 
-The subtlety: `groundingError` walks **every** step, but only the steps whose target lost its
-`css`/`testId` have anything to re-derive — an untouched step still carries its grounding and
-passes on the identity it already had. What the walk actually buys is **the page models those
-edited steps must resolve against**. You cannot check step 7 without arriving at step 7's page,
-which means executing steps 1–6.
+The subtlety: only the steps whose target lost its `css`/`testId` have anything to re-derive — an
+untouched step still carries its grounding and passes on the identity it already had. What the
+walk actually buys is **the page models those edited steps must resolve against**. You cannot
+check step 7 without arriving at step 7's page, which means executing steps 1–6.
+
+`groundingError` used to walk **every** step regardless, and that was a real defect
+(`TECH_DEBT.md` TD-86): during an edit the model holds only what the walk could reach, so
+untouched steps on pages it never visited were re-matched by name and rejected — the editor
+blaming your edit for a step you did not touch. It now takes an optional scope: a step that is
+neither being verified nor already grounded is the only kind still checked. It also prefers the
+page the walk actually landed on over the "match against every page" fallback, which is what
+stopped an untouched "Save" binding to a Save button somewhere else. **The fresh-run compile path
+passes no scope and is unchanged** — a newly generated IR is a model's invention, and checking all
+of it is exactly the point there.
 
 That is why the cost is driven by *where* the edit is, not how many edits there are:
 
 - one walk per distinct arrival point; two edits on the same page share a walk
-- prefixes are cached (`replay.ts`), so a deeper walk reuses a shallower one
+- prefixes are cached (`liveExtend.ts`'s `replayAndSnapshot`), so a deeper walk reuses a shallower
+  one. The key includes a fingerprint of the credential VALUES, because the prefix itself only
+  carries `${env:...}` — without that a failed sign-in and a successful one shared a key, and the
+  disk half of this cache never expires (TD-85). Settings → **Clear verification cache** empties it
 - an edit at index 0 acts on the entry page and needs no walk at all
 - capped by `MAX_LIVE_EXTENSIONS`
 
@@ -258,7 +302,7 @@ a person approves the round before anything is persisted.
 |---|---|
 | `src/stages/stepText.ts` | `formatIrStep`, `parseIrStep`, `parseIrSteps`, `estimateRegrounding`, `STEP_VOCABULARY`, `GROUNDED_FIELDS`, `sameSemanticTarget`, `mergeTarget` |
 | `src/stages/caseEdit.ts` | `regroundEditedIr` — the walk that re-verifies changed targets |
-| `src/stages/replay.ts` | walks a stored IR prefix and snapshots where it lands; prefix-cached |
+| `src/stages/liveExtend.ts` | `refreshPageModel` / `replayAndSnapshot` — replays a step prefix in a real browser and snapshots where it lands; prefix-cached. **This, not `replay.ts`, is the walker the editor uses** — `caseEdit.ts` imports `refreshPageModel` from here. `src/stages/replay.ts` is a different thing entirely: the zero-LLM path that re-runs a *stored* IR, and it takes no part in editing |
 | `src/server/index.ts` | the editor's routes: `GET/POST /steps`, `/estimate`, job SSE + `/cancel` + `/credentials`, `/rewrite`, `/steps/translate`, `/versions/:v` |
 | `src/server/rewrite.ts` | the three proposers, and the shared 20-per-15-min-per-user rate limit |
 | `src/server/library.ts` | `updateCase`, `CaseConflictError`, `current_version`, `test_case_versions` |

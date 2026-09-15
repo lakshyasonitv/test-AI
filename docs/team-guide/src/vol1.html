@@ -30,7 +30,7 @@ code { font-family: Consolas, "Courier New", monospace; font-size: 9.5pt; color:
 
 <h1>Volume 1 — Orientation</h1>
 <p class="sub">An engineer's guide to the AI Test Platform</p>
-<p class="meta">Describes commit <code>57e6261</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026 &nbsp;·&nbsp; Volume 1 of 5</p>
+<p class="meta">Describes commit <code>eca7dee</code> on branch <code>main</code> &nbsp;·&nbsp; written 1 September 2026, revised 5 September 2026 &nbsp;·&nbsp; Volume 1 of 5</p>
 
 <div class="note">
 <b>What this document set is.</b> Five volumes that take you from knowing nothing about this project to being able to read its code, follow a request end to end, and work out for yourself what went wrong when something breaks.
@@ -204,11 +204,11 @@ runs/&lt;id&gt;/generated/test.spec.ts   ←  the file Playwright ACTUALLY execu
 <tr><td><code>src/schema/</code></td><td>3 files<br>727 lines</td><td><code>AppModel</code>, <code>IR</code>, and the gate's wire format. The contracts.</td><td>2</td></tr>
 <tr><td><code>src/llm/</code></td><td>5 files<br>436 lines</td><td>The Gemini call, retry/backoff, API-key rotation, per-run spend cap.</td><td>2</td></tr>
 <tr><td><code>src/kb/</code></td><td>3 files<br>278 lines</td><td>The hand-written QA checklist and the two disk caches.</td><td>2</td></tr>
-<tr><td><code>src/server/</code></td><td>18 files<br>4,806 lines</td><td>Express, all 57 routes, authentication, permissions, the case library.</td><td>3</td></tr>
-<tr><td><code>src/db.ts</code></td><td>350 lines</td><td>Supabase Postgres. Identity and the library — never run content.</td><td>3</td></tr>
+<tr><td><code>src/server/</code></td><td>18 files<br>4,909 lines</td><td>Express, all 57 routes, authentication, permissions, the case library.</td><td>3</td></tr>
+<tr><td><code>src/db.ts</code></td><td>348 lines</td><td>Supabase Postgres. Identity and the library — never run content.</td><td>3</td></tr>
 <tr><td><code>src/runStore.ts</code></td><td>249 lines</td><td>The <code>runs/</code> folder: the event log and the run summary.</td><td>3</td></tr>
 <tr><td><code>public/</code></td><td>5,349 lines</td><td>The entire front end. Plain JavaScript, no framework, no build step.</td><td>4</td></tr>
-<tr><td><code>tests/</code></td><td>51 files</td><td>Vitest unit tests. <b>Not</b> the generated Playwright tests.</td><td>5</td></tr>
+<tr><td><code>tests/</code></td><td>52 files</td><td>Vitest unit tests. <b>Not</b> the generated Playwright tests.</td><td>5</td></tr>
 </table>
 
 <div class="danger">

@@ -17,6 +17,17 @@ export interface HealArgs {
   ir: IR;
   appModel: AppModel;
   diagnosis: Diagnosis;
+  /**
+   * True when the failing case runs a hand-written script instead of its IR.
+   *
+   * Healing MUST NOT run for such a case, and this is the most destructive of the three
+   * IR-assuming flows: `attemptHeal` rebuilds the IR from scratch via `toIR` and regenerates the
+   * spec from it, never looking at the existing one. On an overridden case a "successful" heal
+   * would therefore discard the author's script, run something they never wrote, and report a
+   * pass — a green run for code nobody reviewed. Optional and defaulting to false, so every
+   * existing caller is unaffected.
+   */
+  scriptOverridden?: boolean;
   sourcePrompt: string;
   entryUrl: string;
   // Optional, matching toIR's own signature — a heal attempt still works without one, it just
@@ -38,10 +49,49 @@ export interface HealResult {
   deterministic?: boolean;
 }
 
+/**
+ * Grounding rejections a fresh snapshot cannot resolve, so a heal is pure waste.
+ *
+ * `navigate-url` is the guard refusing an INVENTED route. Re-snapshotting and regenerating cannot
+ * make a route real: `toIR` applies the identical deterministic guard against the new model and
+ * reaches the identical verdict, at the cost of a full IR regeneration (~3.8k prompt tokens
+ * measured across `runs/`). Worse, `attemptHeal` then throws the result away regardless, because
+ * "a heal that truncates isn't a heal" — so the spend buys nothing even in principle.
+ *
+ * Deliberately NARROW. `element_missing` as a RUNTIME diagnosis stays healable: an element that
+ * was there at discovery and gone at run time is precisely what heal exists for. What is excluded
+ * is only the case where GROUNDING already refused, deterministically, before the test ever ran.
+ */
+const UNHEALABLE_TRUNCATIONS = new Set(["navigate-url"]);
+
+/**
+ * Does a run self-heal when the client says nothing about it?
+ *
+ * ONE definition, because two consumers have to agree: the orchestrator uses it as the fallback
+ * for `options.selfHeal`, and `/api/health` advertises it so the Settings toggle opens in the
+ * state the server is actually in. They were separately hardcoded `true`, so the answer was
+ * un-configurable and the user could not turn it off for a demo without touching the toggle
+ * every time.
+ *
+ * Defaults to OFF (platform rule 2: a new capability ships behind a flag defaulting off — and a
+ * heal is a second full test run plus a full IR regeneration, which should be asked for rather
+ * than assumed). Read at call time, not at import, so a test can set the env per case.
+ */
+export function selfHealDefault(): boolean {
+  return process.env.SELF_HEAL_DEFAULT === "true";
+}
+
 /** The same gate `attemptHeal` applies internally, exported so a caller can decide whether to
  *  emit a "heal started" event at all (a UI/observability concern) without duplicating the
  *  condition itself — asking twice would risk the two copies drifting apart. */
 export function isHealable(diagnosis: Diagnosis, ir: IR): boolean {
+  // Read from the structured field, never from `truncationNote` — that note is prose written for
+  // a model, and branching on its wording is the failure CLAUDE.md's central rule and TD-01 both
+  // record. TD-83.
+  if (ir.meta?.truncated && ir.meta.truncationKind
+      && UNHEALABLE_TRUNCATIONS.has(ir.meta.truncationKind)) {
+    return false;
+  }
   const healable = diagnosis.category === "selector_changed" || diagnosis.category === "element_missing";
   const failIdx = diagnosis.failingStepId ? ir.steps.findIndex((s) => s.id === diagnosis.failingStepId) : -1;
   return healable && failIdx > 0;
@@ -124,6 +174,11 @@ export async function attemptDeterministicHeal(args: HealArgs): Promise<HealResu
  */
 export async function attemptHeal(args: HealArgs): Promise<HealResult | null> {
   const { testCase, ir, appModel, diagnosis, sourcePrompt, entryUrl, llmBudget, runCreds, outDir } = args;
+
+  // A hand-written script is not healable by construction: healing works by re-deriving the IR
+  // against a fresh page model, and the IR is not what ran. Returning null is exactly the
+  // "not attempted" signal every other guard here uses, so callers need no new branch.
+  if (args.scriptOverridden) return null;
 
   // A step with no real prefix (first step, or an id toIR never emitted) has nothing to
   // replay from — skip healing, same guard orchestrator.ts's original inline version used.

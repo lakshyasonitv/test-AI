@@ -1,6 +1,7 @@
 # Testbench — self-contained briefing for an LLM with no repo access
 
-**Snapshot date: 2026-09-01.** Everything below was true of the codebase on that date.
+**Snapshot date: 2026-09-05**, describing commit `eca7dee` on `main`. Everything below was true of
+the codebase on that date. Regenerate this file rather than patching it — it is a copy by design.
 
 **Read this first, and say it back to the user if it matters:** this file is a *copy* of facts that
 live elsewhere, written for a model that cannot open the repository. It will drift. If you can read
@@ -140,7 +141,22 @@ schema before extending behaviour that depends on a new field.
 - **Frontend is a classic script** — `public/app.js`, no bundler, no modules, no framework. It
   therefore **cannot import anything from `src/`**, which is why a couple of small functions are
   deliberately duplicated between server and browser, each with a test asserting the two agree.
-- **Tests: vitest.** As of this snapshot: **790 passing across 51 files.**
+- **Nine views exist and all nine are built:** `home`, `run`, `suite`, `case`, `compare`, `history`,
+  `team`, `login`, `signup`. Older docs in this repo call three of them unbuilt stubs; that is wrong.
+- **The UI polls, it does not stream.** `connectToRun` loops on `GET /api/runs/:id/state` once a
+  second. `EventSource` appears nowhere in `public/` as code — an SSE route exists server-side and
+  no client has ever consumed it, because a Cloudflare tunnel buffers `text/event-stream`.
+- **The composer has no coverage selector any more.** The Minimal/Standard/Full control was removed;
+  `coverage` is pinned to `"standard"` in `app.js` and is **still sent** in the `POST /api/runs`
+  body, because dropping the field would change an existing route's request shape. If you are asked
+  to tidy up what looks like a dead constant there, do not — that is the constant.
+- Topbar actions live behind a header hamburger menu; role restrictions are negative body classes
+  (`role-no-edit`, `role-no-admin`); suites are managed from the sidebar; project rows have a Delete.
+- **Tests: vitest.** As of this snapshot: **816 passing across 52 files.** CI
+  (`.github/workflows/test.yml`) runs `tsc --noEmit` and `npm test` on every push and pull request;
+  it is not a merge gate, so a red run can still land.
+- **Sizes:** `src/` is 56 `.ts` files / 17,033 lines. `public/app.js` is 5,611 lines, `index.html`
+  348, `style.css` 1,915.
 - **Run it:** `npm run serve` (starts on port 3000). `npm test`, `npm run typecheck`.
 - **`runs/<runId>/`** holds every artifact of a run — the plan, the AppModel, the IR, the generated
   spec, screenshots, video, and an `events.ndjson` event log. This directory is the project's
@@ -175,8 +191,9 @@ forever, because the cache never expires. This has caused real bugs more than on
 - **A generated Playwright expression that looks right is not verified until it has been run once.**
   A fix once shipped that passed typechecking and a unit test and was a silent no-op, because both
   checks only inspected the emitted *string* and neither executed it.
-- **Roughly 40 of 66 recorded tech-debt items are still open.** Notable open ones: no CI runs the
-  test suite; `runs/` grows unbounded unless `RUN_RETENTION_DAYS` is set; the generated spec's
+- **Roughly 45 of 66 recorded tech-debt items are still open** (IDs run TD-01…TD-67 with TD-35
+  absent, so the highest number is not the count; the summary table only covers TD-01…TD-51, so the
+  open figure is easy to understate). Notable open ones: `runs/` grows unbounded unless `RUN_RETENTION_DAYS` is set; the generated spec's
   locator helpers have already drifted from the resolver they were copied from; wording-based
   detection is used in more places than it should be; and a literal credential can be stored in the
   case library, because the "secrets never reach disk" rule was written for the run pipeline and

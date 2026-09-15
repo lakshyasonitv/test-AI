@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 /**
@@ -30,6 +31,17 @@ const CASE_LOGIN = "c111aaaa-0000-4000-8000-0000000000c1";
 const CASE_CART = "c222aaaa-0000-4000-8000-0000000000c2";
 const CASE_OTHER_PROJECT = "c333aaaa-0000-4000-8000-0000000000c3";
 
+/**
+ * A SECOND ORGANISATION. This file had none — every test above scopes by PROJECT within one org,
+ * which is the axis library.ts spends most of its code on, and none of them could have caught a
+ * case resolving across an organisation boundary. The cross-org block at the bottom uses these.
+ */
+const ORG_OTHER = "bbbbbbbb-0000-4000-8000-00000000000b";
+const OWNER_OTHER = "b1111111-0000-4000-8000-00000000000b";
+const PROJ_OTHER = "bbbb1111-0000-4000-8000-00000000b001";
+const SUITE_OTHER = "bbbb2222-0000-4000-8000-00000000b002";
+const CASE_IN_OTHER_ORG = "bbbb3333-0000-4000-8000-00000000b003";
+
 /** A minimal IR that satisfies src/schema/ir.ts — the schema library.ts validates against. */
 const validIr = (title: string) => ({
   meta: { feature: "checkout", title, priority: "medium", sourcePrompt: "p", baseUrl: "https://example.com" },
@@ -56,10 +68,12 @@ function reset() {
       { organisation_id: ORG, user_id: OWNER, role: "owner" },
       { organisation_id: ORG, user_id: TESTER, role: "tester" },
       { organisation_id: ORG, user_id: VIEWER, role: "viewer" },
+      { organisation_id: ORG_OTHER, user_id: OWNER_OTHER, role: "owner" },
     ],
     projects: [
       { id: PROJ_1, organisation_id: ORG, name: "one.example.com", base_url: "https://one.example.com" },
       { id: PROJ_2, organisation_id: ORG, name: "two.example.com", base_url: "https://two.example.com" },
+      { id: PROJ_OTHER, organisation_id: ORG_OTHER, name: "other.example.com", base_url: "https://other.example.com" },
     ],
     // The tester and viewer are assigned to PROJ_1 only, so PROJ_2 is the "not yours" case.
     project_members: [
@@ -70,11 +84,13 @@ function reset() {
     suites: [
       { id: SUITE_SMOKE, project_id: PROJ_1, name: "Smoke", created_by: OWNER },
       { id: SUITE_AUTH, project_id: PROJ_1, name: "Auth", created_by: OWNER },
+      { id: SUITE_OTHER, project_id: PROJ_OTHER, name: "Other org suite", created_by: OWNER_OTHER },
     ],
     test_cases: [
       { id: CASE_LOGIN, project_id: PROJ_1, title: "Login works", feature: "auth", ir: validIr("Login works"), current_version: 1, source_run_id: null, last_run_status: null, last_run_at: null, updated_at: null },
       { id: CASE_CART, project_id: PROJ_1, title: "Cart survives reload", feature: "cart", ir: validIr("Cart survives reload"), current_version: 1, source_run_id: null, last_run_status: null, last_run_at: null, updated_at: null },
       { id: CASE_OTHER_PROJECT, project_id: PROJ_2, title: "Other project case", feature: null, ir: validIr("Other"), current_version: 1, source_run_id: null, last_run_status: null, last_run_at: null, updated_at: null },
+      { id: CASE_IN_OTHER_ORG, project_id: PROJ_OTHER, title: "Another tenant's case", feature: null, ir: validIr("Another tenant"), current_version: 1, source_run_id: null, last_run_status: null, last_run_at: null, updated_at: null },
     ],
     test_case_versions: [],
     suite_cases: [],
@@ -96,7 +112,10 @@ function makeBuilder(table: keyof Tables) {
     const rows = db[table] as any[];
     if (pending?.kind === "insert" || pending?.kind === "upsert") {
       const payloads = Array.isArray(pending.payload) ? pending.payload : [pending.payload];
-      const made = payloads.map((p: any) => ({ id: p.id ?? `gen-${Math.random().toString(36).slice(2, 10)}`, ...p }));
+      // A uuid, because that is what the column is: `id uuid not null default gen_random_uuid()`.
+      // A fake id of any other shape would sail through this mock and be rejected by the real
+      // `app.param("caseId")` validator, so the fixture has to mint the shape production mints.
+      const made = payloads.map((p: any) => ({ id: p.id ?? randomUUID(), ...p }));
       for (const m of made) {
         // upsert: a duplicate primary key is ignored rather than duplicated.
         const dup = pending.kind === "upsert" && rows.some((r) =>
@@ -157,6 +176,28 @@ vi.mock("../src/stages/executor.js", async (orig) => ({
   findScreenshot: () => null,
   findVideo: () => null,
   detectBlocked: () => null,
+}));
+
+// The re-ground walk is the third thing that would launch Chromium. Mocked to stand in for the
+// walk's OUTCOME — it returns the IR it was given, with a target grounded — so the save path
+// after it can be driven for real. `regroundCalls` records what the walk was HANDED, which is the
+// only way to check the two-IR split: literals go to the browser, references go to the database.
+const regroundCalls: any[] = [];
+vi.mock("../src/stages/caseEdit.js", async (orig) => ({
+  ...(await orig<any>()),
+  regroundEditedIr: async (ir: any, idxs: number[]) => {
+    regroundCalls.push(structuredClone(ir));
+    return {
+      ok: true,
+      snapshots: 1,
+      usage: { calls: 0, promptTokens: 0, outputTokens: 0, totalTokens: 0, estimatedCostUsd: 0 },
+      ir: {
+        ...ir,
+        steps: ir.steps.map((st: any, i: number) =>
+          idxs.includes(i) ? { ...st, target: { ...st.target, css: "#regrounded" } } : st),
+      },
+    };
+  },
 }));
 
 process.env.AUTH_ENABLED = "true";
@@ -625,6 +666,97 @@ describe("the two save paths — what costs a browser and what does not", () => 
   });
 });
 
+/**
+ * A credential typed into the editor must not reach the DATABASE — TECH_DEBT.md TD-67, and the
+ * half of it `tests/credentialLiteralGuard.test.ts` cannot reach. That file tests
+ * `restoreCredentialRefs` in isolation; these two drive the actual save ROUTE and read the stored
+ * row, which is what the defect was about. Remove the wiring in `prepareEdit`, or the per-step
+ * restore before `writeIt` on the job path, and one of these goes red.
+ */
+describe("a typed credential never reaches the stored row", () => {
+  /** The login case as a run would have left it: both credential steps hold `${env:...}`. */
+  const credIr = () => ({
+    meta: { feature: "auth", title: "Login works", priority: "medium", sourcePrompt: "p", baseUrl: "https://one.example.com" },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "you@thinkvibes.com", css: "#email" }, value: "${env:TEST_USERNAME}" },
+      { id: "s3", action: "fill", target: { role: "textbox", name: "*********", css: "#pw" }, value: "${env:TEST_PASSWORD}" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In", css: "#signin" } },
+    ],
+  });
+
+  const EMAIL = "leaked.user@example.com";
+  const PW = "leaked-pw";
+
+  beforeEach(() => {
+    reset();
+    regroundCalls.length = 0;
+    db.test_cases[0].ir = credIr();
+  });
+
+  /** Everything this request could possibly have persisted, as one string to search. */
+  const persisted = () => JSON.stringify({ cases: db.test_cases, versions: db.test_case_versions });
+
+  it("the instant path stores references, and the literals appear nowhere", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [
+        "Go to /login",
+        `Type "${EMAIL}" into textbox "you@thinkvibes.com"`,
+        `Type "${PW}" into textbox "*********"`,
+        `Click on button "Sign In"`,
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.mode).toBe("instant");
+
+    const stored = db.test_cases[0].ir;
+    expect(stored.steps[1].value).toBe("${env:TEST_USERNAME}");
+    expect(stored.steps[2].value).toBe("${env:TEST_PASSWORD}");
+    expect(persisted()).not.toContain(EMAIL);
+    expect(persisted()).not.toContain(PW);
+
+    // And the person is told, on the response, in one line that does not echo the secret.
+    expect(res.body.credentialNote).toMatch(/asked for when the test runs/i);
+    expect(res.body.credentialNote).not.toContain(PW);
+  });
+
+  it("the JOB path hands the literals to the browser and still stores references", async () => {
+    // A TARGET edit on the last step, so `regroundIndexes` is non-empty and the save takes the
+    // job path — the one where the walk's own result, derived from the literals, is what gets
+    // written. This is the line that was wrong in the first wiring of the fix.
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [
+        "Go to /login",
+        `Type "${EMAIL}" into textbox "you@thinkvibes.com"`,
+        `Type "${PW}" into textbox "*********"`,
+        `Click on button "Log In"`,
+      ],
+    });
+    expect(res.status).toBe(202);
+    expect(res.body.mode).toBe("verifying");
+
+    // The job runs after the response; wait for the write.
+    for (let i = 0; i < 200 && db.test_cases[0].current_version === 1; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(db.test_cases[0].current_version).toBe(2);
+
+    // The walk DID get the real values — it has to actually sign in (platform rule 5 keeps them
+    // in memory for the length of one walk, it does not forbid using them).
+    expect(regroundCalls.length).toBe(1);
+    expect(regroundCalls[0].steps[1].value).toBe(EMAIL);
+    expect(regroundCalls[0].steps[2].value).toBe(PW);
+
+    // ...and none of that survived into the row, while the re-grounding did.
+    const stored = db.test_cases[0].ir;
+    expect(stored.steps[1].value).toBe("${env:TEST_USERNAME}");
+    expect(stored.steps[2].value).toBe("${env:TEST_PASSWORD}");
+    expect(stored.steps[3].target.css).toBe("#regrounded");
+    expect(persisted()).not.toContain(EMAIL);
+    expect(persisted()).not.toContain(PW);
+  });
+});
+
 describe("duplicate — an independent copy, not a shared one", () => {
   beforeEach(() => { reset(); db.test_cases[0].current_version = 5; });
 
@@ -696,5 +828,353 @@ describe("a case's own run history", () => {
   it("a viewer in another project cannot read a case's history", async () => {
     const res = await request(app).get(`/api/cases/${CASE_OTHER_PROJECT}/runs`).set(as(VIEWER));
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * A replay collects ONE set of credentials and applies it to every case it runs, via
+ * `credentialEnvVars(creds)` into the Playwright child's environment. But a replay is scoped to a
+ * PROJECT, not a site: nothing stops a project holding cases for two different websites.
+ *
+ * Left unguarded that means being shown site A's URL in the prompt, typing site A's password, and
+ * having it typed into site B's login form with nothing on screen saying so. D-30 made replay
+ * prompt-first, so that credential is now usually a real one a person just typed.
+ *
+ * The guard refuses BEFORE the run is created, so a rejected replay leaves no run row, no
+ * directory and no artifacts.
+ */
+describe("a replay that signs in may not span two sites", () => {
+  /** An IR whose login step carries an ${env:...} reference, on a given site. */
+  const loginIr = (title: string, baseUrl: string) => ({
+    meta: { feature: "auth", title, priority: "medium", sourcePrompt: "p", baseUrl },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "${env:TEST_USERNAME}" },
+    ],
+  });
+  /** Same shape, no credential reference. */
+  const plainIr = (title: string, baseUrl: string) => ({
+    meta: { feature: "nav", title, priority: "low", sourcePrompt: "p", baseUrl },
+    steps: [{ id: "s1", action: "navigate", target: { url: "/" } }],
+  });
+
+  it("refuses, and creates no run, when the cases span two sites AND sign in", async () => {
+    db.test_cases[0].ir = loginIr("Login A", "https://site-a.example");
+    db.test_cases[1].ir = loginIr("Login B", "https://site-b.example");
+    const before = db.runs.length;
+
+    const res = await request(app).post("/api/replay").set(as(TESTER))
+      .send({ caseIds: [CASE_LOGIN, CASE_CART] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/two sites|2 sites/i);
+    // Names both sites, so the message is actionable rather than just a refusal.
+    expect(res.body.origins.sort()).toEqual(["https://site-a.example", "https://site-b.example"]);
+    // The point of refusing before makeRunId(): nothing was started.
+    expect(db.runs.length).toBe(before);
+    expect(res.body.runId).toBeUndefined();
+  });
+
+  it("ALLOWS two sites when nothing signs in — there is no credential to misdirect", async () => {
+    db.test_cases[0].ir = plainIr("Nav A", "https://site-a.example");
+    db.test_cases[1].ir = plainIr("Nav B", "https://site-b.example");
+
+    const res = trackMintedRun(
+      await request(app).post("/api/replay").set(as(TESTER)).send({ caseIds: [CASE_LOGIN, CASE_CART] }),
+    );
+    expect(res.status).toBe(202);
+  });
+
+  it("ALLOWS one site reached by different paths — origin is the unit, not the raw baseUrl", async () => {
+    db.test_cases[0].ir = loginIr("Login", "https://site-a.example/app");
+    db.test_cases[1].ir = loginIr("Admin", "https://site-a.example/admin");
+
+    const res = trackMintedRun(
+      await request(app).post("/api/replay").set(as(TESTER)).send({ caseIds: [CASE_LOGIN, CASE_CART] }),
+    );
+    expect(res.status).toBe(202);
+  });
+
+  it("ALLOWS a single-site login replay — today's behaviour, pinned", async () => {
+    db.test_cases[0].ir = loginIr("Login", "https://site-a.example");
+    db.test_cases[1].ir = loginIr("Also login", "https://site-a.example");
+
+    const res = trackMintedRun(
+      await request(app).post("/api/replay").set(as(TESTER)).send({ caseIds: [CASE_LOGIN, CASE_CART] }),
+    );
+    expect(res.status).toBe(202);
+  });
+
+  it("does not throw on a case with a missing or unparseable baseUrl", async () => {
+    db.test_cases[0].ir = loginIr("Login", "https://site-a.example");
+    db.test_cases[1].ir = { ...loginIr("Broken", "not a url"), meta: { ...loginIr("Broken", "x").meta, baseUrl: "not a url" } };
+
+    const res = trackMintedRun(
+      await request(app).post("/api/replay").set(as(TESTER)).send({ caseIds: [CASE_LOGIN, CASE_CART] }),
+    );
+    // Unparseable origins are dropped, leaving one known site — allowed, and no crash.
+    expect([202, 400]).toContain(res.status);
+    expect(res.status).not.toBe(500);
+  });
+});
+
+/**
+ * Deleting a run used to remove the directory and leave the database row, so every deletion became
+ * a permanent "present in database but not on disk" entry in the startup shadow report, pointing
+ * at evidence that no longer existed.
+ */
+describe("deleting a run removes its database row too", () => {
+  const RUN = "2026-01-01T00-00-00-000Z-deadbeef";
+
+  it("removes the row and still answers 204", async () => {
+    db.runs.push({ id: RUN, organisation_id: ORG, started_by: OWNER, prompt: "p", url: null, status: "passed", started_at: new Date().toISOString(), project_id: PROJ_1 });
+
+    const res = await request(app).delete(`/api/runs/${RUN}`).set(as(OWNER));
+
+    expect(res.status).toBe(204);
+    // The assertion that matters: the row is gone, not that a function was called.
+    await vi.waitFor(() => expect(db.runs.find((r) => r.id === RUN)).toBeUndefined(), { timeout: 5000 });
+  });
+
+  it("leaves other runs alone", async () => {
+    const KEEP = "2026-01-01T00-00-00-000Z-0000keep";
+    db.runs.push({ id: RUN, organisation_id: ORG, started_by: OWNER, prompt: "p", url: null, status: "passed", started_at: new Date().toISOString(), project_id: PROJ_1 });
+    db.runs.push({ id: KEEP, organisation_id: ORG, started_by: OWNER, prompt: "p", url: null, status: "passed", started_at: new Date().toISOString(), project_id: PROJ_1 });
+
+    await request(app).delete(`/api/runs/${RUN}`).set(as(OWNER));
+
+    await vi.waitFor(() => expect(db.runs.find((r) => r.id === RUN)).toBeUndefined(), { timeout: 5000 });
+    expect(db.runs.find((r) => r.id === KEEP)).toBeDefined();
+  });
+
+  it("a run with no row is still refused, not deleted — the fail-closed rule is unchanged", async () => {
+    // `requireRunRole("admin")` cannot prove ownership of a run the database has never heard of,
+    // so it refuses rather than guessing (the same rule tenancy.test.ts pins). Which means the
+    // "row already gone" case cannot normally be reached through this route at all — worth
+    // stating, because it is why deleteRunRow needs no not-found handling of its own.
+    const res = await request(app).delete(`/api/runs/2026-01-01T00-00-00-000Z-0badc0de`).set(as(OWNER));
+    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(500);
+  });
+});
+
+/**
+ * Deleting the last check must not save silently — TECH_DEBT.md TD-89.
+ *
+ * `meta.hasTerminalAssertion` decides whether a truncated case may report "passed", and nothing on
+ * the edit path recomputed it. A case whose final `Check ...` row was deleted saved instantly,
+ * kept the stale `true`, and reported Passed forever while verifying nothing. A test that cannot
+ * fail is worse than no test: it is a green tick someone will trust.
+ */
+describe("removing the last check", () => {
+  /** The login case plus a real assertion at the end. */
+  const withCheck = () => ({
+    meta: { feature: "auth", title: "Login works", priority: "medium", sourcePrompt: "p", baseUrl: "https://one.example.com" },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Email", css: "#email" }, value: "a@b.c" },
+      { id: "s3", action: "click", target: { role: "button", name: "Sign In", css: "#signin" } },
+      { id: "s4", action: "assert", target: { text: "Welcome" }, assertion: "text_contains", value: "Welcome" },
+    ],
+    // Deliberately stale in the other direction on some tests below.
+    hasTerminalAssertion: true,
+  });
+
+  beforeEach(() => {
+    reset();
+    db.test_cases[0].ir = withCheck();
+  });
+
+  const linesWithoutCheck = () => [
+    "Go to /login",
+    `Type "a@b.c" into textbox "Email"`,
+    `Click on button "Sign In"`,
+  ];
+
+  it("is refused, and says why, without writing anything", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER))
+      .send({ steps: linesWithoutCheck() });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/removes the last check/i);
+    // Named so the client can offer "Save anyway" rather than blaming a row.
+    expect(res.body.needsConfirmation).toBe("noAssertion");
+    expect(res.body.stepIndex).toBeUndefined();
+    expect(db.test_cases[0].current_version).toBe(1);
+    expect(db.test_cases[0].ir.steps).toHaveLength(4);
+  });
+
+  it("is accepted once confirmed, and the flag is stored as false", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER))
+      .send({ steps: linesWithoutCheck(), confirmNoAssertion: true });
+    expect(res.status).toBe(200);
+    expect(db.test_cases[0].current_version).toBe(2);
+    expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(false);
+    expect(db.test_cases[0].ir.steps).toHaveLength(3);
+  });
+
+  it("an edit that KEEPS the check needs no confirmation", async () => {
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [...linesWithoutCheck(), `Check that the text "Welcome" is displayed`]
+        .map((t, i) => i === 1 ? `Type "new@example.com" into textbox "Email"` : t),
+    });
+    expect(res.status).toBe(200);
+    expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(true);
+  });
+
+  it("ADDING a check to a case that had none is always fine", async () => {
+    db.test_cases[0].ir = groundedIr("Login works");           // no assertion at all
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [...linesWithoutCheck(), `Check that the text "Welcome" is displayed`],
+    });
+    expect(res.status).toBe(200);
+    expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(true);
+  });
+
+  it("a case that never had a check is not refused for editing something else", async () => {
+    // The over-reach this fix had at first: keying "did it have one?" off the stale meta flag
+    // refuses every edit to a login case, which asserts nothing by design.
+    db.test_cases[0].ir = { ...groundedIr("Login works"), meta: { ...groundedIr("x").meta, hasTerminalAssertion: true } } as any;
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [
+        "Go to /login",
+        `Type "changed@example.com" into textbox "Email"`,
+        `Click on button "Sign In"`,
+      ],
+    });
+    expect(res.status).toBe(200);
+    // ...and the stale flag is corrected on the way through.
+    expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(false);
+  });
+
+  it("recomputes the flag on every save, not only when it changes", async () => {
+    db.test_cases[0].ir = { ...withCheck(), meta: { ...withCheck().meta, hasTerminalAssertion: false } } as any;
+    const res = await request(app).post(`/api/cases/${CASE_LOGIN}/steps`).set(as(TESTER)).send({
+      steps: [
+        "Go to /login",
+        `Type "a@b.c" into textbox "Email"`,
+        `Click on button "Sign In"`,
+        `Check that the text "Welcome" is displayed`,
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(true);
+  });
+});
+
+/**
+ * Cross-organisation isolation, at the MODULE boundary.
+ *
+ * This file had no second organisation at all until now. Every test above scopes by project inside
+ * one org — which is the axis library.ts spends most of its code on, and is genuinely well covered
+ * — but none of them could have caught a case or suite id resolving across an organisation.
+ *
+ * `multiTenancy.test.ts` asks the same question over HTTP. These call the library functions
+ * DIRECTLY, one level below the routes, because that is where the guarantee actually lives:
+ * `projectOfCase` and `projectOfSuite` look an id up globally and then re-check it against the
+ * session's organisation, so the refusal is theirs, not the middleware's. A route could lose its
+ * guard tomorrow and these would still hold.
+ *
+ * The org id passed in is always the CALLER's, exactly as `requireRole` derives it from the
+ * session — never one taken from a request. Naming another organisation's case id can therefore
+ * only ever fail to resolve.
+ */
+describe("cross-organisation — an id from another tenant resolves to nothing", () => {
+  const otherOrgCtx = () => [OWNER_OTHER, ORG_OTHER, "owner" as const] as const;
+  const ourCtx = () => [OWNER, ORG, "owner" as const] as const;
+
+  it("getCase refuses another organisation's case", async () => {
+    await expect(lib.getCase(...ourCtx(), CASE_IN_OTHER_ORG)).rejects.toThrow();
+  });
+
+  it("...and the other tenant cannot read ours", async () => {
+    await expect(lib.getCase(...otherOrgCtx(), CASE_LOGIN)).rejects.toThrow();
+  });
+
+  it("getCaseScript refuses across the boundary", async () => {
+    await expect(lib.getCaseScript(...ourCtx(), CASE_IN_OTHER_ORG)).rejects.toThrow();
+  });
+
+  it("getCaseVersion refuses — this is the one that holds the IR", async () => {
+    await expect(lib.getCaseVersion(...ourCtx(), CASE_IN_OTHER_ORG, 1)).rejects.toThrow();
+  });
+
+  it("updateCase refuses to write into another organisation", async () => {
+    await expect(
+      lib.updateCase(...ourCtx(), CASE_IN_OTHER_ORG, { title: "hijacked" }),
+    ).rejects.toThrow();
+    expect(db.test_cases.find((c) => c.id === CASE_IN_OTHER_ORG).title).toBe("Another tenant's case");
+  });
+
+  it("deleteCase refuses, and the row survives", async () => {
+    await expect(lib.deleteCase(...ourCtx(), CASE_IN_OTHER_ORG)).rejects.toThrow();
+    expect(db.test_cases.some((c) => c.id === CASE_IN_OTHER_ORG)).toBe(true);
+  });
+
+  it("duplicateCase refuses — copying is still reading", async () => {
+    await expect(lib.duplicateCase(...ourCtx(), CASE_IN_OTHER_ORG)).rejects.toThrow();
+    expect(db.test_cases.filter((c) => c.title.includes("Another tenant"))).toHaveLength(1);
+  });
+
+  it("listCaseRuns refuses", async () => {
+    await expect(lib.listCaseRuns(...ourCtx(), CASE_IN_OTHER_ORG)).rejects.toThrow();
+  });
+
+  it("renameSuite refuses another organisation's suite", async () => {
+    await expect(lib.renameSuite(...ourCtx(), SUITE_OTHER, "hijacked")).rejects.toThrow();
+    expect(db.suites.find((s) => s.id === SUITE_OTHER).name).toBe("Other org suite");
+  });
+
+  it("deleteSuite refuses, and the suite survives", async () => {
+    await expect(lib.deleteSuite(...ourCtx(), SUITE_OTHER)).rejects.toThrow();
+    expect(db.suites.some((s) => s.id === SUITE_OTHER)).toBe(true);
+  });
+
+  it("listSuiteCases refuses", async () => {
+    await expect(lib.listSuiteCases(...ourCtx(), SUITE_OTHER)).rejects.toThrow();
+  });
+
+  it("addCaseToSuite refuses to pull another tenant's case into our suite", async () => {
+    await expect(lib.addCaseToSuite(...ourCtx(), SUITE_SMOKE, CASE_IN_OTHER_ORG)).rejects.toThrow();
+    expect(db.suite_cases.some((sc) => sc.test_case_id === CASE_IN_OTHER_ORG)).toBe(false);
+  });
+
+  it("loadCasesForReplay refuses a selection containing another tenant's case", async () => {
+    await expect(
+      lib.loadCasesForReplay(...ourCtx(), { caseIds: [CASE_IN_OTHER_ORG] }),
+    ).rejects.toThrow();
+  });
+
+  it("loadCasesForReplay refuses a MIXED selection rather than silently dropping the foreign one", async () => {
+    // Returning just the permitted case would look like success and quietly run a shorter suite
+    // than was asked for. Every case is re-checked individually for exactly this reason.
+    await expect(
+      lib.loadCasesForReplay(...ourCtx(), { caseIds: [CASE_LOGIN, CASE_IN_OTHER_ORG] }),
+    ).rejects.toThrow();
+  });
+
+  it("saveCaseFromRun refuses to file into another organisation's project", async () => {
+    // The run id is arbitrary and need not exist: `saveCaseFromRun` calls assertProjectVisible on
+    // the DESTINATION before it reads anything from disk. Asserting the message matters here —
+    // a nonexistent run would also reject, with "that run has no saved test plan", and a test that
+    // accepted any rejection would pass without the access check ever running.
+    await expect(
+      lib.saveCaseFromRun(...ourCtx(), "2026-01-01T00-00-00-000Z-abcdabcd", "case-0", PROJ_OTHER),
+    ).rejects.toThrow(/project/i);
+  });
+
+  it("listCases and listSuites never include the other tenant's rows", async () => {
+    const cases = await lib.listCases(...ourCtx());
+    expect(cases.map((c) => c.id)).not.toContain(CASE_IN_OTHER_ORG);
+
+    const suites = await lib.listSuites(...ourCtx());
+    expect(suites.map((s) => s.id)).not.toContain(SUITE_OTHER);
+  });
+
+  it("the other tenant's owner sees only their own", async () => {
+    const cases = await lib.listCases(...otherOrgCtx());
+    expect(cases.map((c) => c.id)).toEqual([CASE_IN_OTHER_ORG]);
+
+    const suites = await lib.listSuites(...otherOrgCtx());
+    expect(suites.map((s) => s.id)).toEqual([SUITE_OTHER]);
   });
 });

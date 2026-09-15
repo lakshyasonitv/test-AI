@@ -376,6 +376,73 @@ h1, h2, h3, h4 { letter-spacing: -0.015em; margin: 0; }
 .settings-row[aria-pressed="true"] .switch-knob { transform: translateX(14px); }
 
 /* ---------------------------------------------------------------------------
+   Header actions menu — the topbar hamburger
+
+   The five header actions (History, Team, Settings, the session badge, Sign out)
+   are authored inline in index.html and are RELOCATED into this panel by app.js:
+   the same nodes, same ids, same listeners, only a different box. Everything here
+   is a NEW selector — nothing above was renamed, and the moved controls keep their
+   own .topbar-btn / .session-badge / .settings-pop rules, which is why the rules
+   below are descendant overrides rather than replacements.
+
+   Open/closed is .hdr-menu-open, deliberately NOT .hidden: showView() owns .hidden
+   (see its comment in app.js), and a second thing toggling it is the bug that
+   comment exists to prevent.
+   --------------------------------------------------------------------------- */
+
+.hdr-menu-wrap { position: relative; display: flex; align-items: center; flex: none; }
+
+.hdr-menu-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 31px; padding: 0;
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-sm);
+  color: var(--text); cursor: pointer;
+  transition: background .15s var(--ease);
+}
+.hdr-menu-btn:hover,
+.hdr-menu-btn[aria-expanded="true"] { background: var(--surface-hover); }
+
+.hdr-menu {
+  display: none;
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
+  min-width: 212px;
+  flex-direction: column; align-items: stretch;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+.hdr-menu.hdr-menu-open { display: flex; animation: fadeUp .16s var(--ease); }
+
+/* Each moved action becomes a full-width row. The .hidden rules that gate Team,
+   the badge and Sign out still apply untouched — display:none !important wins
+   over everything here. */
+.hdr-menu .topbar-btn {
+  width: 100%; height: 30px; text-align: left;
+  border-color: transparent; background: none;
+}
+.hdr-menu .topbar-btn:hover { background: var(--surface-hover); }
+
+/* The badge is a label, not an action: it reads as the account row that Sign out
+   belongs to, separated from the navigation above it. */
+.hdr-menu .session-badge {
+  flex-wrap: wrap; gap: 6px;
+  margin-top: 4px; padding: 8px 11px 6px;
+  border-top: 1px solid var(--line);
+}
+
+/* The Settings popover was absolutely positioned against .topbar-actions. Inside
+   the menu it is an in-flow submenu directly under its own button, so the menu is
+   one surface rather than two overlapping ones. Its .hidden toggle is unchanged. */
+.hdr-menu .settings-pop {
+  position: static; top: auto; right: auto; width: auto;
+  padding: 2px 11px 8px;
+  background: none; border: none; box-shadow: none;
+  animation: none;
+}
+
+/* ---------------------------------------------------------------------------
    Views — one screen visible at a time
    --------------------------------------------------------------------------- */
 
@@ -772,6 +839,24 @@ li.failed .summary-text { color: var(--failed); }
 .case-notice.error { background: var(--failed-bg); color: var(--failed); }
 .case-regen-note { margin: 0 var(--sp-4) 13px; font-size: .69rem; color: var(--faint); }
 
+/* --- Gate: refine disclosure and the disabled-Run reason --------------------
+   Three NEW classes. Nothing existing is renamed, removed or restyled.
+   `.case-refine-collapsed` carries the open/closed state that used to be carried by
+   `.hidden`, so this feature no longer toggles `.hidden` outside showView(); the class
+   still ships in index.html (not editable here) and is cleared once by setRefineOpen.
+   `.case-done-hint:empty` keeps the slot from taking space when there is nothing to say.
+   `.case-refine-confirm` is the submit control inside the box — styled neutral on purpose,
+   so it does not compete with "Run N tests" as the primary way forward. */
+.case-refine-collapsed { display: none; }
+.case-done-hint:empty { display: none; }
+.case-refine-confirm {
+  margin-top: 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--text);
+  padding: 7px 13px; font: inherit; font-size: .75rem; cursor: pointer;
+}
+.case-refine-confirm:hover { background: var(--surface-hover); }
+
 /* ---------------------------------------------------------------------------
    Verdict — a banner, tinted by outcome
    --------------------------------------------------------------------------- */
@@ -863,6 +948,13 @@ figcaption { font-size: .69rem; color: var(--muted); margin-top: 6px; }
 
 .suite-results { display: flex; flex-direction: column; gap: 11px; }
 .suite-summary-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+/* The run's original request, rendered into the existing summary header by app.js. It reuses
+   `.case-narrative-line` (the prose style already used for a case's narrative) rather than
+   minting a class; flex-basis gives it its own row above the stat pills instead of sitting
+   beside them, and the margin reset removes the <p> default that would otherwise break the
+   header's `gap` rhythm. Scoped to this header so `.case-narrative-line` is unchanged
+   everywhere else it is used. */
+.suite-summary-header > .case-narrative-line { flex-basis: 100%; margin: 0; }
 .suite-summary-stats { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .suite-stat {
   font-family: var(--font-mono); font-size: .66rem; font-weight: 500;
@@ -906,7 +998,13 @@ figcaption { font-size: .69rem; color: var(--muted); margin-top: 6px; }
    app.js toggles — is what switches between them. No new class, no JS change. */
 .suite-case-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  /* One card per row, full container width. This was `repeat(auto-fit, minmax(340px, 1fr))`,
+     which tiled collapsed cards 3-across at 366px while the rule below gave the OPEN card the
+     whole row — so a card changed width when you expanded it, and a header had ~330px to fit a
+     status icon, title, badge and chevron into, which is why the chevron wrapped onto its own
+     line. A single column makes collapsed and expanded identical by construction rather than by
+     keeping two numbers in agreement. `gap` already gives uniform vertical spacing. */
+  grid-template-columns: 1fr;
   align-items: start;
   gap: 11px;
 }
@@ -950,12 +1048,19 @@ figcaption { font-size: .69rem; color: var(--muted); margin-top: 6px; }
 }
 .case-card:hover { border-color: var(--line-hover); }
 .case-card-header {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 11px;
+  /* nowrap: the badge and chevron must never reflow onto their own line. Measured before this
+     change, on a 366px card, the chevron sat at x=16 (hard left, under the status icon) and
+     y=206 (the bottom) instead of at the right-hand end of the header.
+     flex-start, not center: the heading holds a title plus up to two paragraphs, so its height
+     varies per card. Centring made the icon, badge and chevron sit at a different offset on
+     every card — measured at dy 76, 84 and 93 across three cards. Pinning to the top makes that
+     offset constant regardless of how tall the heading grows. */
+  display: flex; flex-wrap: nowrap; align-items: flex-start; gap: 11px;
   padding: 13px var(--sp-4);
   cursor: pointer;
 }
 .case-card-header:hover { background: var(--surface-2); }
-.case-heading { flex: 1; min-width: 200px; }
+.case-heading { flex: 1; min-width: 0; }
 .case-title { font-size: .81rem; font-weight: 500; margin-bottom: 3px; }
 .case-intent { font-size: .72rem; line-height: 1.5; color: var(--text-2); text-wrap: pretty; }
 .case-expand-icon { color: var(--faint); flex: none; transition: transform .18s var(--ease); }
@@ -991,7 +1096,22 @@ figcaption { font-size: .69rem; color: var(--muted); margin-top: 6px; }
 .case-diagnosis-block:empty { display: none; }
 .blocked-note { font-size: .75rem; color: var(--blocked); background: var(--blocked-bg); padding: 10px 12px; border-radius: var(--r-md); }
 
-.case-downloads { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+/* `.case-card-body` is a wrapping flex ROW, so these shared a row with the `.case-details`
+   disclosure and stretched to ITS height: the buttons measured 43px tall against the ~31px of
+   every other secondary button on the page (`.screenshot-toggle`), because `.case-details`
+   contributes 12px margin + 12px padding + an 18px summary and `align-items` defaults to
+   stretch. flex-basis:100% gives the row to the buttons alone; align-items:center stops them
+   stretching to it; align-self:flex-start stops the group stretching to anything else. The
+   result is their natural padding-derived height, which already matches `.screenshot-toggle`. */
+.case-downloads {
+  display: flex; flex-wrap: wrap; gap: var(--sp-2);
+  flex-basis: 100%; align-items: center; align-self: flex-start;
+}
+/* Scoped to the card body ON PURPOSE: `.case-details` shares its base rule with `.output` and
+   `.diag-tech-details`, which live outside the results area and must not move. */
+.case-card-body > .case-details,
+.case-card-body > .case-save-panel,
+.case-card-body > .blocked-note { flex-basis: 100%; }
 .dl-btn, .dl-btn-inline {
   display: inline-flex; align-items: center; gap: 6px;
   border: 1px solid var(--line); background: var(--surface-2);
@@ -1497,6 +1617,22 @@ body.role-no-admin #teamBtn { display: none; }
   background: var(--surface-2); font-size: .74rem;
 }
 .tree-suite-new .dl-btn-inline { flex: none; }
+
+/* Suite Rename/Delete mirror the project row's Edit/Delete exactly: revealed on row hover or
+   keyboard focus, so a destructive control is never what the eye lands on first, and red only on
+   hover, matching .history-del. The suite row has no .tree-chevron, so these sit between the
+   flex:1 .tree-label and .tree-count just as the project row's do. */
+.tree-suite-edit, .tree-suite-del { flex: none; opacity: 0; font-size: .66rem; padding: 1px 6px; }
+.tree-suite:hover .tree-suite-edit,
+.tree-suite-edit:focus-visible,
+.tree-suite:hover .tree-suite-del,
+.tree-suite-del:focus-visible { opacity: 1; }
+.tree-suite-del:hover { color: var(--failed); border-color: var(--failed); }
+
+/* The heading-level create form is not nested under a project, so it drops .tree-suite-new's
+   22px indent and lines up with the tree's own left edge. */
+.tree-suite-new-top { padding-left: var(--sp-2); }
+.tree-suite-new select.suite-new-input { cursor: pointer; }
 .suite-new-err {
   padding: 2px 8px 6px 22px;
   font-size: .68rem; line-height: 1.4; color: var(--failed);
@@ -1522,8 +1658,25 @@ body.role-no-admin #teamBtn { display: none; }
 .tree-project:hover .tree-project-edit,
 .tree-project-edit:focus-visible { opacity: 1; }
 
+/* Delete sits beside Edit and follows the same reveal-on-hover rule, so the destructive
+   control is never what the eye lands on first. Kept keyboard-reachable via :focus-visible
+   for the same reason Edit is. Red only on hover, matching .history-del. */
+.tree-project-del { flex: none; opacity: 0; font-size: .66rem; padding: 1px 6px; }
+.tree-project:hover .tree-project-del,
+.tree-project-del:focus-visible { opacity: 1; }
+.tree-project-del:hover { color: var(--failed); border-color: var(--failed); }
+
 /* Same reasoning as #teamBtn: if a future change forgets the JS toggle, the class still hides it. */
 body.role-no-admin #addProjectBtn { display: none; }
+
+/* Same belt-and-braces as #addProjectBtn above, one rung lower: suites are authored at `tester`,
+   so this is role-no-edit (below tester), NOT role-no-admin. */
+body.role-no-edit #addSuiteBtn { display: none; }
+.rail-actions { display: inline-flex; align-items: center; gap: 8px; }
+.rail-add-suite {
+  font-family: var(--font-mono);
+  font-size: .58rem; letter-spacing: .06em; text-transform: uppercase;
+}
 
 /* Suite membership on the Case screen, and the Suite screen's "add cases" picker. Both reuse
    .lib-check / .hrow-label / .hrow-meta / .case-save-panel rather than restating them. */
@@ -1687,6 +1840,17 @@ body.role-no-admin #addProjectBtn { display: none; }
 }
 .cd-ask-btn:hover:not(:disabled) { background: #000; }
 .cd-ask-btn:disabled { opacity: .5; cursor: default; }
+
+/* --- In-flight AI step proposal -------------------------------------------
+   Two NEW classes, added to a button only while its request is in flight and
+   taken off when it settles. Nothing existing changes behaviour: `.cd-ask-btn`
+   keeps its ordinary block layout, `.dl-btn-inline` keeps its own inline-flex,
+   and `:disabled { opacity: .5 }` above already carries the disabled look.
+   `.spin` was NOT reused: it is scoped as `.run-btn .spin`, and none of these
+   buttons is a run button. The `spin` keyframes are shared, not duplicated. */
+.ai-busy { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.ai-spin { animation: spin .8s linear infinite; flex: none; }
+@media (prefers-reduced-motion: reduce) { .ai-spin { animation: none; } }
 
 /* A proposal is a DIFF, never a save — Apply only fills the editor. */
 .cd-proposal { margin-top: var(--sp-3); border-top: 1px solid var(--line-soft); padding-top: var(--sp-3); }

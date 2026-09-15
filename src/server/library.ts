@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { getServiceClient } from "../db.js";
 import { IR } from "../schema/ir.js";
+import { generateSpec } from "../stages/generator.js";
 import { AccessError, roleAtLeast, visibleProjectIds, type Role } from "./authz.js";
 import { assertProjectVisible } from "./projects.js";
 
@@ -33,6 +34,35 @@ function requireClient() {
     );
   }
   return client;
+}
+
+/**
+ * Screenshot directory baked into a library spec.
+ *
+ * A real run passes its own per-run path so concurrent runs cannot overwrite each other's frames;
+ * a library spec belongs to no run yet, so it takes the generator's own default. This is a named
+ * constant rather than three string literals because the STORED spec and the REGENERATED fallback
+ * must come out byte-identical — if those call sites drift, a case's script would appear to change
+ * the day its version row is missing a spec, which is precisely the kind of silent difference the
+ * "no script yet" bug taught us to distrust.
+ */
+const LIBRARY_SHOT_DIR = "artifacts";
+
+/**
+ * The spec for a stored IR, never throwing.
+ *
+ * `generateSpec` is pure code with no LLM and no I/O (DECISIONS.md D-06), so this is deterministic
+ * and instant. It is wrapped anyway: this sits on the *write* path of saving a case, and a case
+ * that cannot be saved because its script could not be pre-rendered would be a far worse bug than
+ * the missing script this whole change exists to fix. A null simply means "regenerate on read".
+ */
+function specForStorage(ir: IR): string | null {
+  try {
+    return generateSpec(ir, LIBRARY_SHOT_DIR);
+  } catch (err) {
+    console.error(`[library] could not pre-render spec, storing null: ${(err as Error)?.message}`);
+    return null;
+  }
 }
 
 export interface SuiteRow {
@@ -382,13 +412,17 @@ export async function listCases(
 /** One case with its IR, its version history, and which suites it sits in. */
 export async function getCase(
   userId: string, orgId: string, role: Role, caseId: string,
-): Promise<CaseRow & { ir: IR; versions: CaseVersionRow[]; suiteIds: string[] }> {
+): Promise<CaseRow & {
+  ir: IR; versions: CaseVersionRow[]; suiteIds: string[];
+  /** True when this case runs a hand-written script instead of its IR. Additive (rule 1). */
+  scriptOverridden: boolean;
+}> {
   await projectOfCase(userId, orgId, role, caseId);
   const client = requireClient();
 
   const { data, error } = await client
     .from("test_cases")
-    .select("id, project_id, title, feature, ir, current_version, source_run_id, last_run_status, last_run_at, updated_at")
+    .select("id, project_id, title, feature, ir, current_version, source_run_id, last_run_status, last_run_at, updated_at, script_overridden")
     .eq("id", caseId).single();
   if (error || !data) throw new AccessError(404, "no such case");
 
@@ -410,6 +444,7 @@ export async function getCase(
       savedAt: v.saved_at ?? null,
     })),
     suiteIds: ((sRows ?? []) as { suite_id: string }[]).map((r) => r.suite_id),
+    scriptOverridden: (data as { script_overridden?: boolean }).script_overridden === true,
   };
 }
 
@@ -431,6 +466,110 @@ export async function getCaseVersion(
     changeNote: (data as any).change_note ?? null,
     savedAt: (data as any).saved_at ?? null,
   };
+}
+
+export interface CaseScript {
+  /** The Playwright spec. Never empty for a case that exists. */
+  spec: string;
+  /**
+   * `stored` — read back from the version row. `generated` — re-derived from the IR just now.
+   * `override` — a hand-written script that REPLACES the generated one (additive value; existing
+   * callers that only ever compared against "stored"/"generated" still read a string).
+   */
+  source: "stored" | "generated" | "override";
+  /** Which version this spec belongs to. */
+  version: number;
+  /**
+   * True when `spec` is a hand-written override rather than anything derived from the IR.
+   * Additive field — `CLAUDE.md` rule 1. Callers that ignore it behave exactly as before.
+   */
+  overridden: boolean;
+}
+
+/**
+ * The Playwright script for a saved case — always, for any case that exists.
+ *
+ * THE BUG THIS EXISTS TO FIX: the `.spec.ts` used to live only inside the originating run's
+ * artifact folder. `DELETE /api/runs/:runId` does an `rmSync` of that folder, and retention does
+ * the same on a timer, so a case could truthfully report "Passed v1" while its Script tab said
+ * "No script yet" — the evidence had been deleted out from under it. Cloning the repo onto another
+ * machine had the same effect, since `runs/` is gitignored. See `TECH_DEBT.md` TD-68.
+ *
+ * Two sources, in order:
+ *   1. the `spec` stored alongside the version's IR at save time — the exact bytes that version
+ *      was saved with;
+ *   2. failing that, `generateSpec(ir)` right now.
+ *
+ * (2) is not a degraded mode. The generator is pure code with no LLM (DECISIONS.md D-06), so it is
+ * deterministic: the same IR yields the same spec every time. `source` is returned so the UI can
+ * be honest about which one the reader is looking at, not because one of them is untrustworthy.
+ *
+ * **This never throws for a valid, visible case.** A missing `spec` column, an unreadable version
+ * row, a database that has not been migrated yet — all fall through to (2). The only errors it
+ * raises are the access ones every other function here raises: 404 for a case you cannot see.
+ */
+export async function getCaseScript(
+  userId: string, orgId: string, role: Role, caseId: string, version?: number,
+): Promise<CaseScript> {
+  const found = await getCase(userId, orgId, role, caseId);
+  const wanted = version ?? found.currentVersion;
+
+  // A version explicitly asked for must be the one returned, so its IR comes from the version row.
+  // getCaseVersion 404s for a version that does not exist, which is the right answer to `?version=`
+  // naming one — but the CURRENT version is never allowed to fail that way (see the fallback below).
+  let ir = found.ir;
+  if (version !== undefined && version !== found.currentVersion) {
+    ir = (await getCaseVersion(userId, orgId, role, caseId, version)).ir;
+  }
+
+  // Deliberately its own narrow query rather than a new field on getCase/getCaseVersion: those two
+  // back `GET /api/cases/:id` and `GET /api/cases/:id/versions/:v`, and widening their return would
+  // ship the whole spec text on every Compare-screen fetch that has no use for it.
+  let stored: string | null = null;
+  let override: string | null = null;
+  let overridden = false;
+  try {
+    const client = requireClient();
+    const { data } = await client
+      .from("test_case_versions")
+      .select("spec, script_override, script_overridden")
+      .eq("test_case_id", caseId).eq("version", wanted).maybeSingle();
+    const row = data as { spec?: unknown; script_override?: unknown; script_overridden?: unknown } | null;
+    const raw = row?.spec;
+    if (typeof raw === "string" && raw.trim()) stored = raw;
+    overridden = row?.script_overridden === true;
+    const rawOverride = row?.script_override;
+    if (typeof rawOverride === "string" && rawOverride.trim()) override = rawOverride;
+  } catch {
+    // Swallowed on purpose — a script must always come back. Before the column existed this threw
+    // on every read, and the whole point of this function is that it cannot leave a case scriptless.
+  }
+
+  // An overridden version is the ONE case where falling back to `generateSpec(ir)` would be wrong
+  // rather than merely re-derived. The two sources below are interchangeable because the generator
+  // is deterministic; an override is by definition not derivable from the IR, so regenerating would
+  // hand the reader a script that is not the one that runs. Fail loudly instead of quietly lying.
+  if (overridden && !scriptOverrideEnabled()) {
+    // Flag off = as if the feature never existed. The stored override is ignored and this case
+    // reads as the IR-driven case it was before, rather than 500ing on a feature nobody enabled.
+    overridden = false;
+    override = null;
+  }
+
+  if (overridden) {
+    if (!override) {
+      throw new AccessError(
+        500,
+        `version ${wanted} is marked script-overridden but stores no script — refusing to fall back ` +
+        `to the generated spec, which is not what this version runs`,
+      );
+    }
+    return { spec: override, source: "override", version: wanted, overridden: true };
+  }
+
+  return stored
+    ? { spec: stored, source: "stored", version: wanted, overridden: false }
+    : { spec: generateSpec(ir, LIBRARY_SHOT_DIR), source: "generated", version: wanted, overridden: false };
 }
 
 /**
@@ -490,6 +629,7 @@ export async function saveCaseFromRun(
     test_case_id: data.id,
     version: 1,
     ir,
+    spec: specForStorage(ir),
     change_note: `Saved from run ${runId}`,
     saved_by: userId,
   });
@@ -528,7 +668,7 @@ export async function updateCase(
   const client = requireClient();
 
   const { data: current, error: readErr } = await client
-    .from("test_cases").select("current_version").eq("id", caseId).single();
+    .from("test_cases").select("current_version, script_override, script_overridden").eq("id", caseId).single();
   if (readErr || !current) throw new AccessError(404, "no such case");
 
   // Optimistic concurrency (plan Step 5.4). OPTIONAL: a request that sends no `expectedVersion`
@@ -558,6 +698,14 @@ export async function updateCase(
       test_case_id: caseId,
       version: nextVersion,
       ir,
+      spec: specForStorage(ir),
+      // An IR edit does NOT clear an override — editing steps warns that the script still wins,
+      // and removing it is its own deliberate, permission-gated action. Carrying the flag forward
+      // is what makes that true: without this the new version row would default to
+      // script_overridden=false while test_cases still said true, and the two would disagree about
+      // what the case runs. The steps edit is still recorded in full; it just is not yet in effect.
+      script_override: (current as { script_override?: string | null }).script_override ?? null,
+      script_overridden: (current as { script_overridden?: boolean }).script_overridden === true,
       change_note: patch.changeNote?.trim() || "Edited",
       saved_by: userId,
     });
@@ -570,6 +718,85 @@ export async function updateCase(
 
   const { data, error } = await client
     .from("test_cases").update(update).eq("id", caseId)
+    .select("id, project_id, title, feature, current_version, source_run_id, last_run_status, last_run_at, updated_at")
+    .single();
+  if (error || !data) throw new AccessError(500, `could not update case: ${error?.message}`);
+  return toCaseRow(data);
+}
+
+/**
+ * Set or clear a case's hand-written script override. Mints a version either way.
+ *
+ * **What an override is.** A case version is either IR-driven or script-overridden, and which one
+ * is an explicit stored flag, never inferred. When overridden, `script_override` is what runs and
+ * the IR no longer describes execution — it is kept as the last known statement of intent, as the
+ * thing the case reverts to, and as what the steps panel renders (while saying it is not in effect).
+ *
+ * **What it costs.** An override is NOT grounded. `groundingError()` (`DECISIONS.md` D-02/D-03)
+ * verifies every target an LLM invents against a real discovered element; nothing does that here.
+ * No locator in an override is checked against anything, so a stale one does not fail the way a
+ * grounded test fails — it fails later, somewhere else, blaming an innocent step. That is the
+ * tradeoff the caller must put in front of a person before this is called.
+ *
+ * **Why it does not weaken D-27.** D-27 forbids a *model* writing to the library without a parser,
+ * a grounder and a person. This is the opposite actor: a human, explicitly, behind a permission
+ * check and a confirmation, with the result versioned and revertible. No model can reach this path
+ * — `rewrite.ts` and `steps/translate` still return step text and still refuse an overridden case.
+ *
+ * Reverting is `clear` — a new version carrying the same IR with the flag off. History is kept:
+ * the overriding version stays in `test_case_versions` with its author and timestamp.
+ */
+export async function setScriptOverride(
+  userId: string, orgId: string, role: Role, caseId: string,
+  opts: { script: string | null; changeNote?: string; expectedVersion?: number },
+): Promise<CaseRow> {
+  await projectOfCase(userId, orgId, role, caseId);
+  const client = requireClient();
+
+  const { data: current, error: readErr } = await client
+    .from("test_cases").select("current_version, ir").eq("id", caseId).single();
+  if (readErr || !current) throw new AccessError(404, "no such case");
+
+  const currentVersion = (current as { current_version: number }).current_version;
+  if (typeof opts.expectedVersion === "number" && opts.expectedVersion !== currentVersion) {
+    throw new CaseConflictError(
+      opts.expectedVersion,
+      currentVersion,
+      await getCase(userId, orgId, role, caseId),
+    );
+  }
+
+  const setting = typeof opts.script === "string";
+  const script = setting ? opts.script!.trim() : null;
+  if (setting && !script) throw new AccessError(400, "an override cannot be empty");
+
+  // The IR is carried forward untouched. It is still the case's description and still what a
+  // revert restores; the override changes what RUNS, not what the case is.
+  const ir = parseIr((current as { ir: unknown }).ir, "the stored test plan");
+  const nextVersion = currentVersion + 1;
+
+  const { error: vErr } = await client.from("test_case_versions").insert({
+    test_case_id: caseId,
+    version: nextVersion,
+    ir,
+    spec: specForStorage(ir),
+    script_override: script,
+    script_overridden: setting,
+    change_note: opts.changeNote?.trim() || (setting ? "Script overridden" : "Override removed"),
+    saved_by: userId,
+  });
+  if (vErr) throw new AccessError(500, `could not record the new version: ${vErr.message}`);
+
+  const { data, error } = await client
+    .from("test_cases")
+    .update({
+      current_version: nextVersion,
+      script_override: script,
+      script_overridden: setting,
+      updated_at: new Date().toISOString(),
+      updated_by: userId,
+    })
+    .eq("id", caseId)
     .select("id, project_id, title, feature, current_version, source_run_id, last_run_status, last_run_at, updated_at")
     .single();
   if (error || !data) throw new AccessError(500, `could not update case: ${error?.message}`);
@@ -619,6 +846,7 @@ export async function duplicateCase(
     test_case_id: data.id,
     version: 1,
     ir,
+    spec: specForStorage(ir),
     change_note: `Duplicated from "${(src as any).title}"`,
     saved_by: userId,
   });
@@ -692,7 +920,7 @@ export async function recordCaseOutcome(caseId: string, status: string): Promise
 export async function loadCasesForReplay(
   userId: string, orgId: string, role: Role,
   sel: { suiteId?: string; caseIds?: string[] },
-): Promise<{ id: string; title: string; ir: IR; projectId: string }[]> {
+): Promise<{ id: string; title: string; ir: IR; projectId: string; scriptOverride?: string }[]> {
   const client = requireClient();
 
   let ids: string[];
@@ -715,9 +943,12 @@ export async function loadCasesForReplay(
   if (ids.length === 0) throw new AccessError(400, "no cases selected to run");
 
   const { data, error } = await client
-    .from("test_cases").select("id, project_id, title, ir").in("id", ids);
+    .from("test_cases").select("id, project_id, title, ir, script_override, script_overridden").in("id", ids);
   if (error) throw new AccessError(500, `could not load cases: ${error.message}`);
-  const rows = (data ?? []) as { id: string; project_id: string; title: string; ir: unknown }[];
+  const rows = (data ?? []) as {
+    id: string; project_id: string; title: string; ir: unknown;
+    script_override?: string | null; script_overridden?: boolean;
+  }[];
   if (rows.length === 0) throw new AccessError(404, "none of those cases exist");
 
   // Every case is re-checked individually. Selecting by id must never be a way to reach a project
@@ -735,8 +966,31 @@ export async function loadCasesForReplay(
       title: r.title,
       projectId: r.project_id,
       ir: parseIr(r.ir, `case "${r.title}"`),
+      // Only when the explicit flag is set — never inferred from the column being non-null, so a
+      // leftover script from a removed override can never quietly come back to life.
+      ...(scriptOverrideEnabled() && r.script_overridden === true
+        && typeof r.script_override === "string" && r.script_override.trim()
+        ? { scriptOverride: r.script_override }
+        : {}),
     }))
     .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+}
+
+/**
+ * Script overrides, behind an env flag defaulting OFF (`CLAUDE.md` rule 2).
+ *
+ * "Off" means the feature is not merely hidden but absent: the routes 404, and — the part that
+ * actually matters — a stored override does NOT run. `loadCasesForReplay` will not attach one and
+ * `getCaseScript` will not serve one, so a case whose row is flagged falls back to being exactly
+ * the IR-driven case it was before any of this existed. That is what rule 2 asks for, and it is
+ * also the safer direction: switching the flag off is a way to make every case grounded again,
+ * not a way to leave hand-written scripts running invisibly.
+ *
+ * The flag rows in `BOOLEAN_ENV_FLAGS` alongside the others, so the boot guard rejects a typo in
+ * it the same way it now rejects `AUTH_ENABLED=truebro`.
+ */
+export function scriptOverrideEnabled(): boolean {
+  return process.env.SCRIPT_OVERRIDE_ENABLED === "true";
 }
 
 /** Composing the library is authoring, not administration — `tester` and above. */

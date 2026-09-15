@@ -1,6 +1,25 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import request from "supertest";
 import { app } from "../src/server/index.js";
+import { invalidateMemberships } from "../src/server/authz.js";
+
+/**
+ * These characterise the DEFAULT configuration — auth off, database off — so they pin the flag-off
+ * contract explicitly rather than inheriting whatever the process happens to have.
+ *
+ * That inheritance was a real, reproducible flake. Several test files set `AUTH_ENABLED=true` and
+ * `DB_ENABLED=true` at module top level and never restore them; vitest can run more than one file
+ * in the same worker process, and `process.env` is per-process. When one of those files ran first,
+ * `canEnforceTenancy()` was true here, `/api/runs` tried to resolve run ownership against a
+ * Supabase client that this file does not mock, and the assertion below saw 500 instead of 200 —
+ * on a different test each run, which is the signature of a scheduling-order bug rather than a
+ * code one. Pinning the flags per test makes this file independent of what ran before it.
+ */
+beforeEach(() => {
+  delete process.env.AUTH_ENABLED;
+  delete process.env.DB_ENABLED;
+  invalidateMemberships();
+});
 
 // Characterization tests for src/server/index.ts's public HTTP contract.
 //

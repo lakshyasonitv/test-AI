@@ -310,13 +310,51 @@ export async function removeProjectMember(
 }
 
 /**
+ * Put the person who caused a project to exist into it.
+ *
+ * Non-fatal, like everything else on this path: the project exists and the run can still be filed
+ * under it. Logged loudly rather than swallowed, because the consequence is a run its own author
+ * cannot see, and that is invisible from the server's side.
+ */
+async function addCreatorToProject(
+  client: NonNullable<ReturnType<typeof getServiceClient>>,
+  projectId: string,
+  userId: string | undefined,
+): Promise<void> {
+  if (!userId) return;
+  const { error } = await client
+    .from("project_members")
+    .upsert({ project_id: projectId, user_id: userId },
+      { onConflict: "project_id,user_id", ignoreDuplicates: true });
+  if (error) {
+    console.error(
+      `[projects] created project ${projectId} but could not add its creator ${userId} — ` +
+      `they will not be able to see runs filed under it until an admin adds them: ${error.message}`,
+    );
+  }
+}
+
+/**
  * The project a new run belongs to, inferred from its URL.
  *
  * Keeps the sidebar coherent without asking the user to pick a project on every run: a run against
  * a URL that already has a project files under it, and an unrecognised URL creates one. Same key
  * as the backfill, so a run started today lands in the project its history is already in.
+ *
+ * WHEN IT CREATES ONE, IT ADDS THE CREATOR TO IT. Without that a tester who starts a run against a
+ * URL nobody has tested yet lands their own run in a project with no members — and every read path
+ * applies the Step 5.1 visibility gate identically, so `filterRunsForUser` drops the run from their
+ * history, `requireRunRole` refuses `/state`, `/events` and `/page-elements`, and `canViewRun` 403s
+ * every screenshot. They could start a run and then not watch it, with only an admin able to
+ * unblock them after the fact. Admins and owners never noticed because their role exempts them
+ * from project scoping entirely, which is why every run on record was started by one.
+ *
+ * Only on CREATE, never on lookup: adding someone to a project that already exists would silently
+ * widen access, and "who may see this project" is an admin's decision everywhere else.
  */
-export async function resolveProjectForUrl(orgId: string, url: string | null): Promise<string | null> {
+export async function resolveProjectForUrl(
+  orgId: string, url: string | null, userId?: string,
+): Promise<string | null> {
   const key = normaliseUrlKey(url);
   if (!key) return null;
 
@@ -341,11 +379,50 @@ export async function resolveProjectForUrl(orgId: string, url: string | null): P
       .insert({ organisation_id: orgId, name: key, base_url: url ?? "" })
       .select("id")
       .single();
+
     if (createErr) {
+      // 23505 is unique_violation — another run created this same project between the lookup a few
+      // lines above and this insert. Before the (organisation_id, normalised_name) index existed
+      // both inserts succeeded and the result was two near-duplicate projects splitting one site's
+      // history. With the index the loser's insert fails instead, and simply returning null here
+      // would be WORSE than the duplicate it prevents: the run is then filed under no project, and
+      // an unfiled run is admin-visible only — so the person who started it cannot see it. That is
+      // precisely the failure `addCreatorToProject` exists to prevent, reintroduced by the fix for
+      // a different bug.
+      //
+      // So the loser re-reads the winner's row and files under it. Both runs land in one project,
+      // which is what should have happened, and neither caller is punished for the race.
+      if (createErr.code === "23505") {
+        const { data: winner, error: reReadErr } = await client
+          .from("projects")
+          .select("id")
+          .eq("organisation_id", orgId)
+          .eq("name", key)
+          .maybeSingle();
+        if (reReadErr || !winner) {
+          console.error(
+            `[projects] lost the race to create project "${key}" and could not read it back:`,
+            reReadErr?.message ?? "no row",
+          );
+          return null;
+        }
+        const projectId = (winner as { id: string }).id;
+        // Still add the creator. This path is reachable ONLY when the project did not exist at
+        // lookup time, so this caller genuinely was creating it and lost by microseconds — the
+        // "grant on create, never on lookup" rule is about projects that already existed, not
+        // about losing a tie. A caller cannot steer themselves here: if the project exists, the
+        // lookup above returns early and grants nothing.
+        await addCreatorToProject(client, projectId, userId);
+        return projectId;
+      }
+
       console.error("[projects] could not create project for a new run:", createErr.message);
       return null;
     }
-    return (created as { id: string }).id;
+
+    const projectId = (created as { id: string }).id;
+    await addCreatorToProject(client, projectId, userId);
+    return projectId;
   } catch (err) {
     // Never fatal: a run must start even if its filing cabinet is unreachable.
     console.error("[projects] resolving a project threw:", (err as Error)?.message ?? err);

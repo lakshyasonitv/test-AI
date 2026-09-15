@@ -5,7 +5,7 @@ import { isRateLimitError } from "../llm/backoff.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
-import { cutAtBoundary } from "../text.js";
+import { cutAtBoundary, siteHost, pageKey } from "../text.js";
 import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
@@ -14,6 +14,7 @@ import {
 } from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
+import { llmCacheDimension, resolvedModel } from "../llm/llmContext.js";
 
 /** Return type for toIR that includes the updated AppModel after live-extension. */
 export interface IRResult {
@@ -125,19 +126,22 @@ function resolveHref(base: string, hrefOrPath: string): string | null {
   try { return new URL(hrefOrPath, base).href; } catch { return null; }
 }
 
-/** Origin + path, ignoring query/hash — enough to match a discovered page's URL against a
- *  resolved href without tracking params throwing off the comparison. */
-function pageKey(url: string): string {
-  try {
-    const u = new URL(url);
-    return u.origin + (u.pathname.replace(/\/+$/, "") || "/");
-  } catch { return url; }
-}
-
-function originOf(url: string): string | null {
-  try { return new URL(url).origin; } catch { return null; }
-}
-
+/**
+ * Host + path, ignoring scheme, port, `www.`, query and hash — enough to match a discovered
+ * page's URL against a resolved href without tracking params throwing off the comparison.
+ *
+ * THE SCHEME IS DELIBERATELY NOT IN THE KEY (TD-82). It used to be `u.origin + path`, and that
+ * is what rejected a correct IR on run `2026-09-06T15-42-48-000Z-61e01731`: the user entered
+ * `http://veterans.my.site.com/s/`, the site redirected to `https://`, so every discovered
+ * `page.url` was `https://…` while `appModel.baseUrl` kept the typed `http://…`. A navigate step
+ * to `/s/` resolved against the base to `http://…/s`, which is not `https://…/s`, so the guard
+ * refused the very path its own hint then listed as known.
+ *
+ * Normalising the base URL at discovery (see `landedOrigin` in hybridDiscovery.ts) fixes the
+ * cause; this is the second line of defence, and the one that keeps an AppModel cached before
+ * that fix from failing the same way. Same normalisation as `isSameSite`, via one shared
+ * `siteHost`.
+ */
 function findPageByUrl(appModel: AppModel, absoluteUrl: string): PageModel | null {
   const key = pageKey(absoluteUrl);
   return appModel.pages.find(p => pageKey(p.url) === key) ?? null;
@@ -404,8 +408,43 @@ export function irAlreadyLogsIn(ir: IR, auth: AuthOutcome | undefined, model: Ap
       || credentialKindForTarget(s.target, fieldMap) === "password"));
 }
 
+/**
+ * Options for grounding an EDIT rather than a fresh compile.
+ *
+ * The fresh-run path never passes these — it is grounding an IR a model just invented, where every
+ * step is equally unverified and checking all of them is the whole point.
+ */
+export interface GroundingScope {
+  /**
+   * The steps this pass is actually verifying. A step NOT listed is skipped — but only if it is
+   * already grounded (carries `css` or `testId`), because that grounding is the proof it was
+   * checked against a real page once and nothing about it has changed since.
+   *
+   * WHY THIS EXISTS (TD-86). `groundingError` walks every step, and the only existing skip is
+   * "this step's css is in the model's `knownSelectors`". During an EDIT the model is whatever
+   * the walk could reach — often near-empty when the case's source run folder is gone — so that
+   * skip essentially never fires, and every untouched step gets re-matched by name against a
+   * model that does not contain its page. Steps inside a modal, or on the login form, are then
+   * reported as "not present on the page" although the user never touched them: a ghost
+   * rejection that blames the edit for the walk's blind spots.
+   *
+   * Both conditions matter. Skipping an unlisted step that is NOT grounded would silently accept
+   * a step nothing has ever verified.
+   */
+  onlyIndexes?: number[];
+  /**
+   * Where the walk actually landed for a given step index, when it walked one.
+   *
+   * `trackPages` gives up ("stale") after any click that is not a plain link, and a stale cursor
+   * falls back to matching against EVERY page's elements at once. That is how an untouched
+   * "Save" can bind to a Save button on a different page. A URL the walk really reached is
+   * strictly better evidence than that fallback, so it wins where it exists.
+   */
+  reachedUrlAt?: Map<number, string>;
+}
+
 export function groundingError(
-  ir: IR, appModel: AppModel,
+  ir: IR, appModel: AppModel, scope?: GroundingScope,
 ): { index: number; message: string; kind?: "navigate-url" | "text-target" } | null {
   const allElements = appModel.pages.flatMap(p => p.elements);
   // Selectors the model is allowed to address directly, because discovery captured them.
@@ -477,12 +516,15 @@ export function groundingError(
   // redirect, and every later step then grounds against a page that was never really reached.
   // Only destinations the model actually observed are allowed through.
   const knownNav = knownNavigationTargets(appModel);
-  const baseOrigin = originOf(appModel.baseUrl);
   const sourcePrompt = ir.meta?.sourcePrompt ?? "";
+  const baseHost = siteHost(appModel.baseUrl);
   const navUrlAllowed = (url: string): boolean => {
     const resolved = resolveHref(appModel.baseUrl, url);
     if (!resolved) return true;                                  // unparseable — not this guard's business
-    if (!baseOrigin || originOf(resolved) !== baseOrigin) return true; // off-origin is a separate concern
+    // Off-SITE is a separate concern. Compared by host, not by origin string: with the entered
+    // scheme in baseUrl and the landed scheme on every page, an origin comparison answers a
+    // question about redirects rather than about which site this is (TD-82).
+    if (!baseHost || siteHost(resolved) !== baseHost) return true;
     if (knownNav.has(pageKey(resolved))) return true;
     // A path the USER typed themselves is authoritative — they know their own app's routes,
     // and that's a stated fact rather than a guess. Length > 1 so a bare "/" can't match
@@ -490,16 +532,61 @@ export function groundingError(
     const path = (() => { try { return new URL(resolved).pathname.replace(/\/+$/, ""); } catch { return ""; } })();
     return path.length > 1 && sourcePrompt.includes(path);
   };
-  const knownPathsHint = appModel.pages
-    .map(p => { try { return new URL(p.url).pathname || "/"; } catch { return null; } })
-    .filter(Boolean).slice(0, 6).join(", ") || "/";
+  /**
+   * The paths to offer as alternatives when a navigate target is refused.
+   *
+   * Built from the SAME key the check uses, and with the rejected path removed. The old version
+   * did neither, and produced the single most confusing message this pipeline has emitted:
+   *
+   *     Step s4 navigates to "/s/", which is not a page ... Known paths: /s/, /vetforce/s/login/.
+   *
+   * — refusing a path and then listing it as known, on run
+   * `2026-09-06T15-42-48-000Z-61e01731`. A hint that contradicts its own verdict is worse than no
+   * hint: the model cannot act on it, so it re-sends the same answer until the attempt budget is
+   * gone. If removing the rejected path leaves nothing to suggest, say so plainly instead of
+   * offering a list that is now empty. TD-82.
+   */
+  const knownPathsHintFor = (rejectedUrl: string): string => {
+    const rejectedKey = (() => {
+      const resolved = resolveHref(appModel.baseUrl, rejectedUrl);
+      return resolved ? pageKey(resolved) : null;
+    })();
+    const paths = appModel.pages
+      .filter(p => !rejectedKey || pageKey(p.url) !== rejectedKey)
+      .map(p => { try { return new URL(p.url).pathname || "/"; } catch { return null; } })
+      .filter((p): p is string => !!p);
+    const unique = Array.from(new Set(paths)).slice(0, 6);
+    return unique.length ? `Known paths: ${unique.join(", ")}.` : "No other page in the model has a different path.";
+  };
   // Which page the flow is actually on at each step — an element grounded only against
   // some OTHER page (never the current one) shouldn't pass just because it exists
   // somewhere in the model. Falls back to allElements wherever the cursor is unresolved.
   const trail = trackPages(ir, appModel);
+  const onlySet = scope?.onlyIndexes ? new Set(scope.onlyIndexes) : null;
   for (let index = 0; index < ir.steps.length; index++) {
     const step = ir.steps[index];
     const t = step.target;
+    // Not one of the steps this pass is verifying. Skip it without any lookup — re-matching it by
+    // name against a model built from wherever the walk happened to land is how an untouched step
+    // gets rejected for being absent from a page it was never on. TD-86.
+    //
+    // THIS WAS ORIGINALLY "not listed AND already grounded", and a live run proved that too
+    // narrow. Adding `Click on button "Admin"` to the LMS login case still failed — on step 2,
+    // the email box — because that case's login steps carry no `css` at all, so the second
+    // condition never held and they were re-matched against the post-login dashboard, which
+    // naturally has no login form on it. The user's edit was blamed for a step they never
+    // touched, which is the entire defect.
+    //
+    // Skipping regardless is correct for an EDIT: every unlisted step was already in the saved
+    // case, so it was accepted once and this save is not the moment to re-litigate it. The
+    // trade-off, stated plainly: an untouched step that was never grounded STAYS never grounded.
+    // That is the status quo for it, not a regression — and the alternative is refusing edits to
+    // any case with an ungrounded step anywhere in it.
+    //
+    // A genuinely NEW step is always listed (it is a changed row by construction), so nothing
+    // unverified enters the case through this door. The fresh-run compile path passes no scope
+    // and still checks every step.
+    if (onlySet && !onlySet.has(index)) continue;
     // A target carrying a selector discovery verified is already grounded — that IS the
     // proof the element exists, and it's stronger than a role+name match. Covers the
     // selectors a user names in their own request.
@@ -519,10 +606,21 @@ export function groundingError(
           `route usually loads a blank page or redirects, so everything after it runs against ` +
           `the wrong page. Reach that destination the way a user would instead: click the ` +
           `sidebar/menu control that leads there (it is an element in the application model). ` +
-          `Known paths: ${knownPathsHint}.`,
+          `${knownPathsHintFor(t.url)}`,
       };
     }
-    const elements = trail.pageAt[index]?.elements ?? allElements;
+    // Where to look for this step's element, best evidence first:
+    //   1. the page a WALK actually reached for this step (an observed fact)
+    //   2. the page `trackPages` believes the flow is on (an inference)
+    //   3. every page in the model (a fallback that can match the right name on the wrong page)
+    //
+    // (1) exists because (2) gives up after any click that is not a plain link, and (3) is how an
+    // untouched "Save" can silently bind to a Save button somewhere else entirely. TD-86.
+    const reached = scope?.reachedUrlAt?.get(index);
+    const reachedPage = reached
+      ? appModel.pages.find((p) => pageKey(p.url) === pageKey(reached))
+      : undefined;
+    const elements = reachedPage?.elements ?? trail.pageAt[index]?.elements ?? allElements;
 
     // A bare `{ text: ... }` target on an ACTION step. The exemption below it — "no role+name,
     // nothing to check" — is right for an ASSERT (a flash message discovery never saw is the
@@ -1103,8 +1201,17 @@ export async function toIR(
   // (generator.ts appends relative step paths to it), and entryPath is where the
   // actual page under test lives — telling the model both up front heads off the
   // double-path bug ("https://host/login" + "/login" -> 404) at the source.
-  const { origin, pathname, search } = new URL(entryUrl);
+  const { pathname, search } = new URL(entryUrl);
   const entryPath = pathname + search || "/";
+  // The ORIGIN comes from the app model, not from what the user typed: discovery sets
+  // `appModel.baseUrl` to where the browser actually landed, so this is the origin the pages in
+  // the model genuinely live on. Using the entered origin here is what put `http://` into
+  // `meta.baseUrl` — and therefore into the generated `page.goto` — for a site that serves
+  // `https://` (TD-82). The PATH still comes from the entered URL: that is the page the user
+  // asked about, and a redirect of the origin does not change which page they meant.
+  const origin = (() => {
+    try { return new URL(appModel.baseUrl).origin; } catch { return new URL(entryUrl).origin; }
+  })();
 
   // Credentials are decided BEFORE the cache lookup because they belong in the key. The cached
   // IR is stored post-substitution (see finalize below) and a cache hit returns immediately
@@ -1222,20 +1329,33 @@ Example — handling duplicate selectors with nth:
   // made two verification runs look like the fix hadn't worked. Hashing the prompt text is
   // self-maintaining in a way a hand-bumped version constant is not: change a rule, get a new
   // key, with nobody having to remember. The model name is in for the same reason.
+  // `entryUrl` is a REAL input to the prompt — `buildUser` derives `entryPath` from it and the
+  // system prompt states that path as the navigate target — but it was never in the key. Two runs
+  // with the same test case and the same model but different entry pages would therefore share a
+  // cache entry and the second would get an IR built for the first one's page. The disk half of
+  // this cache never expires, so it could not heal on its own. `CLAUDE.md`'s cache rule,
+  // `TECH_DEBT.md` TD-22, `DECISIONS.md` D-10 — the same omission those record, a third time.
+  //
+  // `appModel` is serialised whole, so the normalised `baseUrl` is already in the key
+  // transitively: normalising it changes the key by construction and no stale pre-TD-82 entry
+  // can be served to a post-TD-82 run.
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
-    system, process.env.GEMINI_MODEL ?? "default");
+    entryUrl, system, resolvedModel(), llmCacheDimension());
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
   const buildUser = (model: AppModel, correction?: string) => {
     // Only send pages relevant to this test case: the entry page + pages whose
     // concepts or URL overlap with the test feature. Never send the full model.
-    const entryOrigin = new URL(entryUrl).origin;
+    const entryHost = siteHost(entryUrl);
     const featureLower = testCase.feature.toLowerCase();
     const relevantPages = model.pages.filter(p => {
-      // Always include the entry page
-      if (p.url.startsWith(entryOrigin) && entryPath && p.url.includes(entryPath)) return true;
+      // Always include the entry page. Compared by HOST, not by an origin string prefix: with a
+      // redirected site the entered origin is `http://…` and every page is `https://…`, so
+      // `startsWith` matched nothing and the entry page — the one page always worth sending —
+      // was silently dropped from the prompt (TD-82, same root cause as the navigate guard).
+      if (entryHost && siteHost(p.url) === entryHost && entryPath && p.url.includes(entryPath)) return true;
       // Include pages whose concepts match the test feature
       if (p.concepts.some(c => c.toLowerCase().includes(featureLower))) return true;
       // Include pages whose URL path contains the feature name
@@ -1274,8 +1394,11 @@ Example — handling duplicate selectors with nth:
       ? pagesToSend.find(p => pageKey(p.url) === pageKey(testCase.targetUrl!))
       : undefined;
     // Only trust the path test when there IS a path; otherwise fall back to exact page identity.
+    // Host, not origin prefix — third occurrence of the same scheme trap in this function
+    // (TD-82). With a redirected site this matched nothing, so the entry page never became the
+    // lead page and the model was handed the app's pages in discovery order instead.
     const entryPage = entryPath !== "/"
-      ? pagesToSend.find(p => p.url.startsWith(entryOrigin) && p.url.includes(entryPath))
+      ? pagesToSend.find(p => siteHost(p.url) === entryHost && p.url.includes(entryPath))
       : pagesToSend.find(p => pageKey(p.url) === pageKey(entryUrl));
     const leadPage = targetPage ?? entryPage;
     const orderedPages = leadPage ? [leadPage, ...pagesToSend.filter(p => p !== leadPage)] : pagesToSend;
@@ -1408,7 +1531,33 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   let lastContradiction: { ir: IR; stepIds: string[]; message: string } | undefined;
   /** Longest grounded prefix seen across all attempts — the fallback that keeps a run alive
    *  when the attempt budget is spent extending the model rather than converging. */
-  let bestPartial: { ir: IR; steps: Step[]; note: string } | undefined;
+  let bestPartial: { ir: IR; steps: Step[]; note: string; kind?: string } | undefined;
+
+  /**
+   * Grounding rejections already seen, so an unfixable one is not paid for four times.
+   *
+   * Keyed on the IR TARGET's own fields, never on the message string — `CLAUDE.md`'s central
+   * design rule, and here it is also simply more correct: the same absent element comes back at a
+   * different step index on the next attempt, so the message differs ("Step s6…" then "Step s8…")
+   * while the thing that cannot be grounded is identical. `server.log` lines 107/124/141 show
+   * exactly that: `button "Add User"` rejected three times with identical feedback, then again as
+   * s8. The index is deliberately NOT part of the key.
+   *
+   * When a target repeats, the model is not going to fix it: the element is absent from the page,
+   * usually because it needs a role the test does not have. At ~3,800 prompt tokens per IR call
+   * (measured across every run in `runs/`), each further attempt buys nothing.
+   */
+  const seenRejections = new Set<string>();
+  const rejectionKey = (u: NonNullable<ReturnType<typeof groundingError>>, ir: IR): string => {
+    const t = ir.steps[u.index]?.target ?? {};
+    return JSON.stringify({
+      kind: u.kind ?? "role-name",
+      role: t.role ?? null,
+      name: t.name ?? null,
+      text: t.text ?? null,
+      url: t.url ?? null,
+    });
+  };
   /** The post-click reveal check (see postClickRevealIndex) runs at most ONCE per toIR call.
    *  It costs a browser launch, and — more importantly — it is the mitigation for its own only
    *  real false-positive risk: a flow where a click reveals new fields but the step legitimately
@@ -1442,7 +1591,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // into strict JSON), the same reason it needed a bigger context window under Groq.
       const { content, usage } = await gemini(buildUser(currentModel, correction), {
         systemInstruction: system, json: true, temperature: 0.2,
-        model: process.env.GEMINI_MODEL, stage: "ir",
+        model: resolvedModel(), stage: "ir",
       });
       budget?.record("ir", usage);
       console.log("[ir] gemini returned, length:", content.length);
@@ -1507,7 +1656,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     const trackBestPartial = (u: NonNullable<ReturnType<typeof groundingError>>) => {
       const prefix = parsed.data.steps.slice(0, u.index);
       if (prefix.length && prefix.length > (bestPartial?.steps.length ?? 0)) {
-        bestPartial = { ir: parsed.data, steps: prefix, note: u.message };
+        bestPartial = { ir: parsed.data, steps: prefix, note: u.message, kind: u.kind };
       }
       return prefix;
     };
@@ -1742,14 +1891,32 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
 
     const prefix = trackBestPartial(ungrounded);
-    if (prefix.length && attempt < MAX_ATTEMPTS - 1) {
+
+    // Second time this exact target has been rejected: stop. The page does not have it, and
+    // another generation cannot change that — it can only spend another ~3,800 prompt tokens
+    // arriving at the same answer. Falls through to the truncation path below, which ships the
+    // grounded prefix and records `truncationNote`, so the UI already has the reason and needs
+    // no new status. TECH_DEBT.md TD-74.
+    const key = rejectionKey(ungrounded, parsed.data);
+    const repeated = seenRejections.has(key);
+    seenRejections.add(key);
+
+    if (prefix.length && attempt < MAX_ATTEMPTS - 1 && !repeated) {
       console.log(`[ir] grounding rejected step ("${ungrounded.message}") — retrying with feedback (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
       continue;
+    }
+    if (repeated) {
+      console.log(
+        `[ir] the same target was rejected twice ("${ungrounded.message}") — not retrying: ` +
+        `the element is absent from the page, so more attempts cannot ground it`,
+      );
     }
     if (prefix.length) {
       const truncated: IR = { ...parsed.data, steps: prefix };
       truncated.meta = {
         ...parsed.data.meta, truncated: true, truncationNote: lastErr,
+        // Structured, so isHealable can decide without reading the prose note (TD-83).
+        ...(ungrounded.kind ? { truncationKind: ungrounded.kind } : {}),
         hasTerminalAssertion: hasTerminalAssertion(prefix),
       };
       return { ir: finalize(truncated), updatedAppModel: currentModel };
@@ -1808,6 +1975,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         ...bestPartial.ir.meta,
         truncated: true,
         truncationNote: bestPartial.note,
+        ...(bestPartial.kind ? { truncationKind: bestPartial.kind } : {}),
         hasTerminalAssertion: hasTerminalAssertion(bestPartial.steps),
       },
     };

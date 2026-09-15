@@ -385,6 +385,153 @@ const form = document.getElementById("runForm");
 const promptEl = document.getElementById("prompt");
 const urlEl = document.getElementById("url");
 const submitBtn = form.querySelector('button[type="submit"]');
+const urlSchemeEl = document.getElementById("urlScheme");
+const urlErrorEl = document.getElementById("urlError");
+
+// -----------------------------------------------------------------------------
+// URL field: scheme lives beside the input, never inside its value
+// -----------------------------------------------------------------------------
+
+/** True once the person has chosen a scheme themselves, so nothing auto-overrides it after. */
+let urlSchemeChosen = false;
+/** True only while a submit is in flight — read by refreshNewRunState(). Declared here, not
+ *  beside currentRunId at the bottom of this file, because init-time calls run earlier and a
+ *  `let` read before its declaration is a TDZ ReferenceError, not undefined. */
+let runInFlight = false;
+
+const urlScheme = () => (urlSchemeEl.textContent.trim() === "http://" ? "http://" : "https://");
+function setUrlScheme(scheme, byUser) {
+  urlSchemeEl.textContent = scheme;
+  if (byUser) urlSchemeChosen = true;
+}
+
+/** Host+path only: no scheme, no surrounding whitespace, no leading slashes. */
+function stripScheme(raw) {
+  return String(raw ?? "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/^\/+/, "");
+}
+
+/** localhost and 127.0.0.1 do not serve https — default the prefix, unless the user chose one. */
+function autoSchemeFor(value) {
+  if (urlSchemeChosen) return null;
+  return /^(localhost|127\.0\.0\.1)(:|\/|$)/i.test(value) ? "http://" : null;
+}
+
+/**
+ * Normalise what is in the field, flipping the prefix when a pasted URL carried its own scheme,
+ * and keeping the caret where the person left it.
+ *
+ * The caret is preserved by applying the SAME transform to the text before the caret and using
+ * its length — which is correct however many characters the strip removed, and needs no counting.
+ */
+function normalizeUrlField(preserveCaret) {
+  const before = urlEl.value;
+  const pasted = before.match(/^\s*([a-z][a-z0-9+.-]*):\/\//i);
+  if (pasted) {
+    const scheme = pasted[1].toLowerCase();
+    // An explicit scheme in what they typed or pasted wins, and counts as their choice.
+    if (scheme === "http" || scheme === "https") setUrlScheme(scheme + "://", true);
+  }
+
+  const after = stripScheme(before);
+  if (after !== before) {
+    const caret = urlEl.selectionStart ?? before.length;
+    const headAfter = stripScheme(before.slice(0, caret));
+    urlEl.value = after;
+    if (preserveCaret && document.activeElement === urlEl) {
+      const pos = Math.min(headAfter.length, after.length);
+      urlEl.setSelectionRange(pos, pos);
+    }
+  }
+
+  const auto = autoSchemeFor(urlEl.value);
+  if (auto) setUrlScheme(auto, false);
+}
+
+/** Put a possibly-absolute URL into the field, splitting the scheme out to the prefix. */
+function setUrlFieldValue(raw) {
+  urlEl.value = String(raw ?? "");
+  normalizeUrlField(false);
+  clearUrlError();
+  refreshComposerState();
+}
+
+/** The absolute URL the pipeline receives — unchanged contract, just assembled here. */
+function absoluteUrl() {
+  return urlScheme() + stripScheme(urlEl.value);
+}
+
+// ---- validation: on blur and submit only, never while typing --------------------
+
+function clearUrlError() {
+  urlErrorEl.textContent = "";
+  urlErrorEl.classList.add("hidden");
+  urlEl.removeAttribute("aria-invalid");
+}
+
+function showUrlError(msg) {
+  urlErrorEl.textContent = msg;
+  urlErrorEl.classList.remove("hidden");
+  urlEl.setAttribute("aria-invalid", "true");
+}
+
+/**
+ * What is wrong with the URL, in words the person can act on — or "" when it is fine.
+ *
+ * Deliberately specific: "Invalid URL" tells someone nothing about which of the several possible
+ * mistakes they made, so each case names the problem and the fix.
+ */
+function urlProblem() {
+  const value = stripScheme(urlEl.value);
+  if (!value) return "Enter the address of the page to test — for example example.com/cart.";
+
+  const host = value.split(/[/?#]/)[0];
+  if (!host) return "That looks like a path with no site — add the domain, like example.com/cart.";
+
+  const bare = host.replace(/:\d+$/, "");
+  const isLocal = /^(localhost|127\.0\.0\.1)$/i.test(bare);
+  const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(bare);
+  if (isLocal || isIp) return "";
+
+  if (!bare.includes(".")) {
+    return `"${host}" is missing a domain ending — did you mean ${bare}.com?`;
+  }
+  if (!/^[a-z0-9.-]+$/i.test(bare) || /^[.-]|[.-]$|\.\./.test(bare)) {
+    return `"${host}" is not a valid domain — use something like example.com.`;
+  }
+  const tld = bare.split(".").pop();
+  if (!/^[a-z]{2,}$/i.test(tld)) {
+    return `"${host}" does not end in a valid domain — did you mean ${bare.split(".").slice(0, -1).join(".")}.com?`;
+  }
+  return "";
+}
+
+/**
+ * "New run" is pointless when the workspace is already new — disable it then.
+ *
+ * Derived from state the page already keeps (CLAUDE.md: no new store): no run being viewed, no
+ * run in flight, and both composer fields empty. `runInFlight` is read off the submit button's
+ * own disabled-while-running state rather than a new flag.
+ */
+function refreshNewRunState() {
+  const btn = document.getElementById("newRunBtn");
+  if (!btn) return;
+  const fresh =
+    !currentRunId &&
+    !runInFlight &&
+    promptEl.value.trim() === "" &&
+    urlEl.value.trim() === "";
+  // Only a real <button> has a meaningful .disabled; guard so this stays a no-op elsewhere.
+  if (typeof btn.disabled === "boolean") btn.disabled = fresh;
+  btn.setAttribute("aria-disabled", fresh ? "true" : "false");
+  btn.title = fresh ? "You're already on a new chat" : "Start a new run";
+}
+
+/** Run test stays disabled until there is both a description and a URL. */
+function refreshComposerState() {
+  const ready = promptEl.value.trim().length > 0 && urlEl.value.trim().length > 0;
+  submitBtn.disabled = !ready;
+  refreshNewRunState();
+}
 const finalResult = document.getElementById("finalResult");
 const verdictEl = document.getElementById("verdict");
 const testSummaryEl = document.getElementById("testSummary");
@@ -460,6 +607,7 @@ function renderTemplates() {
   templatesEl.querySelectorAll(".template-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       promptEl.value = TEMPLATES[Number(btn.dataset.i)].prompt;
+      refreshComposerState();
     });
   });
 }
@@ -667,6 +815,7 @@ function hideSuiteProgress() {
 function renderSuiteSummaryHeader(suite) {
   if (!suite) return "";
   return `
+    ${currentRunPrompt ? `<p class="case-narrative-line"><b>You asked:</b> ${escapeHtml(currentRunPrompt)}</p>` : ""}
     <div class="suite-summary-stats">
       <span class="suite-stat">${suite.total} checks</span>
       <span class="suite-stat suite-stat-passed">${icon("check", { size: 13 })} ${suite.passed} passed</span>
@@ -674,7 +823,46 @@ function renderSuiteSummaryHeader(suite) {
       ${suite.truncated ? `<span class="suite-stat suite-stat-truncated">${icon("alert-triangle", { size: 13 })} ${suite.truncated} partial</span>` : ""}
       ${suite.truncated_no_assertion ? `<span class="suite-stat suite-stat-partial">${icon("minus-circle", { size: 13 })} ${suite.truncated_no_assertion} unconfirmed</span>` : ""}
       ${suite.blocked ? `<span class="suite-stat suite-stat-blocked">${icon("slash-circle", { size: 13 })} ${suite.blocked} blocked</span>` : ""}
-    </div>`;
+    </div>
+    ${renderUsageLine()}`;
+}
+
+/**
+ * What this run cost, from the terminal event's `llmUsage`.
+ *
+ * A replay is called out explicitly rather than shown as "0 tokens": re-running a saved case for
+ * no model spend at all is the reason the library exists, and a bare zero reads like missing data.
+ *
+ * Reuses `.hrow-meta`, the existing muted-metadata class — no new class name (rule 3).
+ */
+function renderUsageLine() {
+  if (currentRunIsReplay) {
+    return `<div class="hrow-meta">Replayed from saved steps &mdash; <b>0 AI calls</b>, no tokens spent.</div>`;
+  }
+  const u = currentRunUsage;
+  if (!u || !u.calls) return "";
+
+  const stages = Object.entries(u.byStage ?? {})
+    .sort((a, b) => (b[1].totalTokens ?? 0) - (a[1].totalTokens ?? 0));
+  const top = stages[0];
+  const topPart = top
+    ? ` &middot; most of it in <b>${escapeHtml(top[0])}</b> (${top[1].calls} call${top[1].calls === 1 ? "" : "s"}, ${fmtTokens(top[1].totalTokens ?? 0)})`
+    : "";
+  const cap = u.exhausted ? " &middot; <b>budget exhausted</b>" : "";
+  // A self-heal is a second full test run AND a full IR regeneration, so it is a real part of
+  // what a run cost — but it is invisible in `byStage`, which folds the heal's IR call into the
+  // ordinary `ir` total. Counted separately from the suite events. TD-83.
+  const healCount = currentRunPrimaryHeals + currentRunSuiteHeals;
+  const heals = healCount > 0
+    ? ` &middot; <b>${healCount} self-heal retr${healCount === 1 ? "y" : "ies"}</b>`
+    : "";
+  return `<div class="hrow-meta">${u.calls} AI call${u.calls === 1 ? "" : "s"} &middot; ${fmtTokens(u.totalTokens ?? 0)} tokens${heals}${topPart}${cap}</div>`;
+}
+
+/** 1234 -> "1.2k". Token counts are for a sense of scale, not accounting. */
+function fmtTokens(n) {
+  if (!Number.isFinite(n)) return "0";
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
 }
 
 function renderScreenshotGrid(suite, runId) {
@@ -751,6 +939,7 @@ function renderCaseCard(c, runId, index) {
       </div>
       <div class="case-card-body">
         ${c.blockedBy ? `<p class="blocked-note">Couldn't finish: ${escapeHtml(c.blockedBy)}. The screenshot below is where it stopped.</p>` : ""}
+        ${renderCaseErrorBlock(c, screenshotUrl)}
         <div class="case-narrative hidden"></div>
         <div class="case-diagnosis-block hidden"></div>
         ${screenshotUrl ? `
@@ -998,7 +1187,43 @@ async function openSaveCasePanel(card) {
   });
 }
 
+/**
+ * The natural-language request that produced the run currently on screen.
+ *
+ * NOT fetched: it already arrives on the run's own event stream. The `input` event carries
+ * `{ prompt, url, urls, coverage }` — the same field `summariseRun` reads to build a RunSummary —
+ * and `applyEvent` sees every event, replayed ones included, so this survives a page reload with
+ * no request and no route change.
+ */
+let currentRunPrompt = "";
+
+/**
+ * The run's LLM spend, from the terminal event's `llmUsage`. Already on `/state` for both a normal
+ * run and a replay (which sends explicit zeroes), so this needs no request and no new route.
+ * Cleared with the rest of the run-scoped state in hideSuiteResults.
+ */
+let currentRunUsage = null;
+let currentRunIsReplay = false;
+/**
+ * Self-heal retries observed in THIS run. Counted from the events rather than read from
+ * 08-llm-usage.json, which records tokens by stage and has no notion of a retry — the heal's IR
+ * regeneration is folded into the `ir` stage total. TD-83.
+ *
+ * TWO counters, because the two heal paths report differently and mixing them double-counts. The
+ * primary case heals under its own "heal" StageName and emits once per attempt (relative, so
+ * increment). Suite cases carry `healsUsedInRun`, which is already a running total (absolute, so
+ * take the max). The primary case is reused by the suite rather than re-healed, so the two never
+ * describe the same retry and summing them is correct.
+ */
+let currentRunPrimaryHeals = 0;
+let currentRunSuiteHeals = 0;
+
 function hideSuiteResults() {
+  currentRunPrompt = "";
+  currentRunUsage = null;
+  currentRunIsReplay = false;
+  currentRunPrimaryHeals = 0;
+  currentRunSuiteHeals = 0;
   currentSuite = null;
   suiteResultsEl.classList.add("hidden");
   suiteResultsEl.removeAttribute("data-run-id");
@@ -1176,6 +1401,62 @@ function renderCaseNarrative(container, c, ir) {
     <p class="case-narrative-line"><b>What happened:</b> ${escapeHtml(whatHappened)}</p>
     ${whatImage ? `<p class="case-narrative-line"><b>What the image shows:</b> ${escapeHtml(whatImage)}</p>` : ""}`;
   container.classList.remove("hidden");
+}
+
+/**
+ * What a failed case says for itself, with no model call.
+ *
+ * A replay makes zero LLM calls by design, so `renderCaseDiagnosisBlock` below has nothing to
+ * render — and the card showed a red X and no text at all. The failing step and the Playwright
+ * error were sitting in `05-result.json` unread the whole time. This is the floor every failed
+ * case gets, whatever the run type; a diagnosis, when one exists, renders BELOW it rather than
+ * instead of it. TECH_DEBT.md TD-80.
+ *
+ * Rendered straight from the summary, so it appears with the card instead of waiting on the
+ * per-case fetch the diagnosis block needs. Every class here already exists (rule 3).
+ */
+/**
+ * The one-line retry note on a suite progress row.
+ *
+ * `.hrow-meta` is the existing muted-metadata class this file already uses for the cost line —
+ * no new CSS class (rule 3). Passing `null` removes the note, so a row that is reused for a
+ * later case cannot inherit a stale one.
+ */
+function setSuiteRetryNote(item, text) {
+  let note = item.querySelector(".hrow-meta");
+  if (text === null) { if (note) note.remove(); return; }
+  if (!note) {
+    note = document.createElement("span");
+    note.className = "hrow-meta";
+    item.appendChild(note);
+  }
+  note.textContent = text;
+}
+
+function renderCaseErrorBlock(c, screenshotUrl) {
+  if (c.status !== "failed" && c.status !== "blocked") return "";
+  if (!c.error && c.failedStep === undefined) return "";
+
+  const where = c.failedStep !== undefined
+    ? `Step ${c.failedStep}${c.failedStepTitle ? ` — ${c.failedStepTitle}` : ""}`
+    : "The test stopped here";
+
+  return `
+    <div class="diag-card">
+      <div class="diag-card-header">
+        <span class="diag-badge">Where it stopped</span>
+        <h4>${escapeHtml(where)}</h4>
+      </div>
+      <div class="diag-card-body">
+        ${c.error ? `<div class="diag-item"><p class="diag-text">${escapeHtml(c.error)}</p></div>` : ""}
+        ${screenshotUrl ? `<div class="diag-item"><p class="diag-text"><a href="${escapeHtml(screenshotUrl)}" target="_blank" rel="noopener">Screenshot at the point it stopped</a></p></div>` : ""}
+        ${c.errorDetail && c.errorDetail !== c.error ? `
+        <details class="diag-tech-details">
+          <summary>Full error (for developers)</summary>
+          <code>${escapeHtml(c.errorDetail)}</code>
+        </details>` : ""}
+      </div>
+    </div>`;
 }
 
 function renderCaseDiagnosisBlock(container, diagnosis) {
@@ -1371,6 +1652,19 @@ function renderSingleTestResult(data, stage, error) {
     resultVideoEl.removeAttribute("src");
     resultVideoEl.innerHTML = "";
   }
+
+  // A missing video used to be indistinguishable from a run that simply passed (video is
+  // retain-on-failure). When ffmpeg is absent the server now says so explicitly, so show that
+  // rather than an unexplained gap — reusing .tree-empty, no new class (rule 3). TD-71.
+  const noVid = document.getElementById("videoUnavailable");
+  if (noVid) {
+    if (!vid && data?.videoUnavailable) {
+      noVid.textContent = data.videoUnavailable;
+      noVid.classList.remove("hidden");
+    } else {
+      noVid.classList.add("hidden");
+    }
+  }
 }
 
 function hideSingleTestResult() {
@@ -1402,7 +1696,7 @@ function renderHistory(runs) {
       <span class="badge ${escapeHtml(r.status)}" title="${escapeHtml(STATUS_LABEL[r.status] ?? r.status)}">${icon(STATUS_ICON[r.status] ?? "circle", { size: 14 })}</span>
       <span class="hprompt">${escapeHtml(r.prompt || "(no prompt)")}</span>
       ${suiteInfo}
-      <span class="hurl">${escapeHtml(r.url)}</span>
+      <span class="hurl" title="${escapeHtml(r.url || "")}">${escapeHtml(displayUrl(r.url))}</span>
       <button type="button" class="history-del" title="Delete this run" aria-label="Delete run">${icon("trash", { size: 13 })}</button>
     </li>`;
   }).join("");
@@ -1412,7 +1706,8 @@ function renderHistory(runs) {
       historyListEl.querySelectorAll(".history-item").forEach(item => item.classList.remove("active"));
       li.classList.add("active");
       if (li.dataset.prompt) promptEl.value = li.dataset.prompt;
-      if (li.dataset.url) urlEl.value = li.dataset.url;
+      refreshComposerState();
+      if (li.dataset.url) setUrlFieldValue(li.dataset.url);
       navigate("#/run/" + li.dataset.runId);
     });
   });
@@ -1454,9 +1749,24 @@ let suitesCache = [];
 // The sidebar's inline "new suite" form. Module state rather than DOM state because
 // renderProjectsTree() re-renders wholesale on every history refresh — anything held only in the
 // input would be wiped mid-typing by a background reload.
-let newSuiteFor = null;     // project id whose form is open, or null
+let newSuiteFor = null;     // project id whose form is open, NEW_SUITE_ANY, or null
 let newSuiteName = "";
 let newSuiteError = "";
+
+// Sentinel for `newSuiteFor`: the create form was opened from the Projects heading rather than
+// from inside one project, so the project is CHOSEN in the form instead of implied by where the
+// form was opened. Cannot collide with a real id — project ids are UUIDs.
+const NEW_SUITE_ANY = "*";
+
+// Which project the heading-level form is filing the new suite under. Module state, not just the
+// <select>'s DOM value: loadHistory() -> loadProjects() -> renderProjectsTree() fires on a poll and
+// replaces the whole tree, so a choice held only in the DOM would silently snap back to the first
+// project mid-typing — and the suite would be created in the wrong one.
+let newSuiteProject = null;
+
+let renameSuiteId = null;   // suite id whose rename form is open, or null
+let renameSuiteName = "";
+let renameSuiteError = "";
 
 // The sidebar's inline project form, for both create and edit — same shape, same two fields, so
 // one form serves both and `projectFormId` is what tells them apart (null = creating). Module
@@ -1472,6 +1782,25 @@ let projectFormError = "";
  *  configured the sidebar is showing URL groupings, not project rows, so there is nothing to edit
  *  and offering the control would be a lie. */
 function canManageProjects() {
+  return (!auth.required || roleAtLeast(auth.role, "admin")) && !projectsUnavailable;
+}
+
+/**
+ * Suite gates. Two of them, because the server splits the same way: composing the library is
+ * authoring (`tester` — POST/PATCH /api/suites) and destroying authored work is administration
+ * (`admin` — DELETE /api/suites/:id).
+ *
+ * Both keep the `!auth.required ||` escape hatch that canManageProjects() has. With auth off the
+ * server hands the synthetic local user `owner` rather than skipping the check, so a UI gate
+ * without the hatch hides controls the server would happily honour.
+ *
+ * `!projectsUnavailable` because with no database the tree is showing URL groupings synthesised
+ * from run history, not real suites — there is nothing there to rename or delete.
+ */
+function canAuthorSuites() {
+  return (!auth.required || roleAtLeast(auth.role, "tester")) && !projectsUnavailable;
+}
+function canDeleteSuites() {
   return (!auth.required || roleAtLeast(auth.role, "admin")) && !projectsUnavailable;
 }
 
@@ -1931,8 +2260,13 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
   }
 
   caseRoundLabelEl.textContent = `Round ${attempt} — review the test cases`;
-  casePoolCounterEl.textContent =
-    `${acceptedSoFarCount} of ${CASE_POOL_CAP} case${acceptedSoFarCount === 1 ? "" : "s"} accepted so far`;
+  // "2 of 5 cases accepted so far" read as progress toward a target of five, so people pressed
+  // refine to "finish". Five is MAX_ACCUMULATED_CASES — a ceiling on what the pool will hold,
+  // not a number to reach. The wording now says what you can do rather than how far along you are.
+  casePoolCounterEl.textContent = acceptedSoFarCount === 0
+    ? `Tick the cases you want to run. You can run as few as one — up to ${CASE_POOL_CAP} in total.`
+    : `${acceptedSoFarCount} case${acceptedSoFarCount === 1 ? "" : "s"} accepted — enough to run now. ` +
+      `${CASE_POOL_CAP} is the most this run will hold, not a target.`;
 
   repaintCaseList();
   // Fetched after the first paint, not before it: the round is reviewable immediately, and the
@@ -1941,9 +2275,8 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
     if (gatePageElements && !caseSelectionPanelEl.classList.contains("hidden")) repaintCaseList();
   });
 
-  caseRefineInputWrapEl.classList.add("hidden");
+  setRefineOpen(false);
   caseNewPromptInputEl.value = "";
-  caseNotSatisfiedBtnEl.textContent = "Not satisfied — refine";
   caseRegenAttemptsLeftEl.textContent =
     `Refine attempts left: ${Math.max(0, MAX_CASE_REGEN_ATTEMPTS_LOCAL - attempt)} of ${MAX_CASE_REGEN_ATTEMPTS_LOCAL}`;
   caseNoticeEl.classList.add("hidden");
@@ -2007,6 +2340,27 @@ function updateDoneButtonState() {
   caseDoneBtnEl.textContent = total === 0
     ? "Run selected tests"
     : `Run ${total} test${total === 1 ? "" : "s"}`;
+
+  // A disabled button with no reason left "Not satisfied — refine" as the only control that
+  // responded, which is how unintended extra rounds were being generated. Say why, next to it,
+  // and say that refining is not the way out.
+  refineHintEl().textContent = total === 0
+    ? "Nothing is ticked, so there is nothing to run. Tick at least one case above — you do not need to refine."
+    : "";
+}
+
+/** The inline reason under the final actions. Created once, in code, because this task may not
+ *  add markup to index.html; `.case-regen-note` is the existing style for a line in this slot. */
+function refineHintEl() {
+  let el = document.getElementById("case-done-hint");
+  if (!el) {
+    el = document.createElement("p");
+    el.id = "case-done-hint";
+    el.className = "case-regen-note case-done-hint";
+    el.setAttribute("role", "status");
+    caseDoneBtnEl.closest(".case-selection-final-actions").insertAdjacentElement("beforebegin", el);
+  }
+  return el;
 }
 
 // --- Turning drafts into the request ----------------------------------------
@@ -2128,26 +2482,79 @@ caseDoneBtnEl.addEventListener("click", async () => {
   if (ok) hideCaseSelectionPanel();
 });
 
-caseNotSatisfiedBtnEl.addEventListener("click", async () => {
-  if (!caseRunId) return;
-  if (caseRefineInputWrapEl.classList.contains("hidden")) {
-    caseRefineInputWrapEl.classList.remove("hidden");
-    caseNotSatisfiedBtnEl.textContent = "Confirm refine";
+/**
+ * Open or close the refine box. Nothing here submits.
+ *
+ * The trigger used to be a two-click submit: the first click revealed the box, the second sent
+ * the round. Clicking it twice — to look, then to dismiss — generated a refine nobody asked for.
+ * The trigger is now a pure disclosure, and the only thing that submits is the confirm control
+ * inside the box.
+ *
+ * `.hidden` ships on this element from index.html, which this change may not edit. Rather than
+ * add another `.hidden` toggle outside showView(), the class is cleared once here and the
+ * open/closed state is carried by `.case-refine-collapsed`, which belongs to this feature.
+ */
+function setRefineOpen(open) {
+  caseRefineInputWrapEl.classList.remove("hidden");
+  caseRefineInputWrapEl.classList.toggle("case-refine-collapsed", !open);
+  caseNotSatisfiedBtnEl.textContent = open ? "Cancel refine" : "Not satisfied — refine";
+  caseNotSatisfiedBtnEl.setAttribute("aria-expanded", String(open));
+  if (open) {
+    ensureRefineConfirmBtn();
     caseNewPromptInputEl.focus();
-    return;
   }
+}
+
+/** The confirm control, inside the box so the trigger can never submit. Created once, in code,
+ *  because this change may not add markup to index.html. */
+function ensureRefineConfirmBtn() {
+  let btn = document.getElementById("case-refine-confirm-btn");
+  if (btn) return btn;
+  btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "case-refine-confirm-btn";
+  btn.className = "case-refine-confirm";
+  btn.textContent = "Generate another round";
+  caseRefineInputWrapEl.appendChild(btn);
+  btn.addEventListener("click", submitRefine);
+  return btn;
+}
+
+/** Send the refine. The only path that posts `not_satisfied`. */
+async function submitRefine() {
+  if (!caseRunId) return;
   const newPrompt = caseNewPromptInputEl.value.trim();
   if (!newPrompt) {
     showError("Describe what should change before refining.");
+    caseNewPromptInputEl.focus();
     return;
   }
   const selectedIndexes = getCheckedCaseIndexes();
   const problem = gateValidationError(selectedIndexes);
   if (problem) return showError(problem);
+
+  // Anything not ticked is recorded `rejected` by the history ledger, and getRejectedTitles()
+  // then excludes it from every later round of this run. That is not obvious from the screen and
+  // it cannot be undone, so it is stated before the round is spent rather than discovered after.
+  const unticked = gateCases().filter((c) => !selectedIndexes.includes(c.index)).length;
+  const warning = unticked === 0
+    ? "Generate another round of cases?"
+    : `Generate another round?
+
+${unticked} case${unticked === 1 ? "" : "s"} you have not ` +
+      `ticked will be recorded as rejected, and cannot be offered again in this run.`;
+  if (!confirm(warning)) return;
+
   const ok = await postCaseSelectionDecision(caseRunId, {
     action: "not_satisfied", selectedIndexes, newPrompt, ...gateEditPayload(),
   });
   if (ok) hideCaseSelectionPanel();
+}
+
+// The trigger only discloses — open, or close again with nothing sent.
+caseNotSatisfiedBtnEl.addEventListener("click", () => {
+  if (!caseRunId) return;
+  setRefineOpen(caseRefineInputWrapEl.classList.contains("case-refine-collapsed"));
 });
 
 caseSelectionListEl.addEventListener("change", (e) => {
@@ -2301,7 +2708,8 @@ caseSelectionListEl.addEventListener("click", async (e) => {
     const entry = gateCases().find((x) => x.index === i);
     if (!entry) return;
     btn.disabled = true;
-    btn.textContent = "Asking…";
+    btn.classList.add("ai-busy");
+    btn.innerHTML = `${SPIN_ICON} Asking…`;
     try {
       const res = await fetch(`/api/runs/${caseRunId}/case-selection/rewrite`, {
         method: "POST",
@@ -2322,6 +2730,7 @@ caseSelectionListEl.addEventListener("click", async (e) => {
       showError("Could not propose a change.");
     } finally {
       btn.disabled = false;
+      btn.classList.remove("ai-busy");
       btn.textContent = "Ask for a change";
     }
   }
@@ -2346,6 +2755,13 @@ if (caseWriteOwnBtnEl) {
 
 function applyEvent(event, runId) {
   setPhaseFromStage(event.stage, event.status, event.data);
+
+  // The first event of every run. Recorded, not rendered here: the results header is drawn later,
+  // from renderSuiteResults, and by then this has been seen — on a live run and on a reload alike,
+  // because the poller replays the whole stream through this function.
+  if (event.stage === "input" && typeof event.data?.prompt === "string") {
+    currentRunPrompt = event.data.prompt;
+  }
 
   if (event.stage === "credentials") {
     if (event.status === "started") showCredentialPrompt(runId, event.data);
@@ -2395,6 +2811,9 @@ function applyEvent(event, runId) {
     const partial = event.data?.partial;
     const healed = event.data?.healed;
     const status = event.data?.status;
+    // Captured BEFORE renderSuiteResults runs — the header reads it.
+    currentRunUsage = event.data?.llmUsage ?? null;
+    currentRunIsReplay = !!event.data?.replay;
     paintVerdict(verdictFor(event.data, event.stage, event.error));
 
     renderEnterpriseDiagnostic(event.data, event.stage, event.error);
@@ -2442,6 +2861,13 @@ function applyEvent(event, runId) {
   }
 
   // Suite progress events
+  // The PRIMARY case heals under its own "heal" StageName (orchestrator.ts), not through the
+  // suite events — so without this a run where only the primary case healed would show no retry
+  // count at all, and the cost line would understate what the run actually did.
+  if (event.stage === "heal" && event.status === "started") {
+    currentRunPrimaryHeals += 1;
+  }
+
   if (event.stage === "suite" && event.status === "started" && event.data) {
     const caseId = event.data.caseId;
     if (event.data.total && !caseId) {
@@ -2477,6 +2903,17 @@ function applyEvent(event, runId) {
         if (event.data.title) {
           item.querySelector(".suite-progress-title").textContent = event.data.title;
         }
+        // A heal re-runs the whole case in a real browser, so the user watches the tests run a
+        // second time after the run looked finished. Say why, while it is happening — until now
+        // the only trace was a "Fixed automatically" badge, and only when it worked. TD-83.
+        if (event.data.healing) {
+          // healsUsedInRun is the SUITE-WIDE count (how many cases have healed); healAttempt is
+          // this case's own, and a heal is one-shot so it is always 1. Two different numbers —
+          // the cost line wants the first, this row wants the second.
+          currentRunSuiteHeals = Math.max(currentRunSuiteHeals, event.data.healsUsedInRun ?? 1);
+          setSuiteRetryNote(item,
+            `Attempt ${(event.data.healAttempt ?? 1) + 1} of ${(event.data.healMax ?? 1) + 1} — retrying with a fresh page snapshot`);
+        }
       }
     }
   }
@@ -2493,6 +2930,14 @@ function applyEvent(event, runId) {
         const iconEl = item.querySelector(".suite-progress-icon");
         if (iconEl) {
           iconEl.innerHTML = icon(STATUS_ICON[statusClass] ?? "check", { size: 14 });
+        }
+        // A retry that FAILED has to say so too. Reporting only the successes is how a silent
+        // second browser run looked like the tool misbehaving rather than trying again.
+        if (event.data.healAttempt) {
+          const outcome = statusClass === "passed" || statusClass === "truncated" ? "passed" : "failed";
+          setSuiteRetryNote(item, `Retry ${event.data.healAttempt}: ${outcome}`);
+        } else {
+          setSuiteRetryNote(item, null);
         }
       }
     }
@@ -2574,9 +3019,24 @@ async function connectToRun(runId) {
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const prompt = promptEl.value.trim();
-  const url = urlEl.value.trim();
-  if (!prompt || !url) return;
+  if (!prompt) return;
 
+  // Validation happens here and on blur only — never while typing, so a half-typed host is not
+  // flagged as a mistake mid-keystroke.
+  const problem = urlProblem();
+  if (problem) {
+    showUrlError(problem);
+    urlEl.focus();
+    return;
+  }
+  clearUrlError();
+
+  // The scheme lives beside the field, so the absolute URL is assembled at the last moment. The
+  // request body is byte-for-byte the shape it always was: { prompt, url, coverage, options }.
+  const url = absoluteUrl();
+
+  runInFlight = true;
+  refreshNewRunState();
   submitBtn.disabled = true;
   submitBtn.innerHTML = `${icon("loader", { size: 14 })} <span class="run-btn-text">Running\u2026</span>`;
 
@@ -2589,12 +3049,15 @@ form.addEventListener("submit", async (e) => {
     if (!res.ok) throw new Error(`Server responded with HTTP ${res.status}`);
     const { runId } = await res.json();
     if (!runId) throw new Error("Server didn't return a run id");
+    runInFlight = false;
     navigate("#/run/" + runId);
   } catch (err) {
     // A failed POST previously left the button stuck on "Running\u2026" forever. Reset it and
     // surface the reason instead of silently swallowing the error.
+    runInFlight = false;
     submitBtn.disabled = false;
     submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
+    refreshComposerState();
     finalResult.classList.remove("hidden");
     paintVerdict({ cls: "incomplete", ic: "alert-triangle",
       head: "Couldn't start the run",
@@ -2615,16 +3078,23 @@ document.getElementById("caseSelectionIcon").innerHTML = icon("list", { size: 18
 
 // "New run" clears the workspace without a page reload, so an in-flight poll is abandoned
 // (pollGeneration is what stops the old loop touching the DOM again).
-document.getElementById("newRunBtn").addEventListener("click", () => {
+document.getElementById("newRunBtn").addEventListener("click", (e) => {
+  // No-op when it is not a real button (so aria-disabled is not the only thing stopping a click),
+  // and when it is a button that is already disabled.
+  const btn = e.currentTarget;
+  if (typeof btn.disabled !== "boolean" || btn.disabled) return;
   pollGeneration++;
   currentRunId = null;
+  runInFlight = false;
   promptEl.value = "";
   urlEl.value = "";
+  clearUrlError();
   resetRunUI();
   navigate("#/");
   submitBtn.disabled = false;
   submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
   historyListEl.querySelectorAll(".history-item").forEach(i => i.classList.remove("active"));
+  refreshComposerState();
   promptEl.focus();
 });
 
@@ -2646,7 +3116,6 @@ screenshotToggleEl.addEventListener("click", () => {
 
 const sidebarEl = document.getElementById("sidebar");
 const sidebarTreeEl = document.getElementById("sidebarTree");
-const sidebarSearchEl = document.getElementById("sidebarSearch");
 const sidebarOpenEl = document.getElementById("sidebarOpen");
 const sidebarCloseEl = document.getElementById("sidebarClose");
 const scrimEl = document.getElementById("scrim");
@@ -2656,11 +3125,11 @@ const historyBtnEl = document.getElementById("historyBtn");
 const teamBtnEl = document.getElementById("teamBtn");
 const allRunsBtnEl = document.getElementById("allRunsBtn");
 const addProjectBtnEl = document.getElementById("addProjectBtn");
+const addSuiteBtnEl = document.getElementById("addSuiteBtn");
 const settingsBtnEl = document.getElementById("settingsBtn");
 const settingsPopEl = document.getElementById("settingsPop");
 const gateToggleEl = document.getElementById("gateToggle");
 const healToggleEl = document.getElementById("healToggle");
-const coverageSegEl = document.getElementById("coverageSeg");
 const toastEl = document.getElementById("toast");
 const runTitleEl = document.getElementById("runTitle");
 const runScopeLabelEl = document.getElementById("runScopeLabel");
@@ -2795,8 +3264,12 @@ async function renderSuiteView(suiteId) {
   }
 
   setCrumbs(["Suite", suite.name]);
-  const canAuthor = roleAtLeast(auth.role, "tester");
-  const canDelete = roleAtLeast(auth.role, "admin");
+  // The `!auth.required ||` half is not decoration. auth.role is null until GET /api/auth/me
+  // fills it, so with AUTH_ENABLED=false these were both false and this toolbar rendered EMPTY —
+  // no Add cases, no Rename, no Delete, and no Run all — while the server was granting that same
+  // synthetic user `owner`. Flag-off has to exercise flag-on's code path (CLAUDE.md rule 7).
+  const canAuthor = !auth.required || roleAtLeast(auth.role, "tester");
+  const canDelete = !auth.required || roleAtLeast(auth.role, "admin");
 
   body.innerHTML = `
     <div>
@@ -2854,8 +3327,9 @@ async function renderSuiteView(suiteId) {
    * Pick saved cases from this project and file them into this suite.
    *
    * Only offers cases NOT already in the suite: `suite_cases` has (suite_id, case_id) as its key,
-   * so re-adding one is a guaranteed error, and offering it would be offering a mistake. Same
-   * reasoning as the Team screen's addable-users list.
+   * so re-adding one is a guaranteed error, and offering it would be offering a mistake. This list
+   * is safe to offer where the Team screen's account suggestions were not: it is scoped to one
+   * project the caller can already see, rather than to every account on the instance.
    */
   const openAddPanel = async () => {
     const panel = document.getElementById("suiteAddPanel");
@@ -3023,6 +3497,11 @@ function caseEditorDirty() {
   return !!caseEditor && JSON.stringify(caseLinesPayload()) !== caseEditor.original;
 }
 
+/** The inline spinner shown inside a button waiting on an AI proposal. One definition so the
+ *  three AI entry points cannot drift apart. Purely visual — the button's own label change is
+ *  what a screen reader announces. */
+const SPIN_ICON = icon("loader", { size: 13, cls: "ai-spin" });
+
 /** A re-ground is in flight — steps are read-only and Save is replaced by Cancel. */
 const caseEditorBusy = () => !!caseEditor?.job;
 
@@ -3164,7 +3643,11 @@ async function doTranslateSteps(btn) {
   if (!caseEditor) return;
   const editor = caseEditor;
   btn.disabled = true;
-  btn.textContent = "Writing…";
+  // Same direct-DOM approach, and here it is required rather than merely preferred: the
+  // function that renders this button documents that it must NOT repaint, because a repaint
+  // mid-typing steals the caret out of the line being fixed.
+  btn.classList.add("ai-busy");
+  btn.innerHTML = `${SPIN_ICON} Writing…`;
   try {
     const proposal = await api(`/api/cases/${encodeURIComponent(editor.caseId)}/steps/translate`, {
       method: "POST",
@@ -3184,16 +3667,29 @@ async function doTranslateSteps(btn) {
 
 // ------------------------------------------------------------------------ save
 
-async function saveCaseSteps(c, repaint) {
+/**
+ * @param confirmNoAssertion true only when the person answered the "this removes the last check"
+ *        refusal by pressing "Save without a check". Never sent otherwise, so the server keeps
+ *        refusing by default. TD-89.
+ */
+async function saveCaseSteps(c, repaint, confirmNoAssertion = false) {
   if (!caseEditor || !caseEditorDirty()) return;
   const editor = caseEditor;
   editor.errorAt = null;
   editor.errorMsg = "";
   editor.notice = "";
   editor.conflict = null;
+  editor.needsConfirmation = "";
 
   const btn = document.getElementById("cdSave");
-  if (btn) btn.disabled = true;
+  if (btn) {
+    btn.disabled = true;
+    // Covers the POST window only. Once the server answers with a job, the `.cd-job` banner
+    // and the per-row verifying states take over. Every exit from this function ends in a
+    // repaint that rebuilds this button, so the spinner cannot get stuck.
+    btn.classList.add("ai-busy");
+    btn.innerHTML = `${SPIN_ICON} Saving…`;
+  }
 
   let res;
   try {
@@ -3206,6 +3702,9 @@ async function saveCaseSteps(c, repaint) {
         // visible conflict.
         expectedVersion: editor.currentVersion,
         changeNote: "Edited steps",
+        // Optional and absent unless the person explicitly confirmed — an additive request
+        // field, so nothing that does not send it changes behaviour (rule 1).
+        ...(confirmNoAssertion ? { confirmNoAssertion: true } : {}),
       }),
     });
   } catch (err) {
@@ -3224,6 +3723,9 @@ async function saveCaseSteps(c, repaint) {
     // The server names the offending step, so the message lands on that row rather than
     // floating above a list of nine.
     editor.errorAt = typeof body.stepIndex === "number" ? body.stepIndex : null;
+    // A refusal the person can answer rather than a broken row: no step is at fault, so there is
+    // no `stepIndex`, and the message needs a button beside it instead of a row highlight.
+    editor.needsConfirmation = typeof body.needsConfirmation === "string" ? body.needsConfirmation : "";
     return repaint();
   }
 
@@ -3257,7 +3759,14 @@ function finishCaseSave(payload, repaint) {
   caseEditor.original = JSON.stringify(caseLinesPayload());
   caseEditor.currentVersion = updated.currentVersion ?? caseEditor.currentVersion;
   caseEditor.estimate = null;
-  caseEditor.notice = `Saved as v${caseEditor.currentVersion}.`;
+  // A credential the person typed was swapped back to an ${env:...} reference before storing
+  // (TECH_DEBT.md TD-67). Say so on the same line as the save confirmation — silently changing
+  // what someone typed is worse than not accepting it, and they need to know the value will be
+  // asked for at run time instead.
+  const credNote = payload.credentialNote ?? payload.case?.credentialNote ?? "";
+  caseEditor.notice = credNote
+    ? `Saved as v${caseEditor.currentVersion}. ${credNote}`
+    : `Saved as v${caseEditor.currentVersion}.`;
   toast(`Saved as v${caseEditor.currentVersion}.`);
   caseEditor.reloadNeeded = true;
   repaint();
@@ -3365,7 +3874,7 @@ function paintCaseJobBanner() {
   const job = caseEditor.job;
   el.innerHTML = `
     <div class="cd-job">
-      <span class="cd-job-text">${job.cancelling
+      <span class="cd-job-text ai-busy">${SPIN_ICON}${job.cancelling
         ? "Cancelling… the page being checked has to finish first."
         : `Verifying ${Math.min(job.done + 1, job.total)} of ${job.total}…`}</span>
       <button type="button" class="dl-btn-inline" id="cdCancel"${job.cancelling ? " disabled" : ""}>Cancel</button>
@@ -3436,8 +3945,11 @@ async function renderCaseView(caseId, routeProjectId) {
     }
   }
 
-  const canAuthor = roleAtLeast(auth.role, "tester");
-  const canDelete = roleAtLeast(auth.role, "admin");
+  // Same missing escape hatch as the Suite screen above, with the same effect under
+  // AUTH_ENABLED=false. (The Team screen's own roleAtLeast gate is deliberately left alone: it is
+  // only reachable when auth is on, so it has no flag-off path to get wrong.)
+  const canAuthor = !auth.required || roleAtLeast(auth.role, "tester");
+  const canDelete = !auth.required || roleAtLeast(auth.role, "admin");
 
   // Names for the breadcrumb. Both are best-effort: a missing one degrades to a quieter crumb
   // rather than blocking the screen the user asked for.
@@ -3495,6 +4007,19 @@ async function renderCaseView(caseId, routeProjectId) {
             <span class="case-badge ${caseBadgeClass(c.lastRunStatus)}">${escapeHtml(caseStatusLabel(c.lastRunStatus))}</span>
             <span class="cd-version">v${caseEditor.currentVersion} · ${c.versions.length} version${c.versions.length === 1 ? "" : "s"}</span>
             <span class="case-badge badge-truncated" id="cdUnsaved"${dirty ? "" : ` style="display:none"`}>UNSAVED</span>
+            ${c.ir?.meta?.hasTerminalAssertion === false
+              // A case that checks nothing runs to the end and reports Passed. Saying so on the
+              // case itself is the whole point of TD-89 — the flag exists, it was simply never
+              // recomputed on edit and never surfaced. Reuses `.case-badge badge-truncated`,
+              // the existing "this is partial" pill (rule 3).
+              ? `<span class="case-badge badge-truncated" title="This test runs to the end without verifying anything, so it can only report Passed.">NO CHECK</span>`
+              : ""}
+            ${c.scriptOverridden
+              // The steps below are NOT what runs. Says so in the one place a reader always looks
+              // before believing a case does what its title claims. Reuses the existing
+              // "this is not the whole story" pill rather than minting a class (rule 3).
+              ? `<span class="case-badge badge-truncated" title="A hand-written script replaces this case's generated one. The steps below no longer describe what runs.">SCRIPT OVERRIDE</span>`
+              : ""}
           </div>
           <input class="cd-title" id="cdTitle" value="${escapeHtml(c.title)}"
                  ${canAuthor ? "" : "readonly"} aria-label="Case title" />
@@ -3513,6 +4038,12 @@ async function renderCaseView(caseId, routeProjectId) {
         ${caseEditor.notice ? `<p class="team-ok">${escapeHtml(caseEditor.notice)}</p>` : ""}
         ${caseEditor.errorMsg && caseEditor.errorAt === null
           ? `<p class="team-error">${escapeHtml(caseEditor.errorMsg)}</p>` : ""}
+        ${caseEditor.needsConfirmation === "noAssertion"
+          // A refusal the person can answer, not a dead end. Re-submits the same steps with
+          // `confirmNoAssertion`, which is the only thing the server is waiting for. Reuses the
+          // existing button classes — no new CSS (rule 3). TD-89.
+          ? `<button type="button" class="run-btn lib-run-all" data-act="save-no-assertion">Save without a check</button>`
+          : ""}
       </div>
       <div id="cdConflict">${caseEditor.conflict ? conflictHtml(caseEditor.conflict) : ""}</div>
       <div id="caseSuites"></div>
@@ -3570,6 +4101,15 @@ async function renderCaseView(caseId, routeProjectId) {
         <div class="cd-left">
           <div class="cd-card">
             <div class="cd-card-head">Steps — edit in plain English</div>
+            ${c.scriptOverridden ? `
+              <p class="team-error">
+                <strong>A script override is in effect. These steps do not describe what runs.</strong>
+                This case runs a hand-written Playwright script instead of the one generated from the
+                steps below. The script is not grounded: no locator in it is verified against a real
+                discovered element, so when it breaks it fails silently rather than loudly. Editing
+                these steps is recorded and versioned, but it will not change what this case does
+                until the override is removed.
+              </p>` : ""}
             <div id="cdJob"></div>
             <div id="cdEstimateError"></div>
             <div class="cd-lines" id="cdLines">
@@ -3581,11 +4121,17 @@ async function renderCaseView(caseId, routeProjectId) {
               <div class="cd-expected-value">${escapeHtml(caseEditor.expected || "Not recorded.")}</div>
             </div>
             ${canAuthor ? `<p class="hrow-meta" id="cdSaveHint" style="margin-top:10px"></p>` : ""}
-            <p class="hrow-meta" style="margin-top:6px">Target: ${escapeHtml(c.ir?.meta?.baseUrl ?? "")}</p>
+            <p class="hrow-meta" style="margin-top:6px" title="${escapeHtml(c.ir?.meta?.baseUrl ?? "")}">Target: ${escapeHtml(displayUrl(c.ir?.meta?.baseUrl))}</p>
           </div>
         </div>
         <div class="cd-right">
-          ${canAuthor ? `
+          ${canAuthor && c.scriptOverridden ? `
+            <div class="cd-card cd-card-inset">
+              <div class="cd-card-label">Ask for a change</div>
+              <p class="hrow-meta">Unavailable while a script override is in effect — a rewrite would
+              change the steps, and the steps are not what runs.</p>
+            </div>` : ""}
+          ${canAuthor && !c.scriptOverridden ? `
             <div class="cd-card cd-card-inset">
               <div class="cd-card-label">Ask for a change</div>
               <textarea class="cd-ask-text" id="cdAsk" placeholder="also assert the order total is unchanged"
@@ -3707,7 +4253,12 @@ async function renderCaseView(caseId, routeProjectId) {
     const instruction = (caseEditor.askText || "").trim();
     if (!instruction) { caseEditor.errorMsg = "Say what you would like changed."; return paintCaseScreen(); }
     btn.disabled = true;
-    btn.textContent = "Asking…";
+    // Presentation only. Deliberately still a direct DOM write rather than a state flag +
+    // repaint: paintCaseScreen() rebuilds this button from scratch when the request settles,
+    // so the busy look cannot outlive the request, and a pre-request repaint would be a
+    // behaviour change nobody asked for.
+    btn.classList.add("ai-busy");
+    btn.innerHTML = `${SPIN_ICON} Asking…`;
     try {
       caseEditor.proposal = await api(`/api/cases/${encodeURIComponent(caseId)}/rewrite`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -3775,40 +4326,93 @@ async function renderCaseView(caseId, routeProjectId) {
 
   // --------------------------------------------------------------- script tab
 
+  /**
+   * The URL of a run artifact that holds this case's executed spec, or "" if none survives.
+   *
+   * Only ever a SECONDARY link now. Run directories are deleted by `DELETE /api/runs/:runId`, by
+   * retention, and simply by cloning the repo (`runs/` is gitignored) — which is exactly why the
+   * tab itself no longer depends on one.
+   *
+   * Chain: newest `run_cases` row whose file actually responds 200, then the case's own source run.
+   * The `run_cases` paths are exact (`cases/case-N` comes back with the row). The source run has no
+   * stored case index, so it falls back to that run's run-level spec — which is this case's spec
+   * when it was saved from a single-case run, and the run's primary case otherwise. That is why it
+   * is offered as "the spec from run X" rather than silently rendered as this case's script.
+   */
+  async function findRunSpecUrl(runs) {
+    const candidates = runs.map(
+      (r) => `/runs/${encodeURIComponent(r.runId)}/${r.resultPath}/generated.spec.ts`);
+    if (c.sourceRunId && !runs.some((r) => r.runId === c.sourceRunId)) {
+      candidates.push(`/runs/${encodeURIComponent(c.sourceRunId)}/generated.spec.ts`);
+    }
+    for (const url of candidates) {
+      const ok = await fetch(url, { method: "HEAD" }).then((r) => r.ok).catch(() => false);
+      if (ok) return url;
+    }
+    return "";
+  }
+
   async function paintScriptTab(el) {
     el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">Loading…</div></div>`;
+
+    // The script belongs to the CASE, not to a run's artifact folder. `GET /api/cases/:id/script`
+    // returns the spec stored with this version, or regenerates it from the same IR with the same
+    // pure generator (DECISIONS.md D-06) when no stored copy exists. Deleting the run a case came
+    // from used to empty this tab even though the case still reported "Passed v1" — TD-68.
+    let doc = null;
+    let loadError = "";
+    try { doc = await api(`/api/cases/${encodeURIComponent(caseId)}/script`); }
+    catch (err) { loadError = err.message; }
+
     let runs = [];
-    try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; } catch { /* below */ }
-    const last = runs[0];
+    try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; } catch { /* optional */ }
 
-    // There is no endpoint that generates a spec from a stored IR — the generator runs as part of
-    // a run. So this shows the spec the last run actually emitted, which is the real artifact
-    // rather than a re-derivation that could differ from what executed.
-    let text = "";
-    if (last) {
-      text = await fetch(`/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/generated.spec.ts`)
-        .then((r) => (r.ok ? r.text() : "")).catch(() => "");
-    }
-
-    if (!text) {
+    if (!doc || !doc.spec) {
       el.innerHTML = `
         <div class="panel"><div class="tree-empty" style="padding:34px 16px;text-align:center">
-          No script yet — the spec is written when this case runs.
-          ${canAuthor ? "Press <b>Run case</b> to generate one." : ""}
+          ${escapeHtml(loadError || "This case has no readable test plan, so no script could be produced.")}
         </div></div>`;
       return;
     }
+
+    const runSpecUrl = await findRunSpecUrl(runs);
+    const last = runs[0];
+    const provenance = doc.source === "stored"
+      ? `Saved with v${doc.version}.`
+      : `Generated from the steps of v${doc.version}.`;
+    // `download`, not `target="_blank"`: the artifact route serves `.ts` through `res.sendFile`,
+    // and Express's mime table maps that extension to `video/mp2t` — opening it in a tab hands the
+    // browser a broken media file rather than showing the spec. The old code only ever used
+    // `download=` on these links, which is why the mime type never surfaced as a problem before.
+    const runLink = runSpecUrl
+      ? ` <a class="dl-btn-inline" href="${escapeHtml(runSpecUrl)}" download="${escapeHtml(c.title)} (as run).spec.ts">download the spec from the last run${last && last.ranAt ? ` (${escapeHtml(formatWhen(last.ranAt))})` : ""}</a>`
+      : "";
 
     el.innerHTML = `
       <div class="panel" style="padding:0;overflow:hidden">
         <div class="cd-script-head">
           <span class="cd-script-name">generated.spec.ts</span>
-          <a class="dl-btn-inline" href="/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/generated.spec.ts"
-             download="${escapeHtml(c.title)}.spec.ts">Download .spec.ts</a>
+          <a class="dl-btn-inline" id="cdScriptDl" href="#" download="${escapeHtml(c.title)}.spec.ts">Download .spec.ts</a>
         </div>
-        <pre class="cd-script-body">${escapeHtml(text)}</pre>
-        <div class="cd-script-foot">From the run on ${escapeHtml(last.ranAt ? formatWhen(last.ranAt) : last.runId)}. Edit the steps and press Save to cut a new version.</div>
+        <pre class="cd-script-body">${escapeHtml(doc.spec)}</pre>
+        <div class="cd-script-foot">${provenance} Edit the steps and press Save to cut a new version.${runLink}</div>
       </div>`;
+
+    // A Blob rather than an href to the route: the endpoint answers JSON, and downloading that
+    // under a .spec.ts name would hand the user a file that is not a spec. Revoked on click so a
+    // tab left open for a long time is not holding the string alive indefinitely.
+    const dl = el.querySelector("#cdScriptDl");
+    if (dl) {
+      dl.addEventListener("click", (e) => {
+        e.preventDefault();
+        const url = URL.createObjectURL(new Blob([doc.spec], { type: "text/plain" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${c.title || "test"}.spec.ts`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      });
+    }
   }
 
   // ----------------------------------------------------------- runs & versions
@@ -3894,6 +4498,13 @@ async function renderCaseView(caseId, routeProjectId) {
 
     const save = document.getElementById("cdSave");
     if (save) save.addEventListener("click", () => saveCaseSteps(c, repaint));
+
+    // The "save it anyway" answer to the removed-last-check refusal. Delegated on the feedback
+    // container because the button only exists while that refusal is showing, and this block runs
+    // on every repaint. TD-89.
+    const feedback = document.getElementById("caseFeedback");
+    const confirmBtn = feedback?.querySelector('[data-act="save-no-assertion"]');
+    if (confirmBtn) confirmBtn.addEventListener("click", () => saveCaseSteps(c, repaint, true));
 
     const title = document.getElementById("cdTitle");
     if (title && canAuthor) title.addEventListener("change", async () => {
@@ -4300,7 +4911,11 @@ scrimEl.addEventListener("click", closeSidebarDrawer);
 // leaves the server on its own env-configured default rather than the client
 // silently overriding it with a hardcoded guess.
 const runOptions = {};
-const optionDefaults = { gateReview: false, selfHeal: true };
+// Both OFF unless the server says otherwise. /api/health overwrites these with the server's
+// real configured defaults a moment later; hardcoding `selfHeal: true` here meant the toggle
+// showed ON before the server had been asked, and disagreed with it whenever SELF_HEAL_DEFAULT
+// was unset. TD-83.
+const optionDefaults = { gateReview: false, selfHeal: false };
 
 function paintToggle(el, on) { el.setAttribute("aria-pressed", String(on)); }
 
@@ -4325,6 +4940,41 @@ fetch("/api/health")
   })
   .catch(() => { /* health is a diagnostic; the toggles still work without it */ });
 
+/**
+ * Clear the cached browser walks the step editor uses to verify an edit.
+ *
+ * Reports the count back in the row's own description line rather than a toast: the popover is
+ * already open and about to be dismissed, and a toast for a maintenance action nobody is watching
+ * is worse than the number appearing where the button is. Reuses the existing `.settings-row`
+ * markup — no new class (rule 3). TECH_DEBT.md TD-85.
+ */
+const clearWalkCacheBtnEl = document.getElementById("clearWalkCacheBtn");
+const clearWalkCacheNoteEl = document.getElementById("clearWalkCacheNote");
+const CLEAR_WALK_CACHE_IDLE = clearWalkCacheNoteEl?.textContent ?? "";
+if (clearWalkCacheBtnEl) {
+  clearWalkCacheBtnEl.addEventListener("click", async () => {
+    clearWalkCacheBtnEl.disabled = true;
+    clearWalkCacheNoteEl.textContent = "Clearing…";
+    try {
+      // `window.fetch` is wrapped at the top of this file to attach the bearer token to
+      // same-origin requests, so this needs no header of its own.
+      const res = await fetch("/api/cache/walks/clear", { method: "POST" });
+      const body = await res.json().catch(() => null);
+      clearWalkCacheNoteEl.textContent = res.ok
+        ? (body?.message ?? "Cleared.")
+        : (res.status === 403
+          ? "Only an admin can clear the cache."
+          : (body?.error ?? "Could not clear the cache."));
+    } catch {
+      clearWalkCacheNoteEl.textContent = "Could not reach the server.";
+    } finally {
+      clearWalkCacheBtnEl.disabled = false;
+      // Put the description back, so reopening the popover doesn't show a stale result.
+      setTimeout(() => { clearWalkCacheNoteEl.textContent = CLEAR_WALK_CACHE_IDLE; }, 6000);
+    }
+  });
+}
+
 settingsBtnEl.addEventListener("click", () => {
   const open = settingsPopEl.classList.toggle("hidden");
   settingsBtnEl.setAttribute("aria-expanded", String(!open));
@@ -4337,18 +4987,156 @@ document.addEventListener("click", (e) => {
 });
 
 // -----------------------------------------------------------------------------
-// Coverage segmented control
+// Header actions menu — the topbar hamburger
+//
+// History, Team, Settings, the session badge and Sign out are authored inline in
+// index.html and wired up above. This block MOVES those exact nodes into a menu
+// panel — appendChild relocates a live node, it does not clone it, so every id,
+// every class and every listener bound earlier in this file is still on the same
+// element. Nothing here rebinds or re-creates a control.
+//
+// Open/closed is a NEW class, .hdr-menu-open, and this block never touches
+// .hidden: showView() owns .hidden, and the .hidden rules already on Team, the
+// badge and Sign out (auth/role gating) must keep meaning exactly what they meant
+// before — a menu that also toggled .hidden would fight them.
+//
+// The Settings popover moves in too, so it renders as an in-flow submenu under
+// its own button instead of a second floating card overlapping this one. Its own
+// toggle and outside-click handler above are unchanged: the popover sits inside
+// the panel, so a click on it is a click inside the menu.
 // -----------------------------------------------------------------------------
 
-let coverage = "standard";
-coverageSegEl.addEventListener("click", (e) => {
-  const btn = e.target.closest(".seg-btn");
-  if (!btn) return;
-  coverage = btn.dataset.coverage;
-  coverageSegEl.querySelectorAll(".seg-btn").forEach((b) => {
-    b.classList.toggle("active", b === btn);
+const topbarActionsEl = document.querySelector(".topbar-actions");
+
+const hdrMenuWrapEl = document.createElement("div");
+hdrMenuWrapEl.className = "hdr-menu-wrap";
+
+const hdrMenuBtnEl = document.createElement("button");
+hdrMenuBtnEl.type = "button";
+hdrMenuBtnEl.id = "hdrMenuBtn";
+hdrMenuBtnEl.className = "hdr-menu-btn";
+hdrMenuBtnEl.setAttribute("aria-label", "Menu");
+hdrMenuBtnEl.setAttribute("aria-haspopup", "true");
+hdrMenuBtnEl.setAttribute("aria-expanded", "false");
+hdrMenuBtnEl.setAttribute("aria-controls", "hdrMenu");
+// Inlined rather than icon(): icons.js has no hamburger, and the three-bar mark is
+// the one glyph this file needs that the shared set doesn't carry.
+hdrMenuBtnEl.innerHTML =
+  '<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.75" stroke-linecap="round" ' +
+  'stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+  '<path d="M4 6h16M4 12h16M4 18h16"/></svg>';
+
+const hdrMenuEl = document.createElement("div");
+hdrMenuEl.id = "hdrMenu";
+hdrMenuEl.className = "hdr-menu";
+hdrMenuEl.setAttribute("aria-label", "Header actions");
+
+// Order is the order they read in the topbar today; settingsPop follows its own
+// button so it opens as a submenu in place.
+["historyBtn", "teamBtn", "settingsBtn", "settingsPop", "sessionBadge", "signOutBtn"]
+  .forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) hdrMenuEl.appendChild(el);
   });
+
+hdrMenuWrapEl.appendChild(hdrMenuBtnEl);
+hdrMenuWrapEl.appendChild(hdrMenuEl);
+if (topbarActionsEl) topbarActionsEl.appendChild(hdrMenuWrapEl);
+
+function hdrMenuIsOpen() { return hdrMenuEl.classList.contains("hdr-menu-open"); }
+
+/** Every control the panel is currently offering, in DOM order. Filtered on
+ *  offsetParent so a .hidden Team button or a closed Settings popover is skipped —
+ *  arrow keys must not land on something the user cannot see. */
+function hdrMenuItems() {
+  return Array.from(hdrMenuEl.querySelectorAll("button"))
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+}
+
+function openHdrMenu(focusFirst) {
+  hdrMenuEl.classList.add("hdr-menu-open");
+  hdrMenuBtnEl.setAttribute("aria-expanded", "true");
+  if (!focusFirst) return;
+  const items = hdrMenuItems();
+  if (items.length) items[0].focus();
+}
+
+function closeHdrMenu(refocus) {
+  if (!hdrMenuIsOpen()) return;
+  hdrMenuEl.classList.remove("hdr-menu-open");
+  hdrMenuBtnEl.setAttribute("aria-expanded", "false");
+  if (refocus) hdrMenuBtnEl.focus();
+}
+
+// detail === 0 means the click came from Enter/Space, not a pointer: a keyboard
+// user gets focus moved into the panel, a mouse user does not have it stolen.
+hdrMenuBtnEl.addEventListener("click", (e) => {
+  if (hdrMenuIsOpen()) closeHdrMenu(false);
+  else openHdrMenu(e.detail === 0);
 });
+
+hdrMenuBtnEl.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown") return;
+  e.preventDefault();
+  openHdrMenu(true);
+});
+
+// A chosen action closes the menu. Settings is the exception — its popover lives
+// inside this panel, so opening it must leave the panel up.
+hdrMenuEl.addEventListener("click", (e) => {
+  if (settingsBtnEl.contains(e.target) || settingsPopEl.contains(e.target)) return;
+  if (e.target.closest("button")) closeHdrMenu(false);
+});
+
+hdrMenuEl.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  const items = hdrMenuItems();
+  if (!items.length) return;
+  e.preventDefault();
+  const at = items.indexOf(document.activeElement);
+  const next = e.key === "ArrowDown"
+    ? (at + 1) % items.length
+    : (at <= 0 ? items.length - 1 : at - 1);
+  items[next].focus();
+});
+
+// Tab out of the last item closes the menu. relatedTarget null means focus went
+// nowhere at all — a pointer landing on the panel's own padding — which must NOT
+// count as leaving, or clicking inside the menu would dismiss it.
+hdrMenuWrapEl.addEventListener("focusout", (e) => {
+  if (!e.relatedTarget) return;
+  if (hdrMenuWrapEl.contains(e.relatedTarget)) return;
+  closeHdrMenu(false);
+});
+
+document.addEventListener("click", (e) => {
+  if (!hdrMenuIsOpen()) return;
+  if (hdrMenuWrapEl.contains(e.target)) return;
+  closeHdrMenu(false);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !hdrMenuIsOpen()) return;
+  closeHdrMenu(true);
+});
+
+// -----------------------------------------------------------------------------
+// Coverage
+//
+// The Minimal/Standard/Full segmented control was removed from the composer. The
+// VALUE stays, pinned to the default the control shipped selected, because it is
+// still part of the POST /api/runs body and the server still validates it and
+// sizes the run from it (budgetFor() in src/stages/testCases.ts: minimal 2,
+// standard 4, full 5 cases). Dropping the field would change an existing route's
+// request shape; pinning it means every run behaves exactly as an untouched
+// control did.
+//
+// .seg/.seg-btn stay in style.css on purpose — the case-detail tabs (Steps /
+// Script / Runs & versions) reuse both classes.
+// -----------------------------------------------------------------------------
+
+const coverage = "standard";
 
 // -----------------------------------------------------------------------------
 // Sidebar Projects tree — real projects, from GET /api/projects.
@@ -4377,6 +5165,18 @@ const RUN_SDOT_CLASS = {
   truncated_no_assertion: "unconfirmed",
   error: "blocked",
 };
+
+/**
+ * A URL as a person reads it: no scheme, no trailing slash.
+ *
+ * Display only. Deliberately NOT normalizeUrlKey() below — that one exists to match
+ * normaliseUrlKey() in src/server/projects.ts so a run finds its project row, and it lowercases
+ * for that reason. Borrowing it here would both mangle a case-sensitive path and couple a cosmetic
+ * choice to a matching rule, so a later tweak to either would silently break the other.
+ */
+function displayUrl(url) {
+  return (url || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+}
 
 /** MUST match normaliseUrlKey() in src/server/projects.ts and the backfill migration's SQL —
  *  it's how a run row finds the project row it belongs under. */
@@ -4428,6 +5228,38 @@ function groupRunsByUrl(runs) {
   return [...groups.values()];
 }
 
+/**
+ * The heading-level "New suite" form, rendered ABOVE the tree because it is not scoped to any one
+ * project. A suite must belong to a project — createSuite() in src/server/library.ts takes a
+ * required projectId — so the picker is what supplies it. The name and the picker are on separate
+ * rows: the sidebar is ~244px wide and a name field plus a project select do not share one.
+ */
+function topLevelSuiteFormHtml(projects) {
+  if (newSuiteFor !== NEW_SUITE_ANY || !canAuthorSuites()) return "";
+  // Defensive: the button is already hidden when there are no projects, since there would be no
+  // valid id to post against.
+  if (!projects.length) return "";
+  // Fall back to the first project when the remembered one has gone (deleted, or no longer
+  // visible) so the form can never post an id that is not in the list it is showing.
+  const chosen = projects.some((p) => p.id === newSuiteProject) ? newSuiteProject : projects[0].id;
+  const options = projects
+    .map((p) => `<option value="${escapeHtml(p.id)}"${p.id === chosen ? " selected" : ""}>${escapeHtml(p.name)}</option>`)
+    .join("");
+  return `
+    <div class="tree-row tree-suite-new tree-suite-new-top">
+      <input type="text" class="suite-new-input" id="newSuiteInput"
+             placeholder="Suite name" value="${escapeHtml(newSuiteName)}"
+             aria-label="Name for the new suite" />
+    </div>
+    <div class="tree-row tree-suite-new tree-suite-new-top">
+      <select class="suite-new-input" id="newSuiteProject"
+              aria-label="Project this suite belongs to">${options}</select>
+      <button type="button" class="dl-btn-inline" data-suite-create-top="1">Add</button>
+      <button type="button" class="dl-btn-inline" data-suite-cancel="1" title="Cancel">&times;</button>
+    </div>
+    ${newSuiteError ? `<div class="suite-new-err">${escapeHtml(newSuiteError)}</div>` : ""}`;
+}
+
 function renderProjectsTree(runs) {
   if (!sidebarTreeEl) return;
 
@@ -4435,6 +5267,14 @@ function renderProjectsTree(runs) {
   // role, this covers the no-database case, where the sidebar is showing URL groupings rather
   // than project rows and there is nothing a create button could write to.
   if (addProjectBtnEl) addProjectBtnEl.classList.toggle("hidden", !canManageProjects());
+
+  // Suites are `tester`+ while projects are `admin`+, so this is NOT the same gate. It also needs
+  // at least one project, because a suite has to be created inside one and the form's picker would
+  // otherwise have nothing to offer. Deliberately ABOVE the loading return below: `projectsCache`
+  // is null on that frame, so the button stays hidden until we know, rather than flashing in.
+  if (addSuiteBtnEl) {
+    addSuiteBtnEl.classList.toggle("hidden", !canAuthorSuites() || !projectsCache?.length);
+  }
 
   if (projectsCache === null && !projectsUnavailable) {
     sidebarTreeEl.innerHTML = `<div class="tree-empty">Loading projects…</div>`;
@@ -4490,7 +5330,9 @@ function renderProjectsTree(runs) {
 
   const canManage = canManageProjects();
 
-  sidebarTreeEl.innerHTML = (creating ? projectFormHtml() : "") + projects.map((p) => {
+  sidebarTreeEl.innerHTML = (creating ? projectFormHtml() : "")
+    + topLevelSuiteFormHtml(projects)
+    + projects.map((p) => {
     const open = expandedProjects.has(p.id);
     const projectRuns = byKey.get(normalizeUrlKey(p.name) || p.name) || [];
     // The number on a project row is its SAVED CASE count, because the suite rows nested under it
@@ -4523,24 +5365,37 @@ function renderProjectsTree(runs) {
         <span class="tree-chevron">${icon(open ? "chevron-down" : "chevron-right", { size: 9 })}</span>
         <span class="tree-label" title="${escapeHtml(rowTitle)}">${escapeHtml(p.name)}</span>
         ${canManage ? `<button type="button" class="dl-btn-inline tree-project-edit" data-project-edit="${escapeHtml(p.id)}" title="Rename or set a base URL">Edit</button>` : ""}
+        ${canManage ? `<button type="button" class="dl-btn-inline tree-project-del" data-project-delete="${escapeHtml(p.id)}" title="Delete this project">Delete</button>` : ""}
         <span class="tree-count">${caseCount}</span>
       </div>`;
     // Saved suites first, then recent runs. The suites are the reusable, zero-cost thing — a
     // project's library is more useful to reach than its scrollback, so it sits above.
+    // Renaming swaps the row for the form in place, the same way editing a project does, so the
+    // suite being renamed stays where the eye already is. Inline rather than prompt() for the same
+    // reason the create form is inline (see below): a server refusal needs somewhere to land.
     const suiteRows = !open ? "" : (suitesCache
       .filter((s) => s.projectId === p.id)
-      .map((s) => `
-      <div class="tree-row tree-suite" data-suite-id="${escapeHtml(s.id)}">
-        <span class="tree-label" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
-        <span class="tree-count">${s.caseCount}</span>
-      </div>`).join(""));
+      .map((s) => (renameSuiteId === s.id
+      ? `<div class="tree-row tree-suite-new">
+           <input type="text" class="suite-new-input" id="renameSuiteInput"
+                  placeholder="Suite name" value="${escapeHtml(renameSuiteName)}"
+                  aria-label="New name for this suite" />
+           <button type="button" class="dl-btn-inline" data-suite-rename-save="${escapeHtml(s.id)}">Save</button>
+           <button type="button" class="dl-btn-inline" data-suite-rename-cancel="1" title="Cancel">&times;</button>
+         </div>
+         ${renameSuiteError ? `<div class="suite-new-err">${escapeHtml(renameSuiteError)}</div>` : ""}`
+      : `<div class="tree-row tree-suite" data-suite-id="${escapeHtml(s.id)}">
+           <span class="tree-label" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+           ${canAuthorSuites() ? `<button type="button" class="dl-btn-inline tree-suite-edit" data-suite-rename="${escapeHtml(s.id)}" title="Rename this suite">Rename</button>` : ""}
+           ${canDeleteSuites() ? `<button type="button" class="dl-btn-inline tree-suite-del" data-suite-delete="${escapeHtml(s.id)}" title="Delete this suite">Delete</button>` : ""}
+           <span class="tree-count">${s.caseCount}</span>
+         </div>`)).join(""));
 
     // Creating a suite belongs where the suites already are — someone looking at a project's
     // suites and wanting another looks right here. Naming happens inline rather than through a
     // prompt() so the server's refusal (duplicate name, project you can't see) has somewhere to
     // land. `tester`+ only; the server enforces it regardless (POST /api/suites).
-    const canAuthorSuites = !auth.required || roleAtLeast(auth.role, "tester");
-    const newSuiteRow = !open || !canAuthorSuites ? "" : (newSuiteFor === p.id
+    const newSuiteRow = !open || !canAuthorSuites() ? "" : (newSuiteFor === p.id
       ? `<div class="tree-row tree-suite-new">
            <input type="text" class="suite-new-input" id="newSuiteInput"
                   placeholder="Suite name" value="${escapeHtml(newSuiteName)}"
@@ -4582,6 +5437,29 @@ function renderProjectsTree(runs) {
     });
   });
 
+  // Delete a project. The route (DELETE /api/projects/:id, admin+) and its rules already
+  // existed; the sidebar simply never offered a way to reach them, so an owner had no control
+  // to click. The server REFUSES with 409 while the project still holds runs and says how many
+  // (deleteProject in src/server/projects.ts) — that refusal is deliberate, so this surfaces the
+  // server's own sentence rather than second-guessing it or offering to cascade the runs away.
+  sidebarTreeEl.querySelectorAll("[data-project-delete]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      // Same reason as Edit above: the row itself toggles expand/collapse.
+      e.stopPropagation();
+      const p = projects.find((x) => x.id === btn.dataset.projectDelete);
+      if (!p) return;
+      if (!confirm(`Delete the project "${p.name}"? Its saved suites and cases go with it.`)) return;
+      try {
+        await api(`/api/projects/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+        expandedProjects.delete(p.id);
+        await loadProjects();
+        toast(`Project "${p.name}" deleted.`);
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+  });
+
   sidebarTreeEl.querySelectorAll("[data-suite-add]").forEach((row) => {
     row.addEventListener("click", () => {
       newSuiteFor = row.dataset.suiteAdd;
@@ -4601,12 +5479,20 @@ function renderProjectsTree(runs) {
   const createSuite = async (projectId) => {
     const name = newSuiteName.trim();
     if (!name) { newSuiteError = "Give the suite a name."; return renderProjectsTree(allRunsCache); }
+    // Only reachable from the heading form, and only if its picker somehow came back empty.
+    if (!projectId) {
+      newSuiteError = "Choose a project for this suite.";
+      return renderProjectsTree(allRunsCache);
+    }
     try {
       const created = await api("/api/suites", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId, name }),
       });
-      newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
+      newSuiteFor = null; newSuiteName = ""; newSuiteError = ""; newSuiteProject = null;
+      // Created from the heading, the project it landed in may well be collapsed — open it so the
+      // new suite is where the eye goes when it comes back to the tree.
+      expandedProjects.add(projectId);
       await loadProjects();                       // refresh suitesCache so the new row appears
       // Land in the new (empty) suite — adding cases is the obvious next step and it should be
       // in front of them rather than something they have to go find.
@@ -4618,11 +5504,23 @@ function renderProjectsTree(runs) {
     }
   };
 
+  // Opened under a project, the project is `newSuiteFor`; opened from the heading it is whatever
+  // the picker says. One function either way, so createSuite() did not have to change.
+  const targetProjectId = () => (newSuiteFor === NEW_SUITE_ANY ? (newSuiteProject || "") : newSuiteFor);
+
+  const projectSelect = document.getElementById("newSuiteProject");
+  if (projectSelect) {
+    // Sync state to what actually rendered — this is what makes the fallback above real rather
+    // than only visual, since the render itself must not write state.
+    newSuiteProject = projectSelect.value;
+    projectSelect.addEventListener("change", () => { newSuiteProject = projectSelect.value; });
+  }
+
   const nameInput = document.getElementById("newSuiteInput");
   if (nameInput) {
     nameInput.addEventListener("input", () => { newSuiteName = nameInput.value; });
     nameInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); createSuite(newSuiteFor); }
+      if (e.key === "Enter") { e.preventDefault(); createSuite(targetProjectId()); }
       if (e.key === "Escape") {
         newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
         renderProjectsTree(allRunsCache);
@@ -4631,6 +5529,104 @@ function renderProjectsTree(runs) {
   }
   sidebarTreeEl.querySelectorAll("[data-suite-create]").forEach((btn) => {
     btn.addEventListener("click", () => createSuite(btn.dataset.suiteCreate));
+  });
+  sidebarTreeEl.querySelectorAll("[data-suite-create-top]").forEach((btn) => {
+    btn.addEventListener("click", () => createSuite(targetProjectId()));
+  });
+
+  // Suite rename + delete. Every one of these calls stopPropagation() because the row they sit in
+  // is itself a click target that opens the suite — without it, reaching for Rename would navigate
+  // away before the form could render.
+  sidebarTreeEl.querySelectorAll("[data-suite-rename]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const s = suitesCache.find((x) => x.id === btn.dataset.suiteRename);
+      if (!s) return;
+      // One suite form at a time: two open forms would mean two inputs competing for focus.
+      newSuiteFor = null; newSuiteName = ""; newSuiteError = "";
+      renameSuiteId = s.id;
+      renameSuiteName = s.name || "";
+      renameSuiteError = "";
+      renderProjectsTree(allRunsCache);
+      document.getElementById("renameSuiteInput")?.focus();
+    });
+  });
+
+  const saveSuiteName = async (suiteId) => {
+    const name = renameSuiteName.trim();
+    if (!name) { renameSuiteError = "Give the suite a name."; return renderProjectsTree(allRunsCache); }
+    // Unchanged name: just close. Mirrors the Suite screen's own rename, which returns early too.
+    const current = suitesCache.find((x) => x.id === suiteId);
+    if (current && name === current.name) {
+      renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";
+      return renderProjectsTree(allRunsCache);
+    }
+    try {
+      await api(`/api/suites/${encodeURIComponent(suiteId)}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";
+      await loadProjects();
+      toast("Suite renamed.");
+      // If that suite is the screen currently open, its heading and crumb still say the old name.
+      // navigate() to the same hash re-runs applyRoute() rather than doing nothing (see :4310).
+      const hash = "#/suite/" + encodeURIComponent(suiteId);
+      if (location.hash === hash) navigate(hash);
+    } catch (err) {
+      renameSuiteError = err.message;
+      renderProjectsTree(allRunsCache);
+      document.getElementById("renameSuiteInput")?.focus();
+    }
+  };
+
+  const renameInput = document.getElementById("renameSuiteInput");
+  if (renameInput) {
+    renameInput.addEventListener("input", () => { renameSuiteName = renameInput.value; });
+    renameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); saveSuiteName(renameSuiteId); }
+      if (e.key === "Escape") {
+        renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";
+        renderProjectsTree(allRunsCache);
+      }
+    });
+  }
+  sidebarTreeEl.querySelectorAll("[data-suite-rename-save]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      saveSuiteName(btn.dataset.suiteRenameSave);
+    });
+  });
+  sidebarTreeEl.querySelectorAll("[data-suite-rename-cancel]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";
+      renderProjectsTree(allRunsCache);
+    });
+  });
+
+  // Deleting a suite is unconditional server-side, unlike deleting a project (which refuses while
+  // runs remain). A suite is a grouping: `suite_cases` cascades, `test_cases` does not, so the
+  // authored cases survive. The confirm says so, in the Suite screen's own words.
+  sidebarTreeEl.querySelectorAll("[data-suite-delete]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const s = suitesCache.find((x) => x.id === btn.dataset.suiteDelete);
+      if (!s) return;
+      if (!confirm(`Delete the suite "${s.name}"? The cases themselves are kept.`)) return;
+      // Read the hash BEFORE the await: loadProjects() can re-render and navigate underneath us.
+      const onThisSuite = location.hash.startsWith("#/suite/" + encodeURIComponent(s.id));
+      if (renameSuiteId === s.id) { renameSuiteId = null; renameSuiteName = ""; renameSuiteError = ""; }
+      try {
+        await api(`/api/suites/${encodeURIComponent(s.id)}`, { method: "DELETE" });
+        await loadProjects();
+        toast("Suite deleted — its cases were kept.");
+        // Don't leave someone standing on the screen of a suite that no longer exists.
+        if (onThisSuite) navigate("#/");
+      } catch (err) {
+        toast(err.message);
+      }
+    });
   });
 
   sidebarTreeEl.querySelectorAll("[data-toggle-key]").forEach((row) => {
@@ -4647,7 +5643,7 @@ function renderProjectsTree(runs) {
   sidebarTreeEl.querySelectorAll(".tree-row.tree-case").forEach((row) => {
     row.addEventListener("click", () => {
       if (row.dataset.prompt) promptEl.value = row.dataset.prompt;
-      if (row.dataset.url) urlEl.value = row.dataset.url;
+      if (row.dataset.url) setUrlFieldValue(row.dataset.url);
       navigate("#/run/" + row.dataset.runId);
     });
   });
@@ -4747,6 +5743,18 @@ addProjectBtnEl?.addEventListener("click", () => {
   document.getElementById("projectFormName")?.focus();
 });
 
+// "New suite" from the Projects heading — creating a suite without first expanding the project it
+// belongs to. The project is picked in the form; everything after that is the existing create path.
+addSuiteBtnEl?.addEventListener("click", () => {
+  if (!canAuthorSuites()) return;
+  renameSuiteId = null; renameSuiteName = ""; renameSuiteError = "";   // one suite form at a time
+  newSuiteFor = NEW_SUITE_ANY;
+  newSuiteName = "";
+  newSuiteError = "";
+  renderProjectsTree(allRunsCache);
+  document.getElementById("newSuiteInput")?.focus();
+});
+
 historyBtnEl.addEventListener("click", () => navigate("#/history"));
 teamBtnEl.addEventListener("click", () => navigate("#/team"));
 allRunsBtnEl.addEventListener("click", () => navigate("#/history"));
@@ -4807,7 +5815,7 @@ async function renderHistoryView() {
           const src = runs.find((r) => r.runId === runId);
           if (!src) return;
           promptEl.value = src.prompt || "";
-          urlEl.value = src.url || "";
+          setUrlFieldValue(src.url || "");
           navigate("#/");
           toast("Loaded that run into the composer — press Run test to go again");
           return;
@@ -4869,7 +5877,8 @@ async function renderTeamView() {
     </div>
     <div id="teamFeedback"></div>
     <div id="teamAddWrap"></div>
-    <div class="panel"><div id="teamRows"></div></div>`;
+    <div class="panel"><div id="teamRows"></div></div>
+    <div id="llmConfigWrap"></div>`;
 
   const rows = document.getElementById("teamRows");
 
@@ -4888,12 +5897,11 @@ async function renderTeamView() {
       <div class="team-add">
         <label class="field">
           <span class="field-label">Email of an existing account</span>
+          <!-- Plain free text, no suggestions. The endpoint that fed a datalist here returned
+               every registered address on the instance to any admin, which across separate
+               organisations is a customer list. Typing the full address is the cost of that. -->
           <input id="teamAddEmail" type="email" placeholder="someone@example.com"
-            autocomplete="off" spellcheck="false" list="teamAddSuggestions" />
-          <!-- Suggestions are filled in below, after the list of addable accounts loads. A
-               datalist is used deliberately: it needs no CSS, no keyboard handling and no new
-               class names, and the field stays plain free text if the list never arrives. -->
-          <datalist id="teamAddSuggestions"></datalist>
+            autocomplete="off" spellcheck="false" />
         </label>
         <label class="field" style="flex:0 0 150px">
           <span class="field-label">Role</span>
@@ -4918,19 +5926,9 @@ async function renderTeamView() {
       );
     });
 
-    // Populate the suggestions without blocking the roster render below. A failure here is
-    // silent by design — the field still works as free text, which is exactly what it did before.
-    fetch(`/api/organisations/${encodeURIComponent(orgId)}/addable-users`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        const list = document.getElementById("teamAddSuggestions");
-        if (!list || !data || !Array.isArray(data.emails)) return;
-        list.innerHTML = data.emails
-          .map((e) => `<option value="${escapeHtml(e)}"></option>`)
-          .join("");
-      })
-      .catch(() => { /* suggestions are a convenience, never a requirement */ });
   }
+
+  if (isAdmin) void renderLlmConfigPanel(orgId);
 
   rows.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">Loading…</div>`;
 
@@ -5108,3 +6106,169 @@ applyRoute();
 // Async, and deliberately AFTER the synchronous applyRoute() above: with auth off this resolves
 // to a no-op, so the first paint is unchanged. With auth on it re-routes to the login view.
 initAuth();
+
+/**
+ * The per-organisation LLM configuration panel — admin and owner only.
+ *
+ * THE KEY IS WRITE-ONLY, and this panel is built so that it could not reveal one even if it
+ * wanted to: the server's GET returns `keySet` and a four-character hint, and there is no route
+ * that returns a key. So the UI shows "Set ••••3f9a" with a Replace action, never a value in a
+ * readable field. The input is `type="password"`, `autocomplete="off"`, and is cleared the moment
+ * it has been sent.
+ *
+ * Absent entirely when the server has the feature off: the fetch 404s and the panel renders
+ * nothing at all, rather than a control that cannot work.
+ */
+async function renderLlmConfigPanel(orgId) {
+  const wrap = document.getElementById("llmConfigWrap");
+  if (!wrap) return;
+
+  let cfg;
+  try {
+    cfg = await api(`/api/organisations/${encodeURIComponent(orgId)}/llm-config`);
+  } catch {
+    // 404 (feature off) or 403 — either way there is nothing to offer here.
+    wrap.innerHTML = "";
+    return;
+  }
+
+  const modelOptions = (selected) => [
+    `<option value=""${selected ? "" : " selected"}>Use the server's default</option>`,
+    ...cfg.availableModels.map((m) =>
+      `<option value="${escapeHtml(m)}"${m === selected ? " selected" : ""}>${escapeHtml(m)}</option>`),
+  ].join("");
+
+  wrap.innerHTML = `
+    <div style="margin-top:28px">
+      <div class="eyebrow">AI CONFIGURATION</div>
+      <h1 class="page-head-title">This organisation's Gemini key and model</h1>
+      <p class="tagline">Runs started by this organisation use the key set here and bill to its own
+      quota. Leave it unset to use the server's shared configuration.</p>
+    </div>
+    <div id="llmFeedback"></div>
+    <div class="panel">
+      <div class="team-add">
+        <label class="field">
+          <span class="field-label">Gemini API key</span>
+          ${cfg.keySet
+            ? `<p class="hrow-meta" id="llmKeyState">Set — <strong>${escapeHtml(cfg.keyHint || "••••")}</strong>.
+               A stored key is never shown again; you can replace or remove it.</p>`
+            : `<p class="hrow-meta" id="llmKeyState">Not set — this organisation uses the server's key.</p>`}
+          <input id="llmKeyInput" type="password" autocomplete="off" spellcheck="false"
+                 placeholder="${cfg.keySet ? "Enter a new key to replace it" : "Paste this organisation's Gemini API key"}"
+                 ${cfg.custodyConfigured ? "" : "disabled"} />
+          ${cfg.custodyConfigured ? "" :
+            `<p class="team-error">This server has no encryption key configured (LLM_KEY_FILE), so an
+             API key cannot be stored safely. Ask an operator to set one.</p>`}
+        </label>
+        <label class="field" style="flex:0 0 200px">
+          <span class="field-label">Model</span>
+          <select id="llmModel" class="team-select">${modelOptions(cfg.model)}</select>
+        </label>
+        <label class="field" style="flex:0 0 200px">
+          <span class="field-label">Cheap-call model</span>
+          <select id="llmModelLite" class="team-select">${modelOptions(cfg.modelLite)}</select>
+        </label>
+        <label class="field" style="flex:0 0 150px">
+          <span class="field-label">Max LLM calls per run</span>
+          <input id="llmMaxCalls" type="number" min="1" placeholder="server default"
+                 value="${cfg.maxCallsPerRun ?? ""}" />
+        </label>
+        <div class="team-add-actions">
+          <button type="button" id="llmSaveBtn" class="dl-btn-inline">Save</button>
+          ${cfg.keySet ? `<button type="button" id="llmRemoveKeyBtn" class="dl-btn-inline">Remove key</button>` : ""}
+        </div>
+      </div>
+    </div>`;
+
+  const feedback = (msg, isError) => {
+    const el = document.getElementById("llmFeedback");
+    if (el) el.innerHTML = `<p class="${isError ? "team-error" : "team-ok"}">${escapeHtml(msg)}</p>`;
+  };
+
+  const save = async (body, okMsg) => {
+    const btn = document.getElementById("llmSaveBtn");
+    if (btn) btn.disabled = true;
+    try {
+      await api(`/api/organisations/${encodeURIComponent(orgId)}/llm-config`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      // Re-render from the server rather than patching local state: the key hint and keySet must
+      // come from what was actually stored, never from what we think we sent.
+      await renderLlmConfigPanel(orgId);
+      feedback(okMsg, false);
+    } catch (err) {
+      feedback(err.message || "Could not save the configuration.", true);
+      if (btn) btn.disabled = false;
+    }
+  };
+
+  document.getElementById("llmSaveBtn").addEventListener("click", () => {
+    const keyEl = document.getElementById("llmKeyInput");
+    const key = keyEl ? keyEl.value.trim() : "";
+    const maxRaw = document.getElementById("llmMaxCalls").value.trim();
+    const body = {
+      model: document.getElementById("llmModel").value || null,
+      modelLite: document.getElementById("llmModelLite").value || null,
+      maxCallsPerRun: maxRaw === "" ? null : Number(maxRaw),
+    };
+    // Only send a key when one was typed — an untouched field must not clear the stored key.
+    if (key) body.apiKey = key;
+    // Cleared immediately, so it is not sitting in the DOM after the request.
+    if (keyEl) keyEl.value = "";
+    void save(body, key ? "Key and model saved. The key is stored encrypted and cannot be shown again." : "Model settings saved.");
+  });
+
+  const removeBtn = document.getElementById("llmRemoveKeyBtn");
+  if (removeBtn) {
+    removeBtn.addEventListener("click", () => {
+      void save({ apiKey: null }, "Key removed — this organisation now uses the server's key.");
+    });
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Composer field wiring (URL scheme, validation, button states)
+// -----------------------------------------------------------------------------
+// Placed at the end of the file on purpose: refreshNewRunState() reads `currentRunId`, which is a
+// `let` declared further down. Running this any earlier would hit its temporal dead zone.
+
+// Typing never blocks or rejects: the value is only normalised (scheme split out, whitespace and
+// leading slashes dropped) and any existing error is cleared.
+urlEl.addEventListener("input", () => {
+  normalizeUrlField(true);
+  clearUrlError();
+  refreshComposerState();
+});
+
+// Pasting is handled by the same input handler on the next tick, so a pasted scheme flips the
+// prefix rather than landing in the value.
+urlEl.addEventListener("paste", () => setTimeout(() => {
+  normalizeUrlField(true);
+  clearUrlError();
+  refreshComposerState();
+}, 0));
+
+// Validate on blur — the first moment the person has finished a thought.
+urlEl.addEventListener("blur", () => {
+  normalizeUrlField(false);
+  const problem = urlEl.value.trim() ? urlProblem() : "";
+  if (problem) showUrlError(problem); else clearUrlError();
+});
+
+promptEl.addEventListener("input", refreshComposerState);
+
+// The prefix toggles https:// <-> http://. preventDefault because it sits inside a <label>, which
+// would otherwise just forward the click to the input.
+urlSchemeEl.addEventListener("click", (e) => {
+  e.preventDefault();
+  setUrlScheme(urlScheme() === "https://" ? "http://" : "https://", true);
+  urlEl.focus();
+});
+urlSchemeEl.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  e.preventDefault();
+  setUrlScheme(urlScheme() === "https://" ? "http://" : "https://", true);
+});
+
+refreshComposerState();

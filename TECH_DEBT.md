@@ -23,7 +23,12 @@ drifted from its own stated intent, a bug slipped through, or a gap nobody chose
 but "nobody has yet judged whether this is worth fixing, or how." Don't clear a `?` without
 actually making that call.
 
-## Status of fixes landed this session
+## Status of fixes landed in the 2026-08-14 session
+
+**This is a dated historical note, not a running status board.** It records one session's fixes and
+has not been extended since; the document now runs to TD-67 with updates as recent as 2026-09-05.
+Do not read it as "the latest state" — read the individual entries, and note that an entry's
+authority is its own heading, not this list.
 
 - **TD-01 (`missingActions` false-positive), TD-02 (SIGKILL destroys the report), TD-03 (Groq 429
   feedback loop): fixed and confirmed working against a real post-restart run**
@@ -45,8 +50,8 @@ actually making that call.
 
 | ID | Item | Severity | Type | Owner |
 |---|---|---|---|---|
-| TD-01 | `missingActions` can hard-fail a run over a *correct* IR | Critical | Accidental | Lakshya |
-| TD-02 | Executor's SIGKILL destroys the report needed to diagnose the failure it just caused | Critical | Accidental | Lakshya |
+| TD-01 | `missingActions` can hard-fail a run over a *correct* IR — **symptom fixed** (structural coverage count), **class still open**: it still regexes LLM-authored prose (`CASE_ACTION_LINE`, `ir.ts`) and is cited across the docs as the reference example of that failure mode | Critical | Accidental | Lakshya |
+| TD-02 | Executor's SIGKILL destroys the report needed to diagnose the failure it just caused — **fixed** (`TEST_RUN` raised 60s → 100s, a backstop above Playwright's own 50s per-test timeout) | Critical | Accidental | Lakshya |
 | TD-03 | Rate-limit handling burned IR-attempt budget instead of backing off — **fixed** (backoff wording + free rate-limit retries; the whole provider it was filed against, Groq, is also gone — `DECISIONS.md` D-21) | High | Accidental | Lakshya |
 | TD-04 | No general mechanism for a blocking interstitial (CAPTCHA, cookie wall, OTP, age gate) | High | Strategic | ? |
 | TD-05 | Duplicate element names in a merged multi-page AppModel produce ambiguous locators — *partial mitigation shipped, `.first()` fallback on genuine ambiguity; page-scoping fix still open* | High | Accidental | Lakshya |
@@ -64,7 +69,7 @@ actually making that call.
 | TD-17 | `store.read()` / `listRuns()` have no per-entry error isolation | Medium | Accidental | Lakshya |
 | TD-18 | Entry-URL allow-list is a pre-DNS-lookup hostname check (DNS-rebinding residual) | Low | Strategic | Lakshya |
 | TD-19 | Single-process, no multi-user isolation or per-user quotas | Low | Strategic | Lakshya |
-| TD-20 | No CI runs the test suite | High | Strategic | Lakshya |
+| TD-20 | No CI runs the test suite — **fixed** (`.github/workflows/test.yml` runs `npm ci`, `tsc --noEmit`, `npm test` on push and PR). Still open: CI is **not a merge gate**, so a red run can land | High | Strategic | Lakshya |
 | TD-21 | `tests/strategy.test.ts` flakes ~1 run in 6 under parallel load — **fixed**, import hoisted to module scope | Medium | Accidental | Lakshya |
 | TD-22 | LLM disk cache never expires; a key missing an input dimension serves stale results forever | Medium | Strategic | Lakshya |
 | TD-23 | Case-selection-gate progress events briefly corrupt the phase summary text | Low | Accidental | Lakshya |
@@ -95,12 +100,61 @@ actually making that call.
 | TD-49 | `discoverPagesHybrid` (multi-URL entry) remains auth-unaware | Medium | Strategic | ? |
 | TD-50 | Click-probe candidate cap is document order, not priority order | Low | Strategic | ? |
 | TD-51 | History screen can only ever show the newest 20 runs — `listRuns()` has no paging and re-reads every run's full event log per call | Medium | Strategic | ? |
+| TD-52 | `replayAndSnapshot`'s cache key omits the credentials it was given | Medium | Accidental | ? |
+| TD-53 | A malformed case id returns 500 with raw Postgres text | Low | Accidental | ? |
+| TD-54 | `/api/runs` capped the list BEFORE access-filtering it, so history shrank toward empty — **fixed** | High | Accidental | ? |
+| TD-55 | The test suite leaked two real run directories into `runs/` on every invocation — **fixed** | Medium | Accidental | ? |
+| TD-56 | The token premise is half stale, and the half that holds is narrower than it looked | High | Strategic | ? |
+| TD-57 | A bare-origin entry URL sent the IR prompt the wrong page — an Authentication case never saw the login form — **fixed** | High | Accidental | ? |
+| TD-58 | `toMicroModel`'s 30-element cap dropped one grounded element — filed, not fixed | Low | Accidental | ? |
+| TD-59 | `toMicroModel` sends one page, so a case spanning two pages cannot see both | Medium | Strategic | ? |
+| TD-60 | Grounding validates against the full model while the prompt shows a subset — theoretical, with a trigger | Medium | Strategic | ? |
+| TD-61 | The identity hypothesis was never a token argument, and has never been measured | Medium | Strategic | ? |
+| TD-62 | Hidden form inputs and a live CSRF token reach the model as if they were controls — **fixed** | High | Accidental | ? |
+| TD-63 | The `forms` block sent every hidden field's name AND value to the model, including CSRF tokens — **fixed** | High | Accidental | ? |
+| TD-64 | Hidden field values were recorded into publicly-served run artifacts — **fixed at capture**; `cleanedHtml` remains (TD-65) | High | Accidental | ? |
+| TD-65 | `cleanedHtml` persists every page's raw HTML into a publicly-served artifact, and nothing reads it | Medium | Strategic | ? |
+| TD-66 | A replay never collected credentials, so every saved login case failed at the login — **fixed**; see the 2026-09-06 follow-up: the fix shipped with a persistence gap that meant the prompt could never render, now also fixed | High | Accidental | ? |
+| TD-67 | The library could store a literal credential typed into the step editor — **fixed on the editor save path** (`restoreCredentialRefs` puts it back behind `${env:...}`); the save-from-run path was never affected | High | Strategic | ? |
+| TD-68 | A saved case lost its script when the run it came from was deleted — the Script tab said "No script yet" beside "Passed v1" — **fixed** (spec stored per version + `GET /api/cases/:id/script`, regenerating from the IR when no stored copy exists) | High | Strategic (root) / Accidental (in effect) | ? |
+| TD-69 | `detectBlocked` compared origins by string prefix, so an http→https or `www.` redirect reported every case as having left for an external provider — **fixed** (`isSameSite` compares hosts) | High | Accidental | ? |
+| TD-70 | A `select` step emitted `selectOption()` unconditionally, so a React combobox (an `<input>` with `role="combobox"`) failed with "Element is not a `<select>` element"; the `:near()` fallback also offered plain inputs for an action that can never act on one — **fixed** (`choose()` branches on the real tag; the fallback is narrowed for `select`) | High | Accidental | ? |
+| TD-71 | A missing Playwright ffmpeg stopped `browserContext.newPage()` outright, so a valid case was reported as a test failure with a blank screenshot instead of simply losing its video — **fixed** (probe + `PLAYWRIGHT_VIDEO=off` + a stated reason in the result) | Medium | Accidental | ? |
+| TD-72 | `:near()` returning several controls resolved via `.first()` (**DOM order, not proximity**), so a modal's `fill "Email"` landed on the Full Name box above it — **fixed** (label→next-control in DOM order, dialog scoping; TD-72 promoted from filed to fixed by run `db2c0b4c`) | High | Accidental | ? |
+| TD-73 | One `discovery` call sent **514,427 prompt tokens** — 40% of all prompt tokens on disk — because an element's accessible name was an inlined 648,107-char stylesheet and the concept-labeling prompt inlines names verbatim — **fixed** (per-name + per-list caps, an ARIA-snapshot cap, and a hard ceiling in `gemini.ts`) | Critical | Accidental | ? |
+| TD-74 | IR grounding retried a rejection the model cannot fix, spending the full 4-attempt budget re-deriving the same refusal — **fixed** (a repeated target signature stops the retries) | High | Accidental | ? |
+| TD-75 | An element's accessible name can be an entire inlined stylesheet, because `<style>` text is read as element text at capture — **the root cause behind TD-73, still open** | High | Accidental | ? |
+| TD-76 | `selectOption()` matches an option EXACTLY, so a step value cased differently from the `<option>` text retried for the full timeout reporting only "did not find some options" — **fixed** (trimmed, case-insensitive, then containment) | Medium | Accidental | ? |
+| TD-77 | Steps inside content revealed by a click (modal, tab, wizard) are never grounded, because discovery never saw it — **mitigated** (better resolution, TD-72) and **optionally fixed** behind `REPLAY_REGROUND`, which grounds them against the live page before a replay | High | Strategic | ? |
+| TD-78 | `Locator.evaluate()` given a function as a STRING evaluates it as an expression and never calls it, returning `undefined` — so TD-72's DOM-order rung reported "no match" on every lookup and silently fell through to geometry. It never ran once, in either implementation — **fixed** | High | Accidental | ? |
+| TD-79 | `choose()` resolved to whatever the step's locator returned and matched options once, immediately: a wrapper/label/custom shell was never walked to the real control, a server-populated list was read before it arrived, and a miss failed with Playwright's "did not find some options", naming neither the wanted value nor the available ones — **fixed** | High | Accidental | ? |
+| TD-80 | A failed case showed a red X and NO text whenever no LLM diagnosis existed — which is every replay, by design. The failing step and the Playwright error sat unread in `05-result.json` — **fixed** (surfaced deterministically, no model call) | High | Strategic | ? |
+| TD-81 | `resolveScope` cannot find a modal that sets no `role="dialog"`, no `aria-modal` and no dialog/modal class — the LMS's New User modal sets none of the three, so every lookup inside it is scoped to `body` and competes with the whole page behind it | Medium | Strategic | ? |
+| TD-82 | The entry URL's SCHEME decided whether a real page existed: a site that redirects `http` -> `https` left `appModel.baseUrl` on the typed scheme while every discovered page carried the landed one, so the IR navigate guard refused a correct step **and listed that same path as known** in its own hint — then paid for 4 retries the model could not satisfy — **fixed** | High | Accidental | ? |
+| TD-83 | Self-heal ran on every run with no way to decline it, and `suiteRunner` emitted nothing while doing it — so the browser re-ran the tests after the run looked finished, with no explanation and no cost attribution — **fixed** | High | Strategic | ? |
+| TD-84 | The editor's live walk decided which login box was the password from the TARGET, while the executed spec decides from the VALUE — so on a site whose fields are named by placeholder it typed the literal string `${env:TEST_USERNAME}`, never signed in, and reported every post-login step as "not present on the page" — **fixed** | Critical | Accidental | ? |
+| TD-85 | The walk cache keyed on a prefix containing `${env:...}` rather than the credentials used, and its disk half never expires — so one failed sign-in pinned a login-page snapshot for that case forever — **fixed** | High | Accidental | ? |
+| TD-86 | A save re-verified EVERY step against whatever page the walk could reach, so untouched steps on unvisited pages were rejected ("ghost rejections") and an untouched target could silently bind to a same-named element on a different page — **fixed** | High | Strategic | ? |
+| TD-87 | The vitest suite failed 1-3 tests per run on `Test timed out in 5000ms`, on a different set of files each time, all passing in isolation — the 5s default was calibrated for a pure-function suite that now launches real browsers — **fixed** | Medium | Accidental | ? |
+| TD-88 | The walk's page merge removed the stale page by EXACT url while every lookup uses `pageKey`, so `https://x.app` survived beside a fresh `https://x.app/` and `find` returned the stale one — **fixed** | Medium | Accidental | ? |
+| TD-89 | Nothing recomputed `meta.hasTerminalAssertion` on the edit path, so deleting a case's last `Check ...` row saved silently and the case reported **Passed forever while verifying nothing** — **fixed** | High | Strategic | ? |
+| TD-90 | Edited rows were paired with originals BY POSITION, so deleting one row marked the whole tail changed, queued five browser walks, and **renumbered every step below it** — version history and failure reports then pointed at the wrong step — **fixed** | High | Strategic | ? |
+| TD-91 | "Ask for a change" was given the case title, its steps and the instruction — and nothing about the site — so it invented element names from page headings, and unlike the translate path its output was never parse-checked before being shown — **fixed** | Medium | Strategic | ? |
+
+> **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
+> as detail sections with no table row for some time, which hid an **open security item (TD-67)**
+> from anyone reading only the summary. If you add an entry, add a row.
+>
+> **Numbering:** IDs run TD-01 … TD-67 with **no TD-35** — it does not exist in the table or as a
+> detail section, and the string appears nowhere in this file. That is a genuine gap of unknown
+> cause, not a retired entry. **66 entries, highest id 67** — do not use the highest id as a count,
+> and do not reuse 35.
 
 ---
 
 ## Pipeline correctness
 
-### TD-01. `missingActions` can hard-fail a run over a *correct* IR — Critical / Accidental
+### TD-01. `missingActions` can hard-fail a run over a *correct* IR — Critical / Accidental — **Symptom fixed, class still open**
 
 **What it is.** `missingActions` (`src/stages/ir.ts:724-759`) flags an IR as incomplete by testing
 regexes (`CASE_ACTION_LINE`, `ir.ts:721`) against the case's own title/steps/expected text joined
@@ -127,7 +181,7 @@ element-name prose. (3) Regardless of (1)/(2), a `missingActions` rejection shou
 guard degrades to `truncated` instead of throwing — matching what `TECH_DEBT.md`'s own predecessor
 document predicted this guard would do.
 
-### TD-02. Executor's SIGKILL destroys the report needed to diagnose the failure it just caused — Critical / Accidental
+### TD-02. Executor's SIGKILL destroys the report needed to diagnose the failure it just caused — Critical / Accidental — **Fixed**
 
 **What it is.** `executor.ts`'s per-run timer (`CONFIG.TIMEOUTS.TEST_RUN = 60_000`, lines ~20-24)
 `SIGKILL`s the Playwright child at 60s (kill site, lines 176-181); `runSpec` retries once
@@ -294,9 +348,16 @@ so a styled `<a>` acting as a button still resolves during IR generation and liv
 `generator.ts`'s `LOCATE_HELPER` has no equivalent (confirmed by grep — no `ROLE_SWAP` or
 equivalent anywhere in `generator.ts`).
 
+**The drift runs BOTH ways — re-verified 2026-09-05.** This entry originally recorded only the
+missing rung on the generator's side. The reverse is also true: `generator.ts` carries a
+three-selector CSS fallback (`a:text-is()`, `button:text-is()`, `[role="menuitem"]:text-is()`) that
+`resolveRoleWithFallback` does **not** have — `:text-is` appears nowhere in `targetResolver.ts`.
+So each implementation now has a rung the other lacks, in opposite directions. Any remediation must
+reconcile both, not just add `ROLE_SWAP` to the generator.
+
 **Why it hurts.** An element can ground successfully during IR generation and then fail to resolve
-in the *executed* spec — the two implementations have already drifted apart, this isn't a
-theoretical risk. Nothing pins them equal, so the next divergence will also go unnoticed until a
+in the *executed* spec — or resolve in the spec having failed during grounding. The two
+implementations have already drifted apart in both directions; this isn't a theoretical risk. Nothing pins them equal, so the next divergence will also go unnoticed until a
 user's run breaks on it.
 
 **Remediation.** One test that runs both implementations against the same fixture page (or, more
@@ -430,10 +491,13 @@ session/user auth is a bigger project for the latter). Flagged `?` for exactly t
 
 ### TD-15. A stale poll response can misdirect a credential submission to the wrong run — High / Accidental
 
-**What it is.** `public/app.js`'s `connectToRun` (~line 1079) checks
-`generation === pollGeneration` only at the top of each loop iteration — never re-checked after the
-`await fetch`/`await res.json()`, before `applyEvent(event, runId)` runs with the OLD `runId`
-closed over in that iteration.
+**What it is.** `public/app.js`'s `connectToRun` checks `generation === pollGeneration` only at the
+top of each loop iteration — never re-checked after the `await fetch`/`await res.json()`, before
+`applyEvent(event, runId)` runs with the OLD `runId` closed over in that iteration.
+
+> Cite the **function**, not a line number. This entry read "~line 1079" for a long time while the
+> function sat past 2600; `app.js` has roughly doubled since. It is the only line-number citation
+> into `public/*` anywhere in this document — keep it that way.
 
 **Why it hurts.** Run A's poll is in flight; before it resolves, the user switches to run B. A's
 stale event batch still applies. If that batch includes a credential-prompt event, the modal for
@@ -518,19 +582,31 @@ model changes.
 
 ## Reliability & test infrastructure
 
-### TD-20. No CI runs the test suite — High / Strategic
+### TD-20. No CI runs the test suite — High / Strategic — **Fixed**
 
-**What it is.** 790 tests across 51 files exist (a moving number — re-check with `npx vitest run`
-rather than trusting this doc) and nothing executes them automatically. The only GitHub Actions
-workflow, `.github/workflows/directory-tree.yml`, regenerates a directory tree and pushes to
-`main`.
+**What it was.** The tests existed and nothing executed them automatically. The only GitHub Actions
+workflow was `.github/workflows/directory-tree.yml`, which regenerates a directory tree and pushes
+to `main`.
 
-**Why it hurts.** Every deterministic guard this project has built — grounding, credential policy,
-scope filtering — is unenforced on any change. Highest leverage-per-effort item in this whole
+**Why it hurt.** Every deterministic guard this project has built — grounding, credential policy,
+scope filtering — was unenforced on any change. It was the highest leverage-per-effort item in this
 register: one workflow file protects every other fix listed here.
 
-**Remediation.** One workflow: `npm ci`, `npx tsc --noEmit`, `npx vitest run`. TD-21 (the flake
-that would have made this intermittently red) is now fixed, so nothing else blocks landing this.
+**Fix, verified 2026-09-05.** `.github/workflows/test.yml` exists, is git-tracked, and is exactly
+the remediation this entry proposed. It runs `on: push` and `on: pull_request`, Node 22 with npm
+cache, then three steps: `npm ci`, `npx tsc --noEmit`, `npm test` (which `package.json` defines as
+`vitest run`). TD-21 — the flake that would have made this intermittently red — was fixed first, as
+this entry required.
+
+> **This entry read "no CI" for longer than it was true, and the claim propagated.** It was repeated
+> in `docs/team-guide/` Vol 5 and in conversation before anyone opened `.github/workflows/`. If you
+> are about to state that this project has no CI, check the directory first. Two workflows live
+> there, not one.
+>
+> What remains true, and is the thing people probably meant: **CI is not a merge gate.** Nothing in
+> the repo enforces that the workflow passed before a branch merges, so a red run can still land.
+> That is a repository-settings change (branch protection), not a code change, and it is the only
+> part of this entry still open.
 
 ### TD-21. `tests/strategy.test.ts` flakes ~1 run in 6 under parallel load — Medium / Accidental
 
@@ -603,16 +679,29 @@ that env var today (confirmed: absent from `.env`, and no longer any injection s
 behavior is unchanged — every run still gets Playwright's own 50s timeout, comfortably under the
 parent's 100s kill timer, exactly as before this fix.
 
-### TD-25. Deleting the currently-viewed run leaves its polling loop running forever — Low / Accidental
+### TD-25. Deleting the currently-viewed run leaves its polling loop running forever — Low / Accidental — **Fixed**
 
-**What it is.** The history delete button's handler calls `DELETE /api/runs/:runId` and
-`loadHistory()` but never touches `pollGeneration`.
+**What it was.** The history delete button's handler called `DELETE /api/runs/:runId` and
+`loadHistory()` but never touched `pollGeneration`.
 
-**Why it hurts.** Deleting the run currently on screen leaves `connectToRun`'s poll loop hitting the
+**Why it hurt.** Deleting the run currently on screen left `connectToRun`'s poll loop hitting the
 now-deleted run's `/state` endpoint forever.
 
-**Remediation.** Bump `pollGeneration` in the delete handler when the deleted id matches the
-currently-viewed run.
+**Fix, verified 2026-09-05.** The handler now bumps the generation counter, which is exactly the
+remediation this entry proposed — orphaning the old loop so it cannot touch the DOM again:
+
+```js
+await fetch(`/api/runs/${runId}`, { method: "DELETE" });
+if (currentRunId === runId) {
+  pollGeneration++;
+}
+loadHistory();
+```
+
+**One untested neighbour, deliberately not claimed as fixed.** A Delete control now also exists on
+*project* rows, which is a different path. Whether deleting a project that contains the
+currently-viewed run should likewise bump `pollGeneration` has not been checked. It is a plausible
+new instance of this entry's class rather than a known defect — verify before filing it as one.
 
 ### TD-26. Credential prompt fires even when no case in the suite has a login step — Low / Accidental
 
@@ -737,7 +826,12 @@ role-only target) instead of ever reaching `generateSpec`. Covered by `tests/gro
 (both the empty-string and absent-name shapes, plus a check that a step with no role at all is
 still correctly skipped); regression-verified.
 
-### TD-31. A not-yet-hydrated page (0 extracted elements) is accepted as a valid, cacheable AppModel with no vision fallback — High / Strategic (root) / Accidental (in effect) — Fixed
+### TD-31. A not-yet-hydrated page (0 extracted elements) is accepted as a valid AppModel with no retry — High / Strategic (root) / Accidental (in effect) — Fixed
+
+> Heading corrected 2026-09-05. It previously read "…cacheable AppModel with **no vision
+> fallback**", which describes a different remediation from the one that shipped and from the one
+> the summary row claims. The fix in the code is **polling before accepting zero**
+> (`domDiscovery.ts`, `DISCOVERY_HYDRATION_POLL_MS`, default 6000) — not a vision fallback.
 
 **What it is.** `domDiscovery.ts:515` navigates with `waitUntil: "domcontentloaded"` and
 `extractDomModelFromPage` calls `page.content()` immediately after with no settle wait —
@@ -2129,7 +2223,8 @@ the same case had just been edited, and a fresh run of the same site worked, bec
 orchestrator asks for credentials and a replay never did. Diagnosed by artifact replay: the
 replay's `events.ndjson` has no `credentials` stage at all.
 
-**Fix.** `/api/replay` now resolves credentials before running — env first, prompt second — through
+**Fix.** `/api/replay` now resolves credentials before running — prompt first, with the
+environment as the fallback when the person supplies nothing (`DECISIONS.md` D-30) — through
 the same `askCredentials` waiter a run uses, and passes them to `runReplay`'s existing parameter.
 The policy lives in one place (`src/server/resolveCredentials.ts`) shared with the case editor's
 re-ground walk, so the two cannot drift. A replay whose cases contain no `${env:...}` prompts for
@@ -2137,7 +2232,44 @@ nothing and behaves exactly as before. No frontend change was needed: `showCrede
 already defaults its post URL to `/api/runs/<runId>/credentials`, and a replay's runId is a real
 run id. Pinned by `tests/replayCredentials.test.ts`.
 
-### TD-67. The library can store a literal credential, and nothing on the save path stops it — High / Strategic — OPEN, security
+#### Follow-up 2026-09-06 — the fix above shipped with a gap, and a later failure had TWO causes
+
+Run `2026-09-04T10-44-48-583Z-a388c88e` ("Search with no results") failed at
+`expect(input[placeholder="*********"]).toBeHidden()` — the password box was still on screen, so
+the login never happened — with **no `credentials` event in its `events.ndjson`** at all. Both of
+the following were true, and only the first was suspected:
+
+**1. That server predated this fix.** Its event log runs `input` → `execute started` in **33 ms**.
+A prompt-first replay parks on `askCredentials` for up to `CREDENTIAL_WAIT_MS`, so 33 ms is proof
+the prompt was never attempted. `tsx` has no watch/reload — the process was simply older than the
+code. This is the `CLAUDE.md` sharp edge, hit again.
+
+**2. The credential events were never persisted, so no browser could ever have shown the prompt.**
+The route emitted them through its `onEvent`, which calls `record()` — and `record()` is **live SSE
+fan-out only**; durability is the caller's job via `store.append`, which `orchestrator.ts` and
+`replay.ts` both do and this call site did not. Since **no client consumes the SSE route** (the UI
+polls `/api/runs/:runId/state`, which reads the store), the prompt would never have rendered even
+on a current server: the run would park for the full five minutes and then fall back to the
+environment — which on a machine with `TEST_USERNAME` unset means empty credentials, i.e. exactly
+the original symptom.
+
+So the "stale server" explanation was correct **and** insufficient. Fixed by appending to the store
+before fanning out, mirroring the two other emit sites.
+
+**Pinned by `tests/replayCredentialPrompt.test.ts`**, which asserts the ordering rather than mere
+presence: `credentials started` (with `fields: ["username","password"]`) must appear **before**
+`execute started`, and the typed values — not empty strings — must reach the Playwright child via
+`credentialEnvVars`. A test that only asserted "a credentials event exists somewhere" would pass
+against a server that asked *after* executing, which is the same bug wearing a different shape.
+
+Two notes for whoever reads this next. `credentialKindsNeeded` inspects `step.value` and never
+looks at `step.action`, so an env reference on a `press` or `click` is seen exactly like one on a
+`fill` — which matters because the LMS login submits with a button. And while writing the test its
+first version read `/state` as `{ events: [...] }` when the route returns the array itself; every
+poll silently returned `[]`, and the test that did not assert ordering still went green. That is
+`CLAUDE.md`'s "don't assume a passing test proves a fix" in miniature.
+
+### TD-67. The library can store a literal credential, and nothing on the save path stops it — High / Strategic — Fixed (editor save path); rotation and scrub still owed
 
 **What it is.** `DECISIONS.md` D-09 ("secrets never reach disk") was designed around the run
 pipeline: a user-supplied credential becomes an `${env:...}` reference in the IR and the generated
