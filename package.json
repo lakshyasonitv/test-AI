@@ -10,6 +10,7 @@
     "serve": "node --env-file-if-exists=.env --import tsx src/server/index.ts",
     "start": "node --env-file-if-exists=.env --import tsx src/server/index.ts",
     "test": "vitest run",
+    "test:rls": "node --env-file-if-exists=.env.rls --import tsx node_modules/vitest/vitest.mjs run tests/rlsPolicies.integration.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "postinstall": "playwright install"

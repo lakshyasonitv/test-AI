@@ -6,6 +6,7 @@ import { discoverSiteHybrid, discoverPagesHybrid } from "./stages/hybridDiscover
 import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
 import { LlmBudget, enterWithBudget } from "./llm/llmBudget.js";
+import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import {
   credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, redactCredentials,
   extractCredentialsFromPrompt,
@@ -59,6 +60,18 @@ export interface RunOptions {
   gateReview?: boolean;
   /** Allow one re-snapshot + regenerate + re-run on a selector-drift failure. */
   selfHeal?: boolean;
+  /**
+   * This run's LLM credentials and model, already resolved by the caller.
+   *
+   * Passed IN rather than looked up here on purpose: resolving it needs the database and the
+   * organisation of the requester, and this module is also the CLI's entry point. Importing
+   * `server/orgLlmConfig.ts` from here would drag Supabase into `npm run generate`, which has no
+   * database and no organisation. The server resolves it; the CLI passes nothing and gets the
+   * env-driven behaviour it has always had.
+   */
+  llmConfig?: LlmConfig;
+  /** This run's call ceiling. Omitted means the shared `MAX_LLM_CALLS_PER_RUN`. */
+  maxLlmCalls?: number;
 }
 
 export async function runPipeline(
@@ -81,13 +94,19 @@ export async function runPipeline(
   // One budget per run, shared across every LLM-calling stage (plan, discovery, test-case
   // generation, IR, failure diagnosis, self-heal, and every suite case) — never a
   // module-level singleton (MAX_CONCURRENT_RUNS lets several runs share one process).
-  const llmBudget = new LlmBudget();
+  // A per-organisation ceiling when one was resolved, otherwise the shared env default that
+  // LlmBudget's own constructor applies.
+  const llmBudget = new LlmBudget(options?.maxLlmCalls);
   // Makes llmBudget ambiently available to every gemini() call for the rest of this run,
   // however many layers deep (discovery's labelConceptsWithDOM in particular) — see
   // llmBudget.ts's own doc comment for why this is `enterWith`, not a wrapping callback, and
   // why it's still safe across MAX_CONCURRENT_RUNS. ir.ts/heal.ts/suiteRunner.ts still take
   // `llmBudget` as an explicit parameter below — this is additive, not a replacement.
   enterWithBudget(llmBudget);
+  // The same rail, for the same reason, entered in the same place: which credentials and which
+  // model this run uses. Absent means the process-wide env pool, i.e. exactly the behaviour every
+  // run had before per-organisation configuration existed.
+  if (options?.llmConfig) enterWithLlmConfig(options.llmConfig);
 
   const save = (name: string, data: unknown) =>
     writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));

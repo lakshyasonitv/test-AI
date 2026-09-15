@@ -2,6 +2,10 @@ import { describe, it, expect, vi } from "vitest";
 import { isPureTextAssertion, groundTerminalTextAssertion, runStepLive } from "../src/stages/liveExtend.js";
 import { assertionContradictsCase } from "../src/stages/ir.js";
 import { llmCacheSet, makeCacheKey, credentialFingerprint } from "../src/kb/llmCache.js";
+// The walk cache is now keyed per-tenant as well as per-policy: two organisations walking the
+// same URL must not share an entry. Outside a run this resolves to "env", which is what these
+// tests seed under — the same value production uses when no per-org config is active.
+import { llmCacheDimension } from "../src/llm/llmContext.js";
 import { WALK_CACHE_NS } from "../src/stages/liveExtend.js";
 import type { IR, Step } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -104,7 +108,7 @@ describe("groundTerminalTextAssertion", () => {
     // fixtures pass no credentials, hence the "anon" fingerprint.
     const seed = (result: Record<string, unknown>, policy: string = "full") =>
       llmCacheSet(
-        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), policy, credentialFingerprint()),
+        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), policy, credentialFingerprint(), llmCacheDimension()),
         { reachedUrl: page.url, pageModel: page, ...result },
         WALK_CACHE_NS,
       );
@@ -195,13 +199,13 @@ describe("groundTerminalTextAssertion — structural diff fallback", () => {
     const model = { baseUrl, pages: [page] } as unknown as AppModel;
     const seedAfter = (pageText: string, policy: string = "full") =>
       llmCacheSet(
-        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), policy, credentialFingerprint()),
+        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), policy, credentialFingerprint(), llmCacheDimension()),
         { reachedUrl: page.url, pageModel: page, pageText },
         WALK_CACHE_NS,
       );
     const seedBefore = (pageText: string, policy: string = "full") =>
       llmCacheSet(
-        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -2)), policy, credentialFingerprint()),
+        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -2)), policy, credentialFingerprint(), llmCacheDimension()),
         { reachedUrl: page.url, pageModel: page, pageText },
         WALK_CACHE_NS,
       );

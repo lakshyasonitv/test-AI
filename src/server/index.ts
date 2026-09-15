@@ -34,15 +34,15 @@ import {
   addMember,
   bootstrapUser,
   changeMemberRole,
+  createOrganisation,
   findUserByEmail,
-  listAddableUsers,
   listMembers,
   removeMember,
   roleOfMember,
 } from "./organisations.js";
 import {
   addProjectMember,
-  assertProjectInOrg,
+  assertProjectVisible,
   assignmentsByUser,
   createProject,
   deleteProject,
@@ -55,6 +55,7 @@ import {
 import { consumeSignupAttempt, createAccount, isSignupEnabled } from "./signup.js";
 import {
   addCaseToSuite,
+  assertCanAuthor,
   CaseConflictError,
   createSuite,
   deleteCase,
@@ -74,10 +75,16 @@ import {
   renameSuite,
   reorderSuite,
   saveCaseFromRun,
+  scriptOverrideEnabled,
+  setScriptOverride,
   updateCase,
 } from "./library.js";
 import { runReplay, originOf } from "../stages/replay.js";
+import {
+  describeOrgLlmConfig, llmConfigForOrg, maxCallsForOrg, orgLlmConfigEnabled, setOrgLlmConfig,
+} from "./orgLlmConfig.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
+import { enterWithLlmConfig } from "../llm/llmContext.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
 import {
   credentialsFromEnv, credentialKindsNeeded, restoreCredentialRefs, isEnvValueRef,
@@ -90,13 +97,33 @@ import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsE
 import {
   cancelJob, createJob, emitJobEvent, getJob, isCancelled, jobEvents, subscribeJob,
 } from "./regroundJobs.js";
-import { deleteRunRow, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
+import { deleteRunRow, isDbEnabled, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
+
+/**
+ * The two things a `:caseId` is ever allowed to be.
+ *
+ * `:caseId` names two different kinds of id depending on the route, and both must be validated
+ * because Express decides a parameter's value AFTER matching, not before:
+ *
+ *   - LIBRARY_CASE_ID — `test_cases.id`, a uuid. Every `/api/cases/:caseId/...` route.
+ *   - RUN_CASE_ID     — a run directory's `cases/case-N`. Only `/api/runs/:runId/cases/:caseId/save`,
+ *                       which is the one place a caseId becomes a PATH SEGMENT (library.ts:549).
+ *
+ * That last one is why this exists. Express 4 matches `:caseId` against the raw, still-encoded
+ * segment and only then decodes it, so `..%2F..%2F<otherRun>%2Fcases%2Fcase-0` arrives at the
+ * handler as a single parameter containing separators — and `path.join()` then walks straight out
+ * of the run directory into another organisation's run. Validating in the handler would work; a
+ * `app.param` is used instead so the rule covers every current AND future `:caseId` route by
+ * construction, which is the same reason `:runId` already has one.
+ */
+const LIBRARY_CASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RUN_CASE_ID = /^case-\d+$/;
 
 // Bound concurrent runs (each launches Chromium). Tune via env as the box grows.
 const runLimit = new Semaphore(Number(process.env.MAX_CONCURRENT_RUNS ?? 3));
@@ -174,6 +201,15 @@ app.param("runId", (_req, res, next, runId) => {
   next();
 });
 
+// Same, for :caseId. Neither accepted shape can contain "/", "\" or ".", so no value that reaches
+// a handler can traverse out of the directory it is joined into — see the constants above.
+app.param("caseId", (_req, res, next, caseId) => {
+  if (!LIBRARY_CASE_ID.test(caseId) && !RUN_CASE_ID.test(caseId)) {
+    return res.status(400).json({ error: "invalid caseId" });
+  }
+  next();
+});
+
 // Start a run: generate the runId up front so we can hand it back immediately,
 // then let the pipeline run in the background, pushing events into the registry.
 //
@@ -241,8 +277,15 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
     try {
       const explicit = typeof projectId === "string" && projectId ? projectId : null;
       const resolved = explicit
-        ? (await assertProjectInOrg(req.organisationId!, explicit).then((p) => p.id).catch(() => null))
-        : await resolveProjectForUrl(req.organisationId!, primaryUrl);
+        // assertProjectVisible, not assertProjectInOrg: being in the caller's organisation is not
+        // the same as being a project the caller may see, and filing a run into a project they
+        // were never added to produces a run its own author is then refused (the same failure
+        // resolveProjectForUrl now avoids). The two entry points must agree on what "your project"
+        // means, or the guarantee only holds on one of them.
+        ? (await assertProjectVisible(
+            req.user?.id ?? LOCAL_USER_ID, req.organisationId!, req.organisationRole!, explicit,
+          ).then((p) => p.id).catch(() => null))
+        : await resolveProjectForUrl(req.organisationId!, primaryUrl, req.user?.id ?? LOCAL_USER_ID);
       if (resolved) recordRunProject(runId, resolved);
     } catch (err) {
       console.error(`[projects] could not file run ${runId}:`, (err as Error)?.message ?? err);
@@ -266,7 +309,25 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
 
   // Hand back the runId immediately; the run waits for a free slot, then executes.
   // Over-cap runs sit queued (UI shows pending) until a slot frees — no dropped requests.
-  runLimit.run(() => runPipeline({ prompt, url, urls, coverage, options: runOptions }, onEvent, runId, askCredentials))
+  // Resolve this organisation's own credentials/model/budget, if it has any and the feature is on.
+  // Resolved HERE rather than inside the pipeline because it needs the database and the caller's
+  // organisation, neither of which the CLI entry point has. Both calls degrade to null/undefined
+  // for an unconfigured org, which is exactly the env-driven behaviour that predates this.
+  runLimit.run(async () => {
+    const orgId = req.organisationId ?? null;
+    const [llmConfig, maxLlmCalls] = await Promise.all([
+      llmConfigForOrg(orgId),
+      maxCallsForOrg(orgId),
+    ]);
+    return runPipeline({
+      prompt, url, urls, coverage,
+      options: {
+        ...runOptions,
+        ...(llmConfig ? { llmConfig } : {}),
+        ...(maxLlmCalls !== null ? { maxLlmCalls } : {}),
+      },
+    }, onEvent, runId, askCredentials);
+  })
     .catch(() => { /* failure already emitted as an "error" event */ });
   res.status(202).json({ runId });
 });
@@ -668,6 +729,32 @@ app.post("/api/auth/bootstrap", async (req, res) => {
   }
 });
 
+/**
+ * Create a new organisation, with the caller as its owner.
+ *
+ * NO ROLE GATE, DELIBERATELY. Every other route in this file asks "what may you do *within* an
+ * organisation", and this one is the only thing that happens outside every organisation — there is
+ * no org to check a role against, and requiring one would mean only an existing tenant could create
+ * a tenant. The gate that does apply is `requireAuth` on `/api/*`: you must be a real signed-in
+ * account. A caller only ever gains an organisation of their own here, never any access to anyone
+ * else's, so this widens nothing.
+ *
+ * It is therefore also the self-serve tenant-creation endpoint, and it inherits sign-up's exposure:
+ * with `SIGNUP_ENABLED` on and this port reachable, strangers can create tenants. See
+ * bootstrapUser's header.
+ */
+app.post("/api/organisations", async (req, res) => {
+  const { name } = req.body ?? {};
+  if (typeof name !== "string" || !name.trim()) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  try {
+    res.status(201).json(await createOrganisation(req.user?.id ?? LOCAL_USER_ID, name));
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
 // --------------------------------------------------------------------------
 // Projects (Step 5.1) — the second axis of access.
 //
@@ -786,6 +873,49 @@ app.delete("/api/projects/:projectId/members/:userId", requireRole("admin"), asy
 });
 
 /** Every project assignment in the org — one call so the Team screen renders in one pass. */
+/**
+ * Per-organisation LLM configuration — the admin panel's read and write.
+ *
+ * TENANCY. `requireOrgRole("admin")` proves the caller is an admin OF THE ORGANISATION IN THE
+ * PATH, not merely an admin somewhere; `describeOrgLlmConfig`/`setOrgLlmConfig` then re-assert it
+ * with `assertOrgAccess` before touching a row. An admin of org A naming org B is refused by both.
+ *
+ * THE KEY IS WRITE-ONLY. The GET returns `keySet` and a four-character hint and nothing else —
+ * there is no shape in `OrgLlmConfigView` that could carry a key, and no route that reveals one.
+ * The only decryption in the codebase happens in `llmConfigForOrg`, straight into an in-memory
+ * KeyPool for one run.
+ *
+ * Additive: new paths, no existing route's request or response shape changes (rule 1).
+ */
+app.get("/api/organisations/:orgId/llm-config", requireOrgRole("admin"), async (req, res) => {
+  if (!orgLlmConfigEnabled()) {
+    return res.status(404).json({ error: "per-organisation LLM configuration is not available — this server has ORG_LLM_CONFIG_ENABLED off" });
+  }
+  try {
+    res.json(await describeOrgLlmConfig(req.user?.id ?? LOCAL_USER_ID, req.params.orgId));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.put("/api/organisations/:orgId/llm-config", requireOrgRole("admin"), async (req, res) => {
+  if (!orgLlmConfigEnabled()) {
+    return res.status(404).json({ error: "per-organisation LLM configuration is not available — this server has ORG_LLM_CONFIG_ENABLED off" });
+  }
+  const { apiKey, model, modelLite, maxCallsPerRun } = req.body ?? {};
+  try {
+    // `apiKey` is read here and never again: it goes into setOrgLlmConfig, is encrypted, and the
+    // view that comes back cannot express it. It is deliberately not logged, not echoed in an
+    // error, and not included in any event.
+    res.json(await setOrgLlmConfig(req.user?.id ?? LOCAL_USER_ID, req.params.orgId, {
+      ...(apiKey === undefined ? {} : { apiKey: apiKey === null ? null : String(apiKey) }),
+      ...(model === undefined ? {} : { model: model === null ? null : String(model) }),
+      ...(modelLite === undefined ? {} : { modelLite: modelLite === null ? null : String(modelLite) }),
+      ...(maxCallsPerRun === undefined ? {} : {
+        maxCallsPerRun: maxCallsPerRun === null ? null : Number(maxCallsPerRun),
+      }),
+    }));
+  } catch (err) { sendAccessError(res, err); }
+});
+
 app.get("/api/organisations/:orgId/assignments", requireOrgRole("admin"), async (req, res) => {
   try {
     const map = await assignmentsByUser(req.params.orgId);
@@ -798,21 +928,6 @@ app.get("/api/organisations/:orgId/assignments", requireOrgRole("admin"), async 
 app.get("/api/organisations/:orgId/members", requireOrgRole("viewer"), async (req, res) => {
   try {
     res.json({ members: await listMembers(req.params.orgId) });
-  } catch (err) {
-    sendAccessError(res, err);
-  }
-});
-
-/**
- * Registered accounts that aren't in this organisation yet — suggestions for the add-member field.
- *
- * `admin`, matching POST .../members: the only thing you can do with this list is add someone, so
- * anyone who can't add shouldn't be able to enumerate. Enforced through the same
- * `requireOrgRole`/`assertOrgAccess` path as every other member route — no new permission concept.
- */
-app.get("/api/organisations/:orgId/addable-users", requireOrgRole("admin"), async (req, res) => {
-  try {
-    res.json({ emails: await listAddableUsers(req.params.orgId) });
   } catch (err) {
     sendAccessError(res, err);
   }
@@ -1406,6 +1521,81 @@ app.get("/api/cases/:caseId/runs", requireRole("viewer"), async (req, res) => {
 });
 
 /**
+ * What a caller must be told before overriding a case's script, and what the UI's confirmation
+ * repeats back. Served so the wording lives next to the rule it describes rather than only in
+ * `app.js`, where it would drift from the behaviour it warns about.
+ */
+const SCRIPT_OVERRIDE_WARNING =
+  "An overridden script is not grounded. No locator in it is verified against a real discovered " +
+  "element, so nothing checks that the things it clicks and fills actually exist on the page. " +
+  "When it breaks it will not fail the way a generated test fails — it will fail silently rather " +
+  "than loudly, often several steps later and blaming the wrong thing. The steps panel will keep " +
+  "showing this case's steps, but they will no longer describe what runs.";
+
+/**
+ * Replace a case's generated script with a hand-written one, or remove that override.
+ *
+ * **Permission: tester or above**, via the same `assertCanAuthor` that gates every other authoring
+ * action in the library — composing tests is authoring, not administration. `requireRole("tester")`
+ * is the route-level gate; `assertCanAuthor` is re-asserted inside the handler so the rule holds
+ * for any future caller that does not come through this route.
+ *
+ * PUT with `{ script }` sets it; PUT with `{ script: null }` clears it. Both mint a version with
+ * author and timestamp, so an override is as revertible as any other change and shows up in the
+ * same history. New route, new fields only — no existing route's shape changes (rule 1).
+ *
+ * `confirm: true` is required in the body. The point is not security — the role check is the
+ * security — but that a client cannot set an override without having been handed
+ * `SCRIPT_OVERRIDE_WARNING` to show, which is what makes "the person was told" true rather than
+ * assumed.
+ */
+/**
+ * Deliberately NOT mounted under `/api/cases/:caseId`. The warning is a fixed statement of policy
+ * — it names no case, reads no row, and is identical for every caller. Hanging it off a case id
+ * would make it *look* tenant-scoped while returning 200 to anyone, which is a worse lie than
+ * having no route at all.
+ */
+app.get("/api/script-override/warning", requireRole("viewer"), (_req, res) => {
+  if (!scriptOverrideEnabled()) {
+    return res.status(404).json({ error: "script overrides are not available — this server has SCRIPT_OVERRIDE_ENABLED off" });
+  }
+  res.json({ warning: SCRIPT_OVERRIDE_WARNING });
+});
+
+app.put("/api/cases/:caseId/script-override", requireRole("tester"), async (req, res) => {
+  if (!scriptOverrideEnabled()) {
+    return res.status(404).json({ error: "script overrides are not available — this server has SCRIPT_OVERRIDE_ENABLED off" });
+  }
+  const { script, changeNote, expectedVersion, confirm } = req.body ?? {};
+  try {
+    const [userId, orgId, role] = libraryCtx(req);
+    // Authoring-level check, stated again at the point of effect. Redundant with the route guard
+    // today, and deliberately so: this is the rule, not the routing table.
+    assertCanAuthor(role);
+
+    const clearing = script === null;
+    if (!clearing && typeof script !== "string") {
+      return res.status(400).json({ error: "send a script string to override, or null to remove the override" });
+    }
+    // Setting an override needs the acknowledgement; removing one restores the grounded path and
+    // therefore needs no warning.
+    if (!clearing && confirm !== true) {
+      return res.status(400).json({
+        error: "an override must be confirmed — resend with confirm: true",
+        warning: SCRIPT_OVERRIDE_WARNING,
+      });
+    }
+
+    const row = await setScriptOverride(userId, orgId, role, req.params.caseId, {
+      script: clearing ? null : (script as string),
+      changeNote: typeof changeNote === "string" ? changeNote : undefined,
+      expectedVersion: typeof expectedVersion === "number" ? expectedVersion : undefined,
+    });
+    res.json({ case: row, overridden: !clearing, warning: clearing ? null : SCRIPT_OVERRIDE_WARNING });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
  * "Ask for a change" — a model PROPOSES an edit. It never saves.
  *
  * Approving a proposal sends it back through POST /steps like any hand-typed edit, so it is
@@ -1420,6 +1610,16 @@ app.post("/api/cases/:caseId/rewrite", requireRole("tester"), async (req, res) =
   }
   try {
     const found = await getCase(...libraryCtx(req), req.params.caseId);
+    // Refused rather than answered for an overridden case. The proposal itself would be perfectly
+    // valid — and perfectly inert: approving it fills the editor, saving mints a new IR version,
+    // and the hand-written script still runs. The user would get a diff, an approval and a version
+    // bump with no change in behaviour, which is indistinguishable from it having worked.
+    if (found.scriptOverridden && scriptOverrideEnabled()) {
+      return res.status(409).json({
+        error: "this case runs a script override, so editing its steps would not change what runs — " +
+          "remove the override first if you want the steps to take effect",
+      });
+    }
     // The source run is where the case's own page snapshot lives — without it the model is
     // guessing element names from the instruction's wording (TD-91).
     res.json(await proposeRewrite(
@@ -1471,6 +1671,12 @@ app.delete("/api/cases/:caseId", requireRole("admin"), async (req, res) => {
  */
 app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async (req, res) => {
   const { projectId, title, suiteId } = req.body ?? {};
+  // Narrower than the app.param above, which has to admit a library uuid too: on THIS route the
+  // id is a run directory name, so only `case-N` is meaningful. Belt-and-braces in the same shape
+  // the runId checks in this file already use — the param layer is what actually stops traversal.
+  if (!RUN_CASE_ID.test(req.params.caseId)) {
+    return res.status(400).json({ error: "invalid caseId" });
+  }
   if (typeof projectId !== "string" || !projectId) {
     return res.status(400).json({ error: "projectId is required" });
   }
@@ -1617,6 +1823,11 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
           // TEST_USERNAME/TEST_PASSWORD may belong to someone else entirely, so what they type
           // must win. The environment is the fallback for a skipped or timed-out prompt.
           "prompt-first");
+      // A replay can spend real LLM calls (REPLAY_REGROUND), so it bills to the same organisation
+      // a fresh run would. Entered here because runReplay is not runPipeline and has no options
+      // object of its own; the ambient config covers everything downstream of this point.
+      const replayConfig = await llmConfigForOrg(req.organisationId ?? null);
+      if (replayConfig) enterWithLlmConfig(replayConfig);
       return runReplay({ runId, cases, label: runLabel, creds }, onEvent);
     })
       .then((outcome) => {
@@ -1646,6 +1857,69 @@ app.get("/", (_req, res) => {
 
 const port = Number(process.env.PORT ?? 3000);
 
+/**
+ * Every env var the code compares against the string `"true"` or `"false"`.
+ *
+ * Kept as data, not scattered `if`s, so that adding a flag without adding it here is the only way
+ * to get an unchecked flag — and `.env.example` can be diffed against this list.
+ */
+export const BOOLEAN_ENV_FLAGS = [
+  "AUTH_ENABLED",
+  "DB_ENABLED",
+  "ENABLE_CASE_SELECTION_GATE",
+  "NL_STEPS_ENABLED",
+  "ORG_LLM_CONFIG_ENABLED",
+  "REPLAY_REGROUND",
+  "SCRIPT_OVERRIDE_ENABLED",
+  "SELF_HEAL_DEFAULT",
+  "SIGNUP_ENABLED",
+] as const;
+
+/** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */
+export interface InvalidBooleanFlag {
+  name: string;
+  found: string;
+}
+
+/**
+ * Find every boolean flag that is SET to something other than exactly `"true"` or `"false"`.
+ *
+ * Why this exists: every one of these flags is read as `x === "true"` (or, for `SIGNUP_ENABLED`,
+ * `x !== "false"`). That is a silent coercion — `AUTH_ENABLED=truebro` shipped in a real `.env`
+ * and read as `false`, so the server booted with authentication off, resolved every visitor as
+ * the synthetic local owner, and said nothing. A typo in a security flag must not be survivable.
+ *
+ * **An ABSENT variable is not an error**: unset is the documented default-OFF contract that
+ * `CLAUDE.md` rule 2 depends on ("every new capability ships behind an env flag defaulting to
+ * OFF"), and `.env.example` documents it. What is rejected is a variable that is *present and
+ * malformed* — including present-but-empty (`FLAG=`), which is the case that most looks
+ * deliberate and reads as false. Case matters too: `TRUE`, `1` and `yes` are all rejected rather
+ * than guessed at, because guessing is how a flag ends up meaning the opposite of what was typed.
+ *
+ * Pure and exported so each flag can be tested without booting a server; the process-killing
+ * call lives inside `isMain` below.
+ */
+export function findInvalidBooleanFlags(env: NodeJS.ProcessEnv = process.env): InvalidBooleanFlag[] {
+  const bad: InvalidBooleanFlag[] = [];
+  for (const name of BOOLEAN_ENV_FLAGS) {
+    const raw = env[name];
+    if (raw === undefined) continue; // absent = documented default, not a misconfiguration
+    if (raw !== "true" && raw !== "false") bad.push({ name, found: raw });
+  }
+  return bad;
+}
+
+/** The fatal message for `findInvalidBooleanFlags()` output — names each variable and its value. */
+export function formatInvalidBooleanFlags(bad: InvalidBooleanFlag[]): string {
+  return [
+    `[startup] FATAL: boolean environment flag(s) set to a value that is neither "true" nor "false".`,
+    ...bad.map((b) => `  ${b.name}=${JSON.stringify(b.found)} — expected exactly "true" or "false"`),
+    `  These flags are compared against the literal string "true", so any other value is silently`,
+    `  read as false — which is how a server ships with AUTH_ENABLED=truebro and no authentication.`,
+    `  Set each to exactly "true" or "false", or remove it entirely to take its documented default.`,
+  ].join("\n");
+}
+
 export { app };
 
 // Only actually start listening (and run startup-only diagnostics/jobs) when this file is
@@ -1653,6 +1927,47 @@ export { app };
 // via supertest — importing must never bind a real port or spin up background timers.
 const isMain = !!process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
+  /**
+   * Runs BEFORE the AUTH/DB combination check below, and that order is load-bearing: the M-3
+   * check reads `isAuthEnabled()`, which resolves a malformed value to `false`. Validating the
+   * combination first would mean reasoning about a value nobody actually typed.
+   */
+  const invalidFlags = findInvalidBooleanFlags();
+  if (invalidFlags.length > 0) {
+    console.error(formatInvalidBooleanFlags(invalidFlags));
+    process.exit(1);
+  }
+
+  /**
+   * Refuse to start in the one combination that looks configured and isn't.
+   *
+   * Membership lives in the database and nowhere else, so `canEnforceTenancy()` returns false when
+   * `DB_ENABLED` is off — every role check passes and every organisation boundary disappears. With
+   * `AUTH_ENABLED` also off that is correct and intended: one synthetic local owner, nothing to
+   * isolate. With `AUTH_ENABLED` ON it is the worst of both: a login screen, real accounts, and a
+   * server where every signed-in user sees and does everything.
+   *
+   * It used to log an error and carry on, which made it survivable — and therefore survivable in
+   * production. The library, projects and team surfaces do NOT consult `DB_ENABLED` at all (they
+   * go straight to the service client), so the app keeps working and looking correct while the
+   * isolation it appears to enforce is switched off. Nothing about the running system says so
+   * except one line that scrolled past at boot.
+   *
+   * Deliberately inside `isMain`: importing `app` for tests must never throw, and several test
+   * files legitimately set one flag without the other.
+   */
+  if (isAuthEnabled() && !isDbEnabled()) {
+    console.error(
+      "[startup] FATAL: AUTH_ENABLED=true with DB_ENABLED unset or false.\n" +
+      "  Membership and roles live in the database, so organisation isolation cannot be enforced\n" +
+      "  in this combination — every signed-in user would see and do everything, while the team,\n" +
+      "  project and library screens carried on working as if they were scoped.\n" +
+      "  Set DB_ENABLED=true (with SUPABASE_SERVICE_ROLE_KEY) to run with authentication,\n" +
+      "  or AUTH_ENABLED=false to run single-user with the synthetic local owner.",
+    );
+    process.exit(1);
+  }
+
   // Startup diagnostic — log which key env vars are detected so Render's deploy
   // log immediately shows whether secrets were injected.
   console.log("[startup] Environment variable check:");

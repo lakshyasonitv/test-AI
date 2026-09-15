@@ -3148,8 +3148,9 @@ async function renderSuiteView(suiteId) {
    * Pick saved cases from this project and file them into this suite.
    *
    * Only offers cases NOT already in the suite: `suite_cases` has (suite_id, case_id) as its key,
-   * so re-adding one is a guaranteed error, and offering it would be offering a mistake. Same
-   * reasoning as the Team screen's addable-users list.
+   * so re-adding one is a guaranteed error, and offering it would be offering a mistake. This list
+   * is safe to offer where the Team screen's account suggestions were not: it is scoped to one
+   * project the caller can already see, rather than to every account on the instance.
    */
   const openAddPanel = async () => {
     const panel = document.getElementById("suiteAddPanel");
@@ -3834,6 +3835,12 @@ async function renderCaseView(caseId, routeProjectId) {
               // the existing "this is partial" pill (rule 3).
               ? `<span class="case-badge badge-truncated" title="This test runs to the end without verifying anything, so it can only report Passed.">NO CHECK</span>`
               : ""}
+            ${c.scriptOverridden
+              // The steps below are NOT what runs. Says so in the one place a reader always looks
+              // before believing a case does what its title claims. Reuses the existing
+              // "this is not the whole story" pill rather than minting a class (rule 3).
+              ? `<span class="case-badge badge-truncated" title="A hand-written script replaces this case's generated one. The steps below no longer describe what runs.">SCRIPT OVERRIDE</span>`
+              : ""}
           </div>
           <input class="cd-title" id="cdTitle" value="${escapeHtml(c.title)}"
                  ${canAuthor ? "" : "readonly"} aria-label="Case title" />
@@ -3915,6 +3922,15 @@ async function renderCaseView(caseId, routeProjectId) {
         <div class="cd-left">
           <div class="cd-card">
             <div class="cd-card-head">Steps — edit in plain English</div>
+            ${c.scriptOverridden ? `
+              <p class="team-error">
+                <strong>A script override is in effect. These steps do not describe what runs.</strong>
+                This case runs a hand-written Playwright script instead of the one generated from the
+                steps below. The script is not grounded: no locator in it is verified against a real
+                discovered element, so when it breaks it fails silently rather than loudly. Editing
+                these steps is recorded and versioned, but it will not change what this case does
+                until the override is removed.
+              </p>` : ""}
             <div id="cdJob"></div>
             <div id="cdEstimateError"></div>
             <div class="cd-lines" id="cdLines">
@@ -3930,7 +3946,13 @@ async function renderCaseView(caseId, routeProjectId) {
           </div>
         </div>
         <div class="cd-right">
-          ${canAuthor ? `
+          ${canAuthor && c.scriptOverridden ? `
+            <div class="cd-card cd-card-inset">
+              <div class="cd-card-label">Ask for a change</div>
+              <p class="hrow-meta">Unavailable while a script override is in effect — a rewrite would
+              change the steps, and the steps are not what runs.</p>
+            </div>` : ""}
+          ${canAuthor && !c.scriptOverridden ? `
             <div class="cd-card cd-card-inset">
               <div class="cd-card-label">Ask for a change</div>
               <textarea class="cd-ask-text" id="cdAsk" placeholder="also assert the order total is unchanged"
@@ -5664,7 +5686,8 @@ async function renderTeamView() {
     </div>
     <div id="teamFeedback"></div>
     <div id="teamAddWrap"></div>
-    <div class="panel"><div id="teamRows"></div></div>`;
+    <div class="panel"><div id="teamRows"></div></div>
+    <div id="llmConfigWrap"></div>`;
 
   const rows = document.getElementById("teamRows");
 
@@ -5683,12 +5706,11 @@ async function renderTeamView() {
       <div class="team-add">
         <label class="field">
           <span class="field-label">Email of an existing account</span>
+          <!-- Plain free text, no suggestions. The endpoint that fed a datalist here returned
+               every registered address on the instance to any admin, which across separate
+               organisations is a customer list. Typing the full address is the cost of that. -->
           <input id="teamAddEmail" type="email" placeholder="someone@example.com"
-            autocomplete="off" spellcheck="false" list="teamAddSuggestions" />
-          <!-- Suggestions are filled in below, after the list of addable accounts loads. A
-               datalist is used deliberately: it needs no CSS, no keyboard handling and no new
-               class names, and the field stays plain free text if the list never arrives. -->
-          <datalist id="teamAddSuggestions"></datalist>
+            autocomplete="off" spellcheck="false" />
         </label>
         <label class="field" style="flex:0 0 150px">
           <span class="field-label">Role</span>
@@ -5713,19 +5735,9 @@ async function renderTeamView() {
       );
     });
 
-    // Populate the suggestions without blocking the roster render below. A failure here is
-    // silent by design — the field still works as free text, which is exactly what it did before.
-    fetch(`/api/organisations/${encodeURIComponent(orgId)}/addable-users`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        const list = document.getElementById("teamAddSuggestions");
-        if (!list || !data || !Array.isArray(data.emails)) return;
-        list.innerHTML = data.emails
-          .map((e) => `<option value="${escapeHtml(e)}"></option>`)
-          .join("");
-      })
-      .catch(() => { /* suggestions are a convenience, never a requirement */ });
   }
+
+  if (isAdmin) void renderLlmConfigPanel(orgId);
 
   rows.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">Loading…</div>`;
 
@@ -5903,3 +5915,123 @@ applyRoute();
 // Async, and deliberately AFTER the synchronous applyRoute() above: with auth off this resolves
 // to a no-op, so the first paint is unchanged. With auth on it re-routes to the login view.
 initAuth();
+
+/**
+ * The per-organisation LLM configuration panel — admin and owner only.
+ *
+ * THE KEY IS WRITE-ONLY, and this panel is built so that it could not reveal one even if it
+ * wanted to: the server's GET returns `keySet` and a four-character hint, and there is no route
+ * that returns a key. So the UI shows "Set ••••3f9a" with a Replace action, never a value in a
+ * readable field. The input is `type="password"`, `autocomplete="off"`, and is cleared the moment
+ * it has been sent.
+ *
+ * Absent entirely when the server has the feature off: the fetch 404s and the panel renders
+ * nothing at all, rather than a control that cannot work.
+ */
+async function renderLlmConfigPanel(orgId) {
+  const wrap = document.getElementById("llmConfigWrap");
+  if (!wrap) return;
+
+  let cfg;
+  try {
+    cfg = await api(`/api/organisations/${encodeURIComponent(orgId)}/llm-config`);
+  } catch {
+    // 404 (feature off) or 403 — either way there is nothing to offer here.
+    wrap.innerHTML = "";
+    return;
+  }
+
+  const modelOptions = (selected) => [
+    `<option value=""${selected ? "" : " selected"}>Use the server's default</option>`,
+    ...cfg.availableModels.map((m) =>
+      `<option value="${escapeHtml(m)}"${m === selected ? " selected" : ""}>${escapeHtml(m)}</option>`),
+  ].join("");
+
+  wrap.innerHTML = `
+    <div style="margin-top:28px">
+      <div class="eyebrow">AI CONFIGURATION</div>
+      <h1 class="page-head-title">This organisation's Gemini key and model</h1>
+      <p class="tagline">Runs started by this organisation use the key set here and bill to its own
+      quota. Leave it unset to use the server's shared configuration.</p>
+    </div>
+    <div id="llmFeedback"></div>
+    <div class="panel">
+      <div class="team-add">
+        <label class="field">
+          <span class="field-label">Gemini API key</span>
+          ${cfg.keySet
+            ? `<p class="hrow-meta" id="llmKeyState">Set — <strong>${escapeHtml(cfg.keyHint || "••••")}</strong>.
+               A stored key is never shown again; you can replace or remove it.</p>`
+            : `<p class="hrow-meta" id="llmKeyState">Not set — this organisation uses the server's key.</p>`}
+          <input id="llmKeyInput" type="password" autocomplete="off" spellcheck="false"
+                 placeholder="${cfg.keySet ? "Enter a new key to replace it" : "Paste this organisation's Gemini API key"}"
+                 ${cfg.custodyConfigured ? "" : "disabled"} />
+          ${cfg.custodyConfigured ? "" :
+            `<p class="team-error">This server has no encryption key configured (LLM_KEY_FILE), so an
+             API key cannot be stored safely. Ask an operator to set one.</p>`}
+        </label>
+        <label class="field" style="flex:0 0 200px">
+          <span class="field-label">Model</span>
+          <select id="llmModel" class="team-select">${modelOptions(cfg.model)}</select>
+        </label>
+        <label class="field" style="flex:0 0 200px">
+          <span class="field-label">Cheap-call model</span>
+          <select id="llmModelLite" class="team-select">${modelOptions(cfg.modelLite)}</select>
+        </label>
+        <label class="field" style="flex:0 0 150px">
+          <span class="field-label">Max LLM calls per run</span>
+          <input id="llmMaxCalls" type="number" min="1" placeholder="server default"
+                 value="${cfg.maxCallsPerRun ?? ""}" />
+        </label>
+        <div class="team-add-actions">
+          <button type="button" id="llmSaveBtn" class="dl-btn-inline">Save</button>
+          ${cfg.keySet ? `<button type="button" id="llmRemoveKeyBtn" class="dl-btn-inline">Remove key</button>` : ""}
+        </div>
+      </div>
+    </div>`;
+
+  const feedback = (msg, isError) => {
+    const el = document.getElementById("llmFeedback");
+    if (el) el.innerHTML = `<p class="${isError ? "team-error" : "team-ok"}">${escapeHtml(msg)}</p>`;
+  };
+
+  const save = async (body, okMsg) => {
+    const btn = document.getElementById("llmSaveBtn");
+    if (btn) btn.disabled = true;
+    try {
+      await api(`/api/organisations/${encodeURIComponent(orgId)}/llm-config`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      // Re-render from the server rather than patching local state: the key hint and keySet must
+      // come from what was actually stored, never from what we think we sent.
+      await renderLlmConfigPanel(orgId);
+      feedback(okMsg, false);
+    } catch (err) {
+      feedback(err.message || "Could not save the configuration.", true);
+      if (btn) btn.disabled = false;
+    }
+  };
+
+  document.getElementById("llmSaveBtn").addEventListener("click", () => {
+    const keyEl = document.getElementById("llmKeyInput");
+    const key = keyEl ? keyEl.value.trim() : "";
+    const maxRaw = document.getElementById("llmMaxCalls").value.trim();
+    const body = {
+      model: document.getElementById("llmModel").value || null,
+      modelLite: document.getElementById("llmModelLite").value || null,
+      maxCallsPerRun: maxRaw === "" ? null : Number(maxRaw),
+    };
+    // Only send a key when one was typed — an untouched field must not clear the stored key.
+    if (key) body.apiKey = key;
+    // Cleared immediately, so it is not sitting in the DOM after the request.
+    if (keyEl) keyEl.value = "";
+    void save(body, key ? "Key and model saved. The key is stored encrypted and cannot be shown again." : "Model settings saved.");
+  });
+
+  const removeBtn = document.getElementById("llmRemoveKeyBtn");
+  if (removeBtn) {
+    removeBtn.addEventListener("click", () => {
+      void save({ apiKey: null }, "Key removed — this organisation now uses the server's key.");
+    });
+  }
+}

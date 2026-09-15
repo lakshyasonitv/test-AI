@@ -10,6 +10,7 @@ import type { IR } from "../schema/ir.js";
 import type { ExecResult } from "./executor.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { cutAtBoundary } from "../text.js";
+import { llmCacheDimension, resolvedModelLite } from "../llm/llmContext.js";
 
 // Falls back to "other" for anything outside the known set (e.g. Gemini describing a
 // real Playwright error like "strict mode violation" accurately but outside our
@@ -238,7 +239,7 @@ export async function analyzeFailure(
   // the disk cache has no expiry, so anything left out is served stale permanently.
   const cacheKey = makeCacheKey(
     errorText, JSON.stringify(ir.steps.slice(-5)),
-    SYSTEM, process.env.GEMINI_MODEL_LITE ?? "default");
+    SYSTEM, resolvedModelLite(), llmCacheDimension());
   const cached = llmCacheGet<Diagnosis>(cacheKey);
   if (cached) return cached;
 
@@ -271,7 +272,7 @@ Return JSON: { "failingStepId", "category", "explanation", "suggestedFix" }`;
     const { content: raw } = await gemini(user, {
       systemInstruction: system,
       json: true,
-      model: process.env.GEMINI_MODEL_LITE,
+      model: resolvedModelLite(),
       imageBase64: shot ? readFileSync(shot).toString("base64") : undefined,
       imageMime: "image/png",
       stage: "failure_analysis",

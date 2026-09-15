@@ -39,6 +39,17 @@ export interface ReplayCase {
   id: string;
   title: string;
   ir: IR;
+  /**
+   * A hand-written spec that REPLACES the one generated from `ir`, when the saved case is
+   * script-overridden. Optional: absent for every ordinary case, so the IR path below is
+   * untouched for them.
+   *
+   * When present, `ir` is still carried (it is the case's description and what a revert restores)
+   * but it is NOT what runs. Two consequences are handled at the call site: the spec is taken
+   * verbatim rather than generated, and re-grounding is skipped — grounding improves targets in
+   * the IR, and no target in the IR reaches execution any more.
+   */
+  scriptOverride?: string;
 }
 
 export interface ReplayOutcome {
@@ -202,10 +213,20 @@ export async function runReplay(
 
       emit("suite", "started", { caseId, title: c.title });
 
+      const overridden = typeof c.scriptOverride === "string" && c.scriptOverride.trim().length > 0;
+
       try {
         // Optional pre-pass: ground the steps discovery never saw against the live page.
-        const { ir: irToRun, regrounded } = await maybeRegroundForReplay(c.ir, creds, (p) =>
-          emit("ir", "started", { caseId, title: c.title, ...p }));
+        //
+        // Skipped entirely for an overridden case, and that is a correctness matter, not an
+        // optimisation. Re-grounding fills in css/testId on IR targets; an overridden case runs a
+        // script those targets never reach. Doing it anyway would spend a real browser walk and
+        // real LLM budget for no effect on execution, and then emit "Re-checked N steps against
+        // the live page before running" — a sentence that would be false.
+        const { ir: irToRun, regrounded } = overridden
+          ? { ir: c.ir, regrounded: 0 }
+          : await maybeRegroundForReplay(c.ir, creds, (p) =>
+            emit("ir", "started", { caseId, title: c.title, ...p }));
         if (regrounded > 0) {
           emit("ir", "completed", {
             caseId, title: c.title, regrounded,
@@ -217,11 +238,21 @@ export async function runReplay(
         writeFileSync(irPath, JSON.stringify(irToRun, null, 2));
 
         emit("generate", "started");
-        const spec = generateSpec(irToRun, path.join(caseDir, "artifacts"));
+        // The single point where "what runs" is decided for a replay. An overridden case takes its
+        // script verbatim; everything else is generated from the IR exactly as before.
+        const spec = overridden
+          ? c.scriptOverride!
+          : generateSpec(irToRun, path.join(caseDir, "artifacts"));
         const specPath = path.join(caseDir, "generated.spec.ts");
         writeFileSync(specPath, spec);
         if (i === 0) writeFileSync(path.join(runDir, "generated.spec.ts"), spec);
-        emit("generate", "completed", { caseId, title: c.title });
+        emit("generate", "completed", {
+          caseId, title: c.title,
+          // Additive field (CLAUDE.md rule 1). The run's own event log is the only durable record
+          // that this case did not run what its steps describe — without it, a reader looking at a
+          // finished run has no way to tell a generated spec from a hand-written one.
+          ...(overridden ? { scriptOverridden: true } : {}),
+        });
 
         emit("execute", "started", { caseId, title: c.title });
         const result = await runSpec(spec, caseDir, credentialEnvVars(creds));

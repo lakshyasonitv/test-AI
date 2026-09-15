@@ -14,6 +14,7 @@ import {
 } from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
+import { llmCacheDimension, resolvedModel } from "../llm/llmContext.js";
 
 /** Return type for toIR that includes the updated AppModel after live-extension. */
 export interface IRResult {
@@ -1340,7 +1341,7 @@ Example — handling duplicate selectors with nth:
   // can be served to a post-TD-82 run.
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
-    entryUrl, system, process.env.GEMINI_MODEL ?? "default");
+    entryUrl, system, resolvedModel(), llmCacheDimension());
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -1590,7 +1591,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // into strict JSON), the same reason it needed a bigger context window under Groq.
       const { content, usage } = await gemini(buildUser(currentModel, correction), {
         systemInstruction: system, json: true, temperature: 0.2,
-        model: process.env.GEMINI_MODEL, stage: "ir",
+        model: resolvedModel(), stage: "ir",
       });
       budget?.record("ir", usage);
       console.log("[ir] gemini returned, length:", content.length);

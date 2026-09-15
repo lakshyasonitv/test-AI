@@ -13,6 +13,7 @@ import {
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, credentialFingerprint } from "../kb/llmCache.js";
 import { cutAtBoundary, pageKey } from "../text.js";
+import { llmCacheDimension } from "../llm/llmContext.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -111,8 +112,12 @@ async function replayAndSnapshot(
   //
   // Namespaced to "walks" so it can be cleared on its own, without discarding the LLM answers in
   // the same store that cost real money to obtain.
+  // llmCacheDimension() is the ORGANISATION's credential fingerprint, not the site's. A walk is
+  // not a model call, but it is still cached forever on disk and is still per-tenant work: two
+  // organisations walking the same URL must not share an entry, or one tenant's authenticated
+  // page state is served to another. TD-22 / D-10 applied to the walks namespace.
   const cacheKey = makeCacheKey(
-    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds));
+    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension());
   const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
   if (cached) return cached;
 
