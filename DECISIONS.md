@@ -769,8 +769,8 @@ entirely: an operator with nothing set gets the same empty-string failure, just 
 is what makes a saved login case usable by someone who is not the person who configured the server.
 
 **Rejected: prompting unconditionally on replay.** A replay whose cases contain no `${env:...}` has
-nothing to ask about. `credentialKindsNeeded` over every case's steps decides, so such a replay
-emits no event and behaves byte-for-byte as it did before any of this.
+nothing to ask about. `credentialKindsNeeded` over every case's steps decides, so a replay that
+does not sign in emits no event and behaves byte-for-byte as it did before D-30.
 
 **Consequences.** No frontend change was required: `showCredentialPrompt` already defaults its post
 URL to `/api/runs/<runId>/credentials`, and a replay's runId is a real run id that the existing

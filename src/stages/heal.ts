@@ -17,6 +17,17 @@ export interface HealArgs {
   ir: IR;
   appModel: AppModel;
   diagnosis: Diagnosis;
+  /**
+   * True when the failing case runs a hand-written script instead of its IR.
+   *
+   * Healing MUST NOT run for such a case, and this is the most destructive of the three
+   * IR-assuming flows: `attemptHeal` rebuilds the IR from scratch via `toIR` and regenerates the
+   * spec from it, never looking at the existing one. On an overridden case a "successful" heal
+   * would therefore discard the author's script, run something they never wrote, and report a
+   * pass — a green run for code nobody reviewed. Optional and defaulting to false, so every
+   * existing caller is unaffected.
+   */
+  scriptOverridden?: boolean;
   sourcePrompt: string;
   entryUrl: string;
   // Optional, matching toIR's own signature — a heal attempt still works without one, it just
@@ -163,6 +174,11 @@ export async function attemptDeterministicHeal(args: HealArgs): Promise<HealResu
  */
 export async function attemptHeal(args: HealArgs): Promise<HealResult | null> {
   const { testCase, ir, appModel, diagnosis, sourcePrompt, entryUrl, llmBudget, runCreds, outDir } = args;
+
+  // A hand-written script is not healable by construction: healing works by re-deriving the IR
+  // against a fresh page model, and the IR is not what ran. Returning null is exactly the
+  // "not attempted" signal every other guard here uses, so callers need no new branch.
+  if (args.scriptOverridden) return null;
 
   // A step with no real prefix (first step, or an id toIR never emitted) has nothing to
   // replay from — skip healing, same guard orchestrator.ts's original inline version used.

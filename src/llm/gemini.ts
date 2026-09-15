@@ -1,6 +1,27 @@
 import { poolFromEnv } from "./keyPool.js";
 import { callWithPool } from "./backoff.js";
 import { recordAmbient } from "./llmBudget.js";
+import { currentLlmConfig } from "./llmContext.js";
+
+/**
+ * The models this server offers in the admin panel's dropdown.
+ *
+ * ONE list, exported, so the UI, the validator and the documentation cannot drift apart — a
+ * second hand-maintained copy of this is `DECISIONS.md` D-01's failure mode reappearing as code.
+ *
+ * It is a convenience, NOT the authority: a hardcoded list goes stale every time Google ships a
+ * model, so `verifyGeminiCredentials` below asks the provider what THIS key can actually use and
+ * refuses a save that the provider would reject. The list stops typos; the live check stops the
+ * list from lying. That is this project's standing rule — a stated preference always has a
+ * deterministic check behind it (`CLAUDE.md`, D-02/D-03).
+ */
+export const GEMINI_MODELS = [
+  "gemini-3.6-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-3-flash-preview",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+] as const;
 
 // Built on first use, not at import. KeyPool throws when no keys are configured, and at
 // module scope that made merely *importing* anything downstream of this file fail — so pure
@@ -65,7 +86,10 @@ const maxPromptChars = (): number => {
 };
 
 export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<GeminiResult> {
-  let model = opts.model ?? process.env.GEMINI_MODEL ?? "gemini-3.6-flash";
+  // Per-run configuration, if this call is inside a run that entered one. Absent (CLI, unit test,
+  // feature flag off) means the process-wide env pool and GEMINI_MODEL, exactly as before.
+  const runConfig = currentLlmConfig();
+  let model = opts.model ?? runConfig?.model ?? process.env.GEMINI_MODEL ?? "gemini-3.6-flash";
   console.log("[gemini] calling model:", model, "| prompt length:", prompt.length);
   const stage = opts.stage ?? "unknown";
 
@@ -81,7 +105,7 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<Gem
   }
 
   try {
-    const result = await callWithPool(getPool(), async (apiKey, signal) => {
+    const result = await callWithPool(runConfig?.pool ?? getPool(), async (apiKey, signal) => {
       const parts: any[] = [{ text: prompt }];
       if (opts.imageBase64) {
         parts.push({ inline_data: { mime_type: opts.imageMime ?? "image/png", data: opts.imageBase64 } });

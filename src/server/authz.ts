@@ -119,10 +119,19 @@ export async function getMemberships(userId: string): Promise<Membership[]> {
   const client = getServiceClient();
   if (!client) return [];
 
+  // ORDERED, because primaryOrgFor takes [0] and every non-run-scoped route acts in whatever it
+  // returns. Unordered, Postgres is free to hand back rows in any order it likes — so a user in two
+  // organisations could create a project in one and then not find it, having been silently switched
+  // to the other between requests. With one organisation this could not be observed, which is why
+  // it survived. created_at first (the oldest membership is the one they were bootstrapped into);
+  // organisation_id as a tiebreak, because two memberships written in the same transaction share a
+  // timestamp and `created_at` alone would leave those two free to swap.
   const { data, error } = await client
     .from("organisation_members")
-    .select("organisation_id, role")
-    .eq("user_id", userId);
+    .select("organisation_id, role, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: true })
+    .order("organisation_id", { ascending: true });
 
   if (error) {
     // Fail closed. An unreadable membership table means "we do not know what you may do", and the
@@ -145,6 +154,11 @@ export async function getMemberships(userId: string): Promise<Membership[]> {
 /**
  * The organisation a new run belongs to. A user with several gets their oldest — deterministic,
  * and the one they were bootstrapped into.
+ *
+ * That claim is now true. It was written before `getMemberships` ordered anything, so "oldest" and
+ * "deterministic" were both aspirations; see the ordering comment there. It remains a placeholder
+ * for a real organisation switcher — a user who belongs to two organisations still acts in one of
+ * them with no way to say which, they just now do so predictably.
  */
 export async function primaryOrgFor(userId: string): Promise<string | null> {
   const memberships = await getMemberships(userId);

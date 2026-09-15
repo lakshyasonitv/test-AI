@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 /**
@@ -87,7 +88,10 @@ function makeBuilder(table: keyof Tables) {
     const rows = db[table] as any[];
     if (pending?.kind === "insert" || pending?.kind === "upsert") {
       const payloads = Array.isArray(pending.payload) ? pending.payload : [pending.payload];
-      const made = payloads.map((p: any) => ({ id: p.id ?? `gen-${Math.random().toString(36).slice(2, 10)}`, ...p }));
+      // A uuid, because that is what the column is: `id uuid not null default gen_random_uuid()`.
+      // A fake id of any other shape would sail through this mock and be rejected by the real
+      // `app.param("caseId")` validator, so the fixture has to mint the shape production mints.
+      const made = payloads.map((p: any) => ({ id: p.id ?? randomUUID(), ...p }));
       rows.push(...made);
       return { data: single ? made[0] : made, error: null };
     }

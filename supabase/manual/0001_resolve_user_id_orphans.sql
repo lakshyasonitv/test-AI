@@ -1,0 +1,119 @@
+-- NOT A MIGRATION. Nothing runs this for you.
+--
+-- This file lives in supabase/manual/ rather than supabase/migrations/ on purpose: it deletes or
+-- rewrites rows, and `supabase db push` must never be able to do that on its own. Read it, choose
+-- an option, run the option you chose, then run the validation block at the bottom.
+--
+-- ---------------------------------------------------------------------------
+-- WHAT IS ACTUALLY THERE
+--
+-- Measured on 2026-09-10, before anything was changed:
+--
+--     table.column                    orphan id                               rows
+--     ------------------------------  --------------------------------------  ----
+--     organisation_members.user_id    00000000-0000-4000-8000-000000000001       1   role = owner
+--     runs.started_by                 00000000-0000-4000-8000-000000000001      53
+--     runs.started_by                 3c779be0-fe43-4eec-a928-19ff3ddd389d       1
+--
+-- Every other user_id column is clean, and its foreign key was validated on creation by
+-- 20260910120200_user_id_foreign_keys.sql. Only these two constraints are still NOT VALID:
+--
+--     organisation_members_user_id_fkey
+--     runs_started_by_fkey
+--
+-- Both already enforce on new writes. What is outstanding is only the historical rows.
+--
+-- Re-measure before acting — this file is a snapshot, not a live view:
+--
+--   select 'organisation_members' t, m.user_id::text, count(*)
+--     from organisation_members m left join auth.users u on u.id = m.user_id
+--    where u.id is null group by 1,2
+--   union all
+--   select 'runs.started_by', r.started_by::text, count(*)
+--     from runs r left join auth.users u on u.id = r.started_by
+--    where r.started_by is not null and u.id is null group by 1,2;
+--
+-- ---------------------------------------------------------------------------
+-- THE TWO ORPHANS ARE NOT THE SAME KIND OF THING
+--
+-- `3c779be0-…` is a genuinely deleted account. One run row attributes work to it. There is nothing
+-- to preserve; the only question is whether that run keeps an author.
+--
+-- `00000000-0000-4000-8000-000000000001` is LOCAL_USER_ID from src/server/auth.ts — the synthetic
+-- identity the server attributes everything to when AUTH_ENABLED is off. It is not a deleted
+-- account; it was never an account. Its header says why the id is fixed:
+--
+--     "Phase 3's bootstrap migration inserts it as the owner of the 'Default' organisation, so
+--      pre-existing runs backfilled into the database are owned by the same id this server
+--      attributes new runs to. If it changes, that link breaks and every historical run becomes
+--      orphaned."
+--
+-- Its membership row is also counted by `ownerCount()` in src/server/organisations.ts, which is
+-- audit finding M-2: the last-owner guard is currently satisfied by an owner nobody can sign in as,
+-- so an organisation can be left with no reachable owner. Option A fixes M-2 as a side effect.
+-- Option B does not — it keeps the ghost owner and only removes it from the FK's view.
+
+-- ===========================================================================
+-- OPTION A — retire the synthetic identity from the database. RECOMMENDED.
+--
+-- The synthetic user needs no database row at all: with AUTH_ENABLED off, `getMemberships()`
+-- returns LOCAL_MEMBERSHIPS from memory and never queries the database, so flag-off mode does not
+-- depend on this row existing. Removing it also closes M-2.
+--
+-- Costs: 54 runs lose their attribution (they keep everything else — prompt, url, status,
+-- project, and every artifact on disk). Verify the organisation has another owner FIRST.
+-- ===========================================================================
+
+-- A0. Refuse to proceed if this would leave the organisation without a real owner.
+--     Expect at least one row back. If it returns nothing, promote someone first.
+--   select m.user_id, m.role
+--     from organisation_members m
+--     join auth.users u on u.id = m.user_id
+--    where m.organisation_id = '00000000-0000-4000-8000-000000000010'
+--      and m.role = 'owner';
+
+-- A1. Drop the attribution on every orphaned run. SET NULL, never DELETE: the run is evidence.
+--   update runs r
+--      set started_by = null
+--    where r.started_by is not null
+--      and not exists (select 1 from auth.users u where u.id = r.started_by);
+
+-- A2. Remove the synthetic membership row.
+--   delete from organisation_members m
+--    where not exists (select 1 from auth.users u where u.id = m.user_id);
+
+-- ===========================================================================
+-- OPTION B — keep the synthetic identity, by giving it a real auth.users row.
+--
+-- Choose this only if you want the 53 historical runs to keep pointing at a named identity, and
+-- you accept a permanent non-loginnable account in auth.users. It does NOT fix M-2.
+--
+-- Not scripted here, deliberately. Hand-inserting into auth.users means writing columns Supabase
+-- Auth owns (`instance_id`, `aud`, `encrypted_password`, the identity rows), and a partial row can
+-- break the Auth service in ways that are painful to unpick. If you want this, create the account
+-- through the Admin API — `auth.admin.createUser({ email, email_confirm: true })` — and then
+-- re-point the rows at the real id it returns, rather than inventing the id:
+--
+--   update runs set started_by = '<new id>' where started_by = '00000000-0000-4000-8000-000000000001';
+--   update organisation_members set user_id = '<new id>' where user_id = '00000000-0000-4000-8000-000000000001';
+--
+-- Note that this makes LOCAL_USER_ID in src/server/auth.ts disagree with the database, so the
+-- constant must be updated to the new id in the same change or flag-off mode starts attributing
+-- runs to an id that is once again an orphan.
+-- ===========================================================================
+
+-- ===========================================================================
+-- FINALLY — validate the two constraints.
+--
+-- Run this after A or B. It takes a SHARE UPDATE EXCLUSIVE lock and scans each table once; it does
+-- not block reads or writes. If either statement errors, orphans remain — re-run the measurement
+-- query at the top and read what it says rather than forcing anything.
+-- ===========================================================================
+
+--   alter table public.organisation_members validate constraint organisation_members_user_id_fkey;
+--   alter table public.runs validate constraint runs_started_by_fkey;
+
+-- Confirm both are valid (expect convalidated = true for each):
+--   select conname, convalidated
+--     from pg_constraint
+--    where conname in ('organisation_members_user_id_fkey', 'runs_started_by_fkey');

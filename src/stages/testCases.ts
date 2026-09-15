@@ -11,6 +11,7 @@ import {
 } from "../kb/testStrategy.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { looksLikeCompoundLoginCase } from "./credentials.js";
+import { llmCacheDimension, resolvedModel } from "../llm/llmContext.js";
 
 // Models sometimes ignore case ("High") or return an array where a string was asked for
 // ("expected": [...]) — normalize before validating rather than rejecting valid content.
@@ -436,7 +437,7 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     JSON.stringify(p), JSON.stringify(liteModel), scope.join(","),
     (extend?.existingTitles ?? []).join("|"), (extend?.rejectedTitles ?? []).join("|"),
     opts.sourcePrompt ?? "", extend?.latestPrompt ?? "",
-    system, process.env.GEMINI_MODEL ?? "default");
+    system, resolvedModel(), llmCacheDimension());
   const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
   if (cachedCases) return cachedCases;
 

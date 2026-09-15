@@ -32,6 +32,7 @@ import { runStepLive } from "./liveExtend.js";
 import { resolveLive } from "./targetResolver.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { cutAtBoundary, siteHost } from "../text.js";
+import { llmCacheDimension, resolvedModelLite } from "../llm/llmContext.js";
 
 // ---------------------------------------------------------------------------
 // Concept labeling — the ONE remaining Gemini call in the primary path
@@ -149,7 +150,7 @@ async function labelConceptsWithDOM(
     // The prompt and model are real inputs too, and the disk cache never expires — leaving
     // them out means a labeling-rule change never reaches a page already seen.
     LABEL_SYSTEM,
-    process.env.GEMINI_MODEL_LITE ?? "default"
+    resolvedModelLite(), llmCacheDimension()
   );
   const cachedLabels = llmCacheGet<{ concepts: string[]; labeledElements: { index: number; concept: string }[] }>(cacheKey);
   if (cachedLabels) return cachedLabels;
@@ -171,7 +172,7 @@ Return JSON: { "concepts": string[], "labeledElements": { "index": number, "conc
     const { content: raw } = await gemini(user, {
       systemInstruction: system,
       json: true,
-      model: process.env.GEMINI_MODEL_LITE,
+      model: resolvedModelLite(),
       imageBase64: screenshotBase64,
       imageMime: screenshotBase64 ? "image/jpeg" : undefined,
       stage: "discovery",

@@ -185,9 +185,11 @@
 
               <div class="composer-foot">
                 <label class="field field-url">
-                  <span class="field-label">https://</span>
+                  <span class="field-label" id="urlScheme" role="button" tabindex="0"
+                    title="Click to switch between https:// and http://">https://</span>
                   <span class="input-wrap">
-                    <input id="url" type="text" placeholder="example.com/page" />
+                    <input id="url" type="text" placeholder="example.com/page"
+                      aria-describedby="urlError" autocomplete="off" spellcheck="false" />
                   </span>
                 </label>
 
@@ -195,6 +197,7 @@
                   <span id="runIcon"></span> <span class="run-btn-text">Run test</span>
                 </button>
               </div>
+              <p id="urlError" class="team-error hidden" role="alert" aria-live="polite"></p>
             </form>
 
             <div class="templates-row">

@@ -1,5 +1,6 @@
-import { getServiceClient, DEFAULT_ORG_ID } from "../db.js";
+import { getServiceClient } from "../db.js";
 import { AccessError, invalidateMemberships, isRole, roleAtLeast, type Role } from "./authz.js";
+import { LOCAL_USER_ID } from "./auth.js";
 
 /**
  * Organisation membership management — the CRUD behind `/api/organisations/:orgId/members`,
@@ -32,7 +33,19 @@ export interface MemberRow {
   createdAt: string | null;
 }
 
-/** How many owners the organisation currently has — the last-owner guard's input. */
+/**
+ * How many owners the organisation currently has — the last-owner guard's input.
+ *
+ * EXCLUDES THE SYNTHETIC LOCAL USER (audit finding M-2). `LOCAL_USER_ID` holds a real `owner` row
+ * in the bootstrap organisation and has no `auth.users` record — it is the identity the server
+ * attributes work to when AUTH_ENABLED is off, not an account anyone can sign in as. Counting it
+ * meant the last-owner guard could be satisfied by an owner who can never log in: with one real
+ * owner plus the synthetic one the count read 2, so demoting or removing the real owner was
+ * permitted and left an organisation nobody could administer.
+ *
+ * The guard's question is "would this leave a person able to manage this organisation", so the
+ * count has to be of people.
+ */
 async function ownerCount(orgId: string): Promise<number> {
   const client = requireClient();
   const { data, error } = await client
@@ -41,7 +54,25 @@ async function ownerCount(orgId: string): Promise<number> {
     .eq("organisation_id", orgId)
     .eq("role", "owner");
   if (error) throw new AccessError(500, `could not count owners: ${error.message}`);
-  return (data ?? []).length;
+  return (data ?? []).filter((r) => (r as { user_id: string }).user_id !== LOCAL_USER_ID).length;
+}
+
+/**
+ * The synthetic identity is not a member anyone may administer.
+ *
+ * It is a placeholder for "no authentication is configured", so promoting, demoting or removing it
+ * is meaningless — and removing it would silently change what the AUTH_ENABLED=off path attributes
+ * historical runs to. Refused explicitly rather than left to the rank checks, which would happily
+ * let an owner act on it.
+ */
+function refuseSyntheticTarget(targetUserId: string): void {
+  if (targetUserId === LOCAL_USER_ID) {
+    throw new AccessError(
+      403,
+      "that is the built-in local identity used when authentication is disabled — it cannot be " +
+      "given a role, changed or removed",
+    );
+  }
 }
 
 /** Exported as `roleOfMember` below — project membership has to check org membership first. */
@@ -117,43 +148,6 @@ export async function findUserByEmail(email: string): Promise<{ id: string; emai
   }
 }
 
-/**
- * Accounts that exist but are not yet in this organisation — the add-member field's suggestions.
- *
- * Read-only and admin-gated at the route. It exists because adding a member meant typing a full
- * address blind, and a typo produced "no account with that email" with no way to tell a wrong
- * address from an unregistered one.
- *
- * **This returns every registered address to any admin of any organisation.** Correct for one
- * company running this locally, a privacy leak the moment two unrelated customers share an
- * instance — see the report's DEFERRED section. It has to be scoped or dropped before that.
- */
-export async function listAddableUsers(orgId: string): Promise<string[]> {
-  const client = requireClient();
-
-  const { data: memberRows, error } = await client
-    .from("organisation_members")
-    .select("user_id")
-    .eq("organisation_id", orgId);
-  if (error) throw new AccessError(500, `could not list members: ${error.message}`);
-
-  const alreadyIn = new Set((memberRows ?? []).map((r) => (r as { user_id: string }).user_id));
-
-  try {
-    const { data, error: listErr } = await client.auth.admin.listUsers({ page: 1, perPage: 1000 });
-    if (listErr) throw new Error(listErr.message);
-    return (data?.users ?? [])
-      .filter((u) => u.email && !alreadyIn.has(u.id))
-      .map((u) => u.email as string)
-      .sort((a, b) => a.localeCompare(b));
-  } catch (err) {
-    // A suggestion list is a convenience. If the directory can't be read, the field still works
-    // as free text — degrade to "no suggestions" rather than failing the whole Team screen.
-    console.error("[org] could not list addable accounts:", (err as Error)?.message ?? err);
-    return [];
-  }
-}
-
 /** Invariant 1, in one place so every mutation below is covered by it. */
 function assertCanGrant(actorRole: Role, targetRole: Role): void {
   if (!roleAtLeast(actorRole, targetRole)) {
@@ -198,6 +192,7 @@ export async function changeMemberRole(
   role: Role,
 ): Promise<MemberRow> {
   assertCanGrant(actorRole, role);
+  refuseSyntheticTarget(targetUserId);
 
   const current = await roleOf(orgId, targetUserId);
   if (!current) throw new AccessError(404, "that account is not a member of this organisation");
@@ -236,6 +231,7 @@ export async function removeMember(
   actorRole: Role,
   targetUserId: string,
 ): Promise<void> {
+  refuseSyntheticTarget(targetUserId);
   const current = await roleOf(orgId, targetUserId);
   if (!current) throw new AccessError(404, "that account is not a member of this organisation");
   if (!roleAtLeast(actorRole, current)) {
@@ -264,23 +260,82 @@ export interface BootstrapResult {
 }
 
 /**
+ * Create an organisation with the caller as its owner.
+ *
+ * ONE STATEMENT, NOT TWO. `create_organisation_with_owner` is a plpgsql function and therefore a
+ * single transaction. Doing this as two inserts from here leaves an ownerless organisation behind
+ * if the process dies between them — and an ownerless organisation is unreachable forever, because
+ * every management route requires an owner or admin membership to act, so nobody could ever add
+ * one. The function has existed since `20260825080543_orgs_create_with_owner.sql` and nothing has
+ * ever called it; this is its caller.
+ */
+export async function createOrganisation(userId: string, name: string): Promise<BootstrapResult> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new AccessError(400, "an organisation needs a name");
+
+  const client = requireClient();
+  const { data, error } = await client.rpc("create_organisation_with_owner", {
+    p_name: trimmed,
+    p_user_id: userId,
+  });
+  if (error) throw new AccessError(500, `could not create the organisation: ${error.message}`);
+
+  // The function `returns table (id uuid, name text)`, which supabase-js surfaces as an array.
+  const row = (Array.isArray(data) ? data[0] : data) as { id?: string; name?: string } | null;
+  if (!row?.id) throw new AccessError(500, "the organisation was not created");
+
+  invalidateMemberships(userId);
+  return {
+    organisationId: row.id,
+    organisationName: row.name ?? trimmed,
+    role: "owner",
+    created: true,
+  };
+}
+
+/**
+ * A readable name for the organisation a new sign-up gets.
+ *
+ * The local part of their address, not the whole thing: "priya@acme.com" becomes "priya" rather
+ * than a workspace whose name is an email. Falls back to a generic label when there is no address
+ * at all, which happens for an account created straight in the Supabase dashboard.
+ */
+function defaultOrgName(email: string | null): string {
+  const local = (email ?? "").split("@")[0]?.trim();
+  return local ? `${local}'s workspace` : "New workspace";
+}
+
+/**
  * Make sure a signed-in account belongs somewhere.
  *
- * **A new account joins the existing workspace as `viewer` with no project access** (Step 5.1).
- * It used to become `owner` of a brand-new organisation of its own, which meant every colleague
- * who signed up landed in a private empty workspace instead of the company's, saw none of the
- * shared history, and had no way to ask for it — the opposite of what a team tool should do.
+ * **A new account now gets its OWN organisation, as its owner.** That is the whole multi-tenancy
+ * change: an organisation is the tenant boundary, so one organisation per owner is what makes two
+ * owners' projects invisible to each other. Nothing else in the access model had to move — the org
+ * boundary was already enforced by `assertOrgAccess`, by `filterRunsForUser`, and (after the
+ * project-scoped policy migration) by RLS. What was missing was any way for a second organisation
+ * to come into existence at all.
  *
- * `viewer` and zero projects is the deliberate floor: they can sign in, and they can see nothing
- * until an admin adds them to a project. That is the whole access model the user asked for.
+ * WHAT THIS REPLACES, AND WHY THE OLD BEHAVIOUR WAS ALSO RIGHT ONCE. Until now every sign-up was
+ * inserted into one hardcoded organisation (`DEFAULT_ORG_ID`) as `viewer`. That was deliberate and
+ * correct for the thing it was built for — one company, where a colleague signing up should land in
+ * the company's workspace and not a private empty one. It is exactly wrong for unrelated tenants,
+ * where landing in someone else's workspace IS the breach. The trade-off has simply moved:
  *
- * SINGLE-COMPANY ASSUMPTION: every sign-up lands in the one bootstrap organisation. Correct for
- * one company running this locally; wrong the moment two unrelated customers share an instance,
- * when sign-up needs an invite token or a domain rule instead. See the report's DEFERRED section.
+ *   - one company on one instance  -> colleagues must now be added by an owner after signing up
+ *   - many tenants on one instance -> nobody can ever see another tenant's anything
+ *
+ * The second is what this instance is now for. `addMember` is how the first case is served.
+ *
+ * OPEN SIGN-UP IS NOW TENANT CREATION. With `SIGNUP_ENABLED` unset (the default is on, and only
+ * applies when AUTH_ENABLED is true), anyone who can reach this port can create an account AND an
+ * organisation. That was already true of accounts; it is now true of tenants. Set
+ * `SIGNUP_ENABLED=false` before exposing this beyond localhost — signup.ts says the same thing and
+ * meant it slightly less.
  *
  * Idempotent by design: the frontend calls it after every sign-in, not just after sign-up, so an
  * account created directly in the Supabase dashboard (which never touches this server) still ends
- * up with a home rather than a working login that can't do anything.
+ * up with a home rather than a working login that can do nothing. An account that already belongs
+ * somewhere gets its existing membership back and no second organisation is minted.
  */
 export async function bootstrapUser(userId: string, email: string | null): Promise<BootstrapResult> {
   const client = requireClient();
@@ -303,30 +358,5 @@ export async function bootstrapUser(userId: string, email: string | null): Promi
     return { organisationId: first.organisation_id, organisationName: name, role: first.role, created: false };
   }
 
-  // Join the bootstrap workspace as the lowest role. The organisation is looked up rather than
-  // created: if it is somehow missing, that is a broken deployment and inventing a second one
-  // would quietly split the tenancy in half.
-  const { data: org, error: orgErr } = await client
-    .from("organisations")
-    .select("id, name")
-    .eq("id", DEFAULT_ORG_ID)
-    .maybeSingle();
-  if (orgErr) throw new AccessError(500, `could not read the workspace: ${orgErr.message}`);
-  if (!org) {
-    throw new AccessError(
-      500,
-      "the default workspace does not exist — run the bootstrap migration before signing anyone up",
-    );
-  }
-
-  const { error: memberErr } = await client
-    .from("organisation_members")
-    .insert({ organisation_id: org.id, user_id: userId, role: "viewer" });
-  if (memberErr) {
-    throw new AccessError(500, `could not create membership: ${memberErr.message}`);
-  }
-
-  invalidateMemberships(userId);
-  void email; // retained for the signature; the workspace name no longer derives from it
-  return { organisationId: org.id, organisationName: org.name, role: "viewer", created: true };
+  return createOrganisation(userId, defaultOrgName(email));
 }

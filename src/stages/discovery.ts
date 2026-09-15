@@ -2,6 +2,7 @@ import type { Page } from "playwright";
 import { gemini } from "../llm/gemini.js";
 import { parseJson } from "../llm/json.js";
 import { AppModel, INTERACTIVE_ROLES } from "../schema/appModel.js";
+import { resolvedModelLite } from "../llm/llmContext.js";
 
 /** One interactive element found by the in-page detector below. */
 export interface DetectedElement {
@@ -433,7 +434,7 @@ Return ONLY JSON:
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const { content: raw } = await gemini(user, {
-      systemInstruction: system, json: true, model: process.env.GEMINI_MODEL_LITE,
+      systemInstruction: system, json: true, model: resolvedModelLite(),
       imageBase64: screenshotBase64, imageMime: "image/png",
       stage: "discovery",
     });

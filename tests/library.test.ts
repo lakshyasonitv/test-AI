@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 /**
@@ -30,6 +31,17 @@ const CASE_LOGIN = "c111aaaa-0000-4000-8000-0000000000c1";
 const CASE_CART = "c222aaaa-0000-4000-8000-0000000000c2";
 const CASE_OTHER_PROJECT = "c333aaaa-0000-4000-8000-0000000000c3";
 
+/**
+ * A SECOND ORGANISATION. This file had none — every test above scopes by PROJECT within one org,
+ * which is the axis library.ts spends most of its code on, and none of them could have caught a
+ * case resolving across an organisation boundary. The cross-org block at the bottom uses these.
+ */
+const ORG_OTHER = "bbbbbbbb-0000-4000-8000-00000000000b";
+const OWNER_OTHER = "b1111111-0000-4000-8000-00000000000b";
+const PROJ_OTHER = "bbbb1111-0000-4000-8000-00000000b001";
+const SUITE_OTHER = "bbbb2222-0000-4000-8000-00000000b002";
+const CASE_IN_OTHER_ORG = "bbbb3333-0000-4000-8000-00000000b003";
+
 /** A minimal IR that satisfies src/schema/ir.ts — the schema library.ts validates against. */
 const validIr = (title: string) => ({
   meta: { feature: "checkout", title, priority: "medium", sourcePrompt: "p", baseUrl: "https://example.com" },
@@ -56,10 +68,12 @@ function reset() {
       { organisation_id: ORG, user_id: OWNER, role: "owner" },
       { organisation_id: ORG, user_id: TESTER, role: "tester" },
       { organisation_id: ORG, user_id: VIEWER, role: "viewer" },
+      { organisation_id: ORG_OTHER, user_id: OWNER_OTHER, role: "owner" },
     ],
     projects: [
       { id: PROJ_1, organisation_id: ORG, name: "one.example.com", base_url: "https://one.example.com" },
       { id: PROJ_2, organisation_id: ORG, name: "two.example.com", base_url: "https://two.example.com" },
+      { id: PROJ_OTHER, organisation_id: ORG_OTHER, name: "other.example.com", base_url: "https://other.example.com" },
     ],
     // The tester and viewer are assigned to PROJ_1 only, so PROJ_2 is the "not yours" case.
     project_members: [
@@ -70,11 +84,13 @@ function reset() {
     suites: [
       { id: SUITE_SMOKE, project_id: PROJ_1, name: "Smoke", created_by: OWNER },
       { id: SUITE_AUTH, project_id: PROJ_1, name: "Auth", created_by: OWNER },
+      { id: SUITE_OTHER, project_id: PROJ_OTHER, name: "Other org suite", created_by: OWNER_OTHER },
     ],
     test_cases: [
       { id: CASE_LOGIN, project_id: PROJ_1, title: "Login works", feature: "auth", ir: validIr("Login works"), current_version: 1, source_run_id: null, last_run_status: null, last_run_at: null, updated_at: null },
       { id: CASE_CART, project_id: PROJ_1, title: "Cart survives reload", feature: "cart", ir: validIr("Cart survives reload"), current_version: 1, source_run_id: null, last_run_status: null, last_run_at: null, updated_at: null },
       { id: CASE_OTHER_PROJECT, project_id: PROJ_2, title: "Other project case", feature: null, ir: validIr("Other"), current_version: 1, source_run_id: null, last_run_status: null, last_run_at: null, updated_at: null },
+      { id: CASE_IN_OTHER_ORG, project_id: PROJ_OTHER, title: "Another tenant's case", feature: null, ir: validIr("Another tenant"), current_version: 1, source_run_id: null, last_run_status: null, last_run_at: null, updated_at: null },
     ],
     test_case_versions: [],
     suite_cases: [],
@@ -96,7 +112,10 @@ function makeBuilder(table: keyof Tables) {
     const rows = db[table] as any[];
     if (pending?.kind === "insert" || pending?.kind === "upsert") {
       const payloads = Array.isArray(pending.payload) ? pending.payload : [pending.payload];
-      const made = payloads.map((p: any) => ({ id: p.id ?? `gen-${Math.random().toString(36).slice(2, 10)}`, ...p }));
+      // A uuid, because that is what the column is: `id uuid not null default gen_random_uuid()`.
+      // A fake id of any other shape would sail through this mock and be rejected by the real
+      // `app.param("caseId")` validator, so the fixture has to mint the shape production mints.
+      const made = payloads.map((p: any) => ({ id: p.id ?? randomUUID(), ...p }));
       for (const m of made) {
         // upsert: a duplicate primary key is ignored rather than duplicated.
         const dup = pending.kind === "upsert" && rows.some((r) =>
@@ -1039,5 +1058,123 @@ describe("removing the last check", () => {
     });
     expect(res.status).toBe(200);
     expect(db.test_cases[0].ir.meta.hasTerminalAssertion).toBe(true);
+  });
+});
+
+/**
+ * Cross-organisation isolation, at the MODULE boundary.
+ *
+ * This file had no second organisation at all until now. Every test above scopes by project inside
+ * one org — which is the axis library.ts spends most of its code on, and is genuinely well covered
+ * — but none of them could have caught a case or suite id resolving across an organisation.
+ *
+ * `multiTenancy.test.ts` asks the same question over HTTP. These call the library functions
+ * DIRECTLY, one level below the routes, because that is where the guarantee actually lives:
+ * `projectOfCase` and `projectOfSuite` look an id up globally and then re-check it against the
+ * session's organisation, so the refusal is theirs, not the middleware's. A route could lose its
+ * guard tomorrow and these would still hold.
+ *
+ * The org id passed in is always the CALLER's, exactly as `requireRole` derives it from the
+ * session — never one taken from a request. Naming another organisation's case id can therefore
+ * only ever fail to resolve.
+ */
+describe("cross-organisation — an id from another tenant resolves to nothing", () => {
+  const otherOrgCtx = () => [OWNER_OTHER, ORG_OTHER, "owner" as const] as const;
+  const ourCtx = () => [OWNER, ORG, "owner" as const] as const;
+
+  it("getCase refuses another organisation's case", async () => {
+    await expect(lib.getCase(...ourCtx(), CASE_IN_OTHER_ORG)).rejects.toThrow();
+  });
+
+  it("...and the other tenant cannot read ours", async () => {
+    await expect(lib.getCase(...otherOrgCtx(), CASE_LOGIN)).rejects.toThrow();
+  });
+
+  it("getCaseScript refuses across the boundary", async () => {
+    await expect(lib.getCaseScript(...ourCtx(), CASE_IN_OTHER_ORG)).rejects.toThrow();
+  });
+
+  it("getCaseVersion refuses — this is the one that holds the IR", async () => {
+    await expect(lib.getCaseVersion(...ourCtx(), CASE_IN_OTHER_ORG, 1)).rejects.toThrow();
+  });
+
+  it("updateCase refuses to write into another organisation", async () => {
+    await expect(
+      lib.updateCase(...ourCtx(), CASE_IN_OTHER_ORG, { title: "hijacked" }),
+    ).rejects.toThrow();
+    expect(db.test_cases.find((c) => c.id === CASE_IN_OTHER_ORG).title).toBe("Another tenant's case");
+  });
+
+  it("deleteCase refuses, and the row survives", async () => {
+    await expect(lib.deleteCase(...ourCtx(), CASE_IN_OTHER_ORG)).rejects.toThrow();
+    expect(db.test_cases.some((c) => c.id === CASE_IN_OTHER_ORG)).toBe(true);
+  });
+
+  it("duplicateCase refuses — copying is still reading", async () => {
+    await expect(lib.duplicateCase(...ourCtx(), CASE_IN_OTHER_ORG)).rejects.toThrow();
+    expect(db.test_cases.filter((c) => c.title.includes("Another tenant"))).toHaveLength(1);
+  });
+
+  it("listCaseRuns refuses", async () => {
+    await expect(lib.listCaseRuns(...ourCtx(), CASE_IN_OTHER_ORG)).rejects.toThrow();
+  });
+
+  it("renameSuite refuses another organisation's suite", async () => {
+    await expect(lib.renameSuite(...ourCtx(), SUITE_OTHER, "hijacked")).rejects.toThrow();
+    expect(db.suites.find((s) => s.id === SUITE_OTHER).name).toBe("Other org suite");
+  });
+
+  it("deleteSuite refuses, and the suite survives", async () => {
+    await expect(lib.deleteSuite(...ourCtx(), SUITE_OTHER)).rejects.toThrow();
+    expect(db.suites.some((s) => s.id === SUITE_OTHER)).toBe(true);
+  });
+
+  it("listSuiteCases refuses", async () => {
+    await expect(lib.listSuiteCases(...ourCtx(), SUITE_OTHER)).rejects.toThrow();
+  });
+
+  it("addCaseToSuite refuses to pull another tenant's case into our suite", async () => {
+    await expect(lib.addCaseToSuite(...ourCtx(), SUITE_SMOKE, CASE_IN_OTHER_ORG)).rejects.toThrow();
+    expect(db.suite_cases.some((sc) => sc.test_case_id === CASE_IN_OTHER_ORG)).toBe(false);
+  });
+
+  it("loadCasesForReplay refuses a selection containing another tenant's case", async () => {
+    await expect(
+      lib.loadCasesForReplay(...ourCtx(), { caseIds: [CASE_IN_OTHER_ORG] }),
+    ).rejects.toThrow();
+  });
+
+  it("loadCasesForReplay refuses a MIXED selection rather than silently dropping the foreign one", async () => {
+    // Returning just the permitted case would look like success and quietly run a shorter suite
+    // than was asked for. Every case is re-checked individually for exactly this reason.
+    await expect(
+      lib.loadCasesForReplay(...ourCtx(), { caseIds: [CASE_LOGIN, CASE_IN_OTHER_ORG] }),
+    ).rejects.toThrow();
+  });
+
+  it("saveCaseFromRun refuses to file into another organisation's project", async () => {
+    // The run id is arbitrary and need not exist: `saveCaseFromRun` calls assertProjectVisible on
+    // the DESTINATION before it reads anything from disk. Asserting the message matters here —
+    // a nonexistent run would also reject, with "that run has no saved test plan", and a test that
+    // accepted any rejection would pass without the access check ever running.
+    await expect(
+      lib.saveCaseFromRun(...ourCtx(), "2026-01-01T00-00-00-000Z-abcdabcd", "case-0", PROJ_OTHER),
+    ).rejects.toThrow(/project/i);
+  });
+
+  it("listCases and listSuites never include the other tenant's rows", async () => {
+    const cases = await lib.listCases(...ourCtx());
+    expect(cases.map((c) => c.id)).not.toContain(CASE_IN_OTHER_ORG);
+
+    const suites = await lib.listSuites(...ourCtx());
+    expect(suites.map((s) => s.id)).not.toContain(SUITE_OTHER);
+  });
+
+  it("the other tenant's owner sees only their own", async () => {
+    const cases = await lib.listCases(...otherOrgCtx());
+    expect(cases.map((c) => c.id)).toEqual([CASE_IN_OTHER_ORG]);
+
+    const suites = await lib.listSuites(...otherOrgCtx());
+    expect(suites.map((s) => s.id)).toEqual([SUITE_OTHER]);
   });
 });

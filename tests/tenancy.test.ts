@@ -41,8 +41,9 @@ const MEMBERSHIPS: { organisation_id: string; user_id: string; role: string }[] 
 
 /**
  * The Supabase account directory, as `auth.admin.listUsers` would report it. Deliberately wider
- * than ORG_A's roster: OUTSIDER_EMAIL belongs to nobody, which is what the add-member field's
- * suggestion list exists to surface.
+ * than ORG_A's roster: OUTSIDER_EMAIL belongs to no organisation, which is what `addMember` has to
+ * resolve when an admin types an address by hand — the only remaining reader of this directory now
+ * that the suggestion endpoint is gone.
  */
 const OUTSIDER_EMAIL = "outsider@example.com";
 const DIRECTORY = [
@@ -472,56 +473,15 @@ describe("team management — the screen's controls map to enforced routes", () 
 });
 
 /**
- * The add-member field's suggestion list.
+ * `GET /api/organisations/:orgId/addable-users` used to live here, with five tests proving it was
+ * admin-gated and org-scoped. It was all of those things and still had to go: it answered with
+ * every registered address on the INSTANCE, so an admin of one organisation could enumerate every
+ * other organisation's people. Admin-gating the wrong answer does not make it right.
  *
- * It is `admin`-gated for a reason worth stating: the only thing the list is useful for is adding
- * someone, so anyone who cannot add should not be able to enumerate the directory either. These
- * assert that gate, and that the list actually excludes people already in the organisation —
- * suggesting an existing member would just produce a guaranteed 409.
+ * The add-member field is plain free text now. Nothing replaced the endpoint, so there is nothing
+ * left to test here — this note stands in for the deleted block so the removal reads as deliberate
+ * rather than as coverage quietly going missing.
  */
-describe("team management — addable-account suggestions", () => {
-  it("suggests an account that exists but is not in this organisation", async () => {
-    const res = await request(app)
-      .get(`/api/organisations/${ORG_A}/addable-users`)
-      .set(as(OWNER_A));
-    expect(res.status).toBe(200);
-    expect(res.body.emails).toContain(OUTSIDER_EMAIL);
-  });
-
-  it("excludes accounts already in the organisation", async () => {
-    const res = await request(app)
-      .get(`/api/organisations/${ORG_A}/addable-users`)
-      .set(as(OWNER_A));
-    expect(res.body.emails).not.toContain("owner-a@example.com");
-    expect(res.body.emails).not.toContain("viewer-a@example.com");
-  });
-
-  it("refuses a tester — you cannot enumerate what you cannot add to", async () => {
-    const res = await request(app)
-      .get(`/api/organisations/${ORG_A}/addable-users`)
-      .set(as(TESTER_A));
-    expect(res.status).toBe(403);
-  });
-
-  it("refuses a viewer", async () => {
-    const res = await request(app)
-      .get(`/api/organisations/${ORG_A}/addable-users`)
-      .set(as(VIEWER_A));
-    expect(res.status).toBe(403);
-  });
-
-  it("refuses another organisation's owner", async () => {
-    const res = await request(app)
-      .get(`/api/organisations/${ORG_A}/addable-users`)
-      .set(as(OWNER_B));
-    expect(res.status).toBe(403);
-  });
-
-  it("401s an unauthenticated caller", async () => {
-    const res = await request(app).get(`/api/organisations/${ORG_A}/addable-users`);
-    expect(res.status).toBe(401);
-  });
-});
 
 describe("tenancy — the org id in a URL is the subject of a check, never its authority", () => {
   it("naming another organisation in the path does not grant access to it", async () => {
@@ -529,6 +489,83 @@ describe("tenancy — the org id in a URL is the subject of a check, never its a
     // user from the session, and let the join prove the org is theirs."
     const res = await request(app).get(`/api/organisations/${ORG_A}/members`).set(as(OWNER_B));
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * A path parameter is not a name — it is untrusted input that becomes a filesystem path.
+ *
+ * `saveCaseFromRun` joins `:caseId` straight into a path (`runs/<runId>/cases/<caseId>/04-ir.json`,
+ * library.ts:549). Express 4 matches a parameter against the RAW, still-encoded segment and decodes
+ * it only afterwards, so `..%2F..%2F<otherRun>%2Fcases%2Fcase-0` arrives at the handler as one
+ * parameter containing separators — and `path.join` then walks out of the run directory into
+ * another organisation's run, past a `requireRunRole` check that only ever looked at `:runId`.
+ *
+ * These assert the refusal happens at the PARAM layer (400), not in the handler: that is what makes
+ * the rule cover every current and future `:caseId` route by construction rather than by remembering.
+ */
+describe("path parameters cannot traverse — :caseId is validated before any handler runs", () => {
+  const TRAVERSALS = [
+    { name: "encoded ../ into another run's case directory", value: `..%2F..%2F${RUN_B}%2Fcases%2Fcase-0` },
+    { name: "encoded ../ to the runs root", value: "..%2F..%2F.." },
+    { name: "encoded absolute-ish path", value: "%2Fetc%2Fpasswd" },
+    { name: "backslash separator", value: "..%5C..%5Ccase-0" },
+  ];
+
+  // Note what is NOT in that table: a dot-dot segment on its own, in either form. `/api/cases/..`
+  // resolves to `/api/` and `%2E%2E` normalises back to the same thing, so both are collapsed
+  // before routing and 404 without ever becoming a parameter. What survives matching — and what
+  // every case above therefore uses — is an encoded SEPARATOR: `%2F` and `%5C` are reserved, are
+  // not normalised away, and so smuggle a multi-segment path through as one parameter value.
+
+  for (const t of TRAVERSALS) {
+    it(`400s ${t.name} on the save route`, async () => {
+      const res = await request(app)
+        .post(`/api/runs/${RUN_A}/cases/${t.value}/save`)
+        .set(as(OWNER_A))          // fully entitled to RUN_A — the id is the only thing at fault
+        .send({ projectId: PROJ_A1 });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("invalid caseId");
+    });
+
+    it(`400s ${t.name} on a library route too`, async () => {
+      const res = await request(app).get(`/api/cases/${t.value}`).set(as(OWNER_A));
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("invalid caseId");
+    });
+  }
+
+  it("refuses even for the org that owns the source run — this is not an authorization check", async () => {
+    const res = await request(app)
+      .post(`/api/runs/${RUN_A}/cases/..%2F..%2F${RUN_A}%2Fcases%2Fcase-0/save`)
+      .set(as(OWNER_A))
+      .send({ projectId: PROJ_A1 });
+    expect(res.status).toBe(400);
+  });
+
+  it("still accepts the two shapes that are real: a run's case-N and a library uuid", async () => {
+    // Not 400. Whatever happens next is the route's own business — the point is the id was let by.
+    const runCase = await request(app)
+      .post(`/api/runs/${RUN_A}/cases/case-0/save`)
+      .set(as(OWNER_A))
+      .send({ projectId: PROJ_A1 });
+    expect(runCase.status).not.toBe(400);
+
+    const libraryCase = await request(app)
+      .get("/api/cases/c111aaaa-0000-4000-8000-0000000000c1")
+      .set(as(OWNER_A));
+    expect(libraryCase.status).not.toBe(400);
+  });
+
+  it("the save route additionally refuses a library uuid, which is not a run directory", async () => {
+    // Narrower than the shared param allows: on THIS route the id names a directory under
+    // runs/<runId>/cases/, and only `case-N` ever does.
+    const res = await request(app)
+      .post(`/api/runs/${RUN_A}/cases/c111aaaa-0000-4000-8000-0000000000c1/save`)
+      .set(as(OWNER_A))
+      .send({ projectId: PROJ_A1 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("invalid caseId");
   });
 });
 
