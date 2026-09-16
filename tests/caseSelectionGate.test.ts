@@ -22,6 +22,7 @@ vi.mock("../src/server/pendingCaseSelection.js", () => ({
 const { runCaseSelectionGate, runReactiveCaseRound } = await import("../src/stages/caseSelectionGate.js");
 const { applyGateEdits } = await import("../src/server/gateCaseEdits.js");
 const { TestCase: TestCaseSchema } = await import("../src/stages/testCases.js");
+const { NoTestCasesError } = await import("../src/stages/testCases.js");
 const { MAX_ACCUMULATED_CASES } = await import("../src/server/caseAccumulator.js");
 const { CaseSelectionDecisionSchema } = await import("../src/schema/caseSelection.js");
 
@@ -85,6 +86,19 @@ describe("runCaseSelectionGate", () => {
 
     expect(result.finalCases).toEqual([]);
     expect(result.noCasesSelected).toBe(true);
+  });
+
+  // The gate is downstream of toTestCases, so a "the model returned zero usable cases" must
+  // reach it as the typed error and inherit upward unchanged — never as a zero-case round that
+  // the gate then presents (there is nothing to present) or converts into no_cases_selected.
+  it("propagates NoTestCasesError from toTestCases instead of presenting an empty round", async () => {
+    const emptyErr = new NoTestCasesError("azure", "gpt-deploy-1", "");
+    toTestCasesMock.mockRejectedValueOnce(emptyErr);
+
+    await expect(
+      runCaseSelectionGate({ runId, plan, appModel, sourcePrompt: "test the login" })
+    ).rejects.toBe(emptyErr);
+    expect(awaitCaseSelectionMock).not.toHaveBeenCalled();
   });
 });
 

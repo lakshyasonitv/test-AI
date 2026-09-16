@@ -90,6 +90,12 @@ export async function runCaseSelectionGate({
     const rejectedTitles = getRejectedTitles(runId);
     const seenTitles = [...acceptedTitles, ...rejectedTitles];
     const forcePrimary = attempt === 1 ? true : !hasAcceptedPrimary(runId);
+    // A NoTestCasesError from toTestCases (the model returned zero usable cases) propagates
+    // straight out of this loop — it is NOT caught here and converted into a zero-case round.
+    // A round with nothing to offer is never presented to the user and never waited on; the
+    // failure above is what the orchestrator turns into a blocked/error run with the raw
+    // response saved to 03-cases-raw.txt. (The batch.length === 0 path below is a different
+    // thing entirely: generation SUCCEEDED but every case was a duplicate of one already seen.)
     const generated = await caseSelectionBatch(
       plan, appModel, attempt, acceptedTitles, rejectedTitles, forcePrimary,
       promptThatGeneratedCurrentBatch, sourcePrompt

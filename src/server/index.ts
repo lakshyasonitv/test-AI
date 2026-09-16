@@ -569,6 +569,7 @@ app.get("/api/health", (_req, res) => {
       AZURE_OPENAI_API_KEY: check("AZURE_OPENAI_API_KEY"),
       AZURE_OPENAI_DEPLOYMENT: check("AZURE_OPENAI_DEPLOYMENT"),
       AZURE_OPENAI_DEPLOYMENT_LITE: check("AZURE_OPENAI_DEPLOYMENT_LITE"),
+      LLM_CACHE_VERSION: check("LLM_CACHE_VERSION"),
       NODE_ENV:        check("NODE_ENV"),
       PORT:            check("PORT"),
     },

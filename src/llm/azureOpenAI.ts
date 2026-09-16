@@ -23,6 +23,11 @@ import { recordAmbient } from "./llmBudget.js";
  *    surfaced as its own error class (`Azure OpenAI content_filter: <reason>`) so `backoff.ts`
  *    throws it straight through (`rateLimited` returns null for it).
  *  - The per-organisation config in `orgLlmConfig.ts` is Gemini-only and is never consulted here.
+ *  - On a 200, `finish_reason` and `message.refusal` are read additively: refusal always throws a
+ *    plain Error (no `.status`, no retry), and `finish_reason === "length"` means the output cap
+ *    truncated the answer (also a plain Error, never retried).  When neither triggers, the
+ *    returned result carries both fields for callers that need them (the orchestrator surfaces
+ *    `finishReason` in `NoTestCasesError`).
  *  - Parameter rules specific to Azure's model family: temperature is NEVER sent (gpt-5 family
  *    rejects it — dropping it is safe on both deployments); an output cap maps to
  *    `max_completion_tokens`, never `max_tokens`; `reasoning_effort` is sent per role (main always,
@@ -57,7 +62,17 @@ export interface AzureOpenAIUsage {
    *  (usage.completion_tokens_details.reasoning_tokens). Absent on a non-reasoning model. */
   reasoningTokens?: number;
 }
-export interface AzureOpenAIResult { content: string; usage: AzureOpenAIUsage; }
+export interface AzureOpenAIResult {
+  content: string; usage: AzureOpenAIUsage;
+  /** OpenAI-style finish reason from `choices[0].finish_reason` ("stop", "length",
+   *  "content_filter"…). Present on all successful responses; `length` means the output cap
+   *  truncated the answer and is pre-empted (thrown) before a result is returned. */
+  finishReason?: string;
+  /** A refusal message from `choices[0].message.refusal`, when the model refused instead of
+   *  answering. null when absent — the check distinguishes "the field was present but empty"
+   *  from "the field was not sent at all". */
+  refusal?: string | null;
+}
 
 // Built on first use, not at import — the KeyPool constructor throws on a missing key, and module
 // scope would make merely importing client.ts fail without the azure env configured, even when the
@@ -153,7 +168,10 @@ export async function azureOpenAI(prompt: string, opts: AzureOpenAIOpts = {}): P
         throw e;
       }
       const data = await res.json();
-      const content = (data.choices?.[0]?.message?.content ?? "") as string;
+      const choice = data.choices?.[0] ?? {};
+      const content = (choice.message?.content ?? "") as string;
+      const finishReason = choice.finish_reason as string | undefined;
+      const refusal = (choice.message?.refusal ?? null) as string | null;
       const u = data.usage ?? {};
       // totalTokens read directly (not prompt+completion summed), mirroring gemini.ts — Azure's
       // own total can include reasoning tokens the split doesn't otherwise surface.
@@ -168,7 +186,18 @@ export async function azureOpenAI(prompt: string, opts: AzureOpenAIOpts = {}): P
       // completion totals nobody can decompose.
       const reasoningTokens = u.completion_tokens_details?.reasoning_tokens;
       if (reasoningTokens !== undefined) usage.reasoningTokens = reasoningTokens;
-      return { content, usage };
+      // A refusal is announced OUT OF BAND of the finish reason (finish_reason can be "stop"
+      // even when the model refused), so check it first.  Both throws are plain Errors with
+      // NO `.status`: backoff.ts's `rateLimited()` returns null for them (429/503 only), so
+      // the retry loop throws them through unchanged — a truncated or refused answer is the
+      // same clipped prompt re-billed, exactly like the content_filter 400 above.
+      if (refusal) {
+        throw new Error(`Azure OpenAI refusal: ${refusal}`);
+      }
+      if (finishReason === "length") {
+        throw new Error(`Azure OpenAI truncated: ${content.slice(0, 300)}`);
+      }
+      return { content, usage, finishReason, refusal };
     });
     recordAmbient(stage, result.usage, "azure");
     return result;

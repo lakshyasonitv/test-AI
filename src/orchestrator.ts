@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { plan } from "./stages/planner.js";
 import { discoverSiteHybrid, discoverPagesHybrid } from "./stages/hybridDiscovery.js";
-import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor } from "./stages/testCases.js";
+import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor, NoTestCasesError, type TestCase } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
 import { LlmBudget, enterWithBudget } from "./llm/llmBudget.js";
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
@@ -219,14 +219,27 @@ export async function runPipeline(
     // would park the run until CASE_SELECTION_WAIT_MS expires with nothing to show for it.
     const gateRequested = options?.gateReview ?? (process.env.ENABLE_CASE_SELECTION_GATE === "true");
     const gateUsed = gateRequested && !!askCredentials;
-    const cases = await step("testcases", "03-cases.json", async () => {
-      if (gateUsed) {
-        const { runCaseSelectionGate } = await import("./stages/caseSelectionGate.js");
-        const { finalCases } = await runCaseSelectionGate({ runId, plan: thePlan, appModel, sourcePrompt: prompt });
-        return finalCases;
+    let cases: TestCase[];
+    try {
+      cases = await step("testcases", "03-cases.json", async () => {
+        if (gateUsed) {
+          const { runCaseSelectionGate } = await import("./stages/caseSelectionGate.js");
+          const { finalCases } = await runCaseSelectionGate({ runId, plan: thePlan, appModel, sourcePrompt: prompt });
+          return finalCases;
+        }
+        return toTestCases(thePlan, appModel, undefined, { sourcePrompt: prompt });
+      });
+    } catch (err: any) {
+      if (err instanceof NoTestCasesError) {
+        // step() already emitted `(testcases, "failed")` with the plain-English message. The
+        // run must NOT look like a clean `no_cases_selected` outcome — the model produces not
+        // an empty-but-honest result but a $0 answer that was wrong to cache in the first
+        // place. Persist the FULL raw response for diagnosis (the run's dir is already on
+        // disk), then rethrow so the whole run ends as blocked/error.
+        writeFileSync(path.join(runDir, "03-cases-raw.txt"), err.rawResponse);
       }
-      return toTestCases(thePlan, appModel, undefined, { sourcePrompt: prompt });
-    });
+      throw err;
+    }
     console.log("✓ Test cases:", cases.length);
 
     // The case-selection gate can legitimately end with nothing accepted (a round timed out on

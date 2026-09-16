@@ -104,6 +104,7 @@ describe("API contract — GET /api/health", () => {
       "GEMINI_API_KEYS", "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_MODEL_LITE",
       "LLM_PROVIDER", "LLM_PROVIDER_LITE",
       "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_DEPLOYMENT_LITE",
+      "LLM_CACHE_VERSION",
       "NODE_ENV", "PORT",
     ];
     for (const key of envKeys) {

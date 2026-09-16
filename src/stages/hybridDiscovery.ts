@@ -31,7 +31,7 @@ import {
 import { AUTH_VERB, waitForAuthSettle } from "./authSettle.js";
 import { runStepLive } from "./liveExtend.js";
 import { resolveLive } from "./targetResolver.js";
-import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { cutAtBoundary, siteHost } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 
@@ -151,7 +151,7 @@ async function labelConceptsWithDOM(
     // The prompt and model are real inputs too, and the disk cache never expires — leaving
     // them out means a labeling-rule change never reaches a page already seen.
     LABEL_SYSTEM,
-    cacheModelDimension("lite"), llmCacheDimension("lite")
+    cacheModelDimension("lite"), llmCacheDimension("lite"), llmCacheVersion()
   );
   const cachedLabels = llmCacheGet<{ concepts: string[]; labeledElements: { index: number; concept: string }[] }>(cacheKey);
   if (cachedLabels) return cachedLabels;
@@ -181,7 +181,7 @@ Return JSON: { "concepts": string[], "labeledElements": { "index": number, "conc
     try {
       const parsed = parseJson(raw);
       if (parsed && Array.isArray(parsed.concepts) && Array.isArray(parsed.labeledElements)) {
-        llmCacheSet(cacheKey, parsed);
+        if (isCacheableResult(parsed)) llmCacheSet(cacheKey, parsed);
         return parsed;
       }
       lastErr = "Invalid shape";

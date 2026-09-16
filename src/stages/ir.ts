@@ -12,7 +12,7 @@ import {
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
   NEGATIVE_CATEGORIES, type Credentials,
 } from "./credentials.js";
-import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 
@@ -1341,7 +1341,7 @@ Example — handling duplicate selectors with nth:
   // can be served to a post-TD-82 run.
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
-    entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"));
+    entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion());
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -1505,7 +1505,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         credentialFieldMap(currentModel));
     }
     if (!ir.meta.truncated) {
-      llmCacheSet(cacheKey, ir);
+      if (isCacheableResult(ir)) llmCacheSet(cacheKey, ir);
     }
     return ir;
   };

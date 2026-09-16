@@ -3733,3 +3733,73 @@ reason `AZURE_OPENAI_REASONING_EFFORT_LITE` must stay optional with no fallback 
 variable. Ticket to migrate when the successor is available and the quota picture has moved; the
 env-documented defaults in `.env.example` are the single place the deployment names live outside
 this doc.
+
+### TD-94. The LLM cache persisted a zero-case answer forever and served it to every later run — Fixed
+
+The disk half of the LLM cache never expires (D-10 / this doc's TD-22). Run
+`2026-09-16T07-10-56-871Z-2a364a79` made **zero** LLM calls (`llmUsage.calls: 0`) and reported zero
+test cases — an earlier run's **empty** result had been written to the cache and every later run
+was served it, so the pipeline skipped generation entirely and died with nothing to select.
+
+**What it was.** Nothing in the cache write path distinguished "the model returned a real, usable
+answer" from "the model returned nothing". `toTestCases` cached whatever parsed from the response
+— including `[]` — so a single empty answer pinned a permanent zero-case outcome for that
+(cache-key-frozen) prompt. Cache correctness was enforced by prompt wording only, never by a
+deterministic check of a structured result (`DECISIONS.md` D-02/D-03), exactly the failure mode
+the central design rule warns about.
+
+**The fix, structural rather than prompt-wording:**
+- **Empty results are never written.** `isCacheableResult(content, {json})` in `llmCache.ts` now
+  guards **every** write path — it rejects empty/whitespace content, unparseable JSON when `json`
+  was requested, and parsed `[]` / `{"cases":[]}` / `{}`; `llmCacheSet` independently refuses the
+  same negative shapes as a belt even if a future caller forgets. Cache writes were already
+  happening **after** schema validation at every site (plan: `Plan.safeParse`, discovery: 
+  structural `Array.isArray` checks, failure-analysis: `verifyDiagnosisText`, test-cases:
+  `z.array(LLMTestCase).safeParse`, IR: `!ir.meta.truncated`) — this guard is the layer that was
+  missing, not a reordering.
+- **A zero-case generation is a stage failure, not an empty success.** `toTestCases` throws the
+  typed `NoTestCasesError` (carrying provider, resolved model/deployment, and the full raw
+  response) instead of returning `[]`. The orchestrator writes the raw response to
+  `runs/<id>/03-cases-raw.txt`, the `testcases` stage already emitted its `failed` event with the
+  plain-English message, and the run ends as blocked/error. The gate inherits the error upward —
+  a round with nothing to present is never served to the UI, and the legitimate
+  `no_cases_selected` outcome is reserved for a gate round timing out.
+- **`LLM_CACHE_VERSION` is an escape hatch.** The salt defaults to `"1"` and is folded into every
+  cache key (all six `makeCacheKey` sites: plan, discovery, failure-analysis, test-cases, IR, and
+  the walk/replay cache), so bumping it to anything new invalidates **all** cached results in one
+  move — the control to use if a bug like this ever reports another poisoned entry.
+
+**Remaining half of the design, filed rather than accepted as "done":** invalidating the walk
+cache on a bump costs a fresh browser visit of every walked page the next time it is needed — no
+LLM tokens, but real network — because a walk is deterministic browser evidence, not a model
+answer, and it lives in the same never-expiring store. If a second, independent version salt for
+walks is wanted, it is one key-site change and does not affect this entry's claim that the LLM
+answer cache is now clean by construction, not by prompt.
+
+**Post-phase delta (Azure truncation/refusal + tolerant envelope):** evidence run
+`2026-09-16T09-17-37-827Z-ebda5c90` (testcases on Azure main, gpt-5-mini: `completionTokens` 538,
+`reasoningTokens` 512 — about 26 visible tokens of JSON — parsed to `[]`) had two
+indistinguishable causes from the run's own artifacts alone, and this entry's guarantee needed
+each to be told apart by structure, not by re-reading a truncated raw dump:
+- **Truncation and in-band refusal now throw, structurally.** `azureOpenAI.ts` reads
+  `choices[0].finish_reason` and `message.refusal` additively. `finish_reason === "length"` throws
+  `Azure OpenAI truncated: <first 300 chars>`; a non-empty `refusal` throws
+  `Azure OpenAI refusal: <…>` (a model can refuse with `finish_reason: "stop"`, so the refusal
+  check runs first). Both are plain `Error`s with no `.status`, so `backoff.ts`'s `rateLimited()`
+  (429/503 only) throws them through unchanged, zero retries — the same contract as the
+  content_filter 400. On a clean 200 the result also carries `finishReason`/`refusal` additively,
+  and `NoTestCasesError` now exposes `finishReason` (set under azure; `undefined` under gemini,
+  which never reports one).
+- **Envelope-wrapped arrays are recovered, once.** `unwrapArray(value, preferredKeys)` in
+  `src/llm/json.ts` accepts a bare array, a preferred-key envelope (`cases`/`testCases`/
+  `test_cases`), or a single-key object whose one value is an array. Of the json-mode stages only
+  `testCases.ts` expects a top-level array — the others expect objects (`discovery.ts` AppModel,
+  `planner.ts` Plan, `hybridDiscovery.ts` `{concepts, labeledElements}`, `ir.ts` IR,
+  `failureAnalysis.ts` Diagnosis) and are deliberately untouched, so `unwrapArray` cannot smuggle
+  a wrong-shaped object past their schema checks.
+- **The UI copy is pinned, not inherited from prompt wording.** `tests/appJsVerdict.test.ts`
+  extracts `verdictFor` from `public/app.js` (same technique as `tests/stepText.test.ts`) and
+  asserts the "review round timed out before anything was picked" sentence renders only for
+  `status: "no_cases_selected"` (a real gate timeout) while a failed testcases stage always
+  renders the stage's failure message. The behaviour already held; the pin makes it inseparable
+  from future edits.

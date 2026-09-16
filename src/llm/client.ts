@@ -29,6 +29,18 @@ export type { LlmRole } from "./llmContext.js";
 
 export type LlmOpts = Omit<GeminiOpts, "model"> & { role: LlmRole };
 
+/**
+ * The shared result shape every stage reads.  gemini returns `{content, usage}` with no extra
+ * fields; azure adds OpenAI-style `finishReason` and `refusal`.  Both are optional and left as
+ * `undefined` by gemini.ts — callers that do not care about them never see a type error, and
+ * callers that need them (testCases.ts for the `NoTestCasesError` finish-reason path) can read
+ * them from the same return type on either provider.
+ */
+export type LlmResult = GeminiResult & {
+  finishReason?: string;
+  refusal?: string | null;
+};
+
 /** The provider a role resolves to, narrowed to the two this build can serve. Throws on garbage —
  *  the startup guard in server/index.ts should have rejected it before a request ever ran. */
 export function providerFor(role: LlmRole): "gemini" | "azure" {
@@ -53,7 +65,7 @@ export function cacheModelDimension(role: LlmRole): string {
   return `${provider}:${modelOrDeployment}`;
 }
 
-export async function llm(prompt: string, opts: LlmOpts): Promise<GeminiResult> {
+export async function llm(prompt: string, opts: LlmOpts): Promise<LlmResult> {
   const { role, ...rest } = opts;
   if (providerFor(role) === "azure") {
     // temperature (from a shared call site, e.g. ir.ts:1592) is deliberately NOT forwarded to the

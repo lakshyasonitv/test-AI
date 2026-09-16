@@ -12,7 +12,7 @@ import {
   lastFillIndexByKind, type Credentials, type CredentialKind, type CredentialPolicy,
 } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
-import { llmCacheGet, llmCacheSet, makeCacheKey, credentialFingerprint } from "../kb/llmCache.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey, credentialFingerprint, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { cutAtBoundary, pageKey } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 
@@ -119,7 +119,7 @@ async function replayAndSnapshot(
   // entry, or one tenant's authenticated page state is served to another. The "main" role is
   // picked because walks serve the main-model stages (toIR's live-extend and the rewrite routes).
   const cacheKey = makeCacheKey(
-    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"));
+    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), llmCacheVersion());
   const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
   if (cached) return cached;
 
@@ -283,7 +283,7 @@ async function replayAndSnapshot(
     // cached under runs/_cache and its pageModel ends up inside 04-ir.json, both of which the
     // server exposes as static files. No-op for the public demo accounts.
     const result = redactCredentials<ReplayResult>({ reachedUrl, pageModel, pageText }, creds);
-    llmCacheSet(cacheKey, result, WALK_CACHE_NS);
+    if (isCacheableResult(result)) llmCacheSet(cacheKey, result, WALK_CACHE_NS);
     return result;
   } finally {
     await browser.close();

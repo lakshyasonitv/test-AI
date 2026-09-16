@@ -2,7 +2,7 @@ import { z } from "zod";
 import { cacheModelDimension, llm } from "../llm/client.js";
 import { parseJson } from "../llm/json.js";
 import { classifyScope, ALL_SCOPES } from "../kb/testStrategy.js";
-import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 
 export type Coverage = "minimal" | "standard" | "full";
@@ -43,7 +43,7 @@ Example of the exact shape required:
   // this prompt gains would otherwise never reach a request already seen.
   const cacheKey = makeCacheKey(
     prompt, url, coverage, testTypeScope.join(","),
-    cacheModelDimension("lite"), llmCacheDimension("lite"), system);
+    cacheModelDimension("lite"), llmCacheDimension("lite"), system, llmCacheVersion());
   const cached = llmCacheGet<Plan>(cacheKey);
   if (cached) return cached;
 
@@ -60,7 +60,7 @@ Example of the exact shape required:
       parsed.coverage = coverage;
       const result = Plan.safeParse(parsed);
       if (result.success) {
-        llmCacheSet(cacheKey, result.data);
+        if (isCacheableResult(result.data)) llmCacheSet(cacheKey, result.data);
         return result.data;
       }
       lastErr = result.error.message;

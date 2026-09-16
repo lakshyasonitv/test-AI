@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { llm, cacheModelDimension } from "../llm/client.js";
-import { parseJson } from "../llm/json.js";
+import { llm, cacheModelDimension, providerFor } from "../llm/client.js";
+import { parseJson, unwrapArray } from "../llm/json.js";
 import type { Plan } from "./planner.js";
 import type { Coverage } from "./planner.js";
 import type { AppModel } from "../schema/appModel.js";
@@ -9,9 +9,29 @@ import {
   strategyFor, unmatchedConcepts, filterByScope, ALL_SCOPES, CATEGORY_IDS, normalizeCategory,
   type ScopeFilter,
 } from "../kb/testStrategy.js";
-import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { looksLikeCompoundLoginCase } from "./credentials.js";
-import { llmCacheDimension } from "../llm/llmContext.js";
+import { llmCacheDimension, resolvedDeployment, resolvedModel } from "../llm/llmContext.js";
+
+/**
+ * The model returned zero usable test cases — either an empty array, all cases failed schema
+ * validation, or compound-login filtering dropped every candidate. The orchestrator catches this
+ * to write the full raw LLM response to `03-cases-raw.txt` and emits a `testcases` `failed`
+ * event so the run ends as blocked/error, never as `no_cases_selected` with an empty gate round.
+ */
+export class NoTestCasesError extends Error {
+  override name = "NoTestCasesError";
+  constructor(
+    public readonly provider: string,
+    public readonly modelOrDeployment: string,
+    public readonly rawResponse: string,
+    /** OpenAI-style finish reason from the provider, when it reported one. Set on azure;
+     *  undefined under gemini (gemini.ts does not report finish reasons). */
+    public readonly finishReason?: string,
+  ) {
+    super("The model returned no usable test cases. Raw response saved.");
+  }
+}
 
 // Models sometimes ignore case ("High") or return an array where a string was asked for
 // ("expected": [...]) — normalize before validating rather than rejecting valid content.
@@ -437,7 +457,7 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     JSON.stringify(p), JSON.stringify(liteModel), scope.join(","),
     (extend?.existingTitles ?? []).join("|"), (extend?.rejectedTitles ?? []).join("|"),
     opts.sourcePrompt ?? "", extend?.latestPrompt ?? "",
-    system, cacheModelDimension("main"), llmCacheDimension("main"));
+    system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion());
   const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
   if (cachedCases) return cachedCases;
 
@@ -466,10 +486,13 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { content: raw } = await llm(user, { systemInstruction: system, json: true, role: "main", stage: "testcases" });
+    const { content: raw, finishReason } = await llm(user, { systemInstruction: system, json: true, role: "main", stage: "testcases" });
     try {
       const parsed: any = parseJson(raw);
-      const arr = Array.isArray(parsed) ? parsed : parsed.testCases ?? [];
+      // Tolerant array unwrap — a model asked for a top-level array sometimes wraps it in an
+      // envelope (`{"testCases":[...]}`, `{"cases":[...]}`, or a single-key object whose value is
+      // the array). Bare arrays and every one of those shapes come back the same way here.
+      const arr = unwrapArray(parsed, ["cases", "testCases", "test_cases"]) ?? [];
       // Parse against LLM-facing schema (no generatedFrom) — the model never produces it.
       const result = z.array(LLMTestCase).safeParse(arr);
       if (result.success) {
@@ -480,11 +503,24 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
         // merged upfront + reactive list, so this stage can't cap twice and produce 4-or-8.
         const scoped = filterByScope(stamped, scope);
         const finalCases = dropCompoundLoginCases(scoped);
-        llmCacheSet(cacheKey, finalCases);
+        if (finalCases.length === 0) {
+          // An empty case list is a failed stage — the model (or the cache) returned "no
+          // answers". Never let this look like a clean empty-generation outcome: no cache
+          // write, and the orchestrator ends the run as blocked/error after saving the raw
+          // response for diagnosis. provider/model name who actually billed the attempt.
+          const provider = providerFor("main");
+          const modelOrDeployment = provider === "azure" ? resolvedDeployment("main") : resolvedModel();
+          throw new NoTestCasesError(provider, modelOrDeployment, raw, finishReason);
+        }
+        if (isCacheableResult(finalCases)) llmCacheSet(cacheKey, finalCases);
         return finalCases;
       }
       lastErr = result.error.message;
     } catch (err: any) {
+      // A NoTestCasesError is a definite "no answer", not a retryable parse/schema flake —
+      // letting the generic catch swallow it would convert the staged failure into silent
+      // retries (and re-bill / re-cache for a result we already know is empty).
+      if (err instanceof NoTestCasesError) throw err;
       lastErr = err?.message ?? String(err);
     }
   }

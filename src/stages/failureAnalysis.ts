@@ -8,7 +8,7 @@ import { siteHost } from "../text.js";
 import { KNOWN_CATEGORIES, findFailingStepId, classify } from "./classify.js";
 import type { IR } from "../schema/ir.js";
 import type { ExecResult } from "./executor.js";
-import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { cutAtBoundary } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 
@@ -239,7 +239,7 @@ export async function analyzeFailure(
   // the disk cache has no expiry, so anything left out is served stale permanently.
   const cacheKey = makeCacheKey(
     errorText, JSON.stringify(ir.steps.slice(-5)),
-    SYSTEM, cacheModelDimension("lite"), llmCacheDimension("lite"));
+    SYSTEM, cacheModelDimension("lite"), llmCacheDimension("lite"), llmCacheVersion());
   const cached = llmCacheGet<Diagnosis>(cacheKey);
   if (cached) return cached;
 
@@ -282,7 +282,7 @@ Return JSON: { "failingStepId", "category", "explanation", "suggestedFix" }`;
       if (parsed.success) {
         const verifiedText = verifyDiagnosisText(parsed.data, result);
         const diagnosis = verifiedText ? { ...parsed.data, verifiedText } : parsed.data;
-        llmCacheSet(cacheKey, diagnosis);
+        if (isCacheableResult(diagnosis)) llmCacheSet(cacheKey, diagnosis);
         return diagnosis;
       }
       lastErr = parsed.error.message;

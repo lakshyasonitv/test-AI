@@ -212,3 +212,53 @@ describe("azureOpenAI — error contract with the backoff loop", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("azureOpenAI — truncation and in-band refusal on a 200", () => {
+  it("a finish_reason of 'length' throws 'Azure OpenAI truncated: <first 300 chars>' with no .status", async () => {
+    const longContent = "x".repeat(1000);
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      choices: [{ message: { content: longContent }, finish_reason: "length" }],
+      usage: { prompt_tokens: 10, completion_tokens: 1000, total_tokens: 1010 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const err: any = await azureOpenAI("hi", { deployment: "gpt-deploy-1", stage: "x" }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    // First 300 chars only — enough to diagnose, small enough to keep out of a giant log line.
+    expect(err.message).toBe(`Azure OpenAI truncated: ${"x".repeat(300)}`);
+    expect(err.status).toBeUndefined();
+    expect(isRateLimitError(err)).toBe(false);
+    // A truncated answer is the same clipped prompt re-billed — never retried.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a non-empty message.refusal throws 'Azure OpenAI refusal: <message>' with no .status", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      choices: [{ message: { content: "", refusal: "I can't help with that." }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const err: any = await azureOpenAI("hi", { deployment: "gpt-deploy-1", stage: "x" }).catch((e) => e);
+    expect(err.message).toBe("Azure OpenAI refusal: I can't help with that.");
+    expect(err.status).toBeUndefined();
+    expect(isRateLimitError(err)).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refusal is checked before finish_reason (a model can refuse with finish_reason 'stop')", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      choices: [{ message: { content: "", refusal: "No." }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const err: any = await azureOpenAI("hi", { deployment: "gpt-deploy-1", stage: "x" }).catch((e) => e);
+    expect(err.message).toBe("Azure OpenAI refusal: No.");
+  });
+
+  it("a clean 200 passes finishReason and refusal through additively", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      choices: [{ message: { content: "ok", refusal: null }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const res = await azureOpenAI("hi", { deployment: "gpt-deploy-1", stage: "x" });
+    expect(res.content).toBe("ok");
+    expect(res.finishReason).toBe("stop");
+    expect(res.refusal).toBeNull();
+  });
+});

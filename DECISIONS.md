@@ -938,3 +938,39 @@ thoughts tokens are not separately reported, so the field is 0 on that provider.
 fingerprint is ALWAYS `"env"` — the lockstep org config is Gemini-only, so splitting the azure
 cache per tenant would serve identical env credentials different answers by tenant, the inverse of
 TD-22.
+
+### D-31. The lockstep LLM cache is hardened by refusing negatives and by a version salt (LLM cache hardening)
+
+`TECH_DEBT.md` TD-94 records run `2026-09-16T07-10-56-871Z-2a364a79`: a cached **zero-case** answer
+was served forever, so later runs made zero LLM calls and reported no test cases. Two decisions
+closed it, and both are worth recording because they resolve latent tensions with D-10/TD-22:
+
+- **"No answer" is never a cacheable answer.** Every LLM stage had already moved its cache write
+  AFTER schema/structural validation (that was a fact of the code, not this phase's work); what was
+  missing was rejecting validation *output* whose case count is zero. `isCacheableResult` now
+  refuses empty/whitespace, unparseable-requested-JSON, and parsed-empty structures, and
+  `llmCacheSet` independently refuses the same negatives as a belt. Coupled with the typed
+  `NoTestCasesError` (a zero-case generation is a **stage failure** — raw response saved, run ends
+  blocked — never a clean empty success, and never a `no_cases_selected` round), the cache cannot
+  hold what D-10 says must never be shared: an answer that contains none.
+- **The version salt is a second knob beside the key dimensions.** D-10's dimensions keep tenants
+  and providers apart; `LLM_CACHE_VERSION` is the *time* dimension — one variable, audited inside
+  every `makeCacheKey`, defaulting to `"1"`. Because the key includes it, bumping it discards every
+  cached LLM answer in one move. It is deliberately **not** an off-by-default feature flag: its
+  default IS its value ("cache-version 1"), and being present in the key is what guarantees a bump
+  is observable. The one cost recorded in TD-94: the salt also covers the walk/replay cache (all
+  six key sites share the shape), so a bump re-walks live pages once — deterministic browser work,
+  not model spend, and a price paid knowingly so there is a single, kitchen-sink "clear the whole
+  store" control.
+- **A truncated or refused Azure answer is an error, not a result — and the two silent
+  "nothing was generated" causes are separated structurally, not by re-reading the raw dump.**
+  The delta evidence run (Azure gpt-5-mini, ~26 visible tokens parsed to `[]`) could have been
+  either hypothesis A (the output cap cut the answer off mid-object) or hypothesis B (the model
+  wrapped the array in an envelope a strict `Array.isArray` missed) — indistinguishable from
+  `03-cases-raw.txt` alone. Prompt wording forbidding envelopes would be the D-02/D-03 failure in
+  another suit, so the code tells them apart deterministically: `finish_reason === "length"` and a
+  non-empty `message.refusal` throw (plain `Error`, no `.status`, so `backoff.ts` — which keys on
+  `.status`/429/503 — throws them through unretried), and the finish reason rides out of the stage
+  in `NoTestCasesError`. Envelope-wrapped answers are recovered by `unwrapArray`, applied **only**
+  where a top-level array is expected (testCases) rather than bolted onto object-expecting stages
+  where it would silently sidestep their schema checks.
