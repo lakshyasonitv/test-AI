@@ -311,13 +311,13 @@ describe("cache keys do not collide — TD-22 / D-10", () => {
       pool: null, model: "gemini-3.6-flash", modelLite: null,
       keyFingerprint: "fp-a", organisationId: ORG_A,
     });
-    const keyFlash = makeCacheKey("same prompt", resolvedModel(), llmCacheDimension());
+    const keyFlash = makeCacheKey("same prompt", resolvedModel(), llmCacheDimension("main"));
 
     enterWithLlmConfig({
       pool: null, model: "gemini-2.5-pro", modelLite: null,
       keyFingerprint: "fp-a", organisationId: ORG_A,
     });
-    const keyPro = makeCacheKey("same prompt", resolvedModel(), llmCacheDimension());
+    const keyPro = makeCacheKey("same prompt", resolvedModel(), llmCacheDimension("main"));
 
     expect(keyFlash).not.toBe(keyPro);
   });
@@ -327,13 +327,13 @@ describe("cache keys do not collide — TD-22 / D-10", () => {
       pool: null, model: "gemini-3.6-flash", modelLite: null,
       keyFingerprint: "fp-a", organisationId: ORG_A,
     });
-    const keyA = makeCacheKey("same prompt", resolvedModel(), llmCacheDimension());
+    const keyA = makeCacheKey("same prompt", resolvedModel(), llmCacheDimension("main"));
 
     enterWithLlmConfig({
       pool: null, model: "gemini-3.6-flash", modelLite: null,
       keyFingerprint: "fp-b", organisationId: ORG_B,
     });
-    const keyB = makeCacheKey("same prompt", resolvedModel(), llmCacheDimension());
+    const keyB = makeCacheKey("same prompt", resolvedModel(), llmCacheDimension("main"));
 
     expect(keyA).not.toBe(keyB);
   });

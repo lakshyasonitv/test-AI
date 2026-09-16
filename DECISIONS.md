@@ -863,3 +863,78 @@ no `.env` exists in the image (`docker-compose.yml` supplies env vars via `env_f
 variable-presence metadata only and never returns non-200, so it is liveness-only. A meaningful
 readiness check (Gemini key present, DB reachable) is deferred. `docs/phases/PHASE_CONTAINERIZATION_REPORT.md`
 documents verification, rollback, and deferred items.
+
+## D-29
+
+**Azure OpenAI is a second LLM provider, selected per-role at the call site, with no fallback.**
+
+The build's nine LLM call sites across seven files used to import `gemini()` directly. They now
+go through `src/llm/client.ts`, which resolves a role (`'main' | 'lite'`) to a provider from
+`LLM_PROVIDER` / `LLM_PROVIDER_LITE` (both defaulting to `"gemini"`) and calls either `gemini()`
+(the existing function, unchanged) or `azureOpenAI()` (a mirror with the same `{content, usage}`
+contract and the same ambient spend recording). An unset selector is byte-identical to the
+pre-phase behaviour — the resolved model string is the one `gemini()` would have used anyway.
+
+The stage-to-role map (all of planner/discovery/discovery-label/failure-analysis are cheap-model
+stages except ir/testcases/rewrite/translate) lives only at the ten call sites — they say `role:`
+and nothing about models, so a future provider needs no new routing.
+
+**Rejected: automatic fallback from Azure to Gemini.** D-21's reason for one provider was
+determinism and identical cost-reliability behaviour. A fallback quietly mixes billing, tenancy
+(Azure credentials going to Google) and model pan-position, and every retry cost lands twice.
+Two operators who disagreed about which "failed" run a run on would produce two different
+answers — the inverse of D-02. A role is bound to one provider; a failure surfaces as the
+failing provider's own error in the same backoff loop (`callWithPool` is shared, unchanged —
+a one-key `KeyPool` on the Azure side).
+
+**Rejected: per-run or per-organisation provider selection.** D-21 stands: an `orgLlmConfig`
+cannot carry an Azure key, and a per-run provider would multiply the feature surface (request
+shape, cache keys, validation) without a customer. `LLM_PROVIDER` is a cold environment switch,
+read once per request. The per-org config remains Gemini-only: when a role's provider is Azure it
+is ignored at the resolution point (comment on `LlmConfig` in `llmContext.ts`).
+
+**Rejected: a separate retry loop for Azure.** The provider must reproduce gemini's one-key
+behaviour exactly. It reuses `callWithPool` + `KeyPool` unchanged, sets `e.status`/`e.retryAfter`
+the way gemini.ts does, and marks a content_filter refusal (`code: "content_filter"` in a 400
+body) with a distinct error and NO `.status`, so `backoff.ts` sees "not a rate limit" and throws
+it straight through — retrying a refusal would just re-bill the same blocked prompt.
+
+**Cache keys carry the provider dimension.** `cacheModelDimension(role)` replaced the
+`resolvedModel()/resolvedModelLite()` fragment of every key. Under gemini it still yields exactly
+`gemini:<same model>`, so the only cost is a one-time cache miss (TD-22 / D-10: the non-expiring
+disk cache must never serve one provider's answer to the other, and did before this — the key
+did not know which provider ran). The `record()`/`recordAmbient()` spend lines in
+08-llm-usage.json now carry a required `provider` field for the same reason: non-expiring cost
+lines must name who billed them.
+
+**Consequences.** Provider choice is a cold switch: an operator is either 100% Gemini or 100%
+Azure (per role), which is what makes the cache-key and cost-line questions tractable. A
+malformed `LLM_PROVIDER` value is a startup error, not a silent fallback, and `/api/health`
+reports the four Azure variables' presence. The one-time gemini cache-key change is the price of
+not disambiguating later, recorded here because D-10/TD-22 make the alternative unaffordable.
+
+**Deployments and request shape (phase 2).** `AZURE_OPENAI_DEPLOYMENT`/`_LITE` name the "main"
+and "lite" roles' deployments, expected on the org's subscription to be gpt-5-mini (main) and
+gpt-4.1-mini (lite) — at the time of writing the only image-capable OpenAI models with non-zero
+quota on the subscription. Main needs vision (screenshot grounding), which is why image capability
+is the hard requirement; gpt-4.1-mini often lacks it entirely, and lite rarely sees images anyway.
+
+Three request-shape rules follow from the model family:
+
+- **`temperature` is NEVER sent**, on either deployment. The gpt-5 family rejects the parameter
+  outright (callers — notably `ir.ts` — still pass `temperature: 0.2` on a shared opts type; the
+  azure body simply never maps it, so IR's 0.2 becomes a no-op rather than a 400).
+- An output cap maps to **`max_completion_tokens`**, never `max_tokens` — the two count
+  differently on gpt-5, and `max_tokens` is not a supported alias there.
+- **`reasoning_effort`** is sent per role: `AZURE_OPENAI_REASONING_EFFORT` (default `"low"`, the
+  pipeline's one knob over completion cost on a reasoning model) — always on main; lite sends the
+  parameter only when `AZURE_OPENAI_REASONING_EFFORT_LITE` is set, and never falls back to the
+  main variable, because gpt-4.1-mini rejects the key (it is not a reasoning model). undefined in
+  code means "omit the key from the body".
+
+`usage.completion_tokens_details.reasoning_tokens` is read when present so a stage's
+08-llm-usage.json line can say how much of its completion spend was internal reasoning; gemini's
+thoughts tokens are not separately reported, so the field is 0 on that provider. The azure cache
+fingerprint is ALWAYS `"env"` — the lockstep org config is Gemini-only, so splitting the azure
+cache per tenant would serve identical env credentials different answers by tenant, the inverse of
+TD-22.

@@ -563,6 +563,12 @@ app.get("/api/health", (_req, res) => {
       GEMINI_API_KEY:  check("GEMINI_API_KEY"),
       GEMINI_MODEL:    check("GEMINI_MODEL"),
       GEMINI_MODEL_LITE: check("GEMINI_MODEL_LITE"),
+      LLM_PROVIDER:    check("LLM_PROVIDER"),
+      LLM_PROVIDER_LITE: check("LLM_PROVIDER_LITE"),
+      AZURE_OPENAI_ENDPOINT: check("AZURE_OPENAI_ENDPOINT"),
+      AZURE_OPENAI_API_KEY: check("AZURE_OPENAI_API_KEY"),
+      AZURE_OPENAI_DEPLOYMENT: check("AZURE_OPENAI_DEPLOYMENT"),
+      AZURE_OPENAI_DEPLOYMENT_LITE: check("AZURE_OPENAI_DEPLOYMENT_LITE"),
       NODE_ENV:        check("NODE_ENV"),
       PORT:            check("PORT"),
     },
@@ -1922,6 +1928,51 @@ export function formatInvalidBooleanFlags(bad: InvalidBooleanFlag[]): string {
 
 export { app };
 
+/**
+ * Every env var that names an LLM provider ("gemini" or "azure").
+ *
+ * The same shape as `BOOLEAN_ENV_FLAGS` for the same reason: `LLM_PROVIDER=azureEE` would be
+ * silently read as `gemini` (the fallback default) if a typo ever shipped, and a server running
+ * gemini when the operator believes it is on Azure is expensive to discover — wrong-billion
+ * tokens, wrong endpoint, wrong tenancy. Unset is the documented default (gemini); a present value
+ * must be exactly "gemini" or "azure".
+ */
+export const LLM_PROVIDER_ENV_VARS = ["LLM_PROVIDER", "LLM_PROVIDER_LITE"] as const;
+
+/** One malformed LLM provider variable: the name, and the value actually found. */
+export interface InvalidProviderEnv {
+  name: string;
+  found: string;
+}
+
+/** Find every LLM provider variable that is set to something other than exactly "gemini" or
+ *  "azure". Pure and exported so it can be tested without booting a server, exactly like
+ *  `findInvalidBooleanFlags`. An ABSENT variable is not an error. Case matters; a present-but-empty
+ *  value is rejected (it reads as gemini while looking deliberate). */
+export function findInvalidProviderEnv(env: NodeJS.ProcessEnv = process.env): InvalidProviderEnv[] {
+  const bad: InvalidProviderEnv[] = [];
+  for (const name of LLM_PROVIDER_ENV_VARS) {
+    const raw = env[name];
+    if (raw === undefined) continue;
+    // No trimming, exactly like findInvalidBooleanFlags: " azure"/"azure " read as gemini at the
+    // call site (resolvedProvider does no trimming either), so they must be fatal here.
+    if (raw !== "gemini" && raw !== "azure") bad.push({ name, found: raw });
+  }
+  return bad;
+}
+
+/** The fatal message for `findInvalidProviderEnv()` output — names each variable and its value. */
+export function formatInvalidProviderEnv(bad: InvalidProviderEnv[]): string {
+  return [
+    `[startup] FATAL: LLM provider environment variable(s) set to a value that is neither "gemini" nor "azure".`,
+    ...bad.map((b) => `  ${b.name}=${JSON.stringify(b.found)} — expected exactly "gemini" or "azure"`),
+    `  These variables select which provider a role ('main'/'lite') calls; any other value is read`,
+    `  as gemini, so a stale typos would silently run Google's endpoints while the operator believes`,
+    `  Azure is configured. Set each to exactly "gemini" or "azure", or remove it entirely to take`,
+    `  its documented default (gemini).`,
+  ].join("\n");
+}
+
 // Only actually start listening (and run startup-only diagnostics/jobs) when this file is
 // executed directly (`npm run serve`/`start`), not when a test imports `app` to exercise routes
 // via supertest — importing must never bind a real port or spin up background timers.
@@ -1935,6 +1986,13 @@ if (isMain) {
   const invalidFlags = findInvalidBooleanFlags();
   if (invalidFlags.length > 0) {
     console.error(formatInvalidBooleanFlags(invalidFlags));
+    process.exit(1);
+  }
+  // The sibling guard for the LLM provider selector — same rationale, same placement, run with the
+  // boolean-flag check, before any route can serve a request on a misconfigured provider.
+  const invalidProviders = findInvalidProviderEnv();
+  if (invalidProviders.length > 0) {
+    console.error(formatInvalidProviderEnv(invalidProviders));
     process.exit(1);
   }
 

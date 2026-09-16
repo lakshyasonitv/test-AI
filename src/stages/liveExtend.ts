@@ -113,12 +113,13 @@ async function replayAndSnapshot(
   //
   // Namespaced to "walks" so it can be cleared on its own, without discarding the LLM answers in
   // the same store that cost real money to obtain.
-  // llmCacheDimension() is the ORGANISATION's credential fingerprint, not the site's. A walk is
-  // not a model call, but it is still cached forever on disk and is still per-tenant work: two
-  // organisations walking the same URL must not share an entry, or one tenant's authenticated
-  // page state is served to another. TD-22 / D-10 applied to the walks namespace.
+  // llmCacheDimension("main") is the ORGANISATION's credential fingerprint (provider-prefixed,
+  // D-10 / TD-22), not the site's. A walk is not a model call, but it is still cached forever on
+  // disk and is still per-tenant work: two organisations walking the same URL must not share an
+  // entry, or one tenant's authenticated page state is served to another. The "main" role is
+  // picked because walks serve the main-model stages (toIR's live-extend and the rewrite routes).
   const cacheKey = makeCacheKey(
-    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension());
+    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"));
   const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
   if (cached) return cached;
 

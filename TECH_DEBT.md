@@ -3697,3 +3697,39 @@ value in `.env.example` has been replaced with the placeholder `your-key-here`.
 
 The check must scope or review false positives rather than blanket-excluding them — a saved-HTML
 page full of base64 blobs is what produced `eyJ…` noise in the audit.
+
+### TD-93. Azure OpenAI is provider #2, and two of its seams knowingly leak — Medium / Strategic — Filed, not fixed
+
+Azure-backed runs work end to end (LLM_PROVIDER=azure routes every role; provider + usage are
+recorded per stage in `runs/<id>/08-llm-usage.json`; a malformed selector is a startup error, not
+a silent fallback). Two seams are deliberately left, and each should be filed against before it is
+claimed closed:
+
+- **`orgLlmConfig` cannot hold an Azure key.** The per-organisation config (`orgLlmConfig.ts`)
+  stays Gemini-only by data shape and by rule: when a role's provider is "azure" the config is
+  ignored (see the comment at the resolution point in `llmContext.ts`). An organisation that
+  wants Azure has no per-org path today; the switch is server-wide. Adding one means the config
+  gains an azure-key field, the role resolution consults it, and a credential type that has not
+  been through `redactCredentials`/`scrubServedSecrets` appears — all deferred, and all must come
+  with their own leak tests.
+- **The editor rewrite routes fold in the per-org model when `GEMINI_MODEL` is unset.** Before
+  this phase, `/api/cases/rewrite|translate|rewrite-gate` passed `model: process.env.GEMINI_MODEL`
+  directly. They now route through `llm({ role: "main" })`, which folds the per-org model in —
+  but only when `GEMINI_MODEL` is unset, mirroring the old behaviour exactly. So an organisation
+  on Gemini still cannot override the server model for those routes, and if `GEMINI_MODEL` is
+  unset the per-org model silently serves them. That was already true without Azure; it becomes a
+  real question now that a second provider exists.
+
+Both are the "whatever per-org means on a second provider" question D-29 deferred, and neither
+blocks the cold-switch story. When either is addressed, the tests must start by asserting that
+`cacheModelDimension` includes the org's model/deployment and that a per-org azure key never
+reaches `08-llm-usage.json` or any `runs/` artifact.
+
+**Phase-2 additions.** The deployments the azure returns expect to name are gpt-5-mini (main) and
+gpt-4.1-mini (lite). gpt-4.1-mini is in **Legacy** status on the subscription at the time of
+writing: it keeps working (with a deprecation deadline) and it is the one currently carrying most
+of lite's shorter-label workloads, but it rejects the `reasoning_effort` parameter outright — the
+reason `AZURE_OPENAI_REASONING_EFFORT_LITE` must stay optional with no fallback to the main
+variable. Ticket to migrate when the successor is available and the quota picture has moved; the
+env-documented defaults in `.env.example` are the single place the deployment names live outside
+this doc.

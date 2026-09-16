@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { gemini } from "../llm/gemini.js";
+import { llm, cacheModelDimension } from "../llm/client.js";
 import { parseJson } from "../llm/json.js";
 import { findScreenshot } from "./executor.js";
 import { siteHost } from "../text.js";
@@ -10,7 +10,7 @@ import type { IR } from "../schema/ir.js";
 import type { ExecResult } from "./executor.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { cutAtBoundary } from "../text.js";
-import { llmCacheDimension, resolvedModelLite } from "../llm/llmContext.js";
+import { llmCacheDimension } from "../llm/llmContext.js";
 
 // Falls back to "other" for anything outside the known set (e.g. Gemini describing a
 // real Playwright error like "strict mode violation" accurately but outside our
@@ -239,7 +239,7 @@ export async function analyzeFailure(
   // the disk cache has no expiry, so anything left out is served stale permanently.
   const cacheKey = makeCacheKey(
     errorText, JSON.stringify(ir.steps.slice(-5)),
-    SYSTEM, resolvedModelLite(), llmCacheDimension());
+    SYSTEM, cacheModelDimension("lite"), llmCacheDimension("lite"));
   const cached = llmCacheGet<Diagnosis>(cacheKey);
   if (cached) return cached;
 
@@ -269,10 +269,10 @@ Return JSON: { "failingStepId", "category", "explanation", "suggestedFix" }`;
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { content: raw } = await gemini(user, {
+    const { content: raw } = await llm(user, {
       systemInstruction: system,
       json: true,
-      model: resolvedModelLite(),
+      role: "lite",
       imageBase64: shot ? readFileSync(shot).toString("base64") : undefined,
       imageMime: "image/png",
       stage: "failure_analysis",

@@ -1,4 +1,4 @@
-import { gemini } from "../llm/gemini.js";
+import { llm, providerFor, cacheModelDimension } from "../llm/client.js";
 import { LlmBudget } from "../llm/llmBudget.js";
 import { parseJson } from "../llm/json.js";
 import { isRateLimitError } from "../llm/backoff.js";
@@ -14,7 +14,7 @@ import {
 } from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
-import { llmCacheDimension, resolvedModel } from "../llm/llmContext.js";
+import { llmCacheDimension } from "../llm/llmContext.js";
 
 /** Return type for toIR that includes the updated AppModel after live-extension. */
 export interface IRResult {
@@ -1341,7 +1341,7 @@ Example — handling duplicate selectors with nth:
   // can be served to a post-TD-82 run.
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
-    entryUrl, system, resolvedModel(), llmCacheDimension());
+    entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"));
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -1589,16 +1589,16 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // whatever Gemini's own default is. model: GEMINI_MODEL (the full model, not LITE) —
       // IR is the hardest structured-output task in the pipeline (DOM + test case combined
       // into strict JSON), the same reason it needed a bigger context window under Groq.
-      const { content, usage } = await gemini(buildUser(currentModel, correction), {
+      const { content, usage } = await llm(buildUser(currentModel, correction), {
         systemInstruction: system, json: true, temperature: 0.2,
-        model: resolvedModel(), stage: "ir",
+        role: "main", stage: "ir",
       });
-      budget?.record("ir", usage);
+      budget?.record("ir", usage, providerFor("main"));
       console.log("[ir] gemini returned, length:", content.length);
       parsed = IR.safeParse(normalizeIR(parseJson(content)));
       console.log("[ir] parsed:", parsed.success ? "valid" : "INVALID");
     } catch (err: any) {
-      budget?.record("ir");
+      budget?.record("ir", undefined, providerFor("main"));
       lastErr = err?.message ?? String(err);
 
       // A definitively non-retryable infrastructure error (bad API key, a decommissioned/

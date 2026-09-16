@@ -37,8 +37,14 @@ export interface GeminiOpts {
   imageMime?: string;         // default image/png
   /** No provider default here (unlike Groq's 0.2) — omitted entirely means Gemini's own
    *  default applies. IR generation sets this explicitly; every other stage is unaffected by
-   *  this option existing. */
+   *  this option existing. (azureOpenAI never sends temperature regardless — the gpt-5 family
+   *  rejects it — so dropping it is safe on BOTH providers; see client.ts.) */
   temperature?: number;
+  /** Optional cap on generated tokens. No call site sets it today; it exists so the shared
+   *  opts type can carry an output cap to whichever provider runs, and each provider maps it to
+   *  ITS OWN field name (gemini: generationConfig.maxOutputTokens; azureOpenAI:
+   *  max_completion_tokens, NEVER max_tokens — the token-counting APIs differ). */
+  maxOutputTokens?: number;
   /** Short label for the ambient budget's per-stage breakdown (llmBudget.ts's `recordAmbient`)
    *  — the StageName convention ("plan", "discovery", "testcases", "failure_analysis"), or
    *  omitted for a call made outside `runWithBudget` (a direct unit test, a one-off script). */
@@ -112,10 +118,11 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<Gem
       }
       const body: any = { contents: [{ role: "user", parts }] };
       if (opts.systemInstruction) body.system_instruction = { parts: [{ text: opts.systemInstruction }] };
-      if (opts.json || opts.temperature !== undefined) {
+      if (opts.json || opts.temperature !== undefined || opts.maxOutputTokens !== undefined) {
         body.generationConfig = {
           ...(opts.json ? { responseMimeType: "application/json" } : {}),
           ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+          ...(opts.maxOutputTokens !== undefined ? { maxOutputTokens: opts.maxOutputTokens } : {}),
         };
       }
 
@@ -158,14 +165,14 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<Gem
         },
       };
     });
-    recordAmbient(stage, result.usage);
+    recordAmbient(stage, result.usage, "gemini");
     return result;
   } catch (err) {
     // Counted even on failure — a rejected call already spent the request. Mirrors the
     // explicit `budget?.record()` on the catch path in ir.ts's own retry loop. A no-op outside
     // `runWithBudget` (recordAmbient itself is the optional part), so this never breaks a
     // caller that doesn't care about budgeting.
-    recordAmbient(stage);
+    recordAmbient(stage, undefined, "gemini");
     throw err;
   }
 }

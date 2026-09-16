@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { gemini } from "../llm/gemini.js";
+import { llm, cacheModelDimension } from "../llm/client.js";
 import { parseJson } from "../llm/json.js";
 import type { Plan } from "./planner.js";
 import type { Coverage } from "./planner.js";
@@ -11,7 +11,7 @@ import {
 } from "../kb/testStrategy.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { looksLikeCompoundLoginCase } from "./credentials.js";
-import { llmCacheDimension, resolvedModel } from "../llm/llmContext.js";
+import { llmCacheDimension } from "../llm/llmContext.js";
 
 // Models sometimes ignore case ("High") or return an array where a string was asked for
 // ("expected": [...]) — normalize before validating rather than rejecting valid content.
@@ -437,7 +437,7 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     JSON.stringify(p), JSON.stringify(liteModel), scope.join(","),
     (extend?.existingTitles ?? []).join("|"), (extend?.rejectedTitles ?? []).join("|"),
     opts.sourcePrompt ?? "", extend?.latestPrompt ?? "",
-    system, resolvedModel(), llmCacheDimension());
+    system, cacheModelDimension("main"), llmCacheDimension("main"));
   const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
   if (cachedCases) return cachedCases;
 
@@ -466,7 +466,7 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { content: raw } = await gemini(user, { systemInstruction: system, json: true, stage: "testcases" });
+    const { content: raw } = await llm(user, { systemInstruction: system, json: true, role: "main", stage: "testcases" });
     try {
       const parsed: any = parseJson(raw);
       const arr = Array.isArray(parsed) ? parsed : parsed.testCases ?? [];

@@ -5,6 +5,18 @@ export interface LlmStageUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /**
+   * Reasoning-model reasoning tokens, when the provider reported them. Azure's gpt-5 family
+   * sends usage.completion_tokens_details.reasoning_tokens; gemini's thoughts tokens are not
+   * separately reported (their cost is already inside the totals). 0 when absent/unknown. Kept
+   * visible so a stage's bill can say how much of the output was internal reasoning instead of
+   * silently folding it into completion totals nobody can decompose.
+   */
+  reasoningTokens: number;
+  /** Which provider served this stage's calls — "gemini" or "azure". Written to 08-llm-usage.json
+   *  so a run's cost line says which provider the (non-expiring, possibly stale) totals belong to;
+   *  the same stage can be served by different providers across runs since choice is per-role. */
+  provider: string;
 }
 
 export interface LlmUsageSnapshot {
@@ -51,7 +63,10 @@ export class LlmBudget {
   private promptTokens = 0;
   private completionTokens = 0;
   private readonly maxCalls: number;
-  private readonly byStage = new Map<string, { calls: number; promptTokens: number; completionTokens: number }>();
+  private readonly byStage = new Map<
+    string,
+    { calls: number; promptTokens: number; completionTokens: number; reasoningTokens: number; provider: string }
+  >();
 
   constructor(
     maxCalls = Number(process.env.MAX_LLM_CALLS_PER_RUN ?? 60)
@@ -65,24 +80,35 @@ export class LlmBudget {
   }
 
   /**
-   * Record one completed attempt. Called after every attempt regardless of success or
-   * failure — a failed/erroring call already spent the request, so it counts against the
-   * ceiling too. `usage` is omitted on failure. `stage` is a short label (ir.ts's own
-   * `StageName` values are the convention, e.g. "ir", "plan", "testcases", "discovery",
-   * "failure_analysis", "heal") — freeform, not validated, since the budget itself doesn't
-   * care which stage spent the call, only the per-stage breakdown does.
+   * `record` is called after every attempt regardless of success or failure — a failed/erroring
+   * call already spent the request, so it counts against the ceiling too. `usage` is omitted on
+   * failure. `stage` is a short label (ir.ts's own `StageName` values are the convention, e.g.
+   * "ir", "plan", "testcases", "discovery", "failure_analysis", "heal") — freeform, not
+   * validated, since the budget itself doesn't care which stage spent the call, only the
+   * per-stage breakdown does. `provider` names which provider served the call ("gemini"/"azure")
+   * and is REQUIRED: every real call path supplies it (gemini.ts / azureOpenAI.ts via recordAmbient,
+   * ir.ts explicitly), so the 08-llm-usage.json per-stage breakdown can never silently say "a call
+   * happened" without saying who billed it.
    */
-  record(stage: string, usage?: { promptTokens?: number; completionTokens?: number }) {
+  record(
+    stage: string,
+    usage: { promptTokens?: number; completionTokens?: number; reasoningTokens?: number } | undefined,
+    provider: string,
+  ) {
     this.calls++;
     const promptTokens = usage?.promptTokens ?? 0;
     const completionTokens = usage?.completionTokens ?? 0;
+    const reasoningTokens = usage?.reasoningTokens ?? 0;
     this.promptTokens += promptTokens;
     this.completionTokens += completionTokens;
 
-    const s = this.byStage.get(stage) ?? { calls: 0, promptTokens: 0, completionTokens: 0 };
+    const s = this.byStage.get(stage)
+      ?? { calls: 0, promptTokens: 0, completionTokens: 0, reasoningTokens: 0, provider };
     s.calls++;
     s.promptTokens += promptTokens;
     s.completionTokens += completionTokens;
+    s.reasoningTokens += reasoningTokens;
+    s.provider = provider;
     this.byStage.set(stage, s);
   }
 
@@ -131,9 +157,13 @@ export function enterWithBudget(budget: LlmBudget): void {
   budgetContext.enterWith(budget);
 }
 
-/** Called by gemini() itself after every call. A no-op outside of `enterWithBudget` (e.g. a
- *  direct unit-test call to gemini()) — same "budget is optional, everything still works
- *  without one" contract the explicit `budget?.record()` call sites already have. */
-export function recordAmbient(stage: string, usage?: { promptTokens?: number; completionTokens?: number }) {
-  budgetContext.getStore()?.record(stage, usage);
+/** Called by gemini()/azureOpenAI() themselves after every call. A no-op outside of
+ *  `enterWithBudget` (e.g. a direct unit-test call). `provider` is required, mirroring `record`.
+ */
+export function recordAmbient(
+  stage: string,
+  usage: { promptTokens?: number; completionTokens?: number; reasoningTokens?: number } | undefined,
+  provider: string,
+) {
+  budgetContext.getStore()?.record(stage, usage, provider);
 }

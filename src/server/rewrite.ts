@@ -1,4 +1,4 @@
-import { gemini } from "../llm/gemini.js";
+import { llm } from "../llm/client.js";
 import { LlmBudget, enterWithBudget } from "../llm/llmBudget.js";
 import { IR, type Step } from "../schema/ir.js";
 import { STEP_VOCABULARY, formatIrStep, parseIrStep } from "../stages/stepText.js";
@@ -141,8 +141,8 @@ export async function proposeRewrite(
 
   const before = ir.steps.map((s: Step) => formatIrStep(s));
   const context = caseElementContext(ir, sourceRunId);
-  const { content } = await gemini(buildPrompt(ir.meta.title, before, trimmed, context.lines), {
-    model: process.env.GEMINI_MODEL,
+  const { content } = await llm(buildPrompt(ir.meta.title, before, trimmed, context.lines), {
+    role: "main",
     stage: "rewrite",
   });
 
@@ -288,8 +288,8 @@ export async function proposeStepTranslation(ir: IR, drafts: unknown): Promise<T
   const budget = new LlmBudget();
   enterWithBudget(budget);
 
-  const { content } = await gemini(buildTranslatePrompt(ir.meta.title, lines, unreadable), {
-    model: process.env.GEMINI_MODEL,
+  const { content } = await llm(buildTranslatePrompt(ir.meta.title, lines, unreadable), {
+    role: "main",
     stage: "translate",
   });
 
@@ -431,8 +431,8 @@ export async function proposeGateRewrite(
   const budget = new LlmBudget();
   enterWithBudget(budget);
 
-  const { content } = await gemini(buildGatePrompt(String(title ?? "").trim() || "Untitled case", before, trimmed), {
-    model: process.env.GEMINI_MODEL,
+  const { content } = await llm(buildGatePrompt(String(title ?? "").trim() || "Untitled case", before, trimmed), {
+    role: "main",
     stage: "rewrite",
   });
 

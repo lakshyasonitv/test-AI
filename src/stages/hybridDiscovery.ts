@@ -16,7 +16,7 @@
 import crypto from "node:crypto";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { chromiumLaunchOptions } from "../browserLaunch.js";
-import { gemini } from "../llm/gemini.js";
+import { llm, cacheModelDimension } from "../llm/client.js";
 import { parseJson } from "../llm/json.js";
 import { AppModel, AuthOutcome, type AuthStep, Element, PageModel } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
@@ -33,7 +33,7 @@ import { runStepLive } from "./liveExtend.js";
 import { resolveLive } from "./targetResolver.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey } from "../kb/llmCache.js";
 import { cutAtBoundary, siteHost } from "../text.js";
-import { llmCacheDimension, resolvedModelLite } from "../llm/llmContext.js";
+import { llmCacheDimension } from "../llm/llmContext.js";
 
 // ---------------------------------------------------------------------------
 // Concept labeling — the ONE remaining Gemini call in the primary path
@@ -151,7 +151,7 @@ async function labelConceptsWithDOM(
     // The prompt and model are real inputs too, and the disk cache never expires — leaving
     // them out means a labeling-rule change never reaches a page already seen.
     LABEL_SYSTEM,
-    resolvedModelLite(), llmCacheDimension()
+    cacheModelDimension("lite"), llmCacheDimension("lite")
   );
   const cachedLabels = llmCacheGet<{ concepts: string[]; labeledElements: { index: number; concept: string }[] }>(cacheKey);
   if (cachedLabels) return cachedLabels;
@@ -170,10 +170,10 @@ Return JSON: { "concepts": string[], "labeledElements": { "index": number, "conc
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { content: raw } = await gemini(user, {
+    const { content: raw } = await llm(user, {
       systemInstruction: system,
       json: true,
-      model: resolvedModelLite(),
+      role: "lite",
       imageBase64: screenshotBase64,
       imageMime: screenshotBase64 ? "image/jpeg" : undefined,
       stage: "discovery",

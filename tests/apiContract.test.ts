@@ -100,7 +100,12 @@ describe("API contract — GET /api/health", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("ok");
 
-    const envKeys = ["GEMINI_API_KEYS", "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_MODEL_LITE", "NODE_ENV", "PORT"];
+    const envKeys = [
+      "GEMINI_API_KEYS", "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_MODEL_LITE",
+      "LLM_PROVIDER", "LLM_PROVIDER_LITE",
+      "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_DEPLOYMENT_LITE",
+      "NODE_ENV", "PORT",
+    ];
     for (const key of envKeys) {
       expect(typeof res.body.env[key].set).toBe("boolean");
       expect(typeof res.body.env[key].length).toBe("number");
