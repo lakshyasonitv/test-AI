@@ -3803,3 +3803,32 @@ each to be told apart by structure, not by re-reading a truncated raw dump:
   `status: "no_cases_selected"` (a real gate timeout) while a failed testcases stage always
   renders the stage's failure message. The behaviour already held; the pin makes it inseparable
   from future edits.
+
+**Second post-phase delta (Azure `json_object` vs the bare-array prompt):** evidence run
+`2026-09-16T10-14-09-905Z-0bb5a291` (testcases on Azure main, gpt-5-mini) wrote exactly
+`{"error":"Assistant must output only a JSON array. Please retry."}` to `03-cases-raw.txt`. Root
+cause: OpenAI's `json_object` mode *requires* a top-level JSON object, while the testCases prompt
+demands a bare array — an inherent contradiction. Gemini's JSON mode accepts arrays, so the same
+prompt only ever failed on Azure.
+- **`jsonEnvelope` removes the contradiction by changing the shape asked for, not the recovery.**
+  `llm()` gains an optional `jsonEnvelope?: string`; `testCases.ts` passes `jsonEnvelope: "cases"`.
+  Under azure with `json: true`, the appended instruction becomes "Respond with a single JSON
+  object of the form `{"<key>": [ ... ]}` and nothing else. Do not return a bare array." (full text
+  lives in `azureOpenAI.ts`); `response_format` stays `{type:"json_object"}`. `unwrapArray`, which
+  already accepts `cases` first, recovers the array — the deterministic check is unchanged.
+- **`jsonEnvelope` is never forwarded to gemini.** Gemini can return a bare array, so its prompt
+  stays verbatim; `client.ts` strips the option before calling `gemini()`, and
+  `tests/llmClient.test.ts` asserts gemini receives exactly the same args as before (D-31).
+- **The model's own error now reaches the UI.** When the raw response parses to a single-key
+  `{"error": string}`, `NoTestCasesError`'s message becomes `The model returned no usable test
+  cases: <the model's words>` (a deterministic structural check — one string `error` key — not a
+  regex over prose); any other shape keeps "Raw response saved." The stage `failed` event and the
+  verdict copy carry the resulting message, so the run's row shows what Azure itself said.
+- **General rule for future stages:** *any* prompt asking for a top-level array must pass
+  `jsonEnvelope` — a bare-array demand under OpenAI `json_object` mode is the same contradiction
+  regardless of stage. Stages whose prompts demand a top-level JSON *object* are unaffected.
+- **Why not `json_schema` structured outputs instead?** The case schema is large and still
+  evolving (`LLMTestCase` + its stamps), and the deterministic acceptance check is already
+  `unwrapArray` + `zod` on the wrapped result — the envelope adds one instruction line instead of
+  a second, competing schema to keep in step with `src/schema/`, and it stays provider-agnostic
+  (the gemini path is untouched byte-for-byte).

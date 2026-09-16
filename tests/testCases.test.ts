@@ -120,6 +120,9 @@ describe("toTestCases — azure provider", () => {
   beforeEach(() => {
     process.env.LLM_PROVIDER = "azure";
     process.env.AZURE_OPENAI_DEPLOYMENT = "gpt-deploy-main";
+    // Module-level mock shared across every test in this file — clear the call log so the
+    // `toHaveBeenCalledTimes` assertions in the azure describe count only this test's calls.
+    azureMock.mockClear();
   });
   afterEach(() => {
     delete process.env.LLM_PROVIDER;
@@ -164,6 +167,50 @@ describe("toTestCases — azure provider", () => {
     });
     expect(viaCases.map((c) => c.title)).toEqual([VALID_LOGIN_CASE.title]);
     expect(viaSingleKey.map((c) => c.title)).toEqual([INVALID_PASSWORD_CASE.title]);
+  });
+
+  // D-31: the testCases prompt demands a BARE array, but Azure's json_object mode can only
+  // return a top-level object — the contradiction that produced the evidence run's
+  // {"error":"Assistant must output only a JSON array. Please retry."}. The stage must ask
+  // azure (via jsonEnvelope) for the array wrapped under "cases", and the wrap must still work.
+  it("asks azure for the array wrapped under jsonEnvelope 'cases' and unwraps it back", async () => {
+    expect.assertions(3);
+    azureMock.mockResolvedValueOnce({
+      content: JSON.stringify({ cases: [VALID_LOGIN_CASE] }),
+      usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+      finishReason: "stop",
+      refusal: null,
+    });
+    const cases = await toTestCases(plan, appModel, undefined, {
+      sourcePrompt: `azure-jsonenvelope ${Date.now()}-${Math.random()}`,
+    });
+    expect(azureMock).toHaveBeenCalledTimes(1);
+    expect(azureMock.mock.calls[0][1]).toEqual(expect.objectContaining({ json: true, jsonEnvelope: "cases" }));
+    expect(cases.map((c) => c.title)).toEqual([VALID_LOGIN_CASE.title]);
+  });
+
+  it("azure's single-key {\"error\":...} reply becomes the NoTestCasesError message, not \"Raw response saved.\"", async () => {
+    expect.assertions(3);
+    const raw = JSON.stringify({ error: "Assistant must output only a JSON array. Please retry." });
+    azureMock.mockResolvedValueOnce({
+      content: raw,
+      usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+      finishReason: "stop",
+      refusal: null,
+    });
+    const err = await toTestCases(plan, appModel, undefined, {
+      sourcePrompt: `azure-error-envelope ${Date.now()}-${Math.random()}`,
+    }).then(
+      () => { throw new Error("toTestCases resolved — expected NoTestCasesError"); },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(NoTestCasesError);
+    if (err instanceof NoTestCasesError) {
+      expect(err.message).toBe(
+        `The model returned no usable test cases: Assistant must output only a JSON array. Please retry.`,
+      );
+      expect(err.rawResponse).toBe(raw);
+    }
   });
 
   it("an azure empty result throws NoTestCasesError carrying the azure finishReason", async () => {

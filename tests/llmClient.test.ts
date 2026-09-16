@@ -144,6 +144,15 @@ describe("llm() — delegation to the right provider", () => {
     expect(azureOpenAI).not.toHaveBeenCalled();
   });
 
+  it("never forwards jsonEnvelope to gemini — Gemini's JSON mode returns a bare array as asked", async () => {
+    // D-31: the bare-array prompt must stay verbatim under gemini; the wrap-object envelope is
+    // an azure-only workaround for json_object mode. Assert byte-identical gemini args.
+    await llm("hi", { role: "lite", stage: "testcases", jsonEnvelope: "cases" });
+    expect(gemini).toHaveBeenCalledTimes(1);
+    expect(azureOpenAI).not.toHaveBeenCalled();
+    expect(gemini.mock.calls[0][1]).toEqual({ stage: "testcases", model: "gemini-3.6-flash" });
+  });
+
   it("passes the model string to gemini for the main role", async () => {
     process.env.GEMINI_MODEL = "gemini-2.5-pro";
     await llm("hi", { role: "main", stage: "ir" });
@@ -168,6 +177,17 @@ describe("llm() — delegation to the right provider", () => {
     const res = await llm("do something", { systemInstruction: "sys", role: "main", stage: "ir" });
     expect(res.content).toBe("azure responded");
     expect(azureOpenAI).toHaveBeenCalledTimes(1);
+    expect(gemini).not.toHaveBeenCalled();
+  });
+
+  it("forwards jsonEnvelope to azureOpenAI but not so much as a leak to gemini", async () => {
+    process.env.LLM_PROVIDER = "azure";
+    process.env.AZURE_OPENAI_DEPLOYMENT = "gpt-deploy-1";
+    await llm("hi", { role: "main", stage: "testcases", jsonEnvelope: "cases" });
+    expect(azureOpenAI).toHaveBeenCalledWith(
+      "hi",
+      expect.objectContaining({ jsonEnvelope: "cases", deployment: "gpt-deploy-1", stage: "testcases" }),
+    );
     expect(gemini).not.toHaveBeenCalled();
   });
 

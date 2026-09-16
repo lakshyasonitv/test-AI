@@ -17,8 +17,10 @@ import { recordAmbient } from "./llmBudget.js";
  *    header (no OAuth, no bearer flow), and `body.model` is the DEPLOYMENT name, not a model id.
  *  - OpenAI's chat-completions request shape is message-array based, not `contents[{parts}]`.
  *  - `json: true` needs `response_format: {type:"json_object"}` AND the word "json" to appear in
- *    the messages or OpenAI rejects the request, so the one-line "Respond with valid JSON only."
- *    instruction is appended to the system message whenever json output is requested.
+ *    the messages or OpenAI rejects the request, so a one-line instruction is appended to the
+ *    system message whenever json output is requested: "Respond with valid JSON only." by default,
+ *    or — when `jsonEnvelope` is set (a caller expecting a top-level ARRAY) — a demand for the
+ *    array wrapped as `{"<key>": [ ... ]}`, because json_object mode cannot return a bare array.
  *  - A 400 whose body names `content_filter` is a REFUSAL, not a retryable rate limit: it is
  *    surfaced as its own error class (`Azure OpenAI content_filter: <reason>`) so `backoff.ts`
  *    throws it straight through (`rateLimited` returns null for it).
@@ -39,6 +41,17 @@ export interface AzureOpenAIOpts {
   /** Deployment name — `AZURE_OPENAI_DEPLOYMENT` / `_LITE`, resolved in llmContext.ts. */
   deployment?: string;
   json?: boolean;             // request structured JSON output
+  /**
+   * The envelope key a stage expecting a top-level JSON ARRAY asks for. OpenAI's `json_object`
+   * mode requires a top-level OBJECT, but the testCases prompt demanded a bare array, and Azure
+   * answered `{"error":"Assistant must output only a JSON array. Please retry."}` (TD-94, run
+   * `2026-09-16T10-14-09-905Z-0bb5a291`). When json is true AND this is set, the appended system
+   * instruction tells the model to wrap its array as `{"<key>": [ ... ]}`, which `unwrapArray`
+   * recovers deterministically. With json false, nothing extra is appended — without
+   * `response_format: json_object` the model can already return a bare array, so there's no
+   * contradiction to work around.
+   */
+  jsonEnvelope?: string;
   systemInstruction?: string;
   imageBase64?: string;       // optional vision input
   imageMime?: string;         // default image/png
@@ -109,9 +122,15 @@ export async function azureOpenAI(prompt: string, opts: AzureOpenAIOpts = {}): P
 
   // One-line JSON instruction when json output is requested — OpenAI refuses json_object mode
   // unless the word "json" actually appears somewhere in the messages. Appended to the system
-  // message so the caller's own instruction (if any) stays untouched.
+  // message so the caller's own instruction (if any) stays untouched. When a caller expects a
+  // top-level ARRAY (jsonEnvelope set), plain "valid JSON" is not enough: json_object mode can
+  // only return a top-level OBJECT, so the array must be demanded wrapped under the envelope key
+  // (TD-94 / D-31). A bare-array demand here is exactly what Azure answered
+  // `{"error":"Assistant must output only a JSON array. Please retry."}` to.
   const system = opts.json
-    ? `${opts.systemInstruction ? opts.systemInstruction + "\n\n" : ""}Respond with valid JSON only.`
+    ? opts.jsonEnvelope
+      ? `${opts.systemInstruction ? opts.systemInstruction + "\n\n" : ""}Respond with a single JSON object of the form {"${opts.jsonEnvelope}": [ ... ]} and nothing else. Do not return a bare array.`
+      : `${opts.systemInstruction ? opts.systemInstruction + "\n\n" : ""}Respond with valid JSON only.`
     : opts.systemInstruction;
 
   const messages: any[] = [];

@@ -29,7 +29,30 @@ export class NoTestCasesError extends Error {
      *  undefined under gemini (gemini.ts does not report finish reasons). */
     public readonly finishReason?: string,
   ) {
-    super("The model returned no usable test cases. Raw response saved.");
+    super(NoTestCasesError.messageFor(rawResponse));
+  }
+
+  /**
+   * When the provider answered with a single-key `{"error": string}` object — what Azure's
+   * json_object mode returns when a prompt demands a bare array it cannot produce — surface the
+   * model's own words in the message instead of only "Raw response saved.", so the run's failed
+   * stage tells the user exactly what the model said. Any other shape falls back to the generic
+   * message. Deterministic structural check (single string "error" key), not a regex over prose.
+   */
+  private static messageFor(raw: string): string {
+    let modelSaid = "";
+    try {
+      const parsed: any = JSON.parse(raw);
+      if (
+        parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) &&
+        Object.keys(parsed).length === 1 && typeof parsed.error === "string"
+      ) {
+        modelSaid = parsed.error;
+      }
+    } catch { /* not JSON — keep the generic message */ }
+    return modelSaid
+      ? `The model returned no usable test cases: ${modelSaid}`
+      : "The model returned no usable test cases. Raw response saved.";
   }
 }
 
@@ -486,7 +509,13 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { content: raw, finishReason } = await llm(user, { systemInstruction: system, json: true, role: "main", stage: "testcases" });
+    const { content: raw, finishReason } = await llm(user, {
+      systemInstruction: system,
+      json: true,
+      jsonEnvelope: "cases",
+      role: "main",
+      stage: "testcases",
+    });
     try {
       const parsed: any = parseJson(raw);
       // Tolerant array unwrap — a model asked for a top-level array sometimes wraps it in an

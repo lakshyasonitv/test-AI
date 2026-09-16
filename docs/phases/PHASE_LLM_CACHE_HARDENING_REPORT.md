@@ -112,6 +112,40 @@ isolation, same as before any of this work. `failureDetail` and the six real-bro
 the unchanged pre-existing failures. `npx tsc --noEmit` still reports only the three pre-existing
 `suiteRunner.ts` errors.
 
+## 5c. SECOND POST-PHASE DELTA — Azure `json_object` vs the bare-array prompt (`jsonEnvelope`)
+
+The tolerant envelope solved the "model wrapped it" half; a third, provider-shaped cause surfaced
+next. Evidence: run `2026-09-16T10-14-09-905Z-0bb5a291` — testcases on Azure main (gpt-5-mini)
+wrote exactly `{"error":"Assistant must output only a JSON array. Please retry."}` to
+`03-cases-raw.txt`. Root cause: OpenAI's `json_object` mode *requires* a top-level JSON object,
+but the testCases prompt demands a bare array — the two cannot both hold. Gemini's JSON mode
+accepts a bare array, so the identical prompt only ever failed on Azure, and no gemini-only test
+could see it. Additive, per the platform rules.
+
+| File | Why |
+|---|---|
+| `src/llm/client.ts` | `LlmOpts` gains optional `jsonEnvelope?: string` — the envelope key a caller expecting a top-level ARRAY asks for. Forwarded to azureOpenAI; **stripped before the gemini call**, whose bare-array prompt stays byte-for-byte (asserted in `tests/llmClient.test.ts`). |
+| `src/llm/azureOpenAI.ts` | `AzureOpenAIOpts` gains `jsonEnvelope?: string`. With `json: true` AND `jsonEnvelope` set, the appended system instruction becomes "Respond with a single JSON object of the form `{"<key>": [ ... ]}` and nothing else. Do not return a bare array." (instead of "Respond with valid JSON only."). `response_format` stays `{type:"json_object"}`. |
+| `src/stages/testCases.ts` | testcases `llm()` call passes `jsonEnvelope: "cases"`; `NoTestCasesError`'s message becomes `The model returned no usable test cases: <model's own words>` when the raw response is a single-key `{"error": string}` object (deterministic structural check), so Azure's literal complaint reaches the UI — otherwise the generic "Raw response saved." is kept. |
+
+**Why the envelope instruction and not `json_schema` structured outputs:** the case schema is
+large and evolving, the deterministic acceptance check is already `unwrapArray` + zod on the
+array shape, an added instruction line is provider-agnostic where a competing azure-specific
+schema would not be, and it keeps the gemini error surface identical. This is D-02/D-03 in
+practice: the prompt-level "return the array wrapped" is backed by a code-level deterministic
+recovery (`unwrapArray`, which already accepts `"cases"` first).
+
+**The general rule this delta records:** *any* stage whose prompt asks for a top-level array must
+pass `jsonEnvelope`; object-expecting stages are unaffected.
+
+New tests (all offline): two `llmClient` cases (`jsonEnvelope` never reaches gemini / is forwarded
+to azure), two `azureOpenAI` request-body cases (wrapped-object instruction + `json_object` still
+present; no instruction when `json` is off), two `testCases` azure end-to-end cases (mock replies
+`{"cases":[…]}` → real cases AND the call carries `jsonEnvelope: "cases"`; the single-key
+`{"error":…}` reply → `NoTestCasesError` whose message quotes the model). Verification run:
+**1325 → 1331 passing on the cleanest full run** (+6 new tests), still no new failures; `tsc`
+unchanged at the three pre-existing `suiteRunner.ts` errors. No network touched.
+
 ## 6. DELIBERATELY NOT DONE
 
 - **No live LLM/browser verification.** Per the phase instructions this pass stopped before any

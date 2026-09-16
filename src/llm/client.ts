@@ -27,7 +27,21 @@ import {
 
 export type { LlmRole } from "./llmContext.js";
 
-export type LlmOpts = Omit<GeminiOpts, "model"> & { role: LlmRole };
+export type LlmOpts = Omit<GeminiOpts, "model"> & {
+  role: LlmRole;
+  /**
+   * The envelope key a stage expecting a top-level JSON ARRAY asks for. OpenAI's `json_object`
+   * mode can only return a top-level OBJECT, so a prompt demanding "return a JSON array" and
+   * `json_object` contradict each other — Azure literally answers `Assistant must output only a
+   * JSON array. Please retry.` (run `2026-09-16T10-14-09-905Z-0bb5a291`). When set, the azure
+   * provider's added instruction demands the array arrive wrapped: `{"<key>": [ ... ]}`, which
+   * `unwrapArray` recovers deterministically. Gemini's JSON mode accepts a bare array, so this
+   * option is deliberately NOT forwarded to gemini — the bare-array prompt stays verbatim.
+   * See `TECH_DEBT.md` TD-94 / `DECISIONS.md` D-31. The general rule: any stage whose prompt
+   * asks for a top-level array must pass `jsonEnvelope`.
+   */
+  jsonEnvelope?: string;
+};
 
 /**
  * The shared result shape every stage reads.  gemini returns `{content, usage}` with no extra
@@ -78,5 +92,9 @@ export async function llm(prompt: string, opts: LlmOpts): Promise<LlmResult> {
   // The model is passed explicitly (rather than relying on gemini()'s internal fallback) so the
   // cache dimension and this actual call can never disagree about which model ran. Per-org config
   // is folded in by resolvedModel/resolvedModelLite.
-  return gemini(prompt, { ...rest, model: role === "lite" ? resolvedModelLite() : resolvedModel() });
+  //
+  // jsonEnvelope is deliberately NOT forwarded — Gemini can return a bare JSON array, so the
+  // prompt's array instruction stays verbatim and unwrapArray recovers it as-is (see D-31).
+  const { jsonEnvelope: _jsonEnvelope, ...geminiRest } = rest;
+  return gemini(prompt, { ...geminiRest, model: role === "lite" ? resolvedModelLite() : resolvedModel() });
 }

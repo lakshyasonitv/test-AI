@@ -974,3 +974,18 @@ closed it, and both are worth recording because they resolve latent tensions wit
   in `NoTestCasesError`. Envelope-wrapped answers are recovered by `unwrapArray`, applied **only**
   where a top-level array is expected (testCases) rather than bolted onto object-expecting stages
   where it would silently sidestep their schema checks.
+- **A prompt may not demand what the provider's JSON mode cannot produce.** The truncation delta
+  was followed by run `2026-09-16T10-14-09-905Z-0bb5a291`, where Azure gpt-5-mini answered the
+  bare-array testCases prompt with `{"error":"Assistant must output only a JSON array. Please
+  retry."}`. OpenAI's `json_object` mode requires a top-level OBJECT; Gemini's JSON mode accepts a
+  bare array. The same prompt therefore worked on gemini and failed on azure — a provider-shaped
+  defect, invisible to any gemini-only test. The fix is `jsonEnvelope`: the stage states its
+  expectation ("array"), azure is instructed to return it wrapped as `{"<key>": [ ... ]}` (one
+  added system line, `response_format` unchanged), and `unwrapArray` recovers it deterministically
+  — the acceptance check is still structure + zod, not prompt prose. The option is deliberately
+  **never forwarded to gemini**, whose prompt stays byte-for-byte the bare-array ask, and
+  `tests/llmClient.test.ts` pins that. Rationale for choosing this over OpenAI `json_schema`
+  structured outputs: the case schema is large and evolving, the deterministic check already
+  exists on the array shape, an instruction line is provider-agnostic where a second schema would
+  be azure-specific, and it keeps the bare-array prompt identical under gemini. General rule this
+  records: *any* stage whose prompt asks for a top-level array must pass `jsonEnvelope`.

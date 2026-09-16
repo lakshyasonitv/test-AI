@@ -86,6 +86,31 @@ describe("azureOpenAI — request mapping", () => {
     });
   });
 
+  it("json:true + jsonEnvelope demands the array wrapped as {\\\"<key>\\\": [ ... ]} instead of bare valid JSON", async () => {
+    // D-31: OpenAI's json_object mode cannot return a top-level ARRAY. When a caller expects an
+    // array (jsonEnvelope set), the azure instruction must demand the wrap — otherwise Azure
+    // answers {"error":"Assistant must output only a JSON array. Please retry."} (TD-94).
+    await azureOpenAI("list cases", {
+      deployment: "gpt-deploy-1", json: true, jsonEnvelope: "cases",
+      systemInstruction: "You make cases.", stage: "x",
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.messages[0]).toEqual({
+      role: "system",
+      content: 'You make cases.\n\nRespond with a single JSON object of the form {"cases": [ ... ]} and nothing else. Do not return a bare array.',
+    });
+  });
+
+  it("jsonEnvelope without json:true appends no instruction — no json_object mode, so no wrap is needed", async () => {
+    const envelope: any = { deployment: "gpt-deploy-1", jsonEnvelope: "cases", stage: "x" };
+    await azureOpenAI("list cases", envelope);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body.response_format).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain('"cases": [ ... ]');
+    expect(body.messages).toEqual([{ role: "user", content: "list cases" }]);
+  });
+
   it("keeps the caller's systemInstruction byte-for-byte when json is off", async () => {
     await azureOpenAI("hello", { deployment: "gpt-deploy-1", systemInstruction: "Do a thing.", stage: "x" });
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
