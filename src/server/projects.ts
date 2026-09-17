@@ -1,4 +1,5 @@
 import { getServiceClient } from "../db.js";
+import { siteHost } from "../text.js";
 import { AccessError, visibleProjectIds, type Role } from "./authz.js";
 import { countCasesByProject } from "./library.js";
 
@@ -411,6 +412,45 @@ export async function resolveProjectForUrl(
       return null;
     }
     if (data) return (data as { id: string }).id;
+
+    // SECOND: a project already pointing at this SITE, matched on base_url's host.
+    //
+    // Why this exists. The lookup above compares `name`, and `name` holds two different kinds of
+    // value: `resolveProjectForUrl` writes a normalised URL key, while `createProject` writes
+    // whatever a human typed. So a user who creates "LMS" for https://learnvibes.vercel.app gets a
+    // SECOND, URL-named project the first time a run goes to that site — the name never matches.
+    // Measured on this database: "LMS" (85 runs, 4 suites, 15 cases) and "learnvibes.vercel.app"
+    // (21 runs, 1 suite, 1 case) have the SAME base_url and are the same site; "Salesforce
+    // Website" is split from two `veterans.my.site.com/*` projects the same way. That split is why
+    // a case could not be attached to the suite the user wanted: the save panel only offers suites
+    // belonging to the selected project.
+    //
+    // `siteHost` is the existing helper (it already lowercases and strips `www.`), so a run against
+    // https://www.example.com/checkout finds a project whose base_url is http://example.com. Host
+    // only, deliberately: the PATH is what fragmented these in the first place.
+    //
+    // Deterministic when several match, which is possible today precisely because the split already
+    // happened: exact base_url first, then oldest by created_at. Never "most recently used" — that
+    // would make the same URL resolve differently over time, and a run's project decides who can
+    // see it.
+    const host = siteHost(url ?? "");
+    if (host) {
+      const { data: candidates, error: hostErr } = await client
+        .from("projects")
+        .select("id, base_url, created_at")
+        .eq("organisation_id", orgId)
+        .order("created_at", { ascending: true });
+      if (hostErr) {
+        // Non-fatal: fall through and create, exactly as before this lookup existed.
+        console.error("[projects] base_url host lookup failed:", hostErr.message);
+      } else {
+        const rows = (candidates ?? []) as { id: string; base_url: string | null }[];
+        const sameSite = rows.filter((r) => r.base_url && siteHost(r.base_url) === host);
+        const exact = sameSite.find((r) => (r.base_url ?? "").replace(/\/+$/, "") === (url ?? "").replace(/\/+$/, ""));
+        const chosen = exact ?? sameSite[0];
+        if (chosen) return chosen.id;
+      }
+    }
 
     const { data: created, error: createErr } = await client
       .from("projects")
