@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { isPureTextAssertion, groundTerminalTextAssertion, runStepLive } from "../src/stages/liveExtend.js";
+import { isPureTextAssertion, groundTerminalTextAssertion, runStepLive, findVerbatim } from "../src/stages/liveExtend.js";
 import { assertionContradictsCase } from "../src/stages/ir.js";
 import { llmCacheSet, makeCacheKey, credentialFingerprint, llmCacheVersion } from "../src/kb/llmCache.js";
 // The walk cache is now keyed per-tenant as well as per-policy: two organisations walking the
@@ -269,5 +269,158 @@ describe("groundTerminalTextAssertion — structural diff fallback", () => {
     const res = await groundTerminalTextAssertion(ir, model);
     expect(res.corrected).toBe(true);
     expect(res.ir.steps.at(-1)!.target!.text).toBe("Your message was a success!");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Near-miss correction — the gap TD-39's fix sits above
+// ---------------------------------------------------------------------------
+//
+// Reported from a real checkout run: the generated test asserted the exact uppercase string
+// "THANK YOU FOR YOUR ORDER" while the page read "Thank you for your order!". The flow itself
+// worked; only the assertion failed.
+//
+// The cause was NOT TD-39. The confirm check was `norm(page).includes(norm(guess))` — lowercased
+// and whitespace-collapsed, with `includes()` blind to the trailing "!" — so the wrong-cased guess
+// passed, was stamped "confirmed against the live page", and shipped verbatim into
+// `expect(...).toHaveText("THANK YOU FOR YOUR ORDER")`, which is case-SENSITIVE and exact. The
+// validator was more lenient than the thing it validated, and every TD-39 fixture above uses a
+// guess that is genuinely ABSENT from the page, so none of them could ever catch this.
+describe("groundTerminalTextAssertion — near miss (case/punctuation only)", () => {
+  const nearMissFixture = (host: string, guess: string) => {
+    const baseUrl = `https://${host}.example`;
+    const ir = {
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Finish" } },
+        { id: "s3", action: "assert", target: { text: guess }, value: guess, assertion: "text_equals" },
+      ],
+    } as unknown as IR;
+    const page = { url: `${baseUrl}/`, title: "Complete", concepts: [], elements: [] };
+    const model = { baseUrl, pages: [page] } as unknown as AppModel;
+    const seedAfter = (pageText: string, pageTextRaw?: string) =>
+      llmCacheSet(
+        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), "full", credentialFingerprint(), llmCacheDimension("main"), llmCacheVersion()),
+        { reachedUrl: page.url, pageModel: page, pageText, ...(pageTextRaw !== undefined ? { pageTextRaw } : {}) },
+        WALK_CACHE_NS,
+      );
+    return { ir, model, seedAfter };
+  };
+
+  it("corrects a case-only mismatch to the page's own spelling", async () => {
+    const { ir, model, seedAfter } = nearMissFixture("nm-case", "Thank You For Your Order");
+    seedAfter("Checkout: Complete!\nThank you for your order\nYour order has been dispatched");
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(true);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("Thank you for your order");
+  });
+
+  it("corrects a trailing-punctuation-only mismatch", async () => {
+    const { ir, model, seedAfter } = nearMissFixture("nm-punct", "Thank you for your order");
+    seedAfter("Checkout: Complete!\nThank you for your order!\nYour order has been dispatched");
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(true);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("Thank you for your order!");
+  });
+
+  // THE REPORTED FAILURE, end to end.
+  it("corrects the reported uppercase-plus-punctuation case", async () => {
+    const { ir, model, seedAfter } = nearMissFixture("nm-reported", "THANK YOU FOR YOUR ORDER");
+    seedAfter("Checkout: Complete!\nThank you for your order!\nYour order has been dispatched");
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(true);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("Thank you for your order!");
+  });
+
+  // target.text becomes the LOCATOR and value becomes the COMPARISON (generator.ts) — correcting
+  // one without the other emits expect(getByText(A)).toHaveText(B), which looks for one string and
+  // asserts a different one.
+  it("keeps target.text and value in step", async () => {
+    const { ir, model, seedAfter } = nearMissFixture("nm-both", "THANK YOU FOR YOUR ORDER");
+    seedAfter("Thank you for your order!");
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    const last = res.ir.steps.at(-1)!;
+    expect(last.target!.text).toBe("Thank you for your order!");
+    expect(last.value).toBe("Thank you for your order!");
+  });
+
+  // CSS text-transform: uppercase. innerText (what the corrector used to read) is the RENDERED
+  // text and comes back uppercased; textContent (what toHaveText actually reads) does not. Before
+  // this fix the corrector's ground truth and the assertion's ground truth were different strings,
+  // so the uppercase guess would be confirmed even with the normalisation removed.
+  it("corrects to the textContent spelling, not the CSS-uppercased rendered one", async () => {
+    const { ir, model, seedAfter } = nearMissFixture("nm-transform", "THANK YOU FOR YOUR ORDER");
+    seedAfter(
+      "CHECKOUT: COMPLETE!\nTHANK YOU FOR YOUR ORDER!",
+      "Checkout: Complete!\nThank you for your order!",
+    );
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(true);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("Thank you for your order!");
+  });
+
+  it("still reports a genuine verbatim match as uncorrected", async () => {
+    const { ir, model, seedAfter } = nearMissFixture("nm-verbatim", "Thank you for your order!");
+    seedAfter("Checkout: Complete!\nThank you for your order!\nDispatched");
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.grounded).toBe(true);
+    expect(res.corrected).toBe(false);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("Thank you for your order!");
+  });
+
+  // Additive, not a replacement: text genuinely absent from the page must still fall through to
+  // TD-39's keyword scan rather than being swallowed by the near-miss branch.
+  it("leaves genuinely-absent text to the TD-39 keyword path", async () => {
+    const { ir, model, seedAfter } = nearMissFixture("nm-absent", "Order placed successfully");
+    // Deliberately only ONE message-shaped line: an earlier draft also seeded "Checkout:
+    // Complete!", which MESSAGE_LIKE matches on "complete" and which the keyword path's
+    // closest-to-guess-length tie-break then picked — so the test asserted TD-39's tie-break
+    // rather than that the near-miss branch had stayed out of the way.
+    seedAfter("Your payment was declined, please try another card");
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(true);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("Your payment was declined, please try another card");
+  });
+
+  // Backward compatibility: every cache entry written before pageTextRaw existed comes back
+  // without it, and the walk cache never expires.
+  it("falls back to rendered text when a cached walk predates pageTextRaw", async () => {
+    const { ir, model, seedAfter } = nearMissFixture("nm-legacy", "THANK YOU FOR YOUR ORDER");
+    seedAfter("Thank you for your order!");
+
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(true);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("Thank you for your order!");
+  });
+});
+
+describe("findVerbatim", () => {
+  it("recovers the page's own case and punctuation", () => {
+    expect(findVerbatim("Thank you for your order!", "THANK YOU FOR YOUR ORDER")).toBe("Thank you for your order!");
+    expect(findVerbatim("A\nThank You For Your Order\nB", "thank you for your order")).toBe("Thank You For Your Order");
+  });
+
+  it("prefers the tightest matching line over an enclosing block", () => {
+    const raw = "Checkout: Complete! Thank you for your order! Dispatched\nThank you for your order!";
+    expect(findVerbatim(raw, "THANK YOU FOR YOUR ORDER")).toBe("Thank you for your order!");
+  });
+
+  it("handles textContent with no line breaks at all", () => {
+    const raw = "Checkout: Complete!Thank you for your order!Your order has been dispatched";
+    expect(findVerbatim(raw, "THANK YOU FOR YOUR ORDER")).toBe("Thank you for your order");
+  });
+
+  it("returns null when the text is genuinely absent", () => {
+    expect(findVerbatim("Your payment was declined", "Thank you for your order")).toBeNull();
+    expect(findVerbatim("", "anything")).toBeNull();
+    expect(findVerbatim("some page text", "")).toBeNull();
   });
 });

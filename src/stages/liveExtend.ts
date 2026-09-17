@@ -84,11 +84,49 @@ async function capturePageText(page: Page): Promise<string> {
   }
 }
 
+/**
+ * The SAME body text a `text_equals`/`text_contains` assertion will actually be judged against.
+ *
+ * Why this exists beside `capturePageText`. That one reads `innerText()`, which is the RENDERED
+ * text — and rendering applies CSS `text-transform: uppercase`. Playwright's `toHaveText` /
+ * `toContainText` read `textContent`, which does not. So on a page whose confirmation header is
+ * CSS-uppercased, the corrector's ground truth was `"THANK YOU FOR YOUR ORDER!"` while the
+ * executed assertion's ground truth was `"Thank you for your order!"` — two different truths on
+ * the two sides of one pipeline, and the corrector would happily confirm an uppercase guess that
+ * could never match at run time.
+ *
+ * `capturePageText`'s rendered form is deliberately KEPT for the candidate/diff machinery below:
+ * those are line-oriented and visible-only, and `textContent` (no line breaks, includes hidden and
+ * `<style>`/`<script>` text) would wreck them. Only the confirm/near-miss comparison uses this.
+ *
+ * Deliberately `locator().textContent()` and NOT `page.evaluate` — an evaluate callback here would
+ * sit under CLAUDE.md/TD-40's trap, where esbuild wraps any named inner function in a `__name()`
+ * that does not exist in the browser context, a failure that passes every unit test and throws
+ * only on a real `npm run serve`. A plain API call has no such hazard.
+ */
+async function capturePageTextContent(page: Page): Promise<string> {
+  try {
+    const text = (await page.locator("body").textContent()) ?? "";
+    const normalized = text.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    return normalized.length > 8000 ? cutAtBoundary(normalized, 8000) : normalized;
+  } catch {
+    return "";
+  }
+}
+
 export interface ReplayResult {
   reachedUrl: string;
   pageModel: AppModel["pages"][number];
   /** Normalized visible text of the page as it stood right after the replay. */
   pageText: string;
+  /**
+   * The same page's `textContent` — what a `text_*` assertion is actually judged against at run
+   * time, unaffected by CSS `text-transform`. ADDITIVE and optional: this result is cached to disk
+   * forever under `WALK_CACHE_NS`, so entries written before this field existed come back without
+   * it. Every read must default it (see `groundTerminalTextAssertion`), exactly as `pageText`
+   * already has to.
+   */
+  pageTextRaw?: string;
 }
 
 /** Replay a step prefix in a real browser and snapshot+model whatever page it lands on.
@@ -218,6 +256,7 @@ async function replayAndSnapshot(
 
     const title = await page.title();
     const pageText = await capturePageText(page);
+    const pageTextRaw = await capturePageTextContent(page);
 
     // Try DOM-based discovery first for the reached page. Snapshot the replay's OWN page
     // handle — its session/cookies are intact, so an authenticated URL is modeled as the
@@ -282,7 +321,7 @@ async function replayAndSnapshot(
     // routinely echoes the identifier back. Scrub before anything persists it: this result is
     // cached under runs/_cache and its pageModel ends up inside 04-ir.json, both of which the
     // server exposes as static files. No-op for the public demo accounts.
-    const result = redactCredentials<ReplayResult>({ reachedUrl, pageModel, pageText }, creds);
+    const result = redactCredentials<ReplayResult>({ reachedUrl, pageModel, pageText, pageTextRaw }, creds);
     if (isCacheableResult(result)) llmCacheSet(cacheKey, result, WALK_CACHE_NS);
     return result;
   } finally {
@@ -372,6 +411,106 @@ export async function refreshPageModelAt(
 // ---------------------------------------------------------------------------
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+
+/**
+ * Find the page's OWN spelling of `guess` — the substring of `raw` that matches once case,
+ * whitespace and surrounding punctuation are ignored, returned with the page's real capitalisation
+ * and punctuation intact.
+ *
+ * WHY THIS EXISTS. The corrector used to confirm a guess whenever `norm(page).includes(norm(guess))`
+ * — a case- and whitespace-insensitive test. But the assertion it was validating compiles to
+ * `toHaveText`/`toContainText`, which are case-SENSITIVE and (for `text_equals`) whole-element
+ * exact. So `"THANK YOU FOR YOUR ORDER"` was stamped "confirmed against the live page" against a
+ * page reading `"Thank you for your order!"`, and shipped verbatim into a test that could never
+ * pass. The validator was more lenient than the thing it validated.
+ *
+ * This is NOT TD-39's case. TD-39 handles text that is ABSENT from the page and needs a candidate
+ * found by keyword scan or structural diff. Here the text is present and merely shaped differently,
+ * so the fix is to return the page's own spelling rather than go hunting for a replacement.
+ *
+ * Tolerance borrows TD-76's `matchOptionIndexFn` (`targetResolver.ts`) — trimmed and
+ * case-insensitive — but deliberately NOT its bidirectional containment. That function compares
+ * whole `<option>` labels, where "either direction" is safe; here the left-hand side is an
+ * arbitrary line of page text, and `guess.includes(line)` matches every short fragment on the page.
+ * Caught by the unit tests below: a nav line reading `"A"` is a substring of
+ * `"thank you for your order"`, so it matched and — being the shortest candidate — won.
+ * Edge punctuation is handled explicitly instead, which is the tolerance actually needed.
+ *
+ * Returns `null` when nothing matches, so the caller can fall through to TD-39's machinery.
+ * Pure and exported so it is unit-testable without a browser.
+ */
+/**
+ * Write a corrected string onto the terminal step's `target.text` — and onto `value` whenever the
+ * step already carries one.
+ *
+ * Both halves matter and they are read by DIFFERENT parts of the generator: `target.text` becomes
+ * the LOCATOR (`page.getByText(...)`) while `value` becomes the COMPARISON
+ * (`toHaveText(comparisonValue(step))`, `generator.ts:26-29`). Correcting one and not the other
+ * emits `expect(page.getByText(A)).toHaveText(B)` — a test that looks for one string and asserts a
+ * different one. Extracted so both correction paths below share exactly one implementation rather
+ * than two that can drift.
+ *
+ * `value` is set only when it was already defined, preserving the existing contract for assertion
+ * kinds (`visible`/`hidden`) that never carry one.
+ */
+function writeTerminalText(ir: IR, text: string): IR {
+  return {
+    ...ir,
+    steps: ir.steps.map((s, i) =>
+      i === ir.steps.length - 1
+        ? { ...s, target: { ...s.target, text }, ...(s.value !== undefined ? { value: text } : {}) }
+        : s
+    ),
+  };
+}
+
+/** Drop leading/trailing non-alphanumerics — the trailing "!" that makes a guess and the page's
+ *  own wording differ by punctuation alone. Interior punctuation is preserved. */
+const stripEdgePunct = (s: string) =>
+  s.replace(/^[^\p{L}\p{N}]+/u, "").replace(/[^\p{L}\p{N}]+$/u, "");
+
+export function findVerbatim(raw: string, guess: string): string | null {
+  const wanted = norm(guess);
+  if (!wanted || !raw) return null;
+  const wantedCore = stripEdgePunct(wanted);
+  if (!wantedCore) return null;
+
+  // How much longer than the guess a candidate may be and still be "the same message" — enough for
+  // the punctuation and whitespace normalisation drops, not a whole extra sentence.
+  const slack = Math.max(16, Math.ceil(wanted.length * 0.5));
+
+  // Line-shaped first: a confirmation banner is one line, and a line boundary gives the message's
+  // exact extent with no index arithmetic back through normalisation. Shortest wins — a parent
+  // block can hold the message plus unrelated copy, and the tightest matching line is the message.
+  let best: string | null = null;
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const n = norm(trimmed);
+    // Either the same string modulo case and edge punctuation, or a line that CONTAINS the guess
+    // and is not materially longer than it. The length bound is what stops a whole-page
+    // `textContent` blob being returned as "the message"; that case falls to the window scan.
+    if (stripEdgePunct(n) === wantedCore || (n.includes(wanted) && trimmed.length <= wanted.length + slack)) {
+      if (best === null || trimmed.length < best.length) best = trimmed;
+    }
+  }
+  if (best !== null) return best;
+
+  // `textContent` often carries no line breaks at all, so slide a window over the raw string and
+  // return the first whose normalised core matches. Bounded by the guess's own length plus the
+  // same slack, and the text is capped at 8000 chars upstream.
+  for (let start = 0; start < raw.length; start++) {
+    // Start on a real word character. Without this the scan happily begins on the punctuation
+    // belonging to the PRECEDING sentence — on "…Complete!Thank you for your order!…" it returned
+    // "!Thank you for your order", carrying another element's exclamation mark into the assertion.
+    if (!/[\p{L}\p{N}]/u.test(raw[start])) continue;
+    for (let len = wantedCore.length; len <= wanted.length + slack && start + len <= raw.length; len++) {
+      const window = raw.slice(start, start + len).trim();
+      if (stripEdgePunct(norm(window)) === wantedCore) return window;
+    }
+  }
+  return null;
+}
 
 // A short, message-shaped line — the kind of thing a UI shows as a single banner or
 // validation string, not a paragraph of body copy. Deliberately generic: this scans for
@@ -483,26 +622,62 @@ export async function groundTerminalTextAssertion(
   if (!prefix.length) return { ir, grounded: false, corrected: false };
 
   let pageText: string;
+  let pageTextRaw: string;
   try {
     // Defaulted, not asserted: replayAndSnapshot's result is cached to disk by llmCache, and
     // only its in-memory half honours the TTL — a pre-`pageText` entry written before this
     // function existed is returned verbatim, forever. Without the default, norm() below
     // throws on it, outside this try, escaping toIR's loop instead of degrading to
     // "leave the assertion alone" like every other failure here.
-    ({ pageText = "" } = await replayAndSnapshot(model, prefix, creds, policy));
+    ({ pageText = "", pageTextRaw = "" } = await replayAndSnapshot(model, prefix, creds, policy));
   } catch (err: any) {
     console.log("[liveExtend] text-assertion grounding: replay failed, leaving assertion as-is:", err?.message ?? err);
     return { ir, grounded: false, corrected: false };
   }
 
-  const asserted = norm(last.target!.text!);
-  const pageNorm = norm(pageText);
+  const assertedRaw = last.target!.text!;
+  const asserted = norm(assertedRaw);
 
-  // Real text found verbatim (as a substring) — the guess was right. Nothing to correct,
-  // and now confirmed against the live page rather than just pattern-matched.
-  if (asserted && pageNorm.includes(asserted)) {
+  // Judge against textContent — the same text the emitted toHaveText/toContainText will read —
+  // falling back to the rendered text when a pre-`pageTextRaw` cache entry has none, so this can
+  // only ever be as good as the old behaviour, never worse.
+  const judgeText = pageTextRaw || pageText;
+
+  // TIER 1 — the guess appears VERBATIM, at the strictness the assertion will actually be judged
+  // at. `text_equals` compiles to `toHaveText`, a WHOLE-ELEMENT exact match, so a guess that is
+  // merely a substring of the page is not confirmed — "Thank you for your order" against an
+  // element reading "Thank you for your order!" fails at run time, and treating it as confirmed
+  // is the bug this whole function exists to close. A whole line is the closest proxy for "the
+  // element's entire text" that body text affords. Every other eligible kind (`text_contains`,
+  // `visible`, `hidden`) is substring-shaped, so plain containment is the right test for them.
+  const wholeElementMatch = last.assertion === "text_equals";
+  const verbatimHit = wholeElementMatch
+    ? judgeText.split("\n").some((l) => l.trim() === assertedRaw)
+    : judgeText.includes(assertedRaw);
+  if (asserted && verbatimHit) {
     return { ir, grounded: true, corrected: false };
   }
+
+  // TIER 2 — NEAR MISS: it matches only once case/whitespace/punctuation are ignored. This is the
+  // branch that used to return "confirmed" and ship a test that could never pass. The page is
+  // showing this very message, just spelled differently, so correct to the page's own spelling
+  // rather than hunting for a replacement via TD-39's machinery below.
+  //
+  // This is the reported failure: guess "THANK YOU FOR YOUR ORDER" against a page reading
+  // "Thank you for your order!" — one string, three differences (case, trailing punctuation, and
+  // exactness), each individually fatal to `toHaveText`.
+  if (asserted) {
+    const actual = findVerbatim(judgeText, assertedRaw);
+    if (actual !== null && actual !== assertedRaw) {
+      console.log(`[liveExtend] text-assertion grounding: near miss, corrected "${assertedRaw}" -> "${actual}" (differs only in case/punctuation/whitespace)`);
+      return { ir: writeTerminalText(ir, actual), grounded: true, corrected: true };
+    }
+    // Matched the page's own spelling exactly — same as tier 1, reached via the line/window scan.
+    if (actual === assertedRaw) return { ir, grounded: true, corrected: false };
+  }
+
+  // TIER 3 — genuinely absent from the page. Fall through to TD-39's keyword scan and structural
+  // diff, unchanged.
 
   // Not found — the asserted text doesn't match what the page actually shows. Look for a
   // real message-shaped line to correct it to, closest in length to the original guess
@@ -551,13 +726,5 @@ export async function groundTerminalTextAssertion(
       );
 
   console.log(`[liveExtend] text-assertion grounding: corrected "${last.target!.text}" -> "${best}"`);
-  const corrected: IR = {
-    ...ir,
-    steps: ir.steps.map((s, i) =>
-      i === ir.steps.length - 1
-        ? { ...s, target: { ...s.target, text: best }, ...(s.value !== undefined ? { value: best } : {}) }
-        : s
-    ),
-  };
-  return { ir: corrected, grounded: true, corrected: true };
+  return { ir: writeTerminalText(ir, best), grounded: true, corrected: true };
 }
