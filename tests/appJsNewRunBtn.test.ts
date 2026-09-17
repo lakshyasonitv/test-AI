@@ -88,31 +88,72 @@ describe("public/app.js — New run button", () => {
     const promptEl = { value: "" };
     const urlEl = { value: "" };
 
-    const run = (currentRunId: string | null, runInFlight: boolean) => {
+    const run = (currentRunId: string | null, runInFlight: boolean, currentView = "home") => {
       btn.disabled = false;
       // eslint-disable-next-line no-new-func
       new Function(
-        "document", "promptEl", "urlEl", "currentRunId", "runInFlight",
+        "document", "promptEl", "urlEl", "currentRunId", "runInFlight", "currentView",
         `${extractFunctionSource("refreshNewRunState")}; refreshNewRunState();`,
-      )({ getElementById: () => btn }, promptEl, urlEl, currentRunId, runInFlight);
+      )({ getElementById: () => btn }, promptEl, urlEl, currentRunId, runInFlight, currentView);
       return btn.disabled;
     };
 
-    // The empty workspace — the one case that SHOULD disable it.
-    expect(run(null, false)).toBe(true);
+    // The empty workspace ON HOME — the one and only case that SHOULD disable it.
+    expect(run(null, false, "home")).toBe(true);
     expect(btn.title).toBe("You're already on a new chat");
 
-    // A run is open. This is the regression: before the fix the button was left disabled here,
-    // because nothing recomputed after connectToRun() set the id.
-    expect(run("2026-09-16T10-14-09-905Z-0bb5a291", false)).toBe(false);
+    // A run is open. Before the c6c4524 fix the button was left disabled here, because nothing
+    // recomputed after connectToRun() set the id.
+    expect(run("2026-09-16T10-14-09-905Z-0bb5a291", false, "run")).toBe(false);
     expect(btn.title).toBe("Start a new run");
 
     // In flight, and typing in either field, also mean "not fresh".
-    expect(run(null, true)).toBe(false);
+    expect(run(null, true, "home")).toBe(false);
     promptEl.value = "test the login form";
-    expect(run(null, false)).toBe(false);
+    expect(run(null, false, "home")).toBe(false);
     promptEl.value = "";
     urlEl.value = "example.com";
-    expect(run(null, false)).toBe(false);
+    expect(run(null, false, "home")).toBe(false);
+    urlEl.value = "";
+  });
+
+  // THE MAIN REGRESSION. Every view below presents an empty composer and no loaded run, so before
+  // the view was added to the `fresh` test all of them read as "already on a new chat" and the
+  // button went dead — on the majority of the app. Reported as "it should work from every page but
+  // currently it is not".
+  it("refreshNewRunState() keeps the button live on every view except an empty home", () => {
+    const btn = { disabled: false, title: "", attrs: {} as Record<string, string>,
+                  setAttribute(k: string, v: string) { this.attrs[k] = v; } };
+    const promptEl = { value: "" };
+    const urlEl = { value: "" };
+
+    const disabledOn = (currentView: string) => {
+      btn.disabled = false;
+      // eslint-disable-next-line no-new-func
+      new Function(
+        "document", "promptEl", "urlEl", "currentRunId", "runInFlight", "currentView",
+        `${extractFunctionSource("refreshNewRunState")}; refreshNewRunState();`,
+      )({ getElementById: () => btn }, promptEl, urlEl, null, false, currentView);
+      return btn.disabled;
+    };
+
+    // Every view in VIEWS except home, with an otherwise-identical empty workspace.
+    for (const view of ["run", "suite", "case", "compare", "history", "login", "signup", "team"]) {
+      expect(disabledOn(view), `New Run must stay clickable on the "${view}" view`).toBe(false);
+    }
+
+    // Home with an empty composer remains the single disabling case — the feature, not the bug.
+    expect(disabledOn("home")).toBe(true);
+  });
+
+  it("showView() recomputes the button state, so every view change is covered", () => {
+    // Comments stripped for the same reason as above — the call sits beside a comment naming it.
+    const source = stripLineComments(extractFunctionSource("showView"));
+    expect(
+      source.includes("refreshNewRunState()"),
+      "showView() must call refreshNewRunState() — it is the only function allowed to change " +
+        "currentView (platform rule 4), and currentView is an input to the `fresh` test, so " +
+        "without this the button keeps whatever state it had on the previous screen",
+    ).toBe(true);
   });
 });

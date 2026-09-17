@@ -515,7 +515,14 @@ function urlProblem() {
 function refreshNewRunState() {
   const btn = document.getElementById("newRunBtn");
   if (!btn) return;
+  // WHICH SCREEN YOU ARE ON IS PART OF "FRESH", and leaving it out is what made this button dead
+  // on most of the app. "You're already on a new chat" is only true on HOME with nothing typed —
+  // from a case, suite, history, team or compare screen the composer is empty and no run is
+  // loaded, so every other input below reads fresh and the button disabled itself even though
+  // going back to an empty composer is exactly what it is for. The click handler early-returns on
+  // btn.disabled, so it did nothing at all: no error, no log line.
   const fresh =
+    currentView === "home" &&
     !currentRunId &&
     !runInFlight &&
     promptEl.value.trim() === "" &&
@@ -4757,6 +4764,17 @@ function showView(name) {
   });
   closeSidebarDrawer();
   window.scrollTo(0, 0);
+  // `currentView` is an input to refreshNewRunState()'s `fresh` test and this is the only function
+  // that changes it (platform rule 4 — showView is the sole owner of which view is visible). One
+  // call here therefore covers all nine views and every navigation path into them: hashchange, the
+  // back button, navigate(), and the auth re-routes. The alternative — a refresh in each renderer
+  // — is the kind of scattered duplication this function's own comment was written against.
+  //
+  // Safe with respect to the temporal dead zone documented near the bottom of this file:
+  // `currentView` is declared just above, `currentRunId` at the top of the init block, and the
+  // first top-level applyRoute() (the first thing that can reach showView) runs immediately after
+  // both. Every other applyRoute() call sits inside a function body, so none runs at module init.
+  refreshNewRunState();
 }
 
 /** Clears every run-scoped panel. Called on a new run, on switching runs, and
