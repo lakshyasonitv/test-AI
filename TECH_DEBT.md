@@ -365,9 +365,19 @@ cheaply, asserts the injected helper source lists the same role-fallback candida
 order as `targetResolver.ts`'s own list) — enough to catch the *next* divergence even without
 unifying the two.
 
-### TD-08. `safeClick` treats `javascript:`/`mailto:`/`tel:` hrefs as real navigation — Medium / Accidental
+### TD-08. `safeClick` treats `javascript:`/`mailto:`/`tel:` hrefs as real navigation — Medium / Accidental — **Fixed** (entry was stale)
 
-**What it is.** `generator.ts`'s `SAFE_CLICK_HELPER` checks only `href !== "#" && href !== ""`
+> **2026-09-17: already fixed in code; this entry had gone stale.** `SAFE_CLICK_HELPER` now reads
+> `if (href && !/^\s*(#|javascript:|mailto:|tel:)/i.test(href))` — the full set, matching
+> `NON_NAVIGATING_HREF`. The description below still described the old two-value check, so the item
+> read as open long after it was closed.
+>
+> **Proven by execution, not by reading** (`tests/safeClickBrowser.test.ts`, per D-19): a
+> `javascript:void(0)` link whose `onclick` mutates the DOM is clicked and the mutation observed;
+> `mailto:`, `tel:` and `#` likewise; a real href still navigates. Negative control run — restoring
+> the old `href !== "#" && href !== ""` check reddens two of those, so the guard is load-bearing.
+
+**What it was.** `generator.ts`'s `SAFE_CLICK_HELPER` checked only `href !== "#" && href !== ""`
 before calling `page.goto(href)`. Three other places in this codebase agree on the fuller
 non-navigating set (`ir.ts`'s `NON_NAVIGATING_HREF = /^\s*(#|javascript:|mailto:|tel:)/i`, mirrored
 in `discovery.ts` and `domExtract.ts`) — `safeClick` alone omits it.
@@ -395,6 +405,22 @@ click and assert paths handle the same ambiguity differently, one loudly, one si
 returning an unresolvable locator for a same-page duplicate, this swallow stops mattering. If TD-05
 isn't addressed first, at minimum stop swallowing the error here so a genuinely ambiguous click
 fails loudly instead of silently misfiring.
+
+> **2026-09-17 — the "silently misfiring" premise does NOT reproduce. Measured, not reasoned.**
+> Swallowing the error leaves `href` null, control reaches the fallback ladder, and
+> `el.waitFor`/`el.click` raise the **same** strict-mode violation. Playwright raises strict-mode
+> the instant a locator resolves to more than one element — it is not a wait that times out — so
+> the failure is neither silent nor slow, and no `onclick` fires on the way out.
+>
+> Rethrowing at the `href` read was implemented and **reverted**: two attempts to write a failing
+> negative control (asserting the throw; then asserting it happens within 3s) **both passed with
+> the fix reverted**, which is what proved the change inert. Shipping an unverifiable edit to the
+> emitted spec is precisely what D-19 warns against.
+>
+> `tests/safeClickBrowser.test.ts` now pins the behaviour that is actually true: the ambiguity
+> surfaces with a `classify.ts`-matchable error and nothing is clicked. **What remains of this
+> entry is TD-05's ambiguity itself, not the swallow** — the click and assert paths do still differ
+> in how they report it, but not in whether they do.
 
 ### TD-10. Credential policy is case-scoped, not leg-scoped — Medium / Strategic
 

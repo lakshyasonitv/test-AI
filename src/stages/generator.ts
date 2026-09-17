@@ -566,6 +566,16 @@ async function safeClick(page, role, name, nth) {
   // For <a> tags: read href and navigate directly — bypasses all
   // hover/visibility/viewport issues from collapsed dropdown menus.
   if (role.toLowerCase() === "link") {
+    // The .catch here looks like TECH_DEBT.md TD-09 ("swallows a strict-mode error on
+    // duplicate-named links ... silently falls through to the non-link click branch"). Measured in
+    // a real browser — tests/safeClickBrowser.test.ts — TD-09's premise does not hold: swallowing
+    // the error leaves href null, control reaches the fallback ladder, and el.waitFor/el.click
+    // raise the SAME strict-mode violation. (No backticks in this comment: it lives INSIDE the
+    // SAFE_CLICK_HELPER template literal, where one would terminate the string.)
+    // Playwright raises the violation the instant a locator resolves to
+    // more than one element rather than after a timeout, so the failure is neither silent nor slow.
+    // Rethrowing here was tried and reverted: it changed no observable behaviour, and an inert edit
+    // to the emitted spec is exactly what DECISIONS.md D-19 warns against shipping.
     const href = await el.getAttribute("href").catch(() => null);
     if (href && !/^\s*(#|javascript:|mailto:|tel:)/i.test(href)) {
       const target = new URL(href, page.url()).toString();
