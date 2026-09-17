@@ -2970,6 +2970,21 @@ async function connectToRun(runId) {
   const generation = ++pollGeneration;
 
   currentRunId = runId;
+  // `currentRunId` is one of the four inputs to refreshNewRunState()'s `fresh` test, and this is
+  // the only place it is set to a real id — so without this call the New Run button keeps whatever
+  // disabled state it had before the run was opened.
+  //
+  // The bug that was: New Run correctly disables itself once the workspace is empty ("You're
+  // already on a new chat"). Opening a run from history, or loading #/run/<id> directly, then
+  // arrived here and set currentRunId without recomputing anything, so the button stayed disabled
+  // while a run was plainly on screen. Its click handler early-returns on `btn.disabled`, so it
+  // was dead on every path that reached a run without going through the composer — clicking it
+  // did nothing at all, with no error.
+  //
+  // resetRunUI() is not the place for this: it is also called on the way OUT of a run (by the New
+  // Run handler itself), where recomputing is already handled by the refreshComposerState() call
+  // at the end of that handler.
+  refreshNewRunState();
   resetRunUI();
 
   let seen = 0;

@@ -124,6 +124,36 @@ describe("API contract — GET /api/health", () => {
     expect(res.status).toBe(200);
     expect(typeof res.body.authEnabled).toBe("boolean");
   });
+
+  // Additive, same terms as authEnabled above. These two capability flags were the blind spot in
+  // this route: a deployed instance with the gate flag unset was diagnosable via
+  // `defaults.gateReview`, but an unset NL_STEPS_ENABLED or GATE_CASE_EDIT_AI was invisible, so
+  // "the feature is missing" could not be told apart from "the feature is broken" remotely.
+  it("also reports the NL_STEPS_ENABLED and GATE_CASE_EDIT_AI flags (additive)", async () => {
+    const res = await request(app).get("/api/health");
+    expect(res.status).toBe(200);
+    for (const key of ["NL_STEPS_ENABLED", "GATE_CASE_EDIT_AI"]) {
+      expect(typeof res.body.env[key].set).toBe("boolean");
+      expect(typeof res.body.env[key].length).toBe("number");
+    }
+  });
+
+  // The whole point of this route being safe to leave public: it reports that a variable exists
+  // and how long it is, never what it says. Pinned for the two new entries because they are the
+  // ones a future edit is most likely to "helpfully" resolve into a readable value.
+  it("never exposes a flag's VALUE, only presence and length", async () => {
+    const original = process.env.GATE_CASE_EDIT_AI;
+    process.env.GATE_CASE_EDIT_AI = "true";
+    try {
+      const res = await request(app).get("/api/health");
+      // Exactly these two keys and nothing else — a resolved value could only arrive as a third.
+      expect(Object.keys(res.body.env.GATE_CASE_EDIT_AI).sort()).toEqual(["length", "set"]);
+      expect(res.body.env.GATE_CASE_EDIT_AI).toEqual({ set: true, length: 4 });
+    } finally {
+      if (original === undefined) delete process.env.GATE_CASE_EDIT_AI;
+      else process.env.GATE_CASE_EDIT_AI = original;
+    }
+  });
 });
 
 // Step 2.1. These flip AUTH_ENABLED at runtime rather than at import, which is why auth.ts reads

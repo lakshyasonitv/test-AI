@@ -572,6 +572,22 @@ app.get("/api/health", (_req, res) => {
       LLM_CACHE_VERSION: check("LLM_CACHE_VERSION"),
       NODE_ENV:        check("NODE_ENV"),
       PORT:            check("PORT"),
+      // ADDITIVE — appended, nothing above reordered or replaced (platform rule 1).
+      //
+      // Why these two specifically: this route is the ONLY remote window into a deployed
+      // instance's configuration, and these were the two capability flags it could not see.
+      // `defaults.gateReview` already exposes ENABLE_CASE_SELECTION_GATE, so a gate that was
+      // simply off on a Container App was diagnosable from here; NL_STEPS_ENABLED and
+      // GATE_CASE_EDIT_AI were not, and a run of "the feature is missing" reports cost real time
+      // because an absent variable and a broken feature look identical from outside.
+      //
+      // Reported through the same `check()` as everything else rather than as a resolved boolean:
+      // the failure this is built to catch is an ABSENT variable (`set: false`), which `check()`
+      // already distinguishes, and a second reporting shape in one object is its own trap. Note
+      // the values are never exposed — name, presence and length only — which is what makes this
+      // route safe to leave public.
+      NL_STEPS_ENABLED:  check("NL_STEPS_ENABLED"),
+      GATE_CASE_EDIT_AI: check("GATE_CASE_EDIT_AI"),
     },
     // Server-side defaults for the two per-run options a client may override. The
     // UI reads these so its Settings toggles open in the state the server is
