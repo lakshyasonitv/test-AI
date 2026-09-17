@@ -967,12 +967,35 @@ export function postClickRevealIndex(ir: IR): number {
 // A case step "line" that names an action, vs. one that's purely a wait/verify. Deliberately
 // the same verbs the presence check below already uses — this just counts them per-line
 // instead of once across the whole case.
-const CASE_ACTION_LINE = /\b(fill|enter|type|input|provide|supply|click|press|tap|select|check|submit|sign ?in|log ?in)\b/i;
+// `check` is deliberately NOT in this alternation. It is the one verb in the list that means
+// opposite things in the two vocabularies this function straddles:
+//
+//   case prose:      "Check that the heading is visible"   -> an ASSERTION
+//   STEP_VOCABULARY: `Check checkbox "Name"`               -> an ACTION (tick a checkbox)
+//
+// With bare `check` here, a case whose steps are three "Check that ..." verifications counted as
+// three ACTIONS, while the IR correctly emitted three `assert` steps and therefore zero actions —
+// so the guard rejected a correct IR on all four attempts and the run died. Observed on a real run
+// against a blog page (`qable.io/blog/happy-path-testing`); this is TECH_DEBT.md TD-01's open
+// class, and the second run-killing false positive it has produced.
+//
+// CHECK_ACTION_LINE below restores the genuine action case by anchoring to what STEP_VOCABULARY
+// says an action-`check` looks like: a checkbox is named. "Check the Terms checkbox" still counts;
+// "Check that X is visible" never does. Anchoring to the system's own closed grammar rather than to
+// prose is what CLAUDE.md asks for — structure over wording.
+const CASE_ACTION_LINE = /\b(fill|enter|type|input|provide|supply|click|press|tap|select|submit|sign ?in|log ?in)\b/i;
+/** An English "check" that is an ACTION: something in the same line names a checkbox. */
+const CHECK_ACTION_LINE = /\bcheck(?:s|ed|ing)?\b[^.]*\bcheck ?box(?:es)?\b/i;
 const IR_ACTION_KINDS = new Set(["click", "press", "fill", "select", "check"]);
 
 export function missingActions(ir: IR, testCase: TestCase): { message: string } | null {
   const steps = testCase.steps ?? [];
-  const text = [testCase.title, ...steps, testCase.expected ?? ""].join(" ").toLowerCase();
+  // Quoted spans are the case's DATA, not its instructions: a page heading, a value to type, a
+  // button's visible label. Regexing them for action verbs is how TD-01's original false positive
+  // happened — a correct IR rejected because the page's own heading contained the word "Click".
+  // Stripped before any test below, so only the case's own wording is read.
+  const unquoted = (s: string) => s.replace(/"[^"]*"/g, " ").replace(/'[^']*'/g, " ");
+  const text = [testCase.title, ...steps, testCase.expected ?? ""].map(unquoted).join(" ").toLowerCase();
   const has = (...actions: string[]) => ir.steps.some(s => actions.includes(s.action));
   const missing: string[] = [];
 
@@ -989,7 +1012,11 @@ export function missingActions(ir: IR, testCase: TestCase): { message: string } 
   // when the gap is more than the slack of one legitimate consolidation (e.g. "fill the login
   // form" being one case line but two IR fills). Caught in practice: a case naming 5 actions
   // whose IR carried out login, then stopped — 2 fills and a click can't cover 5 named steps.
-  const caseActionLines = steps.filter(s => CASE_ACTION_LINE.test(s)).length;
+  // Same quote-stripping as above, and for the same reason: a step whose quoted VALUE contains
+  // "click" is not a step that clicks.
+  const caseActionLines = steps
+    .map(unquoted)
+    .filter(s => CASE_ACTION_LINE.test(s) || CHECK_ACTION_LINE.test(s)).length;
   const irActionSteps = ir.steps.filter(s => IR_ACTION_KINDS.has(s.action)).length;
   if (caseActionLines >= 2 && irActionSteps < caseActionLines - 1) {
     missing.push(
@@ -1760,6 +1787,31 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         console.log("[ir] IR does not carry out the case:", incomplete.message);
         lastErr = incomplete.message;
         correction = incomplete.message;
+        // Remember this IR as a shippable partial before retrying.
+        //
+        // THIS IS WHAT STOPS THE GUARD KILLING RUNS. Every GROUNDING rejection already calls
+        // trackBestPartial, so attempts-exhausted ships a truncated result. This path did not: it
+        // only set lastErr and continued, so when the loop ran out `bestPartial` was undefined and
+        // the throw at the bottom took the entire run with it. Observed twice, both times on a
+        // CORRECT IR that the prose regex misread.
+        //
+        // `missingActions` is a heuristic over model-authored prose, and CLAUDE.md is explicit
+        // that such a check can never be made reliably deterministic — so it must not be able to
+        // be the sole cause of a dead run. It still rejects and still retries, which is the
+        // protection it was built for (an IR that filled nothing once reported PASSED); what
+        // changes is the floor: a false positive now costs a result marked truncated, not the run.
+        //
+        // The steps are the WHOLE IR, not a prefix: grounding succeeded, so every step is real and
+        // executable. The doubt is about coverage, not reach — hence its own truncationKind, and
+        // `hasTerminalAssertion` still decides truncated vs truncated_no_assertion downstream.
+        if (parsed.data.steps.length > (bestPartial?.steps.length ?? 0)) {
+          bestPartial = {
+            ir: parsed.data,
+            steps: parsed.data.steps,
+            note: incomplete.message,
+            kind: "incomplete-coverage",
+          };
+        }
         continue;
       }
 

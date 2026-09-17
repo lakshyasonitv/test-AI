@@ -1048,3 +1048,109 @@ describe("postClickRevealIndex", () => {
     expect(postClickRevealIndex(withSelect)).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TD-01's open class: "check" is not an action verb
+// ---------------------------------------------------------------------------
+//
+// THE RUN THIS COMES FROM. A real run against qable.io/blog/happy-path-testing died with "the case
+// describes 3 action steps but the IR only carries out 0", four identical attempts, then
+// `IR failed schema validation after retry`. The IR was CORRECT.
+//
+// `check` means opposite things in the two vocabularies missingActions straddles:
+//   case prose:      "Check that the heading is visible"  -> an ASSERTION
+//   STEP_VOCABULARY: `Check checkbox "Name"`              -> an ACTION
+// With bare `check` in CASE_ACTION_LINE, three "Check that ..." verifications counted as three
+// ACTIONS while the IR's three `assert` steps counted as zero, so 3 >= 2 && 0 < 2 rejected it
+// every time — nothing about the input changed between retries, so it could never pass.
+//
+// This is the second run-killing false positive TD-01 has produced. CLAUDE.md names it as the
+// reference example of the project's central failure mode: a "deterministic" check written as a
+// regex over LLM-authored prose is not actually deterministic.
+describe("missingActions — 'check' is a verification, not an action (TD-01)", () => {
+  // The failing case, verbatim from the run.
+  const blogCase = tc({
+    title: "Homepage loads and key areas are visible (from plan)",
+    steps: [
+      "Go to the 'https://www.qable.io/blog/happy-path-testing' page.",
+      "Wait for the page to fully load.",
+      "Check that the page shows the level 1 heading with the text 'What Is Happy Path Testing? - Complete Guide 2024'.",
+      "Check that the 'Services' button is visible in the navigation area.",
+      "Check that the level 2 heading 'What is happy path testing?' is present and visible in the main content area.",
+    ],
+    expected: "The level 1 heading is visible, the 'Services' button is visible, and the level 2 heading is visible.",
+  });
+
+  it("accepts the IR that was rejected four times on a real run", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/blog/happy-path-testing" } },
+      { id: "s2", action: "assert", target: { role: "heading", name: "What Is Happy Path Testing? - Complete Guide 2024" }, assertion: "visible" },
+      { id: "s3", action: "assert", target: { role: "button", name: "Services" }, assertion: "visible" },
+      { id: "s4", action: "assert", target: { role: "heading", name: "What is happy path testing?" }, assertion: "visible" },
+    ] } as any;
+    expect(missingActions(ir, blogCase)).toBeNull();
+  });
+
+  it("still counts a check that names a CHECKBOX as a real action", () => {
+    // The action form STEP_VOCABULARY actually defines: `Check checkbox "Name"`. Narrowing the
+    // regex must not blind the guard to a case that genuinely ticks boxes and an IR that doesn't.
+    const consentCase = tc({
+      title: "Accept both consents before submitting",
+      steps: [
+        "Check the 'Terms and Conditions' checkbox",
+        "Check the 'Marketing emails' checkbox",
+        "Click 'Submit'",
+      ],
+      expected: "The form is accepted",
+    });
+    const lazyIr = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "assert", target: { role: "button", name: "Submit" }, assertion: "visible" },
+    ] } as any;
+    expect(missingActions(lazyIr, consentCase)?.message).toMatch(/action steps but the IR only carries out/);
+  });
+
+  it("a quoted page string containing an action verb does not inflate the count", () => {
+    // TD-01's ORIGINAL recorded failure: a correct IR rejected because the page's own heading
+    // contained the word "Click". The quoted span is the case's data, not its instructions.
+    const quotedCase = tc({
+      title: "Landing page shows its call to action",
+      steps: [
+        "Go to the landing page.",
+        "Check that the text 'Click here to get started' is displayed.",
+        "Check that the text 'Press play to watch the demo' is displayed.",
+      ],
+      expected: "Both lines are visible",
+    });
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "assert", target: { text: "Click here to get started" }, assertion: "visible" },
+      { id: "s3", action: "assert", target: { text: "Press play to watch the demo" }, assertion: "visible" },
+    ] } as any;
+    expect(missingActions(ir, quotedCase)).toBeNull();
+  });
+
+  it("still catches the flow it was built for", () => {
+    // The protection must survive: an IR that logs in and stops, against a case naming five
+    // actions. This is the case that once reported PASSED having filled nothing.
+    const adminFlow = tc({
+      title: "Admin can view the users list",
+      steps: [
+        "Fill 'Email' with the admin's email",
+        "Fill 'Password' with the admin's password",
+        "Click 'Sign In'",
+        "Click 'Admin' in the sidebar",
+        "Click 'Users'",
+      ],
+      expected: "The users list is displayed",
+    });
+    const stopsAfterLogin = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { name: "Email" }, value: "a@b.c" },
+      { id: "s3", action: "fill", target: { name: "Password" }, value: "pw" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+      { id: "s5", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
+    ] } as any;
+    expect(missingActions(stopsAfterLogin, adminFlow)?.message).toMatch(/action steps but the IR only carries out/);
+  });
+});
