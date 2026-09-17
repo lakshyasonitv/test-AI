@@ -4,7 +4,7 @@ import { rmSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
-import { allRunIds, listRuns, store } from "../runStore.js";
+import { allRunIds, listRuns, store, summariseMissingRun } from "../runStore.js";
 import { warnIfNoVideo } from "../stages/executor.js";
 import { selfHealDefault } from "../stages/heal.js";
 import { llmCacheClear } from "../kb/llmCache.js";
@@ -98,7 +98,7 @@ import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsE
 import {
   cancelJob, createJob, emitJobEvent, getJob, isCancelled, jobEvents, subscribeJob,
 } from "./regroundJobs.js";
-import { deleteRunRow, isDbEnabled, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
+import { deleteRunRow, fetchRunsFromDb, isDbEnabled, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
@@ -521,8 +521,42 @@ app.get("/api/runs", requireRole("viewer"), async (req, res) => {
     // summarising is a full event-log parse per run. So only the survivors are summarised, and
     // only the newest 20 of those.
     const userId = req.user?.id ?? LOCAL_USER_ID;
-    const visible = await filterRunsForUser(userId, allRunIds().map((runId) => ({ runId })));
-    res.json(listRuns(visible.map((r) => r.runId)));
+    const diskIds = allRunIds();
+    const onDisk = new Set(diskIds);
+
+    // Runs the DATABASE knows about whose directory is gone. Without these the run silently
+    // disappears from History — which on ephemeral storage is most of them, and reads as "no runs
+    // happened" rather than "the artifacts are gone". `diffRuns` has always detected this and only
+    // ever logged it; this is the smallest change that puts it in front of the user.
+    //
+    // NOT Step 3.3. Disk remains authoritative for everything it still holds, and its soak gate is
+    // untouched — these rows are appended, never substituted, and each is marked
+    // artifactsAvailable:false rather than pretending to be a full summary.
+    //
+    // Non-fatal: fetchRunsFromDb returns null when the database is unreachable or disabled, and
+    // History then behaves exactly as it did before. A history listing must not fail because a
+    // supplementary lookup did.
+    const dbRows = (await fetchRunsFromDb().catch(() => null)) ?? [];
+    const orphans = dbRows.filter((r) => !onDisk.has(r.id));
+
+    // FILTER FIRST, THEN CAP — and filter BOTH sources in one pass, so an orphan cannot skip the
+    // tenancy check that every disk run goes through. Capping before filtering is TD-54.
+    const visible = await filterRunsForUser(
+      userId,
+      [...diskIds, ...orphans.map((r) => r.id)].map((runId) => ({ runId })),
+    );
+    const visibleIds = new Set(visible.map((r) => r.runId));
+
+    // Merge on recency and cap once, so the contract stays "the newest 20 you may see" rather than
+    // "20 disk runs plus however many orphans".
+    const merged = [
+      ...listRuns(diskIds.filter((id) => visibleIds.has(id))),
+      ...orphans.filter((r) => visibleIds.has(r.id)).map(summariseMissingRun),
+    ]
+      .sort((a, b) => b.startedAt - a.startedAt)
+      .slice(0, 20);
+
+    res.json(merged);
   } catch (err) {
     console.error("[authz] run filtering failed:", (err as Error)?.message ?? err);
     res.status(500).json({ error: "could not list runs" });

@@ -165,6 +165,18 @@ export interface RunSummary {
   startedAt: number;
   /** False for runs that predate events.ndjson — nothing to replay via SSE for those. */
   hasEvents: boolean;
+  /**
+   * ADDITIVE, and present only when FALSE: this run is known to the database but its
+   * `runs/<id>/` directory is gone, so there are no screenshots, no trace, no spec and no event
+   * log — only what the row itself records. Absent means the ordinary case, so every existing
+   * row keeps its exact shape (platform rule 1).
+   *
+   * Why this exists rather than the run simply vanishing: `listRuns` reads DISK, so a run whose
+   * directory has been removed silently disappears from History while its row remains. On a
+   * container with ephemeral storage that is most of them, and the disappearance reads as
+   * "no runs happened" rather than "the artifacts are gone".
+   */
+  artifactsAvailable?: false;
   suite?: {
     total: number;
     passed: number;
@@ -260,6 +272,42 @@ export function summariseRun(runId: string): RunSummary {
  * measured at 20 disk directories yielding 2 visible rows. Callers that want the raw disk window
  * pass nothing and get the old behaviour.
  */
+/** The five values `summariseRun` can produce, for validating whatever the database hands back. */
+const RUN_STATUSES = ["passed", "failed", "error", "incomplete", "truncated_no_assertion"] as const;
+
+/**
+ * Summarise a run that exists in the DATABASE but no longer on disk.
+ *
+ * Structural parameter rather than `DbRunRow`, so this file keeps knowing nothing about `db.ts` —
+ * runStore owns the shape, the route owns the composition.
+ *
+ * Everything a real summary reads (the event log, `00-input.json`, `05-result.json`) is gone, so
+ * only the row's own columns are available: no `suite` breakdown, no per-case rows, `hasEvents`
+ * false. `artifactsAvailable: false` is what tells the UI to say so instead of rendering a card
+ * whose every link 404s.
+ */
+export function summariseMissingRun(row: {
+  id: string; prompt: string | null; url: string | null;
+  status: string | null; started_at: string | null;
+}): RunSummary {
+  const started = row.started_at ? Date.parse(row.started_at) : NaN;
+  const status = (RUN_STATUSES as readonly string[]).includes(row.status ?? "")
+    ? (row.status as RunSummary["status"])
+    // A row written by a crashed or still-running process can hold null or something unknown.
+    // "incomplete" is what summariseRun defaults to for the same situation on disk.
+    : "incomplete";
+
+  return {
+    runId: row.id,
+    url: row.url ?? "",
+    prompt: row.prompt ?? "",
+    status,
+    startedAt: Number.isFinite(started) ? started : 0,
+    hasEvents: false,
+    artifactsAvailable: false,
+  };
+}
+
 export function listRuns(ids: string[] = allRunIds()): RunSummary[] {
   const diskRuns = ids.slice(0, 20).map(summariseRun);
   shadowCompareRuns(diskRuns); // no await: never blocks or alters the response

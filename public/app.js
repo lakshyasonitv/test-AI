@@ -5885,17 +5885,26 @@ async function renderHistoryView() {
     const st = statusKey(r.status);
     const suite = r.suite ? `${r.suite.passed}/${r.suite.total} passed` : "";
     const when = r.startedAt ? new Date(r.startedAt).toLocaleString() : "";
+    // artifactsAvailable is present ONLY when false: the run is in the database but its
+    // runs/<id>/ directory is gone, so there is no event log, no screenshots, no trace and no
+    // spec. Until now such a run simply vanished from History, which reads as "no runs happened"
+    // rather than "the evidence is gone" — on a container with ephemeral storage, that is most of
+    // them. Say what happened, and don't offer View (its page would poll a run with no events) or
+    // Delete (the files are already gone). Re-run still works: it only needs the prompt and URL,
+    // both of which the row itself carries.
+    const gone = r.artifactsAvailable === false;
     return `
     <div class="hrow" data-run-id="${escapeHtml(r.runId)}">
       <span class="case-badge badge-${escapeHtml(st)}">${escapeHtml(statusText(r.status))}</span>
       <div class="hrow-main">
         <div class="hrow-label">${escapeHtml(r.prompt || "(no prompt)")}</div>
         <div class="hrow-meta">${escapeHtml([suite, when, r.url].filter(Boolean).join(" · "))}</div>
+        ${gone ? `<div class="hrow-meta">Artifacts no longer available — screenshots, trace and report were cleared. You can still re-run it.</div>` : ""}
       </div>
       <div class="hrow-actions">
-        <button type="button" class="dl-btn-inline" data-act="view">View</button>
+        ${gone ? "" : `<button type="button" class="dl-btn-inline" data-act="view">View</button>`}
         <button type="button" class="dl-btn-inline" data-act="rerun">Re-run</button>
-        <button type="button" class="dl-btn-inline hrow-del" data-act="delete">Delete</button>
+        ${gone ? "" : `<button type="button" class="dl-btn-inline hrow-del" data-act="delete">Delete</button>`}
       </div>
     </div>`;
   }).join("");
