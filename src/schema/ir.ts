@@ -55,9 +55,19 @@ export type Step = z.infer<typeof Step>;
 
 // Models sometimes ignore the requested lowercase casing (e.g. "High") — normalize
 // before validating rather than rejecting an otherwise-valid IR.
+//
+// TOTAL, for the same reason as the twin in `src/stages/testCases.ts`: an unrecognised value
+// becomes "medium" instead of failing the parse. Fixing only the test-case side would have left
+// the identical trap one stage downstream — `IR.meta.priority` is parsed in `toIR`'s grounding
+// loop, where a rejection burns a retry attempt and can fail the whole compile over a sort hint.
+const PRIORITIES = ["low", "medium", "high", "critical"] as const;
 const Priority = z.preprocess(
-  (v) => (typeof v === "string" ? v.toLowerCase() : v),
-  z.enum(["low", "medium", "high", "critical"])
+  (v) => {
+    if (typeof v !== "string") return v;
+    const lower = v.toLowerCase().trim();
+    return (PRIORITIES as readonly string[]).includes(lower) ? lower : "medium";
+  },
+  z.enum(PRIORITIES)
 ).default("medium");
 
 export const IR = z.object({

@@ -382,8 +382,23 @@ export async function runPipeline(
     let reactiveCount = 0;
     if (newPages.length > 0) {
       emit("testcases", "started", { newPages: newPages.map(p => p.url) });
-      const reactiveCases = await generateCasesForNewPages(
-        updatedAppModel, resolvedUrls, thePlan, prompt, cases.map(c => c.title));
+      // This is the ONE toTestCases call site outside step(), and it stayed that way because it
+      // needs a `started` event carrying `newPages` — which step() does not emit. The cost was
+      // that a throw here produced no `failed` event at all: `computePhaseStatus` still saw
+      // testcases:"started", so public/app.js rendered "Interrupted — pipeline ended before this
+      // step finished" over a stage that had in fact failed outright, naming neither the stage nor
+      // the reason. Seen for real on run 2026-09-17T12-39-49-110Z-73b0af4b.
+      //
+      // Emit the failure the way step() would, then rethrow — abort semantics are deliberately
+      // unchanged here; only the reporting is fixed.
+      let reactiveCases: TestCase[];
+      try {
+        reactiveCases = await generateCasesForNewPages(
+          updatedAppModel, resolvedUrls, thePlan, prompt, cases.map(c => c.title));
+      } catch (err: any) {
+        emit("testcases", "failed", undefined, err?.message ?? String(err));
+        throw err;
+      }
       if (reactiveCases.length > 0) {
         if (gateUsed) {
           // The gate's whole premise is "nothing runs without being shown to you first" — that

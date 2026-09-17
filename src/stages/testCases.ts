@@ -58,9 +58,33 @@ export class NoTestCasesError extends Error {
 
 // Models sometimes ignore case ("High") or return an array where a string was asked for
 // ("expected": [...]) — normalize before validating rather than rejecting valid content.
+const PRIORITIES = ["low", "medium", "high", "critical"] as const;
+/**
+ * TOTAL by construction: an unrecognised priority becomes "medium" rather than failing validation.
+ *
+ * Why this is not laxness. `toTestCases` validates the WHOLE array in one `safeParse`, so a single
+ * unknown enum value rejects every case alongside it and aborts the run. That happened: gpt-5-mini
+ * returned `priority: "functional"` on 3 of 12 cases and the other 9 — all valid, some already
+ * chosen by the user at the gate — died with them. `"functional"` is not even a sibling field's
+ * value; it is a run-level SCOPE (`TestCategory`) that appears in the prompt as "This run is
+ * FUNCTIONAL testing only", right beside the priority instruction.
+ *
+ * `src/kb/testStrategy.ts` already states the rule this restores, for the `category` field:
+ * "a label the pipeline can't parse must not be able to fail a whole run, since toTestCases
+ * validates the entire array at once and would reject every case alongside it." `category` got
+ * both a stated legal set in the prompt AND `normalizeCategory`; `priority` had neither. Same
+ * shape as `Category` in `failureAnalysis.ts` — normalize, check membership, else safe default.
+ *
+ * Priority is a SORT HINT (`priorityRank`), not a correctness signal, so defaulting one case to
+ * "medium" costs an ordering nudge. Failing the batch costs the run.
+ */
 const Priority = z.preprocess(
-  (v) => (typeof v === "string" ? v.toLowerCase() : v),
-  z.enum(["low", "medium", "high", "critical"])
+  (v) => {
+    if (typeof v !== "string") return v;
+    const lower = v.toLowerCase().trim();
+    return (PRIORITIES as readonly string[]).includes(lower) ? lower : "medium";
+  },
+  z.enum(PRIORITIES)
 ).default("medium");
 const StringOrJoinedArray = z.preprocess(
   (v) => (Array.isArray(v) ? v.join(" ") : v),
@@ -311,7 +335,8 @@ export type TestCase = z.infer<typeof TestCase>;
 
 // LLM-facing schema: same as TestCase but WITHOUT generatedFrom — the model never
 // produces this field, it's stamped in code after parsing.
-const LLMTestCase = TestCase.omit({ generatedFrom: true });
+/** Exported so the schema's own tolerance can be tested directly, without a model round-trip. */
+export const LLMTestCase = TestCase.omit({ generatedFrom: true });
 
 // Grounding is deliberately NOT checked here. This stage only ever sees the entry-page model
 // (extension enriches the model later, inside toIR), so a fuzzy check here can't tell a
@@ -441,6 +466,7 @@ Rules, follow exactly:
 - Only write a case whose FIRST action targets an element that actually exists on the target page. Skip a checklist item if the target page has no element to start it (e.g. no search box → skip search cases).
 - "targetUrl" must be the URL of the page this case tests, taken verbatim from the application model's pages array. When the model has multiple pages, this tells the later stage which page to start from. When there is only one page, set it to that page's URL.
 - "feature" must be one of the application model's concepts.
+- "priority" MUST be exactly one of: ${PRIORITIES.join(" | ")} — how urgent this case is. Copy the tag shown in the checklist above where there is one; otherwise pick the closest. Never invent a value, and never put a test TYPE or SCOPE here ("functional", "security", "smoke" are not priorities).
 - "category" MUST be exactly one of: ${CATEGORY_IDS.join(" | ")} — the QA dimension this case exercises. Pick the closest one; never invent a value.
 - "intent" is one short free-text sentence, in QA terms, describing what this case proves. The category is a fixed label; the intent is your reasoning. Required on every case.
 - "whyItMatters" is a SEPARATE sentence, for someone who has never written or read a test before. No QA vocabulary (never use the words "proves", "verifies", "validates", "constraint", "enforces"). Describe the real consequence for a real person if this breaks — what a visitor experiences, or what the site owner loses — not what gets checked. Bad: "Proves that the contact form enforces its required Email field constraint." Good: "If this breaks, someone trying to contact you gets a silent failure and you never hear from them." Required on every case.
