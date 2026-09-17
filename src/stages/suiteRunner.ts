@@ -169,6 +169,16 @@ export function buildSuiteSummary(results: CaseRunResult[], runDir: string): Sui
         intent: r.intent,
         expected: r.expected,
         healed: r.healed,
+        // `failure` was computed above — with a comment explaining why it is read from disk — and
+        // then never reached the object, so failedStep/failedStepTitle/error/errorDetail were
+        // silently dropped on every summary ever written. That is TD-80's other half: the
+        // extraction landed and was tested, the spread did not, and `tests/failureDetail.test.ts`
+        // has been red ever since, carried as a "known pre-existing failure".
+        //
+        // Spread LAST and deliberately: for a passing case `failure` is `{}`, so nothing is added
+        // and the shape is unchanged (rule 1, additive-optional) — which is what the sibling test
+        // "a PASSING case carries none of it — the fields stay absent, not empty" pins.
+        ...failure,
       };
     }),
   };
@@ -334,6 +344,20 @@ export async function runSuite(
 
         let diagnosisPath: string | undefined;
         let healed = false;
+        // Declared, not implied. Both of these were assigned and read below with no declaration
+        // anywhere in scope — `tsc --noEmit` reported them as TS2304 "Cannot find name" for a
+        // long time and the errors were carried as a known baseline. They were not cosmetic:
+        // `tsx` transpiles without type-checking, this file is an ES module (so strict mode), and
+        // reading or assigning an undeclared binding in strict mode throws ReferenceError at
+        // runtime. `deterministicHeal` is read at the `results.push` below, which every suite case
+        // reaches whether it passed or failed — so EVERY executed suite case threw there, landed
+        // in the catch, and was recorded `status: "failed"` with none of whyItMatters/intent/
+        // expected/diagnosisPath. That is why a passing suite case showed as Failed in the UI with
+        // no explanation: there was no failure, only a ReferenceError after the fact. A failing
+        // case threw even earlier, at `healAttempted` in the heal path, for the same net effect.
+        // The primary case was never affected — it runs through orchestrator.ts, not this loop.
+        let deterministicHeal = false;
+        let healAttempted = 0;
         if (!result.passed) {
           const diagnosis = await analyzeFailure(ir, result, appModel.auth?.loginUrl);
           diagnosisPath = path.join(caseDir, "06-diagnosis.json");
