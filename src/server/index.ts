@@ -48,6 +48,7 @@ import {
   deleteProject,
   listProjectMembers,
   listVisibleProjects,
+  projectDeletionImpact,
   removeProjectMember,
   resolveProjectForUrl,
   updateProject,
@@ -843,6 +844,23 @@ app.patch("/api/projects/:projectId", requireRole("admin"), async (req, res) => 
   const { name, baseUrl } = req.body ?? {};
   try {
     res.json(await updateProject(req.organisationId!, req.params.projectId, { name, baseUrl }));
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+/**
+ * What deleting this project would destroy or unfile — counts only, nothing is changed.
+ *
+ * A NEW route rather than a field on an existing one (platform rule 1). The delete itself is
+ * unchanged in shape: it still takes no body and still answers 204. This exists because the
+ * cascade is invisible from the client — `projects → suites` and `projects → test_cases` are both
+ * ON DELETE CASCADE — so the UI can state exactly what is about to go before asking for
+ * confirmation.
+ */
+app.get("/api/projects/:projectId/deletion-impact", requireRole("admin"), async (req, res) => {
+  try {
+    res.json(await projectDeletionImpact(req.organisationId!, req.params.projectId));
   } catch (err) {
     sendAccessError(res, err);
   }

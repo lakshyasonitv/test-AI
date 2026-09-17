@@ -1108,6 +1108,51 @@ function renderSuiteResults(suite, runId) {
  * who can see it afterwards — defaulting silently would file authored work somewhere the author
  * did not choose.
  */
+/**
+ * Confirm a project delete by stating exactly what goes, and requiring the name typed back.
+ *
+ * Three different fates, and conflating them is how someone loses a library by mis-click:
+ *   - SUITES and SAVED CASES are DESTROYED (both cascade from projects in the schema), along with
+ *     every stored version of those cases.
+ *   - RUNS are NOT destroyed. `runs.project_id` is ON DELETE SET NULL, so the run and all its
+ *     artifacts survive — but it becomes UNFILED, and an unfiled run is visible to admins and
+ *     owners only (filterRunsForUser). A tester simply stops seeing it, which is worth saying out
+ *     loud rather than discovering later.
+ *
+ * Counts come from GET /api/projects/:id/deletion-impact. If that call fails we still offer the
+ * delete, but say the impact is unknown — refusing to delete because a COUNT failed would
+ * reintroduce exactly the dead end this replaced.
+ */
+async function confirmProjectDelete(p) {
+  let impact = null;
+  try {
+    impact = await api(`/api/projects/${encodeURIComponent(p.id)}/deletion-impact`);
+  } catch {
+    // Non-fatal on purpose — see above.
+  }
+
+  const n = (x, one, many) => `${x} ${x === 1 ? one : many}`;
+  const lines = impact
+    ? [
+        impact.suites || impact.cases
+          ? `This permanently deletes ${n(impact.suites, "suite", "suites")} and ` +
+            `${n(impact.cases, "saved case", "saved cases")}, including every stored version.`
+          : `This project has no suites or saved cases.`,
+        impact.runs
+          ? `${n(impact.runs, "run", "runs")} will be kept but unfiled — the artifacts stay, ` +
+            `but only admins and owners will still see them.`
+          : `It holds no runs.`,
+      ]
+    : ["Could not read what this project holds, so this may delete suites and saved cases."];
+
+  const typed = prompt(
+    `Delete the project "${p.name}"?\n\n${lines.join("\n\n")}\n\n` +
+    `This cannot be undone. Type the project name to confirm:`,
+  );
+  // Cancel returns null; an exact match is required, trimmed only for stray whitespace.
+  return typed !== null && typed.trim() === p.name;
+}
+
 async function openSaveCasePanel(card) {
   const panel = card.querySelector(".case-save-panel");
   if (!panel) return;
@@ -4588,7 +4633,16 @@ async function renderCaseView(caseId, routeProjectId) {
             return navigate(caseHash(copy.projectId ?? projectId, copy.id));
           }
           if (act === "delete") {
-            if (!confirm(`Delete "${c.title}"? This removes it from every suite it is in.`)) return;
+            // Says what actually goes. `test_case_versions` CASCADEs from `test_cases`, so this
+            // destroys the case's entire edit history — not just its suite membership, which is
+            // all the previous wording mentioned. `run_cases` cascades too, so past runs stop
+            // being linked to it. The run artifacts themselves are untouched.
+            if (!confirm(
+              `Delete "${c.title}"?\n\n` +
+              `This permanently deletes the case and every saved version of it, and removes it ` +
+              `from every suite it is in. Past run artifacts are kept, but stop being linked to ` +
+              `this case.\n\nThis cannot be undone.`
+            )) return;
             await api(`/api/cases/${encodeURIComponent(caseId)}`, { method: "DELETE" });
             stopFollowingCaseJob();
             caseEditor = null;
@@ -5470,18 +5524,23 @@ function renderProjectsTree(runs) {
     });
   });
 
-  // Delete a project. The route (DELETE /api/projects/:id, admin+) and its rules already
-  // existed; the sidebar simply never offered a way to reach them, so an owner had no control
-  // to click. The server REFUSES with 409 while the project still holds runs and says how many
-  // (deleteProject in src/server/projects.ts) — that refusal is deliberate, so this surfaces the
-  // server's own sentence rather than second-guessing it or offering to cascade the runs away.
+  // Delete a project (DELETE /api/projects/:id, admin+).
+  //
+  // The server used to refuse with 409 while the project held ANY run, telling the caller to
+  // "move or delete them first" — an instruction the product could not satisfy, because no
+  // move-run route exists and History lists only the newest 20 runs. It now deletes, and
+  // `runs.project_id` ON DELETE SET NULL leaves the runs and their artifacts intact but UNFILED.
+  //
+  // What that refusal was accidentally hiding is the real hazard: suites and test_cases both
+  // CASCADE from projects, so this destroys the project's entire library. Hence the counts and the
+  // type-the-name gate below — see confirmProjectDelete.
   sidebarTreeEl.querySelectorAll("[data-project-delete]").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
       // Same reason as Edit above: the row itself toggles expand/collapse.
       e.stopPropagation();
       const p = projects.find((x) => x.id === btn.dataset.projectDelete);
       if (!p) return;
-      if (!confirm(`Delete the project "${p.name}"? Its saved suites and cases go with it.`)) return;
+      if (!(await confirmProjectDelete(p))) return;
       try {
         await api(`/api/projects/${encodeURIComponent(p.id)}`, { method: "DELETE" });
         expandedProjects.delete(p.id);
@@ -5638,9 +5697,13 @@ function renderProjectsTree(runs) {
     });
   });
 
-  // Deleting a suite is unconditional server-side, unlike deleting a project (which refuses while
-  // runs remain). A suite is a grouping: `suite_cases` cascades, `test_cases` does not, so the
-  // authored cases survive. The confirm says so, in the Suite screen's own words.
+  // Deleting a suite is unconditional server-side. A suite is only a grouping: `suite_cases`
+  // cascades, `test_cases` does NOT, so the authored cases survive and stay in the library. The
+  // confirm says so, in the Suite screen's own words.
+  //
+  // This is the mildest of the three deletes, and deliberately the only one with a plain confirm:
+  // deleting a CASE destroys its version history, and deleting a PROJECT cascades to both suites
+  // and cases — so those two say more, and the project one requires its name typed back.
   sidebarTreeEl.querySelectorAll("[data-suite-delete]").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();

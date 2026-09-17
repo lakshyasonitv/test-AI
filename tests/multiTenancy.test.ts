@@ -289,6 +289,9 @@ const RESOURCE_ROUTES: { name: string; method: Method; path: string; body?: unkn
 
   { name: "rename org A's project", method: "patch", path: `/api/projects/${PROJ_A1}`, body: { name: "hijacked" }, mounted: "PATCH /api/projects/:projectId" },
   { name: "delete org A's project", method: "delete", path: `/api/projects/${PROJ_A1}`, mounted: "DELETE /api/projects/:projectId" },
+  // Counts only, but it counts ANOTHER org's runs/suites/cases — a cross-tenant caller learning
+  // how much a project holds is a disclosure, so it is isolated exactly like the delete it informs.
+  { name: "read org A's project deletion impact", method: "get", path: `/api/projects/${PROJ_A1}/deletion-impact`, mounted: "GET /api/projects/:projectId/deletion-impact" },
   { name: "read org A's project members", method: "get", path: `/api/projects/${PROJ_A1}/members`, mounted: "GET /api/projects/:projectId/members" },
   { name: "add to org A's project", method: "post", path: `/api/projects/${PROJ_A1}/members`, body: { userId: OWNER_B }, mounted: "POST /api/projects/:projectId/members" },
   { name: "remove from org A's project", method: "delete", path: `/api/projects/${PROJ_A1}/members/${VIEWER_A}`, mounted: "DELETE /api/projects/:projectId/members/:userId" },

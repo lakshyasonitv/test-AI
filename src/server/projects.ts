@@ -186,31 +186,69 @@ export async function updateProject(
   return { id: data.id, name: data.name, baseUrl: data.base_url };
 }
 
+/** What deleting a project would actually destroy or unfile. Counts only — no side effects. */
+export interface ProjectDeletionImpact {
+  /** Runs that become UNFILED (`project_id` → null). Artifacts on disk are untouched. */
+  runs: number;
+  /** Suites destroyed by the `projects → suites` cascade. */
+  suites: number;
+  /** Saved cases destroyed by the `projects → test_cases` cascade, with all their versions. */
+  cases: number;
+}
+
+/**
+ * Count what a delete would do, so the caller can be shown it BEFORE confirming.
+ *
+ * Exists because the cascade is invisible from the UI: `projects → suites` and
+ * `projects → test_cases` are both ON DELETE CASCADE, so deleting a project takes its entire
+ * library with it. Until now the runs refusal below happened to shield people from that; removing
+ * the refusal without surfacing the cascade would trade a blocked delete for a silent one.
+ */
+export async function projectDeletionImpact(
+  orgId: string, projectId: string,
+): Promise<ProjectDeletionImpact> {
+  await assertProjectInOrg(orgId, projectId);
+  const client = requireClient();
+
+  const counted = async (table: string) => {
+    const { count, error } = await client
+      .from(table).select("id", { count: "exact", head: true }).eq("project_id", projectId);
+    if (error) throw new AccessError(500, `could not count ${table}: ${error.message}`);
+    return count ?? 0;
+  };
+
+  return {
+    runs: await counted("runs"),
+    suites: await counted("suites"),
+    cases: await counted("test_cases"),
+  };
+}
+
 /**
  * Delete a project.
  *
- * REFUSES while it still holds runs, rather than orphaning or cascading them. Run history is the
- * evidence this product exists to produce — screenshots, traces, the generated spec — and a
- * mis-click on a project row must not be able to make 25 runs unreachable. The caller is told the
- * count and can move or delete the runs deliberately.
+ * WHAT THIS DOES TO RUNS, AND WHY IT NO LONGER REFUSES. `runs.project_id` is **ON DELETE SET
+ * NULL** — the schema was built so a project can go while its run history survives. This function
+ * used to be stricter than its own database, throwing 409 whenever any run referenced the project
+ * and telling the caller to "move or delete them first". **There is no route to move a run to
+ * another project**, and History only lists the newest 20 runs (TECH_DEBT.md TD-51), so a project
+ * whose runs had aged out of that window could never be deleted at all — the refusal pointed at an
+ * action the product does not offer.
+ *
+ * The original concern was real and is preserved differently: nothing is destroyed here. The runs,
+ * their screenshots, traces and specs all survive; they become UNFILED. The one genuine cost is
+ * that an unfiled run is visible to admin+ only (`filterRunsForUser` in authz.ts — nobody can be
+ * assigned to "no project"), so a tester loses sight of them. That is a disclosure the caller makes
+ * knowingly, which is what `projectDeletionImpact` is for.
+ *
+ * THE CASCADE IS THE DANGEROUS PART, not the runs. Suites and test_cases both CASCADE from
+ * projects, so this destroys the project's whole library including every saved version. Callers
+ * must show `projectDeletionImpact` first; the UI additionally requires the project name to be
+ * typed back.
  */
 export async function deleteProject(orgId: string, projectId: string): Promise<void> {
   await assertProjectInOrg(orgId, projectId);
   const client = requireClient();
-
-  const { data: runRows, error: runErr } = await client
-    .from("runs")
-    .select("id")
-    .eq("project_id", projectId)
-    .limit(1000);
-  if (runErr) throw new AccessError(500, `could not check the project's runs: ${runErr.message}`);
-  const count = (runRows ?? []).length;
-  if (count > 0) {
-    throw new AccessError(
-      409,
-      `this project still holds ${count} run${count === 1 ? "" : "s"} — move or delete them first`,
-    );
-  }
 
   const { error } = await client
     .from("projects")
