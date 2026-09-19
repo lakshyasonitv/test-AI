@@ -205,3 +205,10 @@ other work: read `project-brain/03-progress.md` and the newest file in `project-
 then give a 2-line "where we left off" summary. After completing meaningful work, update the brain
 (journal + progress + tasks; decisions with reasons into 02-decisions.md). If the user forgets,
 proactively suggest `/brain log`.
+
+**Update it at the end of EVERY session that changes anything** — a commit, a config change,
+or a fact worth keeping. Not "when it feels substantial". A single unlogged commit has already
+left it wrong in five ways at once (a missing fix, a test baseline 35 tests light, two shipped
+items still listed as open, a short deploy list, stale dates) — and a cold session then
+re-investigated a theory the live data had already disproved. The brain is only worth having if
+it can be trusted without re-verification. See `project-brain/02-decisions.md`, 2026-09-18.
