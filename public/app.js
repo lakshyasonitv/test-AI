@@ -254,7 +254,7 @@ async function initAuth() {
   const signOutBtn = document.getElementById("signOutBtn");
   if (signOutBtn) {
     signOutBtn.classList.remove("hidden");
-    signOutBtn.addEventListener("click", signOut);
+    signOutBtn.addEventListener("click", () => { if (confirm("Sign out?")) signOut(); });
   }
 
   const form = document.getElementById("loginForm");
@@ -1234,6 +1234,9 @@ async function openSaveCasePanel(card) {
     } catch (err) {
       panel.querySelector('[data-role="feedback"]').innerHTML =
         `<p class="team-error">${escapeHtml(err.message)}</p>`;
+    } finally {
+      // Re-enable on SUCCESS too. It used to live in the catch only, so one successful save killed
+      // the button for the life of the panel — and saving into the wrong project then had no retry.
       btn.disabled = false;
     }
   });
@@ -3352,7 +3355,7 @@ async function renderSuiteView(suiteId) {
       <span class="lib-toolbar-gap"></span>
       ${canAuthor ? `
         <button type="button" class="dl-btn-inline" data-act="run-selected" disabled>▸ Run 0 selected</button>
-        <button type="button" class="run-btn lib-run-all" data-act="run-all">▸ Run all</button>` : ""}
+        <button type="button" class="run-btn lib-run-all" data-act="run-all" ${cases.length ? "" : "disabled"}>▸ Run all</button>` : ""}
     </div>
     <div id="suiteFeedback"></div>
     <div id="suiteAddPanel"></div>
