@@ -1189,13 +1189,19 @@ async function openSaveCasePanel(card) {
         </select>
       </label>
       <label class="field">
-        <span class="field-label">Suite (optional)</span>
+        <span class="field-label">Suite</span>
         <select class="team-select" data-role="suite">
-          <option value="">— none —</option>
+          <option value="">Choose a suite…</option>
           ${suites.map((s) => `<option value="${escapeHtml(s.id)}" data-project="${escapeHtml(s.projectId)}">${escapeHtml(s.name)}</option>`).join("")}
+          <option value="__new">+ New suite</option>
         </select>
       </label>
-      <button type="button" class="dl-btn" data-role="confirm">Save to library</button>
+      <div class="field" data-role="newsuite" hidden>
+        <input type="text" class="team-select" data-role="newsuite-name" placeholder="Suite name"
+               aria-label="Name for the new suite" />
+        <button type="button" class="dl-btn-inline" data-role="newsuite-create">Create</button>
+      </div>
+      <button type="button" class="dl-btn" data-role="confirm" disabled>Save to library</button>
     </div>
     <p class="hrow-meta">Saved cases re-run with no AI calls at all.</p>
     <div data-role="feedback"></div>`;
@@ -1207,14 +1213,57 @@ async function openSaveCasePanel(card) {
   // so offering one would be offering a guaranteed error.
   const syncSuites = () => {
     [...suiteSel.options].forEach((o) => {
-      if (!o.value) return;
+      // The placeholder and "+ New suite" belong to no project and must survive the filter.
+      if (!o.value || o.value === "__new") return;
       o.hidden = o.dataset.project !== projectSel.value;
     });
     const chosen = suiteSel.selectedOptions[0];
     if (chosen && chosen.value && chosen.hidden) suiteSel.value = "";
   };
+  // A case with no suite is UNREACHABLE: the sidebar tree renders suites, then "+ New suite", then
+  // runs — saved cases are only ever opened from inside a suite. The one link to a suite-less case
+  // is the "Saved. Open the case" line below, which goes when the panel does. 10 of 26 saved cases
+  // were already stranded that way before this gate existed.
+  const confirmBtn = panel.querySelector('[data-role="confirm"]');
+  const newSuiteBox = panel.querySelector('[data-role="newsuite"]');
+  const syncSave = () => {
+    newSuiteBox.hidden = suiteSel.value !== "__new";
+    confirmBtn.disabled = !suiteSel.value || suiteSel.value === "__new";
+  };
+
+  // Create a suite without leaving the panel — the alternative is "go to the sidebar, make one,
+  // come back and start again", which is how you teach someone to pick "none".
+  //
+  // Deliberately NOT the tree's createSuite(): that one closes over the tree's form state and
+  // navigates into the new suite on success. Same endpoint, different aftermath.
+  panel.querySelector('[data-role="newsuite-create"]').addEventListener("click", async (e) => {
+    const nameEl = panel.querySelector('[data-role="newsuite-name"]');
+    const name = nameEl.value.trim();
+    if (!name) return nameEl.focus();
+    e.currentTarget.disabled = true;
+    try {
+      const created = await api("/api/suites", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: projectSel.value, name }),
+      });
+      const opt = new Option(created.name, created.id);
+      opt.dataset.project = created.projectId;
+      suiteSel.add(opt, suiteSel.options.length - 1);   // before "+ New suite"
+      suiteSel.value = created.id;
+      nameEl.value = "";
+      syncSave();
+    } catch (err) {
+      panel.querySelector('[data-role="feedback"]').innerHTML =
+        `<p class="team-error">${escapeHtml(err.message)}</p>`;
+    } finally {
+      e.currentTarget.disabled = false;
+    }
+  });
+
   syncSuites();
-  projectSel.addEventListener("change", syncSuites);
+  syncSave();
+  suiteSel.addEventListener("change", syncSave);
+  projectSel.addEventListener("change", () => { syncSuites(); syncSave(); });
 
   panel.querySelector('[data-role="confirm"]').addEventListener("click", async (e) => {
     const btn = e.currentTarget;
