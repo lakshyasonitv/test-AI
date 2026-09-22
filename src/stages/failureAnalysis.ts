@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { llm, cacheModelDimension } from "../llm/client.js";
 import { parseJson } from "../llm/json.js";
-import { findScreenshot } from "./executor.js";
+import { findScreenshot, extractFailureDetail } from "./executor.js";
 import { siteHost } from "../text.js";
 import { KNOWN_CATEGORIES, findFailingStepId, classify } from "./classify.js";
 import type { IR } from "../schema/ir.js";
@@ -69,6 +69,70 @@ function extractQuotedCandidates(text: string): string[] {
  * Returns the first confirmed quoted candidate, or undefined if none of them appear in the
  * snapshot (including when there's no snapshot to check against at all).
  */
+/**
+ * Which IR step ACTUALLY failed, from Playwright's own structured report.
+ *
+ * This is ground truth, not inference. `extractFailureDetail` reads the position of the first
+ * step carrying an error, and `generateSpec` emits exactly one `test.step()` per IR step in order,
+ * so that position maps straight onto `ir.steps`. Contrast `findFailingStepId`, which regexes the
+ * error TEXT to guess — fine as a fallback, but it is reading prose.
+ *
+ * Returns undefined when the report has no step-level error (an older report, a crash before any
+ * step ran). Callers must treat that as "no ground truth" and not reject anything.
+ */
+export function recordedFailingStepId(ir: IR, result: ExecResult): string | undefined {
+  const { failedStep } = extractFailureDetail(result.raw);
+  if (typeof failedStep !== "number") return undefined;
+  return ir.steps[failedStep - 1]?.id;   // failedStep is 1-based
+}
+
+/**
+ * Does this diagnosis blame a step or an element other than the one that actually failed?
+ *
+ * Two structural checks, both against the IR rather than against prose:
+ *
+ *  1. **Step.** `failingStepId` must be the recorded one. Exact id comparison.
+ *  2. **Element.** A quoted string in the diagnosis that matches SOME OTHER step's target name,
+ *     while matching nothing on the failing step's own target, means the sentence is describing
+ *     the wrong control. Deliberately narrow: it only fires when the quote names another step's
+ *     element *specifically*, so ordinary prose that happens to quote page text is untouched.
+ *
+ * Returns a reason string, or undefined when the diagnosis is consistent — or when there is no
+ * ground truth to compare against, in which case nothing is rejected.
+ */
+export function diagnosisBlamesWrongStep(
+  diagnosis: Diagnosis, ir: IR, recordedId: string | undefined,
+): string | undefined {
+  if (!recordedId) return undefined;
+
+  if (diagnosis.failingStepId && diagnosis.failingStepId !== recordedId) {
+    return `names step ${diagnosis.failingStepId}, but ${recordedId} is the step that failed`;
+  }
+
+  const failing = ir.steps.find((s) => s.id === recordedId);
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const ownNames = new Set(
+    [failing?.target?.name, failing?.target?.text, failing?.value]
+      .filter((v): v is string => typeof v === "string" && v.length > 0).map(norm),
+  );
+  const otherNames = new Map<string, string>();
+  for (const s of ir.steps) {
+    if (s.id === recordedId) continue;
+    for (const v of [s.target?.name, s.target?.text]) {
+      if (typeof v === "string" && v.length >= 3 && !ownNames.has(norm(v))) otherNames.set(norm(v), s.id);
+    }
+  }
+
+  for (const quoted of [
+    ...extractQuotedCandidates(diagnosis.suggestedFix),
+    ...extractQuotedCandidates(diagnosis.explanation),
+  ]) {
+    const hit = otherNames.get(norm(quoted));
+    if (hit) return `blames "${quoted}", which belongs to step ${hit}, not to ${recordedId}`;
+  }
+  return undefined;
+}
+
 export function verifyDiagnosisText(diagnosis: Diagnosis, result: ExecResult): string | undefined {
   const snapshot = result.accessibilitySnapshot;
   if (!snapshot) return undefined;
@@ -257,18 +321,41 @@ export async function analyzeFailure(
   }
   const urlBlock = `\nPage URL at failure: ${currentUrl}\n`;
   
-  const relevantSteps = ir.steps.slice(-5);
-  
+  // Centre the window on the step that ACTUALLY failed, not on the end of the case.
+  //
+  // This was `ir.steps.slice(-5)` — the last five steps regardless of where the failure was. On a
+  // long case the failing step could fall outside that window entirely, and even inside it the
+  // model was choosing among five candidates with nothing saying which one Playwright recorded as
+  // failing. Naming the wrong step makes the explanation and the suggested fix wrong too.
+  //
+  // Playwright's report knows the answer exactly (see recordedFailingStepId), so hand it over
+  // instead of asking the model to infer it. The two preceding steps stay for context — what a
+  // step was acting on usually depends on what came before it.
+  const recordedId = recordedFailingStepId(ir, result);
+  const failingIdx = recordedId ? ir.steps.findIndex((s) => s.id === recordedId) : -1;
+  const relevantSteps = failingIdx >= 0
+    ? ir.steps.slice(Math.max(0, failingIdx - 2), failingIdx + 1)
+    : ir.steps.slice(-5);   // no step-level error recorded — fall back to the old window
+
   const system = SYSTEM;
 
-  const user = `IR Steps: ${JSON.stringify(relevantSteps)}
+  // Stated separately from the steps so it cannot be mistaken for one more candidate.
+  const recordedBlock = recordedId
+    ? `\nPlaywright recorded step "${recordedId}" as the one that failed. Diagnose THAT step. Do not attribute the failure to a different step or to a different element.\n`
+    : "";
+
+  const baseUser = `IR Steps: ${JSON.stringify(relevantSteps)}
 Execution error output:
 ${errorText}
-${urlBlock}${snapshotBlock}
+${urlBlock}${recordedBlock}${snapshotBlock}
 Return JSON: { "failingStepId", "category", "explanation", "suggestedFix" }`;
 
   let lastErr = "";
+  let wrongStep = "";   // set when the previous attempt blamed the wrong step/element
   for (let attempt = 0; attempt < 2; attempt++) {
+    const user = wrongStep
+      ? `${baseUser}\n\nYour previous answer ${wrongStep}. Diagnose the recorded failing step itself.`
+      : baseUser;
     const { content: raw } = await llm(user, {
       systemInstruction: system,
       json: true,
@@ -280,8 +367,28 @@ Return JSON: { "failingStepId", "category", "explanation", "suggestedFix" }`;
     try {
       const parsed = Diagnosis.safeParse(parseJson(raw));
       if (parsed.success) {
-        const verifiedText = verifyDiagnosisText(parsed.data, result);
-        const diagnosis = verifiedText ? { ...parsed.data, verifiedText } : parsed.data;
+        // Reject a diagnosis that blames a step or element other than the recorded one — then
+        // retry ONCE with the reason, because a wrong step usually means a wrong explanation too.
+        const blames = diagnosisBlamesWrongStep(parsed.data, ir, recordedId);
+        if (blames && attempt === 0) {
+          console.log(`[diagnosis] rejected: ${blames} — retrying`);
+          wrongStep = blames;
+          lastErr = blames;
+          continue;
+        }
+
+        // Still wrong on the last attempt: CORRECT it rather than reject it. We already know the
+        // right step id structurally, and a guard over model output must never be the sole cause
+        // of a dead run — that is TD-01's whole lesson, and this function throws below. The
+        // explanation may still be off, so say so rather than silently presenting it as verified.
+        const corrected = blames
+          ? { ...parsed.data, failingStepId: recordedId ?? parsed.data.failingStepId,
+              explanation: `${parsed.data.explanation} (Note: this explanation ${blames}; the step above is the one Playwright recorded as failing.)` }
+          : parsed.data;
+        if (blames) console.log(`[diagnosis] still ${blames} after retry — overriding failingStepId`);
+
+        const verifiedText = verifyDiagnosisText(corrected, result);
+        const diagnosis = verifiedText ? { ...corrected, verifiedText } : corrected;
         if (isCacheableResult(diagnosis)) llmCacheSet(cacheKey, diagnosis);
         return diagnosis;
       }
