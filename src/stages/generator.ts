@@ -9,6 +9,20 @@ import { isEnvValueRef } from "./credentials.js";
 
 const q = (s: string) => JSON.stringify(s);
 
+/**
+ * How long ONE emitted assertion or action may wait. Was `10000` written out 15 times.
+ *
+ * Read at generation time and baked into the spec, because the spec is a standalone file that
+ * shares nothing with the pipeline (DECISIONS.md D-06) — it cannot read this process's env when
+ * Playwright later runs it.
+ *
+ * Deliberately NOT applied to `SAFE_CLICK_HELPER`'s fallback ladder. Those 2s/3s/5s values are not
+ * a generic "how long to wait" — they are a bounded worst case, tuned in TECH_DEBT.md TD-36 after
+ * an unbounded ladder reached ~113s for a single click and blew the executor's kill timer. Scaling
+ * them with this knob would re-open that.
+ */
+const ASSERT_TIMEOUT_MS = Number(process.env.ASSERTION_TIMEOUT_MS) || 10_000;
+
 /** The code for a fill/select value. A user's own credential arrives as an env-reference
  *  sentinel rather than the literal, so it is emitted as a `process.env` read — the spec file
  *  lives under runs/, which the server serves publicly, and must never contain the secret.
@@ -84,28 +98,28 @@ function emitAssert(step: Step): string {
       const withFilter = narrowed
         ? `${narrowed[1]}.and(page.locator(':visible'))${narrowed[2]}`
         : `${raw}.and(page.locator(':visible'))`;
-      return `  await expect(${withFilter}).toBeVisible({ timeout: 10000 });`;
+      return `  await expect(${withFilter}).toBeVisible({ timeout: ${ASSERT_TIMEOUT_MS} });`;
     }
 
     case "hidden":
-      return `  await expect(${locator(t)}).toBeHidden({ timeout: 10000 });`;
+      return `  await expect(${locator(t)}).toBeHidden({ timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "enabled":
-      return `  await expect(${locator(t)}).toBeEnabled({ timeout: 10000 });`;
+      return `  await expect(${locator(t)}).toBeEnabled({ timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "disabled":
-      return `  await expect(${locator(t)}).toBeDisabled({ timeout: 10000 });`;
+      return `  await expect(${locator(t)}).toBeDisabled({ timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "text_equals":
-      return `  await expect(${locator(t)}).toHaveText(${q(comparisonValue(step))}, { timeout: 10000 });`;
+      return `  await expect(${locator(t)}).toHaveText(${q(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "text_contains":
-      return `  await expect(${locator(t)}).toContainText(${q(comparisonValue(step))}, { timeout: 10000 });`;
+      return `  await expect(${locator(t)}).toContainText(${q(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "url_contains":
       return `  await expect(page).toHaveURL(new RegExp(${q(
         escapeRe(comparisonValue(step))
-      )}), { timeout: 10000 });`;
+      )}), { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     // Page-level, like url_contains — asserts against <title> metadata, never body text.
     // Exists so "verify the page title is X" has a correct compilation target at all; without
@@ -113,10 +127,10 @@ function emitAssert(step: Step): string {
     case "title_contains":
       return `  await expect(page).toHaveTitle(new RegExp(${q(
         escapeRe(comparisonValue(step))
-      )}), { timeout: 10000 });`;
+      )}), { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "title_equals":
-      return `  await expect(page).toHaveTitle(${q(comparisonValue(step))}, { timeout: 10000 });`;
+      return `  await expect(page).toHaveTitle(${q(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     default:
       throw new Error(`Unknown assertion: ${step.assertion}`);
@@ -626,7 +640,7 @@ function emitStep(step: Step, baseUrl: string): string {
     } else if (preAction.action === 'click') {
       code = t.role && t.name
         ? `  await safeClick(page, ${q(t.role)}, ${q(t.name)});\n  await page.waitForTimeout(500); // Wait for dropdown animation\n`
-        : `  await ${locator(t)}.click({ timeout: 10000 });\n  await page.waitForTimeout(500); // Wait for dropdown animation\n`;
+        : `  await ${locator(t)}.click({ timeout: ${ASSERT_TIMEOUT_MS} });\n  await page.waitForTimeout(500); // Wait for dropdown animation\n`;
     }
   }
 
@@ -654,14 +668,14 @@ function emitStep(step: Step, baseUrl: string): string {
         const nthParam = t.nth !== undefined ? `, ${t.nth}` : '';
         code += `  await safeClick(page, ${q(t.role)}, ${q(t.name)}${nthParam});`;
       } else {
-        code += `  await ${locator(t)}.click({ timeout: 10000 });`;
+        code += `  await ${locator(t)}.click({ timeout: ${ASSERT_TIMEOUT_MS} });`;
       }
-      code += `\n  await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});`;
+      code += `\n  await page.waitForLoadState("domcontentloaded", { timeout: ${ASSERT_TIMEOUT_MS} }).catch(() => {});`;
       break;
     }
 
     case "fill":
-      code += `  await ${locator(step.target!, "fill")}.fill(${valueCode(step.value)}, { timeout: 10000 });`;
+      code += `  await ${locator(step.target!, "fill")}.fill(${valueCode(step.value)}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
       break;
 
     case "select":
@@ -671,11 +685,11 @@ function emitStep(step: Step, baseUrl: string): string {
       break;
 
     case "check":
-      code += `  await ${locator(step.target!, "check")}.check({ timeout: 10000 });`;
+      code += `  await ${locator(step.target!, "check")}.check({ timeout: ${ASSERT_TIMEOUT_MS} });`;
       break;
 
     case "press":
-      code += `  await ${locator(step.target!)}.press(${q(step.value ?? "Enter")}, { timeout: 10000 });`;
+      code += `  await ${locator(step.target!)}.press(${q(step.value ?? "Enter")}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
       break;
 
     case "wait":

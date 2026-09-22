@@ -110,6 +110,47 @@ const CONFIG = {
   RETRIES: 2, // Number of retry attempts for flaky tests
 };
 
+/** Slack between Playwright's own per-test timeout and the SIGKILL above it — the 100s/50s gap
+ *  TD-02 settled on, kept as a difference so it survives the per-test budget changing. */
+const KILL_SLACK_MS = CONFIG.TIMEOUTS.TEST_RUN - 50_000;
+
+/**
+ * The per-test budget for THIS spec, scaled by how many steps it carries.
+ *
+ * A 3-step case and a 25-step case both used to get 50s for the whole `test()`. A long case can
+ * exhaust that purely by having more steps, with every individual step healthy — and it surfaces
+ * as `Test timeout of 50000ms exceeded`, which this file already notes is the CONSEQUENCE of the
+ * first error rather than a second failure.
+ *
+ * Counted from the spec text rather than the IR: `generateSpec` emits exactly one `test.step()`
+ * per IR step, so the count is already here and `runSpec`'s signature does not have to change.
+ *
+ * `PLAYWRIGHT_TIMEOUT` set explicitly wins outright — that is what "configurable" has to mean, and
+ * `playwright.config.ts` has read it since TD-24. Unset, the budget is the old 50s floor or the
+ * per-step allowance, whichever is larger, so short cases behave exactly as before.
+ */
+export function perTestTimeoutMs(specCode: string): number {
+  const explicit = Number(process.env.PLAYWRIGHT_TIMEOUT);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+
+  const steps = (specCode.match(/test\.step\(/g) ?? []).length;
+  const perStep = Number(process.env.PLAYWRIGHT_STEP_BUDGET_MS) || 6_000;
+  return Math.max(50_000, steps * perStep);
+}
+
+/**
+ * The SIGKILL backstop, derived from the per-test budget rather than fixed.
+ *
+ * It exists to sit comfortably ABOVE Playwright's own timeout so the JSON reporter's onEnd() can
+ * still write results.json — TD-02 measured a too-tight gap SIGKILLing the child on both the
+ * attempt and its retry, leaving the diagnosis with no error text and guessing the wrong step
+ * every time. Hardcoding 100s while the per-test budget scales would reintroduce exactly that on
+ * any case long enough to pass it.
+ */
+export function killTimeoutMs(specCode: string): number {
+  return perTestTimeoutMs(specCode) + KILL_SLACK_MS;
+}
+
 /**
  * Sleep for specified milliseconds
  */
@@ -183,7 +224,7 @@ export async function runSpec(
 
   for (let attempt = 1; attempt <= CONFIG.RETRIES; attempt++) {
     try {
-      const result = await executePlaywright(specPath, resultsJson, artifactsDir, cliPath, secretEnv);
+      const result = await executePlaywright(specPath, resultsJson, artifactsDir, cliPath, perTestTimeoutMs(specCode), secretEnv);
 
       // exitCode 1 with a parsed report = Playwright ran and the test has a verdict.
       // That verdict is the answer, pass or fail.
@@ -210,6 +251,9 @@ async function executePlaywright(
   resultsJson: string,
   artifactsDir: string,
   cliPath: string,
+  /** This spec's per-test budget, from `perTestTimeoutMs`. Passed in rather than recomputed here
+   *  because the spec TEXT (which the step count comes from) lives in the caller. */
+  perTestMs: number,
   /** Credentials the user supplied for their own site. Passed to the child process only —
    *  the spec on disk holds a `process.env.X` reference, never the value. Deliberately not
    *  logged anywhere in this file. */
@@ -229,6 +273,10 @@ async function executePlaywright(
           ...secretEnv,
           PLAYWRIGHT_JSON_OUTPUT_NAME: resultsJson,
           PLAYWRIGHT_HEADLESS: 'true',
+          // Read by playwright.config.ts (since TD-24). Set per run so a long case gets a budget
+          // proportional to its step count instead of every case sharing one 50s ceiling. An
+          // explicitly-set PLAYWRIGHT_TIMEOUT passes straight through — see perTestTimeoutMs.
+          PLAYWRIGHT_TIMEOUT: String(perTestMs),
           // Read by playwright.config.ts. Missing ffmpeg does not degrade video to "off" on its
           // own — it stops browserContext.newPage() outright, failing a valid case before it
           // navigates (TD-71). Turning recording off is what keeps the run runnable.
@@ -264,12 +312,14 @@ async function executePlaywright(
       console.log("[PW STDERR]", d.toString());
     });
 
-    // Safety timeout: kill Playwright if it runs longer than configured timeout
+    // Safety timeout: kill Playwright if it outlives its own per-test budget plus finalization
+    // slack. Derived per spec rather than fixed, so it stays above the budget as that scales.
+    const killMs = perTestMs + KILL_SLACK_MS;
     const timeout = setTimeout(() => {
-      console.error(`[executor] TIMEOUT ${CONFIG.TIMEOUTS.TEST_RUN / 1000}s — killing Playwright (pid=${p.pid})`);
+      console.error(`[executor] TIMEOUT ${killMs / 1000}s — killing Playwright (pid=${p.pid})`);
       p.kill("SIGKILL");
       resolve(1);
-    }, CONFIG.TIMEOUTS.TEST_RUN);
+    }, killMs);
     p.on("close", () => clearTimeout(timeout));
   });
 
