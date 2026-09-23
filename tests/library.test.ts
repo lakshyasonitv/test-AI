@@ -368,6 +368,55 @@ describe("suites — clubbing cases together", () => {
   });
 });
 
+/**
+ * The sidebar's "Not in a suite" group (item 10) reads cases that sit in NO suite. Filing lives in
+ * the `suite_cases` join table, so "unfiled" is a structural fact about membership — not a text
+ * match on anything a model or a rendered sentence could vary. These pin the `unfiled` filter:
+ * additive by default, exact about membership, and the other tenant's cases stay invisible under it.
+ */
+describe("the unfiled filter — cases filed in no suite", () => {
+  it("without the filter, nothing changes — the additive default", async () => {
+    await lib.addCaseToSuite(OWNER, ORG, "owner", SUITE_SMOKE, CASE_LOGIN);
+    const all = await lib.listCases(OWNER, ORG, "owner", PROJ_1);
+    expect(all.map((c) => c.id).sort()).toEqual([CASE_LOGIN, CASE_CART].sort());
+  });
+
+  it("excludes exactly the cases that have a suite_cases row", async () => {
+    // Default fixture: every case unfiled. Filing CASE_LOGIN leaves only CASE_CART outside.
+    await lib.addCaseToSuite(OWNER, ORG, "owner", SUITE_SMOKE, CASE_LOGIN);
+    const unfiled = await lib.listCases(OWNER, ORG, "owner", PROJ_1, true);
+    expect(unfiled.map((c) => c.id)).toEqual([CASE_CART]);
+  });
+
+  it("a case in TWO suites is still filed", async () => {
+    await lib.addCaseToSuite(OWNER, ORG, "owner", SUITE_SMOKE, CASE_LOGIN);
+    await lib.addCaseToSuite(OWNER, ORG, "owner", SUITE_AUTH, CASE_LOGIN);
+    await lib.addCaseToSuite(OWNER, ORG, "owner", SUITE_SMOKE, CASE_CART);
+    expect(await lib.listCases(OWNER, ORG, "owner", PROJ_1, true)).toEqual([]);
+  });
+
+  it("the route honours ?unfiled=1, and still scopes to what the caller may see", async () => {
+    await lib.addCaseToSuite(OWNER, ORG, "owner", SUITE_SMOKE, CASE_LOGIN);
+
+    const res = await request(app).get("/api/cases?unfiled=1").set(as(OWNER));
+    expect(res.status).toBe(200);
+    expect(res.body.cases.map((c: any) => c.id).sort()).toEqual([CASE_CART, CASE_OTHER_PROJECT].sort());
+
+    // The other tenant's cases are invisible even under the new filter; theirs in turn
+    // shows only their own unfiled case.
+    const other = await request(app).get("/api/cases?unfiled=1").set(as(OWNER_OTHER));
+    expect(other.status).toBe(200);
+    expect(other.body.cases.map((c: any) => c.id)).toEqual([CASE_IN_OTHER_ORG]);
+  });
+
+  it("without the query param the route returns filed and unfiled alike — old behaviour", async () => {
+    await lib.addCaseToSuite(OWNER, ORG, "owner", SUITE_SMOKE, CASE_LOGIN);
+    const res = await request(app).get("/api/cases").set(as(OWNER));
+    expect(res.status).toBe(200);
+    expect(res.body.cases.map((c: any) => c.id).sort()).toEqual([CASE_LOGIN, CASE_CART, CASE_OTHER_PROJECT].sort());
+  });
+});
+
 describe("saving a case from a run writes version 1 with it", () => {
   it("mints a version alongside the case, so history starts at the beginning", async () => {
     const before = db.test_case_versions.length;
