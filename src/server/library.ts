@@ -387,9 +387,15 @@ export async function countCasesByProject(projectIds: string[]): Promise<Map<str
   return counts;
 }
 
-/** Cases the caller may see, optionally narrowed to one project. */
+/** Cases the caller may see, optionally narrowed to one project.
+ *
+ *  `unfiled` additionally narrows to cases filed in NO suite — the "Not in a suite" group the
+ *  sidebar renders. One grouped query on `suite_cases` (never one per case), and it runs AFTER
+ *  project scoping so a caller only ever learns about cases they could already read. The filter
+ *  is additive (rule 1): callers that don't ask for it get exactly what they got before.
+ */
 export async function listCases(
-  userId: string, orgId: string, role: Role, projectId?: string,
+  userId: string, orgId: string, role: Role, projectId?: string, unfiled = false,
 ): Promise<CaseRow[]> {
   const client = requireClient();
   let projectIds: string[];
@@ -406,7 +412,22 @@ export async function listCases(
     .select("id, project_id, title, feature, current_version, source_run_id, last_run_status, last_run_at, updated_at")
     .in("project_id", projectIds);
   if (error) throw new AccessError(500, `could not list cases: ${error.message}`);
-  return ((data ?? []) as any[]).map(toCaseRow).sort((a, b) => a.title.localeCompare(b.title));
+
+  let rows = ((data ?? []) as any[]).map(toCaseRow);
+
+  // A "no suite" answer comes from the join table, not from the case: `suite_cases` is where a
+  // case's filing lives, and unfiled means "no row there at all". Exclusion by id is exact, and
+  // it is the schema's own shape (many-to-many) rather than a text match on anything the model
+  // or a rendered sentence could vary.
+  if (unfiled && rows.length) {
+    const { data: sRows, error: sErr } = await client
+      .from("suite_cases").select("test_case_id").in("test_case_id", rows.map((r) => r.id));
+    if (sErr) throw new AccessError(500, `could not list suite memberships: ${sErr.message}`);
+    const filed = new Set((sRows ?? []).map((r: any) => r.test_case_id));
+    rows = rows.filter((r) => !filed.has(r.id));
+  }
+
+  return rows.sort((a, b) => a.title.localeCompare(b.title));
 }
 
 /** One case with its IR, its version history, and which suites it sits in. */

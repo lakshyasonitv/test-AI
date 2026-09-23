@@ -1143,7 +1143,10 @@ app.patch("/api/suites/:suiteId/order", requireRole("tester"), async (req, res) 
 app.get("/api/cases", requireRole("viewer"), async (req, res) => {
   try {
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
-    res.json({ cases: await listCases(...libraryCtx(req), projectId) });
+    // Optional additive filter (rule 1): only the loader asks for unfiled, and only when it wants
+    // the "Not in a suite" group. Anyone else keeps the exact response they get today.
+    const unfiled = req.query.unfiled === "1" || req.query.unfiled === "true";
+    res.json({ cases: await listCases(...libraryCtx(req), projectId, unfiled) });
   } catch (err) { sendAccessError(res, err); }
 });
 

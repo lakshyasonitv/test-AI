@@ -1850,6 +1850,17 @@ let projectsUnavailable = false;
  *  renders it inline, and a null here would mean guarding every use. */
 let suitesCache = [];
 
+// Saved cases filed in NO suite, grouped for the tree's per-project "Not in a suite" rows. Kept
+// as its own cache (not folded into suitesCache) because the tree needs per-case ids/titles for
+// the same classes suites use — see the "Not in a suite" render inside renderProjectsTree.
+let unfiledCases = [];
+
+// True while a suite-mutating action is awaiting loadProjects(). The tree re-renders wholesale
+// when the fetch resolves, so this is the only window where the sidebar is visibly behind the
+// action that just happened — the tree renders a "Updating library…" line rather than looking
+// frozen or silently stale.
+let treeRefreshing = false;
+
 // The sidebar's inline "new suite" form. Module state rather than DOM state because
 // renderProjectsTree() re-renders wholesale on every history refresh — anything held only in the
 // input would be wiped mid-typing by a background reload.
@@ -3404,7 +3415,7 @@ async function renderSuiteView(suiteId) {
       <span class="lib-toolbar-gap"></span>
       ${canAuthor ? `
         <button type="button" class="dl-btn-inline" data-act="run-selected" disabled>▸ Run 0 selected</button>
-        <button type="button" class="run-btn lib-run-all" data-act="run-all" ${cases.length ? "" : "disabled"}>▸ Run all</button>` : ""}
+        <button type="button" class="run-btn lib-run-all" data-act="run-all"${cases.length === 0 ? " disabled" : ""}>▸ Run all</button>` : ""}
     </div>
     <div id="suiteFeedback"></div>
     <div id="suiteAddPanel"></div>
@@ -3470,15 +3481,41 @@ async function renderSuiteView(suiteId) {
         <button type="button" class="dl-btn-inline" data-add="close">Close</button>
       </div>`;
     } else {
+      // Group the pool by exact title. Repeated saves of the same scenario create separate
+      // test_cases rows with the same title (`saveCaseFromRun` inserts without dedup), so a picker
+      // that listed every row showed the same name eight times. Each row is a distinct case and
+      // needs its own checkbox (Add still posts its id), but identical titles collapse behind one
+      // toggle row so the list reads once per scenario instead of once per save. (item 12)
+      const byTitle = new Map();
+      for (const c of pool) {
+        if (!byTitle.has(c.title)) byTitle.set(c.title, []);
+        byTitle.get(c.title).push(c);
+      }
+
+      const rowHtml = (c) => `
+        <label class="suite-add-row">
+          <input type="checkbox" class="lib-check" value="${escapeHtml(c.id)}" />
+          <span class="hrow-label">${escapeHtml(c.title)}</span>
+          <span class="hrow-meta">v${c.currentVersion}${c.feature ? ` · ${escapeHtml(c.feature)}` : ""}${c.updatedAt ? ` · saved ${formatWhen(c.updatedAt)}` : ""}</span>
+        </label>`;
+
+      const groupHtml = (title, members) => members.length === 1
+        ? rowHtml(members[0])
+        : `
+        <div class="suite-add-row" data-version-grp="${escapeHtml(title)}">
+          <button type="button" class="dl-btn-inline" data-version-toggle="${escapeHtml(title)}"
+                  title="${members.length} saved copies of this title">${icon("chevron-right", { size: 9 })}</button>
+          <span class="hrow-label">${escapeHtml(title)}</span>
+          <span class="hrow-meta">${members.length} saved copies</span>
+        </div>
+        <div data-version-rows="${escapeHtml(title)}" class="hidden">
+          ${members.map((m) => rowHtml(m)).join("")}
+        </div>`;
+
       panel.innerHTML = `<div class="case-save-panel">
         <div class="lib-steps-head">Add saved cases to “${escapeHtml(suite.name)}”</div>
         <div class="suite-add-list">
-          ${pool.map((c) => `
-            <label class="suite-add-row">
-              <input type="checkbox" class="lib-check" value="${escapeHtml(c.id)}" />
-              <span class="hrow-label">${escapeHtml(c.title)}</span>
-              <span class="hrow-meta">v${c.currentVersion}${c.feature ? ` · ${escapeHtml(c.feature)}` : ""}</span>
-            </label>`).join("")}
+          ${[...byTitle.entries()].map(([title, members]) => groupHtml(title, members)).join("")}
         </div>
         <div class="step-edit-actions">
           <button type="button" class="dl-btn-inline" data-add="close">Cancel</button>
@@ -3486,6 +3523,19 @@ async function renderSuiteView(suiteId) {
           <button type="button" class="run-btn lib-run-all" data-add="confirm" disabled>Add 0 cases</button>
         </div>
       </div>`;
+
+      // Expand/collapse a duplicated-title group. Uses the same `.hidden` toggle the rest of the
+      // UI relies on (rule 3) — no new state, no re-render that could steal focus from a checkbox.
+      panel.querySelectorAll("[data-version-toggle]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const title = btn.dataset.versionToggle;
+          const rows = panel.querySelector(`[data-version-rows="${CSS.escape(title)}"]`);
+          if (!rows) return;
+          rows.classList.toggle("hidden");
+          btn.innerHTML = rows.classList.contains("hidden")
+            ? icon("chevron-right", { size: 9 }) : icon("chevron-down", { size: 9 });
+        });
+      });
     }
 
     const picked = () => [...panel.querySelectorAll(".lib-check")].filter((c) => c.checked).map((c) => c.value);
@@ -3510,7 +3560,10 @@ async function renderSuiteView(suiteId) {
           });
         }
         toast(`Added ${ids.length} case${ids.length === 1 ? "" : "s"}.`);
+        treeRefreshing = true;
         await loadProjects();                 // suite case-counts in the sidebar
+        treeRefreshing = false;
+        renderProjectsTree(allRunsCache);
         return renderSuiteView(suiteId);
       } catch (err) {
         btn.disabled = false;
@@ -3540,7 +3593,13 @@ async function renderSuiteView(suiteId) {
       const row = btn.closest(".lib-row");
       const caseId = row?.dataset.caseId;
       try {
-        if (act === "run-all") return startReplay({ suiteId }, `Replayed suite "${suite.name}"`);
+        if (act === "run-all") {
+          // Belt-and-braces for the empty-suite case: the button renders disabled, but a rerender
+          // race between render and the click could still reach here, and running zero cases is
+          // a no-op worth refusing twice.
+          if (!cases.length) return;
+          return startReplay({ suiteId }, `Replayed suite "${suite.name}"`);
+        }
         if (act === "run-selected") {
           const ids = selected();
           return startReplay({ suiteId, caseIds: ids },
@@ -3699,21 +3758,25 @@ function refreshCaseSaveAffordance() {
   const unsaved = document.getElementById("cdUnsaved");
   if (unsaved) unsaved.style.display = dirty ? "" : "none";
 
+  // A save has landed this session → the two named states: clean reads "Saved ✓", and the first
+  // edit afterwards reads "Save again" rather than a flat "Save" (a re-save, not a first save).
+  const verb = caseEditor.justSaved ? "Save again" : "Save";
+
   if (!dirty) {
-    btn.textContent = "Save";
-    if (hint) hint.textContent = "";
+    btn.textContent = caseEditor.justSaved ? "Saved ✓" : "Save";
+    if (hint) hint.textContent = caseEditor.justSaved ? "All changes saved." : "";
   } else if (caseEditor.estimateError) {
-    btn.textContent = "Save";
+    btn.textContent = verb;
     if (hint) hint.textContent = "";
   } else if (!est) {
-    btn.textContent = "Save";
+    btn.textContent = verb;
     if (hint) hint.textContent = "Checking what this will cost…";
   } else if (est.instant) {
-    btn.textContent = "Save";
+    btn.textContent = verb;
     if (hint) hint.textContent = "No steps need re-checking.";
   } else {
     const s = est.stepsToVerify === 1 ? "step" : "steps";
-    btn.textContent = `Save — re-checks ${est.stepsToVerify} ${s} (~${est.estimatedSeconds}s)`;
+    btn.textContent = `${verb} — re-checks ${est.stepsToVerify} ${s} (~${est.estimatedSeconds}s)`;
     // maxLlmCalls is a CEILING. Grounding is DOM-first and usually spends none, so promising
     // "N model calls" would make the common zero-cost save read as a bug.
     if (hint) {
@@ -3886,6 +3949,7 @@ function finishCaseSave(payload, repaint) {
   caseEditor.notice = credNote
     ? `Saved as v${caseEditor.currentVersion}. ${credNote}`
     : `Saved as v${caseEditor.currentVersion}.`;
+  caseEditor.justSaved = true;
   toast(`Saved as v${caseEditor.currentVersion}.`);
   caseEditor.reloadNeeded = true;
   repaint();
@@ -4094,6 +4158,10 @@ async function renderCaseView(caseId, routeProjectId) {
       estimate: null, estimateTimer: null, estimateError: "",
       job: null, errorAt: null, errorMsg: "", errorKind: "",
       conflict: null, askText: "", proposal: null, notice: "", reloadNeeded: false,
+      // Whether a save has landed in THIS session. Drives the Save button's two named states:
+      // clean → "Saved ✓", dirty → "Save again". False until the first save so a freshly-loaded
+      // case doesn't claim to have just been saved.
+      justSaved: false,
       // Whether this server will translate loosely-typed lines. Comes from the server rather
       // than being assumed, because the browser has no parser and no Gemini key of its own —
       // guessing would mean offering a button that 404s.
@@ -5352,6 +5420,17 @@ async function loadProjects() {
     suitesCache = [];
   }
 
+  // Unfiled cases ride along, not a heavier ask per expanded project: one additive call that
+  // returns every case the caller may see that sits in no suite. Same soft-failure discipline —
+  // without it the tree simply draws no "Not in a suite" group in DB-off mode.
+  try {
+    const res = await fetch("/api/cases?unfiled=1");
+    const data = res.ok ? await res.json() : null;
+    unfiledCases = data && Array.isArray(data.cases) ? data.cases : [];
+  } catch {
+    unfiledCases = [];
+  }
+
   renderProjectsTree(allRunsCache);
 }
 
@@ -5547,6 +5626,14 @@ function renderProjectsTree(runs) {
            <span class="tree-label">+ New suite</span>
          </div>`);
 
+    const unfiledRows = !open ? "" : (unfiledCases.filter((c) => c.projectId === p.id).length
+      ? `<div class="tree-empty" style="padding-left:40px">Not in a suite</div>` + unfiledCases
+        .filter((c) => c.projectId === p.id)
+        .map((c) => `<div class="tree-row tree-case" data-case-id="${escapeHtml(c.id)}" data-project-id="${escapeHtml(p.id)}" title="${escapeHtml(c.feature ? `${c.feature} · ` : "")}v${c.currentVersion}">
+          <span class="tree-label">${escapeHtml(c.title)}</span>
+        </div>`).join("")
+      : "");
+
     const caseRows = !open ? "" : (projectRuns.length
       ? projectRuns.map((r) => `
       <div class="tree-row tree-case${r.runId === currentRunId ? " active" : ""}" data-run-id="${escapeHtml(r.runId)}" data-prompt="${escapeHtml(r.prompt || "")}" data-url="${escapeHtml(r.url || "")}">
@@ -5554,10 +5641,18 @@ function renderProjectsTree(runs) {
         <span class="tree-label" title="${escapeHtml(r.prompt || "")}">${escapeHtml(r.prompt || "(no prompt)")}</span>
       </div>`).join("")
       : `<div class="tree-empty" style="padding-left:40px">No recent runs.</div>`);
-    return projectRow + suiteRows + newSuiteRow + caseRows;
+    return projectRow + suiteRows + newSuiteRow + unfiledRows + caseRows;
   }).join("");
 
-  bindProjectForm();
+bindProjectForm();
+
+  // While a suite mutation is awaiting loadProjects(), the tree's numbers and rows are still the
+  // pre-mutation ones. Say so rather than looking frozen — stale-but-quiet is what made the create
+  // flow read as "nothing happened" while the fetch was still in flight (item 16).
+  if (treeRefreshing) {
+    sidebarTreeEl.insertAdjacentHTML("beforeend",
+      `<div class="tree-empty" style="padding:12px 16px">Updating library…</div>`);
+  }
 
   sidebarTreeEl.querySelectorAll("[data-project-edit]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
@@ -5637,7 +5732,10 @@ function renderProjectsTree(runs) {
       // Created from the heading, the project it landed in may well be collapsed — open it so the
       // new suite is where the eye goes when it comes back to the tree.
       expandedProjects.add(projectId);
+      treeRefreshing = true;
       await loadProjects();                       // refresh suitesCache so the new row appears
+      treeRefreshing = false;
+      renderProjectsTree(allRunsCache);
       // Land in the new (empty) suite — adding cases is the obvious next step and it should be
       // in front of them rather than something they have to go find.
       navigate("#/suite/" + encodeURIComponent(created.id));
@@ -5790,6 +5888,12 @@ function renderProjectsTree(runs) {
   });
   sidebarTreeEl.querySelectorAll(".tree-row.tree-case").forEach((row) => {
     row.addEventListener("click", () => {
+      // An unfiled saved case navigates to its editor like any other case, not to a run. The two
+      // row kinds share the `.tree-case` class but are told apart by which dataset they carry.
+      if (row.dataset.caseId && row.dataset.projectId) {
+        navigate(caseHash(row.dataset.projectId, row.dataset.caseId));
+        return;
+      }
       if (row.dataset.prompt) promptEl.value = row.dataset.prompt;
       if (row.dataset.url) setUrlFieldValue(row.dataset.url);
       navigate("#/run/" + row.dataset.runId);
