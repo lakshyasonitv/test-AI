@@ -326,6 +326,9 @@ const RESOURCE_ROUTES: { name: string; method: Method; path: string; body?: unkn
   { name: "read org A's accepted cases", method: "get", path: `/api/runs/${RUN_A}/accepted-cases`, mounted: "GET /api/runs/:runId/accepted-cases" },
   { name: "read org A's selection status", method: "get", path: `/api/runs/${RUN_A}/case-selection-status`, mounted: "GET /api/runs/:runId/case-selection-status" },
   { name: "read org A's page elements", method: "get", path: `/api/runs/${RUN_A}/page-elements`, mounted: "GET /api/runs/:runId/page-elements" },
+  // The report is built from another org's run artifacts -- step titles, error text, screenshots.
+  // Reading it is reading their run, so it is isolated exactly like the artifacts it renders.
+  { name: "read org A's case report", method: "get", path: `/api/runs/${RUN_A}/cases/case-0/report.html`, mounted: "GET /api/runs/:runId/cases/:caseId/report.html" },
   { name: "answer org A's credential prompt", method: "post", path: `/api/runs/${RUN_A}/credentials`, body: { skip: true }, mounted: "POST /api/runs/:runId/credentials" },
   { name: "answer org A's selection gate", method: "post", path: `/api/runs/${RUN_A}/case-selection`, body: { action: "done", selectedIndexes: [0] }, mounted: "POST /api/runs/:runId/case-selection" },
   { name: "rewrite org A's gate case", method: "post", path: `/api/runs/${RUN_A}/case-selection/rewrite`, body: { title: "t", steps: ["s"], instruction: "i" }, mounted: "POST /api/runs/:runId/case-selection/rewrite" },

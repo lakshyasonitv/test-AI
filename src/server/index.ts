@@ -1,6 +1,7 @@
 import express from "express";
 import path from "node:path";
-import { rmSync, existsSync, readFileSync } from "node:fs";
+import { rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { buildCaseReportHtml } from "../stages/htmlReport.js";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
@@ -449,6 +450,60 @@ app.post("/api/runs/:runId/case-selection/rewrite", requireRunRole("tester"), ex
  * `requireRunRole("viewer")` -- it is read-only information about a run the caller can already
  * see, and `toElementIndex` emits only role and name, never a field's value.
  */
+/**
+ * A readable HTML report for one case — the "Download full result" the tester could not open.
+ *
+ * GENERATED ON DEMAND, not at execution time. The alternative was writing `report.html` from the
+ * three places that run a case, which would have covered new runs only — 200+ runs already on
+ * record would keep handing out raw JSON. Building it here from artifacts that are already on disk
+ * costs a file read per request and works for every run ever made, including replays.
+ *
+ * Every input is optional except the result itself: `04-ir.json` adds each step's intent,
+ * `06-diagnosis.json` exists only when a model call was made (never on a replay — TD-80), and the
+ * artifacts listing is what decides whether a step can show its screenshot. A missing one degrades
+ * that section rather than failing the page.
+ *
+ * `requireRunRole("viewer")` and a `RUN_CASE_ID` check on the path segment, matching every other
+ * per-case route here: the id becomes a directory name, so only `case-N` is meaningful.
+ */
+app.get("/api/runs/:runId/cases/:caseId/report.html", requireRunRole("viewer"), (req, res) => {
+  const { runId, caseId } = req.params;
+  if (!RUN_CASE_ID.test(caseId)) return res.status(400).send("invalid caseId");
+
+  const caseDir = path.join("runs", runId, "cases", caseId);
+  const readJson = (name: string): any | null => {
+    try { return JSON.parse(readFileSync(path.join(caseDir, name), "utf8")); } catch { return null; }
+  };
+
+  const saved = readJson("05-result.json");
+  if (!saved) return res.status(404).send("no result recorded for this case");
+
+  // Title and status come from the suite summary when it exists — it is the only place that knows
+  // the honest status (blocked / truncated_no_assertion), which 05-result.json cannot express.
+  const summary = (() => {
+    try { return JSON.parse(readFileSync(path.join("runs", runId, "07-suite-summary.json"), "utf8")); }
+    catch { return null; }
+  })();
+  const entry = summary?.cases?.find((c: any) => c.caseId === caseId);
+
+  let artifactFiles: string[] = [];
+  try { artifactFiles = readdirSync(path.join(caseDir, "artifacts")); } catch { /* no artifacts dir */ }
+
+  const html = buildCaseReportHtml({
+    caseId,
+    title: entry?.title ?? readJson("04-ir.json")?.meta?.title ?? caseId,
+    status: entry?.status,
+    saved,
+    ir: readJson("04-ir.json"),
+    diagnosis: readJson("06-diagnosis.json"),
+    artifactFiles,
+  });
+
+  // Content-Disposition is what makes the browser's own download save it as a file rather than
+  // navigating to it. The frontend's <a download> works either way; this covers a direct hit.
+  res.type("html").send(html);
+});
+
 app.get("/api/runs/:runId/page-elements", requireRunRole("viewer"), (req, res) => {
   const file = path.join("runs", req.params.runId, "02-appmodel.json");
   if (!existsSync(file)) {
