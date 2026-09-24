@@ -1,139 +1,153 @@
-import { describe, it, expect } from "vitest";
-import { buildCaseReportHtml } from "../src/stages/htmlReport.js";
-import type { IR } from "../src/schema/ir.js";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { buildRunReportHtml, type ReportCase } from "../src/stages/htmlReport.js";
 
 /**
- * The readable HTML report that replaced handing the user Playwright's raw reporter JSON.
+ * The whole-run HTML report.
  *
- * WHY IT EXISTS. A QA tester's report put it plainly: to open "Download full result" the user
- * "must have vs code or other IDE installed". For a testing product, that means the evidence is
- * unreadable by the person it is produced for. Items 1 and 6 improved what the system KNOWS about
- * a failure; this is what makes it visible.
- *
- * Pure code, no model call — presentation over artifacts already on disk (D-06's side of the line),
- * so it is cheap to test exhaustively and free to regenerate.
+ * WHY IT LOOKS LIKE THIS. "Download full result" used to hand over Playwright's raw reporter JSON —
+ * a QA tester noted you "must have vs code or other IDE installed" to open it. The first fix
+ * produced one page per CASE with screenshots linked by relative path, which meant four downloads
+ * for a four-case run, each with broken images the moment the file left the run folder. One file
+ * per run, with images embedded, is what makes it something you can actually send to someone.
  */
+
+let dir: string;
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+beforeAll(() => {
+  dir = mkdtempSync(path.join(tmpdir(), "report-"));
+  mkdirSync(path.join(dir, "artifacts"), { recursive: true });
+  writeFileSync(path.join(dir, "artifacts", "step-1.png"), PNG);
+  writeFileSync(path.join(dir, "artifacts", "step-2.png"), PNG);
+});
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const raw = (steps: any[], errors: any[] = []) => ({
   suites: [{ specs: [{ ok: errors.length === 0, tests: [{ results: [{ steps, errors, duration: 4200 }] }] }] }],
 });
-
 const step = (title: string, duration = 100, error?: string) =>
   ({ title, duration, ...(error ? { error: { message: error } } : {}) });
 
-const ir = (over: Partial<IR["meta"]> = {}): IR => ({
-  meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p",
-          baseUrl: "https://shop.example", ...over },
-  steps: [
-    { id: "s1", action: "navigate", target: { url: "/" } },
-    { id: "s2", action: "click", target: { role: "button", name: "Checkout" } },
-  ],
-} as unknown as IR);
-
-const base = {
+const aCase = (over: Partial<ReportCase> = {}): ReportCase => ({
   caseId: "case-0",
   title: "Complete checkout",
+  status: "passed",
+  whyItMatters: "If this breaks, customers cannot buy anything.",
+  expected: "The order confirmation appears.",
   saved: { passed: true, raw: raw([step("Navigate to /"), step("Click Checkout", 640)]) },
-};
+  artifactsDir: path.join(dir, "artifacts"),
+  artifactFiles: ["step-1.png", "step-2.png"],
+  ...over,
+});
 
-describe("buildCaseReportHtml", () => {
-  it("renders every step with its duration", () => {
-    const html = buildCaseReportHtml({ ...base, status: "passed" });
-    expect(html).toContain("Navigate to /");
-    expect(html).toContain("Click Checkout");
-    expect(html).toContain("640ms");
-    expect((html.match(/<li class=/g) ?? []).length).toBe(2);
-  });
-
-  it("calls out the failing step, from the report rather than from prose", () => {
-    // Same ground truth recordedFailingStepId uses for the diagnosis (item 1): the position of the
-    // first step carrying an error, which maps 1:1 onto IR steps because generateSpec emits one
-    // test.step() each.
-    const html = buildCaseReportHtml({
-      caseId: "case-0", title: "Checkout", status: "failed",
-      saved: { passed: false, raw: raw(
-        [step("Navigate to /"), step("Click Checkout", 300, "locator.click: Timeout 10000ms exceeded")],
-        [{ message: "locator.click: Timeout 10000ms exceeded\n  waiting for getByRole('button')" }],
-      ) },
+describe("buildRunReportHtml", () => {
+  it("covers EVERY case in one file, with a summary at the top", () => {
+    // The reported problem: four cases run, one case in the report. All of them, or it is not a
+    // report of the run.
+    const html = buildRunReportHtml({
+      runId: "2026-09-24T10-00-00-000Z-abcd1234",
+      prompt: "check this website", baseUrl: "https://qa-practice.com",
+      cases: [
+        aCase({ caseId: "case-0", title: "Alpha", status: "passed" }),
+        aCase({ caseId: "case-1", title: "Beta", status: "failed",
+                saved: { passed: false, raw: raw([step("Go", 10, "boom")], [{ message: "boom" }]) } }),
+        aCase({ caseId: "case-2", title: "Gamma", status: "truncated_no_assertion" }),
+        aCase({ caseId: "case-3", title: "Delta", status: "passed" }),
+      ],
     });
-    expect(html).toContain("What failed");
-    expect(html).toContain("Step 2");
-    expect(html).toContain("failed here");
-    expect(html).toContain("locator.click: Timeout 10000ms exceeded");
-    // The first line is the summary; the rest is behind a disclosure rather than dumped inline.
-    expect(html).toContain("Full error");
+
+    for (const t of ["Alpha", "Beta", "Gamma", "Delta"]) expect(html).toContain(t);
+    expect(html).toContain("2 passed");
+    expect(html).toContain("1 failed");
+    expect(html).toContain("1 other");          // truncated_no_assertion is neither
+    expect(html).toContain("check this website");
+    expect(html).toContain("https://qa-practice.com");
   });
 
-  it("ESCAPES page-derived text — the security case", () => {
-    // Step titles, error text and diagnosis prose all originate from the TESTED SITE or from a
-    // model. A page whose heading is a <script> tag must not execute when someone opens the
-    // report. This is the one assertion here that is not cosmetic.
+  it("EMBEDS screenshots, so the file works after it is downloaded", () => {
+    // The whole point of the rewrite. A relative path shows a broken image everywhere except the
+    // run folder, which is where nobody reads it.
+    const html = buildRunReportHtml({ runId: "r", cases: [aCase()] });
+    expect(html).toContain("data:image/png;base64,");
+    expect((html.match(/data:image\/png;base64/g) ?? []).length).toBe(2);
+    // Nothing may load from anywhere else — not a path, not a CDN.
+    expect(html.match(/(?:src|href)="(?!data:)/g) ?? []).toHaveLength(0);
+    expect(html).not.toMatch(/<script\b/i);
+  });
+
+  it("still renders when the artifacts are gone", () => {
+    // Azure clears the container filesystem on scale-to-zero, so this is the normal case for an
+    // older run, not an edge case.
+    const html = buildRunReportHtml({
+      runId: "r", cases: [aCase({ artifactsDir: path.join(dir, "nope"), artifactFiles: ["step-1.png"] })],
+    });
+    expect(html).toContain("Complete checkout");
+    expect(html).not.toContain("data:image/png");
+  });
+
+  it("gives a failure its step, its error and the diagnosis", () => {
+    const html = buildRunReportHtml({
+      runId: "r",
+      cases: [aCase({
+        status: "failed",
+        saved: { passed: false, raw: raw(
+          [step("Navigate to /"), step("Assert URL contains '/x'", 620, "Timed out 10000ms")],
+          [{ message: "Timed out 10000ms waiting for expect(locator).toHaveURL(expected)\n  at line 9" }],
+        ) },
+        diagnosis: { category: "navigation_error", explanation: "The URL did not match.",
+                     suggestedFix: "Confirm the navigation completed.", verifiedText: "Not Found" },
+      })],
+    });
+    expect(html).toContain("Where it stopped");
+    expect(html).toContain("Step 2");
+    expect(html).toContain("Timed out 10000ms");
+    expect(html).toContain("The URL did not match.");
+    expect(html).toContain("Confirm the navigation completed.");
+    expect(html).toContain("Not Found");
+    expect(html).toContain("Full error");        // the rest is behind a disclosure
+  });
+
+  it("shows what each case was for, not just its verdict", () => {
+    // A report read by someone who did not write the test has to say what was being checked.
+    const html = buildRunReportHtml({ runId: "r", cases: [aCase()] });
+    expect(html).toContain("Why this matters");
+    expect(html).toContain("If this breaks, customers cannot buy anything.");
+    expect(html).toContain("What should happen");
+    expect(html).toContain("The order confirmation appears.");
+  });
+
+  it("ESCAPES everything page-derived — the security case", () => {
+    // Case titles, step titles, error text and diagnosis prose all originate from the TESTED SITE
+    // or from a model. A page whose heading is a <script> tag must not execute in the report.
     const nasty = `<script>alert('xss')</script>`;
-    const html = buildCaseReportHtml({
-      caseId: "case-0", title: nasty, status: "failed",
-      saved: { passed: false, raw: raw([step(nasty, 10, nasty)], [{ message: nasty }]) },
-      diagnosis: { category: "other", explanation: nasty, suggestedFix: nasty, verifiedText: nasty },
+    const html = buildRunReportHtml({
+      runId: "r", prompt: nasty, baseUrl: nasty,
+      cases: [aCase({
+        title: nasty, whyItMatters: nasty, expected: nasty, status: "failed",
+        saved: { passed: false, raw: raw([step(nasty, 10, nasty)], [{ message: nasty }]) },
+        diagnosis: { explanation: nasty, suggestedFix: nasty, verifiedText: nasty },
+      })],
     });
     expect(html).not.toContain("<script>alert");
     expect(html).toContain("&lt;script&gt;");
   });
 
-  it("links a screenshot only when the file actually exists", () => {
-    const withShots = buildCaseReportHtml({ ...base, artifactFiles: ["step-1.png", "step-2.png"] });
-    expect(withShots).toContain('src="artifacts/step-1.png"');
-    expect(withShots).toContain('src="artifacts/step-2.png"');
-
-    // A run whose artifacts were cleared (ephemeral storage on Azure) must still render its text.
-    const without = buildCaseReportHtml({ ...base, artifactFiles: [] });
-    expect(without).not.toContain("artifacts/step-");
-    expect(without).toContain("Navigate to /");
+  it("renders a run with no cases rather than throwing", () => {
+    const html = buildRunReportHtml({ runId: "r", cases: [] });
+    expect(html).toContain("no cases");
+    expect(html).toContain("0 passed");
   });
 
-  it("loads nothing from the network, so it works from file://", () => {
-    // Downloaded and opened offline is the whole point. Only relative screenshot paths may appear
-    // as resource references; a site URL rendered as TEXT is fine.
-    const html = buildCaseReportHtml({ ...base, ir: ir(), artifactFiles: ["step-1.png"] });
-    for (const ref of html.match(/(?:src|href)="([^"]*)"/g) ?? []) {
-      expect(ref, `external resource reference: ${ref}`).toMatch(/^(?:src|href)="artifacts\//);
-    }
-    expect(html).not.toMatch(/<script\b/i);
-  });
-
-  it("shows the diagnosis, keeping verifiedText visibly separate", () => {
-    // TD-38 drew that line deliberately: "the model's guess" and "independently confirmed against
-    // captured DOM state" must not blur together wherever a Diagnosis is rendered.
-    const html = buildCaseReportHtml({
-      ...base, status: "failed",
-      diagnosis: { category: "element_not_found", failingStepId: "s2",
-                   explanation: "The button was missing.", suggestedFix: "Wait for it.",
-                   verifiedText: "Out of stock" },
-    });
-    expect(html).toContain("element_not_found");
-    expect(html).toContain("The button was missing.");
-    expect(html).toContain("Confirmed against the page");
-    expect(html).toContain("Out of stock");
-  });
-
-  it("renders without an IR or a diagnosis — both are optional on an older run", () => {
-    const html = buildCaseReportHtml({ ...base, ir: null, diagnosis: null });
-    expect(html).toContain("Complete checkout");
-    expect(html).toContain("<ol class=\"steps\">");
-  });
-
-  it("says so plainly when the run recorded no steps at all", () => {
-    const html = buildCaseReportHtml({
-      caseId: "case-0", title: "Crashed", status: "failed",
-      saved: { passed: false, raw: { suites: [] } },
+  it("does not claim a step record it never had", () => {
+    const html = buildRunReportHtml({
+      runId: "r", cases: [aCase({ status: "failed", saved: { passed: false, raw: { suites: [] } } })],
     });
     expect(html).toContain("No per-step record");
-    expect(html).not.toContain("<ol class=\"steps\">");
-  });
-
-  it("uses the suite summary's honest status when it has one", () => {
-    // 05-result.json only knows passed/failed; blocked and truncated_no_assertion live in the
-    // summary, and rendering one of those as "failed" is the thing item 2 exists to prevent.
-    const html = buildCaseReportHtml({ ...base, status: "blocked" });
-    expect(html).toContain("blocked");
-    expect(html).toContain("v-other");
   });
 });

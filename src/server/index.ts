@@ -1,7 +1,7 @@
 import express from "express";
 import path from "node:path";
 import { rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
-import { buildCaseReportHtml } from "../stages/htmlReport.js";
+import { buildRunReportHtml } from "../stages/htmlReport.js";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
@@ -451,57 +451,83 @@ app.post("/api/runs/:runId/case-selection/rewrite", requireRunRole("tester"), ex
  * see, and `toElementIndex` emits only role and name, never a field's value.
  */
 /**
- * A readable HTML report for one case — the "Download full result" the tester could not open.
+ * A readable report for the WHOLE RUN — every case in one self-contained file.
  *
- * GENERATED ON DEMAND, not at execution time. The alternative was writing `report.html` from the
- * three places that run a case, which would have covered new runs only — 200+ runs already on
- * record would keep handing out raw JSON. Building it here from artifacts that are already on disk
- * costs a file read per request and works for every run ever made, including replays.
+ * GENERATED ON DEMAND, not at execution time. Writing it during a run would mean touching the three
+ * places that execute a case AND would still cover new runs only — the 200+ runs already on record
+ * would keep handing out raw JSON. Reading artifacts already on disk costs one pass per request and
+ * works for every run ever made, replays included.
  *
- * Every input is optional except the result itself: `04-ir.json` adds each step's intent,
- * `06-diagnosis.json` exists only when a model call was made (never on a replay — TD-80), and the
- * artifacts listing is what decides whether a step can show its screenshot. A missing one degrades
- * that section rather than failing the page.
+ * WHOLE RUN, NOT ONE CASE. The first version produced a page per case: four cases meant four
+ * downloads, each with broken images once the file left the run folder. Screenshots are now
+ * embedded as data URIs (~3MB for four cases) so the file can simply be sent to somebody.
  *
- * `requireRunRole("viewer")` and a `RUN_CASE_ID` check on the path segment, matching every other
- * per-case route here: the id becomes a directory name, so only `case-N` is meaningful.
+ * Every input except the result is optional — `04-ir.json` adds each step's action and target,
+ * `06-diagnosis.json` exists only when a model call was made (never on a replay, TD-80), and the
+ * artifacts listing decides whether a step can show its screenshot. A missing one degrades that
+ * part rather than failing the page.
  */
-app.get("/api/runs/:runId/cases/:caseId/report.html", requireRunRole("viewer"), (req, res) => {
-  const { runId, caseId } = req.params;
-  if (!RUN_CASE_ID.test(caseId)) return res.status(400).send("invalid caseId");
-
-  const caseDir = path.join("runs", runId, "cases", caseId);
-  const readJson = (name: string): any | null => {
-    try { return JSON.parse(readFileSync(path.join(caseDir, name), "utf8")); } catch { return null; }
+app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => {
+  const { runId } = req.params;
+  const runDir = path.join("runs", runId);
+  const readJson = (...seg: string[]): any | null => {
+    try { return JSON.parse(readFileSync(path.join(runDir, ...seg), "utf8")); } catch { return null; }
   };
 
-  const saved = readJson("05-result.json");
-  if (!saved) return res.status(404).send("no result recorded for this case");
+  const summary = readJson("07-suite-summary.json");
+  const input = readJson("00-input.json");
+  const usage = readJson("08-llm-usage.json");
 
-  // Title and status come from the suite summary when it exists — it is the only place that knows
-  // the honest status (blocked / truncated_no_assertion), which 05-result.json cannot express.
-  const summary = (() => {
-    try { return JSON.parse(readFileSync(path.join("runs", runId, "07-suite-summary.json"), "utf8")); }
-    catch { return null; }
-  })();
-  const entry = summary?.cases?.find((c: any) => c.caseId === caseId);
+  // The suite summary is the only place that knows a case's HONEST status — blocked and
+  // truncated_no_assertion cannot be expressed by 05-result.json's passed boolean. Falling back to
+  // the primary case keeps single-case runs (and older runs with no summary) working.
+  const entries: any[] = summary?.cases?.length
+    ? summary.cases
+    : [{ caseId: "case-0", title: readJson("04-ir.json")?.ir?.meta?.title ?? readJson("04-ir.json")?.meta?.title ?? "Test case",
+         status: readJson("05-result.json")?.passed ? "passed" : "failed", resultPath: "" }];
 
-  let artifactFiles: string[] = [];
-  try { artifactFiles = readdirSync(path.join(caseDir, "artifacts")); } catch { /* no artifacts dir */ }
+  const cases = entries.map((e: any) => {
+    // A suite case lives in cases/<id>/; the primary case's artifacts sit at the run root.
+    const dir = e.resultPath ? path.join(runDir, "cases", e.caseId) : runDir;
+    const rd = (name: string): any | null => {
+      try { return JSON.parse(readFileSync(path.join(dir, name), "utf8")); } catch { return null; }
+    };
+    // 04-ir.json is a WRAPPER {ir, updatedAppModel} at the run root and a bare IR under cases/.
+    const irRaw = rd("04-ir.json");
+    let artifactFiles: string[] = [];
+    const artifactsDir = path.join(dir, "artifacts");
+    try { artifactFiles = readdirSync(artifactsDir); } catch { /* cleared or never written */ }
 
-  const html = buildCaseReportHtml({
-    caseId,
-    title: entry?.title ?? readJson("04-ir.json")?.meta?.title ?? caseId,
-    status: entry?.status,
-    saved,
-    ir: readJson("04-ir.json"),
-    diagnosis: readJson("06-diagnosis.json"),
-    artifactFiles,
+    return {
+      caseId: e.caseId,
+      title: e.title ?? e.caseId,
+      status: e.status ?? "failed",
+      whyItMatters: e.whyItMatters,
+      expected: e.expected,
+      saved: rd("05-result.json") ?? {},
+      ir: irRaw?.ir ?? irRaw ?? null,
+      diagnosis: rd("06-diagnosis.json"),
+      artifactsDir,
+      artifactFiles,
+    };
   });
 
-  // Content-Disposition is what makes the browser's own download save it as a file rather than
-  // navigating to it. The frontend's <a download> works either way; this covers a direct hit.
-  res.type("html").send(html);
+  if (!cases.length) return res.status(404).send("no cases recorded for this run");
+
+  res.type("html").send(buildRunReportHtml({
+    runId,
+    prompt: input?.prompt,
+    baseUrl: input?.url ?? cases[0]?.ir?.meta?.baseUrl,
+    // A runId is makeRunId()'s ISO stamp with : and . swapped for -, e.g.
+    // 2026-09-17T11-55-50-219Z-0a948aa9. Restore the separators rather than parsing the whole
+    // thing; an unparseable id simply omits the date.
+    startedAt: Date.parse(runId.replace(
+      /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z.*$/, "$1T$2:$3:$4.$5Z")) || undefined,
+    // Totals sit at the top level of 08-llm-usage.json, alongside byStage — not under a `totals` key.
+    llmCalls: usage?.calls,
+    llmTokens: usage?.totalTokens,
+    cases,
+  }));
 });
 
 app.get("/api/runs/:runId/page-elements", requireRunRole("viewer"), (req, res) => {

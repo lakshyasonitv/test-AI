@@ -926,7 +926,8 @@ function renderCaseCard(c, runId, index) {
   const resultUrl = `${caseDir}/05-result.json`;
   // NOT under /runs/ like its siblings: the report is generated on demand by the API from the
   // artifacts beside it, so every run ever made has one — including the 200+ that predate it.
-  const reportUrl = `/api/runs/${encodeURIComponent(runId)}/cases/${encodeURIComponent(c.caseId)}/report.html`;
+  // ONE report for the whole run, not one per case: four cases used to mean four downloads.
+  const reportUrl = `/api/runs/${encodeURIComponent(runId)}/report.html`;
   const traceUrl = `${caseDir}/artifacts`;
 
   // Failed/blocked cases open already-expanded, so the diagnosis a user came for is the first
@@ -969,7 +970,7 @@ function renderCaseCard(c, runId, index) {
         </figure>` : ""}
         <div class="case-downloads">
           <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">${icon("file-text", { size: 13 })} Download test script</a>
-          <a href="${escapeHtml(reportUrl)}" download="${escapeHtml(c.title || 'test')}-report.html" class="dl-btn">${icon("file-text", { size: 13 })} Download report</a>
+          <a href="${escapeHtml(reportUrl)}" download="test-report-${escapeHtml(runId)}.html" class="dl-btn">${icon("file-text", { size: 13 })} Download report (all cases)</a>
           <!-- The raw reporter output is KEPT alongside the readable report, not replaced by it:
                it is the primary evidence anyone debugging this project actually reads, and the
                report is generated from it. A QA tester's note is why the report exists at all —

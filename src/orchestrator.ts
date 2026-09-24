@@ -380,7 +380,21 @@ export async function runPipeline(
     // Merge upfront cases with any reactive cases generated for new pages
     let allCases = [...cases];
     let reactiveCount = 0;
-    if (newPages.length > 0) {
+    // "Done" at the gate means done. It used to mean "done with THIS batch": discovery finding new
+    // pages while compiling the IR then fired a whole extra generation here, unconditionally, and
+    // offered the result as another review round. From the user's side a second round appeared
+    // after they had explicitly finished, having already spent the tokens to produce it — reported
+    // directly ("even after selecting the test cases in round 1 why am I getting round 2… creating
+    // new test cases consumes more tokens"), on a run that found 5 pages.
+    //
+    // The gate's own premise is that nothing runs without being shown first; this is the other half
+    // of it — nothing is GENERATED after the reviewer has said they are finished. With the gate
+    // off, reactive generation is unchanged: there is no decision to contradict.
+    if (gateUsed && newPages.length > 0) {
+      console.log(`[orchestrator] ${newPages.length} new page(s) found, but the reviewer closed the gate — not generating more cases`);
+      emit("testcases", "completed", { newPages: newPages.map(p => p.url), skipped: "gate_closed" });
+    }
+    if (!gateUsed && newPages.length > 0) {
       emit("testcases", "started", { newPages: newPages.map(p => p.url) });
       // This is the ONE toTestCases call site outside step(), and it stayed that way because it
       // needs a `started` event carrying `newPages` — which step() does not emit. The cost was
@@ -399,19 +413,14 @@ export async function runPipeline(
         emit("testcases", "failed", undefined, err?.message ?? String(err));
         throw err;
       }
+      // Unconditional merge: this whole block is now gate-off only, so there is no reviewer
+      // decision to respect and nothing to offer a round to. (`runReactiveCaseRound` in
+      // caseSelectionGate.ts is consequently unused by the orchestrator — kept there rather than
+      // deleted, because it is the piece that would be needed if reactive generation ever returns
+      // as an opt-in behind its own flag.)
       if (reactiveCases.length > 0) {
-        if (gateUsed) {
-          // The gate's whole premise is "nothing runs without being shown to you first" — that
-          // has to hold for reactive cases too, not just the upfront batch. Offer them as one
-          // more review round instead of silently merging them into what's already final.
-          const { runReactiveCaseRound } = await import("./stages/caseSelectionGate.js");
-          const accepted = await runReactiveCaseRound(runId, reactiveCases);
-          allCases = [...allCases, ...accepted];
-          reactiveCount = accepted.length;
-        } else {
-          allCases = [...allCases, ...reactiveCases];
-          reactiveCount = reactiveCases.length;
-        }
+        allCases = [...allCases, ...reactiveCases];
+        reactiveCount = reactiveCases.length;
       }
     }
 
