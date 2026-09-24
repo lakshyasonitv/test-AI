@@ -1,8 +1,9 @@
 # .github/workflows/deploy.yml
-# On every push to main: build image tagged with the commit SHA, push to GHCR,
-# roll it out to the Azure Container App, wait for the revision, hit /api/health.
+# Replaces image.yml. On every push to main: build the image, push it to GHCR
+# (tagged :<sha>, :v1 and :latest), roll it out to the Azure Container App,
+# wait for the new revision to be ready, then hit /api/health.
 
-name: Deploy testbench
+name: Build and deploy testbench
 
 on:
   push:
@@ -21,8 +22,6 @@ env:
   HEALTH_URL: https://testbench.livelysmoke-6ad5557f.koreacentral.azurecontainerapps.io/api/health
 
 jobs:
-  # If you already have a workflow that pushes ghcr.io/lakshyasonitv/testbench:<sha>,
-  # delete this job and make `deploy` depend on that one instead.
   build:
     runs-on: ubuntu-latest
     permissions:
@@ -45,6 +44,7 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:v1
             ${{ env.IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
