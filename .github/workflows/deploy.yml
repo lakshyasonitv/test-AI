@@ -1,0 +1,99 @@
+# .github/workflows/deploy.yml
+# On every push to main: build image tagged with the commit SHA, push to GHCR,
+# roll it out to the Azure Container App, wait for the revision, hit /api/health.
+
+name: Deploy testbench
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deploys at once; queue them instead.
+concurrency:
+  group: deploy-testbench
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/lakshyasonitv/testbench
+  APP_NAME: testbench
+  RESOURCE_GROUP: testbench-rg
+  HEALTH_URL: https://testbench.livelysmoke-6ad5557f.koreacentral.azurecontainerapps.io/api/health
+
+jobs:
+  # If you already have a workflow that pushes ghcr.io/lakshyasonitv/testbench:<sha>,
+  # delete this job and make `deploy` depend on that one instead.
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for OIDC login to Azure
+      contents: read
+    steps:
+      - uses: azure/login@v2
+        with:
+          # These are identifiers, not passwords. OIDC means no secret is stored anywhere.
+          client-id: fd0a1f48-f7d2-4016-bb2c-938ac506e52e       # testbench-deploy app registration
+          tenant-id: a1374a1f-c211-4545-b163-4ea56a9b0a51       # your Entra tenant
+          subscription-id: 0abe35dc-0316-4937-ac49-82382d860687
+
+      - name: Update container app
+        run: |
+          az containerapp update \
+            -n "$APP_NAME" -g "$RESOURCE_GROUP" \
+            --image "$IMAGE:${{ github.sha }}" \
+            --set-env-vars DEPLOY_STAMP=${{ github.run_number }} \
+            --output none
+          echo "Deployed $IMAGE:${{ github.sha }} (DEPLOY_STAMP=${{ github.run_number }})"
+
+      - name: Wait for new revision to become ready
+        run: |
+          for i in $(seq 1 30); do
+            read -r latest ready <<< "$(az containerapp show -n "$APP_NAME" -g "$RESOURCE_GROUP" \
+              --query '[properties.latestRevisionName, properties.latestReadyRevisionName]' -o tsv)"
+            echo "attempt $i: latest=$latest ready=$ready"
+            if [ -n "$latest" ] && [ "$latest" = "$ready" ]; then
+              echo "Revision $latest is ready"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::New revision never became ready (old revision is still serving traffic)"
+          exit 1
+
+      - name: Health check
+        run: |
+          # minReplicas is 0, so the first request cold-starts the container (~60s).
+          for i in $(seq 1 10); do
+            code=$(curl -s -m 120 -o /dev/null -w '%{http_code}' "$HEALTH_URL" || echo "000")
+            echo "attempt $i: HTTP $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 15
+          done
+          echo "::error::Health check failed at $HEALTH_URL"
+          exit 1
