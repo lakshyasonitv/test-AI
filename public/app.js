@@ -1419,7 +1419,17 @@ function formatIrStep(step) {
     ? `text "${target.text}"`
     : target?.url
     ? `"${target.url}"`
-    : target?.role || "element";
+    // A css-only target has no words to show. That is not a rare edge: `buildLoginPrefix` grounds
+    // every login step by css alone (`{ css: "#user-name" }`), deliberately — those selectors are
+    // captured live by `loginOnPage`, never derived from the model. So every case that gets signed
+    // in rendered `Type "..." into element`, `Click on element`, three times per case, in the
+    // report a person actually reads. The selector is cryptic but it NAMES something; "element"
+    // names nothing.
+    //
+    // Last, after `role`, on purpose: a target with a role already renders that word, and moving
+    // css ahead of it would change what those sentences say — which `parseTargetDesc` would then
+    // read as an edit and clear the grounding off an untouched line.
+    : target?.role || target?.css || "element";
 
   switch (action) {
     case "navigate":
