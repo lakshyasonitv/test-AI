@@ -73,8 +73,13 @@ jobs:
 
       - name: Wait for new revision to provision
         run: |
-          read -r rev fqdn <<< "$(az containerapp show -n "$APP_NAME" -g "$RESOURCE_GROUP" \
-            --query '[properties.latestRevisionName, properties.latestRevisionFqdn]' -o tsv)"
+          read -r rev app_fqdn <<< "$(az containerapp show -n "$APP_NAME" -g "$RESOURCE_GROUP" \
+            --query '[properties.latestRevisionName, properties.configuration.ingress.fqdn]' -o tsv)"
+          if [ -z "$rev" ] || [ -z "$app_fqdn" ]; then
+            echo "::error::Could not read revision name or app FQDN (rev='$rev' fqdn='$app_fqdn')"; exit 1
+          fi
+          # Revision hostname = app hostname with the first label replaced by the revision name.
+          fqdn="$rev.${app_fqdn#*.}"
           echo "New revision: $rev ($fqdn)"
           echo "REVISION_FQDN=$fqdn" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do
@@ -95,9 +100,12 @@ jobs:
           # Hits the revision-specific hostname so a lingering old revision can't
           # mask a broken new one. minReplicas is 0, so the first request
           # cold-starts the container (~60s).
+          if [ -z "$REVISION_FQDN" ]; then
+            echo "::error::REVISION_FQDN is empty"; exit 1
+          fi
           url="https://$REVISION_FQDN/api/health"
           for i in $(seq 1 10); do
-            code=$(curl -s -m 120 -o /dev/null -w '%{http_code}' "$url" || echo "000")
+            code=$(curl -s -m 120 -o /dev/null -w '%{http_code}' "$url"); code=${code:-000}
             echo "attempt $i: HTTP $code from $url"
             if [ "$code" = "200" ]; then exit 0; fi
             sleep 15
