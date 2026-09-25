@@ -3760,6 +3760,56 @@ variable. Ticket to migrate when the successor is available and the quota pictur
 env-documented defaults in `.env.example` are the single place the deployment names live outside
 this doc.
 
+### TD-95. A state-dependent accessible name is used as element identity, so an assertion about the state can never pass — Open
+
+**Seen live.** saucedemo, 2026-09-26, case "Add item to cart updates cart count and contents":
+
+> Step 8 — Assert 'Cart, empty' is hidden
+> `Error: Timed out 10000ms waiting for expect(locator).toBeHidden()`
+
+The diagnosis was right and said so: *"the assertion expected the shopping cart button to be
+hidden, but it was visible and indicated that there is 1 item in the cart."*
+
+**What it is.** Discovery records the cart as
+
+```json
+{ "role": "button", "name": "Cart, empty", "testId": "shopping-cart-link",
+  "css": "[data-test=\"shopping-cart-link\"]", "concept": "ShoppingCart" }
+```
+
+`name` here is saucedemo's `aria-label`, and that label **encodes the element's state** — it
+becomes "Cart, 1 item" the moment something is added. The model was shown that name and reasoned
+correctly about it: after adding an item, "Cart, empty" should no longer be showing. But
+`targetResolver.ts` resolves **`css` first** (and it must — it is the only thing that makes
+icon-only controls addressable), so the emitted locator is
+`page.locator('[data-test="shopping-cart-link"]')`, which ignores the name entirely. That element
+is *always* present. The assertion is therefore unsatisfiable, and the run reports a product
+failure on a site that is working.
+
+**The generalisation, which is the reason this is worth an entry:** the model reasons over `name`
+while execution resolves over `css`. Wherever a name is volatile, those two disagree, and the
+disagreement surfaces as a false failure with a confident explanation attached.
+
+**Do NOT fix it in the resolver.** Preferring `getByRole(role, { name })` for `shown`/`not_shown`
+looks like the obvious repair and is a trap: `targetResolver.ts:386` records that discovery
+*synthesises* names the DOM does not have ("shopping cart link"), and TD-32 records `getByRole`'s
+name-matching behaviour. Every such target would start reporting "not shown", so `not_shown`
+assertions would **pass vacuously** — silently, across every saved case. A green verdict that
+verifies nothing is worse than this red one.
+
+**Two candidate layers, both needing a decision before code:**
+
+1. **Grounding refuses the assertion.** `groundingError()` rejects a `shown`/`not_shown` assert
+   whose target is distinguished *only* by a name that is not stable. Deterministic and in the
+   right layer — but "not stable" has to be decided structurally, and the obvious test (does the
+   name look like it contains a state word) is a regex over discovered prose, i.e. exactly TD-01.
+2. **Discovery marks the name.** Capture the element twice across a state change and flag `name`
+   as volatile when it moves while `css` does not. Honest and structural; costs a second capture.
+
+Until then this is a known false-failure class, not a site bug — read a `toBeHidden` timeout on an
+element with a descriptive `aria-label` with that in mind.
+
+
 ### TD-94. The LLM cache persisted a zero-case answer forever and served it to every later run — Fixed
 
 The disk half of the LLM cache never expires (D-10 / this doc's TD-22). Run
