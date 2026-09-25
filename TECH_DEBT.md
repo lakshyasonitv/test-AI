@@ -3797,14 +3797,40 @@ name-matching behaviour. Every such target would start reporting "not shown", so
 assertions would **pass vacuously** — silently, across every saved case. A green verdict that
 verifies nothing is worse than this red one.
 
-**Two candidate layers, both needing a decision before code:**
+**Two candidate layers were proposed here on 2026-09-26. BOTH ARE UNBUILDABLE AS SPECIFIED** —
+recorded rather than deleted, because the reason each dies is the useful part.
 
-1. **Grounding refuses the assertion.** `groundingError()` rejects a `shown`/`not_shown` assert
-   whose target is distinguished *only* by a name that is not stable. Deterministic and in the
-   right layer — but "not stable" has to be decided structurally, and the obvious test (does the
-   name look like it contains a state word) is a regex over discovered prose, i.e. exactly TD-01.
-2. **Discovery marks the name.** Capture the element twice across a state change and flag `name`
-   as volatile when it moves while `css` does not. Honest and structural; costs a second capture.
+1. ~~**Grounding refuses the assertion.**~~ `groundingError()` rejects a `shown`/`not_shown` assert
+   whose target is distinguished only by an unstable name. **Dead: it cannot be built without (2)'s
+   signal.** Deciding "unstable" without volatility data leaves two choices, and both are bad —
+   regex the discovered prose for state words (TD-01, which killed two runs in the week this was
+   written), or refuse *every* named visibility assert, which kills
+   `check that button "Login" is not shown` — the assertion that proves a login worked, and the
+   most valuable one the product emits.
+2. ~~**Discovery marks the name volatile.**~~ Capture the element twice across a state change.
+   **Dead: its premise is false.** Observing a name move requires discovery to *perform* a state
+   change, and discovery crawls — it never adds anything to a cart. Measured: across all four
+   saucedemo runs held locally the cart appears on **exactly one** page, and **no element anywhere
+   in any saved AppModel is recorded under two different names**. There is no second observation to
+   compare against.
+
+**What is actually affordable — the information is free at EXECUTION, not at discovery.** When
+`toBeHidden` on a css/testId-resolved element times out, the live page is still open: ask whether
+the element's accessible name still matches the name the step named. If it moved, the state the
+test cared about *did* change and the assertion was merely expressed wrongly — which is a true,
+specific sentence instead of a false "Failed". Costs no tokens, adds no LLM call, and lands in
+`extractFailureDetail` / `failureAnalysis.ts` rather than in grounding or the resolver.
+
+**Stated limit: that is a DIAGNOSIS fix. The test still goes red.** The correctness fix — making
+the assertion mean "nothing here shows that name" — is a change to the generated spec's Playwright
+surface, so D-19 applies (execute it once in a real browser; this repo already shipped one
+`.filter({visible:true})` no-op by reasoning about Playwright semantics instead of running them),
+and it carries an unbounded vacuity risk: a locator that resolves to nothing would satisfy a
+negated name matcher. Separate decision, separate evidence.
+
+**Frequency is NOT established.** Only 9 IRs survive locally (11 assert steps, 1 match), and that
+sample is visibly skewed — zero `url_contains` despite the reporting run containing one. Azure's
+artifacts are wiped on restart. Do not cite a rate in either direction.
 
 Until then this is a known false-failure class, not a site bug — read a `toBeHidden` timeout on an
 element with a descriptive `aria-label` with that in mind.
