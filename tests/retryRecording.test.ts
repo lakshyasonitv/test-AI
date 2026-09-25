@@ -58,9 +58,12 @@ describe("LlmBudget.recordRetry", () => {
   });
 
   it("caps the list so a pathological run cannot bloat the artifact", () => {
+    // DISTINCT attempts, deliberately: identical consecutive records collapse into one now (see
+    // "one record per attempt" below), so a loop pushing the same record 500 times would test the
+    // collapse rather than the cap and pass for the wrong reason.
     const b = new LlmBudget();
     for (let i = 0; i < 500; i++) {
-      b.recordRetry({ stage: "ir", attempt: 1, kind: "grounding", reason: "r" });
+      b.recordRetry({ stage: "ir", caseTitle: `case-${i}`, attempt: 1, kind: "grounding", reason: "r" });
     }
     expect(b.snapshot().retries).toHaveLength(200);
   });
@@ -85,6 +88,55 @@ describe("LlmBudget.recordRetry", () => {
     const snap = b.snapshot();
     b.recordRetry({ stage: "ir", attempt: 2, kind: "grounding", reason: "second" });
     expect(snap.retries).toHaveLength(1);
+  });
+});
+
+describe("one record per attempt — found by a real run, not by a unit test", () => {
+  it("a second rejection for the SAME attempt replaces the first", () => {
+    // toIR rejects twice inside one attempt: once per live-extend hop, and again at the bottom of
+    // the loop, where the comment calls that write a "re-sync ... idempotent if the top-of-loop
+    // tracking already covered this exact value". Idempotent holds for `lastErr = x` and fails for
+    // an append. Run 2026-09-25T20-00-39-218Z-82ff713c produced FOUR records for TWO rejections --
+    // attempt 1 twice, attempt 2 twice, identical messages.
+    const b = new LlmBudget();
+    b.recordRetry({ stage: "ir", caseTitle: "A", attempt: 1, kind: "grounding", reason: "first" });
+    b.recordRetry({ stage: "ir", caseTitle: "A", attempt: 1, kind: "grounding", reason: "first" });
+
+    const r = b.snapshot().retries;
+    expect(r).toHaveLength(1);
+  });
+
+  it("keeps the LAST reason, because that is what the attempt was sent back with", () => {
+    // An extension hop that resolves into a different failure should report where it ended up.
+    const b = new LlmBudget();
+    b.recordRetry({ stage: "ir", caseTitle: "A", attempt: 1, kind: "grounding", reason: "no button" });
+    b.recordRetry({ stage: "ir", caseTitle: "A", attempt: 1, kind: "missing-actions", reason: "2 actions, 0 carried out" });
+
+    const r = b.snapshot().retries;
+    expect(r).toHaveLength(1);
+    expect(r[0].kind).toBe("missing-actions");
+    expect(r[0].reason).toBe("2 actions, 0 carried out");
+  });
+
+  it("still separates attempts, cases and stages — the counting that matters", () => {
+    // The collapse must be narrow: one attempt is one LLM call, and the array exists to explain
+    // token spend, so a real second call must still show up as a second record.
+    const b = new LlmBudget();
+    b.recordRetry({ stage: "ir", caseTitle: "A", attempt: 1, kind: "grounding", reason: "x" });
+    b.recordRetry({ stage: "ir", caseTitle: "A", attempt: 2, kind: "grounding", reason: "x" });
+    b.recordRetry({ stage: "ir", caseTitle: "B", attempt: 2, kind: "grounding", reason: "x" });
+    b.recordRetry({ stage: "heal", caseTitle: "B", attempt: 2, kind: "grounding", reason: "x" });
+
+    expect(b.snapshot().retries).toHaveLength(4);
+  });
+
+  it("collapses only CONSECUTIVE records, so an interleaved case is never swallowed", () => {
+    const b = new LlmBudget();
+    b.recordRetry({ stage: "ir", caseTitle: "A", attempt: 1, kind: "grounding", reason: "x" });
+    b.recordRetry({ stage: "ir", caseTitle: "B", attempt: 1, kind: "grounding", reason: "y" });
+    b.recordRetry({ stage: "ir", caseTitle: "A", attempt: 1, kind: "grounding", reason: "z" });
+
+    expect(b.snapshot().retries.map((r) => r.caseTitle)).toEqual(["A", "B", "A"]);
   });
 });
 

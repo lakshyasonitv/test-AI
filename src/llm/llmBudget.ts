@@ -154,12 +154,34 @@ export class LlmBudget {
   /**
    * Record that an attempt was rejected and will be retried.
    *
+   * ONE RECORD PER ATTEMPT — a later call for the same (stage, case, attempt) REPLACES the earlier
+   * one rather than appending. This array exists to explain TOKEN SPEND, and one attempt is one
+   * LLM call, so two records for one attempt overstate the bill.
+   *
+   * It is not hypothetical. `toIR` rejects at two points inside a single attempt: once per
+   * live-extend hop, and again at the bottom of the loop where the comment calls the write a
+   * "re-sync … idempotent if the top-of-loop tracking already covered this exact value". Idempotent
+   * is true for `lastErr = x` and false for an append, so the first real run produced four records
+   * for two rejections — the same message, same attempt, twice each. Caught end-to-end, not by
+   * `tsc` and not by a unit test of this method in isolation: the defect lives in how two call
+   * sites interact, which only a whole run exercises.
+   *
+   * The LAST reason for an attempt wins, because that is the one the attempt was actually sent back
+   * with; an extension hop that resolved into a different failure should report where it ended up.
+   *
    * Fire-and-forget by design, like every other write here: a bookkeeping failure must never fail
    * a run. `reason` is truncated because a grounding message can carry a page's own text.
    */
   recordRetry(rec: LlmRetryRecord): void {
+    const next = { ...rec, reason: (rec.reason ?? "").slice(0, 300) };
+    const last = this.retries[this.retries.length - 1];
+    if (last && last.stage === next.stage && last.caseTitle === next.caseTitle
+        && last.attempt === next.attempt) {
+      this.retries[this.retries.length - 1] = next;
+      return;
+    }
     if (this.retries.length >= 200) return;
-    this.retries.push({ ...rec, reason: (rec.reason ?? "").slice(0, 300) });
+    this.retries.push(next);
   }
 
   snapshot(): LlmUsageSnapshot {
