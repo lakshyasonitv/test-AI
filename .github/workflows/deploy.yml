@@ -19,7 +19,6 @@ env:
   IMAGE: ghcr.io/lakshyasonitv/testbench
   APP_NAME: testbench
   RESOURCE_GROUP: testbench-rg
-  HEALTH_URL: https://testbench.livelysmoke-6ad5557f.koreacentral.azurecontainerapps.io/api/health
 
 jobs:
   build:
@@ -72,36 +71,36 @@ jobs:
             --output none
           echo "Deployed $IMAGE:${{ github.sha }} (DEPLOY_STAMP=${{ github.run_number }})"
 
-      - name: Wait for new revision to become ready
+      - name: Wait for new revision to provision
         run: |
-          rev=$(az containerapp show -n "$APP_NAME" -g "$RESOURCE_GROUP" \
-            --query 'properties.latestRevisionName' -o tsv)
-          echo "Waiting for revision $rev"
+          read -r rev fqdn <<< "$(az containerapp show -n "$APP_NAME" -g "$RESOURCE_GROUP" \
+            --query '[properties.latestRevisionName, properties.latestRevisionFqdn]' -o tsv)"
+          echo "New revision: $rev ($fqdn)"
+          echo "REVISION_FQDN=$fqdn" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do
-            read -r prov health running <<< "$(az containerapp revision show \
-              -n "$APP_NAME" -g "$RESOURCE_GROUP" --revision "$rev" \
-              --query '[properties.provisioningState, properties.healthState, properties.runningState]' -o tsv)"
-            echo "attempt $i: provisioning=$prov health=$health running=$running"
-            case "$prov/$health/$running" in
-              Provisioned/Unhealthy/*|Failed/*/*|*/*/Failed|*/*/Degraded)
-                echo "::error::Revision $rev failed (provisioning=$prov health=$health running=$running)"
-                exit 1 ;;
-              Provisioned/Healthy/*|Provisioned/None/ScaledToZero|Provisioned/None/Running)
-                echo "Revision $rev is ready"; exit 0 ;;
+            prov=$(az containerapp revision show -n "$APP_NAME" -g "$RESOURCE_GROUP" \
+              --revision "$rev" --query 'properties.provisioningState' -o tsv)
+            echo "attempt $i: provisioningState=$prov"
+            case "$prov" in
+              Provisioned) echo "Revision $rev provisioned"; exit 0 ;;
+              Failed)      echo "::error::Revision $rev failed to provision"; exit 1 ;;
             esac
             sleep 10
           done
-          echo "::error::Revision $rev never became ready"
+          echo "::error::Revision $rev never finished provisioning"
           exit 1
 
-      - name: Health check
+      - name: Health check (new revision directly)
         run: |
-          # minReplicas is 0, so the first request cold-starts the container (~60s).
+          # Hits the revision-specific hostname so a lingering old revision can't
+          # mask a broken new one. minReplicas is 0, so the first request
+          # cold-starts the container (~60s).
+          url="https://$REVISION_FQDN/api/health"
           for i in $(seq 1 10); do
-            code=$(curl -s -m 120 -o /dev/null -w '%{http_code}' "$HEALTH_URL" || echo "000")
-            echo "attempt $i: HTTP $code"
+            code=$(curl -s -m 120 -o /dev/null -w '%{http_code}' "$url" || echo "000")
+            echo "attempt $i: HTTP $code from $url"
             if [ "$code" = "200" ]; then exit 0; fi
             sleep 15
           done
-          echo "::error::Health check failed at $HEALTH_URL"
+          echo "::error::Health check failed at $url"
           exit 1
