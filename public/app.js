@@ -2055,6 +2055,7 @@ let acceptedSoFarCount = 0;
 // Local mirrors of the gate's pool cap and regeneration budget, so the panel can render its
 // counters and notes without asking the backend for every number.
 const CASE_POOL_CAP = 5; // MAX_ACCUMULATED_CASES
+const CASE_REGEN_LIMIT = 3; // MAX_CASE_REGEN_ATTEMPTS — only a fallback; the event carries the real count
 const MAX_CASE_REGEN_ATTEMPTS_LOCAL = 3; // MAX_CASE_REGEN_ATTEMPTS
 
 // --- Drafts -----------------------------------------------------------------
@@ -2406,10 +2407,16 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
   // "2 of 5 cases accepted so far" read as progress toward a target of five, so people pressed
   // refine to "finish". Five is MAX_ACCUMULATED_CASES — a ceiling on what the pool will hold,
   // not a number to reach. The wording now says what you can do rather than how far along you are.
+  const poolCap = opts?.poolCap ?? CASE_POOL_CAP;
   casePoolCounterEl.textContent = acceptedSoFarCount === 0
-    ? `Tick the cases you want to run. You can run as few as one — up to ${CASE_POOL_CAP} in total.`
+    ? `Tick the cases you want to run. You can run as few as one — up to ${poolCap} in total.`
     : `${acceptedSoFarCount} case${acceptedSoFarCount === 1 ? "" : "s"} accepted — enough to run now. ` +
-      `${CASE_POOL_CAP} is the most this run will hold, not a target.`;
+      `${poolCap} is the most this run will hold, not a target.` +
+      // Ticking everything fills the pool, and a full pool ENDS the round loop — so "refine" after
+      // that silently does nothing. Said before the round is spent, not discovered after it.
+      (acceptedSoFarCount >= poolCap
+        ? " The pool is now full, so this is the last round — refining will not offer another."
+        : "");
 
   repaintCaseList();
   // Fetched after the first paint, not before it: the round is reviewable immediately, and the
@@ -2924,7 +2931,13 @@ function applyEvent(event, runId) {
     const opts = { ai: event.data.gateRewrite === true };
     fetch(`/api/runs/${runId}/accepted-cases`)
       .then((res) => res.json())
-      .then(({ count }) => renderCaseSelectionPanel(batch, attempt, count, opts))
+      .then(({ count, remainingCapacity }) => renderCaseSelectionPanel(
+        batch, attempt, count,
+        // The server's real MAX_ACCUMULATED_CASES, not this file's copy of the default: the cap is
+        // env-configurable, so a hardcoded 5 states the wrong limit the moment anyone raises it.
+        // Derived from the numbers the route already returns rather than a new field.
+        { ...opts, poolCap: typeof remainingCapacity === "number" ? count + remainingCapacity : undefined },
+      ))
       .catch(() => renderCaseSelectionPanel(batch, attempt, 0, opts));
     return false;
   }
@@ -2932,6 +2945,16 @@ function applyEvent(event, runId) {
   if (event.stage === "testcases" && event.data?.action === "case_pool_cap_warning") {
     const cap = event.data.poolCap ?? CASE_POOL_CAP;
     showNotice(`The case pool is full — ${cap} of ${cap} cases already accepted. The run will continue with what's been picked.`);
+    return false;
+  }
+
+  // The gate stops offering rounds after MAX_CASE_REGEN_ATTEMPTS, and until now it did so in
+  // complete silence: the panel closed, the run carried on, and "refine did nothing" was the only
+  // thing on screen. Every OTHER way the round loop ends already says why (pool cap, end of
+  // capacity, finalized) — this was the one exit with no handler here at all.
+  if (event.stage === "testcases" && event.data?.action === "case_regen_limit_reached") {
+    const rounds = event.data.attempt ?? CASE_REGEN_LIMIT;
+    showNotice(`That was the last refine — ${rounds} rounds is the limit for one run. The run will continue with the cases you've picked.`);
     return false;
   }
 
