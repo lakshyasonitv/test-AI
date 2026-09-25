@@ -110,11 +110,24 @@ function emitAssert(step: Step): string {
     case "disabled":
       return `  await expect(${locator(t)}).toBeDisabled({ timeout: ${ASSERT_TIMEOUT_MS} });`;
 
+    // A dropdown needs its SELECTED option compared, never the element's own text. Proven in a
+    // real browser: `textContent` of a <select> is every option concatenated —
+    // "Name (A to Z)Name (Z to A)Price (low to high)" — so `toHaveText("Name (A to Z)")` cannot
+    // ever match, and `toContainText` matches whichever option happens to exist rather than the
+    // one chosen, which is worse: it passes while verifying nothing.
+    //
+    // Observed on a real saucedemo run: "Assert 'Sort products' text is 'Name (A to Z)'" failed
+    // with exactly that concatenation in the error. Every dropdown assertion on every site hits
+    // this.
     case "text_equals":
-      return `  await expect(${locator(t)}).toHaveText(${q(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
+      return t.role === "combobox"
+        ? `  await assertChoice(${locator(t)}, ${q(comparisonValue(step))}, "equals");`
+        : `  await expect(${locator(t)}).toHaveText(${q(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "text_contains":
-      return `  await expect(${locator(t)}).toContainText(${q(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
+      return t.role === "combobox"
+        ? `  await assertChoice(${locator(t)}, ${q(comparisonValue(step))}, "contains");`
+        : `  await expect(${locator(t)}).toContainText(${q(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "url_contains":
       return `  await expect(page).toHaveURL(new RegExp(${q(
@@ -136,6 +149,36 @@ function emitAssert(step: Step): string {
       throw new Error(`Unknown assertion: ${step.assertion}`);
   }
 }
+
+// -----------------------------------------------------------------------------
+// Dropdown assertion helper
+// -----------------------------------------------------------------------------
+
+/**
+ * Assert what a dropdown is SHOWING, for both shapes a combobox comes in.
+ *
+ * Branches on what the element really is, the same way `choose()` does for the select action
+ * (TD-70): a native `<select>` has `<option>` children and `option:checked` is its current value;
+ * a React/custom combobox is an `<input role="combobox">` with no options at all, where the input's
+ * value is what the user sees.
+ *
+ * Deliberately no `page.evaluate` — TD-40's `__name` trap makes an evaluate callback a runtime-only
+ * failure, and `count()` answers the same question through the ordinary API.
+ */
+const ASSERT_CHOICE_HELPER = `
+async function assertChoice(loc, expected, mode) {
+  const chosen = loc.locator("option:checked");
+  if (await chosen.count() > 0) {
+    if (mode === "equals") await expect(chosen).toHaveText(expected, { timeout: ${ASSERT_TIMEOUT_MS} });
+    else await expect(chosen).toContainText(expected, { timeout: ${ASSERT_TIMEOUT_MS} });
+    return;
+  }
+  const pattern = mode === "equals"
+    ? expected
+    : new RegExp(expected.replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&"));
+  await expect(loc).toHaveValue(pattern, { timeout: ${ASSERT_TIMEOUT_MS} });
+}
+`;
 
 // -----------------------------------------------------------------------------
 // Auth settle helper
@@ -791,6 +834,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
 
   const needsLocate = body.includes("await locate(") || body.includes("await safeClick(");
   const needsSafeClick = body.includes("await safeClick(");
+  const needsAssertChoice = body.includes("await assertChoice(");
   const needsField = body.includes("await field(");
   const needsChoose = body.includes("await choose(");
   const needsScope = needsField || needsChoose || needsSafeClick;
@@ -809,6 +853,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     needsField ? FIELD_HELPER : "",
     needsChoose ? CHOOSE_HELPER : "",
     needsSafeClick ? SAFE_CLICK_HELPER : "",
+    needsAssertChoice ? ASSERT_CHOICE_HELPER : "",
     needsAuthSettle ? AUTH_SETTLE_HELPER : "",
   ]
     .filter(Boolean)

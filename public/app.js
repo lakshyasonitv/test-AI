@@ -1669,13 +1669,32 @@ function renderEnterpriseDiagnostic(data, stage, error) {
 
   if (status === "truncated_no_assertion" || status === "truncated" || note) {
     headline = "The test stopped partway through";
-    if (/admin|role|permission|authorized/i.test(note || "")) {
-      description = "It signed in successfully, but couldn't find the Admin section on the page. This usually means the account it used doesn't have Admin access.";
-      fixPrompt = 'Tell it which account to use:\n"Log in with email: user@example.com and password: yourpassword then click Admin..."';
-    } else if (/hydration|dynamically|load/i.test(note || "")) {
-      description = "It tried to interact with part of the page before that part had finished loading.";
-      fixPrompt = 'Give the page a moment to catch up:\n"Log in, wait 2 seconds for the dashboard to load, then click Admin..."';
+    // Branch on the STRUCTURED kind, never on the note.
+    //
+    // This used to regex the note for /admin|role|permission|authorized/ and, on a match, assert
+    // that the account lacked Admin access. ARIA notes say "role" constantly ("no element with
+    // role=button and name=..."), so on a saucedemo shopping run it matched "role" and told the
+    // user a confident, entirely invented story about Admin permissions on a site that has no
+    // admin area at all. A hydration branch had the same shape.
+    //
+    // `truncationKind` exists precisely so this decision does not read prose — its own schema
+    // comment says pattern-matching the note "is exactly the failure CLAUDE.md's central rule and
+    // TECH_DEBT.md TD-01 record". It is carried on the done payload and on ir.meta.
+    //
+    // The note is still SHOWN, in technical details: displaying prose is fine, interpreting it is
+    // not. Where the kind is absent (an older run) the generic wording is used rather than a guess.
+    const kind = data?.truncationKind || data?.ir?.meta?.truncationKind;
+    if (kind === "navigate-url") {
+      description = "It tried to open a page address that isn't part of this site.";
+      fixPrompt = "Name the link or button that leads there, rather than the address — for example \"click Checkout\" instead of \"go to /checkout\".";
+    } else if (kind === "text-target") {
+      description = "It looked for wording that wasn't on the page.";
+      fixPrompt = "Check that any text you asked it to look for matches the page exactly, including capitalisation.";
+    } else if (kind === "incomplete-coverage") {
+      description = "It couldn't carry out every step your request described, so it ran the part it could verify.";
+      fixPrompt = "Try describing fewer steps in one go, or split the request into separate tests.";
     } else {
+      // role-name, and anything unrecognised.
       description = "It couldn't find a button, link, or field it needed on the page.";
       fixPrompt = "Check that the wording in your request (button or link names) matches what actually appears on the website.";
     }
