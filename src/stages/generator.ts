@@ -102,7 +102,11 @@ function emitAssert(step: Step): string {
     }
 
     case "hidden":
-      return `  await expect(${locator(t)}).toBeHidden({ timeout: ${ASSERT_TIMEOUT_MS} });`;
+      // Only when the step NAMED its target: assertGone compares that name against the element's
+      // current label, and with no name there is nothing to compare. See TD-95 on the helper.
+      return t.name
+        ? `  await assertGone(${locator(t)}, ${q(t.name)});`
+        : `  await expect(${locator(t)}).toBeHidden({ timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "enabled":
       return `  await expect(${locator(t)}).toBeEnabled({ timeout: ${ASSERT_TIMEOUT_MS} });`;
@@ -177,6 +181,65 @@ async function assertChoice(loc, expected, mode) {
     ? expected
     : new RegExp(expected.replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&"));
   await expect(loc).toHaveValue(pattern, { timeout: ${ASSERT_TIMEOUT_MS} });
+}
+`;
+
+/**
+ * `toBeHidden`, but when it fails it says whether the element was RENAMED rather than removed.
+ *
+ * TECH_DEBT.md TD-95. Discovery records an element's accessible name as its identity, and on real
+ * sites that name often encodes STATE: saucedemo's cart is `aria-label="Cart, empty"` and becomes
+ * "Cart, 1 item" the moment something is added. The model is shown that name and reasons correctly
+ * from it -- after adding an item, "Cart, empty" should no longer be showing -- but `resolveCode`
+ * resolves `css` first (it must; it is the only thing that makes icon-only controls addressable),
+ * so the locator ignores the name and matches an element that is ALWAYS present. The assertion can
+ * never pass, and the run reports a failure against a site that is working.
+ *
+ * This does not fix that. It makes the failure TRUE: the state did change, the test just expressed
+ * it as "the element disappears" instead of "the label changes". Turning that into a specific
+ * sentence costs nothing -- no tokens, no LLM call, no second page -- and `extractFailureDetail`
+ * takes the FIRST line of the message as the error shown on the card, so the first line is the
+ * finding rather than Playwright's generic timeout.
+ *
+ * WHY IT LIVES IN THE SPEC AND NOT IN failureAnalysis.ts: the page only exists inside this process.
+ * `executePlaywright` spawns the runner and reads `result.json` afterwards, by which time the
+ * browser is gone, and Playwright's own `toBeHidden` message carries the locator and "Received:
+ * visible" but never the element's current label. The question is only answerable while the page is
+ * still open, which is here.
+ *
+ * `aria-label` then text is a deliberate approximation of the accessible name, not the full ARIA
+ * computation -- it is what this class of label is actually built from, and a wrong guess here can
+ * only omit the extra sentence, never change a verdict. Emitted only when the step names its
+ * target: with no name there is nothing to compare and the plain assertion is used.
+ *
+ * No `page.evaluate` (TD-40's `__name` trap) and no inner named functions -- `getAttribute` and
+ * `textContent` answer this through the ordinary locator API.
+ */
+const ASSERT_GONE_HELPER = `
+async function assertGone(loc, namedAs) {
+  try {
+    await expect(loc).toBeHidden({ timeout: ${ASSERT_TIMEOUT_MS} });
+    return;
+  } catch (err) {
+    let now = null;
+    try {
+      now = await loc.getAttribute("aria-label");
+      if (!now) now = await loc.textContent();
+      if (now) now = now.trim().replace(/\\s+/g, " ");
+    } catch (probeFailed) {
+      now = null;
+    }
+    if (now && namedAs && now !== namedAs) {
+      throw new Error(
+        'Still on the page, but now labelled "' + now + '" instead of "' + namedAs +
+        '" -- the label changed rather than the element disappearing.\\n' +
+        'The state this step was checking DID change. Assert on what the label becomes, ' +
+        'not on the element vanishing.\\n\\n' +
+        (err && err.message ? err.message : String(err))
+      );
+    }
+    throw err;
+  }
 }
 `;
 
@@ -835,6 +898,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   const needsLocate = body.includes("await locate(") || body.includes("await safeClick(");
   const needsSafeClick = body.includes("await safeClick(");
   const needsAssertChoice = body.includes("await assertChoice(");
+  const needsAssertGone = body.includes("await assertGone(");
   const needsField = body.includes("await field(");
   const needsChoose = body.includes("await choose(");
   const needsScope = needsField || needsChoose || needsSafeClick;
@@ -854,6 +918,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     needsChoose ? CHOOSE_HELPER : "",
     needsSafeClick ? SAFE_CLICK_HELPER : "",
     needsAssertChoice ? ASSERT_CHOICE_HELPER : "",
+    needsAssertGone ? ASSERT_GONE_HELPER : "",
     needsAuthSettle ? AUTH_SETTLE_HELPER : "",
   ]
     .filter(Boolean)

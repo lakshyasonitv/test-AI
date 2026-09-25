@@ -3760,7 +3760,7 @@ variable. Ticket to migrate when the successor is available and the quota pictur
 env-documented defaults in `.env.example` are the single place the deployment names live outside
 this doc.
 
-### TD-95. A state-dependent accessible name is used as element identity, so an assertion about the state can never pass — Open
+### TD-95. A state-dependent accessible name is used as element identity, so an assertion about the state can never pass — Open (diagnosis shipped; correctness undecided)
 
 **Seen live.** saucedemo, 2026-09-26, case "Add item to cart updates cart count and contents":
 
@@ -3814,12 +3814,26 @@ recorded rather than deleted, because the reason each dies is the useful part.
    in any saved AppModel is recorded under two different names**. There is no second observation to
    compare against.
 
-**What is actually affordable — the information is free at EXECUTION, not at discovery.** When
-`toBeHidden` on a css/testId-resolved element times out, the live page is still open: ask whether
-the element's accessible name still matches the name the step named. If it moved, the state the
-test cared about *did* change and the assertion was merely expressed wrongly — which is a true,
-specific sentence instead of a false "Failed". Costs no tokens, adds no LLM call, and lands in
-`extractFailureDetail` / `failureAnalysis.ts` rather than in grounding or the resolver.
+**SHIPPED — the information is free at EXECUTION, not at discovery.** `assertGone(loc, namedAs)`
+in `generator.ts` replaces the bare `toBeHidden` whenever the step NAMED its target: on failure it
+reads the element's current `aria-label` (falling back to its text) and, if it moved, throws
+*"Still on the page, but now labelled X instead of Y — the label changed rather than the element
+disappearing."* Playwright's original message is appended, so `errorDetail` keeps ground truth,
+and the finding is the FIRST line because `extractFailureDetail` takes that line as the error shown
+on the card. Costs no tokens and adds no LLM call.
+
+**Correction to the plan this entry first recorded:** it said the fix would land in
+`extractFailureDetail` / `failureAnalysis.ts`. **It cannot.** `executePlaywright` spawns the runner
+and reads `result.json` afterwards, by which point the browser is gone, and Playwright's own
+`toBeHidden` message carries the locator and "Received: visible" but never the element's current
+label. The question is answerable only while the page is open — i.e. inside the generated spec — so
+**D-19 applies and the helper is executed in a real browser** (`tests/assertGoneBrowser.test.ts`).
+That was worth the trip: generating the spec caught a lost backslash that had turned an escape into
+a literal newline inside a single-quoted string, i.e. a spec that would not parse.
+
+It also reaches the diagnosis for free: `errorSummary` feeds the Playwright errors into the
+failure-analysis prompt, so the model is now TOLD the label moved instead of having to infer it
+from a screenshot.
 
 **Stated limit: that is a DIAGNOSIS fix. The test still goes red.** The correctness fix — making
 the assertion mean "nothing here shows that name" — is a change to the generated spec's Playwright
