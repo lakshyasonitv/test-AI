@@ -6,6 +6,10 @@ import { llmCacheSet, makeCacheKey, credentialFingerprint, llmCacheVersion } fro
 // same URL must not share an entry. Outside a run this resolves to "env", which is what these
 // tests seed under — the same value production uses when no per-org config is active.
 import { llmCacheDimension } from "../src/llm/llmContext.js";
+// ...and per-LOCALE: a walk snapshots a rendered page, so a walk taken under one locale must
+// not be served to a run using another. Outside a run this resolves from RUN_LOCALE and then
+// the "en-US" default, which is what these fixtures seed under.
+import { localeCacheDimension } from "../src/browserLaunch.js";
 import { WALK_CACHE_NS } from "../src/stages/liveExtend.js";
 import type { IR, Step } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -108,7 +112,7 @@ describe("groundTerminalTextAssertion", () => {
     // fixtures pass no credentials, hence the "anon" fingerprint.
     const seed = (result: Record<string, unknown>, policy: string = "full") =>
       llmCacheSet(
-        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), policy, credentialFingerprint(), llmCacheDimension("main"), llmCacheVersion()),
+        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), policy, credentialFingerprint(), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()),
         { reachedUrl: page.url, pageModel: page, ...result },
         WALK_CACHE_NS,
       );
@@ -199,13 +203,13 @@ describe("groundTerminalTextAssertion — structural diff fallback", () => {
     const model = { baseUrl, pages: [page] } as unknown as AppModel;
     const seedAfter = (pageText: string, policy: string = "full") =>
       llmCacheSet(
-        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), policy, credentialFingerprint(), llmCacheDimension("main"), llmCacheVersion()),
+        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), policy, credentialFingerprint(), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()),
         { reachedUrl: page.url, pageModel: page, pageText },
         WALK_CACHE_NS,
       );
     const seedBefore = (pageText: string, policy: string = "full") =>
       llmCacheSet(
-        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -2)), policy, credentialFingerprint(), llmCacheDimension("main"), llmCacheVersion()),
+        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -2)), policy, credentialFingerprint(), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()),
         { reachedUrl: page.url, pageModel: page, pageText },
         WALK_CACHE_NS,
       );
@@ -301,7 +305,7 @@ describe("groundTerminalTextAssertion — near miss (case/punctuation only)", ()
     const model = { baseUrl, pages: [page] } as unknown as AppModel;
     const seedAfter = (pageText: string, pageTextRaw?: string) =>
       llmCacheSet(
-        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), "full", credentialFingerprint(), llmCacheDimension("main"), llmCacheVersion()),
+        makeCacheKey(baseUrl, JSON.stringify(ir.steps.slice(0, -1)), "full", credentialFingerprint(), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()),
         { reachedUrl: page.url, pageModel: page, pageText, ...(pageTextRaw !== undefined ? { pageTextRaw } : {}) },
         WALK_CACHE_NS,
       );

@@ -7,6 +7,7 @@ import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor
 import { toIR, type IRResult } from "./stages/ir.js";
 import { LlmBudget, enterWithBudget } from "./llm/llmBudget.js";
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
+import { enterWithRunLocale } from "./browserLaunch.js";
 import {
   credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, redactCredentials,
   extractCredentialsFromPrompt,
@@ -72,6 +73,14 @@ export interface RunOptions {
   llmConfig?: LlmConfig;
   /** This run's call ceiling. Omitted means the shared `MAX_LLM_CALLS_PER_RUN`. */
   maxLlmCalls?: number;
+  /**
+   * The locale every browser this run opens should present, e.g. "en-US".
+   *
+   * Validated by the route against `SUPPORTED_RUN_LOCALES` before it gets here, so this is a
+   * known-good tag, never a raw request value. Omitted means `RUN_LOCALE`, and then the "en-US"
+   * default — which is what the CLI gets, since it passes nothing.
+   */
+  locale?: string;
 }
 
 export async function runPipeline(
@@ -107,6 +116,11 @@ export async function runPipeline(
   // model this run uses. Absent means the process-wide env pool, i.e. exactly the behaviour every
   // run had before per-organisation configuration existed.
   if (options?.llmConfig) enterWithLlmConfig(options.llmConfig);
+  // The third use of the same rail, and the reason it is a rail at all: locale has to reach four
+  // browser-opening sites plus both disk caches, none of which the orchestrator calls directly.
+  // Only entered when the run asked for one — absent leaves every consumer resolving RUN_LOCALE
+  // and then the default, exactly as it would in the CLI or a unit test.
+  if (options?.locale) enterWithRunLocale(options.locale);
 
   const save = (name: string, data: unknown) =>
     writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));

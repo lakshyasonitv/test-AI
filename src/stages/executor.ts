@@ -3,6 +3,25 @@ import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from 
 import path from "node:path";
 import { redactCredentials, type Credentials } from "./credentials.js";
 import { siteHost } from "../text.js";
+import { browserContextOptions } from "../browserLaunch.js";
+
+/**
+ * `RUN_LOCALE` / `RUN_TIMEZONE` for the Playwright child, or nothing when pinning is off.
+ *
+ * The spec's browser is the fifth consumer of `browserContextOptions`, and the only one in another
+ * process. It reads the pair from `playwright.config.ts`, which can only see environment — so the
+ * run's locale is resolved HERE, through the same helper, and handed across. Resolving it in the
+ * child instead would mean the child defaulting independently of the run that spawned it.
+ *
+ * Returns `{}` when the helper says pinning is off, rather than a pair of empty strings: the child
+ * already inherits `process.env`, so writing nothing leaves an operator's `RUN_LOCALE=""` intact
+ * instead of overwriting it.
+ */
+export function specLocaleEnv(): Record<string, string> {
+  const opts = browserContextOptions();
+  if (!("locale" in opts)) return {};
+  return { RUN_LOCALE: opts.locale, RUN_TIMEZONE: opts.timezoneId };
+}
 
 export interface ExecResult {
   passed: boolean;
@@ -281,6 +300,15 @@ async function executePlaywright(
           // own — it stops browserContext.newPage() outright, failing a valid case before it
           // navigates (TD-71). Turning recording off is what keeps the run runnable.
           ...(video.ok ? {} : { PLAYWRIGHT_VIDEO: 'off' }),
+          // Read by playwright.config.ts's `use` block. The child is a separate process with no
+          // AsyncLocalStorage to read, so the run's locale has to cross the boundary as env or the
+          // spec executes under the host's locale while its AppModel was discovered under this
+          // one. Resolved through the same helper every in-process consumer uses, so the fifth
+          // browser cannot disagree with the other four.
+          //
+          // Omitted entirely when pinning is off, so an inherited RUN_LOCALE="" keeps meaning
+          // "unpinned" in the child rather than being overwritten with a default here.
+          ...specLocaleEnv(),
         },
         stdio: ["pipe", "pipe", "pipe"],
       }

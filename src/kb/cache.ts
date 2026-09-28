@@ -2,9 +2,24 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from "no
 import path from "node:path";
 import crypto from "node:crypto";
 import { AppModel } from "../schema/appModel.js";
+import { localeCacheDimension } from "../browserLaunch.js";
 
 const DIR = path.join("runs", "_cache", "appmodels");
-const keyFor = (url: string) => crypto.createHash("sha1").update(url).digest("hex");
+/**
+ * URL **and** the locale/timezone it was discovered under.
+ *
+ * The URL alone was not enough: the same URL served in two languages is two different AppModels,
+ * and the element names inside one of them are what every later stage grounds against. The TTL
+ * below means a wrong-locale entry heals within 30 minutes, so this is a narrower hole than the
+ * walk cache's — but it is two lines to close, and 30 minutes of serving a Korean snapshot to an
+ * en-US run is 30 minutes of inexplicable grounding failures.
+ *
+ * Note this is NOT the LLM cache and `LLM_CACHE_VERSION` does not reach it; `localeCacheDimension`
+ * returning "system" when pinning is off keeps an unpinned entry distinct from an en-US one rather
+ * than colliding with it.
+ */
+const keyFor = (url: string) =>
+  crypto.createHash("sha1").update(`${url}|||${localeCacheDimension()}`).digest("hex");
 
 /**
  * How long a discovered AppModel stays usable.

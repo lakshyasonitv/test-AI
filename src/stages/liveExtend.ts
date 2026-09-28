@@ -1,5 +1,5 @@
 import { chromium, type Page } from "playwright";
-import { chromiumLaunchOptions } from "../browserLaunch.js";
+import { chromiumLaunchOptions, browserContextOptions, localeCacheDimension } from "../browserLaunch.js";
 import { AppModel } from "../schema/appModel.js";
 import type { IR, Step } from "../schema/ir.js";
 import { extractDomModelFromPage } from "./domDiscovery.js";
@@ -156,8 +156,15 @@ async function replayAndSnapshot(
   // disk and is still per-tenant work: two organisations walking the same URL must not share an
   // entry, or one tenant's authenticated page state is served to another. The "main" role is
   // picked because walks serve the main-model stages (toIR's live-extend and the rewrite routes).
+  //
+  // And so is the LOCALE/TIMEZONE pair. A walk's result is a page snapshot, and this key carries
+  // neither the page's content nor the locale it was rendered in — so a walk taken under one
+  // locale was served verbatim to a run using another, permanently, because the disk half of this
+  // cache never expires. That is the same defect as the credential case above with a different
+  // input, and the three LLM keys do not have it: theirs already contain the AppModel or the page
+  // text, so they re-key themselves (see docs/FINDINGS_2026-09-28.md §7.4). This one cannot.
   const cacheKey = makeCacheKey(
-    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), llmCacheVersion());
+    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion());
   const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
   if (cached) return cached;
 
@@ -168,7 +175,11 @@ async function replayAndSnapshot(
   const lastOfKind = lastFillIndexByKind(prefix, fieldMap);
   const browser = await chromium.launch(chromiumLaunchOptions());
   try {
-    const page = await browser.newPage();
+    // Same locale the discovery snapshot was taken under, or the replay walks a differently
+    // localised page than the AppModel it is being checked against. One page, so the options go
+    // on newPage() — not newContext() + context.newPage(), which would lose sessionStorage
+    // (TD-41 / D-23) on exactly the authenticated flows this function exists to replay.
+    const page = await browser.newPage(browserContextOptions());
     let urlBeforeLastStep = model.baseUrl;
     /** Where the flow was when it last typed a credential, and what it typed it into. Used
      *  below to tell "signed in" from "still sitting on the sign-in form". */

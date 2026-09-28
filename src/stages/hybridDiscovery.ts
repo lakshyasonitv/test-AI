@@ -15,7 +15,7 @@
 
 import crypto from "node:crypto";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import { chromiumLaunchOptions } from "../browserLaunch.js";
+import { chromiumLaunchOptions, browserContextOptions } from "../browserLaunch.js";
 import { llm, cacheModelDimension } from "../llm/client.js";
 import { parseJson } from "../llm/json.js";
 import { AppModel, AuthOutcome, type AuthStep, Element, PageModel } from "../schema/appModel.js";
@@ -279,7 +279,11 @@ export async function discoverHybrid(url: string): Promise<AppModel> {
 async function discoverUsingVision(url: string): Promise<AppModel> {
   const browser = await chromium.launch(chromiumLaunchOptions());
   try {
-    const page = await browser.newPage();
+    // Pinned here too even though this is the vision fallback and costs vision tokens: a model
+    // reading a screenshot of a differently-localised page produces the same wrong AppModel the
+    // DOM path would, and leaving one of the five consumers unpinned is the failure mode
+    // browserLaunch.ts's docblock describes.
+    const page = await browser.newPage(browserContextOptions());
     const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
     const status = response?.status() ?? 0;
@@ -893,7 +897,10 @@ export async function discoverSiteHybrid(
    */
   const sharedPage = async (): Promise<Page> => {
     state.browser ??= await chromium.launch(chromiumLaunchOptions());
-    state.context ??= await state.browser.newContext();
+    // On the CONTEXT, not on the newPage() below: this site already owns a context deliberately
+    // (see the comments above), and the one page it opens must stay the only one for
+    // sessionStorage to survive. Options belong wherever the context is created.
+    state.context ??= await state.browser.newContext(browserContextOptions());
     state.page ??= await state.context.newPage();
     return state.page;
   };

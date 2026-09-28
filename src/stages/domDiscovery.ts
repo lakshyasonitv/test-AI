@@ -11,7 +11,7 @@
  */
 
 import { chromium, type Page } from "playwright";
-import { chromiumLaunchOptions } from "../browserLaunch.js";
+import { chromiumLaunchOptions, browserContextOptions } from "../browserLaunch.js";
 import { AppModel, PageModel, Element } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 import { extractCrawlResponse, type CrawlResponse } from "./domExtract.js";
@@ -536,7 +536,11 @@ export async function discoverUsingCrawler(url: string): Promise<AppModel | null
   try {
     console.log(`[domDiscovery] extracting DOM structure for ${url}`);
     browser = await chromium.launch(chromiumLaunchOptions());
-    const page = await browser.newPage();
+    // Locale/timezone are CONTEXT options, not launch options, and `browser.newPage(options)`
+    // takes the full context option set (verified against the pinned 1.49.0 types, D-19). Passed
+    // here rather than by promoting this to newContext() + context.newPage(): a second page on a
+    // context does not carry sessionStorage (TD-41 / D-23), and this path needs no extra page.
+    const page = await browser.newPage(browserContextOptions());
     const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: REQUEST_TIMEOUT });
 
     const statusCode = response?.status() ?? 0;

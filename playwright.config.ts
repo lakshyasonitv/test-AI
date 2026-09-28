@@ -1,5 +1,5 @@
 import { defineConfig } from "@playwright/test";
-import { chromiumLaunchOptions } from "./src/browserLaunch.js";
+import { chromiumLaunchOptions, browserContextOptions } from "./src/browserLaunch.js";
 
 export default defineConfig({
   testDir: "./runs",
@@ -25,5 +25,15 @@ export default defineConfig({
     // the generated spec's browser — launched by the Playwright runner, not by the pipeline —
     // carries CHROMIUM_EXTRA_ARGS too. Empty when the var is unset.
     launchOptions: chromiumLaunchOptions(),
+    // locale + timezoneId, so a spec EXECUTES under the same locale its
+    // AppModel was DISCOVERED under. Without this the pipeline pins four browsers and the fifth —
+    // the one that actually runs the test — inherits the host's, which is where a locator
+    // generated against one language meets a page rendered in another.
+    //
+    // This config is loaded by the Playwright child process, which has no AsyncLocalStorage rail
+    // to read, so it resolves from RUN_LOCALE / RUN_TIMEZONE in its environment. executor.ts sets
+    // both on the child from the run's own locale. Spreads to {} when RUN_LOCALE="" — the same
+    // rollback switch every other consumer has.
+    ...browserContextOptions(),
   },
 });

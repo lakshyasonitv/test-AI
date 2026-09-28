@@ -9,6 +9,7 @@ import { allRunIds, listRuns, store, summariseMissingRun } from "../runStore.js"
 import { warnIfNoVideo } from "../stages/executor.js";
 import { selfHealDefault } from "../stages/heal.js";
 import { llmCacheClear } from "../kb/llmCache.js";
+import { isSupportedRunLocale, SUPPORTED_RUN_LOCALES } from "../browserLaunch.js";
 import { hasTerminalAssertion } from "../stages/ir.js";
 import { WALK_CACHE_NS } from "../stages/liveExtend.js";
 import { Semaphore } from "./concurrency.js";
@@ -237,12 +238,26 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
     return res.status(400).json({ error: `Invalid coverage "${coverage}". Use: minimal, standard, or full` });
   }
 
-  // Only the two known booleans are forwarded — the body is untrusted input, and
+  // A locale is a string, so unlike the two booleans below it cannot be validated by its type
+  // alone. Checked against the allow-list that browserLaunch.ts owns — the same shape as
+  // VALID_COVERAGE above, and defined next to the helper that consumes it so the route and the
+  // browser cannot disagree. Rejected rather than ignored: a caller who asked for "de-DE" and
+  // silently got en-US would debug the wrong thing.
+  if (options && typeof options === "object" && options.locale !== undefined
+      && !isSupportedRunLocale(options.locale)) {
+    return res.status(400).json({
+      error: `Invalid locale "${options.locale}". Use one of: ${SUPPORTED_RUN_LOCALES.join(", ")}`,
+    });
+  }
+
+  // Only the known keys are forwarded — the body is untrusted input, and
   // spreading it straight into runPipeline would let a caller set anything.
   const runOptions = options && typeof options === "object"
     ? {
       ...(typeof options.gateReview === "boolean" ? { gateReview: options.gateReview } : {}),
       ...(typeof options.selfHeal === "boolean" ? { selfHeal: options.selfHeal } : {}),
+      // Already validated above, so this forwards a known-good tag, never the raw body value.
+      ...(isSupportedRunLocale(options.locale) ? { locale: options.locale } : {}),
     }
     : undefined;
 
