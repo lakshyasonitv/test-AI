@@ -551,6 +551,7 @@ const videoFigureEl = document.getElementById("videoFigure");
 const resultVideoEl = document.getElementById("resultVideo");
 const diagnosisEl = document.getElementById("diagnosis");
 const traceLinkEl = document.getElementById("traceLink");
+const runSaveSlotEl = document.getElementById("runSaveSlot");
 const suiteProgressEl = document.getElementById("suiteProgress");
 const suiteProgressListEl = document.getElementById("suiteProgressList");
 const suiteResultsEl = document.getElementById("suiteResults");
@@ -1033,7 +1034,12 @@ function setupCaseCardListeners() {
     if (!roleAtLeast(auth.role, "tester")) { btn.remove(); return; }
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      openSaveCasePanel(btn.closest(".case-card"));
+      const card = btn.closest(".case-card");
+      openSaveCasePanel(card, {
+        runId: suiteResultsEl.dataset.runId,
+        caseId: card.dataset.caseId,
+        title: card.querySelector(".case-title")?.textContent ?? "",
+      });
     });
   });
 
@@ -1162,7 +1168,10 @@ async function confirmProjectDelete(p) {
   return typed !== null && typed.trim() === p.name;
 }
 
-async function openSaveCasePanel(card) {
+// `card` is the element that owns the panel (.case-save-panel inside it). `source` says WHAT is
+// being saved — suite-result cards hand their own runId/caseId/title; the single-run screen hands
+// the run currently in front of us plus "case-0". Same POST either way.
+async function openSaveCasePanel(card, source) {
   const panel = card.querySelector(".case-save-panel");
   if (!panel) return;
   if (!panel.classList.contains("hidden")) { panel.classList.add("hidden"); return; }
@@ -1185,9 +1194,7 @@ async function openSaveCasePanel(card) {
     return;
   }
 
-  const runId = suiteResultsEl.dataset.runId;
-  const caseId = card.dataset.caseId;
-  const title = card.querySelector(".case-title")?.textContent ?? "";
+  const { runId, caseId, title } = source;
 
   panel.innerHTML = `
     <div class="case-save-form">
@@ -1301,6 +1308,43 @@ async function openSaveCasePanel(card) {
 }
 
 /**
+ * Refresh the "Save to library" affordance on the single-run results screen.
+ *
+ * Shown only when the run in front of us actually finished (its `done` event), is not a replay of
+ * an already-saved case, and is not showing suite results — those already have a per-card
+ * "Save case" button, and re-saving the primary case here would duplicate it. Rendered once into
+ * the empty slot; the pieces are the same save panel the suite cards use, called with this run's
+ * own id and "case-0" (a single run's one case directory).
+ */
+function refreshRunSaveSlot() {
+  if (!runSaveSlotEl) return;
+
+  const suiteShowing = !suiteResultsEl.classList.contains("hidden");
+  const canSave = currentRunFinished && !currentRunIsReplay && !suiteShowing;
+  if (!canSave) {
+    runSaveSlotEl.classList.add("hidden");
+    runSaveSlotEl.innerHTML = "";
+    delete runSaveSlotEl.dataset.rendered;
+    return;
+  }
+
+  if (!runSaveSlotEl.dataset.rendered) {
+    runSaveSlotEl.innerHTML =
+      `<button type="button" class="dl-btn" id="runSaveBtn">Save to library</button>` +
+      `<div class="case-save-panel hidden"></div>`;
+    runSaveSlotEl.querySelector("#runSaveBtn").addEventListener("click", () => {
+      openSaveCasePanel(runSaveSlotEl, {
+        runId: currentRunId,
+        caseId: "case-0",
+        title: testTitleEl.textContent.trim() || currentRunPrompt || "",
+      });
+    });
+    runSaveSlotEl.dataset.rendered = "true";
+  }
+  runSaveSlotEl.classList.remove("hidden");
+}
+
+/**
  * The natural-language request that produced the run currently on screen.
  *
  * NOT fetched: it already arrives on the run's own event stream. The `input` event carries
@@ -1317,6 +1361,12 @@ let currentRunPrompt = "";
  */
 let currentRunUsage = null;
 let currentRunIsReplay = false;
+/**
+ * True once a run in front of us has genuinely finished (its `done` event was replayed/applied).
+ * Deliberately NOT set on the `error` stage: a run can error before any case artifact exists, and
+ * a save button that would 500 is worse than no button. Reset with the rest of the run UI.
+ */
+let currentRunFinished = false;
 /**
  * Self-heal retries observed in THIS run. Counted from the events rather than read from
  * 08-llm-usage.json, which records tokens by stage and has no notion of a retry — the heal's IR
@@ -2990,6 +3040,7 @@ function applyEvent(event, runId) {
     // Captured BEFORE renderSuiteResults runs — the header reads it.
     currentRunUsage = event.data?.llmUsage ?? null;
     currentRunIsReplay = !!event.data?.replay;
+    currentRunFinished = event.stage === "done";
     paintVerdict(verdictFor(event.data, event.stage, event.error));
 
     renderEnterpriseDiagnostic(event.data, event.stage, event.error);
@@ -3033,6 +3084,7 @@ function applyEvent(event, runId) {
     }
 
     loadHistory();
+    refreshRunSaveSlot();
     return true; // Stop polling
   }
 
@@ -5025,6 +5077,8 @@ function resetRunUI() {
   diagnosisEl.textContent = "";
   runTitleEl.textContent = "";
   runMetaEl.textContent = "";
+  currentRunFinished = false;
+  refreshRunSaveSlot();
 }
 
 function setCrumbs(parts) {
