@@ -987,5 +987,94 @@ closed it, and both are worth recording because they resolve latent tensions wit
   `tests/llmClient.test.ts` pins that. Rationale for choosing this over OpenAI `json_schema`
   structured outputs: the case schema is large and evolving, the deterministic check already
   exists on the array shape, an instruction line is provider-agnostic where a second schema would
-  be azure-specific, and it keeps the bare-array prompt identical under gemini. General rule this
+  be azure-specific, and it keeps the bare-array ask identical under gemini. General rule this
   records: *any* stage whose prompt asks for a top-level array must pass `jsonEnvelope`.
+
+## D-33. Recovering a run view after a poll failure means replaying the whole event stream
+
+**A dropped connection is repaired by re-deriving the view from the event log, not by resuming
+forward from where the client stopped.**
+
+`connectToRun` keeps a one-directional `seen` cursor and applies `events.slice(seen)`. That is the
+right shape for the steady state and the wrong shape for recovery: the stage cards are written *as
+each event is applied*, so an event that never arrived left its card on a stale value with nothing
+left to move it. On the first good read after a failure the loop now calls `resetRunUI()`, sets
+`seen = 0`, and re-applies the full stream.
+
+**This is the reload path, not a new mechanism, and that is the whole argument.** `applyEvent` is
+already required to be re-appliable from the start, because loading `#/run/<id>` after a reload does
+exactly this. So the fix adds no new rendering concept, no second render function, and no state
+machine to keep in sync with the first one — it reuses the one path that was already correct.
+Everything `applyEvent` accumulates is reset by `resetRunUI()` first: `phaseStageStatus` through
+`renderPhases`, and the heal counters through `hideSuiteResults`. The latter is not tidiness — the
+primary-heal counter is a `+= 1`, so an unreset replay would double-count heals.
+
+**Rejected: a snapshot endpoint** (`GET /api/runs/:id/state` returning current derived state
+alongside the log). Strictly better on paper — no replay flicker, no re-run of side effects, and it
+would also have removed the stale-response window behind TD-15. Rejected on cost and shape: it adds
+a route, a second state representation that can drift from the event log, and a decision about who
+owns the derivation — three new places for this class of bug to live, to fix a client that already
+has a working re-derivation path. If the flicker below ever proves genuinely costly, this is the
+entry to revisit, and it should be revisited deliberately rather than by accident.
+
+**Rejected: hold the last-known stage per phase and patch forward.** Cheaper than a replay, and it
+keeps the live view stable. Rejected because it re-implements a *second*, partial derivation of the
+view that has to stay consistent with `applyEvent` forever — the precise anti-pattern the structural
+rule in `AGENTS.md` warns about, in a different costume.
+
+**The cost, stated rather than discovered.** A full replay re-runs every `applyEvent` side effect,
+so credential prompts and case-selection panels visibly replay on recovery. That is precisely the
+behaviour of a manual reload, and it is still better than a view frozen forever — but it is a
+visible artifact of this decision, not an invisible one.
+
+**The guard that keeps this from becoming a regression.** The replay is conditional on `fails > 0`,
+not unconditional. Replaying on *every* poll would rebuild the run view once a second and make a
+live run flicker instead of update — a fix that passes its own test and makes the product worse. It
+is pinned from both sides: one test asserts the pre-outage event is applied a second time, another
+asserts a healthy poll rebuilds nothing.
+
+## D-34. `401` is an expired session; `403` and `404` are an unavailable run, and the run poll must never conflate them
+
+**The run poll branches on the HTTP status, and the branch is drawn by whether signing in again
+could possibly help.**
+
+- **401** — stop, say the session expired, clear the session, route to sign-in, and **preserve the
+  run id** so signing back in lands on that run rather than the home screen. Re-authenticating is
+  precisely the remedy, and the run is still there.
+- **403 / 404** — stop and say the run is no longer available. **No route to sign-in.** Re-signing-in
+  cannot grant access to a run that has been deleted or belongs to another organisation, so the
+  login screen is a dead end: the user authenticates successfully and arrives at the same 403.
+- **Everything else** — network errors, 5xx, a non-array payload — stays transient and keeps
+  retrying. That is the case the retry exists for, and a fix that swallowed it would be a new bug.
+
+**Why this distinction is the whole entry.** The old loop never looked at the status at all, so all
+three landed in one `catch`. The waste is minor. The misclassification was not: `requireRunRole` in
+`src/server/authz.ts` raises 403 when a run has no provable ownership record, which is exactly what
+retention pruning leaves behind — so a 403 reads as "session expired" and sends a legitimate user
+into a sign-in loop with no exit and no message explaining it.
+
+**Status is inspected before `res.json()`.** An error body is `{error: "..."}`, not an event
+array; parsing first and checking the parsed shape conflates "the server said no" with "the server
+sent something malformed", and the two want opposite handling.
+
+**404 is defensive, and is labelled as such in both the code and `TECH_DEBT.md`.** `/state` returns
+`getEvents()` straight from the run store, which yields `[]` for a missing directory, so it does not
+404 today — verified against `src/server/index.ts` and `src/runStore.ts`. The branch is kept so a
+future route change cannot drop a missing run into the transient path and poll it at 1Hz forever. It
+is written as a defensive branch rather than dressed up as a live one, because a comment claiming a
+behaviour the server does not have is worse than no comment.
+
+**Rejected: treat 403 as 401 and let the user discover the problem after signing in.** Cheaper, and
+it is what a single "not authorised → re-authenticate" rule would produce. Rejected because it
+sends the user through a pointless round trip to reach an error they could have been told
+immediately, and because it is the more plausible-looking of the two rules — which is exactly why it
+needed writing down.
+
+**Also decided here, for the same reason (it is the same "can re-authenticating help?" question):**
+signing out **stops the poll** by bumping `pollGeneration` before clearing any state, and asks for
+confirmation **only** when `(currentRunId && !currentRunFinished) || runInFlight`. Both halves are
+client-side, so neither costs a server round trip — notably, the confirmation must not depend on a
+request that fails precisely when the connection is bad. Native `confirm()` is retained because all
+six other destructive asks in `public/app.js` are native, and a styled modal would mean minting a
+CSS class (platform rule 3).
+
