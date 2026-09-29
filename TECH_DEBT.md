@@ -140,6 +140,10 @@ authority is its own heading, not this list.
 | TD-89 | Nothing recomputed `meta.hasTerminalAssertion` on the edit path, so deleting a case's last `Check ...` row saved silently and the case reported **Passed forever while verifying nothing** — **fixed** | High | Strategic | ? |
 | TD-90 | Edited rows were paired with originals BY POSITION, so deleting one row marked the whole tail changed, queued five browser walks, and **renumbered every step below it** — version history and failure reports then pointed at the wrong step — **fixed** | High | Strategic | ? |
 | TD-91 | "Ask for a change" was given the case title, its steps and the instruction — and nothing about the site — so it invented element names from page headings, and unlike the translate path its output was never parse-checked before being shown — **fixed** | Medium | Strategic | ? |
+| TD-96 | The run view was never rebuilt after a transient poll failure, so a run that outlived a network blip stayed frozen at its last-drawn stage until a manual page reload — **fixed** | High | Accidental | ? |
+| TD-97 | The run poll never consulted `res.ok`, so a 401/403/404 was retried at 1Hz forever, and a 403 (a deleted or other-org run) was treated as an expired session — routing it to a sign-in screen that could never succeed — **fixed** | Medium | Accidental | ? |
+| TD-98 | The "lost contact" threshold was `++fails === 5`, correct only via an invariant in a different branch, and the counter was never cleared when a run completed — **fixed** | Low | Accidental | ? |
+| TD-99 | Signing out neither stopped the in-flight poll loop (so it 401'd at 1Hz against a token being revoked) nor asked about a run in progress — **fixed** | Low | Accidental | ? |
 
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
@@ -149,6 +153,11 @@ authority is its own heading, not this list.
 > detail section, and the string appears nowhere in this file. That is a genuine gap of unknown
 > cause, not a retired entry. **66 entries, highest id 67** — do not use the highest id as a count,
 > and do not reuse 35.
+>
+> **This table is behind the sections, again.** TD-68 … TD-95 exist as detail sections with no row
+> here — the same failure the note above describes, recurring. Rows for TD-96 … TD-99 were added
+> when those entries were filed; the earlier ones are still missing and are left as found rather
+> than silently back-filled, since a row written from someone else's entry is how the drift starts.
 
 ---
 
@@ -515,9 +524,9 @@ server via a Cloudflare tunnel, which compounds the exposure rather than mitigat
 scope the fix differently (a shared secret / basic auth is enough for the former; real
 session/user auth is a bigger project for the latter). Flagged `?` for exactly that reason.
 
-### TD-15. A stale poll response can misdirect a credential submission to the wrong run — High / Accidental
+### TD-15. A stale poll response can misdirect a credential submission to the wrong run — High / Accidental — **Fixed**
 
-**What it is.** `public/app.js`'s `connectToRun` checks `generation === pollGeneration` only at the
+**What it was.** `public/app.js`'s `connectToRun` checked `generation === pollGeneration` only at the
 top of each loop iteration — never re-checked after the `await fetch`/`await res.json()`, before
 `applyEvent(event, runId)` runs with the OLD `runId` closed over in that iteration.
 
@@ -532,8 +541,20 @@ run A's site pops over what the user believes is run B's screen — credentials 
 The only item in this register that can misdirect a secret, which is why it outranks the rest of
 this section.
 
-**Remediation.** Re-check `generation === pollGeneration` immediately after the awaited fetch,
-before calling `applyEvent`.
+**Remediation (done, 2026-09-29).** The generation is now re-checked twice inside the loop — once
+immediately after the awaited fetch and **before** the HTTP-status branch, and once after
+`await res.json()`. Order is the whole point: the first check has to precede the status branch, or
+a stale response can still act. TD-97's `stopRunPolling` writes to the sign-in screen and to
+`currentRunId`, so "no event was applied" is not the same as "nothing was acted on".
+
+Pinned by `tests/appJsRunRecovery.test.ts`, which asserts the **ordering** rather than the mere
+presence of a re-check. There are two sites, and the looser assertion lets the meaningful one be
+deleted while the test stays green — verified by mutation: removing the post-fetch check turns it
+red.
+
+**The neater long-term fix was rejected for now.** The root cause is that the loop holds a `runId`
+for a run the user may already have navigated away from. A snapshot endpoint or an `AbortController`
+would remove the window entirely, but both are server- or platform-shaped work.
 
 ### TD-16. `runs/` grows unbounded and is served publicly with no pruning — Medium / Strategic
 
@@ -789,6 +810,119 @@ fix may have already resolved it), rather than a substitution bug that's still l
 
 **Remediation.** Confirm which case it is against a current run before deciding this needs code
 changes at all.
+
+### TD-96. The run view is never rebuilt after a transient poll failure, so a run that outlives a network blip stays stuck until a page reload — High / Accidental — **Fixed**
+
+**What it was.** `connectToRun` in `public/app.js` applies only `events.slice(seen)`, with `seen` a
+closure counter that moves in one direction only. Nothing re-derived state that was lost while the
+connection was down: the stage cards are written *as each event is applied*, so an event that never
+arrived left its card on PENDING, and no later event would move it.
+
+**Why it hurt.** The retry logic was correct throughout — `fails` reset on the next good read — so
+this was never a retry defect, which is why it survived so long. It was a *render* defect wearing a
+retry's clothing: the client reconnected perfectly and still showed a run frozen at whatever stage
+it had reached before the outage. The only recovery was a manual page reload, which happens to reset
+`seen` to 0 and replay the whole stream. Anyone who did not think to reload simply believed their
+run had hung.
+
+**Verification basis, stated precisely:** confirmed by reading the code path end to end — the
+one-directional `seen`, the per-event phase-card writes, the single `resetRunUI()` at entry, and the
+absence of any snapshot render path. **Not** confirmed against a live run: none was interrupted
+mid-flight to reproduce it, and none was staged to. The mechanism follows deterministically from the
+code, but this entry is not a report of a captured incident and should not be read as one.
+
+**Fix, verified 2026-09-29.** On the first good read after a failure, `connectToRun` calls
+`resetRunUI()`, sets `seen = 0`, and re-applies the full stream. This is deliberately the **reload
+path, not a new mechanism** — `applyEvent` is already re-appliable from the start, because the
+reload view depends on it, and every accumulator it touches is reset by `resetRunUI()` first
+(`phaseStageStatus` via `renderPhases`, the heal counters via `hideSuiteResults` — which matters
+because the primary-heal counter is a `+= 1` and would double-count otherwise). See `DECISIONS.md`.
+
+Pinned by `tests/appJsRunRecovery.test.ts`: it asserts the **pre-outage event is applied a second
+time**, which is what "replay from zero" means, plus a guard test that a healthy poll does **not**
+rebuild (replaying every second would make the live run flicker rather than update). Both verified
+by mutation.
+
+**Cost, stated honestly.** A full replay re-runs every `applyEvent` side effect, so credential
+prompts and case-selection panels visibly replay on recovery. That is the same behaviour as a page
+reload, and preferable to a permanently frozen view, but it is a visible artifact of the fix, not
+an invisible one.
+
+### TD-97. The run poll never consulted `res.ok`, so a permanently-failed request was retried at 1Hz forever, and a 403 was treated as an expired session — Medium / Accidental — **Fixed**
+
+**What it was.** The loop called `await res.json()` and used the result without ever looking at
+the status. A 401, a 403, a 404 and a 500 therefore all reached the same `catch` and were retried
+once a second for as long as the tab stayed open, with the only visible symptom being a
+"Lost contact with the server" message that is wrong in every one of those cases.
+
+**Why it hurt.** Two distinct problems, only one of which is cosmetic. The waste is minor; the
+misclassification was not. `requireRunRole` in `src/server/authz.ts` raises **403** when a run has no
+provable ownership record left to prove — which is exactly what a run deleted by retention looks
+like, and also what a run in another organisation looks like. Signing in again cannot fix either.
+Routing 403 to the login screen as "session expired" would bounce a legitimate second-org user to
+the sign-in form forever, where re-authenticating lands them on the same 403. That is a loop with no
+exit and no error message explaining it.
+
+**Fix, verified 2026-09-29.** The status is now branched *before* `res.json()`, so an error body's
+`{error: ...}` object is never mistaken for an event array. 401 stops the loop, says the session
+expired, and **preserves the run id** so signing back in returns to that run rather than home.
+403/404 stop the loop and say the run is no longer available, without routing to sign-in.
+Everything else — network errors, 5xx, a non-array payload — stays transient and keeps retrying,
+which is the case the retry actually exists for.
+
+**404 is defensive and honestly labelled as such.** `/api/runs/:id/state` returns `getEvents()`
+straight from the run store, which yields `[]` for a missing directory, so **it does not 404
+today** (verified against `src/server/index.ts` and `src/runStore.ts`). The branch exists so a
+future route change cannot drop a missing run into the transient path.
+
+Pinned by four tests, including the 403 one, which is the whole reason this entry is more than a
+wasted retry. The distinction between 401 and 403 was mutation-verified: collapsing `403` into the
+"session expired" path turns it red.
+
+### TD-98. The "lost contact" threshold was exact equality, and the counter was never cleared on completion — Low / Accidental — **Fixed**
+
+**What it was.** `if (++fails === 5)`. Exact equality was only ever correct because a successful
+read reset the counter to 0 — so the message depended on an invariant in a *different* branch of
+the loop. Anything that ever skipped a tick lost it permanently, and the sixth, seventh and later
+consecutive failures were never reported at all. Separately, `fails` was never cleared when a run
+reached its terminal event, so a finished run left the counter set for whatever came next.
+
+**Fix, verified 2026-09-29.** `++fails >= 5`, and `fails = 0` on the `done` path. A floor states the
+intent directly instead of relying on an invariant elsewhere.
+
+**A caution about proving this.** This is a source-level check (`>= ` present in the extracted
+function), not a behavioural one — simulating six consecutive failures and asserting the message
+appears exactly once would be the behavioural version, and would be the better test. Recorded
+because the register should not imply a stronger guarantee than was actually built. Mutation-verified
+nonetheless: reverting either half turns it red.
+
+### TD-99. Signing out neither stopped the poll loop nor asked about a run in progress — Low / Accidental — **Fixed**
+
+**What it was.** Two defects in one place. `signOut()` cleared the session but never touched
+`pollGeneration`, and the sign-out button asked `confirm("Sign out?")` unconditionally.
+
+**Why it hurt.** The first is the same class as TD-25 and its direct consequence: an in-flight
+`connectToRun` loop kept polling `/state` with a token that was about to be revoked, so every
+response was a 401 — which, before TD-97's fix, was swallowed by the same transient catch a dropped
+connection uses. Signing out therefore manufactured a 1Hz self-inflicted outage that reads as the
+server falling over. The second is the opposite failure: asking when nothing is at stake (signing
+out of a finished run, or of the home screen) trains people to click through the dialog, which is
+precisely the reflex that makes a real confirmation useless.
+
+**Fix, verified 2026-09-29.** `signOut()` bumps `pollGeneration` first, before any state is
+cleared, so the running loop is retired by the same mechanism TD-25 established. The confirm is now
+conditional on `(currentRunId && !currentRunFinished) || runInFlight` — all client-side, so asking
+costs no server round trip. Native `confirm()` retained: all six other destructive asks in `app.js`
+are native, and a styled modal would mean minting a CSS class (platform rule 3).
+
+**Left unfixed, deliberately.** The condition trusts `currentRunFinished`, a client-side flag. If
+the run finished while the tab was disconnected, signing out asks about a run that is already done —
+a false positive that costs one extra click. The alternative (ask the server) would make a local
+action depend on the network being up, which is worse.
+
+**Still open, and this entry does not close it:** TD-25's untested neighbour — deleting a
+*project* containing the currently-viewed run — remains unchecked. Signing out was verified; project
+deletion was not.
 
 ---
 
