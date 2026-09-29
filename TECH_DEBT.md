@@ -140,6 +140,10 @@ authority is its own heading, not this list.
 | TD-89 | Nothing recomputed `meta.hasTerminalAssertion` on the edit path, so deleting a case's last `Check ...` row saved silently and the case reported **Passed forever while verifying nothing** — **fixed** | High | Strategic | ? |
 | TD-90 | Edited rows were paired with originals BY POSITION, so deleting one row marked the whole tail changed, queued five browser walks, and **renumbered every step below it** — version history and failure reports then pointed at the wrong step — **fixed** | High | Strategic | ? |
 | TD-91 | "Ask for a change" was given the case title, its steps and the instruction — and nothing about the site — so it invented element names from page headings, and unlike the translate path its output was never parse-checked before being shown — **fixed** | Medium | Strategic | ? |
+| TD-96 | `DETERMINISTIC_HEAL` is compared against `"true"` but is **missing from `BOOLEAN_ENV_FLAGS`**, so `=1`/`=True` boots clean and reads false — the cheap structural heal is skipped and every heal silently pays for a full LLM IR regeneration | Medium | Accidental | ? |
+| TD-97 | `computeStatus` returns `truncated` **without consulting `result.passed`**, and `passed: status === "passed" || status === "truncated"` then reports it green — a case that genuinely FAILED in the browser is counted as passed whenever its IR was also truncated | High | Accidental | ? |
+| TD-98 | `attachElementIdentity` KEEPS LLM-authored elements it could not match to the DOM, so a phantom (`role=button, name="login-button", no css`) survives into the AppModel, `toIR` grounds a step on it, and the click can never resolve | High | Accidental | ? |
+| TD-99 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable | High | Accidental | ? |
 
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
@@ -3948,3 +3952,245 @@ prompt only ever failed on Azure.
   `unwrapArray` + `zod` on the wrapped result — the envelope adds one instruction line instead of
   a second, competing schema to keep in step with `src/schema/`, and it stays provider-agnostic
   (the gemini path is untouched byte-for-byte).
+
+---
+
+### TD-96. `DETERMINISTIC_HEAL` is read as a boolean flag but is missing from `BOOLEAN_ENV_FLAGS`, so a typo in it is silently false — Medium / Accidental — Filed, not fixed
+
+`src/stages/heal.ts:104`:
+
+```ts
+export function isDeterministicHealEnabled(): boolean {
+  return process.env.DETERMINISTIC_HEAL === "true";
+}
+```
+
+That is the exact `x === "true"` comparison `BOOLEAN_ENV_FLAGS` exists to protect, and
+`DETERMINISTIC_HEAL` is **not in the list** (`src/server/index.ts:2015`). The registry's own doc
+comment claims this cannot happen:
+
+> Kept as data, not scattered `if`s, so that adding a flag without adding it here is the only way
+> to get an unchecked flag
+
+It happened. `DETERMINISTIC_HEAL=1`, `=True`, `=yes` or `=` all boot cleanly and read as **false** —
+the cheap structural heal path is silently skipped and every heal pays for a full LLM IR
+regeneration instead. The failure is invisible: no boot error, no warning, no event, and the
+expensive path produces a correct-looking result, so the only symptom is the bill.
+
+Contrast `AUTH_ENABLED=truebro`, which this registry catches and kills the process for
+(`formatInvalidBooleanFlags` → `process.exit(1)`). Same class of bug, one flag protected and one not.
+
+**Fix:** add `"DETERMINISTIC_HEAL"` to `BOOLEAN_ENV_FLAGS`. One line. The existing
+`tests/booleanEnvFlags.test.ts` already covers the behaviour once the name is in the list.
+
+**Also check, don't assume:** `GATE_CASE_EDIT_AI` is likewise absent from the list, but it is read
+differently — `String(process.env.GATE_CASE_EDIT_AI ?? "").toLowerCase() === "true"`
+(`src/server/rewrite.ts:416`). That tolerates `TRUE`/`True` and still reads `1`/`yes` as false. It
+is a *second* boolean-reading convention in the same codebase, which is its own smaller problem:
+two conventions mean the registry can never be a complete index by inspection. Decide whether to
+normalise on one reader before extending the list.
+
+**Found while** tracing why self-heal has never run in production (the answer was
+`SELF_HEAL_DEFAULT` unset in Azure, a different flag — this one turned up on the way past and is
+unrelated to that root cause).
+
+---
+
+### TD-97. `truncated` outranks `failed`, so a case that FAILED at runtime is reported as passed — High / Accidental — Filed, not fixed
+
+`src/stages/suiteRunner.ts:334` (and the identical ladder inlined at `:251` for the primary case):
+
+```ts
+const computeStatus = (theIr, theResult, theBlocked) => {
+  if (theBlocked) return "blocked";
+  if (theIr.meta.truncated && !theIr.meta.hasTerminalAssertion) return "truncated_no_assertion";
+  if (theIr.meta.truncated) return "truncated";     // <-- theResult.passed is never consulted
+  return theResult.passed ? "passed" : "failed";
+};
+```
+
+Then, twelve lines down (`:265`, `:431`):
+
+```ts
+passed: status === "passed" || status === "truncated",
+```
+
+So a case whose IR was truncated **and** whose surviving steps failed in the browser is written to
+`05-result.json` as **`passed: true`**. The runtime failure is not downgraded, not flagged, not
+counted — it is discarded.
+
+**Observed, not hypothetical.** Run `2026-09-28T05-35-47-348Z-3effa6c7` (Azure), case *"End-to-end
+purchase flow starting from homepage with given credentials"*:
+
+- the run banner says **Failed** and a diagnosis was produced ("It couldn't find a button, link, or
+  field it needed on the page") — `failure_analysis` only runs on `!result.passed`, so Playwright
+  genuinely failed
+- step 4 (`Click 'login-button'`) took **9.1s** against ~900ms for the same click in every other
+  case, and is **the only step in the whole run with no "After step N" screenshot** — it did not
+  complete
+- the case card nonetheless reads **Partial**, and the run summary reads **"2 passed, 0 failed,
+  1 partial, 2 unconfirmed"**
+
+A reader is told zero tests failed on a run whose own banner says the site is broken.
+
+**Why the ladder is wrong.** The comment defends it: *"A wall the test can't pass outranks every
+other verdict."* That reasoning is correct for `blocked` — an IP block or a captcha is not the
+application's fault. It does not transfer to `truncated`. Truncation is a statement about **what
+was built**: some steps could not be grounded, so they were dropped. It says nothing whatever about
+whether **the steps that did run** passed. Conflating "we couldn't build all of it" with "what we
+built was fine" is how a red run reports green.
+
+**Fix direction (undecided, needs the call made):** the two facts are orthogonal and want two
+fields, not one enum — `status` for completeness (`full` / `truncated` / `truncated_no_assertion` /
+`blocked`) and `passed` for the verdict on what actually executed. A minimal version that changes
+no route shape: keep the enum, but stop letting truncation swallow the verdict —
+
+```ts
+if (theIr.meta.truncated && !theResult.passed) return "failed";
+```
+
+placed above the truncation branches, so a real failure always wins and truncation only describes
+an otherwise-clean run. Then `passed: status === "passed" || status === "truncated"` stops lying,
+because `truncated` can no longer contain a failure.
+
+**Check before fixing:** this will move runs from "passed" to "failed" in existing history — which
+is the point, but it is a visible change to numbers people have already seen. Worth saying out loud
+when it ships rather than letting a dashboard move on its own.
+
+---
+
+### TD-98. Discovery keeps LLM-invented elements it could not match to the DOM, so `toIR` grounds steps against elements that do not exist — High / Accidental — Filed, not fixed
+
+The AppModel is **LLM-authored**: `modelFromAria` (`src/stages/discovery.ts:395`, an `llm()` call at
+`:435`) turns an ARIA snapshot into elements. `attachElementIdentity` (`:345`) then grafts real
+selectors back on by matching `role|normalizeName(name)` against what the DOM detector actually
+found. Its no-match branch is line 368:
+
+```ts
+const hit = byKey.get(`${e.role.toLowerCase()}|${normalizeName(e.name)}`);
+if (!hit) return e;        // kept, unchanged, with no css and no testId
+```
+
+An element the identity pass **could not find in the DOM** is kept verbatim. Downstream, `toIR`
+treats presence in the AppModel as proof the element exists, and `resolveCode`
+(`targetResolver.ts:384`) has no `css` to fall back on, so it emits
+`locate(page, role, name)` → `getByRole(role, {name, exact:true})` on a name the DOM does not have.
+That locator can never resolve. The step burns a full action timeout and fails.
+
+**Observed.** `runs/2026-09-25T20-00-39-218Z-82ff713c/02-appmodel.json` holds the saucedemo login
+button **twice**:
+
+```
+role=button | name="Login"        | css="[data-test=\"login-button\"]" | testId="login-button"   <- real
+role=button | name="login-button" | css=undefined                      | testId=undefined        <- phantom
+```
+
+The second is the element's `id`/`name` **attribute** wearing the `name` slot. Every deterministic
+name path in the codebase gets this right — `discovery.ts:195` (`if (!name && /^(submit|button|
+reset)$/i.test(r.type)) name = r.value`) and `domExtract.ts:440` both read `value` and produce
+`"Login"`. Only the LLM produced `"login-button"`, and nothing removed it.
+
+It is then indistinguishable, to the IR compiler, from a real element — and strictly more
+attractive to a model writing a login step, because the string matches the request's vocabulary.
+That is what run `2026-09-28T05-35-47-348Z-3effa6c7` case 1 clicked (see TD-97).
+
+**Scope is wider than one element.** Counted across local runs: **137 of 143** AppModel elements in
+`2026-09-23T07-14-12-267Z-0b5f3586` carry neither `css` nor `testId`; 4 of 7 in the saucedemo model.
+Most are benign — `{"role":"link","name":"Homepage"}` has a real accessible name and grounds fine
+through `locate()`. Selectorless is **not** the defect. The defect is that "the identity pass could
+not match this" is not recorded anywhere, so benign and phantom are the same shape by the time
+`toIR` sees them.
+
+**Fix direction:** `attachElementIdentity` already knows which elements it failed to match — that
+is exactly the `!hit` branch. Mark them (`identityMatched: false`) rather than dropping them
+outright: dropping would also remove the legitimately selectorless elements above, and the
+deliberate ambiguous-name skip at `:360` (six "Add to cart" buttons attach nothing **on purpose**)
+means `!hit` does not imply "fake". Once marked, `toIR` can refuse to ground a step against an
+unmatched element whose name appears nowhere in the DOM detector's output, which is the narrow
+condition the phantom meets and "Homepage" does not.
+
+**Related:** TD-95 (a state-dependent accessible name used as identity) is the same family — the
+`name` slot is being asked to carry more than it can. This one is worse in that the name is not
+even wrong-but-real; it names nothing at all.
+
+---
+
+### TD-99. The click-probe's role+landmark filter excludes every element that navigates and admits only ones that go nowhere — High / Accidental — Filed, not fixed
+
+**This is the root cause of the truncations, and therefore of the IR retry spend and of self-heal
+never being demonstrable.** One condition, `src/stages/hybridDiscovery.ts:569`:
+
+```ts
+const clickable = (/button/i.test(el.role) && el.landmark === "nav") || /link/i.test(el.role);
+```
+
+Measured against the real saucedemo inventory page as discovery itself recorded it
+(`runs/2026-09-17T11-38-39-418Z-bfd03461/02-appmodel.json`), **8 of 38 elements pass** — and after
+`crawlableFrom`'s same-origin filter and the two safety verbs, **zero new URLs survive**:
+
+| element | role / landmark | passes filter | outcome |
+|---|---|---|---|
+| All Items | button / nav | yes | back to `inventory.html` — same page |
+| Dynamic Catalog | button / nav | yes | same page |
+| About | link / nav | yes | `saucelabs.com` — **external**, dropped |
+| Logout | button / nav | yes | dropped by `SIGN_OUT_VERB` (correctly) |
+| Reset App State | button / nav | yes | dropped by `DESTRUCTIVE_VERB` (correctly) |
+| X / Facebook / LinkedIn | link / footer | yes | **external**, dropped |
+| **Cart, empty** | **button / header** | **no** | `/cart.html` — the gateway to checkout |
+| **Open Menu** | **button / header** | **no** | reveals the menu |
+| **View details for …** (×6) | **button / undefined** | **no** | `/inventory-item.html?id=N` |
+
+The filter admits exactly the elements that lead nowhere and excludes exactly the three kinds that
+navigate. Net crawl result: **2 pages, on five separate runs, four of them authenticated** — login
+and inventory, never cart, never a product page, never checkout.
+
+**The most instructive part: this was already fixed once, for this exact site, and the fix does not
+fire.** The comment above the condition (`:564`) reads:
+
+> ANY link: an `<a>` that survived the href pass has no usable destination. saucedemo's cart is
+> literally `<a class="shopping_cart_link" data-test="shopping-cart-link">` with no href attribute
+> at all … Anchors are safe to widen to because they are semantically navigation
+
+The widening to `/link/i` was written **specifically to catch saucedemo's cart**. It misses it,
+because an `<a>` with no `href` is not a link in the accessibility tree — discovery records the cart
+as **`role: "button"`, `landmark: "header"`**, which the widened condition still rejects. The fix
+and the element it was written for never meet.
+
+**Not the cause — ruled out with data, so nobody re-checks these:**
+- `MAX_DISCOVERY_PAGES` is 5 and only 2 pages were found. **Not binding. Do not raise it.**
+- The href pass is not shadowing the probe: `internalUrls` is `[]` on **every** saucedemo page in
+  every run, so `if (viaLinks.length) return viaLinks` is false and the click-probe *does* run.
+  It runs and correctly finds nothing, because of the filter above.
+- Not an auth wall: `auth.status` is `"authenticated"` and the crawl reached `inventory.html`.
+
+**Downstream consequences, all one cause:**
+- `toIR` cannot ground steps for cart/checkout/product-detail pages, so cases are **truncated** —
+  3 of 5 on run `2026-09-28T05-35-47-348Z-3effa6c7`, two of them stripped to a bare login prefix.
+- Truncation is what `attemptHeal` refuses to accept (`heal.ts:206`, *"a heal that truncates isn't
+  a heal"*), so **self-heal cannot demonstrate anything on this site** no matter what
+  `SELF_HEAL_DEFAULT` is set to.
+- Each truncated case still burns its full `MAX_IR_ATTEMPTS` trying to ground steps against pages
+  that are not in the model — consistent with 20 IR calls for 5 cases, though `retries[]` is what
+  would confirm it.
+
+**Fix direction — smallest change that moves the needle:** allow `header` alongside `nav`.
+
+```ts
+const navish = el.landmark === "nav" || el.landmark === "header";
+const clickable = (/button/i.test(el.role) && navish) || /link/i.test(el.role);
+```
+
+A header is navigation chrome by definition, and both safety verbs still apply, so `Logout` and
+`Reset App State` stay excluded. That one word unlocks `Cart, empty` → `/cart.html`, and from the
+cart the checkout flow becomes crawlable within the existing budget of 5.
+
+**Do NOT widen to landmark-less buttons in the same change.** That admits the six `Add to cart`
+buttons, and discovery clicking those mutates application state — it would violate the
+read-only guarantee the `DESTRUCTIVE_VERB` filter exists to hold, and "Add to cart" is not a
+destructive *verb*, so nothing would catch it. Product-detail coverage (`View details for …`) is a
+real gap but needs its own decision about read-only-ness, separately.
+
+**Verify by measuring, not by eye:** the check that produced the table above is one `node -e` over
+`02-appmodel.json` counting elements that pass the condition. Run it before and after; the number
+must go from 8-that-yield-nothing to a set containing `Cart, empty`, and the crawl from 2 pages
+to 3+.
