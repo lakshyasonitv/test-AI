@@ -1113,7 +1113,12 @@ async function loadCaseDetails(card) {
     const c = suite?.cases?.find((x) => x.caseId === caseId);
     const narrativeEl = card.querySelector(".case-narrative");
     const diagEl = card.querySelector(".case-diagnosis-block");
-    if (status === "passed" && c) renderCaseNarrative(narrativeEl, c, ir);
+    // Every non-failed outcome explains itself. It used to be `passed` only, so a Blocked,
+    // Unconfirmed or Partial card showed a badge, a screenshot and nothing else — the reader got
+    // no statement of what ran or what they were looking at. `failed` is excluded because it has
+    // its own, richer block below (the failing step, the error, the diagnosis); giving it both
+    // would say the same thing twice in two voices.
+    if (NARRATIVE_LEAD_IN[status] && c) renderCaseNarrative(narrativeEl, c, ir, status);
     if (status === "failed") renderCaseDiagnosisBlock(diagEl, diagnosis);
   } catch {
     // Details stay as "Loading..." — non-critical
@@ -1574,7 +1579,23 @@ function describeScreenshot(steps) {
 // English step descriptions already produced by formatIrStep, not a second LLM summarization
 // pass (this path makes no new API calls; see the file header on public/preview.js for why
 // that constraint is deliberate here).
-function buildStepNarrative(steps) {
+/**
+ * How the step list is introduced, by outcome.
+ *
+ * "Here's what happened" is only honest for a case that RAN ITS WHOLE PLAN. A truncated case's
+ * IR is the surviving prefix — real steps were dropped before it ever executed — and a blocked
+ * case hit a wall partway. Reusing the passed wording for those would tell the reader the plan
+ * completed when it demonstrably did not, which is the same class of overclaim as reporting a
+ * truncated failure as a pass (TD-101). `passed` is unchanged, so no existing card moves.
+ */
+const NARRATIVE_LEAD_IN = {
+  passed: "Here's what happened",
+  truncated: "Here's the part of the test that actually ran",
+  truncated_no_assertion: "Here's the part of the test that actually ran",
+  blocked: "Here's what the test was doing when it was stopped",
+};
+
+function buildStepNarrative(steps, status) {
   if (!steps || !steps.length) return "";
   // formatIrStep returns imperative fragments ("Go to X", "Click on Y") — gluing them after a
   // subject like "The test ___" needs verb conjugation ("go" -> "goes") this function doesn't
@@ -1586,14 +1607,25 @@ function buildStepNarrative(steps) {
     return d.charAt(0).toLowerCase() + d.slice(1);
   });
   const sentence = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")}, then ${parts[parts.length - 1]}`;
-  return `Here's what happened: ${sentence}.`;
+  return `${NARRATIVE_LEAD_IN[status] ?? NARRATIVE_LEAD_IN.passed}: ${sentence}.`;
 }
 
-function renderCaseNarrative(container, c, ir) {
+/**
+ * A blocked case's screenshot is `blockedScreenshot` — the WALL (a captcha, a login gate, an
+ * IP block), not the final state of the test. `describeScreenshot` reads the IR's last step, so
+ * for a blocked case it would confidently describe an assertion the image does not show. Fixed
+ * copy instead, because there is nothing in the IR that describes a wall.
+ */
+const BLOCKED_IMAGE_DESC =
+  "The wall the test ran into — this is as far as it got, not the end of the test.";
+
+function renderCaseNarrative(container, c, ir, status = "passed") {
   const steps = ir?.steps;
-  const whatHappened = steps?.length ? buildStepNarrative(steps) : (c.whyItMatters || c.intent || "");
+  const whatHappened = steps?.length ? buildStepNarrative(steps, status) : (c.whyItMatters || c.intent || "");
   if (!whatHappened) { container.classList.add("hidden"); return; }
-  const whatImage = c.screenshotUrl ? describeScreenshot(steps) : "";
+  const whatImage = !c.screenshotUrl ? ""
+    : status === "blocked" ? BLOCKED_IMAGE_DESC
+    : describeScreenshot(steps);
   container.innerHTML = `
     <p class="case-narrative-line"><b>What happened:</b> ${escapeHtml(whatHappened)}</p>
     ${whatImage ? `<p class="case-narrative-line"><b>What the image shows:</b> ${escapeHtml(whatImage)}</p>` : ""}`;

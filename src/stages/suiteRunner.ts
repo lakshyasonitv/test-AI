@@ -134,10 +134,12 @@ export function buildSuiteSummary(results: CaseRunResult[], runDir: string): Sui
         ?? (r.healed ? findScreenshot(path.join(caseDir, "healed", "artifacts")) : undefined)
         ?? findScreenshot(path.join(caseDir, "artifacts")) ?? findScreenshot(caseDir);
       const screenshotUrl = shot ? "/" + path.relative(".", shot).replace(/\\/g, "/") : undefined;
-      // Unlike screenshotUrl, never check caseDir/healed/artifacts here: video is
-      // retain-on-failure, and a heal only "counts" once the retry PASSES — a passing
-      // Playwright run never keeps a video. The only place a video could ever exist is the
-      // original (failing) attempt, healed or not.
+      // Unlike screenshotUrl, deliberately the ORIGINAL attempt, never caseDir/healed/artifacts.
+      // Under the default retain-on-failure that is the only place a video can exist at all (a
+      // heal only "counts" once the retry passes, and a passing run keeps nothing). Under
+      // PLAYWRIGHT_VIDEO=on the healed attempt also has one — and the original is still the right
+      // choice, because the reason to watch a healed case is to see what went wrong the first
+      // time; the retry that worked is the less interesting half.
       const video = findVideo(path.join(caseDir, "artifacts")) ?? findVideo(caseDir);
       const videoUrl = video ? "/" + path.relative(".", video).replace(/\\/g, "/") : undefined;
       // Read the failure out of the case's own saved report. Read from DISK, like the screenshot

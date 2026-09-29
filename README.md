@@ -266,6 +266,7 @@ in `.env.example` — but that file is not a complete index of this table. `MAX_
 | `PORT` | No | Web UI port (default: 3000) |
 | `SELECT_TIMEOUT_MS` | No | How long a `select` step waits for its options and for the action itself (default: 10000). Server-populated dropdowns are the norm, so the wait is the default — but it exits the moment the control is populated and still has no match, so a wrong-control resolution fails fast instead of looking like a slow network (`TECH_DEBT.md` TD-79) |
 | `PLAYWRIGHT_TIMEOUT` | No | Per-test timeout in ms, read by `playwright.config.ts` (default: 50000). Note this one is **not** listed in `.env.example` |
+| `PLAYWRIGHT_VIDEO` | No | `on` records a video for **every** case, `off` records none; unset is `retain-on-failure` — only a case Playwright itself failed. Set it to `on` if you want recordings for Blocked/Partial/Unconfirmed cases, which Playwright counts as passes and therefore discards by default. Costs a video per case on ephemeral storage |
 
 #### Platform flags — every one defaults OFF
 
