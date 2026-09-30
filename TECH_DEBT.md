@@ -147,7 +147,7 @@ authority is its own heading, not this list.
 | TD-100 | `DETERMINISTIC_HEAL` is compared against `"true"` but is **missing from `BOOLEAN_ENV_FLAGS`**, so `=1`/`=True` boots clean and reads false — the cheap structural heal is skipped and every heal silently pays for a full LLM IR regeneration — **fixed** | Medium | Accidental | ? |
 | TD-101 | `computeStatus` returns `truncated` **without consulting `result.passed`**, and `passed: status === "passed" || status === "truncated"` then reports it green — a case that genuinely FAILED in the browser is counted as passed whenever its IR was also truncated — **fixed** | High | Accidental | ? |
 | TD-102 | `attachElementIdentity` KEEPS LLM-authored elements it could not match to the DOM, so a phantom (`role=button, name="login-button", no css`) survives into the AppModel, `toIR` grounds a step on it, and the click can never resolve | High | Accidental | ? |
-| TD-103 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable — **fixed** | High | Accidental | ? |
+| TD-103 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable — fix reverted, **still open** | High | Accidental | ? |
 | TD-104 | `RUN_TIMEZONE` reaches Chromium unvalidated (`isSupportedRunLocale` guards only the ROUTE, never the env, and the timezone nothing at all), so one typo throws at `browserContext.newPage` and **every case in every run dies before navigating** — TD-71 again, same function, same blank-screenshot symptom — **fixed** | High | Accidental | ? |
 
 | TD-105 | The crawler's read-only guards (`SIGN_OUT_VERB` / `DESTRUCTIVE_VERB`) are anchored `^...$`, so discovery will click **"Delete account"** while refusing **"Delete"** — pre-existing, but TD-103 widened the landmarks it applies to | Medium | Accidental | ? |
@@ -4251,7 +4251,7 @@ even wrong-but-real; it names nothing at all.
 
 ---
 
-### TD-103. The click-probe's role+landmark filter excludes every element that navigates and admits only ones that go nowhere — High / Accidental — **Fixed**
+### TD-103. The click-probe's role+landmark filter excludes every element that navigates and admits only ones that go nowhere — High / Accidental — **OPEN (a fix shipped, did not work in production, and was reverted 2026-09-30)**
 
 **This is the root cause of the truncations, and therefore of the IR retry spend and of self-heal
 never being demonstrable.** One condition, `src/stages/hybridDiscovery.ts:569`:
@@ -4408,9 +4408,10 @@ those in a `nav` or `header` landmark is clicked during discovery, on a real sit
 **Found by a test written for TD-103** that asserted the guarantee the comment implies; the code
 did not make it. The test now pins the *actual* reach, so the gap is visible rather than assumed.
 
-**Pre-existing, but the surface grew.** The anchors already applied to `nav`; TD-103's fix widened
-the filter to `header`, which is exactly where a user menu with "Delete account" tends to live. The
-change did not create this, and it did make it worth writing down.
+**Pre-existing, and the surface did NOT grow after all.** The anchors already applied to `nav`.
+TD-103's fix would have widened this to `header` too, but that fix was reverted on 2026-09-30, so
+the reach today is exactly what it always was. Still worth having written down: it was found by a
+test asserting the guarantee the code's comment makes, and the code does not make it.
 
 **Why it was NOT fixed inline with TD-103.** Loosening `^delete$` to `^delete` is not free: it
 would also exclude legitimate navigation — "Cancelled orders" on any e-commerce site is a real
@@ -4454,3 +4455,42 @@ boot on a correct config, converting a guard against a broken deployment into a 
 working one. The check asks the runtime instead — `new Intl.DateTimeFormat("en-US", { timeZone })`
 throws `RangeError` for exactly what Chromium rejects and accepts every alias it accepts.
 `RUN_LOCALE=""` stays legal: it is the documented rollback switch, not a typo.
+
+**TD-103 REVERT NOTE (2026-09-30) — read this before attempting it again.**
+
+`nav || header` shipped in `41c2dca` and **changed nothing in production**: four further
+authenticated saucedemo runs, still exactly 2 pages, including one with `APPMODEL_CACHE_TTL_MS=0`
+so the crawl was genuinely re-run. Reverted rather than left in, since it was earning nothing.
+
+**Ruled out — do not re-investigate:**
+
+| link in the chain | checked how | result |
+|---|---|---|
+| the filter admits the cart | `isCrawlClickCandidate` on the recorded element | admits it |
+| the click-probe finds the page | ran the REAL `discoverUrlsByClicking` against a live logged-in saucedemo | returned `https://www.saucedemo.com/cart.html` |
+| the URL survives filtering | `collectCrawlTargets` with the real `visited` set | passed through |
+| the locator resolves | live browser | `getByRole("button",{name:"Cart, empty"})` → 1 match, click navigates to `/cart.html` |
+| the probe page is logged in | `sharedPage()` — one page, one context, login runs on it | session preserved |
+| `MAX_DISCOVERY_PAGES` | default 5; `pages` starts at 2 | not binding |
+| the AppModel cache | set to 0 in Azure for one run | crawl genuinely re-ran, still 2 pages |
+
+Every link works in isolation. Something about the production AppModel differs from the artifact the
+change was measured against.
+
+**The prime suspect, unconfirmed:** the measurement used
+`runs/2026-09-17T11-38-39-418Z-bfd03461/02-appmodel.json`, where the cart carries
+`"landmark": "header"`. **`landmark` is populated only by the DOM discovery path**
+(`domDiscovery.ts:178`), and `attachElementIdentity` (`discovery.ts:345`) copies
+`testId`/`id`/`css`/`genericPath` onto LLM-authored elements but **not `landmark`**. On a model
+built through `modelFromAria` the field is simply absent, and any condition keyed on it matches
+nothing — which is exactly the observed behaviour.
+
+**The one check that would confirm it:** open a CURRENT run's `02-appmodel.json`, find the
+`Cart, empty` element, and see whether `landmark` is there. If it is not, the fix is to carry
+`landmark` across in `attachElementIdentity` (the real defect) rather than to widen the filter.
+
+**Scope correction, measured across every run on disk.** Discovery is not broadly broken — the
+crawl LOOP works. `www.qa-practice.com` goes **1 → 5 pages** on the href path, twice. What has never
+added a page, on any run, before or after this change, is the **click-probe fallback** — the path a
+site needs only when its navigation has no usable `href`. That is a narrower and more accurate
+statement of the defect than this entry originally made.

@@ -543,8 +543,8 @@ const MAX_CLICK_PROBES = 12;
  * had just got past. Clicking is the only way to learn those destinations.
  *
  * Two candidate shapes, both provably unreachable via `href` (see `isCrawlClickCandidate`):
- * navigation-landmark buttons, and any anchor. Buttons stay scoped to the `nav` and `header`
- * landmarks — a DOM fact, not a guess about button text — because an unscoped button could be
+ * nav-landmark buttons, and any anchor. Buttons stay scoped to the `nav` landmark — a DOM fact,
+ * not a guess about button text — because an unscoped button could be
  * "Delete" or "Add to cart". Anchors need no such scoping: they are semantically navigation, and
  * this only runs when the href pass already returned nothing, so every anchor reaching here is one
  * with no usable destination.
@@ -579,23 +579,25 @@ const normName = (s: string) => (s ?? "").toLowerCase().replace(/\s+/g, " ").tri
   //    no href attribute at all, and its product links are `href="#"`. Anchors are safe to
   //    widen to because they are semantically navigation.
   //
-  // `header` COUNTS AS NAVIGATION CHROME, NOT JUST `nav` — TECH_DEBT.md TD-103.
+  // REVERTED 2026-09-30 — the `nav || header` widening shipped and did NOT work in production.
+  // TD-103 stays OPEN.
   //
-  // The widening to `/link/i` above was written for saucedemo's cart specifically, and it never
-  // fired on it: an <a> with no href is not a link in the accessibility tree, so discovery
-  // records that cart as `role: "button", landmark: "header"` and the widened condition still
-  // rejected it. The fix and the element it was written for never met.
+  // Everything downstream was verified working against a live authenticated saucedemo: this
+  // filter admitted `Cart, empty`, `discoverUrlsByClicking` returned
+  // "https://www.saucedemo.com/cart.html", and `collectCrawlTargets` passed it through. Four real
+  // runs still produced exactly 2 pages.
   //
-  // Measured against the real inventory page as discovery recorded it
-  // (`runs/2026-09-17T11-38-39-418Z-bfd03461/02-appmodel.json`): 8 of 38 elements passed, and
-  // after the same-origin filter and the two verb guards, ZERO new URLs survived — the two nav
-  // buttons loop back to the same page, About and the three footer socials are external, and
-  // Logout / Reset App State are correctly dropped. Every element that actually navigates
-  // (`Cart, empty`, `Open Menu`, six `View details for …`) sat outside the filter. Result: 2
-  // pages crawled on five separate runs, four of them authenticated — which is what truncates
-  // the cases, burns the IR retries, and leaves self-heal unable to demonstrate anything
-  // (`heal.ts` discards a heal whose regenerated IR is still truncated).
+  // The likely reason, and what to check before anyone re-widens this: the measurement was made
+  // against a 2026-09-17 AppModel in which the cart carried `landmark: "header"`. `landmark` is
+  // populated ONLY by the DOM discovery path (domDiscovery.ts), and `attachElementIdentity` copies
+  // css/testId/id/genericPath onto LLM-authored elements but NOT landmark — so on a model built
+  // the other way the field is absent and any condition keyed on it matches nothing.
   //
+  // DO NOT re-widen against an old artifact. Check the field on an AppModel from a CURRENT run.
+  //
+  // Context for whoever picks this up: the crawl LOOP itself works — qa-practice.com goes 1 -> 5
+  // pages on the href path. It is this click-probe fallback that has never added a page, on any
+  // run, before or after the reverted change.
   // DELIBERATELY NOT widened to landmark-less buttons. That admits the six `Add to cart`
   // buttons, and discovery CLICKING those mutates application state — "Add to cart" is not a
   // destructive *verb*, so `DESTRUCTIVE_VERB` would not catch it and the read-only guarantee
@@ -609,8 +611,7 @@ export function isCrawlClickCandidate(
 ): boolean {
   if (SIGN_OUT_VERB.test(normName(el.name))) return false;    // would end the session mid-crawl
   if (DESTRUCTIVE_VERB.test(normName(el.name))) return false; // discovery must stay read-only
-  const navish = el.landmark === "nav" || el.landmark === "header";
-  return (/button/i.test(el.role) && navish) || /link/i.test(el.role);
+  return (/button/i.test(el.role) && el.landmark === "nav") || /link/i.test(el.role);
 }
 
 export async function discoverUrlsByClicking(
