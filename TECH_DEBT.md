@@ -147,7 +147,7 @@ authority is its own heading, not this list.
 | TD-100 | `DETERMINISTIC_HEAL` is compared against `"true"` but is **missing from `BOOLEAN_ENV_FLAGS`**, so `=1`/`=True` boots clean and reads false — the cheap structural heal is skipped and every heal silently pays for a full LLM IR regeneration — **fixed** | Medium | Accidental | ? |
 | TD-101 | `computeStatus` returns `truncated` **without consulting `result.passed`**, and `passed: status === "passed" || status === "truncated"` then reports it green — a case that genuinely FAILED in the browser is counted as passed whenever its IR was also truncated — **fixed** | High | Accidental | ? |
 | TD-102 | `attachElementIdentity` KEEPS LLM-authored elements it could not match to the DOM, so a phantom (`role=button, name="login-button", no css`) survives into the AppModel, `toIR` grounds a step on it, and the click can never resolve | High | Accidental | ? |
-| TD-103 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable — fix reverted, **still open** | High | Accidental | ? |
+| TD-103 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable — **fixed** (three coupled changes) | High | Accidental | ? |
 | TD-104 | `RUN_TIMEZONE` reaches Chromium unvalidated (`isSupportedRunLocale` guards only the ROUTE, never the env, and the timezone nothing at all), so one typo throws at `browserContext.newPage` and **every case in every run dies before navigating** — TD-71 again, same function, same blank-screenshot symptom — **fixed** | High | Accidental | ? |
 
 | TD-105 | The crawler's read-only guards (`SIGN_OUT_VERB` / `DESTRUCTIVE_VERB`) are anchored `^...$`, so discovery will click **"Delete account"** while refusing **"Delete"** — pre-existing, but TD-103 widened the landmarks it applies to | Medium | Accidental | ? |
@@ -4251,7 +4251,7 @@ even wrong-but-real; it names nothing at all.
 
 ---
 
-### TD-103. The click-probe's role+landmark filter excludes every element that navigates and admits only ones that go nowhere — High / Accidental — **OPEN (a fix shipped, did not work in production, and was reverted 2026-09-30)**
+### TD-103. A click-discovered page was discarded twice over, so the crawl could never add one — High / Accidental — **Fixed (three changes; 2026-09-30)**
 
 **This is the root cause of the truncations, and therefore of the IR retry spend and of self-heal
 never being demonstrable.** One condition, `src/stages/hybridDiscovery.ts:569`:
@@ -4553,3 +4553,50 @@ target (`add-to-cart-sauce-labs-backpack`) IS in the 39-element inventory model,
 is flat (`appModel.pages.flatMap`), so page reachability is not the gate. That needs the truncation
 note, which local reproduction cannot produce: the `.env` Gemini key returns 401
 (`ACCESS_TOKEN_TYPE_UNSUPPORTED` — it is an OAuth token, not an API key), so `toIR` will not run here.
+
+**TD-103 FIXED (2026-09-30) — three changes, and any one alone is a no-op.**
+
+That property is the whole story: the first attempt shipped change 3 by itself, changed nothing across
+four authenticated runs, and was reverted as dead weight. It was necessary and insufficient.
+Instrumenting the crawl found the other two in minutes, after three wrong theories had cost a day.
+
+| # | change | what it fixes |
+|---|---|---|
+| 1 | `keepErrorStatusSnapshot` — trust a 4xx body **only** for a URL the click-probe reached | a client-side route 404s on the crawl re-fetch |
+| 2 | `landedOnAlreadyModelled` — compare the landing against the REQUESTED url before consulting `visited` | `collectCrawlTargets` marks a url visited when it QUEUES it, so the loop rejected every non-redirecting page it fetched |
+| 3 | `isCrawlClickCandidate` — `header` counts as navigation chrome, not just `nav` | the cart and menu live in the header, so neither was ever clicked |
+
+**Measured, cache off, both sites:**
+
+```
+saucedemo      2 -> 3 pages   (cart.html, 14 elements: "404 from the server but 14 elements rendered")
+qa-practice    5 -> 5 pages   (all five real; no regression)
+```
+
+**The 4xx rule is scoped on PROVENANCE, not a threshold.** A blanket "accept any 4xx that rendered
+something" was measured against `qa-practice.com` and admitted `index.html` and `index_v2.html` —
+genuine dead links whose 404 pages carry one element — which then displaced real pages. An element
+count would be a magic number between 1 and 14. A URL found in an href that 404s is a broken link; a
+URL found by CLICKING cannot be, because the click worked.
+
+**Verified:** `tsc` clean, 1649 passed / 0 failed / 18 skipped across 114 files. Each change
+negative-controlled independently — reverting one turns 2, 2 and 4 tests red respectively, all
+restored green.
+
+**Still open, and NOT this:** saucedemo stops at 3 rather than reaching checkout. The cart page IS now
+probed (`found 1 route(s) by clicking`) but the next hop is not kept, and `MAX_DISCOVERY_PAGES` is 5 so
+the budget is not the limit. Separately, an add-to-cart case truncates at its own step 2 even though
+its target IS in the model and `groundingError` is flat across pages — that needs a truncation note
+from a real run, which cannot be produced locally (the `.env` Gemini key returns 401
+`ACCESS_TOKEN_TYPE_UNSUPPORTED`; it is an OAuth token, not an API key).
+
+**How to reproduce any of this locally, free:**
+
+```
+rm -rf runs/_cache/appmodels
+APPMODEL_CACHE_TTL_MS=0 node --env-file-if-exists=.env --import tsx <script>.mts
+```
+
+`TTL_MS` in `src/kb/cache.ts` is read at MODULE LOAD, so setting `process.env` inside a script does
+nothing — two of this investigation measurements were silently served from cache. Pass it on the
+command line.
