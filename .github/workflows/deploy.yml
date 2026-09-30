@@ -19,7 +19,6 @@ env:
   IMAGE: ghcr.io/lakshyasonitv/testbench
   APP_NAME: testbench
   RESOURCE_GROUP: testbench-rg
-  HEALTH_URL: https://testbench.livelysmoke-6ad5557f.koreacentral.azurecontainerapps.io/api/health
 
 jobs:
   build:
@@ -72,28 +71,44 @@ jobs:
             --output none
           echo "Deployed $IMAGE:${{ github.sha }} (DEPLOY_STAMP=${{ github.run_number }})"
 
-      - name: Wait for new revision to become ready
+      - name: Wait for new revision to take over
         run: |
+          rev=$(az containerapp show -n "$APP_NAME" -g "$RESOURCE_GROUP" \
+            --query 'properties.latestRevisionName' -o tsv)
+          app_fqdn=$(az containerapp show -n "$APP_NAME" -g "$RESOURCE_GROUP" \
+            --query 'properties.configuration.ingress.fqdn' -o tsv)
+          if [ -z "$rev" ] || [ -z "$app_fqdn" ]; then
+            echo "::error::Could not read revision name or app FQDN (rev='$rev' fqdn='$app_fqdn')"; exit 1
+          fi
+          echo "New revision: $rev  (app: https://$app_fqdn)"
+          echo "APP_FQDN=$app_fqdn" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do
-            read -r latest ready <<< "$(az containerapp show -n "$APP_NAME" -g "$RESOURCE_GROUP" \
-              --query '[properties.latestRevisionName, properties.latestReadyRevisionName]' -o tsv)"
-            echo "attempt $i: latest=$latest ready=$ready"
-            if [ -n "$latest" ] && [ "$latest" = "$ready" ]; then
-              echo "Revision $latest is ready"; exit 0
+            prov=$(az containerapp revision show -n "$APP_NAME" -g "$RESOURCE_GROUP" \
+              --revision "$rev" --query 'properties.provisioningState' -o tsv)
+            # In single-revision mode the old revision stays active until the new one is serving.
+            active=$(az containerapp revision list -n "$APP_NAME" -g "$RESOURCE_GROUP" \
+              --query "[?properties.active].name" -o tsv | tr '\n' ' ')
+            echo "attempt $i: provisioningState=$prov active=[$active]"
+            if [ "$prov" = "Failed" ]; then
+              echo "::error::Revision $rev failed to provision"; exit 1
+            fi
+            if [ "$prov" = "Provisioned" ] && [ "$active" = "$rev " ]; then
+              echo "Revision $rev is provisioned and is the only active revision"; exit 0
             fi
             sleep 10
           done
-          echo "::error::New revision never became ready (old revision is still serving traffic)"
+          echo "::error::Revision $rev never became the sole active revision (active=[$active])"
           exit 1
 
       - name: Health check
         run: |
           # minReplicas is 0, so the first request cold-starts the container (~60s).
+          url="https://$APP_FQDN/api/health"
           for i in $(seq 1 10); do
-            code=$(curl -s -m 120 -o /dev/null -w '%{http_code}' "$HEALTH_URL" || echo "000")
-            echo "attempt $i: HTTP $code"
+            code=$(curl -s -m 120 -o /dev/null -w '%{http_code}' "$url"); code=${code:-000}
+            echo "attempt $i: HTTP $code from $url"
             if [ "$code" = "200" ]; then exit 0; fi
             sleep 15
           done
-          echo "::error::Health check failed at $HEALTH_URL"
+          echo "::error::Health check failed at $url"
           exit 1

@@ -19,6 +19,34 @@ export interface LlmStageUsage {
   provider: string;
 }
 
+/**
+ * One rejected attempt: which case, which attempt number, and WHY it was sent back.
+ *
+ * Exists because the retry count is the dominant cost in a run and nothing recorded the reason.
+ * Measured on a real saucedemo run: 20 IR calls for 5 cases — exactly `MAX_IR_ATTEMPTS` (4) per
+ * case, with **zero** cases passing. Every case burned every attempt. Whether that is fixable
+ * waste or the honest price of the project's central rule depends entirely on the reasons, and
+ * those were only ever visible in `console.log`.
+ *
+ * Logs cannot answer it on this deployment: Azure's storage is ephemeral, so a run's artifacts are
+ * gone by the next deploy (11 restarts inside 2h on 2026-09-25), and Log Analytics samples the
+ * `[ir]` lines away. Recording it into the run's own usage artifact makes every run answer the
+ * question by itself, with no log dependency and no race.
+ */
+export interface LlmRetryRecord {
+  /** Which stage rejected — "ir" today; the shape is deliberately not IR-specific. */
+  stage: string;
+  /** The case this attempt belonged to, so a per-case pattern is visible. */
+  caseTitle?: string;
+  /** 1-based, matching the `[ir] attempt N / M` log line. */
+  attempt: number;
+  /** A short structural label — "grounding", "missing-actions", "schema", "contradicts-case".
+   *  Grouping by this is what separates "retries that cannot succeed" from ordinary correction. */
+  kind: string;
+  /** The rejection message, truncated. Prose: for a human to read, never to branch on. */
+  reason: string;
+}
+
 export interface LlmUsageSnapshot {
   calls: number;
   promptTokens: number;
@@ -29,6 +57,9 @@ export interface LlmUsageSnapshot {
    *  Absent from `groq-usage.json`'s predecessor entirely; this is what makes generalizing the
    *  budget past IR-only worthwhile — you can now see which stage is actually spending. */
   byStage: Record<string, LlmStageUsage>;
+  /** Every attempt that was rejected and retried, in order. Empty on a run where nothing was
+   *  sent back — which is itself the signal that the retries are not where the money went. */
+  retries: LlmRetryRecord[];
 }
 
 /**
@@ -116,6 +147,43 @@ export class LlmBudget {
     return this.promptTokens + this.completionTokens;
   }
 
+  /** Rejected attempts, in order. Capped so a pathological run cannot grow the artifact
+   *  unboundedly — 200 is far above any real run (4 attempts x MAX_CASES_PER_RUN). */
+  private readonly retries: LlmRetryRecord[] = [];
+
+  /**
+   * Record that an attempt was rejected and will be retried.
+   *
+   * ONE RECORD PER ATTEMPT — a later call for the same (stage, case, attempt) REPLACES the earlier
+   * one rather than appending. This array exists to explain TOKEN SPEND, and one attempt is one
+   * LLM call, so two records for one attempt overstate the bill.
+   *
+   * It is not hypothetical. `toIR` rejects at two points inside a single attempt: once per
+   * live-extend hop, and again at the bottom of the loop where the comment calls the write a
+   * "re-sync … idempotent if the top-of-loop tracking already covered this exact value". Idempotent
+   * is true for `lastErr = x` and false for an append, so the first real run produced four records
+   * for two rejections — the same message, same attempt, twice each. Caught end-to-end, not by
+   * `tsc` and not by a unit test of this method in isolation: the defect lives in how two call
+   * sites interact, which only a whole run exercises.
+   *
+   * The LAST reason for an attempt wins, because that is the one the attempt was actually sent back
+   * with; an extension hop that resolved into a different failure should report where it ended up.
+   *
+   * Fire-and-forget by design, like every other write here: a bookkeeping failure must never fail
+   * a run. `reason` is truncated because a grounding message can carry a page's own text.
+   */
+  recordRetry(rec: LlmRetryRecord): void {
+    const next = { ...rec, reason: (rec.reason ?? "").slice(0, 300) };
+    const last = this.retries[this.retries.length - 1];
+    if (last && last.stage === next.stage && last.caseTitle === next.caseTitle
+        && last.attempt === next.attempt) {
+      this.retries[this.retries.length - 1] = next;
+      return;
+    }
+    if (this.retries.length >= 200) return;
+    this.retries.push(next);
+  }
+
   snapshot(): LlmUsageSnapshot {
     const byStage: Record<string, LlmStageUsage> = {};
     for (const [stage, s] of this.byStage) {
@@ -128,6 +196,7 @@ export class LlmBudget {
       totalTokens: this.totalTokens,
       exhausted: !this.hasBudget,
       byStage,
+      retries: [...this.retries],
     };
   }
 }

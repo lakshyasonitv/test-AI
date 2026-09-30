@@ -1608,6 +1608,20 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       break;
     }
     console.log("[ir] attempt", attempt + 1, "/", MAX_ATTEMPTS);
+    /**
+     * Set the retry state AND record why, so the run's own 08-llm-usage.json can answer
+     * "what were all these attempts spent on" without anyone reading container logs.
+     *
+     * The retry count is the dominant cost here — a real saucedemo run spent 20 IR calls on 5
+     * cases (exactly MAX_ATTEMPTS each) and produced zero passing tests. `kind` is what makes
+     * that answerable: grouping by it separates a retry that cannot ever succeed from ordinary
+     * correction. Recording is fire-and-forget and never affects control flow.
+     */
+    const reject = (kind: string, message: string): void => {
+      lastErr = message;
+      correction = message;
+      budget?.recordRetry({ stage: "ir", caseTitle: testCase.title, attempt: attempt + 1, kind, reason: message });
+    };
     let parsed;
     try {
       // temperature: 0.2, not Gemini's provider default — matches the value this call ran at
@@ -1657,8 +1671,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       continue;
     }
     if (!parsed.success) {
-      lastErr = parsed.error.message;
-      correction = `The JSON did not match the required schema: ${lastErr}`;
+      reject("schema", `The JSON did not match the required schema: ${parsed.error.message}`);
       continue;
     }
 
@@ -1701,8 +1714,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     // notes seen in practice: true on an earlier attempt, false in the model shipped alongside
     // the note.
     while (ungrounded && extensions < MAX_EXTENSIONS) {
-      lastErr = ungrounded.message;
-      correction = ungrounded.message;
+      reject(ungrounded.kind ?? "grounding", ungrounded.message);
       console.log("[ir] ungrounded step", ungrounded.index, ":", ungrounded.message);
       const prefix = trackBestPartial(ungrounded);
       if (!prefix.length) break; // nothing to replay from — fall through, same as today
@@ -1747,8 +1759,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       const vacuous = vacuousAssertion(parsed.data, currentModel);
       if (vacuous) {
         console.log("[ir] vacuous assertion rejected:", vacuous.message);
-        lastErr = vacuous.message;
-        correction = vacuous.message;
+        reject("vacuous-assertion", vacuous.message);
         lastContradiction = { ir: parsed.data, ...vacuous };
         continue;
       }
@@ -1756,8 +1767,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       const urlMismatch = urlAssertionError(parsed.data, currentModel);
       if (urlMismatch) {
         console.log("[ir] hallucinated url_contains rejected:", urlMismatch.message);
-        lastErr = urlMismatch.message;
-        correction = urlMismatch.message;
+        reject("url-mismatch", urlMismatch.message);
         lastContradiction = {
           ir: parsed.data, stepIds: [parsed.data.steps[urlMismatch.index].id], message: urlMismatch.message,
         };
@@ -1767,8 +1777,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       const clickedHidden = clickedElementHiddenAssertion(parsed.data, currentModel, testCase);
       if (clickedHidden) {
         console.log("[ir] assert-hidden on a merely-clicked element rejected:", clickedHidden.message);
-        lastErr = clickedHidden.message;
-        correction = clickedHidden.message;
+        reject("clicked-element-hidden", clickedHidden.message);
         lastContradiction = { ir: parsed.data, ...clickedHidden };
         continue;
       }
@@ -1776,8 +1785,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       const crossForm = crossFormBleedError(parsed.data, currentModel);
       if (crossForm) {
         console.log("[ir] cross-form target bleed rejected:", crossForm.message);
-        lastErr = crossForm.message;
-        correction = crossForm.message;
+        reject("cross-form-bleed", crossForm.message);
         lastContradiction = { ir: parsed.data, ...crossForm };
         continue;
       }
@@ -1785,8 +1793,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       const incomplete = missingActions(parsed.data, testCase);
       if (incomplete) {
         console.log("[ir] IR does not carry out the case:", incomplete.message);
-        lastErr = incomplete.message;
-        correction = incomplete.message;
+        reject("missing-actions", incomplete.message);
         // Remember this IR as a shippable partial before retrying.
         //
         // THIS IS WHAT STOPS THE GUARD KILLING RUNS. Every GROUNDING rejection already calls
@@ -1910,8 +1917,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       const contradiction = assertionContradictsCase(parsed.data, testCase);
       if (contradiction) {
         console.log("[ir] inverted assertion rejected:", contradiction.message);
-        lastErr = contradiction.message;
-        correction = contradiction.message;
+        reject("contradicts-case", contradiction.message);
         lastContradiction = { ir: parsed.data, ...contradiction };
         continue;
       }
@@ -1927,8 +1933,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     // value) and degrade to a real-but-partial test on the grounded prefix instead of failing
     // the whole run. Only a fully ungrounded IR (empty prefix) falls through to the next
     // outer-loop attempt (a fresh LLM generation).
-    lastErr = ungrounded.message;
-    correction = ungrounded.message;
+    reject(ungrounded.kind ?? "grounding", ungrounded.message);
 
     // A text-target rejection is a "we couldn't VERIFY this", not a "this cannot work". Its
     // whole purpose is to make live-extend run so the page gets discovered; once the budget is

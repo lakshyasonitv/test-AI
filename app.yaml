@@ -1,0 +1,133 @@
+﻿id: /subscriptions/0abe35dc-0316-4937-ac49-82382d860687/resourceGroups/testbench-rg/providers/Microsoft.App/containerapps/testbench
+location: Korea Central
+name: testbench
+properties:
+  configuration:
+    activeRevisionsMode: Single
+    dapr: null
+    identitySettings: []
+    ingress:
+      additionalPortMappings: null
+      allowInsecure: false
+      clientCertificateMode: null
+      corsPolicy: null
+      customDomains: null
+      exposedPort: null
+      external: true
+      fqdn: testbench.livelysmoke-6ad5557f.koreacentral.azurecontainerapps.io
+      ipSecurityRestrictions: null
+      stickySessions: null
+      targetPort: 3000
+      targetPortHttpScheme: null
+      traffic: null
+      transport: Http
+    maxInactiveRevisions: null
+    registries: null
+    revisionTransitionThreshold: null
+    runtime: null
+    secrets:
+    - name: gemini-keys
+    - name: supabase-pub
+    - name: supabase-service
+    - name: supabase-url
+    - name: azure-openai-key
+    service: null
+    targetLabel: null
+  customDomainVerificationId: 01D6F659FFEBB2354FAB718A42A4D4DAD3ED340F4563F6634A10E91CA8654865
+  environmentId: /subscriptions/0abe35dc-0316-4937-ac49-82382d860687/resourceGroups/testbench-rg/providers/Microsoft.App/managedEnvironments/testbench-env
+  latestRevisionFqdn: testbench.livelysmoke-6ad5557f.koreacentral.azurecontainerapps.io
+  latestRevisionName: testbench--latest
+  managedEnvironmentId: /subscriptions/0abe35dc-0316-4937-ac49-82382d860687/resourceGroups/testbench-rg/providers/Microsoft.App/managedEnvironments/testbench-env
+  outboundIpAddresses: null
+  patchingMode: Automatic
+  provisioningState: Succeeded
+  runningStatus: Running
+  template:
+    containers:
+    - env:
+      - name: PORT
+        value: '3000'
+      - name: GEMINI_API_KEYS
+        secretRef: gemini-keys
+        value: ''
+      - name: GEMINI_MODEL
+        value: gemini-3-flash-preview
+      - name: GEMINI_MODEL_LITE
+        value: gemini-3.1-flash-lite
+      - name: MAX_CONCURRENT_RUNS
+        value: '1'
+      - name: RUN_RETENTION_DAYS
+        value: '2'
+      - name: CHROMIUM_EXTRA_ARGS
+        value: --disable-dev-shm-usage --ignore-certificate-errors
+      - name: PLAYWRIGHT_BROWSERS_PATH
+        value: /ms-playwright
+      - name: AUTH_ENABLED
+        value: 'true'
+      - name: DB_ENABLED
+        value: 'true'
+      - name: SIGNUP_ENABLED
+        value: 'true'
+      - name: SUPABASE_URL
+        secretRef: supabase-url
+        value: ''
+      - name: SUPABASE_PUBLISHABLE_KEY
+        secretRef: supabase-pub
+        value: ''
+      - name: SUPABASE_SERVICE_ROLE_KEY
+        secretRef: supabase-service
+        value: ''
+      - name: DEPLOY_STAMP
+        value: '6'
+      - name: LLM_PROVIDER
+        value: azure
+      - name: AZURE_OPENAI_ENDPOINT
+        value: https://testbench-ai.openai.azure.com
+      - name: AZURE_OPENAI_API_KEY
+        secretRef: azure-openai-key
+        value: ''
+      - name: AZURE_OPENAI_DEPLOYMENT
+        value: main
+      - name: AZURE_OPENAI_DEPLOYMENT_LITE
+        value: lite
+      - name: LLM_CACHE_VERSION
+        value: '2'
+      image: ghcr.io/lakshyasonitv/testbench:81755985c4e95f34cb5eca726ba244fa5868bb18
+      imageType: ContainerImage
+      name: testbench
+      resources:
+        cpu: 1.0
+        ephemeralStorage: 4Gi
+        memory: 2Gi
+      volumeMounts:
+      - volumeName: runs
+        mountPath: /app/runs
+    customMetricsSettings: null
+    initContainers: null
+    revisionSuffix: null
+    scale:
+      cooldownPeriod: null
+      maxReplicas: 1
+      minReplicas: 0
+      pollingInterval: null
+      rules:
+      - http:
+          metadata:
+            concurrentRequests: '10'
+        name: http-scaler
+    serviceBinds: null
+    terminationGracePeriodSeconds: null
+    volumes:
+    - name: runs
+      storageType: AzureFile
+      storageName: runs
+  workloadProfileName: Consumption
+resourceGroup: testbench-rg
+systemData:
+  createdAt: '2026-09-15T11:49:15.1509986'
+  createdBy: gunwanthada23@outlook.com
+  createdByType: User
+  lastModifiedAt: '2026-09-16T10:34:40.5581747'
+  lastModifiedBy: gunwanthada23@outlook.com
+  lastModifiedByType: User
+type: Microsoft.App/containerApps

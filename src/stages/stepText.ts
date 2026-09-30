@@ -83,7 +83,17 @@ export function formatIrStep(step: Step | null | undefined): string {
     ? `text "${target.text}"`
     : target?.url
     ? `"${target.url}"`
-    : target?.role || "element";
+    // A css-only target has no words to show. That is not a rare edge: `buildLoginPrefix` grounds
+    // every login step by css alone (`{ css: "#user-name" }`), deliberately — those selectors are
+    // captured live by `loginOnPage`, never derived from the model. So every case that gets signed
+    // in rendered `Type "..." into element`, `Click on element`, three times per case, in the
+    // report a person actually reads. The selector is cryptic but it NAMES something; "element"
+    // names nothing.
+    //
+    // Last, after `role`, on purpose: a target with a role already renders that word, and moving
+    // css ahead of it would change what those sentences say — which `parseTargetDesc` would then
+    // read as an edit and clear the grounding off an untouched line.
+    : target?.role || target?.css || "element";
 
   switch (action) {
     case "navigate":
@@ -148,6 +158,14 @@ const GROUNDED_FIELDS = ["css", "testId", "nth", "label", "placeholder"] as cons
 function parseTargetDesc(desc: string): Target | null {
   const trimmed = desc.trim();
   if (!trimmed || trimmed === "element") return {};
+
+  // A bare css selector is what a css-only target renders as, and it carries NO semantic fields —
+  // so it must read back the same as "element" did before it. This is the round-trip half of the
+  // rendering change above: `mergeTarget` compares role/name/text/url, so returning {} leaves an
+  // untouched login line semantically identical to its base and the step keeps its grounding.
+  // Returning `{ name: "#user-name" }` instead would mark every such line EDITED and strip the
+  // very selector the login depends on. Unquoted, so it can never collide with a real quoted name.
+  if (/^[#.\[]/.test(trimmed) || trimmed.includes(">")) return {};
 
   let m = /^text\s+"([\s\S]*)"$/.exec(trimmed);
   if (m) return { text: m[1] };

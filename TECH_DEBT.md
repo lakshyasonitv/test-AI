@@ -140,6 +140,14 @@ authority is its own heading, not this list.
 | TD-89 | Nothing recomputed `meta.hasTerminalAssertion` on the edit path, so deleting a case's last `Check ...` row saved silently and the case reported **Passed forever while verifying nothing** — **fixed** | High | Strategic | ? |
 | TD-90 | Edited rows were paired with originals BY POSITION, so deleting one row marked the whole tail changed, queued five browser walks, and **renumbered every step below it** — version history and failure reports then pointed at the wrong step — **fixed** | High | Strategic | ? |
 | TD-91 | "Ask for a change" was given the case title, its steps and the instruction — and nothing about the site — so it invented element names from page headings, and unlike the translate path its output was never parse-checked before being shown — **fixed** | Medium | Strategic | ? |
+| TD-96 | The run view was never rebuilt after a transient poll failure, so a run that outlived a network blip stayed frozen at its last-drawn stage until a manual page reload — **fixed** | High | Accidental | ? |
+| TD-97 | The run poll never consulted `res.ok`, so a 401/403/404 was retried at 1Hz forever, and a 403 (a deleted or other-org run) was treated as an expired session — routing it to a sign-in screen that could never succeed — **fixed** | Medium | Accidental | ? |
+| TD-98 | The "lost contact" threshold was `++fails === 5`, correct only via an invariant in a different branch, and the counter was never cleared when a run completed — **fixed** | Low | Accidental | ? |
+| TD-99 | Signing out neither stopped the in-flight poll loop (so it 401'd at 1Hz against a token being revoked) nor asked about a run in progress — **fixed** | Low | Accidental | ? |
+| TD-100 | `DETERMINISTIC_HEAL` is compared against `"true"` but is **missing from `BOOLEAN_ENV_FLAGS`**, so `=1`/`=True` boots clean and reads false — the cheap structural heal is skipped and every heal silently pays for a full LLM IR regeneration | Medium | Accidental | ? |
+| TD-101 | `computeStatus` returns `truncated` **without consulting `result.passed`**, and `passed: status === "passed" || status === "truncated"` then reports it green — a case that genuinely FAILED in the browser is counted as passed whenever its IR was also truncated | High | Accidental | ? |
+| TD-102 | `attachElementIdentity` KEEPS LLM-authored elements it could not match to the DOM, so a phantom (`role=button, name="login-button", no css`) survives into the AppModel, `toIR` grounds a step on it, and the click can never resolve | High | Accidental | ? |
+| TD-103 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable | High | Accidental | ? |
 
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
@@ -149,6 +157,11 @@ authority is its own heading, not this list.
 > detail section, and the string appears nowhere in this file. That is a genuine gap of unknown
 > cause, not a retired entry. **66 entries, highest id 67** — do not use the highest id as a count,
 > and do not reuse 35.
+>
+> **This table is behind the sections, again.** TD-68 … TD-95 exist as detail sections with no row
+> here — the same failure the note above describes, recurring. Rows for TD-96 … TD-99 were added
+> when those entries were filed; the earlier ones are still missing and are left as found rather
+> than silently back-filled, since a row written from someone else's entry is how the drift starts.
 
 ---
 
@@ -515,9 +528,9 @@ server via a Cloudflare tunnel, which compounds the exposure rather than mitigat
 scope the fix differently (a shared secret / basic auth is enough for the former; real
 session/user auth is a bigger project for the latter). Flagged `?` for exactly that reason.
 
-### TD-15. A stale poll response can misdirect a credential submission to the wrong run — High / Accidental
+### TD-15. A stale poll response can misdirect a credential submission to the wrong run — High / Accidental — **Fixed**
 
-**What it is.** `public/app.js`'s `connectToRun` checks `generation === pollGeneration` only at the
+**What it was.** `public/app.js`'s `connectToRun` checked `generation === pollGeneration` only at the
 top of each loop iteration — never re-checked after the `await fetch`/`await res.json()`, before
 `applyEvent(event, runId)` runs with the OLD `runId` closed over in that iteration.
 
@@ -532,8 +545,20 @@ run A's site pops over what the user believes is run B's screen — credentials 
 The only item in this register that can misdirect a secret, which is why it outranks the rest of
 this section.
 
-**Remediation.** Re-check `generation === pollGeneration` immediately after the awaited fetch,
-before calling `applyEvent`.
+**Remediation (done, 2026-09-29).** The generation is now re-checked twice inside the loop — once
+immediately after the awaited fetch and **before** the HTTP-status branch, and once after
+`await res.json()`. Order is the whole point: the first check has to precede the status branch, or
+a stale response can still act. TD-97's `stopRunPolling` writes to the sign-in screen and to
+`currentRunId`, so "no event was applied" is not the same as "nothing was acted on".
+
+Pinned by `tests/appJsRunRecovery.test.ts`, which asserts the **ordering** rather than the mere
+presence of a re-check. There are two sites, and the looser assertion lets the meaningful one be
+deleted while the test stays green — verified by mutation: removing the post-fetch check turns it
+red.
+
+**The neater long-term fix was rejected for now.** The root cause is that the loop holds a `runId`
+for a run the user may already have navigated away from. A snapshot endpoint or an `AbortController`
+would remove the window entirely, but both are server- or platform-shaped work.
 
 ### TD-16. `runs/` grows unbounded and is served publicly with no pruning — Medium / Strategic
 
@@ -789,6 +814,119 @@ fix may have already resolved it), rather than a substitution bug that's still l
 
 **Remediation.** Confirm which case it is against a current run before deciding this needs code
 changes at all.
+
+### TD-96. The run view is never rebuilt after a transient poll failure, so a run that outlives a network blip stays stuck until a page reload — High / Accidental — **Fixed**
+
+**What it was.** `connectToRun` in `public/app.js` applies only `events.slice(seen)`, with `seen` a
+closure counter that moves in one direction only. Nothing re-derived state that was lost while the
+connection was down: the stage cards are written *as each event is applied*, so an event that never
+arrived left its card on PENDING, and no later event would move it.
+
+**Why it hurt.** The retry logic was correct throughout — `fails` reset on the next good read — so
+this was never a retry defect, which is why it survived so long. It was a *render* defect wearing a
+retry's clothing: the client reconnected perfectly and still showed a run frozen at whatever stage
+it had reached before the outage. The only recovery was a manual page reload, which happens to reset
+`seen` to 0 and replay the whole stream. Anyone who did not think to reload simply believed their
+run had hung.
+
+**Verification basis, stated precisely:** confirmed by reading the code path end to end — the
+one-directional `seen`, the per-event phase-card writes, the single `resetRunUI()` at entry, and the
+absence of any snapshot render path. **Not** confirmed against a live run: none was interrupted
+mid-flight to reproduce it, and none was staged to. The mechanism follows deterministically from the
+code, but this entry is not a report of a captured incident and should not be read as one.
+
+**Fix, verified 2026-09-29.** On the first good read after a failure, `connectToRun` calls
+`resetRunUI()`, sets `seen = 0`, and re-applies the full stream. This is deliberately the **reload
+path, not a new mechanism** — `applyEvent` is already re-appliable from the start, because the
+reload view depends on it, and every accumulator it touches is reset by `resetRunUI()` first
+(`phaseStageStatus` via `renderPhases`, the heal counters via `hideSuiteResults` — which matters
+because the primary-heal counter is a `+= 1` and would double-count otherwise). See `DECISIONS.md`.
+
+Pinned by `tests/appJsRunRecovery.test.ts`: it asserts the **pre-outage event is applied a second
+time**, which is what "replay from zero" means, plus a guard test that a healthy poll does **not**
+rebuild (replaying every second would make the live run flicker rather than update). Both verified
+by mutation.
+
+**Cost, stated honestly.** A full replay re-runs every `applyEvent` side effect, so credential
+prompts and case-selection panels visibly replay on recovery. That is the same behaviour as a page
+reload, and preferable to a permanently frozen view, but it is a visible artifact of the fix, not
+an invisible one.
+
+### TD-97. The run poll never consulted `res.ok`, so a permanently-failed request was retried at 1Hz forever, and a 403 was treated as an expired session — Medium / Accidental — **Fixed**
+
+**What it was.** The loop called `await res.json()` and used the result without ever looking at
+the status. A 401, a 403, a 404 and a 500 therefore all reached the same `catch` and were retried
+once a second for as long as the tab stayed open, with the only visible symptom being a
+"Lost contact with the server" message that is wrong in every one of those cases.
+
+**Why it hurt.** Two distinct problems, only one of which is cosmetic. The waste is minor; the
+misclassification was not. `requireRunRole` in `src/server/authz.ts` raises **403** when a run has no
+provable ownership record left to prove — which is exactly what a run deleted by retention looks
+like, and also what a run in another organisation looks like. Signing in again cannot fix either.
+Routing 403 to the login screen as "session expired" would bounce a legitimate second-org user to
+the sign-in form forever, where re-authenticating lands them on the same 403. That is a loop with no
+exit and no error message explaining it.
+
+**Fix, verified 2026-09-29.** The status is now branched *before* `res.json()`, so an error body's
+`{error: ...}` object is never mistaken for an event array. 401 stops the loop, says the session
+expired, and **preserves the run id** so signing back in returns to that run rather than home.
+403/404 stop the loop and say the run is no longer available, without routing to sign-in.
+Everything else — network errors, 5xx, a non-array payload — stays transient and keeps retrying,
+which is the case the retry actually exists for.
+
+**404 is defensive and honestly labelled as such.** `/api/runs/:id/state` returns `getEvents()`
+straight from the run store, which yields `[]` for a missing directory, so **it does not 404
+today** (verified against `src/server/index.ts` and `src/runStore.ts`). The branch exists so a
+future route change cannot drop a missing run into the transient path.
+
+Pinned by four tests, including the 403 one, which is the whole reason this entry is more than a
+wasted retry. The distinction between 401 and 403 was mutation-verified: collapsing `403` into the
+"session expired" path turns it red.
+
+### TD-98. The "lost contact" threshold was exact equality, and the counter was never cleared on completion — Low / Accidental — **Fixed**
+
+**What it was.** `if (++fails === 5)`. Exact equality was only ever correct because a successful
+read reset the counter to 0 — so the message depended on an invariant in a *different* branch of
+the loop. Anything that ever skipped a tick lost it permanently, and the sixth, seventh and later
+consecutive failures were never reported at all. Separately, `fails` was never cleared when a run
+reached its terminal event, so a finished run left the counter set for whatever came next.
+
+**Fix, verified 2026-09-29.** `++fails >= 5`, and `fails = 0` on the `done` path. A floor states the
+intent directly instead of relying on an invariant elsewhere.
+
+**A caution about proving this.** This is a source-level check (`>= ` present in the extracted
+function), not a behavioural one — simulating six consecutive failures and asserting the message
+appears exactly once would be the behavioural version, and would be the better test. Recorded
+because the register should not imply a stronger guarantee than was actually built. Mutation-verified
+nonetheless: reverting either half turns it red.
+
+### TD-99. Signing out neither stopped the poll loop nor asked about a run in progress — Low / Accidental — **Fixed**
+
+**What it was.** Two defects in one place. `signOut()` cleared the session but never touched
+`pollGeneration`, and the sign-out button asked `confirm("Sign out?")` unconditionally.
+
+**Why it hurt.** The first is the same class as TD-25 and its direct consequence: an in-flight
+`connectToRun` loop kept polling `/state` with a token that was about to be revoked, so every
+response was a 401 — which, before TD-97's fix, was swallowed by the same transient catch a dropped
+connection uses. Signing out therefore manufactured a 1Hz self-inflicted outage that reads as the
+server falling over. The second is the opposite failure: asking when nothing is at stake (signing
+out of a finished run, or of the home screen) trains people to click through the dialog, which is
+precisely the reflex that makes a real confirmation useless.
+
+**Fix, verified 2026-09-29.** `signOut()` bumps `pollGeneration` first, before any state is
+cleared, so the running loop is retired by the same mechanism TD-25 established. The confirm is now
+conditional on `(currentRunId && !currentRunFinished) || runInFlight` — all client-side, so asking
+costs no server round trip. Native `confirm()` retained: all six other destructive asks in `app.js`
+are native, and a styled modal would mean minting a CSS class (platform rule 3).
+
+**Left unfixed, deliberately.** The condition trusts `currentRunFinished`, a client-side flag. If
+the run finished while the tab was disconnected, signing out asks about a run that is already done —
+a false positive that costs one extra click. The alternative (ask the server) would make a local
+action depend on the network being up, which is worse.
+
+**Still open, and this entry does not close it:** TD-25's untested neighbour — deleting a
+*project* containing the currently-viewed run — remains unchecked. Signing out was verified; project
+deletion was not.
 
 ---
 
@@ -3760,6 +3898,96 @@ variable. Ticket to migrate when the successor is available and the quota pictur
 env-documented defaults in `.env.example` are the single place the deployment names live outside
 this doc.
 
+### TD-95. A state-dependent accessible name is used as element identity, so an assertion about the state can never pass — Open (diagnosis shipped; correctness undecided)
+
+**Seen live.** saucedemo, 2026-09-26, case "Add item to cart updates cart count and contents":
+
+> Step 8 — Assert 'Cart, empty' is hidden
+> `Error: Timed out 10000ms waiting for expect(locator).toBeHidden()`
+
+The diagnosis was right and said so: *"the assertion expected the shopping cart button to be
+hidden, but it was visible and indicated that there is 1 item in the cart."*
+
+**What it is.** Discovery records the cart as
+
+```json
+{ "role": "button", "name": "Cart, empty", "testId": "shopping-cart-link",
+  "css": "[data-test=\"shopping-cart-link\"]", "concept": "ShoppingCart" }
+```
+
+`name` here is saucedemo's `aria-label`, and that label **encodes the element's state** — it
+becomes "Cart, 1 item" the moment something is added. The model was shown that name and reasoned
+correctly about it: after adding an item, "Cart, empty" should no longer be showing. But
+`targetResolver.ts` resolves **`css` first** (and it must — it is the only thing that makes
+icon-only controls addressable), so the emitted locator is
+`page.locator('[data-test="shopping-cart-link"]')`, which ignores the name entirely. That element
+is *always* present. The assertion is therefore unsatisfiable, and the run reports a product
+failure on a site that is working.
+
+**The generalisation, which is the reason this is worth an entry:** the model reasons over `name`
+while execution resolves over `css`. Wherever a name is volatile, those two disagree, and the
+disagreement surfaces as a false failure with a confident explanation attached.
+
+**Do NOT fix it in the resolver.** Preferring `getByRole(role, { name })` for `shown`/`not_shown`
+looks like the obvious repair and is a trap: `targetResolver.ts:386` records that discovery
+*synthesises* names the DOM does not have ("shopping cart link"), and TD-32 records `getByRole`'s
+name-matching behaviour. Every such target would start reporting "not shown", so `not_shown`
+assertions would **pass vacuously** — silently, across every saved case. A green verdict that
+verifies nothing is worse than this red one.
+
+**Two candidate layers were proposed here on 2026-09-26. BOTH ARE UNBUILDABLE AS SPECIFIED** —
+recorded rather than deleted, because the reason each dies is the useful part.
+
+1. ~~**Grounding refuses the assertion.**~~ `groundingError()` rejects a `shown`/`not_shown` assert
+   whose target is distinguished only by an unstable name. **Dead: it cannot be built without (2)'s
+   signal.** Deciding "unstable" without volatility data leaves two choices, and both are bad —
+   regex the discovered prose for state words (TD-01, which killed two runs in the week this was
+   written), or refuse *every* named visibility assert, which kills
+   `check that button "Login" is not shown` — the assertion that proves a login worked, and the
+   most valuable one the product emits.
+2. ~~**Discovery marks the name volatile.**~~ Capture the element twice across a state change.
+   **Dead: its premise is false.** Observing a name move requires discovery to *perform* a state
+   change, and discovery crawls — it never adds anything to a cart. Measured: across all four
+   saucedemo runs held locally the cart appears on **exactly one** page, and **no element anywhere
+   in any saved AppModel is recorded under two different names**. There is no second observation to
+   compare against.
+
+**SHIPPED — the information is free at EXECUTION, not at discovery.** `assertGone(loc, namedAs)`
+in `generator.ts` replaces the bare `toBeHidden` whenever the step NAMED its target: on failure it
+reads the element's current `aria-label` (falling back to its text) and, if it moved, throws
+*"Still on the page, but now labelled X instead of Y — the label changed rather than the element
+disappearing."* Playwright's original message is appended, so `errorDetail` keeps ground truth,
+and the finding is the FIRST line because `extractFailureDetail` takes that line as the error shown
+on the card. Costs no tokens and adds no LLM call.
+
+**Correction to the plan this entry first recorded:** it said the fix would land in
+`extractFailureDetail` / `failureAnalysis.ts`. **It cannot.** `executePlaywright` spawns the runner
+and reads `result.json` afterwards, by which point the browser is gone, and Playwright's own
+`toBeHidden` message carries the locator and "Received: visible" but never the element's current
+label. The question is answerable only while the page is open — i.e. inside the generated spec — so
+**D-19 applies and the helper is executed in a real browser** (`tests/assertGoneBrowser.test.ts`).
+That was worth the trip: generating the spec caught a lost backslash that had turned an escape into
+a literal newline inside a single-quoted string, i.e. a spec that would not parse.
+
+It also reaches the diagnosis for free: `errorSummary` feeds the Playwright errors into the
+failure-analysis prompt, so the model is now TOLD the label moved instead of having to infer it
+from a screenshot.
+
+**Stated limit: that is a DIAGNOSIS fix. The test still goes red.** The correctness fix — making
+the assertion mean "nothing here shows that name" — is a change to the generated spec's Playwright
+surface, so D-19 applies (execute it once in a real browser; this repo already shipped one
+`.filter({visible:true})` no-op by reasoning about Playwright semantics instead of running them),
+and it carries an unbounded vacuity risk: a locator that resolves to nothing would satisfy a
+negated name matcher. Separate decision, separate evidence.
+
+**Frequency is NOT established.** Only 9 IRs survive locally (11 assert steps, 1 match), and that
+sample is visibly skewed — zero `url_contains` despite the reporting run containing one. Azure's
+artifacts are wiped on restart. Do not cite a rate in either direction.
+
+Until then this is a known false-failure class, not a site bug — read a `toBeHidden` timeout on an
+element with a descriptive `aria-label` with that in mind.
+
+
 ### TD-94. The LLM cache persisted a zero-case answer forever and served it to every later run — Fixed
 
 The disk half of the LLM cache never expires (D-10 / this doc's TD-22). Run
@@ -3858,3 +4086,245 @@ prompt only ever failed on Azure.
   `unwrapArray` + `zod` on the wrapped result — the envelope adds one instruction line instead of
   a second, competing schema to keep in step with `src/schema/`, and it stays provider-agnostic
   (the gemini path is untouched byte-for-byte).
+
+---
+
+### TD-100. `DETERMINISTIC_HEAL` is read as a boolean flag but is missing from `BOOLEAN_ENV_FLAGS`, so a typo in it is silently false — Medium / Accidental — Filed, not fixed
+
+`src/stages/heal.ts:104`:
+
+```ts
+export function isDeterministicHealEnabled(): boolean {
+  return process.env.DETERMINISTIC_HEAL === "true";
+}
+```
+
+That is the exact `x === "true"` comparison `BOOLEAN_ENV_FLAGS` exists to protect, and
+`DETERMINISTIC_HEAL` is **not in the list** (`src/server/index.ts:2015`). The registry's own doc
+comment claims this cannot happen:
+
+> Kept as data, not scattered `if`s, so that adding a flag without adding it here is the only way
+> to get an unchecked flag
+
+It happened. `DETERMINISTIC_HEAL=1`, `=True`, `=yes` or `=` all boot cleanly and read as **false** —
+the cheap structural heal path is silently skipped and every heal pays for a full LLM IR
+regeneration instead. The failure is invisible: no boot error, no warning, no event, and the
+expensive path produces a correct-looking result, so the only symptom is the bill.
+
+Contrast `AUTH_ENABLED=truebro`, which this registry catches and kills the process for
+(`formatInvalidBooleanFlags` → `process.exit(1)`). Same class of bug, one flag protected and one not.
+
+**Fix:** add `"DETERMINISTIC_HEAL"` to `BOOLEAN_ENV_FLAGS`. One line. The existing
+`tests/booleanEnvFlags.test.ts` already covers the behaviour once the name is in the list.
+
+**Also check, don't assume:** `GATE_CASE_EDIT_AI` is likewise absent from the list, but it is read
+differently — `String(process.env.GATE_CASE_EDIT_AI ?? "").toLowerCase() === "true"`
+(`src/server/rewrite.ts:416`). That tolerates `TRUE`/`True` and still reads `1`/`yes` as false. It
+is a *second* boolean-reading convention in the same codebase, which is its own smaller problem:
+two conventions mean the registry can never be a complete index by inspection. Decide whether to
+normalise on one reader before extending the list.
+
+**Found while** tracing why self-heal has never run in production (the answer was
+`SELF_HEAL_DEFAULT` unset in Azure, a different flag — this one turned up on the way past and is
+unrelated to that root cause).
+
+---
+
+### TD-101. `truncated` outranks `failed`, so a case that FAILED at runtime is reported as passed — High / Accidental — Filed, not fixed
+
+`src/stages/suiteRunner.ts:334` (and the identical ladder inlined at `:251` for the primary case):
+
+```ts
+const computeStatus = (theIr, theResult, theBlocked) => {
+  if (theBlocked) return "blocked";
+  if (theIr.meta.truncated && !theIr.meta.hasTerminalAssertion) return "truncated_no_assertion";
+  if (theIr.meta.truncated) return "truncated";     // <-- theResult.passed is never consulted
+  return theResult.passed ? "passed" : "failed";
+};
+```
+
+Then, twelve lines down (`:265`, `:431`):
+
+```ts
+passed: status === "passed" || status === "truncated",
+```
+
+So a case whose IR was truncated **and** whose surviving steps failed in the browser is written to
+`05-result.json` as **`passed: true`**. The runtime failure is not downgraded, not flagged, not
+counted — it is discarded.
+
+**Observed, not hypothetical.** Run `2026-09-28T05-35-47-348Z-3effa6c7` (Azure), case *"End-to-end
+purchase flow starting from homepage with given credentials"*:
+
+- the run banner says **Failed** and a diagnosis was produced ("It couldn't find a button, link, or
+  field it needed on the page") — `failure_analysis` only runs on `!result.passed`, so Playwright
+  genuinely failed
+- step 4 (`Click 'login-button'`) took **9.1s** against ~900ms for the same click in every other
+  case, and is **the only step in the whole run with no "After step N" screenshot** — it did not
+  complete
+- the case card nonetheless reads **Partial**, and the run summary reads **"2 passed, 0 failed,
+  1 partial, 2 unconfirmed"**
+
+A reader is told zero tests failed on a run whose own banner says the site is broken.
+
+**Why the ladder is wrong.** The comment defends it: *"A wall the test can't pass outranks every
+other verdict."* That reasoning is correct for `blocked` — an IP block or a captcha is not the
+application's fault. It does not transfer to `truncated`. Truncation is a statement about **what
+was built**: some steps could not be grounded, so they were dropped. It says nothing whatever about
+whether **the steps that did run** passed. Conflating "we couldn't build all of it" with "what we
+built was fine" is how a red run reports green.
+
+**Fix direction (undecided, needs the call made):** the two facts are orthogonal and want two
+fields, not one enum — `status` for completeness (`full` / `truncated` / `truncated_no_assertion` /
+`blocked`) and `passed` for the verdict on what actually executed. A minimal version that changes
+no route shape: keep the enum, but stop letting truncation swallow the verdict —
+
+```ts
+if (theIr.meta.truncated && !theResult.passed) return "failed";
+```
+
+placed above the truncation branches, so a real failure always wins and truncation only describes
+an otherwise-clean run. Then `passed: status === "passed" || status === "truncated"` stops lying,
+because `truncated` can no longer contain a failure.
+
+**Check before fixing:** this will move runs from "passed" to "failed" in existing history — which
+is the point, but it is a visible change to numbers people have already seen. Worth saying out loud
+when it ships rather than letting a dashboard move on its own.
+
+---
+
+### TD-102. Discovery keeps LLM-invented elements it could not match to the DOM, so `toIR` grounds steps against elements that do not exist — High / Accidental — Filed, not fixed
+
+The AppModel is **LLM-authored**: `modelFromAria` (`src/stages/discovery.ts:395`, an `llm()` call at
+`:435`) turns an ARIA snapshot into elements. `attachElementIdentity` (`:345`) then grafts real
+selectors back on by matching `role|normalizeName(name)` against what the DOM detector actually
+found. Its no-match branch is line 368:
+
+```ts
+const hit = byKey.get(`${e.role.toLowerCase()}|${normalizeName(e.name)}`);
+if (!hit) return e;        // kept, unchanged, with no css and no testId
+```
+
+An element the identity pass **could not find in the DOM** is kept verbatim. Downstream, `toIR`
+treats presence in the AppModel as proof the element exists, and `resolveCode`
+(`targetResolver.ts:384`) has no `css` to fall back on, so it emits
+`locate(page, role, name)` → `getByRole(role, {name, exact:true})` on a name the DOM does not have.
+That locator can never resolve. The step burns a full action timeout and fails.
+
+**Observed.** `runs/2026-09-25T20-00-39-218Z-82ff713c/02-appmodel.json` holds the saucedemo login
+button **twice**:
+
+```
+role=button | name="Login"        | css="[data-test=\"login-button\"]" | testId="login-button"   <- real
+role=button | name="login-button" | css=undefined                      | testId=undefined        <- phantom
+```
+
+The second is the element's `id`/`name` **attribute** wearing the `name` slot. Every deterministic
+name path in the codebase gets this right — `discovery.ts:195` (`if (!name && /^(submit|button|
+reset)$/i.test(r.type)) name = r.value`) and `domExtract.ts:440` both read `value` and produce
+`"Login"`. Only the LLM produced `"login-button"`, and nothing removed it.
+
+It is then indistinguishable, to the IR compiler, from a real element — and strictly more
+attractive to a model writing a login step, because the string matches the request's vocabulary.
+That is what run `2026-09-28T05-35-47-348Z-3effa6c7` case 1 clicked (see TD-101).
+
+**Scope is wider than one element.** Counted across local runs: **137 of 143** AppModel elements in
+`2026-09-23T07-14-12-267Z-0b5f3586` carry neither `css` nor `testId`; 4 of 7 in the saucedemo model.
+Most are benign — `{"role":"link","name":"Homepage"}` has a real accessible name and grounds fine
+through `locate()`. Selectorless is **not** the defect. The defect is that "the identity pass could
+not match this" is not recorded anywhere, so benign and phantom are the same shape by the time
+`toIR` sees them.
+
+**Fix direction:** `attachElementIdentity` already knows which elements it failed to match — that
+is exactly the `!hit` branch. Mark them (`identityMatched: false`) rather than dropping them
+outright: dropping would also remove the legitimately selectorless elements above, and the
+deliberate ambiguous-name skip at `:360` (six "Add to cart" buttons attach nothing **on purpose**)
+means `!hit` does not imply "fake". Once marked, `toIR` can refuse to ground a step against an
+unmatched element whose name appears nowhere in the DOM detector's output, which is the narrow
+condition the phantom meets and "Homepage" does not.
+
+**Related:** TD-95 (a state-dependent accessible name used as identity) is the same family — the
+`name` slot is being asked to carry more than it can. This one is worse in that the name is not
+even wrong-but-real; it names nothing at all.
+
+---
+
+### TD-103. The click-probe's role+landmark filter excludes every element that navigates and admits only ones that go nowhere — High / Accidental — Filed, not fixed
+
+**This is the root cause of the truncations, and therefore of the IR retry spend and of self-heal
+never being demonstrable.** One condition, `src/stages/hybridDiscovery.ts:569`:
+
+```ts
+const clickable = (/button/i.test(el.role) && el.landmark === "nav") || /link/i.test(el.role);
+```
+
+Measured against the real saucedemo inventory page as discovery itself recorded it
+(`runs/2026-09-17T11-38-39-418Z-bfd03461/02-appmodel.json`), **8 of 38 elements pass** — and after
+`crawlableFrom`'s same-origin filter and the two safety verbs, **zero new URLs survive**:
+
+| element | role / landmark | passes filter | outcome |
+|---|---|---|---|
+| All Items | button / nav | yes | back to `inventory.html` — same page |
+| Dynamic Catalog | button / nav | yes | same page |
+| About | link / nav | yes | `saucelabs.com` — **external**, dropped |
+| Logout | button / nav | yes | dropped by `SIGN_OUT_VERB` (correctly) |
+| Reset App State | button / nav | yes | dropped by `DESTRUCTIVE_VERB` (correctly) |
+| X / Facebook / LinkedIn | link / footer | yes | **external**, dropped |
+| **Cart, empty** | **button / header** | **no** | `/cart.html` — the gateway to checkout |
+| **Open Menu** | **button / header** | **no** | reveals the menu |
+| **View details for …** (×6) | **button / undefined** | **no** | `/inventory-item.html?id=N` |
+
+The filter admits exactly the elements that lead nowhere and excludes exactly the three kinds that
+navigate. Net crawl result: **2 pages, on five separate runs, four of them authenticated** — login
+and inventory, never cart, never a product page, never checkout.
+
+**The most instructive part: this was already fixed once, for this exact site, and the fix does not
+fire.** The comment above the condition (`:564`) reads:
+
+> ANY link: an `<a>` that survived the href pass has no usable destination. saucedemo's cart is
+> literally `<a class="shopping_cart_link" data-test="shopping-cart-link">` with no href attribute
+> at all … Anchors are safe to widen to because they are semantically navigation
+
+The widening to `/link/i` was written **specifically to catch saucedemo's cart**. It misses it,
+because an `<a>` with no `href` is not a link in the accessibility tree — discovery records the cart
+as **`role: "button"`, `landmark: "header"`**, which the widened condition still rejects. The fix
+and the element it was written for never meet.
+
+**Not the cause — ruled out with data, so nobody re-checks these:**
+- `MAX_DISCOVERY_PAGES` is 5 and only 2 pages were found. **Not binding. Do not raise it.**
+- The href pass is not shadowing the probe: `internalUrls` is `[]` on **every** saucedemo page in
+  every run, so `if (viaLinks.length) return viaLinks` is false and the click-probe *does* run.
+  It runs and correctly finds nothing, because of the filter above.
+- Not an auth wall: `auth.status` is `"authenticated"` and the crawl reached `inventory.html`.
+
+**Downstream consequences, all one cause:**
+- `toIR` cannot ground steps for cart/checkout/product-detail pages, so cases are **truncated** —
+  3 of 5 on run `2026-09-28T05-35-47-348Z-3effa6c7`, two of them stripped to a bare login prefix.
+- Truncation is what `attemptHeal` refuses to accept (`heal.ts:206`, *"a heal that truncates isn't
+  a heal"*), so **self-heal cannot demonstrate anything on this site** no matter what
+  `SELF_HEAL_DEFAULT` is set to.
+- Each truncated case still burns its full `MAX_IR_ATTEMPTS` trying to ground steps against pages
+  that are not in the model — consistent with 20 IR calls for 5 cases, though `retries[]` is what
+  would confirm it.
+
+**Fix direction — smallest change that moves the needle:** allow `header` alongside `nav`.
+
+```ts
+const navish = el.landmark === "nav" || el.landmark === "header";
+const clickable = (/button/i.test(el.role) && navish) || /link/i.test(el.role);
+```
+
+A header is navigation chrome by definition, and both safety verbs still apply, so `Logout` and
+`Reset App State` stay excluded. That one word unlocks `Cart, empty` → `/cart.html`, and from the
+cart the checkout flow becomes crawlable within the existing budget of 5.
+
+**Do NOT widen to landmark-less buttons in the same change.** That admits the six `Add to cart`
+buttons, and discovery clicking those mutates application state — it would violate the
+read-only guarantee the `DESTRUCTIVE_VERB` filter exists to hold, and "Add to cart" is not a
+destructive *verb*, so nothing would catch it. Product-detail coverage (`View details for …`) is a
+real gap but needs its own decision about read-only-ness, separately.
+
+**Verify by measuring, not by eye:** the check that produced the table above is one `node -e` over
+`02-appmodel.json` counting elements that pass the condition. Run it before and after; the number
+must go from 8-that-yield-nothing to a set containing `Cart, empty`, and the crawl from 2 pages
+to 3+.

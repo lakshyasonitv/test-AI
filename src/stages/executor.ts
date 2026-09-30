@@ -595,10 +595,15 @@ export function findScreenshot(dir: string): string | null {
  * (e.g. `artifacts/<test-name-hash>/video.webm`), never at a predictable top-level name the
  * way `step-N.png` is, so there's no fast-path equivalent to check first.
  *
- * playwright.config.ts sets `video: "retain-on-failure"` — a video only exists for a case that
- * actually failed or was blocked (deliberate: a full trace per PASSING run made up ~80% of the
- * runs/ folder's size for no diagnostic value, see that config's own comment). A passed case
- * naturally returns null here, no separate status check needed.
+ * WHICH cases have one is a config question, not this function's: playwright.config.ts defaults
+ * `video` to "retain-on-failure" (so only a case Playwright itself failed keeps a recording), and
+ * `PLAYWRIGHT_VIDEO=on` records every case including passing ones. Either way this is a pure
+ * "is there a file" lookup and needs no status check — a case with no recording returns null.
+ *
+ * Note the default's blind spot, which is why the flag exists: `blocked`, `truncated` and
+ * `truncated_no_assertion` are all outcomes where PLAYWRIGHT PASSED and the pipeline reclassified
+ * the result afterwards. Under "retain-on-failure" Playwright has already deleted those
+ * recordings by then, so those cards can never show a video without the flag.
  */
 export function findVideo(dir: string): string | null {
   if (!existsSync(dir)) return null;

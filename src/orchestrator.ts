@@ -515,6 +515,10 @@ export async function runPipeline(
       status: blocked ? "blocked" : (finalResult as any).status,
       blockedBy: blocked?.reason,
       truncationNote: finalIr.meta.truncationNote,
+      // The STRUCTURED counterpart, so the UI never has to pattern-match the note above. It is
+      // reachable via `ir.meta` already; lifting it here keeps the two beside each other and
+      // means a payload reader cannot pick the prose by accident. Additive (rule 1).
+      truncationKind: finalIr.meta.truncationKind,
       // Plain-English record of what was actually tested, for the results panel — the IR/spec
       // are role+name/code, not something an end user should have to read to know what ran.
       test: { title: primary.title, steps: primary.steps, expected: primary.expected },

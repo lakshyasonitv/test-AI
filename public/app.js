@@ -214,6 +214,12 @@ async function refreshIdentity() {
 
 async function signOut() {
   const { url, publishableKey, token } = auth;
+  // Stop the poll FIRST, before any state below is cleared. `connectToRun` loops while its
+  // generation matches the global one, so bumping it here retires whatever loop was running;
+  // without this the old loop keeps polling `/state` with a token that is about to be revoked,
+  // and each 401 is swallowed by the same transient catch the run view uses for a dropped
+  // connection — a 1Hz self-inflicted outage that looks like the server falling over.
+  pollGeneration++;
   auth.role = null;
   auth.organisationId = null;
   auth.userId = null;
@@ -254,7 +260,21 @@ async function initAuth() {
   const signOutBtn = document.getElementById("signOutBtn");
   if (signOutBtn) {
     signOutBtn.classList.remove("hidden");
-    signOutBtn.addEventListener("click", () => { if (confirm("Sign out?")) signOut(); });
+    // Confirm ONLY when signing out would interrupt something. A bare unconditional "Sign out?"
+    // asked the question when there was nothing at stake — signing out of a finished run, or of
+    // the home screen, costs nothing and should cost nothing. A run still going is different: the
+    // poll is killed, the run keeps executing on the server, and the person signing back in
+    // starts from wherever it has got to rather than where they left off. All three inputs are
+    // client-side, so this asks nothing of the server.
+    //
+    // Native confirm() on purpose — all six other destructive asks in this file are native
+    // confirm(), and a styled modal here would be the only one (platform rule 3: reuse, don't
+    // mint a class).
+    signOutBtn.addEventListener("click", () => {
+      const runActive = (currentRunId && !currentRunFinished) || runInFlight;
+      if (runActive && !confirm("A test run is still in progress. Sign out anyway?")) return;
+      signOut();
+    });
   }
 
   const form = document.getElementById("loginForm");
@@ -282,7 +302,11 @@ async function initAuth() {
       setSession(body.access_token, body.user && body.user.email);
       document.getElementById("loginPassword").value = "";
       await refreshIdentity();
-      navigate("#/");
+      // A 401 mid-run parked the run id here so the person lands back on their run rather than the
+      // home screen. Read once and cleared, so a later ordinary sign-in still goes home.
+      const resume = returnToRunAfterSignIn;
+      returnToRunAfterSignIn = null;
+      navigate(resume ? `#/run/${resume}` : "#/");
       applyRoute();
       loadHistory();
     } catch (err) {
@@ -551,6 +575,7 @@ const videoFigureEl = document.getElementById("videoFigure");
 const resultVideoEl = document.getElementById("resultVideo");
 const diagnosisEl = document.getElementById("diagnosis");
 const traceLinkEl = document.getElementById("traceLink");
+const runSaveSlotEl = document.getElementById("runSaveSlot");
 const suiteProgressEl = document.getElementById("suiteProgress");
 const suiteProgressListEl = document.getElementById("suiteProgressList");
 const suiteResultsEl = document.getElementById("suiteResults");
@@ -1033,7 +1058,12 @@ function setupCaseCardListeners() {
     if (!roleAtLeast(auth.role, "tester")) { btn.remove(); return; }
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      openSaveCasePanel(btn.closest(".case-card"));
+      const card = btn.closest(".case-card");
+      openSaveCasePanel(card, {
+        runId: suiteResultsEl.dataset.runId,
+        caseId: card.dataset.caseId,
+        title: card.querySelector(".case-title")?.textContent ?? "",
+      });
     });
   });
 
@@ -1083,7 +1113,12 @@ async function loadCaseDetails(card) {
     const c = suite?.cases?.find((x) => x.caseId === caseId);
     const narrativeEl = card.querySelector(".case-narrative");
     const diagEl = card.querySelector(".case-diagnosis-block");
-    if (status === "passed" && c) renderCaseNarrative(narrativeEl, c, ir);
+    // Every non-failed outcome explains itself. It used to be `passed` only, so a Blocked,
+    // Unconfirmed or Partial card showed a badge, a screenshot and nothing else — the reader got
+    // no statement of what ran or what they were looking at. `failed` is excluded because it has
+    // its own, richer block below (the failing step, the error, the diagnosis); giving it both
+    // would say the same thing twice in two voices.
+    if (NARRATIVE_LEAD_IN[status] && c) renderCaseNarrative(narrativeEl, c, ir, status);
     if (status === "failed") renderCaseDiagnosisBlock(diagEl, diagnosis);
   } catch {
     // Details stay as "Loading..." — non-critical
@@ -1162,7 +1197,10 @@ async function confirmProjectDelete(p) {
   return typed !== null && typed.trim() === p.name;
 }
 
-async function openSaveCasePanel(card) {
+// `card` is the element that owns the panel (.case-save-panel inside it). `source` says WHAT is
+// being saved — suite-result cards hand their own runId/caseId/title; the single-run screen hands
+// the run currently in front of us plus "case-0". Same POST either way.
+async function openSaveCasePanel(card, source) {
   const panel = card.querySelector(".case-save-panel");
   if (!panel) return;
   if (!panel.classList.contains("hidden")) { panel.classList.add("hidden"); return; }
@@ -1185,9 +1223,7 @@ async function openSaveCasePanel(card) {
     return;
   }
 
-  const runId = suiteResultsEl.dataset.runId;
-  const caseId = card.dataset.caseId;
-  const title = card.querySelector(".case-title")?.textContent ?? "";
+  const { runId, caseId, title } = source;
 
   panel.innerHTML = `
     <div class="case-save-form">
@@ -1301,6 +1337,43 @@ async function openSaveCasePanel(card) {
 }
 
 /**
+ * Refresh the "Save to library" affordance on the single-run results screen.
+ *
+ * Shown only when the run in front of us actually finished (its `done` event), is not a replay of
+ * an already-saved case, and is not showing suite results — those already have a per-card
+ * "Save case" button, and re-saving the primary case here would duplicate it. Rendered once into
+ * the empty slot; the pieces are the same save panel the suite cards use, called with this run's
+ * own id and "case-0" (a single run's one case directory).
+ */
+function refreshRunSaveSlot() {
+  if (!runSaveSlotEl) return;
+
+  const suiteShowing = !suiteResultsEl.classList.contains("hidden");
+  const canSave = currentRunFinished && !currentRunIsReplay && !suiteShowing;
+  if (!canSave) {
+    runSaveSlotEl.classList.add("hidden");
+    runSaveSlotEl.innerHTML = "";
+    delete runSaveSlotEl.dataset.rendered;
+    return;
+  }
+
+  if (!runSaveSlotEl.dataset.rendered) {
+    runSaveSlotEl.innerHTML =
+      `<button type="button" class="dl-btn" id="runSaveBtn">Save to library</button>` +
+      `<div class="case-save-panel hidden"></div>`;
+    runSaveSlotEl.querySelector("#runSaveBtn").addEventListener("click", () => {
+      openSaveCasePanel(runSaveSlotEl, {
+        runId: currentRunId,
+        caseId: "case-0",
+        title: testTitleEl.textContent.trim() || currentRunPrompt || "",
+      });
+    });
+    runSaveSlotEl.dataset.rendered = "true";
+  }
+  runSaveSlotEl.classList.remove("hidden");
+}
+
+/**
  * The natural-language request that produced the run currently on screen.
  *
  * NOT fetched: it already arrives on the run's own event stream. The `input` event carries
@@ -1317,6 +1390,12 @@ let currentRunPrompt = "";
  */
 let currentRunUsage = null;
 let currentRunIsReplay = false;
+/**
+ * True once a run in front of us has genuinely finished (its `done` event was replayed/applied).
+ * Deliberately NOT set on the `error` stage: a run can error before any case artifact exists, and
+ * a save button that would 500 is worse than no button. Reset with the rest of the run UI.
+ */
+let currentRunFinished = false;
 /**
  * Self-heal retries observed in THIS run. Counted from the events rather than read from
  * 08-llm-usage.json, which records tokens by stage and has no notion of a retry — the heal's IR
@@ -1419,7 +1498,17 @@ function formatIrStep(step) {
     ? `text "${target.text}"`
     : target?.url
     ? `"${target.url}"`
-    : target?.role || "element";
+    // A css-only target has no words to show. That is not a rare edge: `buildLoginPrefix` grounds
+    // every login step by css alone (`{ css: "#user-name" }`), deliberately — those selectors are
+    // captured live by `loginOnPage`, never derived from the model. So every case that gets signed
+    // in rendered `Type "..." into element`, `Click on element`, three times per case, in the
+    // report a person actually reads. The selector is cryptic but it NAMES something; "element"
+    // names nothing.
+    //
+    // Last, after `role`, on purpose: a target with a role already renders that word, and moving
+    // css ahead of it would change what those sentences say — which `parseTargetDesc` would then
+    // read as an edit and clear the grounding off an untouched line.
+    : target?.role || target?.css || "element";
 
   switch (action) {
     case "navigate":
@@ -1490,7 +1579,23 @@ function describeScreenshot(steps) {
 // English step descriptions already produced by formatIrStep, not a second LLM summarization
 // pass (this path makes no new API calls; see the file header on public/preview.js for why
 // that constraint is deliberate here).
-function buildStepNarrative(steps) {
+/**
+ * How the step list is introduced, by outcome.
+ *
+ * "Here's what happened" is only honest for a case that RAN ITS WHOLE PLAN. A truncated case's
+ * IR is the surviving prefix — real steps were dropped before it ever executed — and a blocked
+ * case hit a wall partway. Reusing the passed wording for those would tell the reader the plan
+ * completed when it demonstrably did not, which is the same class of overclaim as reporting a
+ * truncated failure as a pass (TD-101). `passed` is unchanged, so no existing card moves.
+ */
+const NARRATIVE_LEAD_IN = {
+  passed: "Here's what happened",
+  truncated: "Here's the part of the test that actually ran",
+  truncated_no_assertion: "Here's the part of the test that actually ran",
+  blocked: "Here's what the test was doing when it was stopped",
+};
+
+function buildStepNarrative(steps, status) {
   if (!steps || !steps.length) return "";
   // formatIrStep returns imperative fragments ("Go to X", "Click on Y") — gluing them after a
   // subject like "The test ___" needs verb conjugation ("go" -> "goes") this function doesn't
@@ -1502,14 +1607,25 @@ function buildStepNarrative(steps) {
     return d.charAt(0).toLowerCase() + d.slice(1);
   });
   const sentence = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")}, then ${parts[parts.length - 1]}`;
-  return `Here's what happened: ${sentence}.`;
+  return `${NARRATIVE_LEAD_IN[status] ?? NARRATIVE_LEAD_IN.passed}: ${sentence}.`;
 }
 
-function renderCaseNarrative(container, c, ir) {
+/**
+ * A blocked case's screenshot is `blockedScreenshot` — the WALL (a captcha, a login gate, an
+ * IP block), not the final state of the test. `describeScreenshot` reads the IR's last step, so
+ * for a blocked case it would confidently describe an assertion the image does not show. Fixed
+ * copy instead, because there is nothing in the IR that describes a wall.
+ */
+const BLOCKED_IMAGE_DESC =
+  "The wall the test ran into — this is as far as it got, not the end of the test.";
+
+function renderCaseNarrative(container, c, ir, status = "passed") {
   const steps = ir?.steps;
-  const whatHappened = steps?.length ? buildStepNarrative(steps) : (c.whyItMatters || c.intent || "");
+  const whatHappened = steps?.length ? buildStepNarrative(steps, status) : (c.whyItMatters || c.intent || "");
   if (!whatHappened) { container.classList.add("hidden"); return; }
-  const whatImage = c.screenshotUrl ? describeScreenshot(steps) : "";
+  const whatImage = !c.screenshotUrl ? ""
+    : status === "blocked" ? BLOCKED_IMAGE_DESC
+    : describeScreenshot(steps);
   container.innerHTML = `
     <p class="case-narrative-line"><b>What happened:</b> ${escapeHtml(whatHappened)}</p>
     ${whatImage ? `<p class="case-narrative-line"><b>What the image shows:</b> ${escapeHtml(whatImage)}</p>` : ""}`;
@@ -1669,13 +1785,32 @@ function renderEnterpriseDiagnostic(data, stage, error) {
 
   if (status === "truncated_no_assertion" || status === "truncated" || note) {
     headline = "The test stopped partway through";
-    if (/admin|role|permission|authorized/i.test(note || "")) {
-      description = "It signed in successfully, but couldn't find the Admin section on the page. This usually means the account it used doesn't have Admin access.";
-      fixPrompt = 'Tell it which account to use:\n"Log in with email: user@example.com and password: yourpassword then click Admin..."';
-    } else if (/hydration|dynamically|load/i.test(note || "")) {
-      description = "It tried to interact with part of the page before that part had finished loading.";
-      fixPrompt = 'Give the page a moment to catch up:\n"Log in, wait 2 seconds for the dashboard to load, then click Admin..."';
+    // Branch on the STRUCTURED kind, never on the note.
+    //
+    // This used to regex the note for /admin|role|permission|authorized/ and, on a match, assert
+    // that the account lacked Admin access. ARIA notes say "role" constantly ("no element with
+    // role=button and name=..."), so on a saucedemo shopping run it matched "role" and told the
+    // user a confident, entirely invented story about Admin permissions on a site that has no
+    // admin area at all. A hydration branch had the same shape.
+    //
+    // `truncationKind` exists precisely so this decision does not read prose — its own schema
+    // comment says pattern-matching the note "is exactly the failure CLAUDE.md's central rule and
+    // TECH_DEBT.md TD-01 record". It is carried on the done payload and on ir.meta.
+    //
+    // The note is still SHOWN, in technical details: displaying prose is fine, interpreting it is
+    // not. Where the kind is absent (an older run) the generic wording is used rather than a guess.
+    const kind = data?.truncationKind || data?.ir?.meta?.truncationKind;
+    if (kind === "navigate-url") {
+      description = "It tried to open a page address that isn't part of this site.";
+      fixPrompt = "Name the link or button that leads there, rather than the address — for example \"click Checkout\" instead of \"go to /checkout\".";
+    } else if (kind === "text-target") {
+      description = "It looked for wording that wasn't on the page.";
+      fixPrompt = "Check that any text you asked it to look for matches the page exactly, including capitalisation.";
+    } else if (kind === "incomplete-coverage") {
+      description = "It couldn't carry out every step your request described, so it ran the part it could verify.";
+      fixPrompt = "Try describing fewer steps in one go, or split the request into separate tests.";
     } else {
+      // role-name, and anything unrecognised.
       description = "It couldn't find a button, link, or field it needed on the page.";
       fixPrompt = "Check that the wording in your request (button or link names) matches what actually appears on the website.";
     }
@@ -2036,6 +2171,7 @@ let acceptedSoFarCount = 0;
 // Local mirrors of the gate's pool cap and regeneration budget, so the panel can render its
 // counters and notes without asking the backend for every number.
 const CASE_POOL_CAP = 5; // MAX_ACCUMULATED_CASES
+const CASE_REGEN_LIMIT = 3; // MAX_CASE_REGEN_ATTEMPTS — only a fallback; the event carries the real count
 const MAX_CASE_REGEN_ATTEMPTS_LOCAL = 3; // MAX_CASE_REGEN_ATTEMPTS
 
 // --- Drafts -----------------------------------------------------------------
@@ -2387,10 +2523,16 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
   // "2 of 5 cases accepted so far" read as progress toward a target of five, so people pressed
   // refine to "finish". Five is MAX_ACCUMULATED_CASES — a ceiling on what the pool will hold,
   // not a number to reach. The wording now says what you can do rather than how far along you are.
+  const poolCap = opts?.poolCap ?? CASE_POOL_CAP;
   casePoolCounterEl.textContent = acceptedSoFarCount === 0
-    ? `Tick the cases you want to run. You can run as few as one — up to ${CASE_POOL_CAP} in total.`
+    ? `Tick the cases you want to run. You can run as few as one — up to ${poolCap} in total.`
     : `${acceptedSoFarCount} case${acceptedSoFarCount === 1 ? "" : "s"} accepted — enough to run now. ` +
-      `${CASE_POOL_CAP} is the most this run will hold, not a target.`;
+      `${poolCap} is the most this run will hold, not a target.` +
+      // Ticking everything fills the pool, and a full pool ENDS the round loop — so "refine" after
+      // that silently does nothing. Said before the round is spent, not discovered after it.
+      (acceptedSoFarCount >= poolCap
+        ? " The pool is now full, so this is the last round — refining will not offer another."
+        : "");
 
   repaintCaseList();
   // Fetched after the first paint, not before it: the round is reviewable immediately, and the
@@ -2905,7 +3047,13 @@ function applyEvent(event, runId) {
     const opts = { ai: event.data.gateRewrite === true };
     fetch(`/api/runs/${runId}/accepted-cases`)
       .then((res) => res.json())
-      .then(({ count }) => renderCaseSelectionPanel(batch, attempt, count, opts))
+      .then(({ count, remainingCapacity }) => renderCaseSelectionPanel(
+        batch, attempt, count,
+        // The server's real MAX_ACCUMULATED_CASES, not this file's copy of the default: the cap is
+        // env-configurable, so a hardcoded 5 states the wrong limit the moment anyone raises it.
+        // Derived from the numbers the route already returns rather than a new field.
+        { ...opts, poolCap: typeof remainingCapacity === "number" ? count + remainingCapacity : undefined },
+      ))
       .catch(() => renderCaseSelectionPanel(batch, attempt, 0, opts));
     return false;
   }
@@ -2913,6 +3061,16 @@ function applyEvent(event, runId) {
   if (event.stage === "testcases" && event.data?.action === "case_pool_cap_warning") {
     const cap = event.data.poolCap ?? CASE_POOL_CAP;
     showNotice(`The case pool is full — ${cap} of ${cap} cases already accepted. The run will continue with what's been picked.`);
+    return false;
+  }
+
+  // The gate stops offering rounds after MAX_CASE_REGEN_ATTEMPTS, and until now it did so in
+  // complete silence: the panel closed, the run carried on, and "refine did nothing" was the only
+  // thing on screen. Every OTHER way the round loop ends already says why (pool cap, end of
+  // capacity, finalized) — this was the one exit with no handler here at all.
+  if (event.stage === "testcases" && event.data?.action === "case_regen_limit_reached") {
+    const rounds = event.data.attempt ?? CASE_REGEN_LIMIT;
+    showNotice(`That was the last refine — ${rounds} rounds is the limit for one run. The run will continue with the cases you've picked.`);
     return false;
   }
 
@@ -2938,6 +3096,7 @@ function applyEvent(event, runId) {
     // Captured BEFORE renderSuiteResults runs — the header reads it.
     currentRunUsage = event.data?.llmUsage ?? null;
     currentRunIsReplay = !!event.data?.replay;
+    currentRunFinished = event.stage === "done";
     paintVerdict(verdictFor(event.data, event.stage, event.error));
 
     renderEnterpriseDiagnostic(event.data, event.stage, event.error);
@@ -2981,6 +3140,7 @@ function applyEvent(event, runId) {
     }
 
     loadHistory();
+    refreshRunSaveSlot();
     return true; // Stop polling
   }
 
@@ -3090,6 +3250,68 @@ function applyEvent(event, runId) {
 
 let pollGeneration = 0;
 
+/**
+ * The run to re-open after a 401 forced a sign-in, or null. Set by `stopRunPolling`, consumed once
+ * by the login handler. Kept here rather than in `auth` because it is about the run view's state,
+ * not the identity — but it must survive `signOut()`'s clearing of `auth`, which it does because
+ * signOut never touches it.
+ */
+let returnToRunAfterSignIn = null;
+
+/**
+ * Stop the run view for a reason retrying cannot fix, and say which reason.
+ *
+ * A poll that keeps retrying forever is not a safety net, it is a hang that looks like progress —
+ * so the three terminal answers get their own words. They are NOT interchangeable, and the
+ * difference is who can fix them:
+ *
+ *   - 401 means the token is gone or expired. Signing in again fixes it, so the run id is
+ *     remembered and the user lands back on this run afterwards.
+ *   - 403 and 404 mean this run is not available: deleted (retention prunes directories, and an
+ *     unpruned one still 403s because it has no ownership record left to prove — see
+ *     `requireRunRole` in src/server/authz.ts) or simply not visible to this account. Signing in
+ *     again CANNOT fix either, so this must not route to the login screen: a legitimate second-org
+ *     user would be bounced there forever. It is a real state, not an error — the words say so.
+ *
+ * 404 is defensive. `/api/runs/:id/state` returns `getEvents()` straight from the run store, which
+ * yields `[]` for a missing directory, so it does not 404 today. It is handled anyway so that a
+ * future route change cannot drop it into the transient path and poll a missing run at 1Hz
+ * forever. See DECISIONS.md.
+ */
+function stopRunPolling(runId, status) {
+  const terminal = status === 401;
+  submitBtn.disabled = false;
+  submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
+  finalResult.classList.remove("hidden");
+  paintVerdict(terminal
+    ? { cls: "incomplete", ic: "alert-triangle",
+        head: "Your session expired",
+        detail: "Sign in again to pick this run back up where it left off." }
+    : { cls: "incomplete", ic: "alert-triangle",
+        head: "This run is no longer available",
+        detail: "It may have been deleted, or your account may not have access to it." });
+
+  if (!terminal) return;
+  // Show it on the sign-in screen too — the run view is about to be hidden by applyRoute(), so a
+  // verdict painted here would never be read. `auth.screen` picks login over signup, and the
+  // hash is left alone so signing back in re-enters this run.
+  const errEl = document.getElementById("loginError");
+  if (errEl) {
+    errEl.textContent = "Your session expired. Sign in to continue this run.";
+    errEl.classList.remove("hidden");
+  }
+  setSession(null, null);
+  auth.screen = "login";
+  // Remember which run to come back to. The login success path reads this and navigates to
+  // #/run/<id> instead of the usual home, so an expired session mid-run is not also a lost run.
+  returnToRunAfterSignIn = runId;
+  // Cleared so the post-sign-in connect re-runs from a clean poll rather than trusting whatever
+  // this half-finished attempt left in the run view.
+  currentRunId = null;
+  refreshNewRunState();
+  applyRoute();
+}
+
 async function connectToRun(runId) {
   const generation = ++pollGeneration;
 
@@ -3118,8 +3340,43 @@ async function connectToRun(runId) {
     let done = false;
     try {
       const res = await fetch(`/api/runs/${runId}/state`);
+
+      // TD-15: the generation was checked at the top of this iteration and the user may have
+      // navigated to another run while this request was in flight. Checking only at the top lets a
+      // stale response apply itself with the OLD runId still closed over — which is how a
+      // credential modal for run A pops over what the user believes is run B. This is the only
+      // item in the register that can misdirect a secret. Re-checked after EVERY await below.
+      if (generation !== pollGeneration) return;
+
+      // The three answers retrying cannot fix, handled before `res.json()` so an error body's
+      // `{error: ...}` object is never mistaken for an event array. `res.ok` was never consulted
+      // at all before this, so every one of these — plus network errors and 5xx — landed in the
+      // same catch and the loop retried a 404 at 1Hz forever.
+      if (res.status === 401 || res.status === 403 || res.status === 404) {
+        stopRunPolling(runId, res.status);
+        return;
+      }
+
       const events = await res.json();
+      if (generation !== pollGeneration) return;
       if (!Array.isArray(events)) throw new Error("bad payload");
+
+      // RECOVERY REPLAY. `seen` only ever moves forward, so anything the run emitted while we
+      // were failing is applied on arrival — but the phase cards are written only as each event
+      // is applied, so an event lost mid-outage was never drawn and the card stayed on PENDING
+      // with nothing left to move it. Nothing re-derived it: there is no snapshot render path,
+      // and `resetRunUI()` ran once at entry.
+      //
+      // So on the first good read after a failure, throw the run view away and re-apply the
+      // WHOLE stream from zero. This is the reload path, not a new mechanism: `seen` starts at 0
+      // on every fresh `connectToRun`, and applyEvent is built to be re-appliable from the start
+      // (the reload view depends on it). Safe because every accumulator it touches is reset by
+      // `resetRunUI()` first — `phaseStageStatus` via `renderPhases`, and the heal counters via
+      // `hideSuiteResults`, which matters because the primary-heal counter is a `+= 1`.
+      if (fails > 0) {
+        resetRunUI();
+        seen = 0;
+      }
 
       const newEvents = events.slice(seen);
       if (newEvents.length > 0) {
@@ -3136,7 +3393,11 @@ async function connectToRun(runId) {
       }
       fails = 0;
     } catch {
-      if (++fails === 5) {
+      // `>= 5`, not `=== 5`. Exact equality was only ever correct because a success reset the
+      // counter to 0; anything that ever skipped a tick lost the message entirely, and the
+      // one-after-five-th failures were silently unreported. A floor states the intent: once
+      // enough consecutive failures have happened, say so.
+      if (++fails >= 5) {
         submitBtn.disabled = false;
         submitBtn.innerHTML = `${icon("play", { size: 14 })} <span class="run-btn-text">Run test</span>`;
         finalResult.classList.remove("hidden");
@@ -3146,7 +3407,7 @@ async function connectToRun(runId) {
       }
     }
 
-    if (done) return;
+    if (done) { fails = 0; return; }
     await new Promise((r) => setTimeout(r, 1000));
   }
 }
@@ -4973,6 +5234,8 @@ function resetRunUI() {
   diagnosisEl.textContent = "";
   runTitleEl.textContent = "";
   runMetaEl.textContent = "";
+  currentRunFinished = false;
+  refreshRunSaveSlot();
 }
 
 function setCrumbs(parts) {
