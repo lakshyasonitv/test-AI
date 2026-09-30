@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   BOOLEAN_ENV_FLAGS,
   findInvalidBooleanFlags,
@@ -17,9 +20,19 @@ import {
  * tests never touch `process.env` or boot a server: the `process.exit(1)` call it feeds lives
  * inside `isMain` in `index.ts`, which importing `app` here deliberately does not trigger.
  *
- * Per CLAUDE.md's structural-check rule, the guard tests the *set of declared flags* rather than
- * grepping source text for `=== "true"` — a flag is covered because it is in `BOOLEAN_ENV_FLAGS`,
- * and the last test in this file fails if that list stops matching the flags the code reads.
+ * THE LAST TEST USED TO CLAIM MORE THAN IT DID, and TD-100 is what that cost. It compared
+ * `BOOLEAN_ENV_FLAGS` against a hardcoded literal of the same names, so it could only catch
+ * someone editing the constant without editing the test. A flag added to the CODE and to neither
+ * list passed cleanly — which is exactly what happened: `DETERMINISTIC_HEAL` is read as
+ * `process.env.DETERMINISTIC_HEAL === "true"` in `heal.ts`, was never registered, and `=1`/`=True`
+ * booted clean and silently disabled the cheap structural heal for months.
+ *
+ * It now SCANS `src/` for the comparison itself. That is not the regex-over-prose failure
+ * CLAUDE.md's central rule warns about — the rule is about branching on LLM- or page-authored
+ * *text*; this reads our own source, which is structure we control and the only place the truth
+ * lives. Known blind spot, stated rather than hidden: `GATE_CASE_EDIT_AI` uses a second, lenient
+ * convention (`String(...).toLowerCase() === "true"`) and is deliberately NOT matched — registering
+ * it would make `TRUE` fatal when its reader accepts it. See TD-100 on normalising the two.
  */
 describe("boolean env flag boot guard", () => {
   describe("one test per flag: a malformed value is rejected and named", () => {
@@ -121,18 +134,38 @@ describe("boolean env flag boot guard", () => {
      * to the code and forgetting this list. Assert the declared set matches every flag the
      * server actually compares against "true"/"false".
      */
-    it("covers exactly the flags the codebase compares against a boolean string", () => {
-      expect([...BOOLEAN_ENV_FLAGS].sort()).toEqual([
-        "AUTH_ENABLED",
-        "DB_ENABLED",
-        "ENABLE_CASE_SELECTION_GATE",
-        "NL_STEPS_ENABLED",
-        "ORG_LLM_CONFIG_ENABLED",
-        "REPLAY_REGROUND",
-        "SCRIPT_OVERRIDE_ENABLED",
-        "SELF_HEAL_DEFAULT",
-        "SIGNUP_ENABLED",
-      ]);
+    /** Every `process.env.X === "true"` / `!== "false"` in src/, found by reading the source. */
+    function flagsTheCodeReads(): string[] {
+      const found = new Set<string>();
+      const walk = (dir: string): void => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) { walk(full); continue; }
+          if (!entry.name.endsWith(".ts")) continue;
+          const src = readFileSync(full, "utf8");
+          for (const m of src.matchAll(/process\.env\.([A-Z0-9_]+)\s*(?:===|!==)\s*"(?:true|false)"/g)) {
+            found.add(m[1]);
+          }
+        }
+      };
+      walk(fileURLToPath(new URL("../src", import.meta.url)));
+      return [...found].sort();
+    }
+
+    it("registers every flag the code actually compares against a boolean string", () => {
+      // The real failure mode, and the one that produced TD-100: a flag added to the code and to
+      // no list at all. A hardcoded literal here could never see that.
+      const unregistered = flagsTheCodeReads().filter((f) => !BOOLEAN_ENV_FLAGS.includes(f as never));
+      expect(unregistered,
+        `read as a boolean in src/ but missing from BOOLEAN_ENV_FLAGS, so a typo in them boots `
+        + `clean and reads false: ${unregistered.join(", ")}`).toEqual([]);
+    });
+
+    it("declares no flag the code no longer reads", () => {
+      // The other direction: a stale entry is harmless at runtime but makes the registry lie about
+      // what it covers, which is how the previous version of this test came to be believed.
+      const read = flagsTheCodeReads();
+      expect([...BOOLEAN_ENV_FLAGS].filter((f) => !read.includes(f))).toEqual([]);
     });
 
     it("declares no duplicates", () => {

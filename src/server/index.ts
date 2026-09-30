@@ -2040,6 +2040,11 @@ const port = Number(process.env.PORT ?? 3000);
 export const BOOLEAN_ENV_FLAGS = [
   "AUTH_ENABLED",
   "DB_ENABLED",
+  // TD-100: read as `process.env.DETERMINISTIC_HEAL === "true"` in heal.ts and absent from this
+  // list, which is the one thing the comment above says cannot happen. `=1`/`=True` booted clean,
+  // read false, and silently skipped the cheap structural heal so every heal paid for a full LLM
+  // IR regeneration — invisible, because the expensive path produces a correct-looking result.
+  "DETERMINISTIC_HEAL",
   "ENABLE_CASE_SELECTION_GATE",
   "NL_STEPS_ENABLED",
   "ORG_LLM_CONFIG_ENABLED",
@@ -2141,6 +2146,79 @@ export function formatInvalidProviderEnv(bad: InvalidProviderEnv[]): string {
   ].join("\n");
 }
 
+/**
+ * The browser-pinning pair — `TECH_DEBT.md` TD-104.
+ *
+ * `browserContextOptions()` hands both straight to Chromium. `SUPPORTED_RUN_LOCALES` exists and is
+ * enforced, but ONLY on `options.locale` in `POST /api/runs`; the environment path had no check at
+ * all, and `RUN_TIMEZONE` had none anywhere.
+ *
+ * WHY THIS IS FATAL RATHER THAN A WARNING. Measured in a real Chromium on the pinned 1.49.0:
+ *
+ *     RUN_TIMEZONE=Asia/Kolkata   -> context OK
+ *     RUN_TIMEZONE=Asia/Kolkatta  -> browserContext.newPage: Invalid timezone ID: Asia/Kolkatta
+ *     RUN_LOCALE=en_US            -> context OK, silently pinned to the wrong thing
+ *
+ * The timezone case is TD-71 again, down to the same function in the same error string: pinning
+ * happens when the CONTEXT is created, so it does not degrade to "unpinned" — every case in every
+ * run dies before a single `page.goto`, `screenshot: "on"` photographs a page that never
+ * navigated, and the product reports the site under test as broken. A container that starts
+ * happily and then blames a working site is strictly worse than one that refuses to start.
+ *
+ * `RUN_LOCALE=""` stays legal: it is the documented rollback switch that turns pinning off
+ * entirely (`browserLaunch.ts`), and unlike the boolean flags an empty value here is deliberate,
+ * not a typo that reads as false. Absent is legal for both, as everywhere else in this file.
+ */
+export interface InvalidBrowserEnv { name: string; found: string; hint: string }
+
+export function findInvalidBrowserEnv(env: NodeJS.ProcessEnv = process.env): InvalidBrowserEnv[] {
+  const bad: InvalidBrowserEnv[] = [];
+
+  const locale = env.RUN_LOCALE;
+  // Empty is the rollback switch, not a mistake — see the docblock. Anything else present must be
+  // a tag the allow-list already names, the same list the route enforces.
+  if (locale !== undefined && locale.trim() !== "" && !isSupportedRunLocale(locale)) {
+    bad.push({ name: "RUN_LOCALE", found: locale, hint: `expected one of: ${SUPPORTED_RUN_LOCALES.join(", ")}` });
+  }
+
+  const tz = env.RUN_TIMEZONE;
+  if (tz !== undefined && tz.trim() !== "") {
+    // ASK THE RUNTIME, DO NOT MATCH AGAINST A LIST. The obvious implementation —
+    // `Intl.supportedValuesOf("timeZone").includes(tz)` — is wrong in a way that only a test
+    // catches: that list is CANONICAL names only. Measured on this Node: 418 zones, containing
+    // `Asia/Calcutta` but not the modern alias `Asia/Kolkata`, and **not `UTC` at all** — which is
+    // this project's own DEFAULT_TIMEZONE. An allow-list check would therefore refuse to boot on
+    // `RUN_TIMEZONE=UTC`, turning a guard against a broken config into a guard against a correct
+    // one.
+    //
+    // `Intl.DateTimeFormat` throws RangeError for exactly the values Chromium rejects and accepts
+    // every alias it accepts, verified against both:
+    //     UTC / Asia/Kolkata / Asia/Calcutta / Europe/London  -> accepted
+    //     Asia/Kolkatta / Mars/Olympus                        -> RangeError
+    let valid = true;
+    try { new Intl.DateTimeFormat("en-US", { timeZone: tz.trim() }); } catch { valid = false; }
+    if (!valid) {
+      bad.push({ name: "RUN_TIMEZONE", found: tz, hint: "expected an IANA timezone, e.g. UTC or Asia/Kolkata" });
+    }
+  }
+
+  return bad;
+}
+
+/** The fatal message for `findInvalidBrowserEnv()` — names each variable, its value, and the fix. */
+export function formatInvalidBrowserEnv(bad: InvalidBrowserEnv[]): string {
+  return [
+    `[startup] FATAL: browser locale/timezone environment variable(s) are not valid.`,
+    ...bad.map((b) => `  ${b.name}=${JSON.stringify(b.found)} — ${b.hint}`),
+    `  These are passed straight to Chromium when a browser context is created. An invalid`,
+    `  timezone does not degrade to "unpinned" — it throws at browserContext.newPage(), so EVERY`,
+    `  case in EVERY run would die before navigating and the product would report the site under`,
+    `  test as broken (TECH_DEBT.md TD-71 is the same failure).`,
+    `  Fix the value, or remove the variable to take its default (en-US / UTC).`,
+    `  RUN_LOCALE="" is still valid and means "do not pin at all".`,
+  ].join("\n");
+}
+
 // Only actually start listening (and run startup-only diagnostics/jobs) when this file is
 // executed directly (`npm run serve`/`start`), not when a test imports `app` to exercise routes
 // via supertest — importing must never bind a real port or spin up background timers.
@@ -2161,6 +2239,14 @@ if (isMain) {
   const invalidProviders = findInvalidProviderEnv();
   if (invalidProviders.length > 0) {
     console.error(formatInvalidProviderEnv(invalidProviders));
+    process.exit(1);
+  }
+  // Third sibling, same rationale and same placement (TD-104). Before any route can serve a
+  // request, because the failure this prevents is a browser context that cannot be created at all
+  // — which surfaces as "every test failed" rather than as a configuration error.
+  const invalidBrowserEnv = findInvalidBrowserEnv();
+  if (invalidBrowserEnv.length > 0) {
+    console.error(formatInvalidBrowserEnv(invalidBrowserEnv));
     process.exit(1);
   }
 

@@ -144,11 +144,11 @@ authority is its own heading, not this list.
 | TD-97 | The run poll never consulted `res.ok`, so a 401/403/404 was retried at 1Hz forever, and a 403 (a deleted or other-org run) was treated as an expired session — routing it to a sign-in screen that could never succeed — **fixed** | Medium | Accidental | ? |
 | TD-98 | The "lost contact" threshold was `++fails === 5`, correct only via an invariant in a different branch, and the counter was never cleared when a run completed — **fixed** | Low | Accidental | ? |
 | TD-99 | Signing out neither stopped the in-flight poll loop (so it 401'd at 1Hz against a token being revoked) nor asked about a run in progress — **fixed** | Low | Accidental | ? |
-| TD-100 | `DETERMINISTIC_HEAL` is compared against `"true"` but is **missing from `BOOLEAN_ENV_FLAGS`**, so `=1`/`=True` boots clean and reads false — the cheap structural heal is skipped and every heal silently pays for a full LLM IR regeneration | Medium | Accidental | ? |
+| TD-100 | `DETERMINISTIC_HEAL` is compared against `"true"` but is **missing from `BOOLEAN_ENV_FLAGS`**, so `=1`/`=True` boots clean and reads false — the cheap structural heal is skipped and every heal silently pays for a full LLM IR regeneration — **fixed** | Medium | Accidental | ? |
 | TD-101 | `computeStatus` returns `truncated` **without consulting `result.passed`**, and `passed: status === "passed" || status === "truncated"` then reports it green — a case that genuinely FAILED in the browser is counted as passed whenever its IR was also truncated — **fixed** | High | Accidental | ? |
 | TD-102 | `attachElementIdentity` KEEPS LLM-authored elements it could not match to the DOM, so a phantom (`role=button, name="login-button", no css`) survives into the AppModel, `toIR` grounds a step on it, and the click can never resolve | High | Accidental | ? |
 | TD-103 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable — **fixed** | High | Accidental | ? |
-| TD-104 | `RUN_TIMEZONE` reaches Chromium unvalidated (`isSupportedRunLocale` guards only the ROUTE, never the env, and the timezone nothing at all), so one typo throws at `browserContext.newPage` and **every case in every run dies before navigating** — TD-71 again, same function, same blank-screenshot symptom | High | Accidental | ? |
+| TD-104 | `RUN_TIMEZONE` reaches Chromium unvalidated (`isSupportedRunLocale` guards only the ROUTE, never the env, and the timezone nothing at all), so one typo throws at `browserContext.newPage` and **every case in every run dies before navigating** — TD-71 again, same function, same blank-screenshot symptom — **fixed** | High | Accidental | ? |
 
 | TD-105 | The crawler's read-only guards (`SIGN_OUT_VERB` / `DESTRUCTIVE_VERB`) are anchored `^...$`, so discovery will click **"Delete account"** while refusing **"Delete"** — pre-existing, but TD-103 widened the landmarks it applies to | Medium | Accidental | ? |
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
@@ -4091,7 +4091,7 @@ prompt only ever failed on Azure.
 
 ---
 
-### TD-100. `DETERMINISTIC_HEAL` is read as a boolean flag but is missing from `BOOLEAN_ENV_FLAGS`, so a typo in it is silently false — Medium / Accidental — Filed, not fixed
+### TD-100. `DETERMINISTIC_HEAL` is read as a boolean flag but is missing from `BOOLEAN_ENV_FLAGS`, so a typo in it is silently false — Medium / Accidental — **Fixed**
 
 `src/stages/heal.ts:104`:
 
@@ -4333,7 +4333,7 @@ to 3+.
 
 ---
 
-### TD-104. `RUN_TIMEZONE` is unvalidated and reaches Chromium directly, so one typo kills every test in every run — High / Accidental — Filed, not fixed
+### TD-104. `RUN_TIMEZONE` is unvalidated and reaches Chromium directly, so one typo kills every test in every run — High / Accidental — **Fixed**
 
 Introduced with the locale pinning (`048c4fb`, item 7). `browserContextOptions()`
 (`src/browserLaunch.ts:161`) passes both values straight through:
@@ -4431,3 +4431,26 @@ is a decision, not a cleanup, so it belongs in its own change with its own reaso
 **Related:** the same file's "Known ceiling" note claimed `Reset app state` was unguarded. It is —
 the regex names it explicitly. That comment has been corrected; it is the sort of stale claim
 `DECISIONS.md` D-01 warns about, and it cost a moment of believing the guard was weaker than it is.
+
+**TD-100 fix note (2026-09-30).** `DETERMINISTIC_HEAL` added to `BOOLEAN_ENV_FLAGS`, but the more
+important half is the test. `tests/booleanEnvFlags.test.ts` claimed in its own docblock that its
+last case "fails if that list stops matching the flags the code reads" — it did not. It compared
+the constant against a **hardcoded literal of the same names**, so it could only catch someone
+editing the constant without editing the test. A flag added to the code and to neither list passed
+cleanly, which is precisely how this defect existed. That test now SCANS `src/` for
+`process.env.X === "true"` / `!== "false"` and asserts both directions (nothing unregistered,
+nothing stale). Negative-controlled: removing `DETERMINISTIC_HEAL` from the list reproduces TD-100
+and the failure message names it. Known blind spot, stated in the test: `GATE_CASE_EDIT_AI` uses the
+second, lenient `.toLowerCase() === "true"` convention and is deliberately not matched — registering
+it would make `TRUE` fatal when its own reader accepts it.
+
+**TD-104 fix note (2026-09-30).** `findInvalidBrowserEnv` joins `findInvalidBooleanFlags` and
+`findInvalidProviderEnv` as a third boot guard, same shape, same `process.exit(1)` inside `isMain`.
+One trap worth recording, caught by the test and not by review: the obvious implementation,
+`Intl.supportedValuesOf("timeZone").includes(tz)`, is **wrong**. That list is canonical names only —
+measured at 418 entries containing `Asia/Calcutta` but **not** the modern alias `Asia/Kolkata`, and
+**not `UTC` at all**, which is this project's own `DEFAULT_TIMEZONE`. Using it would have refused to
+boot on a correct config, converting a guard against a broken deployment into a guard against a
+working one. The check asks the runtime instead — `new Intl.DateTimeFormat("en-US", { timeZone })`
+throws `RangeError` for exactly what Chromium rejects and accepts every alias it accepts.
+`RUN_LOCALE=""` stays legal: it is the documented rollback switch, not a typo.
