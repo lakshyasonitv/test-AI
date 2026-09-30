@@ -4,7 +4,7 @@ import { generateSpec } from "./generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked } from "./executor.js";
 import { credentialEnvVars, type Credentials } from "./credentials.js";
 import { regroundEditedIr } from "./caseEdit.js";
-import { buildSuiteSummary, type CaseRunResult } from "./suiteRunner.js";
+import { buildSuiteSummary, computeCaseStatus, type CaseRunResult } from "./suiteRunner.js";
 import { store } from "../runStore.js";
 import type { IR } from "../schema/ir.js";
 import type { OnEvent, StageEvent, StageName } from "../orchestrator.js";
@@ -266,15 +266,10 @@ export async function runReplay(
 
         if (firstArtifactsDir === null) firstArtifactsDir = result.artifactsDir;
 
-        // Same verdict rules the suite runner applies, in the same order — a wall automation
-        // cannot pass outranks pass/fail, and a truncated plan with no terminal assertion cannot
-        // report "passed" because the dropped tail may have held the only assertion.
+        // THE shared ladder, not a copy of it. This was a hand-kept duplicate whose comment said
+        // "same verdict rules the suite runner applies" — and it was, until TD-101 changed them.
         const blocked = detectBlocked(path.join(caseDir, "artifacts"), originOf(entryUrl));
-        const status: CaseRunResult["status"] =
-          blocked ? "blocked"
-            : c.ir.meta.truncated && !c.ir.meta.hasTerminalAssertion ? "truncated_no_assertion"
-              : c.ir.meta.truncated ? "truncated"
-                : result.passed ? "passed" : "failed";
+        const status = computeCaseStatus(c.ir, result, blocked);
 
         results.push({
           caseId,

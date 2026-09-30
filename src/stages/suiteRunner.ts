@@ -28,6 +28,45 @@ export interface PrimaryCaseResult {
   deterministicHeal?: boolean;
 }
 
+/**
+ * THE verdict ladder. One definition, because three call sites have to agree.
+ *
+ * It existed three times — `computeStatus` inside `runSuite`, an inlined copy for the reused
+ * primary case, and a third in `replay.ts` whose own comment said "Same verdict rules the suite
+ * runner applies, in the same order". That is `TECH_DEBT.md` TD-07's shape exactly: two copies of
+ * one rule, kept in step by hand until they are not.
+ *
+ * ORDER IS THE WHOLE CONTENT OF THIS FUNCTION:
+ *
+ *  1. `blocked` outranks everything. A wall automation cannot pass (a captcha, an emailed code) is
+ *     not the application's fault — "failed" would blame the site for something it did not do.
+ *
+ *  2. **A RUNTIME FAILURE OUTRANKS TRUNCATION.** This is TD-101, and it is the line that changed.
+ *     Truncation describes WHAT WAS BUILT — steps that could not be grounded were dropped. It says
+ *     nothing about whether the steps that DID run passed. The old ladder checked `truncated`
+ *     before it ever read `result.passed`, so a case that genuinely failed in the browser came out
+ *     as `truncated`, and `passed: status === "passed" || status === "truncated"` below then wrote
+ *     it to disk as **passed**. Observed on run `2026-09-28T05-35-47-348Z-3effa6c7`: the banner
+ *     said Failed, a real diagnosis existed (`failure_analysis` only runs on `!result.passed`), the
+ *     failing step was the only one in the whole run with no post-step screenshot — and the summary
+ *     read "2 passed, 0 failed".
+ *
+ *  3. Only then does truncation classify an otherwise-clean run. `truncated_no_assertion` still
+ *     catches the false positive it was built for — Playwright PASSED but the dropped tail may have
+ *     held the only assertion — which is why it sits below the failure check rather than above it.
+ */
+export function computeCaseStatus(
+  ir: { meta?: { truncated?: boolean; hasTerminalAssertion?: boolean } },
+  result: { passed: boolean },
+  blocked: unknown,
+): CaseRunResult["status"] {
+  if (blocked) return "blocked";
+  if (!result.passed) return "failed";
+  if (ir.meta?.truncated && !ir.meta.hasTerminalAssertion) return "truncated_no_assertion";
+  if (ir.meta?.truncated) return "truncated";
+  return "passed";
+}
+
 export interface CaseRunResult {
   caseId: string;
   title: string;
@@ -249,21 +288,14 @@ export async function runSuite(
         // already produced — without this the run verdict said "blocked" while this case's own
         // card still said "passed".
         const primaryBlocked = detectBlocked(primaryResult.result.artifactsDir, originOf(entryUrl));
-        let status: CaseRunResult["status"];
-        if (primaryBlocked) {
-          status = "blocked";
-        } else if (primaryResult.ir.meta.truncated && !primaryResult.ir.meta.hasTerminalAssertion) {
-          status = "truncated_no_assertion";
-        } else if (primaryResult.ir.meta.truncated) {
-          status = "truncated";
-        } else if (primaryResult.result.passed) {
-          status = "passed";
-        } else {
-          status = "failed";
-        }
+        const status = computeCaseStatus(primaryResult.ir, primaryResult.result, primaryBlocked);
 
         const resultPath = path.join(caseDir, "05-result.json");
         writeFileSync(resultPath, JSON.stringify({
+          // Safe now, and only because computeCaseStatus checks `!result.passed` BEFORE
+          // truncation (TD-101): `truncated` can no longer contain a run that failed in the
+          // browser, so counting it as passed no longer hides a real failure. A truncated case
+          // still ran its surviving steps green — that is what this records.
           passed: status === "passed" || status === "truncated",
           intent: tc.intent, expected: tc.expected,
           blockedBy: primaryBlocked?.reason,
@@ -331,18 +363,8 @@ export async function runSuite(
 
         console.log(result);
 
-        // Determine honest status before saving the result.
-        // A wall the test can't pass outranks every other verdict: "passed" would be a lie and
-        // "failed" would blame the application for something that isn't its fault.
-        const computeStatus = (theIr: typeof ir, theResult: typeof result, theBlocked: ReturnType<typeof detectBlocked>): CaseRunResult["status"] => {
-          if (theBlocked) return "blocked";
-          if (theIr.meta.truncated && !theIr.meta.hasTerminalAssertion) return "truncated_no_assertion";
-          if (theIr.meta.truncated) return "truncated";
-          return theResult.passed ? "passed" : "failed";
-        };
-
         let blocked = detectBlocked(path.join(caseDir, "artifacts"), originOf(entryUrl));
-        let status = computeStatus(ir, result, blocked);
+        let status = computeCaseStatus(ir, result, blocked);
 
         let diagnosisPath: string | undefined;
         let healed = false;
@@ -418,7 +440,7 @@ export async function runSuite(
                 // The healed run's own artifacts live under caseDir/healed/artifacts — check
                 // there for a block wall too, not the original (failed) attempt's directory.
                 blocked = detectBlocked(path.join(caseDir, "healed", "artifacts"), originOf(entryUrl));
-                status = computeStatus(ir, result, blocked);
+                status = computeCaseStatus(ir, result, blocked);
               }
             } catch (err: any) {
               // Original diagnosis and result stand unchanged — same "never mask the real
@@ -430,6 +452,10 @@ export async function runSuite(
 
         const resultPath = path.join(caseDir, "05-result.json");
         writeFileSync(resultPath, JSON.stringify({
+          // Safe now, and only because computeCaseStatus checks `!result.passed` BEFORE
+          // truncation (TD-101): `truncated` can no longer contain a run that failed in the
+          // browser, so counting it as passed no longer hides a real failure. A truncated case
+          // still ran its surviving steps green — that is what this records.
           passed: status === "passed" || status === "truncated",
           blockedBy: blocked?.reason,
           status: status !== "passed" ? status : undefined,

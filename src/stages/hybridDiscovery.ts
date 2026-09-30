@@ -542,37 +542,84 @@ const MAX_CLICK_PROBES = 12;
  * at one page even after logging in successfully, which looks identical to the auth wall it
  * had just got past. Clicking is the only way to learn those destinations.
  *
- * Two candidate shapes, both provably unreachable via `href` (see the filter below): nav-landmark
- * buttons, and any anchor. Buttons stay scoped to the `nav` landmark — a DOM fact, not a guess
- * about button text — because an unscoped button could be "Delete" or "Add to cart". Anchors need
- * no such scoping: they are semantically navigation, and this only runs when the href pass
- * already returned nothing, so every anchor reaching here is one with no usable destination.
+ * Two candidate shapes, both provably unreachable via `href` (see `isCrawlClickCandidate`):
+ * navigation-landmark buttons, and any anchor. Buttons stay scoped to the `nav` and `header`
+ * landmarks — a DOM fact, not a guess about button text — because an unscoped button could be
+ * "Delete" or "Add to cart". Anchors need no such scoping: they are semantically navigation, and
+ * this only runs when the href pass already returned nothing, so every anchor reaching here is one
+ * with no usable destination.
  *
  * ponytail: one click per candidate, re-navigating between each, capped at MAX_CLICK_PROBES.
  * Fine at MAX_DISCOVERY_PAGES scale; if it ever needs to scale, read the router's route table
- * instead of clicking. Known ceiling: an `<a href="#">` wired to a destructive handler would be
- * clicked — sign-out is excluded by name, but "Reset app state" on saucedemo is not.
+ * instead of clicking.
+ *
+ * KNOWN CEILING, and it is narrower than it reads: `SIGN_OUT_VERB` and `DESTRUCTIVE_VERB` are
+ * anchored `^...$`, so they stop a button named exactly "Delete" and admit one named "Delete
+ * account". ("Reset app state" IS covered — the regex names it explicitly; an older version of
+ * this comment said otherwise.) See `TECH_DEBT.md` TD-105: loosening the anchors is a tradeoff,
+ * not a free win, because `^delete` would also start excluding real navigation like
+ * "Cancelled orders".
  */
+/** `norm` for element names — shared by the candidate filter and its dedupe key. */
+const normName = (s: string) => (s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+
+/**
+ * Is this element worth CLICKING to discover a URL the href pass could not see?
+ *
+ * Extracted from `discoverUrlsByClicking`'s filter so it can be unit-tested against real recorded
+ * element shapes — the condition inside it is the whole of TD-103, and it was wrong for five runs
+ * without anything noticing, because nothing could see it from outside.
+ *
+  // Two shapes, both of which `collectCrawlTargets` provably cannot follow — this only runs
+  // when the href pass already came back empty:
+  //
+  //  - a nav-landmark BUTTON: the Next.js `<button onClick={router.push()}>` sidebar.
+  //  - ANY link: an <a> that survived the href pass has no usable destination. saucedemo's
+  //    cart is literally `<a class="shopping_cart_link" data-test="shopping-cart-link">` with
+  //    no href attribute at all, and its product links are `href="#"`. Anchors are safe to
+  //    widen to because they are semantically navigation.
+  //
+  // `header` COUNTS AS NAVIGATION CHROME, NOT JUST `nav` — TECH_DEBT.md TD-103.
+  //
+  // The widening to `/link/i` above was written for saucedemo's cart specifically, and it never
+  // fired on it: an <a> with no href is not a link in the accessibility tree, so discovery
+  // records that cart as `role: "button", landmark: "header"` and the widened condition still
+  // rejected it. The fix and the element it was written for never met.
+  //
+  // Measured against the real inventory page as discovery recorded it
+  // (`runs/2026-09-17T11-38-39-418Z-bfd03461/02-appmodel.json`): 8 of 38 elements passed, and
+  // after the same-origin filter and the two verb guards, ZERO new URLs survived — the two nav
+  // buttons loop back to the same page, About and the three footer socials are external, and
+  // Logout / Reset App State are correctly dropped. Every element that actually navigates
+  // (`Cart, empty`, `Open Menu`, six `View details for …`) sat outside the filter. Result: 2
+  // pages crawled on five separate runs, four of them authenticated — which is what truncates
+  // the cases, burns the IR retries, and leaves self-heal unable to demonstrate anything
+  // (`heal.ts` discards a heal whose regenerated IR is still truncated).
+  //
+  // DELIBERATELY NOT widened to landmark-less buttons. That admits the six `Add to cart`
+  // buttons, and discovery CLICKING those mutates application state — "Add to cart" is not a
+  // destructive *verb*, so `DESTRUCTIVE_VERB` would not catch it and the read-only guarantee
+  // would go quietly. Product-detail coverage is a real remaining gap; it needs its own
+  // decision about read-only-ness, not a wider regex here.
+    const navish = el.landmark === "nav" || el.landmark === "header";
+    const clickable = (/button/i.test(el.role) && navish) || /link/i.test(el.role);
+ */
+export function isCrawlClickCandidate(
+  el: { role: string; name: string; landmark?: string },
+): boolean {
+  if (SIGN_OUT_VERB.test(normName(el.name))) return false;    // would end the session mid-crawl
+  if (DESTRUCTIVE_VERB.test(normName(el.name))) return false; // discovery must stay read-only
+  const navish = el.landmark === "nav" || el.landmark === "header";
+  return (/button/i.test(el.role) && navish) || /link/i.test(el.role);
+}
+
 export async function discoverUrlsByClicking(
   page: Page, pageModel: PageModel, origin: string,
 ): Promise<string[]> {
-  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
   const seen = new Set<string>();
   const candidates = pageModel.elements.filter((el) => {
-    if (SIGN_OUT_VERB.test(norm(el.name))) return false;    // would end the session mid-crawl
-    if (DESTRUCTIVE_VERB.test(norm(el.name))) return false; // discovery must stay read-only
-    // Two shapes, both of which `collectCrawlTargets` provably cannot follow — this only runs
-    // when the href pass already came back empty:
-    //
-    //  - a nav-landmark BUTTON: the Next.js `<button onClick={router.push()}>` sidebar.
-    //  - ANY link: an <a> that survived the href pass has no usable destination. saucedemo's
-    //    cart is literally `<a class="shopping_cart_link" data-test="shopping-cart-link">` with
-    //    no href attribute at all, and its product links are `href="#"`. Anchors are safe to
-    //    widen to because they are semantically navigation; buttons stay restricted to `nav`,
-    //    since an unscoped button could be "Delete" or "Add to cart".
-    const clickable = (/button/i.test(el.role) && el.landmark === "nav") || /link/i.test(el.role);
-    if (!clickable) return false;
-    const key = `${el.role}|${norm(el.name)}|${el.css ?? ""}`;
+    if (!isCrawlClickCandidate(el)) return false;
+    const key = `${el.role}|${normName(el.name)}|${el.css ?? ""}`;
     if (seen.has(key)) return false;   // a grid repeats img-link + title-link per product
     seen.add(key);
     return true;

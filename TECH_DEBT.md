@@ -145,10 +145,12 @@ authority is its own heading, not this list.
 | TD-98 | The "lost contact" threshold was `++fails === 5`, correct only via an invariant in a different branch, and the counter was never cleared when a run completed — **fixed** | Low | Accidental | ? |
 | TD-99 | Signing out neither stopped the in-flight poll loop (so it 401'd at 1Hz against a token being revoked) nor asked about a run in progress — **fixed** | Low | Accidental | ? |
 | TD-100 | `DETERMINISTIC_HEAL` is compared against `"true"` but is **missing from `BOOLEAN_ENV_FLAGS`**, so `=1`/`=True` boots clean and reads false — the cheap structural heal is skipped and every heal silently pays for a full LLM IR regeneration | Medium | Accidental | ? |
-| TD-101 | `computeStatus` returns `truncated` **without consulting `result.passed`**, and `passed: status === "passed" || status === "truncated"` then reports it green — a case that genuinely FAILED in the browser is counted as passed whenever its IR was also truncated | High | Accidental | ? |
+| TD-101 | `computeStatus` returns `truncated` **without consulting `result.passed`**, and `passed: status === "passed" || status === "truncated"` then reports it green — a case that genuinely FAILED in the browser is counted as passed whenever its IR was also truncated — **fixed** | High | Accidental | ? |
 | TD-102 | `attachElementIdentity` KEEPS LLM-authored elements it could not match to the DOM, so a phantom (`role=button, name="login-button", no css`) survives into the AppModel, `toIR` grounds a step on it, and the click can never resolve | High | Accidental | ? |
-| TD-103 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable | High | Accidental | ? |
+| TD-103 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable — **fixed** | High | Accidental | ? |
+| TD-104 | `RUN_TIMEZONE` reaches Chromium unvalidated (`isSupportedRunLocale` guards only the ROUTE, never the env, and the timezone nothing at all), so one typo throws at `browserContext.newPage` and **every case in every run dies before navigating** — TD-71 again, same function, same blank-screenshot symptom | High | Accidental | ? |
 
+| TD-105 | The crawler's read-only guards (`SIGN_OUT_VERB` / `DESTRUCTIVE_VERB`) are anchored `^...$`, so discovery will click **"Delete account"** while refusing **"Delete"** — pre-existing, but TD-103 widened the landmarks it applies to | Medium | Accidental | ? |
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
 > from anyone reading only the summary. If you add an entry, add a row.
@@ -4130,7 +4132,7 @@ unrelated to that root cause).
 
 ---
 
-### TD-101. `truncated` outranks `failed`, so a case that FAILED at runtime is reported as passed — High / Accidental — Filed, not fixed
+### TD-101. `truncated` outranks `failed`, so a case that FAILED at runtime is reported as passed — High / Accidental — **Fixed**
 
 `src/stages/suiteRunner.ts:334` (and the identical ladder inlined at `:251` for the primary case):
 
@@ -4249,7 +4251,7 @@ even wrong-but-real; it names nothing at all.
 
 ---
 
-### TD-103. The click-probe's role+landmark filter excludes every element that navigates and admits only ones that go nowhere — High / Accidental — Filed, not fixed
+### TD-103. The click-probe's role+landmark filter excludes every element that navigates and admits only ones that go nowhere — High / Accidental — **Fixed**
 
 **This is the root cause of the truncations, and therefore of the IR retry spend and of self-heal
 never being demonstrable.** One condition, `src/stages/hybridDiscovery.ts:569`:
@@ -4328,3 +4330,104 @@ real gap but needs its own decision about read-only-ness, separately.
 `02-appmodel.json` counting elements that pass the condition. Run it before and after; the number
 must go from 8-that-yield-nothing to a set containing `Cart, empty`, and the crawl from 2 pages
 to 3+.
+
+---
+
+### TD-104. `RUN_TIMEZONE` is unvalidated and reaches Chromium directly, so one typo kills every test in every run — High / Accidental — Filed, not fixed
+
+Introduced with the locale pinning (`048c4fb`, item 7). `browserContextOptions()`
+(`src/browserLaunch.ts:161`) passes both values straight through:
+
+```ts
+const resolved = (raw ?? DEFAULT_LOCALE).trim() || DEFAULT_LOCALE;
+return {
+  locale: resolved,
+  timezoneId: process.env.RUN_TIMEZONE?.trim() || DEFAULT_TIMEZONE,
+};
+```
+
+`SUPPORTED_RUN_LOCALES` / `isSupportedRunLocale` exist and are applied — but **only to
+`options.locale` on `POST /api/runs`** (`src/server/index.ts:249`). The ENV path has no check at
+all, and `RUN_TIMEZONE` has no validation anywhere: not on the route, not at startup, not in the
+helper.
+
+**Measured in a real Chromium on the pinned 1.49.0** (D-19 — not inferred from the docs):
+
+```
+valid  Asia/Kolkata   -> context OK
+TYPO   Asia/Kolkatta  -> THROWS: browserContext.newPage: Invalid timezone ID: Asia/Kolkatta
+TYPO   locale en_US   -> context OK          (wrong locale, silently)
+```
+
+**The timezone case is TD-71 again, down to the same function in the same error string.**
+Recording/pinning happens when the CONTEXT is created, so this does not degrade to "unpinned" — it
+stops `browserContext.newPage()` outright, every case dies before a single `page.goto`,
+`screenshot: "on"` photographs a page that never navigated, and the UI reports a blank frame and a
+test failure. Nothing about the site under test is wrong. TD-71 cost a full run
+(`2026-08-31T06-56-52-852Z-7943ebb2`) being misread exactly this way.
+
+**Why it is High despite being unset by default.** `DEFAULT_TIMEZONE` is `"UTC"` so an untouched
+deployment is fine. The exposure is the act of setting it — and on this deployment env vars are set
+by a teammate running `az containerapp update --set-env-vars` from a handed-over block. That is the
+population most likely to typo a timezone, with no local run to catch it and no feedback when it is
+wrong: the next run just says the site is broken.
+
+The locale half is milder but the same gap — `en_US` (underscore for hyphen, the single most
+likely slip) is accepted by Chromium and silently pins the wrong thing, which is the "fix that
+looks like it worked" shape this register keeps recording.
+
+**Fix direction.** This repo already owns the pattern twice — `BOOLEAN_ENV_FLAGS` and
+`LLM_PROVIDER_ENV_VARS` both validate at startup and `process.exit(1)` on a malformed value, with
+the explicit rationale that "a typo in a flag must not be survivable". Add the same for these two:
+`RUN_LOCALE` against `SUPPORTED_RUN_LOCALES` (the allow-list already exists — it is simply not
+applied to the env), and `RUN_TIMEZONE` against `Intl.supportedValuesOf("timeZone")`, which is in
+Node 20+ and needs no dependency. Absent stays legal, as it does for every other flag here.
+
+Failing at boot is the right shape for the same reason it is for `AUTH_ENABLED=truebro`: the
+alternative is a container that starts happily and reports a working site as broken.
+
+**Related:** TD-100 is the same class (a flag read but not registered), one severity lower — that
+one silently disables a feature; this one kills every run.
+
+---
+
+### TD-105. The crawler's read-only guards are EXACT-match, so "Delete account" is clickable while "Delete" is not — Medium / Accidental — Filed, not fixed
+
+`src/stages/hybridDiscovery.ts`:
+
+```ts
+const SIGN_OUT_VERB   = /^(sign\s*out|log\s*out|logout|signout|log\s*off)$/;
+const DESTRUCTIVE_VERB = /^(reset(\s+app\s+state)?|delete|remove|clear|discard|cancel|deactivate|archive)$/;
+```
+
+Both are anchored. They are the only thing keeping `discoverUrlsByClicking` read-only, and the
+comment above them says "discovery must stay read-only" — but they stop a control named exactly
+`Delete` and admit `Delete account`, `Remove item`, `Clear cart`, `Cancel subscription`. Any of
+those in a `nav` or `header` landmark is clicked during discovery, on a real site, with real state.
+
+**Found by a test written for TD-103** that asserted the guarantee the comment implies; the code
+did not make it. The test now pins the *actual* reach, so the gap is visible rather than assumed.
+
+**Pre-existing, but the surface grew.** The anchors already applied to `nav`; TD-103's fix widened
+the filter to `header`, which is exactly where a user menu with "Delete account" tends to live. The
+change did not create this, and it did make it worth writing down.
+
+**Why it was NOT fixed inline with TD-103.** Loosening `^delete$` to `^delete` is not free: it
+would also exclude legitimate navigation — "Cancelled orders" on any e-commerce site is a real
+page, and `^cancel` would drop it, losing crawl coverage in the name of safety. Word-boundary
+matching trades a mutation risk for a discovery gap, and which is worse depends on the site. That
+is a decision, not a cleanup, so it belongs in its own change with its own reasoning.
+
+**Options, none obviously right:**
+- **Word-boundary anchors** — safest against mutation, silently loses pages whose names start with
+  a guarded verb.
+- **A deny-list of exact phrases** (`delete account`, `clear cart`, …) — no false exclusions, but
+  it is a regex over LLM/DOM-authored prose, which is the exact failure `CLAUDE.md`'s central rule
+  and TD-01 both record.
+- **Structural instead of textual** — only click elements whose `href`/handler is known-navigational.
+  The most correct, and the largest change; it is also what the docblock's "read the router's route
+  table instead of clicking" already gestures at.
+
+**Related:** the same file's "Known ceiling" note claimed `Reset app state` was unguarded. It is —
+the regex names it explicitly. That comment has been corrected; it is the sort of stale claim
+`DECISIONS.md` D-01 warns about, and it cost a moment of believing the guard was weaker than it is.
