@@ -6,7 +6,10 @@ node_modules
 runs/
 test-results/
 playwright-report/
-.claude/
+# Claude Code: local state (settings.local.json, worktrees, ...) stays out of git, but the
+# shared project settings are committed — they declare the plugin marketplaces.
+.claude/*
+!.claude/settings.json
 artifacts/
 
 # Local dev server output (npm run serve redirect)
