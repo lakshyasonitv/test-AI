@@ -4494,3 +4494,62 @@ crawl LOOP works. `www.qa-practice.com` goes **1 → 5 pages** on the href path,
 added a page, on any run, before or after this change, is the **click-probe fallback** — the path a
 site needs only when its navigation has no usable `href`. That is a narrower and more accurate
 statement of the defect than this entry originally made.
+
+**TD-103 ROOT CAUSE FOUND (2026-09-30) — it is structural, and no filter change could ever have fixed it.**
+
+Traced end to end locally with the crawl instrumented:
+
+```
+[TRACE] targetsFor(.../inventory.html) elements=39 viaLinks=0
+[TRACE]   probe found=["https://www.saucedemo.com/cart.html"] afterFilter=[".../cart.html"]
+[TRACE] initial queue=[".../cart.html"] pages=2 maxPages=5
+[TRACE] snapshot(.../cart.html) wasOn=.../inventory.html response=yes status=404
+[TRACE] DROP A: snapshot(...) returned null
+```
+
+**The click-probe works. The URL is queued. Then `snapshot()` RE-FETCHES it and gets a 404.**
+
+Verified independently, logged in, in a real browser and over plain HTTP:
+
+```
+GET /cart.html       -> HTTP 404
+GET /inventory.html  -> HTTP 404        <- the page the tests run against
+clicking through to the cart -> renders, 1 item in the list
+```
+
+**Every saucedemo page except `/` 404s on a direct GET.** It is client-side routed: the URL in the
+address bar is real to the browser and meaningless to the server.
+
+**The contradiction, which is the actual defect.** `discoverUrlsByClicking` exists specifically to
+find pages that can ONLY be reached by clicking. It returns those pages **URLs**. The crawl loop then
+discards the browser state that reached them and performs a cold `page.goto(url)` — which for exactly
+that class of page cannot work. The two halves of the mechanism assume opposite things.
+
+So saucedemo is always **exactly 2 pages**: `/` (directly fetchable) and the post-login page (reached
+by clicking Login, captured as `entry`, never re-fetched). The crawl loop can only add pages that are
+directly fetchable, and on this site none are.
+
+**Why the reverted fix was doomed.** Widening the filter changed which elements get clicked. The probe
+was already finding `cart.html` before the widening mattered — the loss is one layer below, in
+`snapshot`. Reverting was correct; re-widening would still produce 2 pages.
+
+**Fix direction — snapshot where you land, do not re-fetch.** `discoverUrlsByClicking` has the page in
+the right state at the moment it clicks. Extract the model THERE and return page models instead of
+URLs, so a client-side route is captured from the state that reached it. That is a real change to the
+probe contract (`string[]` -> something carrying a model) and to `targetsFor` plus the loop, not a
+one-liner.
+
+**Scope.** Server-rendered sites are unaffected and already work: `qa-practice.com` goes **1 -> 5
+pages** via the href path, twice on disk. This hits client-side-routed apps (SPAs with pushState
+routing and no server fallback), where it is total — the crawl cannot add a single page.
+
+**Cheap mitigation worth measuring FIRST:** `snapshot` treats `status >= 400` as fatal. For a
+client-side route the DOM is often correct despite the status, because the shell renders and routes.
+Accepting a 404 whose extracted model has elements — while still rejecting an empty one — may recover
+most of this for a few lines. Measure it, do not assume it.
+
+**Still open and NOT explained by this:** why an add-to-cart case truncates at its own step 2. Its
+target (`add-to-cart-sauce-labs-backpack`) IS in the 39-element inventory model, and `groundingError`
+is flat (`appModel.pages.flatMap`), so page reachability is not the gate. That needs the truncation
+note, which local reproduction cannot produce: the `.env` Gemini key returns 401
+(`ACCESS_TOKEN_TYPE_UNSUPPORTED` — it is an OAuth token, not an API key), so `toIR` will not run here.
