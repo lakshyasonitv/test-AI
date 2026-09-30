@@ -454,6 +454,57 @@ export function landedOnAlreadyModelled(
   return finalKey !== normUrl(requestedUrl) && visited.has(finalKey);
 }
 
+/**
+ * Is this discovery result worth REMEMBERING for `APPMODEL_CACHE_TTL_MS`? — TECH_DEBT.md TD-106.
+ *
+ * `discoverSiteHybrid` had this rule once, for one status:
+ *
+ *   > Never cache a failed login. A failure is usually transient — wrong value typed, the site
+ *   > briefly down, a login form that changed — and caching it pins the whole run to a
+ *   > login-page-only model, so the immediate retry silently gets the same broken answer without
+ *   > even opening a browser.
+ *
+ * That argument is right and was applied to `login-failed` alone, while three sibling paths cached
+ * results just as transient and just as unusable:
+ *
+ *  1. **entry page with zero elements** — returns BEFORE the login is even attempted, and its own
+ *     comment called the empty model "still a valid, cacheable result". A blank render (a cold
+ *     serverless start beyond the 6s hydration poll, a network blip) therefore meant no login
+ *     attempt AND thirty minutes of every retry getting the same nothing.
+ *  2. **`no-credentials`** — a credential prompt that timed out. The next run might well have
+ *     someone there to answer it; the cached login-page-only model means it never gets asked.
+ *  3. **`authenticated` with nothing past the login page** — the nastiest, because it claims
+ *     success. When the post-login page extracts no elements, `entry` stays the login page and
+ *     `loginPageModel` stays unset, so the model is `[loginPage]` with `status: "authenticated"`.
+ *     Downstream trusts that, builds a login prefix, and then cannot ground a single step beyond
+ *     it — which presents as every case truncating rather than as a login problem.
+ *
+ * Successes stay cached; only a result a retry could plausibly improve on pays for the retry.
+ */
+export function discoveryIsWorthCaching(model: AppModel): { ok: true } | { ok: false; reason: string } {
+  const status = model.auth?.status;
+  if (status === "login-failed") {
+    return { ok: false, reason: "the login failed, so a retry should try again" };
+  }
+  if (status === "no-credentials") {
+    return { ok: false, reason: "no credentials were supplied, so a retry should ask again" };
+  }
+  const total = model.pages.reduce((n, pg) => n + pg.elements.length, 0);
+  if (total === 0) {
+    return { ok: false, reason: "no elements were found on any page — nothing usable to remember" };
+  }
+  // Signed in, but every page in the model IS the login page: the post-login extraction came back
+  // empty. Compared on the landed URL rather than on page count, because a genuine single-page app
+  // behind a login is a legitimate one-page model.
+  if (status === "authenticated" && model.auth?.loginUrl) {
+    const loginKey = normUrl(model.auth.loginUrl);
+    if (model.pages.every((pg) => normUrl(pg.url) === loginKey)) {
+      return { ok: false, reason: "signed in but nothing past the login page was captured" };
+    }
+  }
+  return { ok: true };
+}
+
 /** Paths that are never page-crawl-worthy: assets and file downloads. */
 const SKIP_CRAWL_PATH = /\.(pdf|zip|tar|gz|rar|7z|exe|msi|dmg|apk|mp3|mp4|mov|avi|mkv|jpe?g|png|gif|webp|svg|ico|css|js|m?jsx|json|xml|woff2?|ttf|eot|wasm)$/i;
 
@@ -1061,11 +1112,12 @@ export async function discoverSiteHybrid(
 
     let entry = await labelPage(entrySnapshot.appModel.pages[0]);
     if (entry.elements.length === 0) {
-      // DOM succeeded but found no elements (auth wall, not-yet-hydrated) — still a valid,
-      // cacheable result. Without this, every call re-launches Chromium and re-crawls instead
-      // of hitting the cache, unlike discoverHybrid's equivalent case.
+      // DOM succeeded but found no elements — an auth wall, or a page still not painted after the
+      // 6s hydration poll (TD-31). NOT cached: this path returns before the login is even
+      // attempted, so remembering it means thirty minutes of retries that never try to sign in.
+      // TD-106. The old comment here called it "still a valid, cacheable result"; it is neither.
       const emptyModel = withLandedBase(entrySnapshot.appModel, entrySnapshot.finalUrl, url);
-      cacheSet(siteCacheKey(url, creds), emptyModel);
+      console.warn(`[hybrid] not caching ${url} — the entry page produced no elements, so a retry should try again`);
       return emptyModel;
     }
 
@@ -1152,7 +1204,12 @@ export async function discoverSiteHybrid(
             entryUrlForCrawl = reached;
             visited.add(normUrl(reached));
           } else {
-            console.warn(`[hybrid] login succeeded but ${reached} produced no elements`);
+            // The model is now `[loginPage]` carrying status "authenticated" — a result that claims
+            // success and cannot ground a single step past the login. Left as authenticated (the
+            // sign-in genuinely worked, and the prefix built from it is valid) but deliberately NOT
+            // cacheable: see discoveryIsWorthCaching. TD-106.
+            console.warn(`[hybrid] login succeeded but ${reached} produced no elements — the model will `
+              + `contain only the login page, and will not be cached`);
           }
         } else {
           auth = {
@@ -1267,8 +1324,9 @@ export async function discoverSiteHybrid(
     // same broken answer without even opening a browser. Caught exactly that way: a re-run after
     // fixing the login logged `cache hit — skipping login and crawl` and reported the OLD
     // failure. Successes stay cached; only the failure path pays for a retry.
-    if (auth.status === "login-failed") {
-      console.warn(`[hybrid] not caching ${url} — login failed, so a retry should try again`);
+    const worth = discoveryIsWorthCaching(result);
+    if (!worth.ok) {
+      console.warn(`[hybrid] not caching ${url} — ${worth.reason}`);
     } else {
       cacheSet(siteCacheKey(url, creds), result);
     }

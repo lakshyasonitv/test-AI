@@ -152,6 +152,7 @@ authority is its own heading, not this list.
 
 | TD-105 | The crawler's read-only guards (`SIGN_OUT_VERB` / `DESTRUCTIVE_VERB`) are anchored `^...$`, so discovery will click **"Delete account"** while refusing **"Delete"** — pre-existing, but TD-103 widened the landmarks it applies to | Medium | Accidental | ? |
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
+| TD-106 | A transient discovery failure was CACHED for 30 minutes — zero-element entry pages, `no-credentials`, and `authenticated`-with-only-the-login-page were all remembered, so one bad login poisoned every retry without opening a browser. The no-cache rule existed but covered only `login-failed` — **fixed** | High | Accidental | ? |
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
 > from anyone reading only the summary. If you add an entry, add a row.
 >
@@ -4600,3 +4601,55 @@ APPMODEL_CACHE_TTL_MS=0 node --env-file-if-exists=.env --import tsx <script>.mts
 `TTL_MS` in `src/kb/cache.ts` is read at MODULE LOAD, so setting `process.env` inside a script does
 nothing — two of this investigation measurements were silently served from cache. Pass it on the
 command line.
+
+---
+
+### TD-106. A transient discovery failure was cached for 30 minutes, so one bad login poisoned every retry — High / Accidental — **Fixed**
+
+Filed from a user report: *"in a few cases its unable to login."* The "a few cases" is the tell — the
+failure is transient, and the cache made it durable.
+
+`discoverSiteHybrid` already owned exactly the right argument, written against ONE status:
+
+> Never cache a failed login. A failure is usually transient — wrong value typed, the site briefly
+> down, a login form that changed — and caching it pins the whole run to a login-page-only model, so
+> the immediate retry silently gets the same broken answer **without even opening a browser**.
+
+It was applied to `login-failed` alone. **Three sibling paths cached results just as transient and
+just as unusable**, each for `APPMODEL_CACHE_TTL_MS` (default 30 minutes):
+
+| # | path | why it is transient | why it is unusable |
+|---|---|---|---|
+| 1 | entry page extracts **zero elements** | a blank render past the 6s hydration poll (TD-31), a cold serverless start, a network blip | returns **before the login is attempted at all** |
+| 2 | **`no-credentials`** | the credential prompt timed out; the next run may well have someone there to answer | login-page-only model, and nobody gets asked again |
+| 3 | **`authenticated` with nothing past the login page** | the post-login page extracted no elements this once | **claims success** and grounds nothing |
+
+Path 1 was the most explicit about it: its comment called the empty model *"still a valid, cacheable
+result"*. It is neither.
+
+Path 3 is the nastiest. When the post-login extraction comes back empty, `entry` stays the login page
+and `loginPageModel` stays unset, so `pages` is `[loginPage]` carrying `status: "authenticated"`.
+Everything downstream trusts that status, builds a login prefix from it, and then cannot ground a
+single step past it — so it surfaces as **every case truncating**, not as a login problem. That is the
+shape of the reports that started this whole investigation.
+
+**Observed on disk:** run `2026-09-25T20-00-39-218Z-82ff713c` — `auth.status: "no-credentials"`, one
+page, 7 elements. Cached under `site:<url>` (the no-credential key), so it was served whole to the
+next run that also could not supply credentials.
+
+**Fix — one rule, every write site.** `discoveryIsWorthCaching(model)` is pure and exported; the three
+paths consult it instead of each carrying its own opinion. Successes still cache, so the common path
+stays fast (verified live: saucedemo authenticated, 3 pages, `{"ok":true}`).
+
+Two details that matter in the rule:
+- Path 3 is detected by comparing each page's **landed URL** against `auth.loginUrl`, not by page
+  count — a genuine single-page app behind a login is a legitimate one-page model, and a count-based
+  check would have refused it and re-crawled on every run.
+- The status stays `authenticated` in path 3. The sign-in really did work and the prefix built from it
+  is valid; what is wrong is remembering the result, not the verdict.
+
+**Verified:** `tsc` clean, 1659 passed / 0 failed / 18 skipped across 115 files. Each of the three
+rules negative-controlled independently (1, 2 and 1 failures respectively), all restored green. A
+source-level test also pins that exactly ONE guarded write to the site cache exists, because the
+defect was three writes and one guard — a fourth added later would reintroduce it while every unit
+test still passed.
