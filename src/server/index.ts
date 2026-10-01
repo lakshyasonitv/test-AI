@@ -758,6 +758,10 @@ app.get("/api/auth/config", (_req, res) => {
     authEnabled: true,
     url: process.env.SUPABASE_URL ?? null,
     publishableKey: process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? null,
+    // ADDITIVE, and present ONLY when AUTH_TOKEN_REFRESH=true (TD-108). With the flag off the
+    // body is byte-identical to before, and app.js never renews a token — the hour-long access
+    // token expires exactly as it always has.
+    ...(process.env.AUTH_TOKEN_REFRESH === "true" ? { tokenRefresh: true } : {}),
   });
 });
 
@@ -2039,6 +2043,7 @@ const port = Number(process.env.PORT ?? 3000);
  */
 export const BOOLEAN_ENV_FLAGS = [
   "AUTH_ENABLED",
+  "AUTH_TOKEN_REFRESH",
   "DB_ENABLED",
   // TD-100: read as `process.env.DETERMINISTIC_HEAL === "true"` in heal.ts and absent from this
   // list, which is the one thing the comment above says cannot happen. `=1`/`=True` booted clean,

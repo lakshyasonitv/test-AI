@@ -279,6 +279,7 @@ not been configured for a capability never advertises it.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AUTH_ENABLED` | `false` | Real Supabase sign-in. Off substitutes a synthetic local owner |
+| `AUTH_TOKEN_REFRESH` | `false` | Renew the sign-in token so a session survives past one hour and idle/sleep. Off = a signed-in tab stops working after an hour (`TECH_DEBT.md` TD-108) |
 | `DB_ENABLED` | `false` | Server-side database reads. Requires `SUPABASE_SERVICE_ROLE_KEY` |
 | `SUPABASE_URL` | — | Browser-safe project URL |
 | `SUPABASE_PUBLISHABLE_KEY` | — | Browser-safe key. Every table is RLS deny-all to it, by design |
