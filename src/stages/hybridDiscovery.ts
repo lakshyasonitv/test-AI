@@ -765,6 +765,46 @@ export async function hasLoginGate(page: Page): Promise<boolean> {
 }
 
 /**
+ * How long to wait for a login gate to CLEAR before calling the sign-in failed — TD-107.
+ *
+ * Matches the generated spec's own assertion budget (`ASSERTION_TIMEOUT_MS`, 10s) on purpose: the
+ * spec asks the identical question with `expect(...).toBeHidden()`, and the two disagreeing is the
+ * whole defect this constant exists to close.
+ */
+const AUTH_VERIFY_TIMEOUT_MS = () => Number(process.env.AUTH_VERIFY_TIMEOUT_MS) || 10_000;
+
+/**
+ * Wait for the login gate to go away, POLLING — TECH_DEBT.md TD-107.
+ *
+ * `hasLoginGate` is an instant sample (`count() > 0`), which is correct for DETECTING a gate: the
+ * question there is "is there a password box on this page right now". It is wrong for verifying a
+ * sign-in, where the question is "has the gate gone yet", and the honest answer takes time.
+ *
+ * WHY THIS WAS WRONG, measured against a real app. `verifySession` sampled once at +600ms, and once
+ * more at +800ms after re-navigating. The generated spec asks the same question with
+ * `expect(locator).toBeHidden({ timeout: 10000 })` — which POLLS. On learnvibes.vercel.app, a
+ * Supabase app, the spec's login case PASSED while discovery reported `login-failed` on the same
+ * credentials in the same session. Supabase keeps its session in `localStorage` and resolves it
+ * ASYNCHRONOUSLY on load: after a navigation the app renders its unauthenticated view until
+ * `getSession()` settles, then redirects. A single sample lands inside that window; a poll rides
+ * through it. The result was a one-page model, every case truncated, and a report that said the
+ * login failed when it had plainly worked.
+ *
+ * Same argument TD-31 already made for element extraction, in the same codebase: *"Poll briefly
+ * rather than accept 0 outright — an auth wall costs nothing extra, since it's still correctly 0
+ * after polling; a page that only needed more time now gets it."* A genuinely failed login still
+ * fails, just at the end of the budget instead of at 600ms.
+ */
+export async function waitForLoginGateToClear(page: Page, budgetMs = AUTH_VERIFY_TIMEOUT_MS()): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    if (!(await hasLoginGate(page))) return true;
+    if (Date.now() >= deadline) return false;
+    await page.waitForTimeout(400);
+  }
+}
+
+/**
  * Log in on a live page so the crawl that follows sees the real application.
  *
  * Why this exists: `collectCrawlTargets` only follows `href`s, and a login is a form SUBMIT,
@@ -943,8 +983,10 @@ export async function loginOnPage(page: Page, creds: Credentials): Promise<AuthS
  * pages the crawl will open, the exact bug this whole area started with.
  */
 export async function verifySession(page: Page, loginUrl: string): Promise<boolean> {
-  await page.waitForTimeout(600);
-  if (await hasLoginGate(page)) return false; // form still up: rejected, or never submitted
+  // POLL, do not sample. The gate clearing is asynchronous on any app that resolves its session
+  // after load (Supabase reads localStorage then calls getSession()), so a single check at +600ms
+  // reports failure on a login that worked. TD-107.
+  if (!(await waitForLoginGateToClear(page))) return false; // form still up: rejected, or never submitted
 
   const reached = page.url();
   if (normUrl(reached) === normUrl(loginUrl)) return true; // in-place auth, nowhere to re-probe
@@ -955,8 +997,10 @@ export async function verifySession(page: Page, loginUrl: string): Promise<boole
   // crawl. Re-navigating here still catches a session that does not survive a page load.
   try {
     await page.goto(reached, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    await page.waitForTimeout(800);
-    return !(await hasLoginGate(page));
+    // Same poll, and this is the sample that mattered most: a reload is exactly when an app that
+    // keeps its session in storage has to re-resolve it, so the unauthenticated view is briefest
+    // here and most likely to be caught mid-flight. TD-107.
+    return await waitForLoginGateToClear(page);
   } catch {
     return false;
   }

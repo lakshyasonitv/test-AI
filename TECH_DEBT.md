@@ -153,6 +153,7 @@ authority is its own heading, not this list.
 | TD-105 | The crawler's read-only guards (`SIGN_OUT_VERB` / `DESTRUCTIVE_VERB`) are anchored `^...$`, so discovery will click **"Delete account"** while refusing **"Delete"** — pre-existing, but TD-103 widened the landmarks it applies to | Medium | Accidental | ? |
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
 | TD-106 | A transient discovery failure was CACHED for 30 minutes — zero-element entry pages, `no-credentials`, and `authenticated`-with-only-the-login-page were all remembered, so one bad login poisoned every retry without opening a browser. The no-cache rule existed but covered only `login-failed` — **fixed** | High | Accidental | ? |
+| TD-107 | Verifying a sign-in used an INSTANT `count() > 0` sample at +600ms/+800ms while the generated spec polls the same question for 10s — an app that resolves its session asynchronously (Supabase/localStorage) was reported `login-failed` on a login that worked, collapsing the model to the login page and truncating every case — **fixed** | High | Accidental | ? |
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
 > from anyone reading only the summary. If you add an entry, add a row.
 >
@@ -4653,3 +4654,60 @@ rules negative-controlled independently (1, 2 and 1 failures respectively), all 
 source-level test also pins that exactly ONE guarded write to the site cache exists, because the
 defect was three writes and one guard — a fourth added later would reintroduce it while every unit
 test still passed.
+
+---
+
+### TD-107. Verifying a sign-in SAMPLED instead of polling, so a slow session resolve was reported as a failed login — High / Accidental — **Fixed**
+
+Diagnosed from a run against `learnvibes.vercel.app` that reported `auth.status: "login-failed"` and a
+**one-page model** — while the SAME RUN's generated login case **passed** on the same credentials.
+
+That contradiction is the whole finding:
+
+| | the check | behaviour |
+|---|---|---|
+| discovery, `verifySession` | `hasLoginGate` = `locator(PASSWORD_INPUT).count() > 0`, once at +600ms and once at +800ms after a reload | **instant sample** |
+| the generated spec that passed | `expect(locator).toBeHidden({ timeout: 10000 })` | **polls 10s** |
+
+Two pieces of code asking the identical question — "has the login gate gone?" — and only one of them
+waits for the answer.
+
+**The mechanism.** The site is a Supabase app: `supabase`, `jwt` and `localStorage` in its bundle, and
+**no cookies set on the login page** (checked live). Supabase keeps the session in `localStorage` and
+resolves it ASYNCHRONOUSLY on load — after a navigation the app renders its unauthenticated view
+until `getSession()` settles, then redirects. A single read lands inside that window. The re-navigation
+check is the worst place for it, because a reload is exactly when the session has to be re-resolved.
+
+**What it cost downstream, and why it never looked like a login bug.** `login-failed` means the crawl
+continues ANONYMOUSLY, so the model is the login page alone — one page, five elements. Every case then
+truncates for want of anything to ground against, and the run reports broken tests rather than a
+failed sign-in. It is also intermittent by nature, which is how it was reported: *"in a few cases its
+unable to login."*
+
+**Ruled out first, so nobody re-checks:** the gate IS detected correctly (1 visible password input on
+the live page, `elementCount: 5` matches exactly); the submit control IS picked correctly ("Sign In" is
+`type="submit"` and wins the first query, and `AUTH_VERB` is anchored so the neighbouring "Sign Up"
+cannot match); `loginOnPage` DOES call `waitForAuthSettle`, so the two are not asymmetric there.
+
+**Fix.** `waitForLoginGateToClear` polls to `AUTH_VERIFY_TIMEOUT_MS` (default 10000, deliberately the
+same as the spec's `ASSERTION_TIMEOUT_MS`, since it is the same question). `hasLoginGate` keeps its
+instant semantics — correct for DETECTING a gate, where the question really is "is one here now".
+
+This is TD-31's argument, in the same codebase, applied to a second place it belonged:
+
+> Poll briefly rather than accept 0 outright — an auth wall costs nothing extra, since it's still
+> correctly 0 after polling; a page that only needed more time now gets it.
+
+A genuinely rejected login still fails, just at the end of the budget instead of at 600ms.
+
+**Verified:** executed in a real Chromium (D-19 — the defect is a timing relationship between a DOM
+that changes late and a check that reads early, so a fake page would only test my model of the race).
+7 tests, including a built-in control that reproduces the old failure by shrinking the budget on an
+unchanged page, and one that pins a never-clearing gate still failing. `tsc` clean, 1666 passed /
+0 failed / 18 skipped across 116 files. Negative-controlled: restoring the single sample turns the
+`verifySession` wiring test red; restored green.
+
+**Not confirmed, and stated rather than hidden:** the final proof would be that run's `auth.detail`,
+which names which of the two samples fired, or credentials to reproduce the login locally. I had
+neither. The fix is safe without it on the TD-31 argument above — polling can only convert a false
+negative into a true positive, and a real failure still fails.
