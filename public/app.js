@@ -87,6 +87,12 @@ const auth = {
   userId: null,
   // Which credential screen an unauthenticated visitor is looking at: "login" or "signup".
   screen: "login",
+  // TD-108. Set from GET /api/auth/config's optional `tokenRefresh`, which the server sends only
+  // when AUTH_TOKEN_REFRESH=true. While false, every line that reads the two fields below is
+  // skipped and the access token expires after an hour exactly as it always has.
+  tokenRefresh: false,
+  refreshToken: null,
+  expiresAt: null,          // access-token expiry, epoch SECONDS (Supabase's own unit)
 };
 
 /** Role ladder, mirrored from src/server/authz.ts. Kept in sync by hand — it is only ever used
@@ -101,6 +107,10 @@ try {
   if (saved && saved.token) {
     auth.token = saved.token;
     auth.email = saved.email || null;
+    // Only ever present if AUTH_TOKEN_REFRESH was on when this was written. Restored here because
+    // the flag isn't known yet; nothing reads these until initAuth() has confirmed it.
+    auth.refreshToken = saved.refreshToken || null;
+    auth.expiresAt = saved.expiresAt || null;
   }
 } catch { /* corrupt/blocked storage just means "not signed in" */ }
 
@@ -112,12 +122,126 @@ function writeSessionCookie(token) {
     : "sb-access-token=; path=/; Max-Age=0; SameSite=Strict";
 }
 
-function setSession(token, email) {
+/**
+ * `refresh` is optional and ignored unless token refresh is on (TD-108): `{ refreshToken,
+ * expiresAt? }`. With the flag off the stored value is exactly `{ token, email }`, as before.
+ */
+function setSession(token, email, refresh) {
   auth.token = token || null;
   auth.email = email || null;
-  if (token) localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ token, email: auth.email }));
-  else localStorage.removeItem(AUTH_STORAGE_KEY);
+  const renewable = !!(token && auth.tokenRefresh && refresh && refresh.refreshToken);
+  auth.refreshToken = renewable ? refresh.refreshToken : null;
+  auth.expiresAt = renewable ? (refresh.expiresAt || jwtExpiry(token)) : null;
+  if (token) {
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(renewable
+      ? { token, email: auth.email, refreshToken: auth.refreshToken, expiresAt: auth.expiresAt }
+      : { token, email: auth.email }));
+  } else {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+  }
   writeSessionCookie(token);
+  scheduleTokenRefresh();
+}
+
+// -----------------------------------------------------------------------------
+// Access-token refresh (TD-108, D-35). Gated on `auth.tokenRefresh`; every function below is a
+// no-op while it is false.
+//
+// Supabase access tokens last an hour. Without this, an idle tab silently breaks after that hour:
+// every /api call 401s, and only the run poll says so. The refresh goes straight to Supabase's
+// REST endpoint — same dependency-free approach as sign-in, and never through this app's server.
+//
+// Refresh tokens are SINGLE-USE (Supabase rotation), and reusing a spent one can revoke the whole
+// session. So two tabs must never both spend the same one: a Web Lock serialises the refresh
+// across tabs, and inside it we re-read storage first — if another tab already renewed, we adopt
+// its token instead of spending ours a second time.
+// -----------------------------------------------------------------------------
+
+/** Renew this many seconds before the access token actually expires. */
+const TOKEN_REFRESH_MARGIN_S = 60;
+let tokenRefreshTimer = null;
+let tokenRefreshInFlight = null;
+
+/** The `exp` claim of a JWT, in epoch seconds, or null. Used only for sign-up, whose server
+ *  response carries no expiry — reading it from the token avoids changing that route's shape. */
+function jwtExpiry(token) {
+  try {
+    const part = String(token).split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const exp = JSON.parse(atob(part + "===".slice((part.length + 3) % 4))).exp;
+    return typeof exp === "number" ? exp : null;
+  } catch {
+    return null;
+  }
+}
+
+function tokenNeedsRefresh() {
+  return !!(auth.tokenRefresh && auth.token && auth.refreshToken && auth.expiresAt
+    && auth.expiresAt - Date.now() / 1000 <= TOKEN_REFRESH_MARGIN_S);
+}
+
+function scheduleTokenRefresh() {
+  if (tokenRefreshTimer) clearTimeout(tokenRefreshTimer);
+  tokenRefreshTimer = null;
+  if (!auth.tokenRefresh || !auth.token || !auth.refreshToken || !auth.expiresAt) return;
+  const delayMs = Math.max(0, (auth.expiresAt - TOKEN_REFRESH_MARGIN_S) * 1000 - Date.now());
+  tokenRefreshTimer = setTimeout(() => { refreshSession(); }, delayMs);
+}
+
+/** Take over a session another tab wrote, if it is the same account's newer one. True if adopted. */
+function adoptStoredSession() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "null"); } catch { return false; }
+  if (!saved || !saved.token || !saved.refreshToken || saved.token === auth.token) return false;
+  if ((saved.email || null) !== (auth.email || null)) return false;
+  if (!saved.expiresAt || saved.expiresAt <= (auth.expiresAt || 0)) return false;
+  auth.token = saved.token;
+  auth.refreshToken = saved.refreshToken;
+  auth.expiresAt = saved.expiresAt;
+  writeSessionCookie(saved.token);
+  scheduleTokenRefresh();
+  return true;
+}
+
+/**
+ * Renew the access token. Resolves true if this tab now holds a fresh token, false otherwise.
+ *
+ * A failure changes NOTHING here — no sign-out, no message. The caller's request simply keeps its
+ * original 401, which reaches exactly the handling it reached before this existed. That keeps the
+ * flag's only visible effect "the session doesn't expire", and an offline blip on wake-up from
+ * signing anyone out.
+ */
+function refreshSession() {
+  if (!auth.tokenRefresh || !auth.refreshToken || !auth.url || !auth.publishableKey) {
+    return Promise.resolve(false);
+  }
+  if (tokenRefreshInFlight) return tokenRefreshInFlight;
+
+  const attempt = async () => {
+    if (adoptStoredSession()) return true;
+    const spent = auth.refreshToken;
+    const res = await rawFetch(`${auth.url}/auth/v1/token?grant_type=refresh_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: auth.publishableKey },
+      body: JSON.stringify({ refresh_token: spent }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.access_token || !body.refresh_token) return false;
+    // Signed out (or signed in as someone else) while the request was in flight: don't resurrect.
+    if (auth.refreshToken !== spent) return false;
+    setSession(body.access_token, auth.email, { refreshToken: body.refresh_token, expiresAt: body.expires_at });
+    return true;
+  };
+
+  const locks = typeof navigator !== "undefined" && navigator.locks;
+  tokenRefreshInFlight = (locks ? locks.request("testbench-token-refresh", attempt) : attempt())
+    .catch(() => false)
+    .finally(() => { tokenRefreshInFlight = null; });
+  return tokenRefreshInFlight;
+}
+
+/** Wake-up check: a sleeping laptop or a throttled background tab never fires the timer. */
+function refreshIfStale() {
+  if (tokenNeedsRefresh()) refreshSession();
 }
 
 if (auth.token) writeSessionCookie(auth.token);
@@ -137,10 +261,35 @@ window.fetch = function (input, init) {
 
   const next = { ...(init || {}) };
   const headers = new Headers(next.headers || (typeof input === "object" && input.headers) || {});
-  if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${auth.token}`);
+  const callerAuth = headers.has("Authorization");
+  if (!callerAuth) headers.set("Authorization", `Bearer ${auth.token}`);
   next.headers = headers;
-  return rawFetch(input, next);
+  const sent = rawFetch(input, next);
+  if (!auth.tokenRefresh || callerAuth || !canReplay(input, next)) return sent;
+
+  // TD-108: one renew-and-retry on a 401, then the ORIGINAL response is what the caller sees if
+  // that didn't help — so every existing 401 handler (the run poll's "session expired") still
+  // runs, unchanged, whenever the session truly can't be saved.
+  const sentToken = auth.token;
+  return sent.then(async (res) => {
+    if (res.status !== 401) return res;
+    // Safe even for a POST: requireAuth answers 401 before any route handler runs, so the first
+    // attempt did nothing. Another request may already have renewed while this one was in flight.
+    const renewed = auth.token !== sentToken || await refreshSession();
+    if (!renewed || !auth.token) return res;
+    const retryHeaders = new Headers(headers);
+    retryHeaders.set("Authorization", `Bearer ${auth.token}`);
+    return rawFetch(input, { ...next, headers: retryHeaders });
+  });
 };
+
+/** A request may be re-sent only if sending it twice is literally the same request: a URL (not a
+ *  Request, whose body is single-use) and no body or a string body. Anything else keeps its 401. */
+function canReplay(input, init) {
+  if (typeof input !== "string") return false;
+  const body = init && init.body;
+  return body === undefined || body === null || typeof body === "string";
+}
 
 /**
  * Reflect the caller's role in what the UI offers.
@@ -256,6 +405,15 @@ async function initAuth() {
   auth.required = true;
   auth.url = cfg.url;
   auth.publishableKey = cfg.publishableKey;
+  auth.tokenRefresh = cfg.tokenRefresh === true;
+  if (auth.tokenRefresh) {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refreshIfStale();
+    });
+    window.addEventListener("focus", refreshIfStale);
+    // Another tab renewed: pick up its token rather than later spending our now-stale refresh token.
+    window.addEventListener("storage", (e) => { if (e.key === AUTH_STORAGE_KEY) adoptStoredSession(); });
+  }
 
   const signOutBtn = document.getElementById("signOutBtn");
   if (signOutBtn) {
@@ -299,7 +457,8 @@ async function initAuth() {
       if (!res.ok || !body.access_token) {
         throw new Error(body.error_description || body.msg || "Could not sign in.");
       }
-      setSession(body.access_token, body.user && body.user.email);
+      setSession(body.access_token, body.user && body.user.email,
+        { refreshToken: body.refresh_token, expiresAt: body.expires_at });
       document.getElementById("loginPassword").value = "";
       await refreshIdentity();
       // A 401 mid-run parked the run id here so the person lands back on their run rather than the
@@ -362,7 +521,8 @@ async function initAuth() {
 
       // The server already gave the new account its own organisation, so this session is usable
       // immediately — straight to Home, signed in, rather than back to a login screen.
-      setSession(body.accessToken, (body.user && body.user.email) || email);
+      setSession(body.accessToken, (body.user && body.user.email) || email,
+        { refreshToken: body.refreshToken });
       document.getElementById("signupPassword").value = "";
       await refreshIdentity();
       navigate("#/");
@@ -389,6 +549,11 @@ async function initAuth() {
     document.getElementById("signupError").classList.add("hidden");
     applyRoute();
   });
+
+  // TD-108: a restored token may have expired while the page was closed — renew it first, or the
+  // role lookup below 401s and the UI comes up looking signed in with nothing loading.
+  if (tokenNeedsRefresh()) await refreshSession();
+  scheduleTokenRefresh();
 
   // A restored session still needs its role resolved before the UI can reflect it.
   if (auth.token) await refreshIdentity();

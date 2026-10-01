@@ -154,6 +154,7 @@ authority is its own heading, not this list.
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
 | TD-106 | A transient discovery failure was CACHED for 30 minutes — zero-element entry pages, `no-credentials`, and `authenticated`-with-only-the-login-page were all remembered, so one bad login poisoned every retry without opening a browser. The no-cache rule existed but covered only `login-failed` — **fixed** | High | Accidental | ? |
 | TD-107 | Verifying a sign-in used an INSTANT `count() > 0` sample at +600ms/+800ms while the generated spec polls the same question for 10s — an app that resolves its session asynchronously (Supabase/localStorage) was reported `login-failed` on a login that worked, collapsing the model to the login page and truncating every case — **fixed** | High | Accidental | ? |
+| TD-108 | Sign-in kept only Supabase's hour-long access token and discarded the refresh token, so a signed-in tab silently stopped working after an hour — every `/api` call 401'd, the sidebar emptied, saves failed, screenshots broke — and only the run poll said why. Recorded as deferred in `PHASE_3_4_REPORT.md` but never filed here — **fixed behind `AUTH_TOKEN_REFRESH`** (default off) | High | Accidental | ? |
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
 > from anyone reading only the summary. If you add an entry, add a row.
 >
@@ -4711,3 +4712,59 @@ unchanged page, and one that pins a never-clearing gate still failing. `tsc` cle
 which names which of the two samples fired, or credentials to reproduce the login locally. I had
 neither. The fix is safe without it on the TD-31 argument above — polling can only convert a false
 negative into a true positive, and a real failure still fails.
+
+### TD-108. The access token was never renewed, so a signed-in tab broke after an hour of use or idleness — High / Accidental — **Fixed behind `AUTH_TOKEN_REFRESH`**
+
+Reported as *"it is not working after some time of idleness."* Two causes produce that symptom on the
+Azure deployment; this entry is the one in code. (The other is `minReplicas: 0` in `app.yaml` — the
+container scales to zero when idle and cold-starts on the next visit. That is configuration, not a
+defect in this repo, and is not touched here.)
+
+**The mechanism.** The sign-in handler in `public/app.js` called `setSession(body.access_token, ...)`
+and dropped `body.refresh_token`; sign-up did the same with the `refreshToken` our own
+`/api/auth/signup` already returns (`src/server/signup.ts`). Supabase access tokens last one hour.
+After that, `requireAuth` 401s every `/api/*` request. Only the run poll handles a 401 (D-34);
+everywhere else it is silent — `loadHistory()` bails on the non-array body and the sidebar empties,
+saves fail with generic errors, and `<img>`/`<video>` artifacts break because the `sb-access-token`
+cookie carries the same dead token. A reload restores the dead token from `localStorage`, so the UI
+looks signed in with nothing loading. Recorded under DEFERRED in `docs/phases/PHASE_3_4_REPORT.md`
+("still no refresh loop") but never filed here, which is how it stayed invisible.
+
+**Fix (flag-gated, platform rule 2).** `AUTH_TOKEN_REFRESH=true` makes `/api/auth/config` send an
+additive `tokenRefresh: true` (absent otherwise — the body is byte-identical with the flag off). With
+it, `app.js`:
+
+- stores the refresh token and expiry beside the access token (with the flag off the stored value is
+  exactly `{ token, email }`, as before);
+- renews 60s before expiry, and on `visibilitychange`/`focus`, because a sleeping laptop or a
+  throttled background tab never fires the timer;
+- on a 401 from a same-origin request, renews once and retries — only when the request can be re-sent
+  verbatim (string URL, no body or a string body). `requireAuth` 401s before any handler runs, so a
+  retried POST did nothing the first time;
+- **on a failed renewal hands back the original 401** and changes nothing, so every pre-existing 401
+  handler (the run poll's "session expired") still runs exactly as before;
+- renews before `refreshIdentity()` on page load when the restored token has expired.
+
+Refresh tokens are single-use (Supabase rotation), and reusing a spent one can revoke the session, so
+two tabs must never both spend the same one: a Web Lock serialises renewal across tabs, the in-tab
+promise is shared, and a tab first adopts a newer same-account session another tab already stored.
+
+**Verified:** `tests/appJsTokenRefresh.test.ts`, 19 tests — the real `app.js` session code extracted
+and run against stubs (flag off changes nothing; renew-and-retry; failed renewal returns the original
+401; concurrent 401s spend the refresh token once; non-replayable bodies keep their 401; cross-tab
+adoption, never across accounts; sign-out mid-renewal does not resurrect), plus the config route
+with the flag off/on/auth-off. Negative-controlled: five separate mutations of the fix (no retry, flag
+ignored, no single-flight, no resurrect guard, no adoption) each turn at least one test red. `tsc`
+clean, full suite green.
+
+**Not confirmed, and stated rather than hidden:** no call has been made to a real Supabase refresh
+endpoint yet. Before deploying with the flag on: sign in locally, set `expiresAt` in
+`localStorage["testbench.session"]` to a past time, refocus the tab, and confirm
+`token?grant_type=refresh_token` returns 200. After deploying: a tab left idle for over an hour still
+works.
+
+**Remaining exposure (by choice, D-35):** the refresh token lives in `localStorage`, readable by any
+script that achieves XSS on this origin — the same place as the access token, but long-lived rather
+than one hour. Moving both to an `httpOnly` cookie set by the server is the real fix, and a larger one.
+Sessions also no longer end on their own; cap them with Supabase's session time-box/inactivity
+settings if that matters.
