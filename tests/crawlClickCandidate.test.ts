@@ -2,9 +2,28 @@ import { describe, it, expect } from "vitest";
 import { isCrawlClickCandidate } from "../src/stages/hybridDiscovery.js";
 
 /**
- * Which elements the crawler may CLICK to find pages the href pass cannot see — TECH_DEBT.md
- * TD-103, the root cause behind the truncations, the IR retry spend, and self-heal being
- * undemonstrable.
+ * Which elements the crawler may CLICK to find pages the href pass cannot see.
+ *
+ * TD-103 IS FIXED — by THREE changes, not this one. This widening shipped ALONE first and produced no
+ * change at all in production — four authenticated saucedemo runs, still exactly 2 pages — because
+ * the page it unlocked was then discarded twice below it: a client-side route 404s on the crawl's
+ * re-fetch, and `visited` was poisoned at queue time. See tests/crawlClientRoutes.test.ts for those
+ * two. All three are required; any one alone is a no-op. Measured together: saucedemo 2 -> 3 pages.
+ *
+ * VERIFIED WORKING, so do not re-investigate these: the filter admitted the cart;
+ * `discoverUrlsByClicking` returned "https://www.saucedemo.com/cart.html" against a live
+ * authenticated page; `collectCrawlTargets` passed that URL through; `getByRole("button",
+ * {name:"Cart, empty"})` resolves to 1 element and clicking it navigates; the probe page keeps its
+ * session (one page, one context); `MAX_DISCOVERY_PAGES` is 5 and not binding.
+ *
+ * THE UNCHECKED LINK: the widening was measured against a 2026-09-17 AppModel where the cart
+ * carried `landmark: "header"`. `landmark` is populated ONLY by the DOM discovery path, and
+ * `attachElementIdentity` does not copy it onto LLM-authored elements — so on a model built the
+ * other way the field is absent and any landmark-keyed condition matches nothing. Check that field
+ * on a CURRENT run's AppModel before trying again.
+ *
+ * SCOPE, measured across every run on disk: the crawl LOOP works — qa-practice.com goes 1 -> 5
+ * pages via the href path. It is this click-probe FALLBACK that has never added a page.
  *
  * WHAT IT WAS. `(button && landmark === "nav") || link`. Measured against the real saucedemo
  * inventory page as discovery itself recorded it
@@ -48,9 +67,10 @@ const INVENTORY = [
 const admitted = () => INVENTORY.filter(isCrawlClickCandidate).map((e) => e.name);
 
 describe("isCrawlClickCandidate", () => {
-  it("admits the cart — the element the whole crawl was stuck behind", () => {
-    // `/cart.html`, and from the cart the checkout flow becomes reachable inside the existing
-    // MAX_DISCOVERY_PAGES budget of 5. This is the assertion the change exists for.
+  it("admits the cart — the element the crawl was stuck behind", () => {
+    // Necessary but NOT sufficient: this same widening shipped alone and changed nothing, because
+    // the page was then dropped twice below (see tests/crawlClientRoutes.test.ts). With all three
+    // fixes in place, saucedemo goes 2 -> 3 pages and this is the step that starts it.
     expect(isCrawlClickCandidate({ role: "button", name: "Cart, empty", landmark: "header" })).toBe(true);
     expect(admitted()).toContain("Cart, empty");
   });
@@ -71,9 +91,9 @@ describe("isCrawlClickCandidate", () => {
     expect(INVENTORY.filter((e) => /add to cart/i.test(e.name)).filter(isCrawlClickCandidate)).toHaveLength(0);
   });
 
-  it("keeps both safety verbs working on the newly-admitted landmark", () => {
-    // Logout and Reset App State are `nav` today, but a header-mounted sign-out is ordinary. The
-    // guards must not depend on which landmark let the element through.
+  it("keeps both safety verbs working regardless of landmark", () => {
+    // The guards must not depend on which landmark let the element through — checked for both, so
+    // a future re-widening cannot quietly lose them.
     for (const landmark of ["nav", "header"]) {
       expect(isCrawlClickCandidate({ role: "button", name: "Logout", landmark })).toBe(false);
       expect(isCrawlClickCandidate({ role: "button", name: "Sign out", landmark })).toBe(false);
@@ -82,7 +102,7 @@ describe("isCrawlClickCandidate", () => {
     }
   });
 
-  it("documents the guards' real reach: they are EXACT-match, not word-match — TD-105", () => {
+  it("documents the guards' real reach: they are EXACT-match, not word-match — TD-105 (pre-existing; unchanged by the revert)", () => {
     // Asserting what the code does, not what its comment implies. SIGN_OUT_VERB and
     // DESTRUCTIVE_VERB are anchored `^...$`, so only a button named exactly "Delete" is stopped;
     // "Delete account" is admitted. That predates this change — it applied to `nav` already — but
@@ -92,7 +112,7 @@ describe("isCrawlClickCandidate", () => {
     // "Cancelled orders", so it is a tradeoff, not a free win.
     expect(isCrawlClickCandidate({ role: "button", name: "Delete account", landmark: "header" })).toBe(true);
     expect(isCrawlClickCandidate({ role: "button", name: "Clear cart", landmark: "nav" })).toBe(true);
-    // The exact names ARE stopped, in both landmarks — that much is guaranteed.
+    // The exact names ARE stopped, in both landmarks. That much is guaranteed.
     expect(isCrawlClickCandidate({ role: "button", name: "Clear", landmark: "header" })).toBe(false);
   });
 
@@ -110,12 +130,15 @@ describe("isCrawlClickCandidate", () => {
     expect(isCrawlClickCandidate({ role: "link", name: "Anything", landmark: undefined })).toBe(true);
   });
 
-  it("admits exactly three more than before, and they are the header trio", () => {
-    // Pins the measured before/after so a future widening has to be deliberate: 8 -> 11 on this
-    // page, the three gained being Open Menu / Close Menu / Cart, empty.
-    const before = (el: { role: string; name: string; landmark?: string }) =>
-      (/button/i.test(el.role) && el.landmark === "nav") || /link/i.test(el.role);
-    const gained = INVENTORY.filter((e) => isCrawlClickCandidate(e) && !before(e)).map((e) => e.name);
+  it("admits exactly the header trio beyond the nav-only set", () => {
+    // Pins the measured before/after so a future change to the landmark rule is deliberate.
+    // Isolate the LANDMARK dimension: an element gained by the widening is one that is rejected
+    // today AND would be admitted if its header landmark were nav. Asking the real predicate both
+    // times keeps the verb guards in play — a hand-rolled copy of the condition silently dropped
+    // them and counted Logout and Reset App State as gains, which they never were.
+    const navOnly = (el: { role: string; name: string; landmark?: string }) =>
+      isCrawlClickCandidate(el) && el.landmark !== "header";
+    const gained = INVENTORY.filter((e) => isCrawlClickCandidate(e) && !navOnly(e)).map((e) => e.name);
     expect(gained).toEqual(["Open Menu", "Close Menu", "Cart, empty"]);
   });
 });

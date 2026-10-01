@@ -415,6 +415,96 @@ function normUrl(u: string): string {
   }
 }
 
+/**
+ * Keep a snapshot whose HTTP status was an error? — TECH_DEBT.md TD-103.
+ *
+ * Pure and exported so the rule can be tested without a browser; the crawl's own `snapshot` closure
+ * calls it. A client-side-routed app serves one shell and routes in the browser, so a direct GET of
+ * an inner route returns 404 while the DOM is entirely correct. Measured on saucedemo, signed in:
+ * `GET /cart.html` -> 404 with the real cart in the body (14 elements, a Checkout button);
+ * `GET /inventory.html` -> 404 as well. Only `/` is directly fetchable.
+ *
+ * `clientRouted` is NOT a guess — it means the click-probe already reached this URL by clicking, so
+ * the page provably renders. Trusting every 4xx that rendered anything was measured against
+ * `qa-practice.com` and admitted `index.html` / `index_v2.html`, genuine dead links whose 404 pages
+ * carry one element, which then displaced real pages. An element-count threshold would be a magic
+ * number between 1 and 14; provenance is the honest signal.
+ */
+export function keepErrorStatusSnapshot(
+  status: number, renderedElements: number, clientRouted: boolean,
+): boolean {
+  if (status < 400) return true;
+  if (!clientRouted) return false;
+  return renderedElements > 0;
+}
+
+/**
+ * Did this snapshot LAND somewhere already modelled? — the auth-wall bounce, TD-103.
+ *
+ * The comparison against `target` is load-bearing and was missing. `collectCrawlTargets` adds a URL
+ * to `visited` when it QUEUES it, so a bare `visited.has(finalKey)` was true for every URL that does
+ * not redirect — the loop threw away every honest page it had just fetched. It only ever appeared to
+ * work on sites whose URLs redirect, which is why a link-based crawl looked fine while a
+ * click-discovered page could never be added.
+ */
+export function landedOnAlreadyModelled(
+  finalUrl: string, requestedUrl: string, visited: Set<string>,
+): boolean {
+  const finalKey = normUrl(finalUrl);
+  return finalKey !== normUrl(requestedUrl) && visited.has(finalKey);
+}
+
+/**
+ * Is this discovery result worth REMEMBERING for `APPMODEL_CACHE_TTL_MS`? — TECH_DEBT.md TD-106.
+ *
+ * `discoverSiteHybrid` had this rule once, for one status:
+ *
+ *   > Never cache a failed login. A failure is usually transient — wrong value typed, the site
+ *   > briefly down, a login form that changed — and caching it pins the whole run to a
+ *   > login-page-only model, so the immediate retry silently gets the same broken answer without
+ *   > even opening a browser.
+ *
+ * That argument is right and was applied to `login-failed` alone, while three sibling paths cached
+ * results just as transient and just as unusable:
+ *
+ *  1. **entry page with zero elements** — returns BEFORE the login is even attempted, and its own
+ *     comment called the empty model "still a valid, cacheable result". A blank render (a cold
+ *     serverless start beyond the 6s hydration poll, a network blip) therefore meant no login
+ *     attempt AND thirty minutes of every retry getting the same nothing.
+ *  2. **`no-credentials`** — a credential prompt that timed out. The next run might well have
+ *     someone there to answer it; the cached login-page-only model means it never gets asked.
+ *  3. **`authenticated` with nothing past the login page** — the nastiest, because it claims
+ *     success. When the post-login page extracts no elements, `entry` stays the login page and
+ *     `loginPageModel` stays unset, so the model is `[loginPage]` with `status: "authenticated"`.
+ *     Downstream trusts that, builds a login prefix, and then cannot ground a single step beyond
+ *     it — which presents as every case truncating rather than as a login problem.
+ *
+ * Successes stay cached; only a result a retry could plausibly improve on pays for the retry.
+ */
+export function discoveryIsWorthCaching(model: AppModel): { ok: true } | { ok: false; reason: string } {
+  const status = model.auth?.status;
+  if (status === "login-failed") {
+    return { ok: false, reason: "the login failed, so a retry should try again" };
+  }
+  if (status === "no-credentials") {
+    return { ok: false, reason: "no credentials were supplied, so a retry should ask again" };
+  }
+  const total = model.pages.reduce((n, pg) => n + pg.elements.length, 0);
+  if (total === 0) {
+    return { ok: false, reason: "no elements were found on any page — nothing usable to remember" };
+  }
+  // Signed in, but every page in the model IS the login page: the post-login extraction came back
+  // empty. Compared on the landed URL rather than on page count, because a genuine single-page app
+  // behind a login is a legitimate one-page model.
+  if (status === "authenticated" && model.auth?.loginUrl) {
+    const loginKey = normUrl(model.auth.loginUrl);
+    if (model.pages.every((pg) => normUrl(pg.url) === loginKey)) {
+      return { ok: false, reason: "signed in but nothing past the login page was captured" };
+    }
+  }
+  return { ok: true };
+}
+
 /** Paths that are never page-crawl-worthy: assets and file downloads. */
 const SKIP_CRAWL_PATH = /\.(pdf|zip|tar|gz|rar|7z|exe|msi|dmg|apk|mp3|mp4|mov|avi|mkv|jpe?g|png|gif|webp|svg|ico|css|js|m?jsx|json|xml|woff2?|ttf|eot|wasm)$/i;
 
@@ -543,8 +633,8 @@ const MAX_CLICK_PROBES = 12;
  * had just got past. Clicking is the only way to learn those destinations.
  *
  * Two candidate shapes, both provably unreachable via `href` (see `isCrawlClickCandidate`):
- * navigation-landmark buttons, and any anchor. Buttons stay scoped to the `nav` and `header`
- * landmarks — a DOM fact, not a guess about button text — because an unscoped button could be
+ * nav-landmark buttons, and any anchor. Buttons stay scoped to the `nav` landmark — a DOM fact,
+ * not a guess about button text — because an unscoped button could be
  * "Delete" or "Add to cart". Anchors need no such scoping: they are semantically navigation, and
  * this only runs when the href pass already returned nothing, so every anchor reaching here is one
  * with no usable destination.
@@ -564,51 +654,47 @@ const MAX_CLICK_PROBES = 12;
 const normName = (s: string) => (s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 
 /**
- * Is this element worth CLICKING to discover a URL the href pass could not see?
+ * Is this element worth CLICKING to discover a URL the href pass cannot see?
  *
- * Extracted from `discoverUrlsByClicking`'s filter so it can be unit-tested against real recorded
- * element shapes — the condition inside it is the whole of TD-103, and it was wrong for five runs
- * without anything noticing, because nothing could see it from outside.
+ * Two shapes, both of which `collectCrawlTargets` provably cannot follow — and this only runs when
+ * the href pass already came back empty:
  *
-  // Two shapes, both of which `collectCrawlTargets` provably cannot follow — this only runs
-  // when the href pass already came back empty:
-  //
-  //  - a nav-landmark BUTTON: the Next.js `<button onClick={router.push()}>` sidebar.
-  //  - ANY link: an <a> that survived the href pass has no usable destination. saucedemo's
-  //    cart is literally `<a class="shopping_cart_link" data-test="shopping-cart-link">` with
-  //    no href attribute at all, and its product links are `href="#"`. Anchors are safe to
-  //    widen to because they are semantically navigation.
-  //
-  // `header` COUNTS AS NAVIGATION CHROME, NOT JUST `nav` — TECH_DEBT.md TD-103.
-  //
-  // The widening to `/link/i` above was written for saucedemo's cart specifically, and it never
-  // fired on it: an <a> with no href is not a link in the accessibility tree, so discovery
-  // records that cart as `role: "button", landmark: "header"` and the widened condition still
-  // rejected it. The fix and the element it was written for never met.
-  //
-  // Measured against the real inventory page as discovery recorded it
-  // (`runs/2026-09-17T11-38-39-418Z-bfd03461/02-appmodel.json`): 8 of 38 elements passed, and
-  // after the same-origin filter and the two verb guards, ZERO new URLs survived — the two nav
-  // buttons loop back to the same page, About and the three footer socials are external, and
-  // Logout / Reset App State are correctly dropped. Every element that actually navigates
-  // (`Cart, empty`, `Open Menu`, six `View details for …`) sat outside the filter. Result: 2
-  // pages crawled on five separate runs, four of them authenticated — which is what truncates
-  // the cases, burns the IR retries, and leaves self-heal unable to demonstrate anything
-  // (`heal.ts` discards a heal whose regenerated IR is still truncated).
-  //
-  // DELIBERATELY NOT widened to landmark-less buttons. That admits the six `Add to cart`
-  // buttons, and discovery CLICKING those mutates application state — "Add to cart" is not a
-  // destructive *verb*, so `DESTRUCTIVE_VERB` would not catch it and the read-only guarantee
-  // would go quietly. Product-detail coverage is a real remaining gap; it needs its own
-  // decision about read-only-ness, not a wider regex here.
-    const navish = el.landmark === "nav" || el.landmark === "header";
-    const clickable = (/button/i.test(el.role) && navish) || /link/i.test(el.role);
+ *  - a NAVIGATION-LANDMARK BUTTON (`nav` or `header`): the Next.js `<button onClick=router.push()>`
+ *    sidebar, and a site's cart or menu in its header.
+ *  - ANY LINK: an `<a>` that survived the href pass has no usable destination. saucedemo's cart is
+ *    `<a class="shopping_cart_link" data-test="shopping-cart-link">` with no href at all, and its
+ *    product links are `href="#"`. Anchors are safe to widen to because they are semantically
+ *    navigation.
+ *
+ * `header` COUNTS, NOT JUST `nav` — and the history is worth keeping. That widening shipped ALONE
+ * first and changed nothing across four authenticated saucedemo runs, because the page it unlocked
+ * was then discarded twice below it: a client-side route 404s on the crawl's re-fetch, and `visited`
+ * was poisoned at queue time. See `keepErrorStatusSnapshot` and `landedOnAlreadyModelled`. All three
+ * are required; any one alone is a no-op. Measured together: saucedemo 2 -> 3 pages with the cart
+ * included, `qa-practice.com` unchanged at 5 real pages. TECH_DEBT.md TD-103.
+ *
+ * DELIBERATELY NOT widened to landmark-less buttons. That admits the six `Add to cart` buttons, and
+ * discovery CLICKING those mutates application state — "Add to cart" is not a destructive *verb*, so
+ * `DESTRUCTIVE_VERB` would not catch it and the read-only guarantee would go quietly. Product-detail
+ * coverage is a real remaining gap; it needs its own decision about read-only-ness, not a wider
+ * regex here.
+ *
+ * Known ceiling, narrower than it reads: both verb guards are anchored `^...$`, so they stop a
+ * control named exactly "Delete" and admit "Delete account". See TD-105 — loosening the anchors is a
+ * tradeoff, not a free win, because `^delete` would also exclude real navigation like
+ * "Cancelled orders".
  */
 export function isCrawlClickCandidate(
   el: { role: string; name: string; landmark?: string },
 ): boolean {
   if (SIGN_OUT_VERB.test(normName(el.name))) return false;    // would end the session mid-crawl
   if (DESTRUCTIVE_VERB.test(normName(el.name))) return false; // discovery must stay read-only
+  // `header` counts as navigation chrome, not just `nav` — a site's cart and menu live there.
+  // NECESSARY BUT NOT SUFFICIENT, which is the whole history of TD-103: this shipped alone, did
+  // nothing, and was reverted. It only has an effect alongside the two downstream fixes (a 4xx from
+  // a click-discovered route is trusted; a page is no longer rejected at dequeue for the `visited`
+  // entry its own queueing added). Measured with all three: saucedemo 2 -> 3 pages, the cart
+  // included; without any one of them, 2.
   const navish = el.landmark === "nav" || el.landmark === "header";
   return (/button/i.test(el.role) && navish) || /link/i.test(el.role);
 }
@@ -676,6 +762,46 @@ const AUTH_VERB_TEXT = /^\s*(sign\s*in|log\s*in|login|authenticate|submit|contin
 /** True when this page presents a login gate — a live-DOM fact, no model required. */
 export async function hasLoginGate(page: Page): Promise<boolean> {
   return await page.locator(PASSWORD_INPUT).count() > 0;
+}
+
+/**
+ * How long to wait for a login gate to CLEAR before calling the sign-in failed — TD-107.
+ *
+ * Matches the generated spec's own assertion budget (`ASSERTION_TIMEOUT_MS`, 10s) on purpose: the
+ * spec asks the identical question with `expect(...).toBeHidden()`, and the two disagreeing is the
+ * whole defect this constant exists to close.
+ */
+const AUTH_VERIFY_TIMEOUT_MS = () => Number(process.env.AUTH_VERIFY_TIMEOUT_MS) || 10_000;
+
+/**
+ * Wait for the login gate to go away, POLLING — TECH_DEBT.md TD-107.
+ *
+ * `hasLoginGate` is an instant sample (`count() > 0`), which is correct for DETECTING a gate: the
+ * question there is "is there a password box on this page right now". It is wrong for verifying a
+ * sign-in, where the question is "has the gate gone yet", and the honest answer takes time.
+ *
+ * WHY THIS WAS WRONG, measured against a real app. `verifySession` sampled once at +600ms, and once
+ * more at +800ms after re-navigating. The generated spec asks the same question with
+ * `expect(locator).toBeHidden({ timeout: 10000 })` — which POLLS. On learnvibes.vercel.app, a
+ * Supabase app, the spec's login case PASSED while discovery reported `login-failed` on the same
+ * credentials in the same session. Supabase keeps its session in `localStorage` and resolves it
+ * ASYNCHRONOUSLY on load: after a navigation the app renders its unauthenticated view until
+ * `getSession()` settles, then redirects. A single sample lands inside that window; a poll rides
+ * through it. The result was a one-page model, every case truncated, and a report that said the
+ * login failed when it had plainly worked.
+ *
+ * Same argument TD-31 already made for element extraction, in the same codebase: *"Poll briefly
+ * rather than accept 0 outright — an auth wall costs nothing extra, since it's still correctly 0
+ * after polling; a page that only needed more time now gets it."* A genuinely failed login still
+ * fails, just at the end of the budget instead of at 600ms.
+ */
+export async function waitForLoginGateToClear(page: Page, budgetMs = AUTH_VERIFY_TIMEOUT_MS()): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    if (!(await hasLoginGate(page))) return true;
+    if (Date.now() >= deadline) return false;
+    await page.waitForTimeout(400);
+  }
 }
 
 /**
@@ -857,8 +983,10 @@ export async function loginOnPage(page: Page, creds: Credentials): Promise<AuthS
  * pages the crawl will open, the exact bug this whole area started with.
  */
 export async function verifySession(page: Page, loginUrl: string): Promise<boolean> {
-  await page.waitForTimeout(600);
-  if (await hasLoginGate(page)) return false; // form still up: rejected, or never submitted
+  // POLL, do not sample. The gate clearing is asynchronous on any app that resolves its session
+  // after load (Supabase reads localStorage then calls getSession()), so a single check at +600ms
+  // reports failure on a login that worked. TD-107.
+  if (!(await waitForLoginGateToClear(page))) return false; // form still up: rejected, or never submitted
 
   const reached = page.url();
   if (normUrl(reached) === normUrl(loginUrl)) return true; // in-place auth, nowhere to re-probe
@@ -869,8 +997,10 @@ export async function verifySession(page: Page, loginUrl: string): Promise<boole
   // crawl. Re-navigating here still catches a session that does not survive a page load.
   try {
     await page.goto(reached, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    await page.waitForTimeout(800);
-    return !(await hasLoginGate(page));
+    // Same poll, and this is the sample that mattered most: a reload is exactly when an app that
+    // keeps its session in storage has to re-resolve it, so the unauthenticated view is briefest
+    // here and most likely to be caught mid-flight. TD-107.
+    return await waitForLoginGateToClear(page);
   } catch {
     return false;
   }
@@ -952,15 +1082,46 @@ export async function discoverSiteHybrid(
     return state.page;
   };
 
-  const snapshot = async (targetUrl: string): Promise<{ appModel: AppModel; finalUrl: string } | null> => {
+  /**
+   * `clientRouted` — trust a 4xx body for this URL, because the click-probe already PROVED the
+   * page renders: it clicked there and the browser displayed it. `TECH_DEBT.md` TD-103.
+   *
+   * A client-side-routed app serves one shell and routes in the browser, so a direct GET of an
+   * inner route returns 404 while the DOM is entirely correct. Measured on saucedemo, signed in:
+   * `GET /cart.html` -> **404**, and the body is the real cart ("Your Cart / QTY / Description /
+   * 1 Sauce Labs Backpack", 14 elements, a Checkout button). `GET /inventory.html` 404s too — the
+   * page the tests actually run against. Only `/` is directly fetchable.
+   *
+   * NOT unconditional, and this is the whole reason for the flag. Regressing `qa-practice.com`
+   * with a blanket "accept any 4xx that rendered something" showed it admitting `index.html` and
+   * `index_v2.html` — **genuine dead links** whose 404 pages carry 1 element — which then displaced
+   * real pages in the model. An element-count threshold would be a magic number between 1 and 14;
+   * provenance is the honest signal. A URL found in an `href` that 404s is a broken link. A URL
+   * found by CLICKING cannot be, because the click worked.
+   */
+  const snapshot = async (
+    targetUrl: string, clientRouted = false,
+  ): Promise<{ appModel: AppModel; finalUrl: string } | null> => {
     const page = await sharedPage();
     try {
       const response = await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
       const status = response?.status() ?? 0;
-      if (!response || status >= 400) return null;
+      if (!response) return null;
+      // Early-out preserved exactly for the ordinary case: a 4xx from a link is still fatal, and
+      // we do not pay for DOM extraction to find that out.
+      if (status >= 400 && !clientRouted) return null;
       await page.waitForTimeout(800);
       const finalUrl = page.url();
       const appModel = await extractDomModelFromPage(page, finalUrl);
+      const rendered = appModel?.pages?.[0]?.elements.length ?? 0;
+      if (!keepErrorStatusSnapshot(status, rendered, clientRouted)) {
+        console.log(`[hybrid] ${targetUrl}: ${status} and nothing usable rendered — dead route`);
+        return null;
+      }
+      if (status >= 400) {
+        console.log(`[hybrid] ${targetUrl}: ${status} from the server but ${rendered} elements rendered — ` +
+          `client-side route, reached by clicking, keeping it`);
+      }
       return appModel ? { appModel, finalUrl } : null;
     } catch (err: any) {
       console.warn(`[hybrid] crawl error for ${targetUrl}: ${err?.message ?? err}`);
@@ -995,11 +1156,12 @@ export async function discoverSiteHybrid(
 
     let entry = await labelPage(entrySnapshot.appModel.pages[0]);
     if (entry.elements.length === 0) {
-      // DOM succeeded but found no elements (auth wall, not-yet-hydrated) — still a valid,
-      // cacheable result. Without this, every call re-launches Chromium and re-crawls instead
-      // of hitting the cache, unlike discoverHybrid's equivalent case.
+      // DOM succeeded but found no elements — an auth wall, or a page still not painted after the
+      // 6s hydration poll (TD-31). NOT cached: this path returns before the login is even
+      // attempted, so remembering it means thirty minutes of retries that never try to sign in.
+      // TD-106. The old comment here called it "still a valid, cacheable result"; it is neither.
       const emptyModel = withLandedBase(entrySnapshot.appModel, entrySnapshot.finalUrl, url);
-      cacheSet(siteCacheKey(url, creds), emptyModel);
+      console.warn(`[hybrid] not caching ${url} — the entry page produced no elements, so a retry should try again`);
       return emptyModel;
     }
 
@@ -1086,7 +1248,12 @@ export async function discoverSiteHybrid(
             entryUrlForCrawl = reached;
             visited.add(normUrl(reached));
           } else {
-            console.warn(`[hybrid] login succeeded but ${reached} produced no elements`);
+            // The model is now `[loginPage]` carrying status "authenticated" — a result that claims
+            // success and cannot ground a single step past the login. Left as authenticated (the
+            // sign-in genuinely worked, and the prefix built from it is valid) but deliberately NOT
+            // cacheable: see discoveryIsWorthCaching. TD-106.
+            console.warn(`[hybrid] login succeeded but ${reached} produced no elements — the model will `
+              + `contain only the login page, and will not be cached`);
           }
         } else {
           auth = {
@@ -1139,6 +1306,10 @@ export async function discoverSiteHybrid(
      * keeps it free on an ordinary site, where the href pass already returns everything and no
      * browser clicking happens.
      */
+    /** URLs the click-probe produced, i.e. pages a real click already reached. Consulted by
+     *  `snapshot` to decide whether a 4xx body can be trusted — see its docblock. */
+    const clickDiscovered = new Set<string>();
+
     const targetsFor = async (pageModel: PageModel): Promise<string[]> => {
       const viaLinks = crawlableFrom(pageModel.internalUrls ?? []);
       if (viaLinks.length) return viaLinks;
@@ -1146,7 +1317,9 @@ export async function discoverSiteHybrid(
       try {
         await probe.goto(pageModel.url, { waitUntil: "domcontentloaded", timeout: 30_000 });
         await probe.waitForTimeout(800);
-        return crawlableFrom(await discoverUrlsByClicking(probe, pageModel, entryOrigin));
+        const viaClicks = crawlableFrom(await discoverUrlsByClicking(probe, pageModel, entryOrigin));
+        for (const u of viaClicks) clickDiscovered.add(u);
+        return viaClicks;
       } catch (err: any) {
         console.warn(`[hybrid] click-probe failed for ${pageModel.url}: ${err?.message ?? err}`);
         return [];
@@ -1156,10 +1329,15 @@ export async function discoverSiteHybrid(
     const queue = await targetsFor(entry);
     while (queue.length > 0 && pages.length < maxPages) {
       const target = queue.shift()!;
-      const snap = await snapshot(target);
+      const snap = await snapshot(target, clickDiscovered.has(target));
       if (!snap) continue;
       const finalKey = normUrl(snap.finalUrl);
-      if (visited.has(finalKey)) continue; // redirected somewhere already seen (auth wall)
+      // Reject only a page that LANDED somewhere already modelled — the auth-wall bounce this
+      // guard exists for. `collectCrawlTargets` adds a URL to `visited` when it QUEUES it, so a
+      // bare `visited.has(finalKey)` was true for every URL that does not redirect, and the loop
+      // threw away every honest page it fetched. It only ever appeared to work on sites whose
+      // URLs redirect. TD-103.
+      if (landedOnAlreadyModelled(snap.finalUrl, target, visited)) continue;
       visited.add(finalKey);
 
       const rawPage = snap.appModel.pages[0];
@@ -1190,8 +1368,9 @@ export async function discoverSiteHybrid(
     // same broken answer without even opening a browser. Caught exactly that way: a re-run after
     // fixing the login logged `cache hit — skipping login and crawl` and reported the OLD
     // failure. Successes stay cached; only the failure path pays for a retry.
-    if (auth.status === "login-failed") {
-      console.warn(`[hybrid] not caching ${url} — login failed, so a retry should try again`);
+    const worth = discoveryIsWorthCaching(result);
+    if (!worth.ok) {
+      console.warn(`[hybrid] not caching ${url} — ${worth.reason}`);
     } else {
       cacheSet(siteCacheKey(url, creds), result);
     }

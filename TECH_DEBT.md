@@ -147,11 +147,13 @@ authority is its own heading, not this list.
 | TD-100 | `DETERMINISTIC_HEAL` is compared against `"true"` but is **missing from `BOOLEAN_ENV_FLAGS`**, so `=1`/`=True` boots clean and reads false — the cheap structural heal is skipped and every heal silently pays for a full LLM IR regeneration — **fixed** | Medium | Accidental | ? |
 | TD-101 | `computeStatus` returns `truncated` **without consulting `result.passed`**, and `passed: status === "passed" || status === "truncated"` then reports it green — a case that genuinely FAILED in the browser is counted as passed whenever its IR was also truncated — **fixed** | High | Accidental | ? |
 | TD-102 | `attachElementIdentity` KEEPS LLM-authored elements it could not match to the DOM, so a phantom (`role=button, name="login-button", no css`) survives into the AppModel, `toIR` grounds a step on it, and the click can never resolve | High | Accidental | ? |
-| TD-103 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable — **fixed** | High | Accidental | ? |
+| TD-103 | The click-probe filter `(button && landmark==="nav") || link` admits only elements that lead nowhere and **excludes the cart, the menu and every product link** — saucedemo crawls 2 pages on every run, which is the ROOT CAUSE of the truncations, the IR retry spend, and self-heal being undemonstrable — **fixed** (three coupled changes) | High | Accidental | ? |
 | TD-104 | `RUN_TIMEZONE` reaches Chromium unvalidated (`isSupportedRunLocale` guards only the ROUTE, never the env, and the timezone nothing at all), so one typo throws at `browserContext.newPage` and **every case in every run dies before navigating** — TD-71 again, same function, same blank-screenshot symptom — **fixed** | High | Accidental | ? |
 
 | TD-105 | The crawler's read-only guards (`SIGN_OUT_VERB` / `DESTRUCTIVE_VERB`) are anchored `^...$`, so discovery will click **"Delete account"** while refusing **"Delete"** — pre-existing, but TD-103 widened the landmarks it applies to | Medium | Accidental | ? |
 > **The table above stops being a reliable index if it is not extended.** TD-52 … TD-67 were written
+| TD-106 | A transient discovery failure was CACHED for 30 minutes — zero-element entry pages, `no-credentials`, and `authenticated`-with-only-the-login-page were all remembered, so one bad login poisoned every retry without opening a browser. The no-cache rule existed but covered only `login-failed` — **fixed** | High | Accidental | ? |
+| TD-107 | Verifying a sign-in used an INSTANT `count() > 0` sample at +600ms/+800ms while the generated spec polls the same question for 10s — an app that resolves its session asynchronously (Supabase/localStorage) was reported `login-failed` on a login that worked, collapsing the model to the login page and truncating every case — **fixed** | High | Accidental | ? |
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
 > from anyone reading only the summary. If you add an entry, add a row.
 >
@@ -4251,7 +4253,7 @@ even wrong-but-real; it names nothing at all.
 
 ---
 
-### TD-103. The click-probe's role+landmark filter excludes every element that navigates and admits only ones that go nowhere — High / Accidental — **Fixed**
+### TD-103. A click-discovered page was discarded twice over, so the crawl could never add one — High / Accidental — **Fixed (three changes; 2026-09-30)**
 
 **This is the root cause of the truncations, and therefore of the IR retry spend and of self-heal
 never being demonstrable.** One condition, `src/stages/hybridDiscovery.ts:569`:
@@ -4408,9 +4410,10 @@ those in a `nav` or `header` landmark is clicked during discovery, on a real sit
 **Found by a test written for TD-103** that asserted the guarantee the comment implies; the code
 did not make it. The test now pins the *actual* reach, so the gap is visible rather than assumed.
 
-**Pre-existing, but the surface grew.** The anchors already applied to `nav`; TD-103's fix widened
-the filter to `header`, which is exactly where a user menu with "Delete account" tends to live. The
-change did not create this, and it did make it worth writing down.
+**Pre-existing, and the surface did NOT grow after all.** The anchors already applied to `nav`.
+TD-103's fix would have widened this to `header` too, but that fix was reverted on 2026-09-30, so
+the reach today is exactly what it always was. Still worth having written down: it was found by a
+test asserting the guarantee the code's comment makes, and the code does not make it.
 
 **Why it was NOT fixed inline with TD-103.** Loosening `^delete$` to `^delete` is not free: it
 would also exclude legitimate navigation — "Cancelled orders" on any e-commerce site is a real
@@ -4454,3 +4457,257 @@ boot on a correct config, converting a guard against a broken deployment into a 
 working one. The check asks the runtime instead — `new Intl.DateTimeFormat("en-US", { timeZone })`
 throws `RangeError` for exactly what Chromium rejects and accepts every alias it accepts.
 `RUN_LOCALE=""` stays legal: it is the documented rollback switch, not a typo.
+
+**TD-103 REVERT NOTE (2026-09-30) — read this before attempting it again.**
+
+`nav || header` shipped in `41c2dca` and **changed nothing in production**: four further
+authenticated saucedemo runs, still exactly 2 pages, including one with `APPMODEL_CACHE_TTL_MS=0`
+so the crawl was genuinely re-run. Reverted rather than left in, since it was earning nothing.
+
+**Ruled out — do not re-investigate:**
+
+| link in the chain | checked how | result |
+|---|---|---|
+| the filter admits the cart | `isCrawlClickCandidate` on the recorded element | admits it |
+| the click-probe finds the page | ran the REAL `discoverUrlsByClicking` against a live logged-in saucedemo | returned `https://www.saucedemo.com/cart.html` |
+| the URL survives filtering | `collectCrawlTargets` with the real `visited` set | passed through |
+| the locator resolves | live browser | `getByRole("button",{name:"Cart, empty"})` → 1 match, click navigates to `/cart.html` |
+| the probe page is logged in | `sharedPage()` — one page, one context, login runs on it | session preserved |
+| `MAX_DISCOVERY_PAGES` | default 5; `pages` starts at 2 | not binding |
+| the AppModel cache | set to 0 in Azure for one run | crawl genuinely re-ran, still 2 pages |
+
+Every link works in isolation. Something about the production AppModel differs from the artifact the
+change was measured against.
+
+**The prime suspect, unconfirmed:** the measurement used
+`runs/2026-09-17T11-38-39-418Z-bfd03461/02-appmodel.json`, where the cart carries
+`"landmark": "header"`. **`landmark` is populated only by the DOM discovery path**
+(`domDiscovery.ts:178`), and `attachElementIdentity` (`discovery.ts:345`) copies
+`testId`/`id`/`css`/`genericPath` onto LLM-authored elements but **not `landmark`**. On a model
+built through `modelFromAria` the field is simply absent, and any condition keyed on it matches
+nothing — which is exactly the observed behaviour.
+
+**The one check that would confirm it:** open a CURRENT run's `02-appmodel.json`, find the
+`Cart, empty` element, and see whether `landmark` is there. If it is not, the fix is to carry
+`landmark` across in `attachElementIdentity` (the real defect) rather than to widen the filter.
+
+**Scope correction, measured across every run on disk.** Discovery is not broadly broken — the
+crawl LOOP works. `www.qa-practice.com` goes **1 → 5 pages** on the href path, twice. What has never
+added a page, on any run, before or after this change, is the **click-probe fallback** — the path a
+site needs only when its navigation has no usable `href`. That is a narrower and more accurate
+statement of the defect than this entry originally made.
+
+**TD-103 ROOT CAUSE FOUND (2026-09-30) — it is structural, and no filter change could ever have fixed it.**
+
+Traced end to end locally with the crawl instrumented:
+
+```
+[TRACE] targetsFor(.../inventory.html) elements=39 viaLinks=0
+[TRACE]   probe found=["https://www.saucedemo.com/cart.html"] afterFilter=[".../cart.html"]
+[TRACE] initial queue=[".../cart.html"] pages=2 maxPages=5
+[TRACE] snapshot(.../cart.html) wasOn=.../inventory.html response=yes status=404
+[TRACE] DROP A: snapshot(...) returned null
+```
+
+**The click-probe works. The URL is queued. Then `snapshot()` RE-FETCHES it and gets a 404.**
+
+Verified independently, logged in, in a real browser and over plain HTTP:
+
+```
+GET /cart.html       -> HTTP 404
+GET /inventory.html  -> HTTP 404        <- the page the tests run against
+clicking through to the cart -> renders, 1 item in the list
+```
+
+**Every saucedemo page except `/` 404s on a direct GET.** It is client-side routed: the URL in the
+address bar is real to the browser and meaningless to the server.
+
+**The contradiction, which is the actual defect.** `discoverUrlsByClicking` exists specifically to
+find pages that can ONLY be reached by clicking. It returns those pages **URLs**. The crawl loop then
+discards the browser state that reached them and performs a cold `page.goto(url)` — which for exactly
+that class of page cannot work. The two halves of the mechanism assume opposite things.
+
+So saucedemo is always **exactly 2 pages**: `/` (directly fetchable) and the post-login page (reached
+by clicking Login, captured as `entry`, never re-fetched). The crawl loop can only add pages that are
+directly fetchable, and on this site none are.
+
+**Why the reverted fix was doomed.** Widening the filter changed which elements get clicked. The probe
+was already finding `cart.html` before the widening mattered — the loss is one layer below, in
+`snapshot`. Reverting was correct; re-widening would still produce 2 pages.
+
+**Fix direction — snapshot where you land, do not re-fetch.** `discoverUrlsByClicking` has the page in
+the right state at the moment it clicks. Extract the model THERE and return page models instead of
+URLs, so a client-side route is captured from the state that reached it. That is a real change to the
+probe contract (`string[]` -> something carrying a model) and to `targetsFor` plus the loop, not a
+one-liner.
+
+**Scope.** Server-rendered sites are unaffected and already work: `qa-practice.com` goes **1 -> 5
+pages** via the href path, twice on disk. This hits client-side-routed apps (SPAs with pushState
+routing and no server fallback), where it is total — the crawl cannot add a single page.
+
+**Cheap mitigation worth measuring FIRST:** `snapshot` treats `status >= 400` as fatal. For a
+client-side route the DOM is often correct despite the status, because the shell renders and routes.
+Accepting a 404 whose extracted model has elements — while still rejecting an empty one — may recover
+most of this for a few lines. Measure it, do not assume it.
+
+**Still open and NOT explained by this:** why an add-to-cart case truncates at its own step 2. Its
+target (`add-to-cart-sauce-labs-backpack`) IS in the 39-element inventory model, and `groundingError`
+is flat (`appModel.pages.flatMap`), so page reachability is not the gate. That needs the truncation
+note, which local reproduction cannot produce: the `.env` Gemini key returns 401
+(`ACCESS_TOKEN_TYPE_UNSUPPORTED` — it is an OAuth token, not an API key), so `toIR` will not run here.
+
+**TD-103 FIXED (2026-09-30) — three changes, and any one alone is a no-op.**
+
+That property is the whole story: the first attempt shipped change 3 by itself, changed nothing across
+four authenticated runs, and was reverted as dead weight. It was necessary and insufficient.
+Instrumenting the crawl found the other two in minutes, after three wrong theories had cost a day.
+
+| # | change | what it fixes |
+|---|---|---|
+| 1 | `keepErrorStatusSnapshot` — trust a 4xx body **only** for a URL the click-probe reached | a client-side route 404s on the crawl re-fetch |
+| 2 | `landedOnAlreadyModelled` — compare the landing against the REQUESTED url before consulting `visited` | `collectCrawlTargets` marks a url visited when it QUEUES it, so the loop rejected every non-redirecting page it fetched |
+| 3 | `isCrawlClickCandidate` — `header` counts as navigation chrome, not just `nav` | the cart and menu live in the header, so neither was ever clicked |
+
+**Measured, cache off, both sites:**
+
+```
+saucedemo      2 -> 3 pages   (cart.html, 14 elements: "404 from the server but 14 elements rendered")
+qa-practice    5 -> 5 pages   (all five real; no regression)
+```
+
+**The 4xx rule is scoped on PROVENANCE, not a threshold.** A blanket "accept any 4xx that rendered
+something" was measured against `qa-practice.com` and admitted `index.html` and `index_v2.html` —
+genuine dead links whose 404 pages carry one element — which then displaced real pages. An element
+count would be a magic number between 1 and 14. A URL found in an href that 404s is a broken link; a
+URL found by CLICKING cannot be, because the click worked.
+
+**Verified:** `tsc` clean, 1649 passed / 0 failed / 18 skipped across 114 files. Each change
+negative-controlled independently — reverting one turns 2, 2 and 4 tests red respectively, all
+restored green.
+
+**Still open, and NOT this:** saucedemo stops at 3 rather than reaching checkout. The cart page IS now
+probed (`found 1 route(s) by clicking`) but the next hop is not kept, and `MAX_DISCOVERY_PAGES` is 5 so
+the budget is not the limit. Separately, an add-to-cart case truncates at its own step 2 even though
+its target IS in the model and `groundingError` is flat across pages — that needs a truncation note
+from a real run, which cannot be produced locally (the `.env` Gemini key returns 401
+`ACCESS_TOKEN_TYPE_UNSUPPORTED`; it is an OAuth token, not an API key).
+
+**How to reproduce any of this locally, free:**
+
+```
+rm -rf runs/_cache/appmodels
+APPMODEL_CACHE_TTL_MS=0 node --env-file-if-exists=.env --import tsx <script>.mts
+```
+
+`TTL_MS` in `src/kb/cache.ts` is read at MODULE LOAD, so setting `process.env` inside a script does
+nothing — two of this investigation measurements were silently served from cache. Pass it on the
+command line.
+
+---
+
+### TD-106. A transient discovery failure was cached for 30 minutes, so one bad login poisoned every retry — High / Accidental — **Fixed**
+
+Filed from a user report: *"in a few cases its unable to login."* The "a few cases" is the tell — the
+failure is transient, and the cache made it durable.
+
+`discoverSiteHybrid` already owned exactly the right argument, written against ONE status:
+
+> Never cache a failed login. A failure is usually transient — wrong value typed, the site briefly
+> down, a login form that changed — and caching it pins the whole run to a login-page-only model, so
+> the immediate retry silently gets the same broken answer **without even opening a browser**.
+
+It was applied to `login-failed` alone. **Three sibling paths cached results just as transient and
+just as unusable**, each for `APPMODEL_CACHE_TTL_MS` (default 30 minutes):
+
+| # | path | why it is transient | why it is unusable |
+|---|---|---|---|
+| 1 | entry page extracts **zero elements** | a blank render past the 6s hydration poll (TD-31), a cold serverless start, a network blip | returns **before the login is attempted at all** |
+| 2 | **`no-credentials`** | the credential prompt timed out; the next run may well have someone there to answer | login-page-only model, and nobody gets asked again |
+| 3 | **`authenticated` with nothing past the login page** | the post-login page extracted no elements this once | **claims success** and grounds nothing |
+
+Path 1 was the most explicit about it: its comment called the empty model *"still a valid, cacheable
+result"*. It is neither.
+
+Path 3 is the nastiest. When the post-login extraction comes back empty, `entry` stays the login page
+and `loginPageModel` stays unset, so `pages` is `[loginPage]` carrying `status: "authenticated"`.
+Everything downstream trusts that status, builds a login prefix from it, and then cannot ground a
+single step past it — so it surfaces as **every case truncating**, not as a login problem. That is the
+shape of the reports that started this whole investigation.
+
+**Observed on disk:** run `2026-09-25T20-00-39-218Z-82ff713c` — `auth.status: "no-credentials"`, one
+page, 7 elements. Cached under `site:<url>` (the no-credential key), so it was served whole to the
+next run that also could not supply credentials.
+
+**Fix — one rule, every write site.** `discoveryIsWorthCaching(model)` is pure and exported; the three
+paths consult it instead of each carrying its own opinion. Successes still cache, so the common path
+stays fast (verified live: saucedemo authenticated, 3 pages, `{"ok":true}`).
+
+Two details that matter in the rule:
+- Path 3 is detected by comparing each page's **landed URL** against `auth.loginUrl`, not by page
+  count — a genuine single-page app behind a login is a legitimate one-page model, and a count-based
+  check would have refused it and re-crawled on every run.
+- The status stays `authenticated` in path 3. The sign-in really did work and the prefix built from it
+  is valid; what is wrong is remembering the result, not the verdict.
+
+**Verified:** `tsc` clean, 1659 passed / 0 failed / 18 skipped across 115 files. Each of the three
+rules negative-controlled independently (1, 2 and 1 failures respectively), all restored green. A
+source-level test also pins that exactly ONE guarded write to the site cache exists, because the
+defect was three writes and one guard — a fourth added later would reintroduce it while every unit
+test still passed.
+
+---
+
+### TD-107. Verifying a sign-in SAMPLED instead of polling, so a slow session resolve was reported as a failed login — High / Accidental — **Fixed**
+
+Diagnosed from a run against `learnvibes.vercel.app` that reported `auth.status: "login-failed"` and a
+**one-page model** — while the SAME RUN's generated login case **passed** on the same credentials.
+
+That contradiction is the whole finding:
+
+| | the check | behaviour |
+|---|---|---|
+| discovery, `verifySession` | `hasLoginGate` = `locator(PASSWORD_INPUT).count() > 0`, once at +600ms and once at +800ms after a reload | **instant sample** |
+| the generated spec that passed | `expect(locator).toBeHidden({ timeout: 10000 })` | **polls 10s** |
+
+Two pieces of code asking the identical question — "has the login gate gone?" — and only one of them
+waits for the answer.
+
+**The mechanism.** The site is a Supabase app: `supabase`, `jwt` and `localStorage` in its bundle, and
+**no cookies set on the login page** (checked live). Supabase keeps the session in `localStorage` and
+resolves it ASYNCHRONOUSLY on load — after a navigation the app renders its unauthenticated view
+until `getSession()` settles, then redirects. A single read lands inside that window. The re-navigation
+check is the worst place for it, because a reload is exactly when the session has to be re-resolved.
+
+**What it cost downstream, and why it never looked like a login bug.** `login-failed` means the crawl
+continues ANONYMOUSLY, so the model is the login page alone — one page, five elements. Every case then
+truncates for want of anything to ground against, and the run reports broken tests rather than a
+failed sign-in. It is also intermittent by nature, which is how it was reported: *"in a few cases its
+unable to login."*
+
+**Ruled out first, so nobody re-checks:** the gate IS detected correctly (1 visible password input on
+the live page, `elementCount: 5` matches exactly); the submit control IS picked correctly ("Sign In" is
+`type="submit"` and wins the first query, and `AUTH_VERB` is anchored so the neighbouring "Sign Up"
+cannot match); `loginOnPage` DOES call `waitForAuthSettle`, so the two are not asymmetric there.
+
+**Fix.** `waitForLoginGateToClear` polls to `AUTH_VERIFY_TIMEOUT_MS` (default 10000, deliberately the
+same as the spec's `ASSERTION_TIMEOUT_MS`, since it is the same question). `hasLoginGate` keeps its
+instant semantics — correct for DETECTING a gate, where the question really is "is one here now".
+
+This is TD-31's argument, in the same codebase, applied to a second place it belonged:
+
+> Poll briefly rather than accept 0 outright — an auth wall costs nothing extra, since it's still
+> correctly 0 after polling; a page that only needed more time now gets it.
+
+A genuinely rejected login still fails, just at the end of the budget instead of at 600ms.
+
+**Verified:** executed in a real Chromium (D-19 — the defect is a timing relationship between a DOM
+that changes late and a check that reads early, so a fake page would only test my model of the race).
+7 tests, including a built-in control that reproduces the old failure by shrinking the budget on an
+unchanged page, and one that pins a never-clearing gate still failing. `tsc` clean, 1666 passed /
+0 failed / 18 skipped across 116 files. Negative-controlled: restoring the single sample turns the
+`verifySession` wiring test red; restored green.
+
+**Not confirmed, and stated rather than hidden:** the final proof would be that run's `auth.detail`,
+which names which of the two samples fired, or credentials to reproduce the login locally. I had
+neither. The fix is safe without it on the TD-31 argument above — polling can only convert a false
+negative into a true positive, and a real failure still fails.
