@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, cpSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, cpSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { toIR } from "./ir.js";
 import type { LlmBudget } from "../llm/llmBudget.js";
@@ -136,6 +136,47 @@ export interface SuiteSummary {
 /** Origin of a url, for deciding whether a flow left the application. */
 function originOf(url: string): string | undefined {
   try { return new URL(url).origin; } catch { return undefined; }
+}
+
+/**
+ * Throw away the recordings nobody will watch — the other half of `PLAYWRIGHT_VIDEO=on`.
+ *
+ * WHY THIS EXISTS AT ALL. Playwright decides recording when the CONTEXT is created, long before an
+ * outcome exists, so there is no mode that means "keep a video for the cases I will later call
+ * interesting". Its `retain-on-failure` keeps only what PLAYWRIGHT failed — and `blocked`,
+ * `truncated` and `truncated_no_assertion` are every one of them cases Playwright PASSED and this
+ * pipeline reclassified afterwards. By the time `computeCaseStatus` runs, those recordings have
+ * already been deleted. That is why `blocked` and `truncated_no_assertion` cards could never show a
+ * video no matter what the UI did: the file never survived.
+ *
+ * So the only way to have them is to record everything and prune afterwards, which is what this
+ * does. A `passed` case is the one outcome nobody debugs, and it is also the common case, so
+ * pruning it is where all the storage saving is. Everything else — failed, blocked, truncated,
+ * truncated_no_assertion — keeps its recording.
+ *
+ * The honest cost, since it is not free: every case is still RECORDED (one ffmpeg process per test)
+ * even when the file is deleted a moment later. That is the price of not knowing the outcome in
+ * advance, and it is why this lives behind `PLAYWRIGHT_VIDEO=on` rather than being the default.
+ *
+ * Best-effort throughout. A recording that cannot be deleted is a stale file, never a failed run.
+ */
+export function pruneVideosForPassedCases(results: CaseRunResult[], runDir: string): number {
+  if (process.env.PLAYWRIGHT_VIDEO !== "on") return 0;   // nothing extra was recorded to prune
+  let removed = 0;
+  for (const r of results) {
+    if (r.status !== "passed") continue;
+    const caseDir = path.join(runDir, "cases", r.caseId);
+    for (const dir of [path.join(caseDir, "artifacts"), path.join(caseDir, "healed", "artifacts"), caseDir]) {
+      const video = findVideo(dir);
+      if (!video) continue;
+      try { rmSync(video, { force: true }); removed++; } catch { /* a stale file, not a failed run */ }
+    }
+  }
+  if (removed > 0) {
+    console.log(`[suite] pruned ${removed} video(s) from passed cases — recordings are kept for `
+      + `failed, blocked and unconfirmed cases, which are the ones worth watching`);
+  }
+  return removed;
 }
 
 /** Pure summary-building step, pulled out of runSuite so it's unit-testable without mocking
@@ -485,6 +526,9 @@ export async function runSuite(
     } // end non-primary else branch
   }
 
+  // Prune BEFORE the summary is built: buildSuiteSummary resolves videoUrl by looking for the file,
+  // so a pruned case must have no file left to find or the card would link a deleted recording.
+  pruneVideosForPassedCases(results, runDir);
   const summary = buildSuiteSummary(results, runDir);
 
   const summaryPath = path.join(runDir, "07-suite-summary.json");
