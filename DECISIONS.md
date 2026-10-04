@@ -1078,3 +1078,30 @@ request that fails precisely when the connection is bad. Native `confirm()` is r
 six other destructive asks in `public/app.js` are native, and a styled modal would mean minting a
 CSS class (platform rule 3).
 
+## D-35. Token refresh lives in the browser, keeps the refresh token in `localStorage`, and fails silently
+
+**Context.** TD-108: the UI never renewed Supabase's hour-long access token. Fixing it means holding a
+refresh token somewhere.
+
+**Decision.**
+
+1. **Client-side, against Supabase's REST endpoint directly** — the same dependency-free approach as
+   sign-in (no `supabase-js` in the page). The server needs no new route and no session state; the
+   only server change is one additive config field.
+2. **The refresh token is stored in `localStorage`, beside the access token.** This is a real increase
+   in exposure: an XSS on this origin could previously steal a token good for at most an hour, and
+   can now steal one that mints new tokens until revoked. Accepted for now because the alternative —
+   an `httpOnly` cookie set and rotated by the server — changes the auth model of every route and of
+   the artifact cookie path, which is not a fix-sized change. That move remains the correct end state.
+3. **A failed renewal changes nothing.** It does not sign the user out and shows no message; the
+   request that triggered it gets its original 401, so the existing handlers decide (D-34). This keeps
+   the flag's only visible effect "the session doesn't expire", and stops a network blip on wake-up
+   from signing anyone out.
+4. **Behind `AUTH_TOKEN_REFRESH`, default off** (platform rule 2), even though it is a bug fix: the
+   stored-session shape and the 401 behaviour both change with it on, and it was requested that
+   shipping it change no behaviour until it is deliberately enabled.
+
+**Rejected.** *Longer JWT expiry in the Supabase dashboard* — moves the bug from one hour to N hours
+and lengthens every stolen token's life. *Redirect to sign-in on any 401* — honest, but still logs
+everyone out hourly. *Proactive refresh only, no retry on 401* — a laptop that sleeps past expiry
+wakes up to requests that fire before the timer or the focus event does.
