@@ -300,3 +300,82 @@ describe.skipIf(!CONFIGURED)("RLS — a viewer reaching PostgREST directly with 
     expect((data as { role: string }).role).toBe("viewer");
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// The roster (D-36, migration 20261007120000). Its own fixture, so the block above stays exactly
+// as it was. Below admin, organisation_members is visible only for yourself and for people who
+// share a project with you — matched PER ORGANISATION, which is the case the API alone cannot
+// prove for the database.
+// ---------------------------------------------------------------------------------------------
+
+describe.skipIf(!CONFIGURED)("RLS — the roster is scoped to shared projects, per organisation", () => {
+  const RTAG = `${TAG}-roster`;
+  const ids: Record<string, string> = {};
+  let orgX = "";
+  let orgY = "";
+
+  const roster = async (who: string, org: string): Promise<string[]> => {
+    const c = await clientFor(`${RTAG}-${who}@example.com`);
+    const { data, error } = await c.from("organisation_members").select("user_id").eq("organisation_id", org);
+    expect(error).toBeNull();
+    return (data ?? []).map((r) => (r as { user_id: string }).user_id).sort();
+  };
+  const sortedIds = (...names: string[]) => names.map((n) => ids[n]).sort();
+
+  beforeAll(async () => {
+    admin ??= createClient(URL_!, SERVICE_KEY!, { auth: { persistSession: false, autoRefreshToken: false } });
+    for (const who of ["admin", "tester", "peer", "stranger", "lonely"]) {
+      ids[who] = await makeUser(`${RTAG}-${who}@example.com`);
+    }
+    orgX = await insert("organisations", { name: `${RTAG}-org-x` });
+    orgY = await insert("organisations", { name: `${RTAG}-org-y` });
+
+    await admin.from("organisation_members").insert([
+      { organisation_id: orgX, user_id: ids.admin, role: "admin" },
+      { organisation_id: orgX, user_id: ids.tester, role: "tester" },
+      { organisation_id: orgX, user_id: ids.peer, role: "tester" },
+      { organisation_id: orgX, user_id: ids.stranger, role: "tester" },
+      { organisation_id: orgX, user_id: ids.lonely, role: "tester" },
+      // tester and peer are BOTH in org Y, with no shared project there.
+      { organisation_id: orgY, user_id: ids.tester, role: "tester" },
+      { organisation_id: orgY, user_id: ids.peer, role: "viewer" },
+    ]);
+
+    const shared = await insert("projects", { organisation_id: orgX, name: `${RTAG}-shared`, base_url: "https://s.example.com" });
+    const other = await insert("projects", { organisation_id: orgX, name: `${RTAG}-other`, base_url: "https://o.example.com" });
+    await insert("projects", { organisation_id: orgY, name: `${RTAG}-y`, base_url: "https://y.example.com" });
+    await admin.from("project_members").insert([
+      { project_id: shared, user_id: ids.tester },
+      { project_id: shared, user_id: ids.peer },
+      { project_id: other, user_id: ids.stranger },
+    ]);
+  }, 60_000);
+
+  afterAll(async () => {
+    if (!admin) return;
+    await admin.from("organisations").delete().in("id", [orgX, orgY].filter(Boolean));
+    for (const id of Object.values(ids)) await admin.auth.admin.deleteUser(id).catch(() => {});
+  }, 60_000);
+
+  it("an admin reads the whole roster of their organisation", async () => {
+    expect(await roster("admin", orgX)).toEqual(sortedIds("admin", "tester", "peer", "stranger", "lonely"));
+  }, 30_000);
+
+  it("a tester reads only themselves and the people they share a project with", async () => {
+    expect(await roster("tester", orgX)).toEqual(sortedIds("tester", "peer"));
+  }, 30_000);
+
+  it("a tester with no projects reads only themselves", async () => {
+    expect(await roster("lonely", orgX)).toEqual(sortedIds("lonely"));
+  }, 30_000);
+
+  it("sharing a project in one organisation reveals nothing in another", async () => {
+    expect(await roster("tester", orgY)).toEqual(sortedIds("tester"));
+    expect(await roster("peer", orgY)).toEqual(sortedIds("peer"));
+  }, 30_000);
+
+  it("an admin of one organisation gets no roster access in an organisation they are not admin of", async () => {
+    // The admin is not in org Y at all.
+    expect(await roster("admin", orgY)).toEqual([]);
+  }, 30_000);
+});

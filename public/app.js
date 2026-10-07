@@ -306,11 +306,13 @@ function applyRoleRestrictions() {
   body.classList.toggle("role-no-edit", !unrestricted && !roleAtLeast(auth.role, "tester"));
   body.classList.toggle("role-no-admin", !unrestricted && !roleAtLeast(auth.role, "admin"));
 
-  // Team is an admin/owner screen. With auth off there is no team to manage — the synthetic
-  // user is the only member — so the entry point stays hidden, exactly as before this existed.
+  // Team is shown to every signed-in member (D-36): admins and owners manage it, everyone else
+  // gets a read-only view of themselves and the people they share a project with — the server
+  // decides who that is. Still needs a known role, i.e. an organisation to show. With auth off
+  // there is no team — the synthetic user is the only member — so it stays hidden, as before.
   const teamBtn = document.getElementById("teamBtn");
   if (teamBtn) {
-    const showTeam = auth.required && !!auth.token && roleAtLeast(auth.role, "admin");
+    const showTeam = auth.required && !!auth.token && !!auth.role;
     teamBtn.classList.toggle("hidden", !showTeam);
   }
 
@@ -6636,19 +6638,16 @@ async function renderTeamView() {
   const members = res && Array.isArray(res.members) ? res.members : [];
 
   // Project assignments — what each person may SEE, the second axis alongside their role.
-  // Admin-only endpoints, so only fetched when we're an admin; a non-admin's Team screen is
-  // read-only anyway.
-  let assignments = {};
-  let allProjects = [];
-  if (isAdmin) {
-    const [aRes, pRes] = await Promise.all([
-      fetch(`/api/organisations/${encodeURIComponent(orgId)}/assignments`)
-        .then((r) => (r.ok ? r.json() : null)).catch(() => null),
-      fetch("/api/projects").then((r) => (r.ok ? r.json() : null)).catch(() => null),
-    ]);
-    assignments = (aRes && aRes.assignments) || {};
-    allProjects = (pRes && Array.isArray(pRes.projects)) ? pRes.projects : [];
-  }
+  // Fetched for every role (D-36). Below admin the server has already cut both lists down to
+  // projects this viewer is in, so a chip can never name a project they don't belong to, and
+  // `allProjects` is only their own projects — which is all the chip names need.
+  const [aRes, pRes] = await Promise.all([
+    fetch(`/api/organisations/${encodeURIComponent(orgId)}/assignments`)
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    fetch("/api/projects").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+  ]);
+  const assignments = (aRes && aRes.assignments) || {};
+  const allProjects = (pRes && Array.isArray(pRes.projects)) ? pRes.projects : [];
   const projectName = new Map(allProjects.map((p) => [p.id, p.name]));
 
   if (!members.length) {
@@ -6684,17 +6683,21 @@ async function renderTeamView() {
     // projects for them would be a lie the moment a new one is created — say the rule instead.
     const seesEverything = roleAtLeast(m.role, "admin");
     const mine = assignments[m.userId] || [];
-    const projectsCell = !isAdmin ? "" : seesEverything
+    // Below admin the chips are read-only: no "×", no "+ Add to project…". Project membership is
+    // admin-managed, and the server 403s both calls for anyone lower regardless of what's drawn.
+    const projectsCell = seesEverything
       ? `<div class="team-projects"><span class="team-projects-all">Sees every project (by role)</span></div>`
       : `<div class="team-projects">
           ${mine.length
             ? mine.map((pid) => `
-              <span class="team-chip">${escapeHtml(projectName.get(pid) || "project")}
+              <span class="team-chip">${escapeHtml(projectName.get(pid) || "project")}${isAdmin ? `
                 <button type="button" class="team-chip-x" data-unassign="${escapeHtml(m.userId)}"
-                  data-project="${escapeHtml(pid)}" title="Remove from this project">&times;</button>
+                  data-project="${escapeHtml(pid)}" title="Remove from this project">&times;</button>` : ""}
               </span>`).join("")
-            : `<span class="team-projects-none">No projects yet — they can't see anything.</span>`}
-          ${allProjects.length > mine.length ? `
+            : `<span class="team-projects-none">${isYou
+                ? "You haven't been added to any projects yet."
+                : "No projects yet — they can't see anything."}</span>`}
+          ${isAdmin && allProjects.length > mine.length ? `
           <select class="team-select team-assign" data-assign="${escapeHtml(m.userId)}">
             <option value="">+ Add to project…</option>
             ${allProjects.filter((p) => !mine.includes(p.id))

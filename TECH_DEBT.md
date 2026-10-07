@@ -155,6 +155,8 @@ authority is its own heading, not this list.
 | TD-106 | A transient discovery failure was CACHED for 30 minutes — zero-element entry pages, `no-credentials`, and `authenticated`-with-only-the-login-page were all remembered, so one bad login poisoned every retry without opening a browser. The no-cache rule existed but covered only `login-failed` — **fixed** | High | Accidental | ? |
 | TD-107 | Verifying a sign-in used an INSTANT `count() > 0` sample at +600ms/+800ms while the generated spec polls the same question for 10s — an app that resolves its session asynchronously (Supabase/localStorage) was reported `login-failed` on a login that worked, collapsing the model to the login page and truncating every case — **fixed** | High | Accidental | ? |
 | TD-108 | Sign-in kept only Supabase's hour-long access token and discarded the refresh token, so a signed-in tab silently stopped working after an hour — every `/api` call 401'd, the sidebar emptied, saves failed, screenshots broke — and only the run poll said why. Recorded as deferred in `PHASE_3_4_REPORT.md` but never filed here — **fixed behind `AUTH_TOKEN_REFRESH`** (default off) | High | Accidental | ? |
+| TD-109 | `removeMember` deletes the organisation row but leaves the person's `project_members` rows, so a removed member stays "assigned" and their id still appears in an admin's assignments map. Access-harmless; D-36's paths guard against it | Low | Accidental | ? |
+| TD-110 | One `tenancy.test.ts` test (synthetic local user on `/api/runs`) fails only when run alongside `multiTenancy.test.ts` alone — pre-existing on `main`, likely shared-worker env leakage | Low | Accidental | ? |
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
 > from anyone reading only the summary. If you add an entry, add a row.
 >
@@ -4768,3 +4770,22 @@ script that achieves XSS on this origin — the same place as the access token, 
 than one hour. Moving both to an `httpOnly` cookie set by the server is the real fix, and a larger one.
 Sessions also no longer end on their own; cap them with Supabase's session time-box/inactivity
 settings if that matters.
+
+### TD-109. Removing a member from an organisation leaves their `project_members` rows behind — Low / Accidental — **Open**
+
+`removeMember` (`src/server/organisations.ts`) deletes the `organisation_members` row and nothing
+else, so the person stays assigned to every project they were in. Harmless for access today —
+every route first requires an organisation role they no longer have — but the leftover rows
+surface wherever assignments are read: an admin's Team-screen `assignments` map still lists the
+removed id. D-36 guards its own paths against it (`assignmentsVisibleTo` drops non-members; the
+RLS helper requires the project's organisation to be one of the caller's). Remediation: delete
+the person's `project_members` rows for that organisation's projects inside `removeMember`, plus a
+one-off cleanup of existing leftovers — a data change, so it needs sign-off before it runs.
+
+### TD-110. `tests/tenancy.test.ts` "the synthetic local user reaches /api/runs exactly as before" fails when run together with `tests/multiTenancy.test.ts` only — Low / Accidental — **Open**
+
+`npx vitest run tests/tenancy.test.ts tests/multiTenancy.test.ts` → that one test returns 500
+instead of 200. Reproduced on unmodified `main` (`df8002d`), so pre-existing; it passes alone and
+in the full suite, where scheduling differs. The shape matches the env-leak warning in
+`tests/runLocaleRoute.test.ts` (files that set `AUTH_ENABLED`/`DB_ENABLED` at module scope sharing
+a worker). Not investigated further; filed so the next person does not mistake it for a regression.

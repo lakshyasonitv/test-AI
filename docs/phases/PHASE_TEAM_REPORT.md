@@ -57,7 +57,7 @@ is no team to manage and the entry point stays hidden. Behaviour is byte-identic
 
 | Method | Path | Min role |
 |---|---|---|
-| `GET` | `/api/organisations/:orgId/members` | `viewer` |
+| `GET` | `/api/organisations/:orgId/members` | `viewer` — **scoped below admin since D-36**: yourself plus members sharing a project with you. See `PHASE_TEAM_SCOPED_ROSTER_REPORT.md` |
 | `POST` | `/api/organisations/:orgId/members` | `admin` |
 | `PATCH` | `/api/organisations/:orgId/members/:userId` | `admin` |
 | `DELETE` | `/api/organisations/:orgId/members/:userId` | `admin` |

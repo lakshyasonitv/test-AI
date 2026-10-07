@@ -1,6 +1,7 @@
 import { getServiceClient } from "../db.js";
 import { AccessError, invalidateMemberships, isRole, roleAtLeast, type Role } from "./authz.js";
 import { LOCAL_USER_ID } from "./auth.js";
+import { assignmentsVisibleTo } from "./projects.js";
 
 /**
  * Organisation membership management — the CRUD behind `/api/organisations/:orgId/members`,
@@ -114,13 +115,18 @@ async function emailsFor(userIds: string[]): Promise<Map<string, string | null>>
   return out;
 }
 
-export async function listMembers(orgId: string): Promise<MemberRow[]> {
+/**
+ * The organisation's roster. `onlyUserIds`, when given, restricts the QUERY itself — the rows
+ * outside it are never read from the database, not read and then dropped.
+ */
+export async function listMembers(orgId: string, onlyUserIds?: string[]): Promise<MemberRow[]> {
   const client = requireClient();
-  const { data, error } = await client
+  let query = client
     .from("organisation_members")
     .select("user_id, role, created_at")
-    .eq("organisation_id", orgId)
-    .order("created_at", { ascending: true });
+    .eq("organisation_id", orgId);
+  if (onlyUserIds) query = query.in("user_id", onlyUserIds);
+  const { data, error } = await query.order("created_at", { ascending: true });
   if (error) throw new AccessError(500, `could not list members: ${error.message}`);
 
   const rows = (data ?? []) as { user_id: string; role: string; created_at: string | null }[];
@@ -132,6 +138,28 @@ export async function listMembers(orgId: string): Promise<MemberRow[]> {
     role: r.role as Role,
     createdAt: r.created_at,
   }));
+}
+
+/**
+ * The roster as `viewerId` may see it — what `GET /api/organisations/:orgId/members` returns (D-36).
+ *
+ *   - admin / owner: every member, exactly `listMembers(orgId)`.
+ *   - anyone else: themselves, plus every member who shares at least one project with them IN THIS
+ *     ORGANISATION. No projects means only themselves.
+ *
+ * The set comes from `assignmentsVisibleTo`, which derives from `visibleProjectIds` — the same
+ * helper every other project-visibility decision in the server uses — so there is one definition
+ * of "a project you can see", not a second one for the Team screen. That lookup fails closed (an
+ * error means no projects), so a database fault degrades to "only yourself", never "everyone".
+ */
+export async function listMembersVisibleTo(
+  orgId: string,
+  viewerId: string,
+  role: Role,
+): Promise<MemberRow[]> {
+  if (roleAtLeast(role, "admin")) return listMembers(orgId);
+  const shared = await assignmentsVisibleTo(orgId, viewerId, role);
+  return listMembers(orgId, [...new Set([viewerId, ...shared.keys()])]);
 }
 
 /** Resolve an email to a Supabase user id. Returns null when no such account exists. */

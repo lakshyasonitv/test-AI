@@ -38,14 +38,14 @@ import {
   changeMemberRole,
   createOrganisation,
   findUserByEmail,
-  listMembers,
+  listMembersVisibleTo,
   removeMember,
   roleOfMember,
 } from "./organisations.js";
 import {
   addProjectMember,
   assertProjectVisible,
-  assignmentsByUser,
+  assignmentsVisibleTo,
   createProject,
   deleteProject,
   listProjectMembers,
@@ -1091,9 +1091,16 @@ app.put("/api/organisations/:orgId/llm-config", requireOrgRole("admin"), async (
   } catch (err) { sendAccessError(res, err); }
 });
 
-app.get("/api/organisations/:orgId/assignments", requireOrgRole("admin"), async (req, res) => {
+// D-36: open to every member, but SCOPED. Admin/owner get the whole map exactly as before; anyone
+// else gets only the projects they are in themselves, and only the people who share one — the
+// same visible set the roster below is cut to. The response shape is unchanged (rule 1).
+app.get("/api/organisations/:orgId/assignments", requireOrgRole("viewer"), async (req, res) => {
   try {
-    const map = await assignmentsByUser(req.params.orgId);
+    const map = await assignmentsVisibleTo(
+      req.params.orgId,
+      req.user?.id ?? LOCAL_USER_ID,
+      req.organisationRole!,
+    );
     res.json({ assignments: Object.fromEntries(map) });
   } catch (err) {
     sendAccessError(res, err);
@@ -1102,7 +1109,11 @@ app.get("/api/organisations/:orgId/assignments", requireOrgRole("admin"), async 
 
 app.get("/api/organisations/:orgId/members", requireOrgRole("viewer"), async (req, res) => {
   try {
-    res.json({ members: await listMembers(req.params.orgId) });
+    // D-36: below admin, the roster is yourself plus whoever shares a project with you in this
+    // organisation. Enforced here, in the query — not by the Team screen hiding rows.
+    res.json({
+      members: await listMembersVisibleTo(req.params.orgId, req.user?.id ?? LOCAL_USER_ID, req.organisationRole!),
+    });
   } catch (err) {
     sendAccessError(res, err);
   }

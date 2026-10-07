@@ -426,12 +426,14 @@ describe("team management — the screen's controls map to enforced routes", () 
     expect(String(res.body.error)).toMatch(/tester/);
   });
 
-  it("a viewer cannot read the roster the Team screen renders", async () => {
-    // The Team entry point is hidden below admin, but hiding is not the control: a viewer who
-    // navigates straight to #/team must still get nothing back.
+  it("a viewer reads only the slice of the roster they share a project with (D-36)", async () => {
+    // Reading the roster is a viewer-level route by design, but below admin it is SCOPED: here
+    // the viewer shares A1 with the tester and nobody else. tests/teamRoster.test.ts owns the
+    // full matrix (owner/admin/tester/no-projects/multi-organisation).
     const res = await request(app).get(`/api/organisations/${ORG_A}/members`).set(as(VIEWER_A));
-    expect(res.status).toBe(200); // reading the roster is a viewer-level route by design
-    expect(Array.isArray(res.body.members)).toBe(true);
+    expect(res.status).toBe(200);
+    expect(res.body.members.map((m: { userId: string }) => m.userId).sort())
+      .toEqual([VIEWER_A, TESTER_A].sort());
   });
 
   it("a tester cannot change anyone's role, with or without the UI drawing a picker", async () => {
@@ -754,11 +756,17 @@ describe("projects — management is admin-and-above, exactly like member manage
     expect(res.status).toBe(404);
   });
 
-  it("the assignments map is admin-only", async () => {
-    const ok = await request(app).get(`/api/organisations/${ORG_A}/assignments`).set(as(ADMIN_A));
-    expect(ok.status).toBe(200);
+  it("the assignments map is whole for an admin and cut to shared projects below (D-36)", async () => {
+    const full = await request(app).get(`/api/organisations/${ORG_A}/assignments`).set(as(ADMIN_A));
+    expect(full.status).toBe(200);
 
-    const denied = await request(app).get(`/api/organisations/${ORG_A}/assignments`).set(as(VIEWER_A));
-    expect(denied.status).toBe(403);
+    // Was a 403 until D-36: a viewer now gets the map, but only for projects they are in.
+    const scoped = await request(app).get(`/api/organisations/${ORG_A}/assignments`).set(as(VIEWER_A));
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.assignments).toEqual({ [VIEWER_A]: [PROJ_A1], [TESTER_A]: [PROJ_A1] });
+
+    // Still refused outright across organisations.
+    const other = await request(app).get(`/api/organisations/${ORG_A}/assignments`).set(as(OWNER_B));
+    expect(other.status).toBe(403);
   });
 });
