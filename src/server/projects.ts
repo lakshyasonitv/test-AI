@@ -309,6 +309,47 @@ export async function assignmentsByUser(orgId: string): Promise<Map<string, stri
 }
 
 /**
+ * `assignmentsByUser`, cut down to what `viewerId` may see (D-36).
+ *
+ * Admin/owner: the whole map, unchanged — `visibleProjectIds` answers `null` ("no restriction") for
+ * them. Anyone else: only projects in THEIR visible set, so a chip can never name a project they
+ * are not in, and a person appears only if they share at least one such project. That second
+ * property is what makes this map and `listMembersVisibleTo`'s roster agree by construction —
+ * both are derived from the same visible set, in the same organisation.
+ *
+ * Org-scoped through `visibleProjectIds(viewerId, orgId, …)`: someone the viewer shares a project
+ * with in another organisation is not visible here unless they also share one in THIS one.
+ */
+export async function assignmentsVisibleTo(
+  orgId: string,
+  viewerId: string,
+  role: Role,
+): Promise<Map<string, string[]>> {
+  const visible = await visibleProjectIds(viewerId, orgId, role);
+  if (visible === null) return assignmentsByUser(orgId);
+  if (visible.size === 0) return new Map();
+
+  // Only people who are still members of this organisation. Removing a member does not delete
+  // their project_members rows (TD-109), and a leftover row must not hand a non-admin the id of
+  // someone who has left. The RLS policy applies the same guard (migration 20261007120000).
+  const client = requireClient();
+  const { data, error } = await client
+    .from("organisation_members")
+    .select("user_id")
+    .eq("organisation_id", orgId);
+  if (error) throw new AccessError(500, `could not read the roster: ${error.message}`);
+  const current = new Set((data ?? []).map((r) => (r as { user_id: string }).user_id));
+
+  const out = new Map<string, string[]>();
+  for (const [userId, projectIds] of await assignmentsByUser(orgId)) {
+    if (!current.has(userId)) continue;
+    const shared = projectIds.filter((pid) => visible.has(pid));
+    if (shared.length) out.set(userId, shared);
+  }
+  return out;
+}
+
+/**
  * Add someone to a project. `userId` must already be a member of the organisation — project
  * membership grants visibility, never entry: someone outside the org has no role and so no
  * permissions at all, and silently creating that state would be a tenancy hole.

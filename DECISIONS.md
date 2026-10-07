@@ -1105,3 +1105,46 @@ refresh token somewhere.
 and lengthens every stolen token's life. *Redirect to sign-in on any 401* — honest, but still logs
 everyone out hourly. *Proactive refresh only, no retry on 401* — a laptop that sleeps past expiry
 wakes up to requests that fire before the timer or the focus event does.
+
+## D-36. Below admin, the Team roster is yourself plus the people you share a project with — always on, an exception to platform rule 2
+
+**Decision.** `GET /api/organisations/:orgId/members` returns the whole organisation to owner and
+admin, unchanged. Anyone below admin gets themselves plus every member who shares at least one
+project with them **in that organisation**, and nothing else. `GET …/assignments` (the project
+chips) is opened from admin-only to every member on the same terms: admins get the whole map,
+everyone else only the projects they are in, for only the people they can see. The database
+policy on `organisation_members` is tightened to match (migration `20261007120000`).
+
+**One definition of "a project you can see".** Both routes derive from `visibleProjectIds()` —
+the helper every other project-visibility decision already uses — through
+`assignmentsVisibleTo()` (`projects.ts`) and `listMembersVisibleTo()` (`organisations.ts`). No
+parallel permission mechanism. The roster and the chips therefore agree by construction.
+
+**Per organisation, not per person.** A person in two organisations who shares a project with
+someone in org A must not reveal that person's org-B membership. The API is org-scoped because
+`visibleProjectIds(userId, orgId, …)` is; the SQL helper returns `(organisation_id, user_id)`
+pairs and the policy matches both columns, because a set of bare user ids would leak across
+organisations. Both layers have a test for exactly that case.
+
+**This reverses a choice migration `20260910120000` made on purpose** — it left the roster
+org-scoped "so the database is not stricter than the product". The product changed; the database
+follows it, by the same rule.
+
+**Always on — an explicit exception to platform rule 2** ("every new capability ships behind an
+env flag defaulting to OFF"). Asked for by the product owner, for two reasons that hold here and
+not in general: it is a *restriction* that closes a disclosure (every member could read every
+other member's email and role), and a flag that defaults off would leave that disclosure open on
+the deployed app until someone remembered to flip it. It also could not be fully flagged anyway —
+an RLS policy has no env var. The rule's purpose, "flag-off behaves exactly as before", is served
+differently: owner and admin behaviour is byte-identical, and with `AUTH_ENABLED` off the
+synthetic local user is an owner, so a default install is unchanged too. Rollback is the
+commented block at the bottom of the migration plus reverting the commit.
+
+**Deliberate consequence, stated so nobody "fixes" it.** A tester does not see the organisation's
+admins or owners unless one is explicitly assigned to a shared project — admins see every project
+by role, which is not a `project_members` row. That is the rule as specified ("only members who
+share at least one project").
+
+**Rejected.** *Filter in the Team screen only* — the roster would still be one `fetch` away.
+*Return all rows with emails blanked* — still discloses headcount, ids and roles. *A per-project
+role column* — `project_members` deliberately has none (Step 5.1); visibility stays one axis.
