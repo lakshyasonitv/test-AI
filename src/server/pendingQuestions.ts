@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { AskQuestion } from "../orchestrator.js";
+import type { AskQuestion, QuestionKind } from "../orchestrator.js";
 
 /**
  * The waiting half of a run question (DECISIONS.md D-51) — the same shape as pendingCredentials.ts,
@@ -16,6 +16,7 @@ import type { AskQuestion } from "../orchestrator.js";
 
 interface Waiter {
   questionId: string;
+  kind: QuestionKind;
   resolve: (answer: string | null) => void;
   timer: NodeJS.Timeout;
 }
@@ -40,11 +41,11 @@ export const askQuestion: AskQuestion = (request, onAsked) => {
   const questionId = crypto.randomUUID();
   const answer = new Promise<string | null>((resolve) => {
     const timer = setTimeout(() => {
-      console.log("[question] no answer for", request.runId, "- continuing without one");
-      settleQuestion(request.runId, questionId, null);
+      console.log("[question] no answer for", request.runId, "- carrying on as if none was given");
+      settleQuestion(request.runId, questionId, request.timeoutAnswer ?? null);
     }, waitMs());
     timer.unref?.();
-    waiters.set(request.runId, { questionId, resolve, timer });
+    waiters.set(request.runId, { questionId, kind: request.kind, resolve, timer });
   });
   onAsked(questionId);
   return answer;
@@ -60,3 +61,15 @@ export function settleQuestion(runId: string, questionId: string, answer: string
   waiter.resolve(answer);
   return true;
 }
+
+/** The kind of the question a run is waiting on, or null. The route uses it to apply that kind's
+ *  answer limit before settling. */
+export function pendingQuestionKind(runId: string): QuestionKind | null {
+  return waiters.get(runId)?.kind ?? null;
+}
+
+/** Longest answer each kind accepts: a one-time code is short; an instruction is a few sentences. */
+export const ANSWER_LIMIT: Record<QuestionKind, number> = {
+  "verification-code": 64,
+  "drift-instruction": 2000,
+};

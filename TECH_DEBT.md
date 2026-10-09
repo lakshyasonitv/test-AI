@@ -162,6 +162,7 @@ authority is its own heading, not this list.
 | TD-113 | Grounding's `bestNameMatch` searches unfiltered elements and can rename a step to a hidden input's name (how `passwordShown` happened) | Medium | Accidental | ? |
 | TD-114 | `isAllowedEntryUrl` blocks private hosts by hostname text only — a public name resolving to a private address passes the SSRF guard | Medium | Accidental | ? |
 | TD-115 | A run question's kept session (D-51) reaches only the run that asked: saved-case replays and suites log in fresh and can meet the code screen again; Salesforce's "trusted browser" behaviour is assumed, not verified live; a failed test's trace can carry the session's cookies under runs/ | Medium | Accidental | ? |
+| TD-116 | Drift recovery (D-52) covers only the primary case, and checks a rewrite's strength only by assertion COUNT — a rewrite asserting something easier, but as many times, is still accepted | Medium | Accidental | ? |
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
 > from anyone reading only the summary. If you add an entry, add a row.
 >
@@ -4954,3 +4955,13 @@ D-51 keeps the session a verification code unlocked, but only on the run that as
   and a trace records request headers, cookies included. That was already true of every login
   prefix; with a kept session the cookie is one the person verified. Same exposure class as TD-14.
 
+### TD-116. Drift recovery checks a rewrite's strength only by count, and covers only the primary case — Medium / Accidental — **Open**
+
+D-52 accepts a rewritten test case once its spec passes and is not truncated, and rejects one whose
+IR has fewer `assert` steps than the test it replaces (`assertionCount` in `driftRecovery.ts`).
+That is structure, not prose, but it is a floor: a rewrite that keeps the count while asserting
+something easier (a heading instead of the saved value) is still accepted. A stronger check would
+compare the assertions' target kinds and values with the original's.
+
+Suite cases are not recovered (by design, D-52), so a page change that breaks five suite cases
+rebuilds only the primary; the other four still fail, and self-heal is their only rung.

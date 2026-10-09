@@ -25,7 +25,8 @@ const PHASES = [
     key: "results",
     label: "4 · Checking the results",
     desc: "Diagnosing failures and self-healing.",
-    stages: ["failure_analysis", "heal"]
+    // "drift" (D-52) only ever fires with DRIFT_RECOVERY on, exactly like "heal" with self-heal.
+    stages: ["failure_analysis", "heal", "drift"]
   },
 ];
 const STAGE_TO_PHASE = Object.fromEntries(
@@ -765,6 +766,9 @@ const questionFormEl = document.getElementById("questionForm");
 const questionWhyEl = document.getElementById("questionWhy");
 const questionAnswerEl = document.getElementById("questionAnswer");
 const questionSkipEl = document.getElementById("questionSkip");
+const questionTitleEl = document.getElementById("questionTitle");
+const questionLabelEl = document.getElementById("questionLabel");
+const questionSendEl = document.getElementById("questionSend");
 const caseSelectionPanelEl = document.getElementById("case-selection-panel");
 const caseRoundLabelEl = document.getElementById("case-round-label");
 const casePoolCounterEl = document.getElementById("case-pool-counter");
@@ -882,6 +886,9 @@ function summarize(stage, data) {
           ? "An element had moved on the page — the test matched it against the crawled model (no model call) and carried on"
           : "An element had moved on the page — the test found it again and carried on"
         : "Tried to recover from a step that broke";
+      case "drift": return data.recovered
+        ? `The page had changed — the test was rebuilt for the new page${data.rounds > 1 ? ` (after ${data.rounds} rounds)` : ""} and passed`
+        : "The page looked changed — tried to rebuild the test for it";
       case "suite": return data.summary ? `Suite Progress: ${data.summary.passed}/${data.summary.total} tests passed` : "";
       default: return "";
     }
@@ -1141,6 +1148,7 @@ function renderCaseCard(c, runId, index) {
           ${expected && expected !== whyItMatters ? `<p class="case-expected"><span>What should happen:</span> ${escapeHtml(expected)}</p>` : ""}
         </span>
         <span class="case-badge ${statusBadge}">${escapeHtml(STATUS_LABEL[c.status] ?? c.status)}</span>
+        ${c.recovered && c.status === "passed" ? `<span class="case-badge case-badge-healed" title="This failed because the page had changed. The system waited, re-checked the page, rebuilt the test for it (with the tester's instructions, if any) and re-ran it, and it passed. The rebuilt test is what is shown here.">${icon("refresh", { size: 11 })} Rebuilt after page change</span>` : ""}
         ${c.healed && c.status === "passed" ? `<span class="case-badge case-badge-healed" title="This failed on the first attempt; the system automatically found a fix and re-ran it, and it passed.${c.deterministicHeal ? " This fix was found deterministically, without a model call." : ""}">${icon("refresh", { size: 11 })} Fixed automatically${c.deterministicHeal ? ` ${icon("zap", { size: 10 })}` : ""}</span>` : ""}
         ${c.deterministicHeal ? `<span class="case-badge case-badge-deterministic" title="The fix was found by matching the element's structure in the crawled page model — no model call, essentially free.">${icon("zap", { size: 10 })} Healed deterministically</span>` : ""}
         <span class="case-expand-icon">${icon("chevron-down", { size: 14 })}</span>
@@ -2337,16 +2345,48 @@ credSkipEl.addEventListener("click", () => submitCredentials({ skip: true }));
 let questionRunId = null;
 let questionId = null;
 
+// The kind of the question on screen. An empty answer means different things per kind: no code
+// (= skip) for a verification code, "carry on with no instructions" for a drift instruction.
+let questionKind = null;
+
+// Wording per question kind. Text only — the modal's markup and classes are shared.
+const QUESTION_COPY = {
+  "verification-code": {
+    title: "Verification code needed", label: "Code", placeholder: "Code", inputmode: "numeric",
+    maxlength: 64, send: "Send", skip: "Skip \u2014 continue without it",
+  },
+  "drift-instruction": {
+    title: "The page has changed", label: "What changed? (optional)",
+    placeholder: "e.g. the Save button is now called Submit", inputmode: "text",
+    maxlength: 2000, send: "Rebuild and re-run", skip: "Stop \u2014 keep the failure",
+  },
+};
+
 function showQuestionPrompt(runId, data) {
   // Replayed after it was answered (the poller replays the whole stream): the "completed" event
   // that follows hides it again, so showing it here is harmless.
   questionRunId = runId;
   questionId = data?.questionId ?? null;
+  questionKind = data?.kind ?? "verification-code";
+  const copy = QUESTION_COPY[questionKind] ?? QUESTION_COPY["verification-code"];
   const host = (() => { try { return new URL(data?.url).host; } catch { return data?.url ?? "this site"; } })();
-  questionWhyEl.textContent =
-    `${host} accepted the username and password, then asked for a verification code ` +
-    `(from email, a text message or an authenticator app). Type it here and the run carries on ` +
-    `signed in. Skip, and it continues without signing in.`;
+  questionTitleEl.textContent = copy.title;
+  questionLabelEl.textContent = copy.label;
+  questionSendEl.textContent = copy.send;
+  questionSkipEl.textContent = copy.skip;
+  questionAnswerEl.placeholder = copy.placeholder;
+  questionAnswerEl.setAttribute("inputmode", copy.inputmode);
+  questionAnswerEl.maxLength = copy.maxlength;
+  questionAnswerEl.autocomplete = questionKind === "verification-code" ? "one-time-code" : "off";
+  questionWhyEl.textContent = questionKind === "drift-instruction"
+    ? `The step \u201c${data?.failingStep ?? "?"}\u201d failed on ${host}, and it looks like the page ` +
+      `changed (${data?.explanation ?? data?.category ?? "the element was not found"}). ` +
+      `The page has been re-checked. Tell me what changed, or leave this empty, and the test ` +
+      `will be rebuilt for the page as it is now and run again` +
+      `${data?.round > 1 ? ` (attempt ${data.round})` : ""}. Stop, and the failure stands.`
+    : `${host} accepted the username and password, then asked for a verification code ` +
+      `(from email, a text message or an authenticator app). Type it here and the run carries on ` +
+      `signed in. Skip, and it continues without signing in.`;
   questionAnswerEl.value = "";
   questionFormEl.querySelectorAll("button, input").forEach((el) => { el.disabled = false; });
   questionPromptEl.classList.remove("hidden");
@@ -2356,6 +2396,7 @@ function showQuestionPrompt(runId, data) {
 function hideQuestionPrompt() {
   questionRunId = null;
   questionId = null;
+  questionKind = null;
   questionAnswerEl.value = "";
   questionPromptEl.classList.add("hidden");
 }
@@ -2379,7 +2420,8 @@ async function submitQuestion(body) {
 questionFormEl.addEventListener("submit", (e) => {
   e.preventDefault();
   const answer = questionAnswerEl.value.trim();
-  if (!answer) return submitQuestion({ skip: true });
+  // An empty instruction is still "go ahead"; only the Stop button stops a rebuild.
+  if (!answer && questionKind !== "drift-instruction") return submitQuestion({ skip: true });
   submitQuestion({ answer });
 });
 

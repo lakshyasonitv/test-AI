@@ -19,6 +19,7 @@ import { generateSpec } from "./stages/generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
 import { attemptHeal, isHealable, selfHealDefault } from "./stages/heal.js";
+import { driftRecoveryEnabled, isDrift, recoverFromDrift } from "./stages/driftRecovery.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 import { ALL_SCOPES } from "./kb/testStrategy.js";
@@ -26,7 +27,7 @@ import type { IR, Step } from "./schema/ir.js";
 
 export type StageName =
   | "input" | "plan" | "discovery" | "testcases" | "credentials" | "question" | "ir"
-  | "generate" | "execute" | "failure_analysis" | "heal"
+  | "generate" | "execute" | "failure_analysis" | "heal" | "drift"
   | "suite" | "done" | "error";
 
 export interface StageEvent {
@@ -52,12 +53,15 @@ export type AskCredentials = (req: CredentialRequest) => Promise<Credentials | n
 
 /** A run question (D-51, RUN_QUESTIONS): something only the person watching the run can answer.
  *  Extend the kind union, never the meaning of an existing member. */
-export type QuestionKind = "verification-code";
+export type QuestionKind = "verification-code" | "drift-instruction";
 export interface QuestionRequest {
   runId: string;
   kind: QuestionKind;
   /** The page that asked, so the person can recognise it — never anything they typed. */
   url: string;
+  /** What a timeout resolves with. Default null (= skipped). Drift recovery passes "" so an
+   *  unattended run carries on unsteered instead of reading the silence as "stop". */
+  timeoutAnswer?: string | null;
 }
 /** Ask, and resolve with the answer or null (skipped / timed out). `onAsked` receives the
  *  question's id the moment it is parked, so the event the UI renders from can carry it. */
@@ -350,7 +354,10 @@ export async function runPipeline(
     }
 
     console.log("Generating IR for primary case:", primary.title);
-    const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0], llmBudget, runCreds));
+    // `let`: drift recovery (D-52) re-snapshots the page the primary case broke on, and the suite
+    // that follows should be generated against that page, not the stale one.
+    // eslint-disable-next-line prefer-const
+    let { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0], llmBudget, runCreds));
     console.log("IR generated");
 
     console.log("Generating spec...");
@@ -418,10 +425,57 @@ export async function runPipeline(
       }
     }
 
+    // Drift recovery (D-52, DRIFT_RECOVERY, primary case only). The rung after heal: when the
+    // failure still says "the page is not shaped the way this test expects", wait, re-discover
+    // that page, ask the tester what changed, rebuild the case and run it again. It needs a person
+    // to talk to, so it runs only when the server passed askQuestion (RUN_QUESTIONS); the CLI and a
+    // flag-off server never enter it.
+    let recovered = false;
+    let recoveredCase: TestCase | undefined;
+    if (!finalResult.passed && askQuestion && driftRecoveryEnabled() && isDrift(diagnosis, ir)) {
+      emit("drift", "started", { category: diagnosis!.category });
+      try {
+        const outcome = await recoverFromDrift({
+          testCase: primary, ir, appModel: updatedAppModel, diagnosis: diagnosis!,
+          sourcePrompt: prompt, entryUrl: resolvedUrls[0], llmBudget, runCreds, outDir: runDir,
+          onProgress: (phase, round) => emit("drift", "started", { phase, round }),
+          ask: async (round) => {
+            const answer = await askQuestion(
+              { runId, kind: "drift-instruction", url: round.pageUrl, timeoutAnswer: "" },
+              (questionId) => emit("question", "started", {
+                questionId, kind: "drift-instruction", url: round.pageUrl,
+                round: round.round, failingStep: round.failingStep,
+                category: round.category, explanation: round.explanation,
+              }),
+            );
+            emit("question", "completed", { answered: answer !== null });
+            // Skip (null) = stop. A timeout resolves "" (timeoutAnswer above): carry on unsteered.
+            return answer === null ? { stop: true } : { stop: false, note: answer };
+          },
+        });
+        if (outcome) {
+          finalResult = {
+            passed: true, exitCode: outcome.result.exitCode,
+            artifactsDir: outcome.result.artifactsDir, resultsJsonPath: outcome.result.resultsJsonPath,
+            raw: outcome.result.raw,
+          };
+          finalIr = outcome.ir;
+          finalSpecCode = outcome.specCode;
+          updatedAppModel = outcome.model;
+          recoveredCase = outcome.testCase;
+          recovered = true;
+        }
+        emit("drift", "completed", { recovered, rounds: outcome?.rounds ?? 0, title: outcome?.testCase.title });
+      } catch (err: any) {
+        // The original failure stands, as for a failed heal.
+        emit("drift", "failed", undefined, err?.message ?? String(err));
+      }
+    }
+
     // If the IR was truncated without a terminal assertion, override the result to
     // prevent a false pass. The diagnosis/heal path above is for real Playwright failures;
     // this handles the case where Playwright itself passed but the test verified nothing.
-    if (truncatedNoAssertion && !healed) {
+    if (truncatedNoAssertion && !healed && !recovered) {
       finalResult = { ...result, passed: false, status: "truncated_no_assertion" } as typeof finalResult;
       save("05-result.json", finalResult);
     }
@@ -507,6 +561,7 @@ export async function runPipeline(
       specCode: finalSpecCode,
       healed,
       ...(deterministicHeal ? { deterministicHeal: true } : {}),
+      ...(recoveredCase ? { recoveredCase } : {}),
     };
     console.log("3. Running suite...");
     await runSuite(scopedCases, updatedAppModel, runDir, prompt, resolvedUrls[0], onEvent, primaryCaseResult, llmBudget, runCreds, selfHealEnabled);
@@ -556,6 +611,8 @@ export async function runPipeline(
       videoUnavailable: (finalResult as any).videoUnavailable,
       partial: finalIr.meta.truncated ?? false, healed,
       deterministicHeal,
+      // Optional, present only when drift recovery rebuilt the primary case (D-52; rule 1).
+      ...(recovered ? { recovered: true } : {}),
       status: blocked ? "blocked" : (finalResult as any).status,
       blockedBy: blocked?.reason,
       truncationNote: finalIr.meta.truncationNote,

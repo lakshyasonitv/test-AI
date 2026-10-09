@@ -14,7 +14,7 @@ import { hasTerminalAssertion } from "../stages/ir.js";
 import { WALK_CACHE_NS } from "../stages/liveExtend.js";
 import { Semaphore } from "./concurrency.js";
 import { askCredentials, settle } from "./pendingCredentials.js";
-import { askQuestion, settleQuestion } from "./pendingQuestions.js";
+import { ANSWER_LIMIT, askQuestion, pendingQuestionKind, settleQuestion } from "./pendingQuestions.js";
 import { runQuestionsEnabled } from "../runSession.js";
 import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
 import { resolveCaseSelection, getPendingSelection } from "./pendingCaseSelection.js";
@@ -402,18 +402,25 @@ app.post("/api/runs/:runId/credentials", requireRunRole("tester"), (req, res) =>
   res.status(204).end();
 });
 
-// Answer a paused run's question (D-51, RUN_QUESTIONS) — today, the one-time code a verification
-// screen asked for during discovery. `{ questionId, answer }`, or `{ questionId, skip: true }`.
-// A NEW route rather than a widened /credentials (platform rule 1). Like that route, the body is
-// never logged, emitted or written: it goes straight into the waiting promise. `questionId` must
-// match the question actually pending, so a stale modal cannot answer a newer question.
+// Answer a paused run's question (D-51, RUN_QUESTIONS): the one-time code a verification screen
+// asked for during discovery, or the tester's instruction for drift recovery (D-52, DRIFT_RECOVERY).
+// `{ questionId, answer }`, or `{ questionId, skip: true }`. A NEW route rather than a widened
+// /credentials (platform rule 1). The body is never logged or emitted; it goes straight into the
+// waiting promise. A code is never written anywhere; an instruction is kept, credential-redacted,
+// in the run's recovered/drift-recovery.json as the record of what the tester asked for.
+// `questionId` must match the question actually pending, so a stale modal cannot answer a newer one.
 app.post("/api/runs/:runId/question", requireRunRole("tester"), (req, res) => {
   const { runId } = req.params;
   if (!RUN_ID.test(runId)) return res.status(400).json({ error: "invalid runId" });
   const { questionId, answer, skip } = req.body ?? {};
   if (typeof questionId !== "string" || !questionId) return res.status(400).json({ error: "questionId is required" });
-  const value = !skip && typeof answer === "string" && answer.trim().length > 0 ? answer.trim() : null;
-  if (value !== null && value.length > 64) return res.status(400).json({ error: "answer is too long" });
+  // Skip is null; an empty answer is "" — for an instruction those differ (stop vs. carry on
+  // with no note), and for a code both mean "no code" (discovery ignores an empty one).
+  const value = skip ? null : typeof answer === "string" ? answer.trim() : null;
+  const kind = pendingQuestionKind(runId);
+  if (value !== null && kind && value.length > ANSWER_LIMIT[kind]) {
+    return res.status(400).json({ error: "answer is too long" });
+  }
   if (!settleQuestion(runId, questionId, value)) {
     return res.status(409).json({ error: "this run is not waiting for an answer to that question" });
   }
@@ -2117,6 +2124,7 @@ export const BOOLEAN_ENV_FLAGS = [
   // IR regeneration — invisible, because the expensive path produces a correct-looking result.
   "DETERMINISTIC_HEAL",
   "DISCOVERY_LIVE_DOM",
+  "DRIFT_RECOVERY",
   "ENABLE_CASE_SELECTION_GATE",
   "NL_STEPS_ENABLED",
   "ORG_LLM_CONFIG_ENABLED",

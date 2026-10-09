@@ -270,3 +270,15 @@ describe("pendingQuestions", () => {
     }
   });
 });
+
+describe("pendingQuestions — timeout answers", () => {
+  it("resolves with the request's timeoutAnswer, so an instruction times out as 'carry on'", async () => {
+    process.env.QUESTION_WAIT_MS = "50";
+    try {
+      const a = askQuestion({ runId: "r4", kind: "drift-instruction", url: "http://x", timeoutAnswer: "" }, () => {});
+      await expect(a).resolves.toBe("");
+    } finally {
+      delete process.env.QUESTION_WAIT_MS;
+    }
+  });
+});

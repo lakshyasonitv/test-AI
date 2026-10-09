@@ -348,8 +348,8 @@
   </section>
 
   <!-- Run question (D-51, RUN_QUESTIONS): the run paused to ask something only the person
-       watching it can answer — today, a one-time verification code. Same modal classes as the
-       credential prompt above (style.css class names are a contract; none are added). -->
+       watching it can answer — a one-time verification code, or what changed on a page (D-52).
+       Same modal classes as the credential prompt above (style.css class names are a contract; none are added). -->
   <section id="questionPrompt" class="cred hidden" aria-live="polite" role="dialog" aria-modal="true" aria-label="The run has a question">
     <div class="cred-card">
       <div class="cred-head">
@@ -362,7 +362,7 @@
       <form id="questionForm" class="cred-form">
         <div class="cred-fields">
           <label class="field">
-            <span class="field-label">Code</span>
+            <span class="field-label" id="questionLabel">Code</span>
             <input id="questionAnswer" type="text" inputmode="numeric" placeholder="Code" autocomplete="one-time-code" spellcheck="false" maxlength="64" />
           </label>
         </div>
@@ -371,7 +371,7 @@
         </p>
         <div class="cred-actions">
           <button type="button" id="questionSkip" class="cred-skip">Skip &mdash; continue without it</button>
-          <button type="submit">Send</button>
+          <button type="submit" id="questionSend">Send</button>
         </div>
       </form>
     </div>

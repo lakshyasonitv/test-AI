@@ -26,6 +26,10 @@ export interface PrimaryCaseResult {
   healed: boolean;
   /** True when `healed` is set and the heal used the deterministic (no-LLM) path. */
   deterministicHeal?: boolean;
+  /** Set when drift recovery (D-52) rebuilt the case after the page changed and the rebuild
+   *  passed. `testCase` above stays the ORIGINAL object, because the primary is matched by
+   *  identity; this is what actually ran, and what the case card shows. */
+  recoveredCase?: TestCase;
 }
 
 /**
@@ -99,6 +103,9 @@ export interface CaseRunResult {
    *  from an expensive one without inspecting the heal artifact directory. Absent when the
    *  case didn't heal, or when the heal went through the LLM path. */
   deterministicHeal?: boolean;
+  /** True when drift recovery (D-52) rebuilt this case against the changed page and the rebuild
+   *  passed. Distinct from `healed`: the case's own steps were rewritten, not just re-located. */
+  recovered?: boolean;
 }
 
 export interface SuiteSummary {
@@ -111,7 +118,7 @@ export interface SuiteSummary {
   cases: {
     caseId: string; title: string; status: string; resultPath: string;
     llmCalls?: number; llmTokens?: number; blockedBy?: string;
-    whyItMatters?: string; intent?: string; expected?: string; healed?: boolean;
+    whyItMatters?: string; intent?: string; expected?: string; healed?: boolean; recovered?: boolean;
     // Already returned by buildSuiteSummary below but never declared here — the same silent
     // interface/implementation drift that let whyItMatters go missing once. Declared now so a
     // future field never repeats it unnoticed.
@@ -251,6 +258,7 @@ export function buildSuiteSummary(results: CaseRunResult[], runDir: string): Sui
         intent: r.intent,
         expected: r.expected,
         healed: r.healed,
+        ...(r.recovered ? { recovered: true } : {}),
         // `failure` was computed above — with a comment explaining why it is read from disk — and
         // then never reached the object, so failedStep/failedStepTitle/error/errorDetail were
         // silently dropped on every summary ever written. That is TD-80's other half: the
@@ -358,9 +366,11 @@ export async function runSuite(
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
         }
 
+        // What actually ran: the rebuilt case when drift recovery replaced it (D-52).
+        const shown = primaryResult.recoveredCase ?? tc;
         results.push({
-          caseId, title: tc.title, status, irPath, resultPath, diagnosisPath,
-          whyItMatters: tc.whyItMatters, intent: tc.intent, expected: tc.expected,
+          caseId, title: shown.title, status, irPath, resultPath, diagnosisPath,
+          whyItMatters: shown.whyItMatters, intent: shown.intent, expected: shown.expected,
           blockedBy: primaryBlocked?.reason,
           // Point at the copy inside the case dir — the source artifacts were copied there above.
           blockedScreenshot: primaryBlocked?.screenshot
@@ -369,8 +379,13 @@ export async function runSuite(
           // this branch reuses that result, not a second heal attempt.
           healed: primaryResult.healed,
           ...(primaryResult.deterministicHeal ? { deterministicHeal: true } : {}),
+          ...(primaryResult.recoveredCase ? { recovered: true } : {}),
         });
-        emit(runId, "suite", "completed", { caseId, title: tc.title, status, reused: true, healed: primaryResult.healed, deterministicHeal: primaryResult.deterministicHeal }, undefined, onEvent);
+        emit(runId, "suite", "completed", {
+          caseId, title: shown.title, status, reused: true, healed: primaryResult.healed,
+          deterministicHeal: primaryResult.deterministicHeal,
+          ...(primaryResult.recoveredCase ? { recovered: true } : {}),
+        }, undefined, onEvent);
       } catch (err: any) {
         results.push({ caseId, title: tc.title, status: "failed", irPath: "", resultPath: "" });
         emit(runId, "suite", "failed", { caseId, title: tc.title }, err?.message ?? String(err), onEvent);

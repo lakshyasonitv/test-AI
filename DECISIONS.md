@@ -1449,3 +1449,40 @@ two-way channel from the Playwright child to the server): every test would need 
 and the code would be asked for once per test instead of once per run. Widening
 `/api/runs/:runId/credentials` to carry a code: changes an existing route's request shape.
 
+## D-52. When the page changed under the main case: wait, re-discover, ask, rebuild, re-run — and accept only a pass
+
+**Decision.** Behind `DRIFT_RECOVERY` (default off, and inert without `RUN_QUESTIONS`, D-51), the
+primary case of a run gets one more rung after self-heal (`src/stages/driftRecovery.ts`). When its
+failure is still a page-change category — `selector_changed`, `element_missing`,
+`multiple_matches`, `detached`, decided by the classifier and the diagnosis, never by reading the
+error text here — the run waits `DRIFT_SETTLE_MS`, re-snapshots the page the case broke on with the
+same replay heal uses, asks the tester (a `drift-instruction` run question: free text, empty means
+"go ahead", Stop means stop, a timeout means go ahead unsteered), rewrites the TEST CASE with one
+model call against the fresh page and the tester's note, compiles it, runs it, and repeats up to
+`DRIFT_MAX_ROUNDS` while the failure still looks like drift.
+
+**Why rewrite the case, not just the IR.** Self-heal regenerates the IR from the SAME case text,
+which cannot help when the case itself no longer describes the page ("click Save" when there is
+only Submit). The tester's note is the cheapest correct source for that, and the place it belongs
+is the case.
+
+**Why acceptance is a passing run.** The rewrite is a model's proposal; the only thing that turns
+it into a result is the real browser (CLAUDE.md's central rule). A truncated rebuild is rejected
+before it runs (it would never reach the part that broke), and a round whose failure is no longer
+drift ends recovery — a wrong value on the page is a finding about the app, and rewriting the test
+until it passes would hide it. A rebuild with fewer `assert` steps than the original is
+rejected before it runs (TD-116). The model cannot change `fromPrompt` or `targetUrl`.
+
+**Why the main case only.** It is the one the person asked for and is watching; asking about each
+suite case would turn one run into a dozen interruptions. Suite cases keep self-heal.
+
+**Nothing reaches the library on its own.** The rebuilt case, IR and spec are run artifacts under
+`runs/<id>/recovered/`; the case card shows the rebuilt case with a "Rebuilt after page change"
+badge (an existing class); saving it is the same deliberate click as for any run case (D-27).
+
+**Rejected.** Re-running full site discovery (`discoverSiteHybrid`): a login, a crawl and an LLM
+labelling pass to learn about the one page that broke. An approval pause before every re-run: the
+tester has already said what to do, and the run's pass is the check that matters. Free-text "stop"
+detection in the answer: a separate Stop button is structure; parsing the note would be the
+regex-over-prose failure mode CLAUDE.md warns about.
+
