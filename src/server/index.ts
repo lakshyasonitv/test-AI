@@ -1,6 +1,6 @@
 import express from "express";
 import path from "node:path";
-import { rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { rmSync, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { buildRunReportHtml } from "../stages/htmlReport.js";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
@@ -104,6 +104,7 @@ import { deleteRunRow, fetchRunsFromDb, isDbEnabled, recordRunCases, recordRunPr
 import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
+import { isTargetApp, salesforceEnabled, TARGET_APPS, type TargetApp } from "../runTarget.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -250,6 +251,21 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
     });
   }
 
+  // `options.targetApp` (D-50): which enterprise application this URL belongs to — today only
+  // "salesforce", from the run screen's "This URL is a Salesforce org" box. Checked against the
+  // allow-list runTarget.ts owns, the same shape as VALID_COVERAGE and the locale check above, and
+  // rejected rather than ignored for the same reason. With SALESFORCE_ENABLED off the field is
+  // IGNORED, never rejected — a flag-off server must answer exactly as it did before the field
+  // existed — and the value below is simply null, so the same code runs either way (rule 7).
+  const targetAppOn = salesforceEnabled();
+  const rawTargetApp = options && typeof options === "object" ? options.targetApp : undefined;
+  if (targetAppOn && rawTargetApp !== undefined && rawTargetApp !== null && !isTargetApp(rawTargetApp)) {
+    return res.status(400).json({
+      error: `Invalid targetApp "${rawTargetApp}". Use one of: ${TARGET_APPS.join(", ")}`,
+    });
+  }
+  const targetApp: TargetApp | null = targetAppOn && isTargetApp(rawTargetApp) ? rawTargetApp : null;
+
   // Only the known keys are forwarded — the body is untrusted input, and
   // spreading it straight into runPipeline would let a caller set anything.
   const runOptions = options && typeof options === "object"
@@ -336,12 +352,26 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
       llmConfigForOrg(orgId),
       maxCallsForOrg(orgId),
     ]);
+    // The run record of its target application (D-50): runs/<id>/00-run-target.json, written only
+    // for a run that has one, so an ordinary run's directory is byte-identical to before. Written
+    // as the run starts rather than when it is queued, so a queued run still has no directory.
+    // Non-fatal: a run must never fail because its label could not be written.
+    if (targetApp) {
+      try {
+        const runDir = path.join("runs", runId);
+        mkdirSync(runDir, { recursive: true });
+        writeFileSync(path.join(runDir, "00-run-target.json"), JSON.stringify({ targetApp }, null, 2));
+      } catch (err) {
+        console.error(`[runs] could not record the target app for ${runId}:`, (err as Error)?.message ?? err);
+      }
+    }
     return runPipeline({
       prompt, url, urls, coverage,
       options: {
         ...runOptions,
         ...(llmConfig ? { llmConfig } : {}),
         ...(maxLlmCalls !== null ? { maxLlmCalls } : {}),
+        ...(targetApp ? { targetApp } : {}),
       },
     }, onEvent, runId, askCredentials);
   })
@@ -742,6 +772,10 @@ app.get("/api/health", (_req, res) => {
       queued: runLimit.queued,
       max: runLimit.capacity,
     },
+    // ADDITIVE, appended, and present ONLY when SALESFORCE_ENABLED=true (D-50) — the values
+    // `options.targetApp` accepts. The run screen renders "This URL is a Salesforce org" only when
+    // this lists "salesforce"; with the flag off the body is byte-identical to before.
+    ...(salesforceEnabled() ? { targetApps: [...TARGET_APPS] } : {}),
   });
 });
 
@@ -2066,6 +2100,7 @@ export const BOOLEAN_ENV_FLAGS = [
   "NL_STEPS_ENABLED",
   "ORG_LLM_CONFIG_ENABLED",
   "REPLAY_REGROUND",
+  "SALESFORCE_ENABLED",
   "SCRIPT_OVERRIDE_ENABLED",
   "SELF_HEAL_DEFAULT",
   "SIGNUP_ENABLED",

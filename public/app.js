@@ -3615,7 +3615,10 @@ form.addEventListener("submit", async (e) => {
     const res = await fetch("/api/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prompt, url, coverage, options: runOptions }),
+      // Unticked (or flag off, so no box at all): exactly `runOptions`, the same object as always,
+      // so the body is byte-identical. Ticked: one extra key, `targetApp` (D-50).
+      body: JSON.stringify({ prompt, url, coverage,
+        options: targetAppBoxEl?.checked ? { ...runOptions, targetApp: "salesforce" } : runOptions }),
     });
     if (!res.ok) throw new Error(`Server responded with HTTP ${res.status}`);
     const { runId } = await res.json();
@@ -5580,9 +5583,35 @@ function bindToggle(el, key) {
 bindToggle(gateToggleEl, "gateReview");
 bindToggle(healToggleEl, "selfHeal");
 
+/**
+ * "This URL is a Salesforce org" (D-50) — the run screen's one Salesforce control.
+ *
+ * Created here, from JS, and only when /api/health lists "salesforce" in `targetApps` — which it
+ * does only with SALESFORCE_ENABLED on. With the flag off the element never exists, so the home
+ * view is byte-identical to before; nothing is toggled with .hidden (rule 4). No new class
+ * (rule 3): the label reuses `.field-label` and the box reuses `.lib-check`.
+ *
+ * The label says "Salesforce org"; the wire value is `targetApp: "salesforce"` (see the submit
+ * handler) — the string is the format, not the wording.
+ */
+let targetAppBoxEl = null;
+function renderTargetAppBox() {
+  if (targetAppBoxEl) return;
+  const form = document.getElementById("runForm");
+  const foot = form?.querySelector(".composer-foot");
+  if (!form || !foot) return;
+  const label = document.createElement("label");
+  label.className = "field-label";
+  label.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer";
+  label.innerHTML = `<input type="checkbox" class="lib-check" id="targetAppSalesforce" /> This URL is a Salesforce org`;
+  foot.insertAdjacentElement("afterend", label);
+  targetAppBoxEl = label.querySelector("input");
+}
+
 fetch("/api/health")
   .then((r) => r.json())
   .then((h) => {
+    if (h && Array.isArray(h.targetApps) && h.targetApps.includes("salesforce")) renderTargetAppBox();
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);

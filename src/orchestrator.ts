@@ -8,6 +8,7 @@ import { toIR, type IRResult } from "./stages/ir.js";
 import { LlmBudget, enterWithBudget } from "./llm/llmBudget.js";
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import { enterWithRunLocale } from "./browserLaunch.js";
+import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import {
   credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, redactCredentials,
   extractCredentialsFromPrompt,
@@ -81,6 +82,12 @@ export interface RunOptions {
    * default — which is what the CLI gets, since it passes nothing.
    */
   locale?: string;
+  /**
+   * The enterprise application this run's URL belongs to, e.g. "salesforce" (D-50). Validated by
+   * the route against `TARGET_APPS` and forced absent when SALESFORCE_ENABLED is off, so this is a
+   * known value or nothing. Omitted means an ordinary web app — what the CLI always gets.
+   */
+  targetApp?: TargetApp;
 }
 
 export async function runPipeline(
@@ -121,6 +128,9 @@ export async function runPipeline(
   // Only entered when the run asked for one — absent leaves every consumer resolving RUN_LOCALE
   // and then the default, exactly as it would in the CLI or a unit test.
   if (options?.locale) enterWithRunLocale(options.locale);
+  // The fourth use of the rail: which enterprise application, if any, this URL belongs to. Entered
+  // on EVERY run — null for an ordinary one — so no run can inherit another's value (runTarget.ts).
+  enterWithTargetApp(options?.targetApp ?? null);
 
   const save = (name: string, data: unknown) =>
     writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));

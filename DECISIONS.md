@@ -1370,3 +1370,41 @@ never become a name (TD-64); a glyph or placeholder standing in for the real acc
 (`button "×"` is `button "Close menu"` — `getByRole` matches the first 0 times and the second once);
 or a nameless heading the walker names from its id. `tests/discoveryStrategy.test.ts` maps every
 static entry to its live element rather than comparing counts.
+
+## D-50. A Salesforce run is one checkbox and a run-scoped rail — nothing is stored
+
+**Decision.** The run screen gains one checkbox under the URL box, "This URL is a Salesforce
+org", behind `SALESFORCE_ENABLED` (default off). Ticked, POST /api/runs carries one optional
+field, `options.targetApp: "salesforce"`, validated against a literal allow-list (`TARGET_APPS`
+in `src/runTarget.ts`) the way coverage and locale are. The orchestrator enters it on a
+run-scoped `AsyncLocalStorage` rail beside the LLM budget, the LLM config and the locale, and any
+stage reads it with **`currentRunTargetApp(): "salesforce" | null`**. The run records it in
+`runs/<id>/00-run-target.json`, written only for a run that has one.
+
+**Why nothing is stored.** The URL goes in the URL box and the credentials in the prompt or the
+existing credential prompt, exactly as for any run. A per-organisation store of Salesforce orgs,
+encrypted test-user passwords, admin routes and an orgs screen was built first and then
+discarded before it was ever merged: it solved a problem — configuring orgs in advance — that
+the product has decided not to have. If saved sessions, or running one test as several users,
+are ever wanted, that is the place to start a design, not this checkbox.
+
+**Why a string, not a boolean.** Two booleans for two applications could both be true, which
+means nothing; one field holding one allow-listed value cannot. POST /api/runs can never change
+shape afterwards (platform rule 1), so the room for a second application is made now. The label
+on screen says "Salesforce org"; `"salesforce"` is only the wire format.
+
+**Flag off (rule 7).** The checkbox is never created — it is built by app.js only when
+`GET /api/health` lists `targetApps`, which it does only with the flag on, so the home view and
+the request body are byte-identical. The route IGNORES the field rather than rejecting it, so a
+flag-off server answers every body exactly as before; the computed value is null and the
+orchestrator still enters the rail with it, so the same code runs either way. A run with no
+target app writes no file and its directory is unchanged.
+
+**Rejected.** A field on the run-state response: `/api/runs/:runId/state` returns a bare array,
+which cannot gain a field without changing shape. A boolean (`salesforceOrg`), for the reason
+above. Threading a parameter through the stages, for the reason `currentRunLocale()` gives.
+`RunOptions` gains one optional field, `targetApp` — additive, and every existing caller compiles
+unchanged, exactly as `locale` did.
+
+**In this change nothing reads the rail.** The Salesforce-specific handling that will is being
+built separately, against `currentRunTargetApp()`.
