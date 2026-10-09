@@ -17,6 +17,7 @@ import { cacheGet, cacheSet } from "../kb/cache.js";
 import { extractCrawlResponse, type CrawlResponse } from "./domExtract.js";
 import { stableSelector } from "./discovery.js";
 import { enumerateLiveElements } from "./liveDomDiscovery.js";
+import { currentRunTargetApp } from "../runTarget.js";
 
 const REQUEST_TIMEOUT = 30_000;
 
@@ -367,8 +368,16 @@ function inferRole(tag: string, el: { aria_role?: string; aria_label?: string; c
  */
 export type ElementStrategy = "cheerio" | "live";
 
-/** `DISCOVERY_LIVE_DOM`, read in exactly one place. Default OFF (`CLAUDE.md` rule 2). */
+/**
+ * `DISCOVERY_LIVE_DOM`, read in exactly one place. Default OFF (`CLAUDE.md` rule 2).
+ *
+ * A Salesforce run (the person ticked "This URL is a Salesforce org", D-50) ALWAYS takes the live
+ * walker, whatever the global flag says: Lightning renders inside shadow roots and frames and
+ * hides mirror inputs that the static parse cannot see (D-51). `currentRunTargetApp()` is null for
+ * every other run, outside a run, and whenever SALESFORCE_ENABLED is off — so those are unchanged.
+ */
 export function elementStrategy(): ElementStrategy {
+  if (currentRunTargetApp() === "salesforce") return "live";
   return process.env.DISCOVERY_LIVE_DOM === "true" ? "live" : "cheerio";
 }
 

@@ -1408,3 +1408,48 @@ unchanged, exactly as `locale` did.
 
 **In this change nothing reads the rail.** The Salesforce-specific handling that will is being
 built separately, against `currentRunTargetApp()`.
+
+## D-51. The Salesforce checkbox selects the live walker and appends Salesforce guidance to three prompts
+
+*Numbered D-51 because D-40–D-44 are used and D-45–D-50 belong to other streams.*
+
+**Context.** D-50 added the checkbox and the `currentRunTargetApp()` rail and deliberately made
+nothing read it. This is the reader.
+
+**Decision.** For a run whose target app is `"salesforce"`:
+1. `elementStrategy()` (`domDiscovery.ts`) returns `"live"` whatever `DISCOVERY_LIVE_DOM` says —
+   Lightning is built from shadow roots and frames, and hides mirror inputs the static parse cannot
+   see (D-41, D-42). The flag stays the default for every other run.
+2. `salesforceGuidance(stage)` (`salesforceGuidance.ts`) is appended to the planner, test-case and
+   IR system prompts. For any other run it returns `""`.
+3. The discovery cache keys follow the per-run strategy (`dom-live:`, and a `#live` suffix on the
+   `hybridDiscovery.ts` keys `site:…` and the bare URL), because the strategy can now differ
+   BETWEEN runs on one server. Without that an unticked run's cached static model was served to a
+   ticked run, and the checkbox would have looked inert (TD-22, D-10).
+4. The walker tags elements inside an open dialog — walking out through shadow hosts, which
+   `Element.closest` does not — with `pageSection`/`containerRole: "dialog"` and the dialog's name.
+   The IR prompt already tells the model to use those fields to tell same-named controls apart; no
+   discovery path set them before, so a Lightning modal's Save and the page's Save were
+   indistinguishable.
+
+**Null stays unchanged.** Each stage's prompt for a non-Salesforce run is byte-identical to a capture
+taken from the code BEFORE this change (`tests/fixtures/salesforceTarget/null-run-prompts.json`); the
+LLM cache key hashes the prompt text, so those keys are unchanged too, and a Salesforce run gets its
+own entries. Appended, never interleaved: the base prompt's rules are untouched.
+
+**A prompt is a preference (`CLAUDE.md`).** Every rule in the guidance that has a deterministic
+check behind it names that check in the text and in the file's comments (the navigate-URL guard,
+grounding to the application model, the vacuous-assertion check, the two-screen login recording,
+the verification-required outcome). The rest — Lightning navigation advice, toast wording, "do not
+touch data the test did not create" — is advice the model may ignore without anything noticing.
+
+**Not verified against a live org.** The guidance is general Lightning Experience knowledge written
+without access to one; Salesforce's own wording ("Complete this field.", "was created" / "was saved")
+is the least certain part. It deliberately sends the model back to the application model for every
+name. Edited in Garvit's `ir.ts` and `hybridDiscovery.ts` with the stream owner's approval; the edits
+are additive and tested.
+
+**Rejected.** *Gating the walker on the host name* — orgs live on custom domains; the checkbox is the
+person saying so. *Interleaving Salesforce rules into the base prompts* — that would change every
+ordinary run's cache keys. *Putting Salesforce names (app and tab names) in the prompts as facts* —
+they differ per org and profile.

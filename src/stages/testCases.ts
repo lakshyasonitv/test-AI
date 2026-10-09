@@ -10,6 +10,7 @@ import {
   type ScopeFilter,
 } from "../kb/testStrategy.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
+import { salesforceGuidance } from "./salesforceGuidance.js";
 import { looksLikeCompoundLoginCase } from "./credentials.js";
 import { llmCacheDimension, resolvedDeployment, resolvedModel } from "../llm/llmContext.js";
 
@@ -428,7 +429,7 @@ ${extend.existingTitles.map(t => `  - ${t}`).join("\n")}${rejectedBlock}`)
     : `Exactly ONE case — the direct, literal translation of the plan itself — must be tagged
 "fromPrompt": true.${compoundLoginCarveOut}`;
 
-  const system =
+  const baseSystem =
     `You write concrete, human-readable QA test cases from a plan and an application model. Output ONLY a JSON array, no prose, no markdown fences.
 
 You write a SUITE, not a single happy-path case — the way a QA engineer covers a feature:
@@ -491,6 +492,8 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
   { "title": "Login with invalid password", "priority": "high", "feature": "Login", "category": "invalid-input", "intent": "proves a wrong password is rejected rather than silently accepted", "whyItMatters": "If this breaks, someone else's guess at a password could get into an account it doesn't belong to — a real security hole, not just a bug.", "checklistTitle": "Invalid password", "targetUrl": "https://example.com/login",
     "steps": ["Go to the '/login' page.", "Type the given identifier into the '<the model's own identifier field>' field.", "Type an incorrect password into the '<the model's own password field>' field.", "Click the '<the model's own submit button>' button."],
     "expected": "An 'invalid credentials' error is shown and the user stays on the login page" } ]`;
+  // "" unless this is a Salesforce run — then `system`, and the cache key that hashes it, differ.
+  const system = baseSystem + salesforceGuidance("cases");
   const gapsLine = gaps.length
     ? `\nConcepts with NO checklist entry — apply the 5 reasoning dimensions above to these directly, do not just emit one generic case: ${gaps.join(", ")}\n`
     : "";

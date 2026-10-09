@@ -20,7 +20,7 @@ import { llm, cacheModelDimension } from "../llm/client.js";
 import { parseJson } from "../llm/json.js";
 import { AppModel, AuthOutcome, type AuthStep, Element, PageModel } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
-import { discoverUsingCrawler, extractDomModelFromPage, needsVisionFallback } from "./domDiscovery.js";
+import { discoverUsingCrawler, extractDomModelFromPage, needsVisionFallback, elementStrategy } from "./domDiscovery.js";
 import {
   modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
 } from "./discovery.js";
@@ -209,7 +209,7 @@ Return JSON: { "concepts": string[], "labeledElements": { "index": number, "conc
  */
 export async function discoverHybrid(url: string): Promise<AppModel> {
   // Check existing cache
-  const cached = cacheGet(url);
+  const cached = cacheGet(hybridKey(url));
   if (cached) return cached;
 
   console.log(`[hybrid] discovering ${url}`);
@@ -248,12 +248,12 @@ export async function discoverHybrid(url: string): Promise<AppModel> {
         }],
       };
 
-      cacheSet(url, result);
+      cacheSet(hybridKey(url), result);
       return result;
     }
 
     // DOM succeeded but no elements — still valid, just return as-is
-    cacheSet(url, domModel);
+    cacheSet(hybridKey(url), domModel);
     return domModel;
   }
 
@@ -321,7 +321,7 @@ async function discoverUsingVision(url: string): Promise<AppModel> {
       })),
     };
 
-    cacheSet(url, visionResult);
+    cacheSet(hybridKey(url), visionResult);
     return visionResult;
   } finally {
     await browser.close();
@@ -590,12 +590,23 @@ const LOGOUT_PATH = /(^|\/)(logout|log-out|signout|sign-out|logoff|log-off)(\/|$
  * real input dimension serves a wrong answer for as long as it lives. Hashed rather than
  * interpolated so no credential value is ever part of a key string.
  */
-const siteCacheKey = (url: string, creds?: Credentials) => {
-  if (!creds) return `site:${url}`;
+export const siteCacheKey = (url: string, creds?: Credentials) => {
+  if (!creds) return `site:${url}${strategySuffix()}`;
   const id = crypto.createHash("sha1")
     .update(JSON.stringify([creds.username, creds.password])).digest("hex").slice(0, 12);
-  return `site:${url}#auth=${id}`;
+  return `site:${url}#auth=${id}${strategySuffix()}`;
 };
+
+/**
+ * The element strategy is an input to the model a key caches (D-43), and it can now differ BETWEEN
+ * RUNS on one server: a Salesforce run takes the live walker whatever the global flag says (D-51).
+ * Without it here, an unticked run's cached static model was served to a ticked run on the same
+ * URL (up to APPMODEL_CACHE_TTL_MS) and the checkbox appeared to do nothing — TD-22, D-10 again.
+ * Empty for the static strategy, so every pre-existing key is unchanged.
+ */
+const strategySuffix = () => (elementStrategy() === "live" ? "#live" : "");
+/** The bare-URL key `discoverHybrid` uses, with the same strategy dimension. */
+const hybridKey = (url: string) => `${url}${strategySuffix()}`;
 
 export function isPrivateOrLoopbackHost(hostname: string): boolean {
   const h = hostname.toLowerCase().trim();

@@ -75,6 +75,9 @@ export interface LiveRawElement {
   classes: string[];
   href: string;
   genericPath: string;
+  /** Name of the open dialog/modal the element sits in (walking out through shadow hosts), or null
+   *  when it is not inside one. "" means inside a dialog that has no accessible name. */
+  dialogName: string | null;
 }
 
 /** What the in-page walk hands back: the facts, the nodes they describe, and whether any
@@ -131,7 +134,7 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
         tag: string; role: string; name: string; nameSource: string; proximity: string;
         visible: boolean; enabled: boolean; css: string; candidates: string[]; inShadow: boolean;
         dataTest: string; dataTestid: string; dataQa: string; id: string; classes: string[];
-        href: string; genericPath: string; frame: string;
+        href: string; genericPath: string; frame: string; dialogName: string | null;
       }> = [];
       const nodes: HTMLElement[] = [];
       const frameEls: Array<{ candidates: string[] }> = [];
@@ -394,6 +397,33 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
           const enabled = !el.matches(":disabled") && el.getAttribute("aria-disabled") !== "true";
 
           // ---- genericPath: tag names from <html> down, crossing shadow roots to their host -----
+          // Inside an open dialog? Walk up through ancestors AND out through shadow hosts
+          // (Element.closest stops at a shadow boundary, and Lightning modals are built from
+          // nested components). Plain loops only — TD-40.
+          let dialogName: string | null = null;
+          let anc: HTMLElement | null = el;
+          while (anc && dialogName === null) {
+            const dlg = anc.closest('[role="dialog"], [role="alertdialog"], dialog, [aria-modal="true"]') as HTMLElement | null;
+            if (dlg) {
+              let dn = (dlg.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+              const by = (dlg.getAttribute("aria-labelledby") || "").trim();
+              if (!dn && by) {
+                const ref = dlg.getRootNode() as Document | ShadowRoot;
+                const ids = by.split(/\s+/);
+                let acc = "";
+                for (let q = 0; q < ids.length; q++) {
+                  const t = ref.getElementById ? ref.getElementById(ids[q]) : null;
+                  if (t) acc += " " + (t.textContent || "");
+                }
+                dn = acc.replace(/\s+/g, " ").trim();
+              }
+              dialogName = dn.slice(0, 80);
+              break;
+            }
+            const root = anc.getRootNode() as ShadowRoot;
+            anc = root && (root as ShadowRoot).host ? ((root as ShadowRoot).host as HTMLElement) : null;
+          }
+
           const tags: string[] = [];
           let up: HTMLElement | null = el;
           while (up) {
@@ -413,6 +443,7 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             href: tag === "a" ? (el.getAttribute("href") || "") : "",
             genericPath: tags.join(">"),
             frame: "",
+            dialogName,
           });
           nodes.push(el);
         }
@@ -564,6 +595,13 @@ export function toElements(raw: LiveRawElement[]): Element[] {
       ...(r.css ? { css: r.css } : {}),
       ...(nameFromProximity ? { nameFromProximity: true } : {}),
       genericPath: r.genericPath,
+      // Only for elements discovered INSIDE an open dialog. Absent otherwise, so an element on the
+      // page itself is exactly what it was before. The IR prompt tells the model it can use
+      // containerRole/containerName/pageSection to tell same-named controls apart.
+      ...(r.dialogName !== null ? {
+        pageSection: "dialog", containerRole: "dialog",
+        ...(r.dialogName ? { containerName: r.dialogName } : {}),
+      } : {}),
       order: order++,
       ...(r.inShadow ? { inShadow: true } : {}),
       ...(r.frame ? { frame: r.frame } : {}),

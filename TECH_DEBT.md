@@ -4935,3 +4935,25 @@ checked for the same gap and does NOT have it: an edited target is rebuilt from 
 removes it when the element has none), counts `frame` in its "nothing changed, same element"
 early return (the same css in a different iframe is a different element, which that return was
 silently skipping), and `diffTargets` compares `frame`. `tests/deterministicHealFrame.test.ts`.
+
+### LS-6. Salesforce guidance reaches only the planner, test-case and IR prompts — Low / Strategic — **Open**
+
+*Filed by the live-DOM discovery stream (Lakshya).*
+
+`salesforceGuidance()` is appended in `planner.ts`, `testCases.ts` and `ir.ts` only (D-51). The other
+LLM calls — failure diagnosis (`failureAnalysis.ts`), the concept labelling in `hybridDiscovery.ts`,
+`classify.ts`, and the editor's "ask for a change" route (`caseEdit.ts`, which runs OUTSIDE a run and
+so has no target app at all) — get no Salesforce context. Heal re-enters `toIR` and is covered. Add a
+stage to `GuidanceStage` and append at its call site when one proves to need it; do not add them
+speculatively, each changes that stage's cache keys for Salesforce runs.
+
+### LS-7. The Salesforce prompt guidance has never run against a live org — Medium / Strategic — **Open**
+
+*Filed by the live-DOM discovery stream (Lakshya).*
+
+`src/stages/salesforceGuidance.ts` was written from general knowledge of Lightning Experience with no
+org to check it against, and this sandbox cannot reach one. Least certain: the toast fragments
+("was created", "was saved"), the standard required-field message ("Complete this field."), and the
+claim that create/edit forms open in a modal dialog in every org. A wrong rule costs a wrong test, not
+a crash. Verify by running a create-a-record case on a sandbox with the checkbox ticked and reading the
+generated IR; the guidance text is data in one file and cheap to correct.

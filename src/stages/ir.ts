@@ -13,6 +13,7 @@ import {
   NEGATIVE_CATEGORIES, type Credentials,
 } from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
+import { salesforceGuidance } from "./salesforceGuidance.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 // The generator's OWN rule for when a step becomes `field(page, hint, …)` and which slot supplies
@@ -1416,7 +1417,7 @@ export async function toIR(
   // published by the sites themselves, so keying on that username leaks nothing.
   const credKey = creds ? `${credPolicy}:${creds.secret ? "env" : creds.username}` : "no-creds";
 
-  const system =
+  const baseSystem =
     `Convert ONE human-readable test case into a strict JSON test model (IR).
 Address elements only by accessibility role + name taken from the application model.
 Allowed actions: navigate, click, fill, select, check, press, wait, assert.
@@ -1513,6 +1514,8 @@ Example — handling duplicate selectors with nth:
     { "id": "s3", "action": "assert", "target": { "url": "/student" }, "assertion": "url_contains" }
   ]
 }`;
+  // "" unless this is a Salesforce run — then `system`, and the cache key that hashes it, differ.
+  const system = baseSystem + salesforceGuidance("ir");
 
   // Keyed AFTER `system` is built, and on `system` itself. The disk half of this cache never
   // expires, so anything the key omits is served stale forever — and the prompt was the

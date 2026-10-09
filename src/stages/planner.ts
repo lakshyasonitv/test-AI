@@ -3,6 +3,7 @@ import { cacheModelDimension, llm } from "../llm/client.js";
 import { parseJson } from "../llm/json.js";
 import { classifyScope, ALL_SCOPES } from "../kb/testStrategy.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
+import { salesforceGuidance } from "./salesforceGuidance.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 
 export type Coverage = "minimal" | "standard" | "full";
@@ -27,7 +28,7 @@ export async function plan(
     ? `\nTest-type scope for this run: ${testTypeScope.join(", ")}. Only generate test cases belonging to these categories.`
     : "";
 
-  const system =
+  const baseSystem =
 `You are a QA planner. Convert a natural-language testing request into an ordered list of high-level test steps. Output ONLY the JSON object, no prose, no markdown fences.
 
 Rules, follow exactly:
@@ -39,6 +40,9 @@ Rules, follow exactly:
 Example of the exact shape required:
 { "goal": "Verify a user can log in with valid credentials and reach the dashboard.",
   "steps": ["Navigate to the login page", "Enter valid credentials", "Submit the login form", "Verify the dashboard is displayed"] }`;
+  // "" for every run that is not a Salesforce run, so `system` — and the cache key below, which
+  // hashes it — is byte-identical to before. A Salesforce run gets its own cache entries.
+  const system = baseSystem + salesforceGuidance("plan");
   // Keyed after `system` exists, and on it — the disk cache never expires, so a planning rule
   // this prompt gains would otherwise never reach a request already seen.
   const cacheKey = makeCacheKey(
