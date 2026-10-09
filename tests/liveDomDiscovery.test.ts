@@ -272,6 +272,144 @@ describe("what the walk includes and excludes", () => {
   });
 });
 
+/** A page whose `<script>` attaches shadow roots — setContent runs inline scripts. */
+const withShadow = (body: string, script: string) => `${body}<script>${script}</script>`;
+
+describe("shadow DOM (open roots)", () => {
+  it("enumerates elements inside an open shadow root, each addressable by a verified >> chain", async () => {
+    await page.setContent(withShadow(`<div id="h1"></div>`, `
+      document.getElementById("h1").attachShadow({ mode: "open" }).innerHTML =
+        '<button data-k="Save">Save</button><label for="q">Query</label><input id="q" data-k="Query">';`));
+    const els = await enumerateLiveElements(page);
+    expect(els.map((e) => e.name)).toEqual(["Save", "Query"]);
+    for (const e of els) {
+      expect(e.inShadow).toBe(true);
+      expect(e.css).toContain(" >> ");
+      const loc = page.locator(e.css!);
+      expect(await loc.count(), e.css).toBe(1);
+      expect(await loc.getAttribute("data-k"), e.css).toBe(e.name);
+    }
+    // A <label for> inside the shadow tree names the input in the same tree.
+    expect(els[1]).toMatchObject({ role: "textbox", nameSource: "label" });
+  });
+
+  it("reaches through NESTED shadow roots and through hosts with no stable attribute", async () => {
+    await page.setContent(withShadow(`<my-card></my-card><my-card></my-card>`, `
+      for (const [i, host] of Array.from(document.querySelectorAll("my-card")).entries()) {
+        const outer = host.attachShadow({ mode: "open" });
+        outer.innerHTML = '<section></section>';
+        outer.querySelector("section").attachShadow({ mode: "open" }).innerHTML =
+          '<button data-k="Buy ' + i + '">Buy ' + i + '</button>';
+      }`));
+    const els = await enumerateLiveElements(page);
+    expect(els.map((e) => e.name)).toEqual(["Buy 0", "Buy 1"]);
+    for (const e of els) {
+      expect(e.css!.split(" >> ")).toHaveLength(3); // host >> section >> button
+      expect(await page.locator(e.css!).getAttribute("data-k")).toBe(e.name);
+    }
+  });
+
+  it("does not give a light element an id Playwright also finds inside a shadow root", async () => {
+    // Measured: document.querySelectorAll("#dup") counts 1 here, Playwright counts 2. An in-page
+    // check alone would have handed the light button "#dup", and `.first()` would be luck.
+    await page.setContent(withShadow(`<button id="dup" data-k="light">light</button><div id="h"></div>`, `
+      document.getElementById("h").attachShadow({ mode: "open" }).innerHTML =
+        '<button id="dup" data-k="shadow">shadow</button>';`));
+    expect(await page.locator("#dup").count()).toBe(2); // the premise, re-measured
+    const els = await enumerateLiveElements(page);
+    expect(els).toHaveLength(2);
+    for (const e of els) {
+      expect(e.css).not.toBe("#dup");
+      expect(await page.locator(e.css!).count(), e.css).toBe(1);
+      expect(await page.locator(e.css!).getAttribute("data-k")).toBe(e.name);
+    }
+  });
+
+  it("lists elements in getByRole's order, so an IR nth means the same thing to the spec", async () => {
+    // Measured on the pinned Playwright, and NOT composed-tree order: all light-DOM matches first
+    // (slotted ones included), then each open shadow root's, depth-first over roots — a root nested
+    // in h1's shadow (N1) comes before the next host's (S2). A walk that put shadow content at its
+    // host's position failed this test.
+    await page.setContent(withShadow(`
+      <button>L0</button>
+      <div id="h1"><button>L1-slotted</button></div>
+      <button>L2</button>
+      <div id="h2"></div>
+      <button>L3</button>`, `
+      const s1 = document.getElementById("h1").attachShadow({ mode: "open" });
+      s1.innerHTML = '<button>S1a</button><div id="n"></div><slot></slot><button>S1b</button>';
+      s1.getElementById("n").attachShadow({ mode: "open" }).innerHTML = '<button>N1</button>';
+      document.getElementById("h2").attachShadow({ mode: "open" }).innerHTML = '<button>S2</button>';`));
+    const walked = (await enumerateLiveElements(page)).filter((e) => e.role === "button").map((e) => e.name);
+    expect(walked).toEqual(await page.getByRole("button").allTextContents());
+    expect(walked).toEqual(await page.locator("button").allTextContents());
+    expect(walked).toEqual(["L0", "L1-slotted", "L2", "L3", "S1a", "S1b", "N1", "S2"]);
+  });
+
+  it("gives identical anonymous controls in one shadow root distinct, working :scope paths", async () => {
+    await page.setContent(withShadow(`<div id="h"></div>`, `
+      document.getElementById("h").attachShadow({ mode: "open" }).innerHTML =
+        '<ul><li><button data-k="0">Dup</button></li><li><button data-k="1">Dup</button></li></ul>';`));
+    const els = await enumerateLiveElements(page);
+    expect(els).toHaveLength(2);
+    expect(els[0].css).not.toBe(els[1].css);
+    expect(await page.locator(els[0].css!).getAttribute("data-k")).toBe("0");
+    expect(await page.locator(els[1].css!).getAttribute("data-k")).toBe("1");
+  });
+
+  it("anchors a shadow positional path at the host with :scope, so it cannot match deeper", async () => {
+    // Without the anchor, A's path "div > button" also matches B (inner div > button): Playwright
+    // counts 2, verification rejects it, and A is left with no css at all.
+    await page.setContent(withShadow(`<div id="h"></div>`, `
+      document.getElementById("h").attachShadow({ mode: "open" }).innerHTML =
+        '<div><button data-k="A">A</button><div><button data-k="B">B</button></div></div>';`));
+    const els = await enumerateLiveElements(page);
+    expect(els.map((e) => e.name)).toEqual(["A", "B"]);
+    for (const e of els) {
+      expect(e.css, `${e.name} has no css`).toBeTruthy();
+      expect(await page.locator(e.css!).getAttribute("data-k")).toBe(e.name);
+    }
+  });
+
+  it("resolves aria-labelledby inside the shadow root, not against the document", async () => {
+    await page.setContent(withShadow(`<span id="lbl">Wrong (document)</span><div id="h"></div>`, `
+      document.getElementById("h").attachShadow({ mode: "open" }).innerHTML =
+        '<span id="lbl">Right (shadow)</span><input aria-labelledby="lbl">';`));
+    const [el] = await enumerateLiveElements(page);
+    expect(el).toMatchObject({ name: "Right (shadow)", nameSource: "aria-labelledby" });
+  });
+
+  it("enumerates slotted content once, as light DOM", async () => {
+    await page.setContent(withShadow(`<div id="h"><a href="/x" data-k="Slotted">Slotted</a></div>`, `
+      document.getElementById("h").attachShadow({ mode: "open" }).innerHTML = '<slot></slot>';`));
+    const els = await enumerateLiveElements(page);
+    expect(els).toHaveLength(1);
+    expect(els[0].inShadow).toBeUndefined();
+    expect(await page.locator(els[0].css!).getAttribute("data-k")).toBe("Slotted");
+  });
+
+  it("carries the composed path through the host in genericPath, so landmark tagging still works", async () => {
+    await page.setContent(withShadow(`<main><div id="h"></div></main>`, `
+      document.getElementById("h").attachShadow({ mode: "open" }).innerHTML = '<button>In main</button>';`));
+    const [el] = await enumerateLiveElements(page);
+    expect(el.genericPath).toBe("html>body>main>div>button");
+  });
+
+  it("skips a CLOSED shadow root's content (unreachable by design) without failing the walk", async () => {
+    await page.setContent(withShadow(`<div id="closed"></div><div id="open"></div>`, `
+      document.getElementById("closed").attachShadow({ mode: "closed" }).innerHTML = '<button>Hidden away</button>';
+      document.getElementById("open").attachShadow({ mode: "open" }).innerHTML = '<button>Reachable</button>';`));
+    expect((await enumerateLiveElements(page)).map((e) => e.name)).toEqual(["Reachable"]);
+  });
+
+  it("leaves a shadow-free page on the in-page check — no element is flagged inShadow", async () => {
+    await page.setContent(`<button id="a">A</button><button>B</button>`);
+    const els = await enumerateLiveElements(page);
+    expect(els.every((e) => e.inShadow === undefined)).toBe(true);
+    expect(els.map((e) => e.css)).toEqual(["#a", "body > button:nth-of-type(2)"]);
+  });
+});
+
 describe("TD-40: the in-page callback survives the transform the server actually runs under", () => {
   const SRC = fileURLToPath(new URL("../src/stages/liveDomDiscovery.ts", import.meta.url));
 
@@ -299,7 +437,8 @@ describe("TD-40: the in-page callback survives the transform the server actually
         const b = await chromium.launch();
         try {
           const p = await b.newPage();
-          await p.setContent('<label for="u">User</label><input id="u"><div>Near</div><input><button>Go</button>');
+          await p.setContent('<label for="u">User</label><input id="u"><div>Near</div><input><button>Go</button>'
+            + '<div id="h"></div><script>document.getElementById("h").attachShadow({mode:"open"}).innerHTML = "<button>Deep</button>";</script>');
           console.log(JSON.stringify(await enumerateLiveElements(p)));
         } finally { await b.close(); }
       `);
@@ -308,7 +447,7 @@ describe("TD-40: the in-page callback survives the transform the server actually
       expect(res.stderr).not.toContain("__name is not defined");
       expect(res.status, res.stderr).toBe(0);
       const els = JSON.parse(res.stdout.trim().split("\n").pop()!);
-      expect(els.map((e: Element) => e.name)).toEqual(["User", "Near", "Go"]);
+      expect(els.map((e: Element) => e.name)).toEqual(["User", "Near", "Go", "Deep"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
