@@ -1,6 +1,6 @@
 import type { IR, Step } from "../schema/ir.js";
 import {
-  resolveCode as locator,
+  resolveCode as locator, frameRootCode,
   DOM_ORDER_FIELD_JS, FIELD_SELECTOR, DIALOG_SELECTOR,
   SELECTABLE_JS, OPTION_PROBE_JS, MATCH_OPTION_INDEX_JS, OPTION_ERROR_JS, SELECT_TIMEOUT_MS,
 } from "./targetResolver.js";
@@ -95,9 +95,12 @@ function emitAssert(step: Step): string {
       // resolves to one specific element internally), so .and() is simply appended there.
       const raw = locator(t);
       const narrowed = raw.match(/^(.*)(\.first\(\)|\.nth\(\d+\))$/);
+      // The :visible operand must hang off the SAME root as the target: Locator.and() refuses
+      // two locators from different frames. `page` whenever the target has no frame.
+      const visibleRoot = frameRootCode(t);
       const withFilter = narrowed
-        ? `${narrowed[1]}.and(page.locator(':visible'))${narrowed[2]}`
-        : `${raw}.and(page.locator(':visible'))`;
+        ? `${narrowed[1]}.and(${visibleRoot}.locator(':visible'))${narrowed[2]}`
+        : `${raw}.and(${visibleRoot}.locator(':visible'))`;
       return `  await expect(${withFilter}).toBeVisible({ timeout: ${ASSERT_TIMEOUT_MS} });`;
     }
 
@@ -554,7 +557,10 @@ const matchOptionIndex = ${MATCH_OPTION_INDEX_JS};
 const optionErrorMessage = ${OPTION_ERROR_JS};
 const selectableJs = ${SELECTABLE_JS};
 
-async function choose(page, target, value) {
+async function choose(page, target, value, root) {
+  // root: the iframe chain a framed target lives in. Re-indexing the real control and finding its
+  // option popup must happen in THAT document; waiting stays on the page. Absent = the page.
+  const inDoc = root || page;
   // A role match is not a promise about the tag: the resolved node can be a wrapper div, a
   // label, or a custom shell with the real <select> hidden behind it. Walk to the control that
   // can actually be selected before deciding which branch applies. TECH_DEBT.md TD-79.
@@ -564,7 +570,7 @@ async function choose(page, target, value) {
     if (String(tag0).toUpperCase() !== 'SELECT' && role0 !== 'combobox' && role0 !== 'listbox') {
       const si = await target.evaluate(selectableJs, ${q(FIELD_SELECTOR)}).catch(() => -1);
       if (typeof si === 'number' && si >= 0) {
-        target = page.locator(${q(FIELD_SELECTOR)}).nth(si);
+        target = inDoc.locator(${q(FIELD_SELECTOR)}).nth(si);
       }
     }
   } catch (e) {}
@@ -605,7 +611,7 @@ async function choose(page, target, value) {
   // Custom dropdown: open it, then pick the option by its accessible name.
   await target.click({ timeout: ${SELECT_TIMEOUT_MS} });
   // Scoped like every other lookup: a listbox behind the modal must not win.
-  const optScope = await scopeOf(page);
+  const optScope = await scopeOf(inDoc);
   // Wait for the popup's items, which are as likely to be fetched as a <select>'s — but wait on
   // the OPEN POPUP, not on the whole scope.
   //
@@ -770,7 +776,9 @@ function emitStep(step: Step, baseUrl: string): string {
       // action uses instead of passing empty strings that silently drop the target.
       // A verified css selector wins: safeClick goes through getByRole, which cannot match
       // an element whose accessible name is empty or was derived by discovery.
-      if (!t.css && t.role && t.name) {
+      // Not for a target inside an iframe either: safeClick resolves against `page` and navigates
+      // with page.goto/page.url, none of which a frame root offers; locate() via locator(t) does.
+      if (!t.css && !t.frame && t.role && t.name) {
         const nthParam = t.nth !== undefined ? `, ${t.nth}` : '';
         code += `  await safeClick(page, ${q(t.role)}, ${q(t.name)}${nthParam});`;
       } else {
@@ -787,7 +795,10 @@ function emitStep(step: Step, baseUrl: string): string {
     case "select":
       // choose() decides selectOption-vs-click-the-option at run time, from the element's real
       // tag. See CHOOSE_HELPER. Emitting selectOption() here is what TD-70 was.
-      code += `  await choose(page, ${locator(step.target!, "select")}, ${valueCode(step.value)});`;
+      // A target in an iframe passes its frame root as choose()'s 4th argument, for the two
+      // lookups that must happen in the target's own document. Omitted otherwise, so a spec with
+      // no frames is emitted exactly as before.
+      code += `  await choose(page, ${locator(step.target!, "select")}, ${valueCode(step.value)}${step.target!.frame ? `, ${frameRootCode(step.target!)}` : ""});`;
       break;
 
     case "check":

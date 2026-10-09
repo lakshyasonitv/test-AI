@@ -410,6 +410,95 @@ describe("shadow DOM (open roots)", () => {
   });
 });
 
+/**
+ * A page on a fake origin with iframes, served by page.route — no network. `pages` maps a path
+ * to its HTML; anything on http://other.test is a different origin.
+ */
+async function framedPage(pages: Record<string, string>): Promise<Page> {
+  const ctx = await browser.newContext();
+  const p = await ctx.newPage();
+  await p.route("http://app.test/**", (r) => {
+    const path = new URL(r.request().url()).pathname;
+    return r.fulfill({ contentType: "text/html", body: pages[path] ?? "<p>404</p>" });
+  });
+  await p.route("http://other.test/**", (r) => r.fulfill({ contentType: "text/html", body: "<button>Foreign</button>" }));
+  await p.goto("http://app.test/");
+  // Every frame must have loaded before the walk.
+  await p.waitForFunction(() => Array.from(document.querySelectorAll("iframe")).every((f) => {
+    // A cross-origin frame's contentDocument is null (not a throw) — nothing to wait for there.
+    try { return !f.contentDocument || f.contentDocument.readyState === "complete"; } catch { return true; }
+  }));
+  await p.waitForTimeout(100);
+  return p;
+}
+
+describe("same-origin iframes", () => {
+  it("tags iframe elements with a frame path that a real frameLocator chain resolves", async () => {
+    const p = await framedPage({
+      "/": `<button data-k="Top">Top</button><iframe id="f" src="/inner"></iframe>`,
+      "/inner": `<label for="e">Email</label><input id="e" data-k="Email"><iframe src="/deep"></iframe>`,
+      "/deep": `<button data-k="Deep">Deep</button>`,
+    });
+    try {
+      const els = await enumerateLiveElements(p);
+      expect(els.map((e) => [e.name, e.frame])).toEqual([
+        ["Top", undefined], ["Email", "#f"], ["Deep", "#f >>> body > iframe"],
+      ]);
+      for (const e of els) {
+        let root: any = p;
+        for (const seg of (e.frame ?? "").split(" >>> ").filter(Boolean)) root = root.frameLocator(seg);
+        const loc = root.locator(e.css!);
+        expect(await loc.count(), `${e.frame} | ${e.css}`).toBe(1);
+        expect(await loc.getAttribute("data-k")).toBe(e.name);
+      }
+    } finally { await p.context().close(); }
+  });
+
+  it("skips a cross-origin iframe", async () => {
+    const p = await framedPage({ "/": `<button>Mine</button><iframe src="http://other.test/x"></iframe>` });
+    try {
+      expect((await enumerateLiveElements(p)).map((e) => e.name)).toEqual(["Mine"]);
+    } finally { await p.context().close(); }
+  });
+
+  it("never treats a data: iframe as same-origin, even under an opaque top origin", async () => {
+    // about:blank's origin and a data: frame's are both serialised as "null"; that is not a match.
+    await page.setContent(`<button>Mine</button><iframe src="data:text/html,<button>Opaque</button>"></iframe>`);
+    await page.waitForTimeout(200);
+    expect((await enumerateLiveElements(page)).map((e) => e.name)).toEqual(["Mine"]);
+  });
+
+  it("measures visibility inside the frame — a control in a display:none iframe is not visible", async () => {
+    const p = await framedPage({
+      "/": `<iframe id="shown" src="/a"></iframe><iframe id="gone" style="display:none" src="/b"></iframe>`,
+      "/a": `<button>Shown</button>`,
+      "/b": `<button>InHiddenFrame</button>`,
+    });
+    try {
+      const els = await enumerateLiveElements(p);
+      expect(els.find((e) => e.name === "Shown")).toMatchObject({ visible: true, frame: "#shown" });
+      // Either not enumerated at all or enumerated as not visible — never "visible: true".
+      const hidden = els.find((e) => e.name === "InHiddenFrame");
+      if (hidden) expect(hidden.visible).toBe(false);
+    } finally { await p.context().close(); }
+  });
+
+  it("reaches an iframe that sits inside an open shadow root", async () => {
+    const p = await framedPage({
+      "/": `<div id="h"></div><script>
+        document.getElementById("h").attachShadow({ mode: "open" }).innerHTML = '<iframe src="/in"></iframe>';
+      </script>`,
+      "/in": `<button data-k="Framed">Framed</button>`,
+    });
+    try {
+      const [el] = await enumerateLiveElements(p);
+      expect(el.name).toBe("Framed");
+      expect(el.frame).toContain(" >> "); // the iframe's own selector crosses the shadow boundary
+      expect(await p.frameLocator(el.frame!).locator(el.css!).getAttribute("data-k")).toBe("Framed");
+    } finally { await p.context().close(); }
+  });
+});
+
 describe("TD-40: the in-page callback survives the transform the server actually runs under", () => {
   const SRC = fileURLToPath(new URL("../src/stages/liveDomDiscovery.ts", import.meta.url));
 

@@ -35,11 +35,16 @@
  * selector candidates are verified through Playwright itself (`verifyWithPlaywright`). A page
  * with no shadow root keeps the in-page check, which is exact there.
  *
- * Scope: top-level document only. Same-origin iframes are a later phase. Nothing here reads
- * DISCOVERY_LIVE_DOM — the strategy switch in domDiscovery.ts does.
+ * IFRAMES: `enumerateLiveElements` also walks every SAME-ORIGIN iframe (recursively) with the same
+ * code, tagging its elements with `frame` — the `" >>> "`-joined selectors of the <iframe>
+ * elements leading to it, each verified through Playwright in its parent frame. Grounding copies
+ * that onto `Target.frame`, and `resolveCode`/the generator wrap the locator in
+ * `page.frameLocator(...)`. Cross-origin frames are skipped.
+ *
+ * Nothing here reads DISCOVERY_LIVE_DOM — the strategy switch in domDiscovery.ts does.
  */
 
-import type { JSHandle, Page } from "playwright";
+import type { Frame, JSHandle, Page } from "playwright";
 import type { Element } from "../schema/appModel.js";
 import { deriveElementName } from "./discovery.js";
 
@@ -61,6 +66,8 @@ export interface LiveRawElement {
   candidates: string[];
   /** True when the element lives inside an open shadow root. */
   inShadow: boolean;
+  /** Same-origin iframe path (`Target.frame` format); "" for the top-level document. */
+  frame: string;
   dataTest: string;
   dataTestid: string;
   dataQa: string;
@@ -76,6 +83,10 @@ interface WalkResult {
   items: LiveRawElement[];
   nodes: unknown[];
   hasShadow: boolean;
+  /** Selector candidates for every <iframe>/<frame> element met, and the elements themselves —
+   *  so a child Frame can be matched to its element and given a verified selector. */
+  frameEls: Array<{ candidates: string[] }>;
+  frameNodes: unknown[];
 }
 
 /** Elements the walk enumerates. Mirrors the cheerio extractor's union (domExtract.ts
@@ -90,7 +101,18 @@ const MAX_PROXIMITY_LABEL = 60;
  * Walk the live DOM and return the raw per-element facts, each with a verified `css` (or "").
  * Exported for tests; production code calls `enumerateLiveElements`.
  */
-export async function walkLiveDom(page: Page): Promise<LiveRawElement[]> {
+export async function walkLiveDom(page: Page | Frame): Promise<LiveRawElement[]> {
+  const { items, handle } = await walkOneDocument(page);
+  await handle.dispose();
+  return items;
+}
+
+/**
+ * Walk ONE document (a page's main frame, or one iframe's) and keep the result handle alive, so
+ * the caller can still match that document's <iframe> elements against Playwright's child frames.
+ * The caller disposes the handle.
+ */
+async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElement[]; handle: JSHandle<WalkResult>; frameEls: Array<{ candidates: string[] }> }> {
   // <live-walk> — the source between these markers runs INSIDE THE BROWSER.
   //
   // ponytail: deliberately written with NO inner named or const-assigned functions, and no
@@ -109,9 +131,11 @@ export async function walkLiveDom(page: Page): Promise<LiveRawElement[]> {
         tag: string; role: string; name: string; nameSource: string; proximity: string;
         visible: boolean; enabled: boolean; css: string; candidates: string[]; inShadow: boolean;
         dataTest: string; dataTestid: string; dataQa: string; id: string; classes: string[];
-        href: string; genericPath: string;
+        href: string; genericPath: string; frame: string;
       }> = [];
       const nodes: HTMLElement[] = [];
+      const frameEls: Array<{ candidates: string[] }> = [];
+      const frameNodes: HTMLElement[] = [];
       let hasShadow = false;
       const NATIVE = ["a", "button", "input", "select", "textarea"];
       const BUTTON_INPUTS = ["submit", "button", "reset", "image"];
@@ -142,7 +166,10 @@ export async function walkLiveDom(page: Page): Promise<LiveRawElement[]> {
           const el = all[ei] as HTMLElement;
           const isTarget = el.matches(selector);
           const shadow = el.shadowRoot; // null for a CLOSED root — unreachable by design
-          if (!isTarget && !shadow) continue;
+          // An <iframe> is never a target itself, but needs a selector so a frameLocator can
+          // reach the document inside it.
+          const isFrameEl = el.tagName === "IFRAME" || el.tagName === "FRAME";
+          if (!isTarget && !shadow && !isFrameEl) continue;
 
           const tag = el.tagName.toLowerCase();
 
@@ -226,6 +253,10 @@ export async function walkLiveDom(page: Page): Promise<LiveRawElement[]> {
           const candidates: string[] = [];
           for (let k = 0; k < scoped.length; k++) candidates.push(inShadow ? chain + " >> " + scoped[k] : scoped[k]);
 
+          if (isFrameEl) {
+            frameEls.push({ candidates });
+            frameNodes.push(el);
+          }
           if (shadow) {
             hasShadow = true;
             // Without a selector for the host, nothing inside it can be addressed; skip it rather
@@ -374,6 +405,7 @@ export async function walkLiveDom(page: Page): Promise<LiveRawElement[]> {
             classes: (el.getAttribute("class") || "").split(/\s+/).filter(Boolean),
             href: tag === "a" ? (el.getAttribute("href") || "") : "",
             genericPath: tags.join(">"),
+            frame: "",
           });
           nodes.push(el);
         }
@@ -383,18 +415,81 @@ export async function walkLiveDom(page: Page): Promise<LiveRawElement[]> {
           scopeChains.push(childChains[k]);
         }
       }
-      return { items, nodes, hasShadow };
+      return { items, nodes, hasShadow, frameEls, frameNodes };
     },
     { selector: LIVE_ELEMENT_SELECTOR, maxProximity: MAX_PROXIMITY_LABEL },
   );
   // </live-walk>
   try {
-    const { items, hasShadow } = await handle.evaluate((w) => ({ items: w.items, hasShadow: w.hasShadow }));
+    const { items, hasShadow, frameEls } = await handle.evaluate(
+      (w) => ({ items: w.items, hasShadow: w.hasShadow, frameEls: w.frameEls }));
     if (hasShadow) await verifyWithPlaywright(page, handle as JSHandle<WalkResult>, items);
-    return items;
-  } finally {
+    return { items, handle: handle as JSHandle<WalkResult>, frameEls };
+  } catch (err) {
     await handle.dispose();
+    throw err;
   }
+}
+
+/**
+ * `about:blank` / `about:srcdoc` frames inherit their parent's origin. Anything else must share
+ * the top page's real origin; an OPAQUE origin ("null" — `data:`, sandboxed) never counts, even
+ * when the top page's is also "null", because two opaque origins are not the same origin.
+ */
+function sameOrigin(frameUrl: string, topOrigin: string): boolean {
+  if (frameUrl.startsWith("about:")) return true;
+  try {
+    const o = new URL(frameUrl).origin;
+    return o !== "null" && o === topOrigin;
+  } catch { return false; }
+}
+
+/**
+ * Walk a page's main document and, recursively, every SAME-ORIGIN iframe in it. Elements inside a
+ * frame carry `frame`: the `" >>> "`-joined selectors of the <iframe> elements leading to it,
+ * outermost first, each verified through Playwright in its PARENT frame to match exactly that
+ * iframe. Frames are listed after the document that contains them.
+ *
+ * Cross-origin frames are skipped — the brief scopes this to same-origin, and a site's own pages
+ * are what discovery models. A frame whose <iframe> gets no verified selector is skipped too: a
+ * spec could never reach what is inside it.
+ */
+export async function walkLiveDomWithFrames(page: Page): Promise<LiveRawElement[]> {
+  const top = page.mainFrame();
+  let topOrigin = "";
+  try { topOrigin = new URL(page.url()).origin; } catch { topOrigin = ""; }
+  const all: LiveRawElement[] = [];
+  // Explicit queue rather than recursion so a deep frame tree cannot blow the stack.
+  const queue: Array<{ frame: Frame; path: string }> = [{ frame: top, path: "" }];
+  while (queue.length) {
+    const { frame, path } = queue.shift()!;
+    let walked: Awaited<ReturnType<typeof walkOneDocument>>;
+    try { walked = await walkOneDocument(frame); } catch { continue; } // detached mid-walk
+    try {
+      for (const item of walked.items) { item.frame = path; all.push(item); }
+      for (const child of frame.childFrames()) {
+        if (!sameOrigin(child.url(), topOrigin)) continue;
+        const el = await child.frameElement().catch(() => null);
+        if (!el) continue;
+        let chosen = "";
+        for (let i = 0; i < walked.frameEls.length && !chosen; i++) {
+          const isThis = await walked.handle.evaluate((w, [n, idx]) => w.frameNodes[idx as number] === n, [el, i] as const);
+          if (!isThis) continue;
+          for (const cand of walked.frameEls[i].candidates) {
+            const ok = await frame.locator(cand).evaluateAll(
+              (ns, n) => ns.length === 1 && ns[0] === n, el,
+            ).catch(() => false);
+            if (ok) { chosen = cand; break; }
+          }
+        }
+        await el.dispose();
+        if (chosen) queue.push({ frame: child, path: path ? path + " >>> " + chosen : chosen });
+      }
+    } finally {
+      await walked.handle.dispose();
+    }
+  }
+  return all;
 }
 
 /**
@@ -409,7 +504,7 @@ export async function walkLiveDom(page: Page): Promise<LiveRawElement[]> {
  * identity in a single round trip), with elements checked concurrently so Playwright pipelines
  * the calls, is what this does instead.
  */
-async function verifyWithPlaywright(page: Page, handle: JSHandle<WalkResult>, items: LiveRawElement[]): Promise<void> {
+async function verifyWithPlaywright(page: Page | Frame, handle: JSHandle<WalkResult>, items: LiveRawElement[]): Promise<void> {
   await Promise.all(items.map(async (item, i) => {
     let chosen = "";
     for (const cand of item.candidates) {
@@ -464,6 +559,7 @@ export function toElements(raw: LiveRawElement[]): Element[] {
       genericPath: r.genericPath,
       order: order++,
       ...(r.inShadow ? { inShadow: true } : {}),
+      ...(r.frame ? { frame: r.frame } : {}),
       nameSource,
       visibleSource: "computed",
     });
@@ -471,7 +567,7 @@ export function toElements(raw: LiveRawElement[]): Element[] {
   return elements;
 }
 
-/** The live-DOM element list for an already-open page. */
+/** The live-DOM element list for an already-open page, same-origin iframes included. */
 export async function enumerateLiveElements(page: Page): Promise<Element[]> {
-  return toElements(await walkLiveDom(page));
+  return toElements(await walkLiveDomWithFrames(page));
 }

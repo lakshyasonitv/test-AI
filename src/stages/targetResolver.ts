@@ -1,7 +1,40 @@
-import type { Page, Locator } from "playwright";
+import type { Page, Locator, FrameLocator } from "playwright";
 import type { Target } from "../schema/ir.js";
 
 const q = (s: string) => JSON.stringify(s);
+
+/**
+ * Where a target is looked for: the page itself, or the same-origin iframe `Target.frame` names.
+ * Everything below that reads only `locator`/`getBy*` takes this rather than `Page`, because a
+ * `FrameLocator` offers exactly that surface — and nothing else, which is the point: a helper
+ * that also needs `waitForTimeout`/`goto`/`url` keeps the real `page` and takes the root
+ * separately.
+ */
+export type LocatorRoot = Page | FrameLocator;
+
+/** Separator between the per-`<iframe>` selectors in `Target.frame` (outermost first). */
+export const FRAME_PATH_SEPARATOR = " >>> ";
+
+/** `Target.frame` split into one selector per `<iframe>`, outermost first; [] for none. */
+export function frameSegments(frame?: string): string[] {
+  return (frame ?? "").split(FRAME_PATH_SEPARATOR).map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * The root a target's locator hangs off, as SOURCE CODE for the generated spec: `page` when the
+ * target has no frame — byte-identical to every spec emitted before frames existed — else
+ * `page.frameLocator(a).frameLocator(b)...`.
+ */
+export function frameRootCode(t: Target): string {
+  return frameSegments(t.frame).reduce((acc, seg) => `${acc}.frameLocator(${q(seg)})`, "page");
+}
+
+/** The live twin of `frameRootCode`: the same chain, built on a real page. */
+export function frameRoot(page: Page, t: Target): LocatorRoot {
+  let root: LocatorRoot = page;
+  for (const seg of frameSegments(t.frame)) root = root.frameLocator(seg);
+  return root;
+}
 
 /**
  * Resolvers for target fields OTHER than role+name — label → placeholder → text → testId,
@@ -12,17 +45,17 @@ const q = (s: string) => JSON.stringify(s);
  */
 const RESOLVERS: Array<{
   match: (t: Target) => boolean;
-  code: (t: Target) => string;
-  live: (page: Page, t: Target) => Locator;
+  code: (t: Target, root: string) => string;
+  live: (root: LocatorRoot, t: Target) => Locator;
 }> = [
   // css first: it is only ever set by discovery, from an element it verified exists, and it
   // is the only way to reach a control whose accessible name is empty (icon-only cart,
   // close, search). Everything below is a name-based guess by comparison.
-  { match: (t) => !!t.css,         code: (t) => `page.locator(${q(t.css!)})`,                  live: (p, t) => p.locator(t.css!) },
-  { match: (t) => !!t.label,       code: (t) => `page.getByLabel(${q(t.label!)})`,             live: (p, t) => p.getByLabel(t.label!) },
-  { match: (t) => !!t.placeholder, code: (t) => `page.getByPlaceholder(${q(t.placeholder!)})`, live: (p, t) => p.getByPlaceholder(t.placeholder!) },
-  { match: (t) => !!t.text,        code: (t) => `page.getByText(${q(t.text!)})`,                live: (p, t) => p.getByText(t.text!) },
-  { match: (t) => !!t.testId,      code: (t) => `page.getByTestId(${q(t.testId!)})`,            live: (p, t) => p.getByTestId(t.testId!) },
+  { match: (t) => !!t.css,         code: (t, r) => `${r}.locator(${q(t.css!)})`,                  live: (p, t) => p.locator(t.css!) },
+  { match: (t) => !!t.label,       code: (t, r) => `${r}.getByLabel(${q(t.label!)})`,             live: (p, t) => p.getByLabel(t.label!) },
+  { match: (t) => !!t.placeholder, code: (t, r) => `${r}.getByPlaceholder(${q(t.placeholder!)})`, live: (p, t) => p.getByPlaceholder(t.placeholder!) },
+  { match: (t) => !!t.text,        code: (t, r) => `${r}.getByText(${q(t.text!)})`,                live: (p, t) => p.getByText(t.text!) },
+  { match: (t) => !!t.testId,      code: (t, r) => `${r}.getByTestId(${q(t.testId!)})`,            live: (p, t) => p.getByTestId(t.testId!) },
 ];
 
 function pick(t: Target) {
@@ -382,26 +415,30 @@ export const optionErrorMessage = new Function(`return (${OPTION_ERROR_JS});`)()
  * as an import — only as the same logic written twice.
  */
 export function resolveCode(t: Target, action?: string): string {
+  // `page`, or the iframe chain `Target.frame` names. locate()/field() only call locator/getBy*
+  // on their first argument, so a FrameLocator is a drop-in for it (tests/frameTarget.test.ts
+  // runs the emitted helpers against a real iframe to keep that true).
+  const root = frameRootCode(t);
   // A verified selector beats role+name even when both are present — role+name may be a
   // name discovery derived (e.g. "shopping cart link"), which getByRole cannot match.
   if (t.css) {
-    const base = `page.locator(${q(t.css)})`;
+    const base = `${root}.locator(${q(t.css)})`;
     return t.nth !== undefined && t.nth !== null ? `${base}.nth(${t.nth})` : `${base}.first()`;
   }
   // A field action routes through the field() helper regardless of which slot carried the
   // hint, so a role+name whose name was inferred from an adjacent <div> still resolves —
   // getByRole cannot match a name the DOM does not actually have.
   if (isFieldAction(action) && fieldHint(t)) {
-    return `(await field(page, ${q(fieldHint(t))}, ${q(action!)}))`;
+    return `(await field(${root}, ${q(fieldHint(t))}, ${q(action!)}))`;
   }
   if (t.role && t.name) {
     // If nth is specified, use it to disambiguate duplicate elements
     if (t.nth !== undefined && t.nth !== null) {
-      return `(await locate(page, ${q(t.role)}, ${q(t.name)}, ${t.nth}))`;
+      return `(await locate(${root}, ${q(t.role)}, ${q(t.name)}, ${t.nth}))`;
     }
-    return `(await locate(page, ${q(t.role)}, ${q(t.name)}))`;
+    return `(await locate(${root}, ${q(t.role)}, ${q(t.name)}))`;
   }
-  return `${pick(t).code(t)}.first()`;
+  return `${pick(t).code(t, root)}.first()`;
 }
 
 /**
@@ -410,7 +447,7 @@ export function resolveCode(t: Target, action?: string): string {
  * the original locator if none are unique, so an unrecoverable failure's error message is
  * unchanged; this only adds chances to succeed, never removes the existing path.
  */
-async function resolveRoleWithFallback(page: Page, role: string, name: string): Promise<Locator> {
+async function resolveRoleWithFallback(page: LocatorRoot, role: string, name: string): Promise<Locator> {
   // exact: true throughout — kept deliberately in step with generator.ts's LOCATE_HELPER,
   // which needs the same thing for the same reason (TECH_DEBT.md TD-32: getByRole's default
   // substring matching picked an unrelated video-player button over the real target). TD-07
@@ -446,7 +483,7 @@ async function resolveRoleWithFallback(page: Page, role: string, name: string): 
  * `getByRole`, `locator`, `evaluate` — the same surface as `Page` for what is needed here).
  * `.last()` because a stacked dialog puts the newest on top.
  */
-export async function resolveScope(page: Page): Promise<Locator> {
+export async function resolveScope(page: LocatorRoot): Promise<Locator> {
   const dialogs = page.locator(DIALOG_SELECTOR).filter({ visible: true } as any);
   try {
     if (await dialogs.count() > 0) return dialogs.last();
@@ -466,7 +503,7 @@ async function firstUnique(candidates: Locator[]): Promise<Locator | null> {
   return null;
 }
 
-export async function resolveField(page: Page, hint: string, action?: string): Promise<Locator> {
+export async function resolveField(page: LocatorRoot, hint: string, action?: string): Promise<Locator> {
   const scope = await resolveScope(page);
 
   // Accessible relationships first, in decreasing order of how much the DOM actually vouches for
@@ -523,12 +560,14 @@ export async function resolveField(page: Page, hint: string, action?: string): P
 
 /** Live Playwright Locator against a running page (for the replay runner). */
 export async function resolveLive(page: Page, t: Target, action?: string): Promise<Locator> {
+  // The same root resolveCode emits, built live. Everything below uses only locator/getBy*.
+  const root = frameRoot(page, t);
   if (t.css) {
-    const base = page.locator(t.css);
+    const base = root.locator(t.css);
     return t.nth !== undefined && t.nth !== null ? base.nth(t.nth) : base.first();
   }
   if (isFieldAction(action) && fieldHint(t)) {
-    return resolveField(page, fieldHint(t), action);
+    return resolveField(root, fieldHint(t), action);
   }
   if (t.role && t.name) {
     // If nth is specified, use it to disambiguate duplicate elements. exact: true for the same
@@ -536,12 +575,12 @@ export async function resolveLive(page: Page, t: Target, action?: string): Promi
     // is only meaningful against the element set it was computed for, so letting substring
     // matches widen that set silently shifts which element nth points at.
     if (t.nth !== undefined && t.nth !== null) {
-      const locator = page.getByRole(t.role as any, { name: t.name, exact: true });
+      const locator = root.getByRole(t.role as any, { name: t.name, exact: true });
       return locator.nth(t.nth);
     }
-    return resolveRoleWithFallback(page, t.role, t.name);
+    return resolveRoleWithFallback(root, t.role, t.name);
   }
-  return pick(t).live(page, t).first();
+  return pick(t).live(root, t).first();
 }
 
 /**
@@ -553,14 +592,16 @@ export async function resolveLive(page: Page, t: Target, action?: string): Promi
  * generator — the two implementations having drifted apart is TD-07, and the point of the shared
  * `*_JS` constants above is that the matching itself cannot.
  */
-export async function chooseLive(page: Page, target: Locator, value: string): Promise<void> {
+export async function chooseLive(page: Page, target: Locator, value: string, root: LocatorRoot = page): Promise<void> {
   // Walk to something selectable when the resolved node is a wrapper, a label, or a custom shell.
   try {
     const tag0 = (await target.evaluate((el) => el.tagName).catch(() => "")) || "";
     const role0 = (await target.getAttribute("role").catch(() => "")) || "";
     if (tag0.toUpperCase() !== "SELECT" && role0 !== "combobox" && role0 !== "listbox") {
       const si = await target.evaluate(selectableFn, FIELD_SELECTOR).catch(() => -1) as number;
-      if (typeof si === "number" && si >= 0) target = page.locator(FIELD_SELECTOR).nth(si);
+      // `root`, not `page`: the index is into the target's OWN document, which for a target in an
+      // iframe is the frame's (frameRoot). Defaults to `page`, so every existing caller is unchanged.
+      if (typeof si === "number" && si >= 0) target = root.locator(FIELD_SELECTOR).nth(si);
     }
   } catch { /* stay with what we were given */ }
 
@@ -592,7 +633,7 @@ export async function chooseLive(page: Page, target: Locator, value: string): Pr
 
   // Custom dropdown: open it, wait for items, then match the same way.
   await target.click({ timeout: SELECT_TIMEOUT_MS });
-  const outer = await resolveScope(page);
+  const outer = await resolveScope(root);
   // Wait on the OPEN popup, not the whole scope. `:visible` matters twice over: several
   // [role="listbox"] nodes on one form means `.first()` is a CLOSED one, and a native <select>
   // anywhere on the page contributes <option> elements whose implicit role is "option" — so an

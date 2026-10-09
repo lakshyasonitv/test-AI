@@ -4894,3 +4894,22 @@ The SSRF guard blocks `127.*`, `10.*`, `169.254.*` and the like by text only, so
 that resolves to a private address passes. It guards POST /api/runs and, since D-49,
 `checkSalesforceLogin`. Remediation: resolve the host and check the address too, at the point the
 browser connects.
+
+### LS-5. Deterministic heal pairs the new element's `css` with the OLD step's `frame` — Medium / Accidental — **Open**
+
+*Filed by the live-DOM discovery stream (Lakshya).*
+
+`healStepTarget` (`src/stages/deterministicHeal.ts`) builds the corrected target as
+`{ ...target }` and then copies `css`/`testId` from the newly matched element, but never `frame`.
+Reproduced through the real function: a step grounded inside iframe `#f` whose button moved to the
+top document heals to `{ css: "#save", frame: "#f" }` and emits
+`page.frameLocator("#f").locator("#save")`, which looks in a document the button is no longer in.
+The reverse (an element now inside a frame) heals to a frameless `page.locator("#save")`. The
+change description hides it too: `diffTargets` compares a fixed key list without `frame`, so a
+frame-only change diffs as `[]` ("no structural changes").
+
+Only reachable with `DISCOVERY_LIVE_DOM=true`, because only the live walker produces `frame`.
+Remediation: set `corrected.frame = best.element.frame` (deleting it when the element has none) in
+the same place `css` is copied, and add `"frame"` to `diffTargets`'s key list. `stepText.ts` was
+checked for the same gap and does NOT have it: an edited target is rebuilt from scratch, so a stale
+`frame` is dropped with `css`.
