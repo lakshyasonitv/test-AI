@@ -44,7 +44,41 @@ export function humaniseIdentifier(raw: string): string {
 const CLASS_NOISE =
   /^(active|disabled|hidden|show|hide|open|closed|selected|first|last|odd|even|col|row|container|wrapper|inner|outer|flex|grid|sm|md|lg|xl|d|p|m|mt|mb|ml|mr|px|py|text|bg|border|rounded|shadow|w|h)([-_]?\d*)$/i;
 
+/** Escape for a value INSIDE a double-quoted CSS string (`[attr="…"]`): only `"` and `\`. */
 const cssEscape = (s: string) => s.replace(/["\\]/g, "\\$&");
+
+/**
+ * Escape an IDENTIFIER (the part after `#`), per the CSSOM `CSS.escape()` algorithm — Node has no
+ * `CSS.escape`, so this is a port of it.
+ *
+ * Not the same job as `cssEscape` above, and using that one here was LS-4: inside a string only
+ * `"` and `\` matter, but in an identifier `.`, `:`, `[`, a leading digit and more all change the
+ * selector's meaning. Measured in Chromium: id `a.b` became `#a.b` ("id a AND class b") and matched a
+ * DIFFERENT element with no error; id `1x` became `#1x`, which throws as an invalid selector.
+ * `stableSelector` uses it to decide whether an id can be written bare at all.
+ */
+export function cssIdent(value: string): string {
+  let out = "";
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    const ch = value[i];
+    if (c === 0) { out += "\uFFFD"; continue; }
+    if ((c >= 0x1 && c <= 0x1f) || c === 0x7f ||
+        (i === 0 && c >= 0x30 && c <= 0x39) ||
+        (i === 1 && c >= 0x30 && c <= 0x39 && value.charCodeAt(0) === 0x2d)) {
+      out += "\\" + c.toString(16) + " ";
+      continue;
+    }
+    if (i === 0 && value.length === 1 && c === 0x2d) { out += "\\" + ch; continue; }
+    if (c >= 0x80 || c === 0x2d || c === 0x5f || (c >= 0x30 && c <= 0x39) ||
+        (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a)) {
+      out += ch;
+      continue;
+    }
+    out += "\\" + ch;
+  }
+  return out;
+}
 
 /** Deterministic selector for one element, most stable attribute first. "" when none exists. */
 export function stableSelector(el: {
@@ -53,7 +87,13 @@ export function stableSelector(el: {
   if (el.dataTest) return `[data-test="${cssEscape(el.dataTest)}"]`;
   if (el.dataTestid) return `[data-testid="${cssEscape(el.dataTestid)}"]`;
   if (el.dataQa) return `[data-qa="${cssEscape(el.dataQa)}"]`;
-  if (el.id) return `#${cssEscape(el.id)}`;
+  if (el.id) {
+    // A plain id stays `#id`, exactly as before. One that needs escaping becomes `[id="…"]`: a
+    // quoted string needs only `"`/`\` escaped and never depends on how a selector engine parses
+    // identifier escapes — Playwright 1.49's own parser throws on `#\-` (id "-") although the
+    // browser accepts it. Measured; see tests/selectorEscape.test.ts.
+    return cssIdent(el.id) === el.id ? `#${el.id}` : `[id="${cssEscape(el.id)}"]`;
+  }
   return "";
 }
 

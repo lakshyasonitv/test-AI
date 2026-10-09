@@ -4849,7 +4849,7 @@ returns origin+path, and its comment ("same as ir.ts pageKey") wrongly claims th
 the schema's `pageKey` delegate to `text.ts` (or delete it and update its callers), then fix the
 comment.
 
-### LS-4. `stableSelector` builds `#id` without escaping, so a dotted id silently matches a different element — Medium / Accidental — **Open**
+### LS-4. `stableSelector` builds `#id` without escaping, so a dotted id silently matches a different element — Medium / Accidental — **Fixed**
 
 *Filed by the live-DOM discovery stream (Lakshya).*
 
@@ -4861,6 +4861,15 @@ valid selector`. The first is the dangerous one: a wrong element, no error. `det
 (`domDiscovery.ts`) builds `#${g.id}` with no escaping at all. The live walker uses the browser's
 `CSS.escape` and is not affected. Remediation: escape identifiers per the CSS spec (a port of
 `CSS.escape`) in both places, with the two ids above as test cases.
+
+**Fixed.** `cssIdent` (`discovery.ts`) is a port of the CSSOM `CSS.escape`, checked against the
+browser's own `CSS.escape` on 22 awkward ids. It is used as the test of whether an id can be written
+bare: a plain id stays `#id` (byte-identical to before), and any id that would need escaping
+becomes `[id="…"]`. Not `#<escaped>`: measured, Playwright 1.49's own selector parser throws on
+`#\-` (id `-`) although the browser accepts it, and the quoted form sidesteps identifier escapes
+entirely. Applied in `stableSelector`, in `detectGenericClickables` (now via `stableSelector`) and in
+the live walker's id candidate and positional anchor. `tests/selectorEscape.test.ts` executes every
+selector in Chromium.
 
 ### TD-111. `groundingError` never checks a target that lacks a role or a name — css-only and label-only targets pass unverified — Medium / Accidental — **Partly addressed (D-48)**
 

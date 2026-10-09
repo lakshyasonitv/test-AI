@@ -15,6 +15,7 @@ import { chromiumLaunchOptions, browserContextOptions } from "../browserLaunch.j
 import { AppModel, PageModel, Element } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 import { extractCrawlResponse, type CrawlResponse } from "./domExtract.js";
+import { stableSelector } from "./discovery.js";
 
 const REQUEST_TIMEOUT = 30_000;
 
@@ -501,7 +502,9 @@ export async function extractDomModelFromPage(page: Page, url: string): Promise<
           role: "button",
           name: g.name,
           ...(g.testId ? { testId: g.testId } : {}),
-          ...(g.id ? { css: `#${g.id}` } : {}),
+          // Through stableSelector, not a bare `#${id}`: an id like "a.b" or "1x" is not a valid
+          // bare identifier (LS-4) — unescaped it matched a different element, or threw.
+          ...(g.id ? { css: stableSelector({ id: g.id }) } : {}),
           visible: true,
           enabled: true,
           order: order++,

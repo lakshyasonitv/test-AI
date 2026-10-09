@@ -218,6 +218,25 @@ describe("css — present on every element, verified by executing it", () => {
   });
 });
 
+describe("awkward ids (LS-4)", () => {
+  it("gives every awkward id a selector Playwright can run — including id \"-\", which #\\- breaks", async () => {
+    const ids = ["plain", "a.b", "1x", "-", "a:b", 'q"uote', "back\\slash", "50%"];
+    await page.setContent('<div id="root"></div>');
+    await page.evaluate((list) => list.forEach((id, i) => {
+      const b = document.createElement("button");
+      b.id = id; b.textContent = "b" + i; b.setAttribute("data-k", "b" + i);
+      document.getElementById("root")!.appendChild(b);
+    }), ids);
+    const els = await enumerateLiveElements(page);
+    expect(els).toHaveLength(ids.length);
+    expect(els[0].css).toBe("#plain");
+    for (const e of els) {
+      expect(await page.locator(e.css!).count(), e.css).toBe(1);
+      expect(await page.locator(e.css!).getAttribute("data-k"), e.css).toBe(e.name);
+    }
+  });
+});
+
 describe("what the walk includes and excludes", () => {
   it("excludes type=hidden inputs entirely — their value must never become a name (TD-64)", async () => {
     await page.setContent(`<form><input type="hidden" name="csrf" value="SECRET-TOKEN"><button>Go</button></form>`);

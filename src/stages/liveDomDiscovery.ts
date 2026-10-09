@@ -192,11 +192,15 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             const value = attrCands[k][2];
             if (!value) continue;
             // Inside a double-quoted CSS string only backslash, the quote and newlines need
-            // escaping; an id goes through CSS.escape because it is an identifier, not a string.
+            // escaping. A plain id stays `#id`; an id that would need identifier escapes takes the
+            // quoted `[id="…"]` form instead, because Playwright 1.49's own selector parser throws
+            // on some escaped identifiers the browser accepts (`#\-`, id "-") — the same rule as
+            // stableSelector in discovery.ts (LS-4).
+            const quoted = "\"" +
+              value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\n/g, "\\a ") + "\"]";
             const cand = prefix === "#"
-              ? "#" + CSS.escape(value)
-              : prefix + "[" + attrName + "=\"" +
-                value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\n/g, "\\a ") + "\"]";
+              ? (CSS.escape(value) === value ? "#" + value : "[id=" + quoted)
+              : prefix + "[" + attrName + "=" + quoted;
             try {
               const hits = scope.querySelectorAll(cand);
               if (hits.length === 1 && hits[0] === el) scoped.push(cand);
@@ -212,7 +216,10 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             while (node && node !== document.documentElement) {
               const nt = node.tagName.toLowerCase();
               if (node !== el && node.id) {
-                const anchor = "#" + CSS.escape(node.id);
+                // Same plain-or-quoted rule as the id candidate above.
+                const anchor = CSS.escape(node.id) === node.id
+                  ? "#" + node.id
+                  : "[id=\"" + node.id.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\n/g, "\\a ") + "\"]";
                 let unique = false;
                 try { unique = scope.querySelectorAll(anchor).length === 1; } catch { unique = false; }
                 if (unique) { segs.unshift(anchor); anchored = true; break; }
