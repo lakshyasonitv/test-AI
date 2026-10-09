@@ -1,0 +1,668 @@
+{
+ "login": {
+  "baseUrl": "https://example.test",
+  "pages": [
+   {
+    "url": "https://example.test/login",
+    "title": "",
+    "concepts": [],
+    "elements": [
+     {
+      "role": "link",
+      "name": "Home",
+      "visible": true,
+      "enabled": true,
+      "id": "link_0",
+      "genericPath": "html>body>header>nav>a",
+      "order": 0,
+      "landmark": "nav"
+     },
+     {
+      "role": "link",
+      "name": "About",
+      "visible": true,
+      "enabled": true,
+      "id": "link_1",
+      "genericPath": "html>body>header>nav>a",
+      "order": 1,
+      "landmark": "nav"
+     },
+     {
+      "role": "textbox",
+      "name": "username",
+      "visible": true,
+      "enabled": true,
+      "id": "u",
+      "css": "#u",
+      "genericPath": "html>body>main>form>input",
+      "order": 2,
+      "landmark": "form"
+     },
+     {
+      "role": "textbox",
+      "name": "pw",
+      "visible": true,
+      "enabled": true,
+      "id": "p",
+      "css": "#p",
+      "genericPath": "html>body>main>form>input",
+      "order": 3,
+      "landmark": "form"
+     },
+     {
+      "role": "textbox",
+      "name": "Password",
+      "visible": true,
+      "enabled": true,
+      "id": "textbox_4",
+      "genericPath": "html>body>main>form>input",
+      "order": 4,
+      "landmark": "form"
+     },
+     {
+      "role": "textbox",
+      "name": "csrf",
+      "visible": true,
+      "enabled": true,
+      "id": "textbox_5",
+      "genericPath": "html>body>main>form>input",
+      "order": 5,
+      "landmark": "form"
+     },
+     {
+      "role": "checkbox",
+      "name": "Remember me",
+      "visible": true,
+      "enabled": true,
+      "id": "checkbox_6",
+      "genericPath": "html>body>main>form>input",
+      "order": 6,
+      "landmark": "form"
+     },
+     {
+      "role": "combobox",
+      "name": "lang",
+      "visible": true,
+      "enabled": true,
+      "id": "combobox_7",
+      "genericPath": "html>body>main>form>select",
+      "order": 7,
+      "landmark": "form"
+     },
+     {
+      "role": "button",
+      "name": "Log in",
+      "visible": true,
+      "enabled": true,
+      "id": "button_8",
+      "testId": "login-button",
+      "css": "[data-test=\"login-button\"]",
+      "genericPath": "html>body>main>form>button",
+      "order": 8,
+      "landmark": "form"
+     },
+     {
+      "role": "link",
+      "name": "Terms",
+      "visible": true,
+      "enabled": true,
+      "id": "link_9",
+      "genericPath": "html>body>footer>a",
+      "order": 9,
+      "landmark": "footer"
+     },
+     {
+      "role": "textbox",
+      "name": "Username",
+      "visible": true,
+      "enabled": true,
+      "id": "u",
+      "order": 10
+     },
+     {
+      "role": "combobox",
+      "name": "Sign in",
+      "visible": true,
+      "enabled": true,
+      "id": "field_11",
+      "order": 11
+     },
+     {
+      "role": "heading",
+      "name": "Sign in",
+      "visible": true,
+      "enabled": true,
+      "order": 12
+     }
+    ],
+    "landmarkSections": [
+     {
+      "landmark": "nav",
+      "label": "",
+      "elementCount": 2
+     },
+     {
+      "landmark": "form",
+      "label": "",
+      "elementCount": 7
+     },
+     {
+      "landmark": "footer",
+      "label": "",
+      "elementCount": 1
+     }
+    ],
+    "markdown": "[Home](/home)\n[About](/about)\n\n# Sign in\n\nUsername\nPassword\nEN\nDE\nLog in\n[Terms](/terms)",
+    "cleanedHtml": "<html><head></head><body><header style=\"position:fixed;top:0\"><nav><a href=\"/home\">Home</a><a href=\"/about\">About</a></nav></header>\n    <main><h1>Sign in</h1><form action=\"/login\" method=\"post\">\n    <label for=\"u\">Username</label><input id=\"u\" name=\"username\"><label for=\"p\">Password</label><input id=\"p\" type=\"password\" name=\"pw\">\n    <input type=\"text\" name=\"passwordShown\" placeholder=\"Password\" style=\"display:none\"><input type=\"hidden\" name=\"csrf\" value=\"T0K3N\">\n    <input type=\"checkbox\" aria-label=\"Remember me\"><select name=\"lang\"><option>EN</option><option>DE</option></select>\n    <button type=\"submit\" data-test=\"login-button\">Log in</button></form></main><footer><a href=\"/terms\">Terms</a></footer></body></html>",
+    "metadata": {
+     "title": "",
+     "description": "",
+     "keywords": "",
+     "author": "",
+     "ogTitle": "",
+     "ogDescription": "",
+     "ogImage": "",
+     "canonical": "",
+     "charset": "",
+     "viewport": "",
+     "favicon": ""
+    },
+    "forms": [
+     {
+      "action": "https://example.test/login",
+      "method": "POST",
+      "id": "",
+      "name": "",
+      "ariaLabel": "",
+      "fields": [
+       {
+        "tag": "input",
+        "inputType": "text",
+        "name": "username",
+        "placeholder": "",
+        "label": "Username",
+        "required": false,
+        "value": "",
+        "options": [],
+        "id": "u",
+        "ariaLabel": ""
+       },
+       {
+        "tag": "input",
+        "inputType": "password",
+        "name": "pw",
+        "placeholder": "",
+        "label": "Password",
+        "required": false,
+        "value": "",
+        "options": [],
+        "id": "p",
+        "ariaLabel": ""
+       },
+       {
+        "tag": "input",
+        "inputType": "text",
+        "name": "passwordShown",
+        "placeholder": "Password",
+        "label": "",
+        "required": false,
+        "value": "",
+        "options": [],
+        "id": "",
+        "ariaLabel": ""
+       },
+       {
+        "tag": "input",
+        "inputType": "hidden",
+        "name": "csrf",
+        "placeholder": "",
+        "label": "Sign in",
+        "required": false,
+        "value": "",
+        "options": [],
+        "id": "",
+        "ariaLabel": ""
+       },
+       {
+        "tag": "input",
+        "inputType": "checkbox",
+        "name": "",
+        "placeholder": "",
+        "label": "",
+        "required": false,
+        "value": "on",
+        "options": [],
+        "id": "",
+        "ariaLabel": "Remember me"
+       },
+       {
+        "tag": "select",
+        "inputType": "",
+        "name": "lang",
+        "placeholder": "",
+        "label": "Sign in",
+        "required": false,
+        "value": "",
+        "options": [
+         "EN",
+         "DE"
+        ],
+        "id": "",
+        "ariaLabel": ""
+       }
+      ]
+     }
+    ],
+    "navigation": [],
+    "domLinks": [
+     {
+      "text": "Home",
+      "href": "https://example.test/home",
+      "title": "",
+      "ariaLabel": "",
+      "isExternal": false,
+      "role": "link"
+     },
+     {
+      "text": "About",
+      "href": "https://example.test/about",
+      "title": "",
+      "ariaLabel": "",
+      "isExternal": false,
+      "role": "link"
+     },
+     {
+      "text": "Terms",
+      "href": "https://example.test/terms",
+      "title": "",
+      "ariaLabel": "",
+      "isExternal": false,
+      "role": "link"
+     }
+    ],
+    "buttons": [
+     {
+      "text": "",
+      "buttonType": "submit",
+      "ariaLabel": "",
+      "disabled": false,
+      "id": "u",
+      "role": "button"
+     },
+     {
+      "text": "Log in",
+      "buttonType": "submit",
+      "ariaLabel": "",
+      "disabled": false,
+      "id": "",
+      "role": "button"
+     }
+    ],
+    "headings": [
+     {
+      "level": 1,
+      "text": "Sign in",
+      "id": ""
+     }
+    ],
+    "tables": [],
+    "images": [],
+    "internalUrls": [
+     "https://example.test/home",
+     "https://example.test/about",
+     "https://example.test/terms"
+    ],
+    "externalUrls": [],
+    "breadcrumbs": [],
+    "hasSearch": false,
+    "hasPagination": false,
+    "hasModal": false,
+    "hasTabs": false,
+    "hasAccordion": false,
+    "domDepth": 4,
+    "accessibility": {
+     "lang": "",
+     "title": "",
+     "landmarkRoles": [],
+     "ariaLandmarks": [],
+     "skipLinks": [],
+     "formsWithLabels": 0,
+     "imagesWithAlt": 0,
+     "imagesTotal": 0,
+     "headingOrder": [
+      1
+     ]
+    },
+    "needsVision": false,
+    "visionReason": "",
+    "discoveryMethod": "dom"
+   }
+  ]
+ },
+ "shop": {
+  "baseUrl": "https://example.test",
+  "pages": [
+   {
+    "url": "https://example.test/shop",
+    "title": "",
+    "concepts": [],
+    "elements": [
+     {
+      "role": "button",
+      "name": "Add to cart",
+      "visible": true,
+      "enabled": true,
+      "id": "add-1",
+      "css": "#add-1",
+      "genericPath": "html>body>main>ul>li>button",
+      "order": 0,
+      "landmark": "main"
+     },
+     {
+      "role": "button",
+      "name": "Add to cart",
+      "visible": true,
+      "enabled": true,
+      "id": "add-2",
+      "css": "#add-2",
+      "genericPath": "html>body>main>ul>li>button",
+      "order": 1,
+      "landmark": "main"
+     },
+     {
+      "role": "button",
+      "name": "Add to cart",
+      "visible": true,
+      "enabled": true,
+      "id": "add-3",
+      "css": "#add-3",
+      "genericPath": "html>body>main>ul>li>button",
+      "order": 2,
+      "landmark": "main"
+     },
+     {
+      "role": "link",
+      "name": "Cart",
+      "visible": true,
+      "enabled": true,
+      "id": "link_3",
+      "genericPath": "html>body>main>a",
+      "order": 3,
+      "landmark": "main"
+     },
+     {
+      "role": "textbox",
+      "name": "Full Name",
+      "visible": true,
+      "enabled": true,
+      "id": "textbox_4",
+      "nameFromProximity": true,
+      "genericPath": "html>body>main>input",
+      "order": 4,
+      "landmark": "main"
+     },
+     {
+      "role": "tab",
+      "name": "Details",
+      "visible": true,
+      "enabled": true,
+      "id": "tab_5",
+      "genericPath": "html>body>main>div",
+      "order": 5,
+      "landmark": "main"
+     },
+     {
+      "role": "heading",
+      "name": "Products",
+      "visible": true,
+      "enabled": true,
+      "order": 6
+     },
+     {
+      "role": "button",
+      "name": "Checkout",
+      "css": "[id=\"go.now\"]",
+      "visible": true,
+      "enabled": true,
+      "order": 7
+     }
+    ],
+    "landmarkSections": [
+     {
+      "landmark": "main",
+      "label": "",
+      "elementCount": 6
+     }
+    ],
+    "markdown": "## Products\n\n  - Item 1Add to cart\n  - Item 2Add to cart\n  - Item 3Add to cart\nCheckout\nDetails\nFull Name",
+    "cleanedHtml": "<html><head></head><body><main><h2>Products</h2><ul><li><span>Item 1</span><button id=\"add-1\">Add to cart</button></li><li><span>Item 2</span><button id=\"add-2\">Add to cart</button></li><li><span>Item 3</span><button id=\"add-3\">Add to cart</button></li></ul>\n    <div style=\"cursor:pointer;width:90px;height:30px\" id=\"go.now\">Checkout</div><div role=\"tab\">Details</div>\n    <a href=\"/cart\" aria-label=\"Cart\"><img alt=\"cart\"></a><div>Full Name</div><input class=\"x\"></main></body></html>",
+    "metadata": {
+     "title": "",
+     "description": "",
+     "keywords": "",
+     "author": "",
+     "ogTitle": "",
+     "ogDescription": "",
+     "ogImage": "",
+     "canonical": "",
+     "charset": "",
+     "viewport": "",
+     "favicon": ""
+    },
+    "forms": [],
+    "navigation": [],
+    "domLinks": [
+     {
+      "text": "",
+      "href": "https://example.test/cart",
+      "title": "",
+      "ariaLabel": "Cart",
+      "isExternal": false,
+      "role": "link"
+     }
+    ],
+    "buttons": [
+     {
+      "text": "Add to cart",
+      "buttonType": "button",
+      "ariaLabel": "",
+      "disabled": false,
+      "id": "add-1",
+      "role": "button"
+     },
+     {
+      "text": "Add to cart",
+      "buttonType": "button",
+      "ariaLabel": "",
+      "disabled": false,
+      "id": "add-2",
+      "role": "button"
+     },
+     {
+      "text": "Add to cart",
+      "buttonType": "button",
+      "ariaLabel": "",
+      "disabled": false,
+      "id": "add-3",
+      "role": "button"
+     },
+     {
+      "text": "",
+      "buttonType": "submit",
+      "ariaLabel": "",
+      "disabled": false,
+      "id": "",
+      "role": "button"
+     }
+    ],
+    "headings": [
+     {
+      "level": 2,
+      "text": "Products",
+      "id": ""
+     }
+    ],
+    "tables": [],
+    "images": [],
+    "internalUrls": [
+     "https://example.test/cart"
+    ],
+    "externalUrls": [],
+    "breadcrumbs": [],
+    "hasSearch": false,
+    "hasPagination": false,
+    "hasModal": false,
+    "hasTabs": false,
+    "hasAccordion": false,
+    "domDepth": 4,
+    "accessibility": {
+     "lang": "",
+     "title": "",
+     "landmarkRoles": [],
+     "ariaLandmarks": [],
+     "skipLinks": [],
+     "formsWithLabels": 0,
+     "imagesWithAlt": 0,
+     "imagesTotal": 0,
+     "headingOrder": [
+      2
+     ]
+    },
+    "needsVision": false,
+    "visionReason": "",
+    "discoveryMethod": "dom"
+   }
+  ]
+ },
+ "shadowAndFrame": {
+  "baseUrl": "https://example.test",
+  "pages": [
+   {
+    "url": "https://example.test/shadowAndFrame",
+    "title": "",
+    "concepts": [],
+    "elements": [
+     {
+      "role": "button",
+      "name": "Light",
+      "visible": true,
+      "enabled": true,
+      "id": "button_0",
+      "genericPath": "html>body>button",
+      "order": 0
+     }
+    ],
+    "markdown": "Light",
+    "cleanedHtml": "<html><head></head><body><button>Light</button><div id=\"h\"></div><iframe srcdoc=\"&lt;button&gt;InFrame&lt;/button&gt;\"></iframe>\n    <script>document.getElementById(\"h\").attachShadow({mode:\"open\"}).innerHTML = \"<button>InShadow</button>\";</script></body></html>",
+    "metadata": {
+     "title": "",
+     "description": "",
+     "keywords": "",
+     "author": "",
+     "ogTitle": "",
+     "ogDescription": "",
+     "ogImage": "",
+     "canonical": "",
+     "charset": "",
+     "viewport": "",
+     "favicon": ""
+    },
+    "forms": [],
+    "navigation": [],
+    "domLinks": [],
+    "buttons": [
+     {
+      "text": "Light",
+      "buttonType": "button",
+      "ariaLabel": "",
+      "disabled": false,
+      "id": "",
+      "role": "button"
+     }
+    ],
+    "headings": [],
+    "tables": [],
+    "images": [],
+    "internalUrls": [],
+    "externalUrls": [],
+    "breadcrumbs": [],
+    "hasSearch": false,
+    "hasPagination": false,
+    "hasModal": false,
+    "hasTabs": false,
+    "hasAccordion": false,
+    "domDepth": 1,
+    "accessibility": {
+     "lang": "",
+     "title": "",
+     "landmarkRoles": [],
+     "ariaLandmarks": [],
+     "skipLinks": [],
+     "formsWithLabels": 0,
+     "imagesWithAlt": 0,
+     "imagesTotal": 0,
+     "headingOrder": []
+    },
+    "needsVision": false,
+    "visionReason": "",
+    "discoveryMethod": "dom"
+   }
+  ]
+ },
+ "empty": {
+  "baseUrl": "https://example.test",
+  "pages": [
+   {
+    "url": "https://example.test/empty",
+    "title": "",
+    "concepts": [],
+    "elements": [],
+    "markdown": "Nothing to click here.",
+    "cleanedHtml": "<html><head></head><body><p>Nothing to click here.</p></body></html>",
+    "metadata": {
+     "title": "",
+     "description": "",
+     "keywords": "",
+     "author": "",
+     "ogTitle": "",
+     "ogDescription": "",
+     "ogImage": "",
+     "canonical": "",
+     "charset": "",
+     "viewport": "",
+     "favicon": ""
+    },
+    "forms": [],
+    "navigation": [],
+    "domLinks": [],
+    "buttons": [],
+    "headings": [],
+    "tables": [],
+    "images": [],
+    "internalUrls": [],
+    "externalUrls": [],
+    "breadcrumbs": [],
+    "hasSearch": false,
+    "hasPagination": false,
+    "hasModal": false,
+    "hasTabs": false,
+    "hasAccordion": false,
+    "domDepth": 1,
+    "accessibility": {
+     "lang": "",
+     "title": "",
+     "landmarkRoles": [],
+     "ariaLandmarks": [],
+     "skipLinks": [],
+     "formsWithLabels": 0,
+     "imagesWithAlt": 0,
+     "imagesTotal": 0,
+     "headingOrder": []
+    },
+    "needsVision": false,
+    "visionReason": "",
+    "discoveryMethod": "dom"
+   }
+  ]
+ }
+}

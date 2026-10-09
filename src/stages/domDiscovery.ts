@@ -16,6 +16,7 @@ import { AppModel, PageModel, Element } from "../schema/appModel.js";
 import { cacheGet, cacheSet } from "../kb/cache.js";
 import { extractCrawlResponse, type CrawlResponse } from "./domExtract.js";
 import { stableSelector } from "./discovery.js";
+import { enumerateLiveElements } from "./liveDomDiscovery.js";
 
 const REQUEST_TIMEOUT = 30_000;
 
@@ -168,26 +169,7 @@ function crawlResponseToAppModel(crawl: CrawlResponse): AppModel {
     });
   }
 
-  // Landmark tagging from genericPath (since we don't have Cheerio here)
-  const landmarkCounts = new Map<string, number>();
-  const LANDMARKS = new Set(["main", "nav", "header", "footer", "aside", "form"]);
-  for (const el of elements) {
-    if (!el.genericPath) continue;
-    const parts = el.genericPath.split(">");
-    for (let i = parts.length - 1; i >= 0; i--) {
-      if (LANDMARKS.has(parts[i])) {
-        el.landmark = parts[i];
-        landmarkCounts.set(parts[i], (landmarkCounts.get(parts[i]) || 0) + 1);
-        break;
-      }
-    }
-  }
-
-  const landmarkSections = Array.from(landmarkCounts.entries()).map(([landmark, count]) => ({
-    landmark,
-    label: "",
-    elementCount: count,
-  }));
+  const landmarkSections = tagLandmarks(elements);
 
   const pageModel: PageModel = {
     url: crawl.url,
@@ -300,6 +282,34 @@ function crawlResponseToAppModel(crawl: CrawlResponse): AppModel {
 }
 
 /**
+ * Landmark tagging from genericPath (since we don't have Cheerio here): set `landmark` on every
+ * element whose path passes through one, innermost wins, and return the per-landmark counts.
+ * Factored out of crawlResponseToAppModel unchanged so the live element list (Phase 5 strategy
+ * switch) is tagged by exactly the same rule.
+ */
+function tagLandmarks(elements: Element[]): Array<{ landmark: string; label: string; elementCount: number }> {
+  const landmarkCounts = new Map<string, number>();
+  const LANDMARKS = new Set(["main", "nav", "header", "footer", "aside", "form"]);
+  for (const el of elements) {
+    if (!el.genericPath) continue;
+    const parts = el.genericPath.split(">");
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (LANDMARKS.has(parts[i])) {
+        el.landmark = parts[i];
+        landmarkCounts.set(parts[i], (landmarkCounts.get(parts[i]) || 0) + 1);
+        break;
+      }
+    }
+  }
+
+  return Array.from(landmarkCounts.entries()).map(([landmark, count]) => ({
+    landmark,
+    label: "",
+    elementCount: count,
+  }));
+}
+
+/**
  * ARIA role for a form field. Previously every non-select field was called a "textbox",
  * which turned <input type="submit"> into a phantom textbox the IR could try to fill, and
  * lost the distinction the assertion/action vocabulary depends on (check vs fill vs click).
@@ -342,6 +352,44 @@ function inferRole(tag: string, el: { aria_role?: string; aria_label?: string; c
     table: "table",
   };
   return el.aria_role || roleMap[tag] || "generic";
+}
+
+// ---------------------------------------------------------------------------
+// Element strategy: DISCOVERY_LIVE_DOM
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a page's `elements` come from. `"cheerio"` — the static `page.content()` parse, the
+ * behaviour before live-DOM discovery existed and still the default. `"live"` — the live-DOM walker
+ * (liveDomDiscovery.ts): real visibility, a verified css on every element, open shadow roots and
+ * same-origin iframes. Every other AppModel field (forms, navigation, markdown, headings…) comes
+ * from the cheerio parse in BOTH modes; only the element list is swapped.
+ */
+export type ElementStrategy = "cheerio" | "live";
+
+/** `DISCOVERY_LIVE_DOM`, read in exactly one place. Default OFF (`CLAUDE.md` rule 2). */
+export function elementStrategy(): ElementStrategy {
+  return process.env.DISCOVERY_LIVE_DOM === "true" ? "live" : "cheerio";
+}
+
+/**
+ * The element list for one extraction, by strategy. CALLED IN BOTH MODES (`CLAUDE.md` rule 7):
+ * with the flag off it returns the cheerio list — the very array the model already holds — so the
+ * flag-off path runs this switch rather than bypassing it, and the switch is exercised everywhere,
+ * not only in production.
+ *
+ * A live walk that throws (a page navigating mid-walk, most often) falls back to the cheerio list
+ * for that one call rather than failing discovery outright.
+ */
+async function elementsFor(strategy: ElementStrategy, page: Page, model: AppModel): Promise<Element[]> {
+  const cheerioElements = model.pages[0]?.elements ?? [];
+  if (strategy === "cheerio") return cheerioElements;
+  try {
+    return await enumerateLiveElements(page);
+  } catch (err: any) {
+    console.warn(`[domDiscovery] live-DOM walk failed, using the static parse: ${err?.message ?? err}`);
+    return cheerioElements;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +475,11 @@ async function detectGenericClickables(page: Page): Promise<GenericClickable[]> 
  *  scan (deliberately NOT offsetParent, which returns null for position:fixed and would wrongly
  *  flag fixed headers as hidden). */
 async function recheckVisibility(page: Page, elements: Element[]): Promise<void> {
-  const selectors = [...new Set(elements.filter(e => e.css).map(e => e.css!))];
+  // An element the live walker already MEASURED is skipped: its css may be a shadow `>>` chain or
+  // live inside an iframe, and document.querySelector on the top page would then test a different
+  // element (or none) and overwrite a correct value. Cheerio elements never carry visibleSource,
+  // so with DISCOVERY_LIVE_DOM off this filter removes nothing.
+  const selectors = [...new Set(elements.filter(e => e.css && e.visibleSource !== "computed").map(e => e.css!))];
   if (!selectors.length) return;
   const results = await page.evaluate((sels: string[]) => {
     const out: Record<string, boolean> = {};
@@ -444,7 +496,7 @@ async function recheckVisibility(page: Page, elements: Element[]): Promise<void>
     return out;
   }, selectors).catch(() => ({} as Record<string, boolean>));
   for (const e of elements) {
-    if (e.css && results[e.css] !== undefined) e.visible = results[e.css];
+    if (e.css && e.visibleSource !== "computed" && results[e.css] !== undefined) e.visible = results[e.css];
   }
 }
 
@@ -457,9 +509,11 @@ async function recheckVisibility(page: Page, elements: Element[]): Promise<void>
  */
 export async function extractDomModelFromPage(page: Page, url: string): Promise<AppModel | null> {
   try {
+    const strategy = elementStrategy();
     let html = await page.content();
     let crawlResult = extractCrawlResponse(html, url, 200);
     let model = crawlResponseToAppModel(crawlResult);
+    let elements = await elementsFor(strategy, page, model);
 
     // Zero elements here is ambiguous — a genuine auth wall (nothing to extract, ever) and a
     // not-yet-hydrated JS-rendered page (elements exist, just not painted into the DOM this
@@ -478,12 +532,24 @@ export async function extractDomModelFromPage(page: Page, url: string): Promise<
     const pollBudgetMs = Number(process.env.DISCOVERY_HYDRATION_POLL_MS ?? 6000);
     const pollIntervalMs = 1000;
     const deadline = Date.now() + pollBudgetMs;
-    while ((model.pages[0]?.elements.length ?? 0) === 0 && generic.length === 0 && Date.now() < deadline) {
+    // `elements` is the strategy's list, so a live walk that already sees shadow-DOM content the
+    // static parse cannot does not wait out the whole budget for nothing.
+    while (elements.length === 0 && generic.length === 0 && Date.now() < deadline) {
       await page.waitForTimeout(pollIntervalMs);
       html = await page.content();
       crawlResult = extractCrawlResponse(html, url, 200);
       model = crawlResponseToAppModel(crawlResult);
+      elements = await elementsFor(strategy, page, model);
       generic = await detectGenericClickables(page);
+    }
+
+    // Live strategy: swap in the walker's elements and re-tag landmarks by the same rule. With the
+    // flag off, `elements` IS the model's own array, so there is nothing to swap.
+    if (strategy === "live" && model.pages[0]) {
+      model.pages[0].elements = elements;
+      const sections = tagLandmarks(elements);
+      if (sections.length) model.pages[0].landmarkSections = sections;
+      else delete model.pages[0].landmarkSections;
     }
 
     if (generic.length && model.pages[0]) {
@@ -522,6 +588,15 @@ export async function extractDomModelFromPage(page: Page, url: string): Promise<
 }
 
 /**
+ * Cache key for `discoverUsingCrawler`. The strategy is a real input to the model it caches, so it
+ * is part of the key (`CLAUDE.md`: a key missing a dimension serves a wrong answer — TD-22, D-10).
+ * Flag off keeps the original `dom:${url}`, so existing cache entries stay valid.
+ */
+export function domCacheKey(url: string): string {
+  return elementStrategy() === "live" ? `dom-live:${url}` : `dom:${url}`;
+}
+
+/**
  * Discover a page's structure directly from the rendered DOM. This is the PRIMARY discovery
  * path — no Gemini vision needed for standard pages.
  *
@@ -529,7 +604,8 @@ export async function extractDomModelFromPage(page: Page, url: string): Promise<
  * caller (hybridDiscovery.ts) falls back to vision-based discovery.
  */
 export async function discoverUsingCrawler(url: string): Promise<AppModel | null> {
-  const cached = cacheGet(`dom:${url}`);
+  const cacheKey = domCacheKey(url);
+  const cached = cacheGet(cacheKey);
   if (cached) {
     console.log(`[domDiscovery] cache hit for ${url}`);
     return cached;
@@ -567,7 +643,7 @@ export async function discoverUsingCrawler(url: string): Promise<AppModel | null
       `needs_vision=${appModel.pages[0]?.needsVision}`
     );
 
-    cacheSet(`dom:${url}`, appModel);
+    cacheSet(cacheKey, appModel);
     return appModel;
   } catch (err: any) {
     console.warn(`[domDiscovery] error for ${url}: ${err?.message ?? err}`);

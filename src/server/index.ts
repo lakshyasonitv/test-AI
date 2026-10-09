@@ -2061,6 +2061,7 @@ export const BOOLEAN_ENV_FLAGS = [
   // read false, and silently skipped the cheap structural heal so every heal paid for a full LLM
   // IR regeneration — invisible, because the expensive path produces a correct-looking result.
   "DETERMINISTIC_HEAL",
+  "DISCOVERY_LIVE_DOM",
   "ENABLE_CASE_SELECTION_GATE",
   "NL_STEPS_ENABLED",
   "ORG_LLM_CONFIG_ENABLED",
