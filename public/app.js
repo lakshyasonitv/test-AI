@@ -760,6 +760,11 @@ const credWhyEl = document.getElementById("credWhy");
 const credUserEl = document.getElementById("credUser");
 const credPassEl = document.getElementById("credPass");
 const credSkipEl = document.getElementById("credSkip");
+const questionPromptEl = document.getElementById("questionPrompt");
+const questionFormEl = document.getElementById("questionForm");
+const questionWhyEl = document.getElementById("questionWhy");
+const questionAnswerEl = document.getElementById("questionAnswer");
+const questionSkipEl = document.getElementById("questionSkip");
 const caseSelectionPanelEl = document.getElementById("case-selection-panel");
 const caseRoundLabelEl = document.getElementById("case-round-label");
 const casePoolCounterEl = document.getElementById("case-pool-counter");
@@ -2324,6 +2329,63 @@ credFormEl.addEventListener("submit", (e) => {
 credSkipEl.addEventListener("click", () => submitCredentials({ skip: true }));
 
 // -----------------------------------------------------------------------------
+// Run question (D-51, RUN_QUESTIONS) — the run paused to ask the person watching it something.
+// -----------------------------------------------------------------------------
+
+// Which run and which question this modal answers. Both guard against the poller replaying an old
+// event: the server only accepts the answer for the question actually pending.
+let questionRunId = null;
+let questionId = null;
+
+function showQuestionPrompt(runId, data) {
+  // Replayed after it was answered (the poller replays the whole stream): the "completed" event
+  // that follows hides it again, so showing it here is harmless.
+  questionRunId = runId;
+  questionId = data?.questionId ?? null;
+  const host = (() => { try { return new URL(data?.url).host; } catch { return data?.url ?? "this site"; } })();
+  questionWhyEl.textContent =
+    `${host} accepted the username and password, then asked for a verification code ` +
+    `(from email, a text message or an authenticator app). Type it here and the run carries on ` +
+    `signed in. Skip, and it continues without signing in.`;
+  questionAnswerEl.value = "";
+  questionFormEl.querySelectorAll("button, input").forEach((el) => { el.disabled = false; });
+  questionPromptEl.classList.remove("hidden");
+  questionAnswerEl.focus();
+}
+
+function hideQuestionPrompt() {
+  questionRunId = null;
+  questionId = null;
+  questionAnswerEl.value = "";
+  questionPromptEl.classList.add("hidden");
+}
+
+async function submitQuestion(body) {
+  if (!questionRunId || !questionId) return;
+  const url = `/api/runs/${questionRunId}/question`;
+  questionFormEl.querySelectorAll("button, input").forEach((el) => { el.disabled = true; });
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ questionId, ...body }),
+    });
+  } catch {
+    // The run's own wait timeout (QUESTION_WAIT_MS) is the backstop.
+  }
+  hideQuestionPrompt();
+}
+
+questionFormEl.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const answer = questionAnswerEl.value.trim();
+  if (!answer) return submitQuestion({ skip: true });
+  submitQuestion({ answer });
+});
+
+questionSkipEl.addEventListener("click", () => submitQuestion({ skip: true }));
+
+// -----------------------------------------------------------------------------
 // Case-selection panel (the gate pauses a run here to review generated cases)
 // -----------------------------------------------------------------------------
 
@@ -3206,6 +3268,12 @@ function applyEvent(event, runId) {
     return;
   }
 
+  if (event.stage === "question") {
+    if (event.status === "started") showQuestionPrompt(runId, event.data);
+    else hideQuestionPrompt();     // answered, skipped or timed out
+    return;
+  }
+
   // Case-selection gate. The batch to review rides in the event; the accepted-so-far count
   // comes from the accumulator, since that's the number the pool cap and Done button depend on.
   if (event.stage === "testcases" && event.data?.action === "case_round_requested") {
@@ -3648,6 +3716,7 @@ document.getElementById("brandMark").innerHTML = icon("zap", { size: 18 });
 document.getElementById("newRunIcon").innerHTML = icon("plus", { size: 15 });
 document.getElementById("runIcon").innerHTML = icon("play", { size: 14 });
 document.getElementById("credIcon").innerHTML = icon("key", { size: 18 });
+document.getElementById("questionIcon").innerHTML = icon("key", { size: 18 });
 document.getElementById("caseSelectionIcon").innerHTML = icon("list", { size: 18 });
 
 // "New run" clears the workspace without a page reload, so an in-flight poll is abandoned

@@ -161,6 +161,7 @@ authority is its own heading, not this list.
 | TD-112 | D-47's related hosts never reach `detectBlocked`, so a Salesforce run landing on Lightning is still reported blocked; `replay.ts` has no source for the set at all | Medium | Accidental | ? |
 | TD-113 | Grounding's `bestNameMatch` searches unfiltered elements and can rename a step to a hidden input's name (how `passwordShown` happened) | Medium | Accidental | ? |
 | TD-114 | `isAllowedEntryUrl` blocks private hosts by hostname text only — a public name resolving to a private address passes the SSRF guard | Medium | Accidental | ? |
+| TD-115 | A run question's kept session (D-51) reaches only the run that asked: saved-case replays and suites log in fresh and can meet the code screen again; Salesforce's "trusted browser" behaviour is assumed, not verified live; a failed test's trace can carry the session's cookies under runs/ | Medium | Accidental | ? |
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
 > from anyone reading only the summary. If you add an entry, add a row.
 >
@@ -4935,3 +4936,21 @@ checked for the same gap and does NOT have it: an edited target is rebuilt from 
 removes it when the element has none), counts `frame` in its "nothing changed, same element"
 early return (the same css in a different iframe is a different element, which that return was
 silently skipping), and `diffTargets` compares `frame`. `tests/deterministicHealFrame.test.ts`.
+
+### TD-115. A run question's kept session reaches only the run that asked — Medium / Accidental — **Open**
+
+D-51 keeps the session a verification code unlocked, but only on the run that asked for it.
+
+- **Replays and suites.** `replay.ts` and `suiteRunner.ts` re-running saved cases have no
+  discovery, so no question and no session: against an org that challenges every new browser
+  they stop at the code screen (reported blocked by the `afterEach` page capture). Remediation is
+  a design decision — a session kept beyond one run is a stored credential (rule 5).
+- **Salesforce's trust rule is assumed.** The design relies on a browser that passed the code once
+  not being asked again when it logs in from the restored cookies. That is how the fixture in
+  `tests/runQuestions.test.ts` behaves and how Salesforce documents device activation, but it was
+  not verified against a live org (the build container cannot reach Salesforce). If an org asks
+  again anyway, the login prefix stops at the code screen exactly as it did before D-51.
+- **Traces.** A failed test keeps a Playwright trace under runs/ (`trace: "retain-on-failure"`),
+  and a trace records request headers, cookies included. That was already true of every login
+  prefix; with a kept session the cookie is one the person verified. Same exposure class as TD-14.
+

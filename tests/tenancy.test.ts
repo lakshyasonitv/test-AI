@@ -182,6 +182,7 @@ const RUN_SCOPED_ROUTES: { name: string; method: "get" | "post" | "delete"; path
   { name: "GET  accepted-cases",        method: "get",    path: `/api/runs/${RUN_A}/accepted-cases` },
   { name: "GET  case-selection-status", method: "get",    path: `/api/runs/${RUN_A}/case-selection-status` },
   { name: "POST credentials",           method: "post",   path: `/api/runs/${RUN_A}/credentials`, body: { skip: true } },
+  { name: "POST question",              method: "post",   path: `/api/runs/${RUN_A}/question`, body: { questionId: "q", skip: true } },
   { name: "POST case-selection",        method: "post",   path: `/api/runs/${RUN_A}/case-selection`, body: { action: "done", selectedIndexes: [0] } },
   { name: "POST case-selection/rewrite", method: "post",  path: `/api/runs/${RUN_A}/case-selection/rewrite`, body: { title: "t", steps: ["s"], instruction: "change it" } },
   { name: "GET  page-elements",         method: "get",    path: `/api/runs/${RUN_A}/page-elements` },

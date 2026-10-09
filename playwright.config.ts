@@ -1,5 +1,6 @@
 import { defineConfig } from "@playwright/test";
 import { chromiumLaunchOptions, browserContextOptions } from "./src/browserLaunch.js";
+import { sessionFromEnv } from "./src/runSession.js";
 
 export default defineConfig({
   testDir: "./runs",
@@ -50,5 +51,10 @@ export default defineConfig({
     // both on the child from the run's own locale. Spreads to {} when RUN_LOCALE="" — the same
     // rollback switch every other consumer has.
     ...browserContextOptions(),
+    // A signed-in session kept by a run question (DECISIONS.md D-51, RUN_QUESTIONS): start every
+    // test's browser as the one a person already verified, so a one-time-code screen after the
+    // password does not appear again. executor.ts passes it as an env var; absent (always, unless
+    // a person answered a code this run) this spreads to {} and nothing changes.
+    ...sessionFromEnv(),
   },
 });

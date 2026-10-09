@@ -347,6 +347,36 @@
     </div>
   </section>
 
+  <!-- Run question (D-51, RUN_QUESTIONS): the run paused to ask something only the person
+       watching it can answer — today, a one-time verification code. Same modal classes as the
+       credential prompt above (style.css class names are a contract; none are added). -->
+  <section id="questionPrompt" class="cred hidden" aria-live="polite" role="dialog" aria-modal="true" aria-label="The run has a question">
+    <div class="cred-card">
+      <div class="cred-head">
+        <span class="cred-key" id="questionIcon"></span>
+        <div>
+          <h2 id="questionTitle">Verification code needed</h2>
+        </div>
+      </div>
+      <p id="questionWhy" class="cred-why"></p>
+      <form id="questionForm" class="cred-form">
+        <div class="cred-fields">
+          <label class="field">
+            <span class="field-label">Code</span>
+            <input id="questionAnswer" type="text" inputmode="numeric" placeholder="Code" autocomplete="one-time-code" spellcheck="false" maxlength="64" />
+          </label>
+        </div>
+        <p class="cred-note">
+          Used once, for this run only. Never written to the run folder or the results history.
+        </p>
+        <div class="cred-actions">
+          <button type="button" id="questionSkip" class="cred-skip">Skip &mdash; continue without it</button>
+          <button type="submit">Send</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
   <div id="screenshotModal" class="screenshot-modal hidden" role="dialog" aria-modal="true" aria-label="Screenshot, full size">
     <span id="screenshotModalLabel" class="screenshot-modal-label"></span>
     <button id="screenshotModalClose" class="screenshot-modal-close" type="button" aria-label="Close">Close</button>

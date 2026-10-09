@@ -1408,3 +1408,44 @@ unchanged, exactly as `locale` did.
 
 **In this change nothing reads the rail.** The Salesforce-specific handling that will is being
 built separately, against `currentRunTargetApp()`.
+
+## D-51. A run may ask a question; a verification code it answers buys a session kept in memory for that run
+
+**Decision.** Behind `RUN_QUESTIONS` (default off), a run can pause and ask the person watching it
+a question, through the same park-a-promise / emit-an-event / POST-the-answer shape the credential
+prompt already uses: `src/server/pendingQuestions.ts`, a `question` event the UI renders as a
+modal (reusing the credential modal's classes), and a NEW route, `POST /api/runs/:runId/question`
+(rule 1). Each question carries an id and only the pending one can be answered, so a stale modal
+cannot answer a newer question. The first and only kind is `verification-code`: after
+`loginOnPage`, discovery checks for a code screen with `codeEntryField` (moved from
+`salesforceLogin.ts`, D-49, unchanged — structure, never wording) and asks for the code.
+
+**Why the session is kept.** A one-time code cannot be replayed, and nothing in this codebase reused
+a session: liveExtend's grounding replay and every generated spec log in from scratch, so each
+would meet the same screen with nobody asked. So when a person answered a code, discovery's
+`storageState()` is kept on a run-scoped rail (`src/runSession.ts`, the fifth use of the
+AsyncLocalStorage rail) and spread into liveExtend's page options and, through
+`playwright.config.ts`, into the spec's browser. The login prefix still runs; it runs as a browser
+the site has already verified.
+
+**Secrets (rule 5).** A storage state is a bearer credential. It is held in process memory for one
+run, crosses to the spec's child process as an environment variable (`TEST_STORAGE_STATE_JSON`),
+never as a file, and is never logged, emitted or written under runs/. Over 96 KiB it is not passed
+(Linux caps one env string at 128 KiB) and the spec logs in itself. The answer itself never enters
+an event, a log line or a file.
+
+**Caching.** A discovery whose login needed a person's code is not cached: a cache hit skips the
+login, so the next run would have no session to give its tests. liveExtend's walk cache gains a
+`session:reused` key part, appended only when a session exists, so every key a run without one
+computes is unchanged (CLAUDE.md: keys carry every real input).
+
+**Flag off (rule 7).** The server passes no `askQuestion`, so discovery never asks and nothing ever
+fills the holder; the orchestrator still enters an empty holder on every run (as it does the target
+app), every accessor answers "nothing", and every browser's options spread `{}`.
+
+**Rejected.** A temporary storageState FILE for the spec runner: it works, but it is a new place a
+session touches disk, and the env var does the same job. Asking inside the generated spec (a live
+two-way channel from the Playwright child to the server): every test would need a person present,
+and the code would be asked for once per test instead of once per run. Widening
+`/api/runs/:runId/credentials` to carry a code: changes an existing route's request shape.
+

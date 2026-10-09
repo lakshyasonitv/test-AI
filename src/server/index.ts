@@ -14,6 +14,8 @@ import { hasTerminalAssertion } from "../stages/ir.js";
 import { WALK_CACHE_NS } from "../stages/liveExtend.js";
 import { Semaphore } from "./concurrency.js";
 import { askCredentials, settle } from "./pendingCredentials.js";
+import { askQuestion, settleQuestion } from "./pendingQuestions.js";
+import { runQuestionsEnabled } from "../runSession.js";
 import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
 import { resolveCaseSelection, getPendingSelection } from "./pendingCaseSelection.js";
 import { getAllAcceptedCases, remainingCapacity } from "./caseAccumulator.js";
@@ -373,7 +375,8 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
         ...(maxLlmCalls !== null ? { maxLlmCalls } : {}),
         ...(targetApp ? { targetApp } : {}),
       },
-    }, onEvent, runId, askCredentials);
+    // askQuestion only with RUN_QUESTIONS on (D-51): absent, the pipeline never pauses to ask.
+    }, onEvent, runId, askCredentials, runQuestionsEnabled() ? askQuestion : undefined);
   })
     .catch(() => { /* failure already emitted as an "error" event */ });
   res.status(202).json({ runId });
@@ -396,6 +399,24 @@ app.post("/api/runs/:runId/credentials", requireRunRole("tester"), (req, res) =>
   // `secret: true` is what routes these away from the on-disk literal path.
   const answered = settle(runId, supplied ? { username, password, secret: true } : null);
   if (!answered) return res.status(409).json({ error: "this run is not waiting for credentials" });
+  res.status(204).end();
+});
+
+// Answer a paused run's question (D-51, RUN_QUESTIONS) — today, the one-time code a verification
+// screen asked for during discovery. `{ questionId, answer }`, or `{ questionId, skip: true }`.
+// A NEW route rather than a widened /credentials (platform rule 1). Like that route, the body is
+// never logged, emitted or written: it goes straight into the waiting promise. `questionId` must
+// match the question actually pending, so a stale modal cannot answer a newer question.
+app.post("/api/runs/:runId/question", requireRunRole("tester"), (req, res) => {
+  const { runId } = req.params;
+  if (!RUN_ID.test(runId)) return res.status(400).json({ error: "invalid runId" });
+  const { questionId, answer, skip } = req.body ?? {};
+  if (typeof questionId !== "string" || !questionId) return res.status(400).json({ error: "questionId is required" });
+  const value = !skip && typeof answer === "string" && answer.trim().length > 0 ? answer.trim() : null;
+  if (value !== null && value.length > 64) return res.status(400).json({ error: "answer is too long" });
+  if (!settleQuestion(runId, questionId, value)) {
+    return res.status(409).json({ error: "this run is not waiting for an answer to that question" });
+  }
   res.status(204).end();
 });
 
@@ -2100,6 +2121,7 @@ export const BOOLEAN_ENV_FLAGS = [
   "NL_STEPS_ENABLED",
   "ORG_LLM_CONFIG_ENABLED",
   "REPLAY_REGROUND",
+  "RUN_QUESTIONS",
   "SALESFORCE_ENABLED",
   "SCRIPT_OVERRIDE_ENABLED",
   "SELF_HEAL_DEFAULT",

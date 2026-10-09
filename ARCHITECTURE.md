@@ -368,6 +368,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `concurrency.ts` | In-process semaphore: caps concurrent runs, queues overflow |
 | `runRegistry.ts` | SSE fan-out: broadcasts events, replays history on connect |
 | `pendingCredentials.ts` | Parks a paused run's credential prompt in memory; resolved by the UI's answer or `CREDENTIAL_WAIT_MS` timeout |
+| `pendingQuestions.ts` | Parks a paused run's question (D-51, `RUN_QUESTIONS`) in memory, keyed by run and question id; resolved by `POST /api/runs/:runId/question` or `QUESTION_WAIT_MS` timeout |
 | `pendingCaseSelection.ts` | Parks a paused run's case-review round in memory; resolved by the UI's decision or `CASE_SELECTION_WAIT_MS` timeout |
 | `caseAccumulator.ts` | File-backed pool of accepted cases across gate rounds, capped at `MAX_ACCUMULATED_CASES` |
 | `caseHistoryLedger.ts` | File-backed record of every case title ever shown and its outcome, so rejections never resurface |

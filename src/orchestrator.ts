@@ -9,6 +9,7 @@ import { LlmBudget, enterWithBudget } from "./llm/llmBudget.js";
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
+import { enterWithRunSession } from "./runSession.js";
 import {
   credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, redactCredentials,
   extractCredentialsFromPrompt,
@@ -24,7 +25,7 @@ import { ALL_SCOPES } from "./kb/testStrategy.js";
 import type { IR, Step } from "./schema/ir.js";
 
 export type StageName =
-  | "input" | "plan" | "discovery" | "testcases" | "credentials" | "ir"
+  | "input" | "plan" | "discovery" | "testcases" | "credentials" | "question" | "ir"
   | "generate" | "execute" | "failure_analysis" | "heal"
   | "suite" | "done" | "error";
 
@@ -48,6 +49,19 @@ export interface CredentialRequest {
   fields: CredentialKind[];
 }
 export type AskCredentials = (req: CredentialRequest) => Promise<Credentials | null>;
+
+/** A run question (D-51, RUN_QUESTIONS): something only the person watching the run can answer.
+ *  Extend the kind union, never the meaning of an existing member. */
+export type QuestionKind = "verification-code";
+export interface QuestionRequest {
+  runId: string;
+  kind: QuestionKind;
+  /** The page that asked, so the person can recognise it — never anything they typed. */
+  url: string;
+}
+/** Ask, and resolve with the answer or null (skipped / timed out). `onAsked` receives the
+ *  question's id the moment it is parked, so the event the UI renders from can carry it. */
+export type AskQuestion = (req: QuestionRequest, onAsked: (questionId: string) => void) => Promise<string | null>;
 
 export type Coverage = "minimal" | "standard" | "full";
 
@@ -94,7 +108,9 @@ export async function runPipeline(
   { prompt, url, urls, coverage, options }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; options?: RunOptions },
   onEvent: OnEvent = () => { },
   presetRunId?: string,
-  askCredentials?: AskCredentials
+  askCredentials?: AskCredentials,
+  /** Passed by the server only when RUN_QUESTIONS is on. The CLI passes nothing, so it never blocks. */
+  askQuestion?: AskQuestion,
 ) {
   // Normalize: single `url` becomes `urls: [url]`; both provided means `urls` wins.
   const resolvedUrls = urls?.length ? urls : url ? [url] : [];
@@ -131,6 +147,10 @@ export async function runPipeline(
   // The fourth use of the rail: which enterprise application, if any, this URL belongs to. Entered
   // on EVERY run — null for an ordinary one — so no run can inherit another's value (runTarget.ts).
   enterWithTargetApp(options?.targetApp ?? null);
+  // The fifth: the signed-in session a run question unlocks (runSession.ts, D-51). A fresh, empty
+  // holder on EVERY run for the same reason as the line above; only discovery ever fills it, and
+  // only after a person answered a verification code — so with RUN_QUESTIONS off it stays empty.
+  enterWithRunSession();
 
   const save = (name: string, data: unknown) =>
     writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));
@@ -209,9 +229,23 @@ export async function runPipeline(
       }
       : undefined;
 
+    // The same emit pair as above, for the same reason: the `question`/`started` event is what
+    // makes the UI show the box (app.js -> showQuestionPrompt). The answer is a one-time code —
+    // a secret for its few minutes of life — so it is never emitted, logged or saved.
+    const askCodeForDiscovery = askQuestion
+      ? async (): Promise<string | null> => {
+        const answer = await askQuestion(
+          { runId, kind: "verification-code", url: resolvedUrls[0] },
+          (questionId) => emit("question", "started", { questionId, kind: "verification-code", url: resolvedUrls[0] }),
+        );
+        emit("question", "completed", { answered: !!answer });
+        return answer;
+      }
+      : undefined;
+
     const appModel = await step("discovery", "02-appmodel.json", async () =>
       resolvedUrls.length === 1
-        ? discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery)
+        ? discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery, askCodeForDiscovery)
         : discoverPagesHybrid(resolvedUrls),
       // The full model still goes to 02-appmodel.json; only the EVENT is narrowed. `data.pages`
       // stays an array of objects carrying `url` and `concepts`, which is everything app.js reads

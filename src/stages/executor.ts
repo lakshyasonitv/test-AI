@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { redactCredentials, type Credentials } from "./credentials.js";
+import { specSessionEnv } from "../runSession.js";
 import { siteHost } from "../text.js";
 import { browserContextOptions } from "../browserLaunch.js";
 
@@ -290,6 +291,9 @@ async function executePlaywright(
         env: {
           ...process.env,
           ...secretEnv,
+          // The session a run question kept (D-51), read by playwright.config.ts. `{}` unless one
+          // exists. An env var and never a file: it is a bearer credential (runSession.ts).
+          ...specSessionEnv(),
           PLAYWRIGHT_JSON_OUTPUT_NAME: resultsJson,
           PLAYWRIGHT_HEADLESS: 'true',
           // Read by playwright.config.ts (since TD-24). Set per run so a long case gets a budget

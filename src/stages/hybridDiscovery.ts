@@ -16,6 +16,7 @@
 import crypto from "node:crypto";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { chromiumLaunchOptions, browserContextOptions } from "../browserLaunch.js";
+import { setRunSession } from "../runSession.js";
 import { llm, cacheModelDimension } from "../llm/client.js";
 import { parseJson } from "../llm/json.js";
 import { AppModel, AuthOutcome, type AuthStep, Element, PageModel } from "../schema/appModel.js";
@@ -898,6 +899,72 @@ async function identifierFirstFields(page: Page): Promise<{ user: string; submit
 }
 
 /**
+ * A verification-code screen: exactly one visible, enabled text-entry input, no password box, no
+ * username box, and that input is CODE-SHAPED by its attributes — `autocomplete="one-time-code"`,
+ * a numeric `inputmode`, `type` tel/number, or a `maxlength` of 4–10. Structure only.
+ *
+ * Returns indexes, not selectors: the result is used once, at the moment it is found, and never
+ * recorded or replayed (a one-time code cannot be), so a positional handle is enough and needs none
+ * of loginOnPage's selector ladder.
+ *
+ * Shared by `checkSalesforceLogin` (D-49), which answers it from a TOTP secret, and by discovery's
+ * run question (D-51), which asks the person watching the run.
+ */
+export async function codeEntryField(page: Page): Promise<{ inputIndex: number; submitIndex: number } | null> {
+  // Nothing named inside this callback — TD-40 (see loginOnPage's comment).
+  return await page.evaluate(() => {
+    const inputs = Array.from(document.querySelectorAll("input"));
+    let idx = -1;
+    let entries = 0;
+    for (let i = 0; i < inputs.length; i++) {
+      const el = inputs[i];
+      const type = (el.getAttribute("type") || "text").toLowerCase();
+      if (["text", "email", "tel", "number", "search", "url", "password"].indexOf(type) < 0) continue;
+      if (el.disabled) continue;
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden")) continue;
+      entries++;
+      idx = i;
+    }
+    if (entries !== 1) return null;
+    const el = inputs[idx];
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    if (type === "password" || type === "email") return null;
+    const autocomplete = (el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+    if (autocomplete.indexOf("username") >= 0) return null;
+    const inputmode = (el.getAttribute("inputmode") || "").toLowerCase();
+    const maxlength = Number(el.getAttribute("maxlength") || "0");
+    const codeShaped = autocomplete.indexOf("one-time-code") >= 0
+      || inputmode === "numeric" || inputmode === "decimal"
+      || type === "tel" || type === "number"
+      || (maxlength >= 4 && maxlength <= 10);
+    if (!codeShaped) return null;
+
+    const scope: ParentNode = el.closest("form") ?? document;
+    const submit = scope.querySelector('button[type="submit"], input[type="submit"]');
+    const allSubmits = Array.from(document.querySelectorAll('button[type="submit"], input[type="submit"]'));
+    return { inputIndex: idx, submitIndex: submit ? allSubmits.indexOf(submit) : -1 };
+  });
+}
+
+/**
+ * Type a one-time code into the field `codeEntryField` found, and submit it: the form's own submit
+ * control when it has one, Enter otherwise. Then wait for the sign-in to settle, the same wait
+ * loginOnPage ends with. Shared by `checkSalesforceLogin` and discovery's run question (D-51).
+ */
+export async function submitVerificationCode(
+  page: Page, field: { inputIndex: number; submitIndex: number }, code: string,
+): Promise<void> {
+  await page.locator("input").nth(field.inputIndex).fill(code, { timeout: 10_000 });
+  if (field.submitIndex >= 0) {
+    await page.locator('button[type="submit"], input[type="submit"]').nth(field.submitIndex).click({ timeout: 10_000 });
+  } else {
+    await page.locator("input").nth(field.inputIndex).press("Enter");
+  }
+  await waitForAuthSettle(page);
+}
+
+/**
  * How long to wait for a login gate to CLEAR before calling the sign-in failed — TD-107.
  *
  * Matches the generated spec's own assertion budget (`ASSERTION_TIMEOUT_MS`, 10s) on purpose: the
@@ -1195,6 +1262,10 @@ export async function discoverSiteHybrid(
   /** Pre-bound by the orchestrator over runId/url — discovery has neither. Returns null when
    *  the user skips or the prompt times out, which is a `no-credentials` outcome, not an error. */
   askCredentials?: () => Promise<Credentials | null>,
+  /** RUN_QUESTIONS only (D-51), pre-bound like askCredentials: ask the person watching the run for
+   *  the one-time code a verification screen wants. Null on a skip or a timeout. Absent, a
+   *  verification screen is handled exactly as before — not at all. */
+  askVerificationCode?: () => Promise<string | null>,
 ): Promise<AppModel> {
   // The cache lookup CANNOT happen here when askCredentials is in play: the key includes the
   // credential identity and we don't know it yet. Reading with a stale key and writing with the
@@ -1338,6 +1409,10 @@ export async function discoverSiteHybrid(
     // so navigating away from it here costs nothing.
     let auth: AuthOutcome = { status: "no-gate" };
     let authenticated = false;
+    // Set when a person typed a one-time code to get past the login (D-51). Such a login cannot be
+    // repeated without them, which decides two things at the end: the session is kept for the rest
+    // of the run, and the result is not cached.
+    let humanCodeUsed = false;
     let entryUrlForCrawl = entrySnapshot.finalUrl;
     /** Set only when a login succeeded and the crawl re-rooted off the gate — the gate page is
      *  still put back into the model so login steps stay groundable. */
@@ -1398,6 +1473,20 @@ export async function discoverSiteHybrid(
     } else {
       try {
         const loginSteps = await loginOnPage(authPage, creds);
+        // A verification screen after the password (D-51): ask for the code rather than report
+        // the login failed. Only with RUN_QUESTIONS on — absent, this block is skipped and the
+        // screen meets verifySession exactly as it always has.
+        if (loginSteps && askVerificationCode) {
+          const codeField = await codeEntryField(authPage).catch(() => null);
+          if (codeField) {
+            console.log(`[hybrid] ${authPage.url()} asks for a verification code — asking the person running this`);
+            const code = (await askVerificationCode())?.trim();
+            if (code) {
+              await submitVerificationCode(authPage, codeField, code);
+              humanCodeUsed = true;
+            }
+          }
+        }
         authenticated = await verifySession(authPage, gateUrl);
         const reached = authPage.url();
         if (authenticated) {
@@ -1544,7 +1633,16 @@ export async function discoverSiteHybrid(
     // fixing the login logged `cache hit — skipping login and crawl` and reported the OLD
     // failure. Successes stay cached; only the failure path pays for a retry.
     const worth = discoveryIsWorthCaching(result);
-    if (!worth.ok) {
+    if (humanCodeUsed && authenticated && state.context) {
+      // Captured at the END, after the crawl, so cookies set on hosts the crawl reached past the
+      // login (Salesforce's Lightning domain) are in it too. Memory only — runSession.ts.
+      setRunSession(await state.context.storageState());
+    }
+    if (humanCodeUsed) {
+      // Not reproducible: a cache hit skips the login, so the next run would have no session to
+      // hand its tests and would meet the verification screen with nobody asked (D-51).
+      console.warn(`[hybrid] not caching ${url} — the login needed a one-time code, so a retry must sign in again`);
+    } else if (!worth.ok) {
       console.warn(`[hybrid] not caching ${url} — ${worth.reason}`);
     } else {
       cacheSet(siteCacheKey(url, creds), result);

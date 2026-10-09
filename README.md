@@ -245,6 +245,7 @@ in `.env.example` — but that file is not a complete index of this table. `MAX_
 | `MAX_LOGIN_CASES` | No | Max cases in a suite that may target the login page itself, on an auth-aware run (default: 1) |
 | `MAX_CONCURRENT_RUNS` | No | Max parallel pipeline runs (default: 3) |
 | `CREDENTIAL_WAIT_MS` | No | How long a paused run waits for credentials before continuing without them (default: 300000 / 5 min) |
+| `QUESTION_WAIT_MS` | No | How long a run question (`RUN_QUESTIONS`) waits for an answer before continuing without one (default: 300000 / 5 min) |
 | `ENABLE_CASE_SELECTION_GATE` | No | Set `true` to pause a run after generating each batch of cases for review (default: off) |
 | `MAX_CASE_REGEN_ATTEMPTS` | No | "Not satisfied" regeneration rounds allowed (default: 3) |
 | `MAX_ACCUMULATED_CASES` | No | Cap on cases accepted into the gate's pool across all rounds (default: 5) |
@@ -288,6 +289,7 @@ not been configured for a capability never advertises it.
 | `SIGNUP_ENABLED` | `true` | Note the default: sign-up is **on** unless set to `false`. Set it to `false` before exposing this server beyond localhost |
 | `NL_STEPS_ENABLED` | `false` | "Write it for me" — translate loosely-typed step lines. Spends one Gemini call per press |
 | `SALESFORCE_ENABLED` | `false` | Shows "This URL is a Salesforce org" under the URL box on the run screen. Ticking it sends `options.targetApp: "salesforce"` with the run, which stages read through `currentRunTargetApp()` (`src/runTarget.ts`) and which is recorded in `runs/<id>/00-run-target.json`. Nothing is stored or configured in advance — the URL and credentials are given exactly as for any run. Off: no checkbox, and the field is ignored. See `DECISIONS.md` D-50 |
+| `RUN_QUESTIONS` | `false` | Lets a run pause and ask the person watching it a question. Today: the one-time code a site asks for after the password (Salesforce's "Verify your identity"). The session that code unlocks is kept in memory for that run only and handed to its grounding replay and test browsers, so they are not asked again. Off: a verification screen is not handled, as before. See `DECISIONS.md` D-51 |
 | `RUN_RETENTION_DAYS` | unset | Age off `runs/` directories after N days. Unset keeps everything |
 
 ### Playwright Config

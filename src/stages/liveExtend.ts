@@ -1,5 +1,6 @@
 import { chromium, type Page } from "playwright";
 import { chromiumLaunchOptions, browserContextOptions, localeCacheDimension } from "../browserLaunch.js";
+import { runSessionCacheDimension, runSessionContextOptions } from "../runSession.js";
 import { AppModel } from "../schema/appModel.js";
 import type { IR, Step } from "../schema/ir.js";
 import { extractDomModelFromPage } from "./domDiscovery.js";
@@ -163,8 +164,13 @@ async function replayAndSnapshot(
   // cache never expires. That is the same defect as the credential case above with a different
   // input, and the three LLM keys do not have it: theirs already contain the AppModel or the page
   // text, so they re-key themselves (see docs/FINDINGS_2026-09-28.md §7.4). This one cannot.
+  // A replay that STARTS signed in (a session kept by a run question, D-51) reaches different pages
+  // than one that has to get through the login itself, so it is a different input. The part is
+  // appended only when a session exists, so every key a run without one computes is unchanged.
+  const sessionDim = runSessionCacheDimension();
   const cacheKey = makeCacheKey(
-    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion());
+    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion(),
+    ...(sessionDim ? [sessionDim] : []));
   const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
   if (cached) return cached;
 
@@ -179,7 +185,10 @@ async function replayAndSnapshot(
     // localised page than the AppModel it is being checked against. One page, so the options go
     // on newPage() — not newContext() + context.newPage(), which would lose sessionStorage
     // (TD-41 / D-23) on exactly the authenticated flows this function exists to replay.
-    const page = await browser.newPage(browserContextOptions());
+    // ...and the session a run question kept, when there is one (D-51): the replay still runs the
+    // login prefix, but as a browser the site has already verified, so no code screen appears.
+    // `{}` otherwise — the options are exactly what they were.
+    const page = await browser.newPage({ ...browserContextOptions(), ...runSessionContextOptions() });
     let urlBeforeLastStep = model.baseUrl;
     /** Where the flow was when it last typed a credential, and what it typed it into. Used
      *  below to tell "signed in" from "still sitting on the sign-in form". */
