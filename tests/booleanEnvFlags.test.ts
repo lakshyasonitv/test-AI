@@ -130,10 +130,24 @@ describe("boolean env flag boot guard", () => {
 
   describe("the declared list stays in step with the code", () => {
     /**
-     * The guard can only check flags it knows about, so the real failure mode is adding a flag
-     * to the code and forgetting this list. Assert the declared set matches every flag the
-     * server actually compares against "true"/"false".
+     * The guard can only check flags it knows about, so the real failure mode is adding a flag to
+     * the code and forgetting this list. The "registers"/"declares" tests below assert the declared
+     * set matches every flag the server actually compares against "true"/"false" in EITHER
+     * direction, which is what TD-100 cost us.
      */
+
+    /**
+     * Flags that are DELIBERATELY registered while nothing reads them yet.
+     *
+     * Every entry here is a capability registered ahead of its reader, so the boot guard already
+     * rejects a typo (`DISCOVERY_LIVE_DOM=truebro`) from the moment the flag exists rather than
+     * silently reading false. The tests below keep this honest: each name must really be in
+     * `BOOLEAN_ENV_FLAGS` (so the guard covers it) AND still be unread (so the moment a reader
+     * lands, the stale exemption is caught and removed rather than quietly widening the guard's
+     * blind spot forever). See TD-100 for why this list matters at all.
+     */
+    const RESERVED_FLAGS = ["DISCOVERY_LIVE_DOM", "SALESFORCE_ENABLED"] as const;
+
     /** Every `process.env.X === "true"` / `!== "false"` in src/, found by reading the source. */
     function flagsTheCodeReads(): string[] {
       const found = new Set<string>();
@@ -164,8 +178,31 @@ describe("boolean env flag boot guard", () => {
     it("declares no flag the code no longer reads", () => {
       // The other direction: a stale entry is harmless at runtime but makes the registry lie about
       // what it covers, which is how the previous version of this test came to be believed.
+      // RESERVED_FLAGS are the one deliberate exception, and are checked separately below.
       const read = flagsTheCodeReads();
-      expect([...BOOLEAN_ENV_FLAGS].filter((f) => !read.includes(f))).toEqual([]);
+      const stale = [...BOOLEAN_ENV_FLAGS].filter(
+        (f) => !read.includes(f) && !RESERVED_FLAGS.includes(f as never),
+      );
+      expect(stale,
+        `declared in BOOLEAN_ENV_FLAGS but read as a boolean nowhere in src/: ${stale.join(", ")}`
+      ).toEqual([]);
+    });
+
+    it("registers every reserved flag, so the boot guard already covers a typo in it", () => {
+      for (const flag of RESERVED_FLAGS) {
+        expect(BOOLEAN_ENV_FLAGS, `${flag} must be in BOOLEAN_ENV_FLAGS`).toContain(flag);
+        // The whole point of registering ahead of the reader: a typo is fatal NOW, not silently
+        // false whenever the reader eventually lands.
+        expect(findInvalidBooleanFlags({ [flag]: "truebro" })).toEqual([{ name: flag, found: "truebro" }]);
+      }
+    });
+
+    it("has no reader for any reserved flag yet, so a stale exemption cannot linger", () => {
+      const read = flagsTheCodeReads();
+      const nowRead = RESERVED_FLAGS.filter((f) => read.includes(f));
+      expect(nowRead,
+        `read as a boolean in src/ now — remove from RESERVED_FLAGS so the reverse assertion `
+        + `covers it again: ${nowRead.join(", ")}`).toEqual([]);
     });
 
     it("declares no duplicates", () => {

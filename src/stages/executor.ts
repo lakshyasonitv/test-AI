@@ -317,7 +317,64 @@ async function executePlaywright(
       [cliPath, "test", specPath.replace(/\\/g, "/"), "--reporter=json", `--output=${artifactsDir}`],
       {
         env: {
-          ...process.env,
+          // D3: the child is handed an ALLOW-LIST of the parent environment, not all of it.
+          //
+          // It used to be `...process.env`, which copied EVERYTHING the server holds into a process
+          // that executes site-authored assertions — GEMINI_API_KEY(S), AZURE_OPENAI_API_KEY, the
+          // Supabase service-role key. A crash that dumps the environment, or any future feature
+          // that lets the spec read `process.env`, was one step from those secrets. Only names
+          // listed here cross the boundary now; everything else is simply absent in the child.
+          //
+          // Each entry is justified by a CHILD-side reader (`playwright.config.ts`,
+          // `chromiumLaunchOptions()`), not by convenience. Matched case-insensitively because
+          // Windows spells these inconsistently (`SystemRoot` vs `windir`), and the parent's
+          // original casing is preserved for the child.
+          ...(() => {
+            const allow = [
+              // Playwright's own configuration, read by the child and its loaded config file.
+              "PLAYWRIGHT_BROWSERS_PATH",         // browser location (Dockerfile / Azure set it)
+              "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
+              "CHROMIUM_EXTRA_ARGS",              // chromiumLaunchOptions(): Azure needs --disable-dev-shm-usage
+              // The run's locale/timezone. specLocaleEnv() below overwrites these with the resolved
+              // pair when pinning is ON; inheriting the operator's value here is what keeps the
+              // child consistent when pinning is OFF (specLocaleEnv returns {} and writes nothing).
+              "RUN_LOCALE",
+              "RUN_TIMEZONE",
+              // Node runtime essentials.
+              "NODE_ENV",
+              "NODE_OPTIONS",
+              "NODE_EXTRA_CA_CERTS",
+              // Launching node/Playwright, and resolving the browser's home directory.
+              "PATH",
+              "PATHEXT",
+              "HOME",
+              "USERPROFILE",
+              "LOCALAPPDATA",
+              "APPDATA",
+              "HOMEDRIVE",
+              "HOMEPATH",
+              // Scratch space for the browser.
+              "TEMP",
+              "TMP",
+              "TMPDIR",
+              // Windows system variables a browser/node needs to start at all.
+              "SystemRoot",
+              "SystemDrive",
+              "windir",
+              "ComSpec",
+              "NUMBER_OF_PROCESSORS",
+              "PROCESSOR_ARCHITECTURE",
+              "OS",
+            ];
+            const wanted = new Set(allow.map((k) => k.toLowerCase()));
+            const out: Record<string, string> = {};
+            for (const key of Object.keys(process.env)) {
+              if (!wanted.has(key.toLowerCase())) continue;
+              const value = process.env[key];
+              if (value !== undefined) out[key] = value;
+            }
+            return out;
+          })(),
           ...secretEnv,
           PLAYWRIGHT_JSON_OUTPUT_NAME: resultsJson,
           PLAYWRIGHT_HEADLESS: 'true',

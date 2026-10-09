@@ -2105,6 +2105,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // read false, and silently skipped the cheap structural heal so every heal paid for a full LLM
   // IR regeneration — invisible, because the expensive path produces a correct-looking result.
   "DETERMINISTIC_HEAL",
+  // RESERVED: registered before its reader lands, so a typo (`=truebro`) is fatal from the moment
+  // the flag exists instead of silently reading false. The live-DOM discovery walker
+  // (`src/schema/appModel.ts` documents the fields it will write) reads it once that stream ships.
   "DISCOVERY_LIVE_DOM",
   "ENABLE_CASE_SELECTION_GATE",
   // Phase 2: gates the new diagnostic OUTPUT only (per-call provider/model/token line, per-run
@@ -2114,6 +2117,8 @@ export const BOOLEAN_ENV_FLAGS = [
   "NL_STEPS_ENABLED",
   "ORG_LLM_CONFIG_ENABLED",
   "REPLAY_REGROUND",
+  // RESERVED: registered before its reader lands (same reason as DISCOVERY_LIVE_DOM above). Names
+  // the Salesforce-specific discovery support; nothing reads it yet.
   "SALESFORCE_ENABLED",
   "SCRIPT_OVERRIDE_ENABLED",
   "SELF_HEAL_DEFAULT",

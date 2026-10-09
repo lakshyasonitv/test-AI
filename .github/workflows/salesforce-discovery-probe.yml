@@ -1,0 +1,51 @@
+# Manual-only probe: measures what the current cheerio discovery path can and cannot see on a
+# Salesforce Lightning page. NEVER runs on push — it signs in to a real org, so it is dispatched
+# by hand only. See scripts/salesforceDiscoveryProbe.ts for what it measures and why.
+name: Salesforce discovery probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      org_url:
+        description: "Salesforce org URL to sign in to (e.g. https://my-org.my.salesforce.com)"
+        required: true
+        type: string
+      record_url:
+        description: "Lightning record page to measure. Blank = measure the org URL itself."
+        required: false
+        type: string
+        default: ""
+
+# Least privilege: this job only reads the repo.
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Credentials come from repo secrets; the org/record URLs from the dispatch inputs. The
+      # script scrubs the credential values out of everything it prints, so this log is safe even
+      # if the repository's Actions logs are public.
+      - name: Run discovery probe
+        env:
+          SALESFORCE_USERNAME: ${{ secrets.SALESFORCE_USERNAME }}
+          SALESFORCE_PASSWORD: ${{ secrets.SALESFORCE_PASSWORD }}
+          SF_ORG_URL: ${{ inputs.org_url }}
+          SF_RECORD_URL: ${{ inputs.record_url }}
+        run: node --import tsx scripts/salesforceDiscoveryProbe.ts
