@@ -1278,3 +1278,95 @@ redirect can carry a session id (`sid=`).
 indistinguishable, so "no secret supplied" reads `verification-required` and "secret rejected" reads
 `mfa-required`; Salesforce's own verification-page markup has not been seen. The signature is
 unchanged; `totpCode` is an extra export for tests, not part of the contract.
+
+## D-40. Live discovery gives EVERY element a `css`, most stable first, positional path last — verified to match exactly that element
+
+**Context.** Grounding attaches a matched element's `css` to the target, and `resolveCode` prefers
+`css` over role+name. The static path only ever produced `css` from `data-test`/`data-testid`/
+`data-qa`/`id`, so most elements had none and went through the `field()`/`locate()` name guesses —
+the Salesforce password-mirror failure (`field(page, "passwordShown", "fill")`) was exactly that.
+
+**Decision.** The live walker builds a ladder per element — `data-test` > `data-testid` > `data-qa` >
+`#id` > `tag[name]` > `tag[aria-label]` > a positional `tag:nth-of-type` path anchored at the nearest
+ancestor with a unique id (else `body`) — and keeps the first candidate that matches exactly one
+element AND is that element. A plain id stays `#id`; an id needing escapes becomes `[id="…"]`
+(LS-4): measured, Playwright 1.49's own parser throws on `#\-` although the browser accepts it.
+
+**Rejected.** *Stable attributes only* (elements without one keep no `css`) — fixes the Salesforce
+case but leaves most elements on the name guesses the brief set out to retire. *Positional only when
+role+name cannot locate the element* — a heuristic for "cannot" that would itself need to be right.
+Chosen explicitly by the stream owner, 2026-10-09, knowing the cost below.
+
+**Cost, stated.** A positional selector is coupled to layout: a DOM reshuffle breaks it, and with
+`.first()` a shifted path could hit a sibling. It is the last rung, used only where the page offers
+nothing stable. A duplicate's `nth` is handled by grounding picking the nth twin and rebasing `nth`
+onto its `css` (Garvit, LS-1), so a unique `css` never meets a stale `nth`.
+
+## D-41. Shadow DOM: `host >> inner` chains, re-verified through Playwright, in getByRole's order
+
+**Context.** `page.content()` never serializes a shadow root. Measured against the pinned
+Playwright 1.49.0 rather than read in docs: Playwright's CSS engine pierces open shadow roots and
+`querySelectorAll` does not — a light `#dup` plus a shadow `#dup` is one match to the DOM and two
+to Playwright. Playwright's `>` combinator also crossed a shadow boundary in 1.49.
+
+**Decision.** Shadow elements get Playwright's documented `>>` chain (`host >> :scope > div > button`
+for a positional inner path). Whenever the walk meets any shadow root, EVERY element's candidates —
+light-DOM ones included — are re-checked through Playwright itself (`evaluateAll`: exactly one
+match, and the very node walked). Elements are listed light DOM first, then each open root
+depth-first over roots, because that is the order `getByRole` returns — a composed-tree order
+failed a test against it. Closed roots are unreachable by design and skipped.
+
+**Rejected.** *Relying on `>` crossing the boundary* — engine behaviour, not a contract. *An in-page
+emulation of Playwright's matching* — a second implementation to drift; the real engine is
+authoritative and affordable (320 shadow elements verified in 0.7s with concurrent `evaluateAll`,
+down from 4.5s sequential).
+
+## D-42. Same-origin iframes: `Target.frame` is the `" >>> "`-joined `<iframe>` selectors; every locator hangs off one root
+
+**Decision.** The walker recurses into same-origin frames (`about:` frames inherit; an opaque `"null"`
+origin never counts, even under an `about:blank` top page) and tags each element with its frame
+path, each `<iframe>` selector verified in its PARENT frame. Grounding copies it to `Target.frame`
+like `css`. `frameRootCode`/`frameRoot` (`targetResolver.ts`) turn it into
+`page.frameLocator(a).frameLocator(b)`, and every branch of `resolveCode`, `resolveLive` and the
+generator's helpers hangs off that root; `locate()`/`field()` take a `FrameLocator` as their first
+argument unchanged because they only call `locator`/`getBy*`. The three spots that need the real
+page — `safeClick` (`goto`/`url`), the `:visible` operand of `Locator.and()` (refuses two frames),
+and `choose()`'s re-index/option scope — skip, re-root, or take an optional 4th `root` argument.
+With no frame the root is `page`, so every frameless target emits exactly what it did before.
+
+**Rejected.** *Cross-origin frames* — out of the brief's scope; discovery models the site's own
+pages. *Passing the frame root as `page` to `choose()`/`safeClick()`* — they need `waitForTimeout`,
+`goto` and `url`, which a `FrameLocator` does not have.
+
+## D-43. `DISCOVERY_LIVE_DOM` swaps only the element list, and the flag-off path runs the switch
+
+**Decision.** `elementStrategy()` is the one read of the flag. `extractDomModelFromPage` calls
+`elementsFor(strategy, …)` in BOTH modes; for `"cheerio"` it returns the array the model already
+holds, so flag off runs the same code path with the old strategy (`CLAUDE.md` rule 7) and is
+byte-identical — pinned by `tests/fixtures/discoveryFlagOff/pre-phase5.json`, captured from the code
+before the switch existed. Flag on: the walker's elements replace the static list, landmarks are
+re-tagged by the same (factored-out) rule, the hydration poll counts the strategy's own elements,
+generic clickables still merge in, a walk that throws falls back to the static list for that call,
+and `discoverUsingCrawler`'s key becomes `dom-live:` (flag off keeps `dom:`).
+
+**`recheckVisibility` skips measured elements.** Otherwise it re-tests a frame or shadow element's
+`css` against the TOP document — tested: a visible framed `#e` was flipped to hidden by a hidden
+top-level `#e`.
+
+**Not done here.** `hybridDiscovery.ts`'s own cache keys (`url`, `siteCacheKey`) do not carry the
+strategy; after flipping the flag, a model from the other mode can be served for up to
+`APPMODEL_CACHE_TTL_MS` (30 minutes). That file belongs to another stream.
+
+## D-44. "Fewer elements is a bug" is judged per CONTROL, not per entry
+
+**Context.** The brief's flag-on check: more elements is expected, fewer is a bug. On real pages the
+live list is sometimes SHORTER — the login fixture: 10 entries against 13; the Testbench UI: 9
+static-only entries.
+
+**Decision.** Compare controls, not entries. Every static-only entry measured so far is one of: the
+same `<input>` listed a second time under its HTML `name` attribute (`textbox "username"` beside
+`textbox "Username"`, both `#u`); a `type=hidden` input, excluded on purpose because its value must
+never become a name (TD-64); a glyph or placeholder standing in for the real accessible name
+(`button "×"` is `button "Close menu"` — `getByRole` matches the first 0 times and the second once);
+or a nameless heading the walker names from its id. `tests/discoveryStrategy.test.ts` maps every
+static entry to its live element rather than comparing counts.

@@ -240,6 +240,7 @@ in `.env.example` — but that file is not a complete index of this table. `MAX_
 | `MAX_LIVE_EXTENSIONS` | No | Max browser replays per case to discover pages behind a login/click (default: 5) |
 | `MAX_DISCOVERY_PAGES` | No | Max pages a single site crawl may collect (default: 5) |
 | `DISCOVERY_HYDRATION_POLL_MS` | No | Max time a zero-element page extraction keeps re-checking before being accepted as final (default: 6000) |
+| `DISCOVERY_LIVE_DOM` | No | Set `true` to take each page's element list from the LIVE page instead of the static `page.content()` parse: measured visibility, a verified `css` for every element, open shadow roots and same-origin iframes (`DECISIONS.md` D-40–D-43). Every other model field is unchanged. After flipping it, cached models from the other mode can be served for up to `APPMODEL_CACHE_TTL_MS`. Default off — output is then byte-identical to before |
 | `MAX_CASES_PER_RUN` | No | Hard ceiling on cases turned into runnable scripts (default: 5) |
 | `MAX_LOGIN_CASES` | No | Max cases in a suite that may target the login page itself, on an auth-aware run (default: 1) |
 | `MAX_CONCURRENT_RUNS` | No | Max parallel pipeline runs (default: 3) |

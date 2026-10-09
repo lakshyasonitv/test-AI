@@ -89,6 +89,8 @@ The hybrid discovery orchestrator (`hybridDiscovery.ts`) tries these in order:
      |
 2. DOM extraction path  -> domDiscovery.ts drives Playwright to fetch page.content(),
      |                      domExtract.ts (cheerio) parses it into structured elements
+     |                      (DISCOVERY_LIVE_DOM=true: the element list instead comes from
+     |                      liveDomDiscovery.ts walking the live page — see below)
      |                      + Gemini concept labeling (text-only, no screenshot)
      |                      = Fast, deterministic structure, ~1 Gemini call, no service to run
      |
@@ -126,6 +128,16 @@ deliberately *not* `offsetParent`, which reports null for `position:fixed` and w
 condemn fixed headers) for every element carrying a stable selector. It runs inside
 `extractDomModelFromPage`, the one function every discovery path shares. What remains uncovered —
 an element with no `id`/`data-test`/`css` at all — is tracked in `TECH_DEBT.md` TD-13.
+
+**Live-DOM discovery (`DISCOVERY_LIVE_DOM`, default off).** `liveDomDiscovery.ts` walks the LIVE page
+in one `page.evaluate` (no inner functions, TD-40) and returns the same `Element[]` shape, with the
+accessible name computed in accname order (never the HTML `name` attribute), `visible` measured,
+and a `css` on every element, verified to match exactly that element (stable attributes first, a
+positional path last — D-40). It descends open shadow roots (`host >> inner` chains, re-verified
+through Playwright whenever a shadow root exists — D-41) and same-origin iframes (`frame` paths —
+D-42). The switch in `extractDomModelFromPage` swaps only `elements`; every other PageModel field
+still comes from the cheerio parse, and with the flag off the output is byte-identical (D-43). This
+closes TD-13 for the live path.
 
 `extractDomModelFromPage(page, url)` is the piece that makes replay-time discovery trustworthy: it
 snapshots a Playwright `Page` object that's ALREADY open and navigated — no new browser launch.
@@ -288,7 +300,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `classify.ts` | No | Deterministic failure classifier |
 | `heal.ts` | Gemini (LLM path only) | Bounded, one-shot self-heal: try the deterministic structural fix first (see `deterministicHeal.ts`, gated on `DETERMINISTIC_HEAL`), then fall back to re-snapshot + regenerate + re-run |
 | `deterministicHeal.ts` | No | Pure-code structural target matcher: re-matches a failing step's IR target (role/name) against the AppModel — no LLM, no browser relaunch. Tiered name matching shared in shape with `ir.ts`'s `bestNameMatch` |
-| `targetResolver.ts` | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`) |
+| `targetResolver.ts` | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`). Every branch hangs off `frameRoot`/`frameRootCode` — `page`, or the `page.frameLocator(...)` chain `Target.frame` names; `tests/frameTarget.test.ts` pins the live and emitted forms to the same element |
 | `failureAnalysis.ts` | Gemini + Vision | Failure diagnosis; deterministic auth-bounce check runs first |
 | `caseSelectionGate.ts` | Gemini (via testCases) | Optional human-review loop over generated case batches, incl. reactive-case rounds |
 | `suiteRunner.ts` | No | Runs every case in its own browser context, per-case artifacts. `buildSuiteSummary` also reads each failed case's own `05-result.json` off disk and surfaces the failing step and error onto the case (optional additive fields, TD-80) |
@@ -299,7 +311,8 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `generator.ts` | No | IR -> Playwright spec (pure code) |
 | `hybridDiscovery.ts` | Gemini (text) | Discovery orchestrator: DOM first, auth-aware login + session verification, same-origin + click-probed site crawl, vision fallback; also owns `isAllowedEntryUrl`/`isPrivateOrLoopbackHost`, the entry-URL scheme + private-host allow-list |
 | `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry; `redactCredentials` skips DOM-keyword-colliding values. `restoreCredentialRefs` guards the editor save path: a credential typed as a literal step value goes back behind `${env:...}` before anything is written, classified by the step's own history / the DOM's `inputType` / a password-only name check (TD-67). `credentialKindForStep`/`credentialForStep` resolve VALUE-first (env reference), falling back to the target only when the value is not one — used by the live walk so it agrees with the compiled spec (TD-84) |
-| `domDiscovery.ts` | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility |
+| `domDiscovery.ts` | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility. Holds the `DISCOVERY_LIVE_DOM` strategy switch (`elementStrategy`, the only read of the flag) and the strategy-aware cache key (`domCacheKey`) |
+| `liveDomDiscovery.ts` | No | Live-DOM element walker (flag-on path): accessible name, measured visibility, a verified `css` for every element, open shadow roots, same-origin iframes. `enumerateLiveElements(page)` |
 | `domExtract.ts` | No | Cheerio DOM extraction — Node port of the deleted Python parser |
 | `ir.ts` | Gemini | TestCase -> IR: grounding (role/selector/navigate-URL/visibility), login-prefix injection (`buildLoginPrefix`/`needsLoginPrefix`), credential policy, live-extend, truncation, action-coverage check (`missingActions`) |
 | `heal.ts` | Gemini | Bounded self-heal, at most once per case: re-snapshot up to the failing step, recompile the IR, regenerate the spec and run it again. Accepted only if it passes **and** is not truncated. `isHealable` gates on category `selector_changed`/`element_missing`, a failure past step 0, and **not** a deterministic grounding rejection (`meta.truncationKind`, TD-83) — a re-snapshot cannot make an invented route real. `selfHealDefault()` is the one definition of the `SELF_HEAL_DEFAULT` fallback, shared by the orchestrator and `/api/health` |
@@ -409,6 +422,10 @@ AppModel
       css?                deterministic selector, NEVER invented by an LLM — set by
                           discovery for elements with an empty/synthetic accessible name
       visible?, enabled?, containerRole?, containerName?, pageSection?, path?, order?
+      frame?, inShadow?,   written ONLY by the live walker (DISCOVERY_LIVE_DOM): the same-origin
+      nameSource?,         iframe path (" >>> "-joined <iframe> selectors), open-shadow-root
+      visibleSource?       membership, which accname rule produced `name`, and "computed" when
+                           `visible` was measured. Absent on every cheerio-built element
     forms?: DomForm[]      structured <form> extraction: fields (inputType, placeholder,
                           label, required, ...) — this is what credentialFieldMap reads to
                           tell a password field from a username field on an unlabelled form
@@ -449,9 +466,12 @@ IR
     id: string
     action: "navigate" | "click" | "fill" | "select" | "check" | "press" | "wait" | "assert"
     target?: { url?, role?, name?, nth?, label?, text?, placeholder?, testId?, css?,
-               groundedAt? }
+               frame?, groundedAt? }
               -- css is written in code during grounding (copied from a verified AppModel
                  element), never produced by the LLM directly
+              -- frame is copied the same way from the element's `frame`: the same-origin
+                 iframe path. The generator and resolveLive wrap the locator in
+                 page.frameLocator(...) once per segment (D-42)
               -- groundedAt: "replay" is PROVENANCE, not behaviour. It marks a target grounded
                  against the LIVE page during a replay (REPLAY_REGROUND) rather than against
                  the discovered model -- the case of a control revealed by a click, which
