@@ -1,5 +1,5 @@
 import { poolFromEnv } from "./keyPool.js";
-import { callWithPool } from "./backoff.js";
+import { callWithPool, boundErrorBody, retryAfterFromBody } from "./backoff.js";
 import { recordAmbient } from "./llmBudget.js";
 import { currentLlmConfig } from "./llmContext.js";
 
@@ -27,7 +27,7 @@ export const GEMINI_MODELS = [
 // module scope that made merely *importing* anything downstream of this file fail — so pure
 // functions in ir.ts / generator.ts could not be unit-tested without live credentials.
 let pool: ReturnType<typeof poolFromEnv> | undefined;
-const getPool = () => (pool ??= poolFromEnv("GEMINI_API_KEYS"));
+const getPool = () => (pool ??= poolFromEnv("GEMINI_API_KEYS", "gemini"));
 
 export interface GeminiOpts {
   model?: string;
@@ -139,10 +139,15 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<Gem
       console.log("[gemini] response status:", res.status);
       if (!res.ok) {
         const text = await res.text();
-        console.error("[gemini] error body:", text.slice(0, 200));
-        const e: any = new Error(`Gemini ${res.status}: ${text}`);
+        console.error("[gemini] error body:", boundErrorBody(text));
+        // Bounded HERE, not at the console line above: `.message` is what ir.ts:1656/1665/1670
+        // and backoff.ts print whole, so the construction site is the only place that bounds
+        // every downstream printer at once. `retryAfter` is lifted from the raw body first, for
+        // the same reason — a bounded message can no longer carry `Please retry after Ns` to
+        // parseRetryDelay.
+        const e: any = new Error(`Gemini ${res.status}: ${boundErrorBody(text)}`);
         e.status = res.status;
-        e.retryAfter = res.headers.get("retry-after");
+        e.retryAfter = res.headers.get("retry-after") ?? retryAfterFromBody(text);
         if (res.status === 429) {
           console.warn("[gemini] quota exceeded — will retry after backoff (status 429)");
         }

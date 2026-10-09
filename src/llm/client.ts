@@ -4,6 +4,8 @@ import {
   resolvedDeployment, resolvedModel, resolvedModelLite, resolvedProvider,
   resolvedReasoningEffort, type LlmRole,
 } from "./llmContext.js";
+import { currentRunId } from "../runContext.js";
+import { extendedLoggingEnabled } from "../logging.js";
 
 /**
  * The single entry point for every LLM call in the pipeline.
@@ -79,15 +81,55 @@ export function cacheModelDimension(role: LlmRole): string {
   return `${provider}:${modelOrDeployment}`;
 }
 
+/**
+ * The exact text of one `[llm]` call line. Pure and exported so its format can be pinned by a
+ * test without a network call (`tests/extendedLogging.test.ts`); the gate and the run-id lookup
+ * live in `logLlmCall` below.
+ */
+export function llmCallLine(
+  role: LlmRole,
+  model: string,
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number },
+  runId: string | null,
+): string {
+  return `[llm] run=${runId ?? "-"} role=${role} model=${model} ` +
+    `tokens prompt=${usage.promptTokens} completion=${usage.completionTokens} total=${usage.totalTokens}`;
+}
+
+/**
+ * One line per completed LLM call, behind `EXTENDED_LOGGING` (logging.ts). Names the provider and
+ * the exact model/deployment that ran, plus this call's token counts — the facts L7 found were
+ * never logged anywhere: this file had zero console calls, so a successful run never said which
+ * provider served it, and Azure logged neither its model nor its usage.
+ *
+ * `cacheModelDimension` is reused rather than resolving the model again, so the line can never
+ * disagree with the cache key that was written for the same call.
+ *
+ * The run id comes from the ambient rail (runContext.ts). It is null for a CLI invocation or a
+ * direct unit test, and prints "-" rather than inventing one.
+ *
+ * A failed call never reaches here — it threw — and needs no line: `backoff.ts` already logs the
+ * provider and key index it is about to retry with (Phase 2 STEP 1).
+ */
+function logLlmCall(
+  role: LlmRole,
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number },
+): void {
+  if (!extendedLoggingEnabled()) return;
+  console.log(llmCallLine(role, cacheModelDimension(role), usage, currentRunId()));
+}
+
 export async function llm(prompt: string, opts: LlmOpts): Promise<LlmResult> {
   const { role, ...rest } = opts;
   if (providerFor(role) === "azure") {
     // temperature (from a shared call site, e.g. ir.ts:1592) is deliberately NOT forwarded to the
     // azure body — azureOpenAI never sends it. reasoning effort is resolved per role here: 'main'
     // always sends (default "low"), 'lite' only when AZURE_OPENAI_REASONING_EFFORT_LITE is set.
-    return azureOpenAI(prompt, {
+    const result = await azureOpenAI(prompt, {
       ...rest, deployment: resolvedDeployment(role), reasoningEffort: resolvedReasoningEffort(role),
     });
+    logLlmCall(role, result.usage);
+    return result;
   }
   // The model is passed explicitly (rather than relying on gemini()'s internal fallback) so the
   // cache dimension and this actual call can never disagree about which model ran. Per-org config
@@ -96,5 +138,7 @@ export async function llm(prompt: string, opts: LlmOpts): Promise<LlmResult> {
   // jsonEnvelope is deliberately NOT forwarded — Gemini can return a bare JSON array, so the
   // prompt's array instruction stays verbatim and unwrapArray recovers it as-is (see D-31).
   const { jsonEnvelope: _jsonEnvelope, ...geminiRest } = rest;
-  return gemini(prompt, { ...geminiRest, model: role === "lite" ? resolvedModelLite() : resolvedModel() });
+  const result = await gemini(prompt, { ...geminiRest, model: role === "lite" ? resolvedModelLite() : resolvedModel() });
+  logLlmCall(role, result.usage);
+  return result;
 }

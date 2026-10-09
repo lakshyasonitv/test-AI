@@ -593,7 +593,7 @@ RUN HISTORY
 
 PUBLIC / SESSION
   GET    /api/health                             public       which critical env vars are set
-                                                     (name + length only, never the value)
+                                                     (name + presence only, never the value)
   GET    /api/auth/config                        public       Supabase URL + publishable key
   POST   /api/auth/signup                        public       creates a confirmed account —
                                                      see SIGNUP_ENABLED in Auth & Tenancy

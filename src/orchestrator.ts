@@ -5,10 +5,12 @@ import { plan } from "./stages/planner.js";
 import { discoverSiteHybrid, discoverPagesHybrid } from "./stages/hybridDiscovery.js";
 import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor, NoTestCasesError, type TestCase } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
-import { LlmBudget, enterWithBudget } from "./llm/llmBudget.js";
+import { LlmBudget, enterWithBudget, type LlmUsageSnapshot } from "./llm/llmBudget.js";
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
+import { enterWithRunId } from "./runContext.js";
+import { extendedLoggingEnabled } from "./logging.js";
 import {
   credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, redactCredentials,
   extractCredentialsFromPrompt,
@@ -90,6 +92,45 @@ export interface RunOptions {
   targetApp?: TargetApp;
 }
 
+/**
+ * The run-log verdict for the primary spec. Separated from the `console.log` so the distinction it
+ * carries can be tested without a live browser (`tests/misleadingLogs.test.ts`).
+ *
+ * `passed` is `exitCode === 0`, which on its own does not mean "a test passed": a crash, a timeout
+ * kill, or a browser that never launched all exit non-zero without writing a report, and a clean
+ * exit with no report verifies nothing either. `reportParsed` is `!!result.raw` — the parsed
+ * Playwright report, null exactly when none was written. The four combinations must stay distinct
+ * in the log; collapsing them to a bare PASSED/FAILED is the over-claim this exists to prevent.
+ */
+export function playwrightOutcomeLine(passed: boolean, reportParsed: boolean): string {
+  if (passed) {
+    return reportParsed
+      ? "PASSED (report parsed)"
+      : "PASSED BY EXIT CODE ONLY - no report was parsed, so this is UNVERIFIED, not a passing test";
+  }
+  return reportParsed
+    ? "FAILED (report parsed)"
+    : "FAILED - no report parsed (crash, timeout, or killed before the reporter wrote results.json)";
+}
+
+/**
+ * The one-line LLM spend summary for a finished run, behind `EXTENDED_LOGGING` (logging.ts). Built
+ * from `llmBudget.snapshot()` — the same object already written to `08-llm-usage.json` — so the
+ * console line and the artifact cannot disagree. Per-stage totals are included because "which
+ * stage spent the run's budget" is the question the retry storm made impossible to answer from a
+ * bare total.
+ */
+export function runUsageLine(runId: string, s: LlmUsageSnapshot): string {
+  const stages = Object.entries(s.byStage)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, u]) => `${name}=${u.totalTokens}/${u.calls}c`)
+    .join(" ");
+  return `[llm] run=${runId} TOTAL calls=${s.calls} prompt=${s.promptTokens} ` +
+    `completion=${s.completionTokens} total=${s.totalTokens}` +
+    (stages ? ` | stages: ${stages}` : "") +
+    (s.exhausted ? " | BUDGET EXHAUSTED" : "");
+}
+
 export async function runPipeline(
   { prompt, url, urls, coverage, options }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; options?: RunOptions },
   onEvent: OnEvent = () => { },
@@ -131,6 +172,12 @@ export async function runPipeline(
   // The fourth use of the rail: which enterprise application, if any, this URL belongs to. Entered
   // on EVERY run — null for an ordinary one — so no run can inherit another's value (runTarget.ts).
   enterWithTargetApp(options?.targetApp ?? null);
+  // The fifth rail, entered beside the other four and for the same reason: the id is known here
+  // and needed at the very bottom of the call stack (llm/client.ts, discovery, the executor's
+  // child spawn), so it travels ambiently rather than through every signature between. Unlike the
+  // four above this is entered unconditionally — every pipeline has a run id — and it is `enterWith`
+  // because the alternative is nesting the rest of this 450-line function. See runContext.ts.
+  enterWithRunId(runId);
 
   const save = (name: string, data: unknown) =>
     writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));
@@ -334,7 +381,14 @@ export async function runPipeline(
       const r = await runSpec(spec, runDir, credentialEnvVars(runCreds));
       return { passed: r.passed, exitCode: r.exitCode, artifactsDir: r.artifactsDir, resultsJsonPath: r.resultsJsonPath, raw: r.raw };
     });
-    console.log("Playwright finished:", result.passed ? "PASSED" : "FAILED");
+    // `passed` is `exitCode === 0` (executor.ts), which is NOT the same as "a test ran and
+    // passed": a crash, a SIGKILL on timeout, or a browser that never launched each produce a
+    // non-zero exit with no report, and a clean exit with no report is just as unverified.
+    // `result.raw` is the parsed Playwright report — null exactly when none was written — so it
+    // is the signal that separates a verdict from a process outcome. The code already knows the
+    // two differ: the `truncatedNoAssertion` check below and `detectBlocked` after it both exist
+    // to stop a bare exit code being read as a verdict.
+    console.log("Playwright finished:", playwrightOutcomeLine(result.passed, !!result.raw));
 
     // A truncated IR whose surviving prefix has no terminal assertion cannot report
     // "passed" — the dropped tail may have contained the only assertion, so Playwright's
@@ -504,6 +558,7 @@ export async function runPipeline(
     // discovered later via a drained account.
     const llmUsage = llmBudget.snapshot();
     save("08-llm-usage.json", llmUsage);
+    if (extendedLoggingEnabled()) console.log(runUsageLine(runId, llmUsage));
 
     // Did the primary case end at a wall automation can't pass? That outranks pass/fail: the
     // app isn't broken and the test didn't succeed, and the user needs to see the proof frame.
@@ -542,6 +597,7 @@ export async function runPipeline(
     // budget retrying — record usage here too instead of only on the happy path.
     const llmUsage = llmBudget.snapshot();
     try { save("08-llm-usage.json", llmUsage); } catch { }
+    if (extendedLoggingEnabled()) console.log(runUsageLine(runId, llmUsage));
     emit("error", "failed", { llmUsage }, err?.message ?? String(err));
     throw err;
   }

@@ -123,7 +123,7 @@ and with every platform flag off it is the *only* half that exists:
 | `POST /api/runs/:runId/case-selection/rewrite` | "Ask for a change" on a case at the gate, before it has an IR. Behind `GATE_CASE_EDIT_AI`; proposes only. |
 | `GET /api/runs/:runId/page-elements` | The discovered controls of each page, role + name only, so the gate editor can show what actually exists. |
 | `DELETE /api/runs/:runId` | Delete a run's directory permanently. |
-| `GET /api/health` | Diagnostic: which env vars are set (name/length only, never values), and the server's current defaults for the gate/self-heal toggles. |
+| `GET /api/health` | Diagnostic: which env vars are set (name/presence only, never values or lengths), and the server's current defaults for the gate/self-heal toggles. |
 
 **Why both SSE and polling exist for the same data:** a Cloudflare Quick Tunnel (the repo's
 suggested way to share a local instance) buffers `text/event-stream` responses and only flushes

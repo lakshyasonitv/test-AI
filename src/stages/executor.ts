@@ -4,6 +4,7 @@ import path from "node:path";
 import { redactCredentials, type Credentials } from "./credentials.js";
 import { siteHost } from "../text.js";
 import { browserContextOptions } from "../browserLaunch.js";
+import { currentRunId } from "../runContext.js";
 
 /**
  * `RUN_LOCALE` / `RUN_TIMEZONE` for the Playwright child, or nothing when pinning is off.
@@ -21,6 +22,34 @@ export function specLocaleEnv(): Record<string, string> {
   const opts = browserContextOptions();
   if (!("locale" in opts)) return {};
   return { RUN_LOCALE: opts.locale, RUN_TIMEZONE: opts.timezoneId };
+}
+
+/**
+ * `RUN_ID` for the Playwright child, or nothing when no run id is ambient.
+ *
+ * Same process boundary as `specLocaleEnv` above: the child has no AsyncLocalStorage, so anything
+ * it must be able to attribute to a run has to cross as environment. The id is entered at the top
+ * of `runPipeline` and, in scoped form, by the editor request handlers, so it is set by the time a
+ * spec is spawned. Returns `{}` rather than an empty string when there is none, so the child falls
+ * back to whatever it inherited instead of being handed a blank id.
+ */
+export function runIdEnv(): Record<string, string> {
+  const id = currentRunId();
+  return id ? { RUN_ID: id } : {};
+}
+
+/**
+ * The `[run <id>] ` prefix for THIS module's own log lines, or `""` when no run is ambient.
+ *
+ * `runIdEnv` above tags the child. This tags the parent — the `[executor] …`/`[PW STDOUT]`/
+ * `[PW STDERR]` lines are printed by the PARENT process, which holds the rail, so it can and must
+ * label its own output. Without this, `MAX_CONCURRENT_RUNS > 1` interleaves two runs' subprocess
+ * chatter with no way to tell which run a line belongs to — the exact unreadability Step 3 exists
+ * to remove. Empty outside a run (CLI, unit tests), so those outputs are byte-unchanged.
+ */
+export function executorRunTag(): string {
+  const id = currentRunId();
+  return id ? `[run ${id}] ` : "";
 }
 
 export interface ExecResult {
@@ -217,7 +246,7 @@ export function scrubServedSecrets(raw: any, artifactsDir: string, resultsJson: 
 export async function runSpec(
   specCode: string, runDir: string, secretEnv: Record<string, string> = {}
 ): Promise<ExecResult> {
-  console.log("[executor] runSpec() called, runDir:", runDir);
+  console.log(executorRunTag() + "[executor] runSpec() called, runDir:", runDir);
   const genDir = path.join(runDir, "generated");
   mkdirSync(genDir, { recursive: true });
   const specPath = path.join(genDir, "test.spec.ts");
@@ -229,8 +258,8 @@ export async function runSpec(
 
   const cliPath = path.join(process.cwd(), "node_modules", "@playwright", "test", "cli.js");
   const specArg = specPath.replace(/\\/g, "/");
-  console.log("[executor] cliPath:", cliPath, "| exists:", existsSync(cliPath));
-  console.log("[executor] specArg:", specArg);
+  console.log(executorRunTag() + "[executor] cliPath:", cliPath, "| exists:", existsSync(cliPath));
+  console.log(executorRunTag() + "[executor] specArg:", specArg);
 
   // Retry only what is worth retrying.
   //
@@ -252,12 +281,12 @@ export async function runSpec(
       // No report at all: Playwright didn't get far enough to produce one (bad spawn,
       // missing browser, killed by the safety timeout). That is worth another go.
       if (attempt === CONFIG.RETRIES) return result;
-      console.log(`[executor] no report produced — retrying (${attempt + 1}/${CONFIG.RETRIES})`);
+      console.log(executorRunTag() + `[executor] no report produced — retrying (${attempt + 1}/${CONFIG.RETRIES})`);
       await sleep(CONFIG.TIMEOUTS.RETRY_DELAY);
     } catch (error) {
       lastError = error;
       if (attempt === CONFIG.RETRIES) break;
-      console.log(`[executor] run threw — retrying (${attempt + 1}/${CONFIG.RETRIES}): ${(error as any)?.message ?? error}`);
+      console.log(executorRunTag() + `[executor] run threw — retrying (${attempt + 1}/${CONFIG.RETRIES}): ${(error as any)?.message ?? error}`);
       await sleep(CONFIG.TIMEOUTS.RETRY_DELAY);
     }
   }
@@ -279,7 +308,7 @@ async function executePlaywright(
   secretEnv: Record<string, string> = {}
 ): Promise<ExecResult> {
   const exitCode: number = await new Promise((resolve) => {
-    console.log("[executor] Spawning Playwright...");
+    console.log(executorRunTag() + "[executor] Spawning Playwright...");
     // One probe per process (memoized). Decides whether this child records video at all.
     const video = ffmpegAvailable();
 
@@ -309,21 +338,24 @@ async function executePlaywright(
           // Omitted entirely when pinning is off, so an inherited RUN_LOCALE="" keeps meaning
           // "unpinned" in the child rather than being overwritten with a default here.
           ...specLocaleEnv(),
+          // Same boundary, same reason: the child cannot read the ambient run id, so the one thing
+          // that ties its output back to this run crosses as env. Empty when no run is ambient.
+          ...runIdEnv(),
         },
         stdio: ["pipe", "pipe", "pipe"],
       }
     );
-    console.log("[executor] Spawned pid =", p.pid);
+    console.log(executorRunTag() + "[executor] Spawned pid =", p.pid);
 
-    p.on("spawn", () => console.log("[executor] event: spawn"));
-    p.on("exit", (code) => console.log("[executor] event: exit", code));
-    p.on("disconnect", () => console.log("[executor] event: disconnect"));
+    p.on("spawn", () => console.log(executorRunTag() + "[executor] event: spawn"));
+    p.on("exit", (code) => console.log(executorRunTag() + "[executor] event: exit", code));
+    p.on("disconnect", () => console.log(executorRunTag() + "[executor] event: disconnect"));
     p.on("error", (err) => {
-      console.error("[executor] event: error", err.message);
+      console.error(executorRunTag() + "[executor] event: error", err.message);
       resolve(1);
     });
     p.on("close", (code) => {
-      console.log("[executor] event: close", code);
+      console.log(executorRunTag() + "[executor] event: close", code);
       if (!existsSync(resultsJson) && out.trim().startsWith("{")) {
         writeFileSync(resultsJson, out, "utf8");
       }
@@ -331,20 +363,29 @@ async function executePlaywright(
     });
 
     let out = "";
+    // The child is a separate process (no AsyncLocalStorage, no shared redaction state), and its
+    // stdout/stderr is the ONE credential-bearing sink in this file that redactCredentials did not
+    // already cover: scrubServedSecrets handles the artifacts, this handles the console. Playwright
+    // prints a locator's expected value on a failed toHaveValue/toHaveValue-like assertion and can
+    // echo an env dump when it crashes, so the raw bytes would otherwise land in Log Analytics —
+    // durable storage outside "secrets never touch disk or the database". Built once per spawn
+    // rather than per chunk; undefined when the run carries no secret, so the common path is
+    // unchanged.
+    const logCreds = secretCreds(secretEnv);
     p.stdout.on("data", (d) => {
       const s = d.toString();
       out += s;
-      console.log("[PW STDOUT]", s);
+      console.log(executorRunTag() + "[PW STDOUT]", redactCredentials(s, logCreds));
     });
     p.stderr.on("data", (d) => {
-      console.log("[PW STDERR]", d.toString());
+      console.log(executorRunTag() + "[PW STDERR]", redactCredentials(d.toString(), logCreds));
     });
 
     // Safety timeout: kill Playwright if it outlives its own per-test budget plus finalization
     // slack. Derived per spec rather than fixed, so it stays above the budget as that scales.
     const killMs = perTestMs + KILL_SLACK_MS;
     const timeout = setTimeout(() => {
-      console.error(`[executor] TIMEOUT ${killMs / 1000}s — killing Playwright (pid=${p.pid})`);
+      console.error(executorRunTag() + `[executor] TIMEOUT ${killMs / 1000}s — killing Playwright (pid=${p.pid})`);
       p.kill("SIGKILL");
       resolve(1);
     }, killMs);
@@ -354,7 +395,7 @@ async function executePlaywright(
   let raw: any = null;
   try { raw = JSON.parse(readFileSync(resultsJson, "utf8")); } catch { /* leave null */ }
 
-  console.log("[executor] Results parsed:", raw ? "yes" : "no", "| exitCode:", exitCode);
+  console.log(executorRunTag() + "[executor] Results parsed:", raw ? "yes" : "no", "| exitCode:", exitCode);
 
   let screenshot: string | undefined;
   let accessibilitySnapshot: string | undefined;
@@ -387,7 +428,7 @@ async function executePlaywright(
     }
   }
 
-  console.log("[executor] runSpec() returning, passed:", exitCode === 0);
+  console.log(executorRunTag() + "[executor] runSpec() returning, passed:", exitCode === 0);
   const video = ffmpegAvailable();
   return {
     passed: exitCode === 0,

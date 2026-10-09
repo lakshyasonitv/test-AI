@@ -280,7 +280,7 @@ export async function llmConfigForOrg(organisationId: string | null): Promise<Ll
       const key = decryptSecret({
         ct: row.key_ct, iv: row.key_iv, tag: row.key_tag, custody: row.key_custody ?? "unknown",
       });
-      pool = new KeyPool(key.split(",").map((s) => s.trim()).filter(Boolean));
+      pool = new KeyPool(key.split(",").map((s) => s.trim()).filter(Boolean), "org-gemini");
       fingerprint = row.key_fingerprint ?? "org";
     } catch (err) {
       // Says which organisation and why, never what. Falling back to the env key is the safe

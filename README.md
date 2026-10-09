@@ -378,7 +378,8 @@ crashing. Locally this var is unset, so bare-metal and `docker compose up` are b
 - **Single replica.** The credential prompt and case-selection gate hold promises in process
   memory; a reschedule drops the promise and wastes the full timeout. Scaling horizontally
   requires an external scheduling layer.
-- **`/api/health`** reports which critical env vars are set (name and length, never the value).
+- **`/api/health`** reports which critical env vars are set (name and presence, never the value
+  and not even its length — `DECISIONS.md` D-38).
   It is a liveness probe only — it returns 200 regardless of Gemini/DB readiness.
 
 Full phase report: [`docs/phases/PHASE_CONTAINERIZATION_REPORT.md`](docs/phases/PHASE_CONTAINERIZATION_REPORT.md).

@@ -775,7 +775,11 @@ export async function discoverUrlsByClicking(
     }
   }
   if (found.length) {
-    console.log(`[hybrid] ${pageModel.url}: no links, found ${found.length} route(s) by clicking nav buttons`);
+    // "no CRAWLABLE links", not "no links": this fallback runs whenever the href pass yielded
+    // zero *targets* (targetsFor), which is true both for a page with no internal links and for
+    // one whose links were all already visited, off-origin, or filtered out (collectCrawlTargets,
+    // the logout filter). The page may well be full of hrefs; what it lacks is somewhere new to go.
+    console.log(`[hybrid] ${pageModel.url}: no crawlable links from its hrefs (none found, or all already visited/filtered) — found ${found.length} route(s) by clicking nav buttons`);
   }
   return found;
 }
@@ -1359,6 +1363,11 @@ export async function discoverSiteHybrid(
     // Phase 1 — is there a gate, and where? Kept separate from the login attempt so the cache
     // lookup below can sit between them.
     let gateUrl: string | null = null;
+    // Set only when the detection below THREW. Without it, "no gate found" and "detection
+    // crashed before it could look" both fall through to `gateUrl === null` and are reported
+    // identically — a broken probe read as a site with no login. The message is carried into the
+    // AuthOutcome so the distinction survives to the run log and to 02-appmodel.json.
+    let gateDetectionError: string | null = null;
     try {
       await authPage.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await authPage.waitForTimeout(800);
@@ -1378,7 +1387,8 @@ export async function discoverSiteHybrid(
         }
       }
     } catch (err: any) {
-      console.warn(`[hybrid] gate detection failed: ${err?.message ?? err}`);
+      gateDetectionError = err?.message ?? String(err);
+      console.warn(`[hybrid] gate detection failed: ${gateDetectionError}`);
     }
 
     // Phase 2 — resolve credentials. This is the first moment we know a login exists, and it is
@@ -1402,7 +1412,16 @@ export async function discoverSiteHybrid(
 
     // Phase 4 — log in, then prove it.
     if (!gateUrl) {
-      auth = { status: "no-gate" };
+      // Three ways to reach `!gateUrl` — no form on the entry page, none one hop away, or the
+      // probe above THREW — and the first two alone are a confirmed "no login". Saying
+      // "no-gate" flat when the probe crashed is the over-claim this exists to stop: a broken
+      // detection then reads in the log as a site with no login at all.
+      auth = gateDetectionError
+        ? {
+            status: "no-gate",
+            detail: `Login-gate detection threw (${gateDetectionError}) before it could decide, so "no-gate" here is NOT a confirmed result — the crawl continued anonymously and no login was attempted. Re-run to distinguish a broken probe from a site without a login.`,
+          }
+        : { status: "no-gate" };
     } else if (!creds) {
       auth = { status: "no-credentials", url: gateUrl, detail: "A login gate was found but no credentials were supplied." };
       console.warn(`[hybrid] login gate at ${gateUrl} but no credentials — crawling anonymously`);
@@ -1436,13 +1455,26 @@ export async function discoverSiteHybrid(
             // success and cannot ground a single step past the login. Left as authenticated (the
             // sign-in genuinely worked, and the prefix built from it is valid) but deliberately NOT
             // cacheable: see discoveryIsWorthCaching. TD-106.
+            //
+            // The hedge the console line already carries is copied into `detail` too: the status
+            // word "authenticated" is true about the SIGN-IN, and false about the MODEL this run
+            // will generate from. Anything that prints the status alone (orchestrator.ts's
+            // outcome line, app.js) would otherwise report the un-hedged half. TD-106 row 3.
+            auth = {
+              ...auth,
+              detail: `Sign-in to ${gateUrl} succeeded (landed at ${reached}), but that page produced no elements, so the model contains ONLY the login page and can ground no step past it. Not cached.`,
+            };
             console.warn(`[hybrid] login succeeded but ${reached} produced no elements — the model will `
               + `contain only the login page, and will not be cached`);
           }
         } else {
           auth = {
             status: "login-failed", url: reached,
-            detail: `Credentials were submitted at ${gateUrl} but ${reached} still shows a password field, so no session was established. Check the values are correct for this site.`,
+            // States only what verifySession established: a password field was STILL visible on
+            // the landed page after the poll. The old wording ("Check the values are correct for
+            // this site") asserted a cause the probe cannot see — a second password step, a
+            // change-password page or an inline error all look identical to this check.
+            detail: `Credentials were submitted at ${gateUrl}, but ${reached} still showed a password field after the post-login check, so no session was established. That is evidence the login did not take; it is not proof the values are wrong.`,
           };
           console.warn(`[hybrid] login FAILED — ${reached} still shows a password field. Crawling anonymously.`);
         }

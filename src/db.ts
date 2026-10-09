@@ -353,6 +353,14 @@ let lastShadowRunMs = 0;
  *
  * What you're watching for: with zero divergence, this logs NOTHING at all. Any `[shadow]` line
  * naming a run id is a real disagreement worth reading before Step 3.3 flips authority.
+ *
+ * READ THE LINE KNOWING THE TWO SIDES ARE NOT THE SAME POPULATION. The disk side is whatever the
+ * caller passed to `listRuns`, which on /api/runs is the requesting user's VISIBLE set (authz's
+ * `filterRunsForUser`, then capped at 20) — not every directory on disk. The database side
+ * (`fetchRunsFromDb`) is deliberately unscoped across organisations, so in a multi-tenant
+ * deployment rows belonging to other tenants can be reported as "present in the database but not
+ * on disk" for the viewer who happened to trigger the comparison. `diffRuns` already documents
+ * the window guard that makes the reported count a floor rather than a total.
  */
 export function shadowCompareRuns(diskRuns: RunSummary[]): void {
   if (!isDbEnabled()) return;
@@ -367,9 +375,18 @@ export function shadowCompareRuns(diskRuns: RunSummary[]): void {
 
     const problems = diffRuns(diskRuns, dbRows);
     if (problems.length === 0) return; // the good case: silence
+    // "at least", and "field(s)", on purpose. The window guard in diffRuns drops every database
+    // row older than the oldest supplied disk row, so the true divergence set can only be larger
+    // than what is printed. And one run can contribute up to four entries (missing, status, url,
+    // prompt), so this number is disagreement FIELDS, not runs — the per-run lines below are the
+    // run count. The parenthetical spells out both sides because neither is obvious from the
+    // numbers: "disk" here is the caller's VISIBLE list (see this function's header), and the
+    // database query is unscoped.
     console.error(
-      `[shadow] ${problems.length} divergence(s) between disk and database ` +
-      `(disk=${diskRuns.length} rows, db=${dbRows.length} rows). Disk remains authoritative:`,
+      `[shadow] at least ${problems.length} divergence field(s) between the supplied disk list and the database ` +
+      `(disk=${diskRuns.length} rows supplied by the caller — on /api/runs this is the requesting user's visible ` +
+      `set, capped at 20, not every run on disk; db=${dbRows.length} rows, deliberately NOT scoped to an ` +
+      `organisation, see fetchRunsFromDb). Disk remains authoritative:`,
     );
     for (const p of problems) console.error(`[shadow]   ${p}`);
   })();

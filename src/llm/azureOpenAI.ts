@@ -1,5 +1,5 @@
 import { KeyPool } from "./keyPool.js";
-import { callWithPool } from "./backoff.js";
+import { callWithPool, boundErrorBody, retryAfterFromBody } from "./backoff.js";
 import { recordAmbient } from "./llmBudget.js";
 
 /**
@@ -93,16 +93,18 @@ export interface AzureOpenAIResult {
 let pool: KeyPool | undefined;
 const getPool = (): KeyPool => {
   const key = (process.env.AZURE_OPENAI_API_KEY ?? "").trim();
-  return (pool ??= new KeyPool(key ? [key] : []));
+  return (pool ??= new KeyPool(key ? [key] : [], "azure"));
 };
 
-/** Extract a short human reason from an OpenAI error body, for error messages and logs. */
+/** Extract a short human reason from an OpenAI error body, for error messages and logs.
+ *  Bounded on the way out: the parsed `error.message` is provider prose of uncontrolled length
+ *  and it goes straight into an Error's `.message`, which ir.ts prints whole. */
 function errorReason(text: string): string {
   try {
     const parsed = JSON.parse(text) as { error?: { message?: string; code?: string } };
-    return parsed.error?.message ?? parsed.error?.code ?? text;
+    return boundErrorBody(parsed.error?.message ?? parsed.error?.code ?? text);
   } catch {
-    return text;
+    return boundErrorBody(text);
   }
 }
 
@@ -167,20 +169,24 @@ export async function azureOpenAI(prompt: string, opts: AzureOpenAIOpts = {}): P
       });
       if (!res.ok) {
         const text = await res.text();
-        console.error("[azureOpenAI] error body:", text.slice(0, 200));
+        console.error("[azureOpenAI] error body:", boundErrorBody(text));
         // A refusal, not a rate limit: Azure reports it as a 400 carrying `code: content_filter`
         // (in the body) or the words in the message. No e.status / e.retryAfter is set, so
         // backoff.ts's rateLimited() sees no 429/503 and throws this straight through with zero
         // retries — a content_filter refusal is exactly the same blocked prompt re-billed.
+        //
+        // Classification above always reads the FULL `text` (a code sitting past the bound must
+        // still be found); only what travels inside `.message` is bounded, at construction, so
+        // ir.ts:1656/1665/1670 and backoff.ts inherit the bound without each re-cutting it.
         const code = (() => { try { return (JSON.parse(text) as any)?.error?.code; } catch { return undefined; } })();
         if (code === "content_filter" || text.includes("content_filter")) {
           const e: any = new Error(`Azure OpenAI content_filter: ${errorReason(text)}`);
           e.contentFilter = true;
           throw e;
         }
-        const e: any = new Error(`Azure OpenAI ${res.status}: ${text}`);
+        const e: any = new Error(`Azure OpenAI ${res.status}: ${boundErrorBody(text)}`);
         e.status = res.status;
-        e.retryAfter = res.headers.get("retry-after");
+        e.retryAfter = res.headers.get("retry-after") ?? retryAfterFromBody(text);
         if (res.status === 429) {
           console.warn("[azureOpenAI] quota exceeded — will retry after backoff (status 429)");
         }

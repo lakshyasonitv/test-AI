@@ -680,7 +680,18 @@ export async function groundTerminalTextAssertion(
   if (asserted) {
     const actual = findVerbatim(judgeText, assertedRaw);
     if (actual !== null && actual !== assertedRaw) {
-      console.log(`[liveExtend] text-assertion grounding: near miss, corrected "${assertedRaw}" -> "${actual}" (differs only in case/punctuation/whitespace)`);
+      // States findVerbatim's ACTUAL tolerance, not the narrower one it looks like. Its line and
+      // window scans both accept a candidate up to `max(16, ceil(guess.length * 0.5))` characters
+      // longer than the guess (see findVerbatim above), so the correction can carry whole extra
+      // words — the old claim that only presentation could differ stopped being true the moment
+      // the slack allowed more than markup. The predicate itself is left unchanged on purpose;
+      // the looseness it tolerates is filed as TECH_DEBT.md TD-115.
+      console.log(
+        `[liveExtend] text-assertion grounding: near miss, corrected "${assertedRaw}" -> "${actual}" ` +
+        `(matched findVerbatim's case/punctuation/whitespace-insensitive scan, which also tolerates the ` +
+        `page's spelling running up to max(16, half the guess) characters longer than the guess — so the ` +
+        `correction can contain additional text, not only a respelling)`,
+      );
       return { ir: writeTerminalText(ir, actual), grounded: true, corrected: true };
     }
     // Matched the page's own spelling exactly — same as tier 1, reached via the line/window scan.

@@ -109,7 +109,6 @@ describe("API contract — GET /api/health", () => {
     ];
     for (const key of envKeys) {
       expect(typeof res.body.env[key].set).toBe("boolean");
-      expect(typeof res.body.env[key].length).toBe("number");
     }
 
     expect(typeof res.body.defaults.gateReview).toBe("boolean");
@@ -134,21 +133,20 @@ describe("API contract — GET /api/health", () => {
     expect(res.status).toBe(200);
     for (const key of ["NL_STEPS_ENABLED", "GATE_CASE_EDIT_AI"]) {
       expect(typeof res.body.env[key].set).toBe("boolean");
-      expect(typeof res.body.env[key].length).toBe("number");
     }
   });
 
-  // The whole point of this route being safe to leave public: it reports that a variable exists
-  // and how long it is, never what it says. Pinned for the two new entries because they are the
-  // ones a future edit is most likely to "helpfully" resolve into a readable value.
-  it("never exposes a flag's VALUE, only presence and length", async () => {
+  // The whole point of this route being safe to leave public: it reports that a variable exists,
+  // never what it says — and (Phase 2 Q3) not even how long it is. A length is a small fact about
+  // a secret reaching anyone who can hit this public URL; `set` is the entire diagnostic.
+  it("never exposes a flag's VALUE, only presence", async () => {
     const original = process.env.GATE_CASE_EDIT_AI;
     process.env.GATE_CASE_EDIT_AI = "true";
     try {
       const res = await request(app).get("/api/health");
-      // Exactly these two keys and nothing else — a resolved value could only arrive as a third.
-      expect(Object.keys(res.body.env.GATE_CASE_EDIT_AI).sort()).toEqual(["length", "set"]);
-      expect(res.body.env.GATE_CASE_EDIT_AI).toEqual({ set: true, length: 4 });
+      // Exactly the one key and nothing else — a resolved value could only arrive as a second.
+      expect(Object.keys(res.body.env.GATE_CASE_EDIT_AI).sort()).toEqual(["set"]);
+      expect(res.body.env.GATE_CASE_EDIT_AI).toEqual({ set: true });
     } finally {
       if (original === undefined) delete process.env.GATE_CASE_EDIT_AI;
       else process.env.GATE_CASE_EDIT_AI = original;

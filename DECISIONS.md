@@ -1453,3 +1453,57 @@ are additive and tested.
 person saying so. *Interleaving Salesforce rules into the base prompts* — that would change every
 ordinary run's cache keys. *Putting Salesforce names (app and tab names) in the prompts as facts* —
 they differ per org and profile.
+
+## D-37. Phase 2 logging: the FIXES are always on, the new OUTPUT is behind one flag
+
+**Decision.** Two different things were in scope for the logging-hardening phase and they are
+governed differently.
+
+*Fixes* — removing secret material from `[PW STDOUT]`/`[PW STDERR]` (`executor.ts`), bounding
+provider error bodies (`backoff.ts`), and correcting log lines that asserted something the code
+never established (`db.ts`, `hybridDiscovery.ts`, `liveExtend.ts`, `orchestrator.ts`) — are
+**always on**, no flag. A log line that states a falsehood is a defect, and nothing in the
+codebase parses log text (verified: no consumer of these strings; the one test near `liveExtend`
+was a describe-name), so there is no runtime dependent to protect. `CLAUDE.md` rule 2 exists so a
+flag-off process "behaves exactly as it did before", and for *behaviour the product depends on*
+that is the right bar; log prose is not that.
+
+*New output* — one line per LLM call (provider, model/deployment, token counts), a per-run token
+summary, and a widened `[startup]` block — ships behind a single flag, **`EXTENDED_LOGGING`**,
+default **off** (`src/logging.ts`). Off, the process logs exactly what it logged before the phase.
+This is `CLAUDE.md` rule 2 applied to a genuinely new capability, and it is what lets the nine
+`docs/phases/` reports' "startup log is byte-identical" gates stay true **without amending the
+reports** (they are a build log, not a living document). The flag is registered in
+`BOOLEAN_ENV_FLAGS` and `.env.example` for the same reason every other flag is: a typo must not
+coerce to false silently (`TECH_DEBT.md` TD-100).
+
+**Rejected.** *One flag for both the fixes and the output.* A fix behind a default-off flag is a
+known disclosure left open on the deployed app until someone flips it — the failure mode D-36
+refused for the roster. *No flag for the output.* It would change the startup log and break every
+phase report's quoted gate, which is why the reports were written to be byte-checkable in the
+first place.
+
+## D-38. `/api/health` and the startup check report presence only, never a length — an explicit exception to platform rule 1
+
+**Decision.** The `check()` helper in `GET /api/health` (`src/server/index.ts`) returns
+`{ set: boolean }` — the `length` field is **removed**, not just deprecated. The startup
+`Environment variable check` line keeps its `SET (N chars)` for the six vars it always covered
+(byte-identity, D-37), and the widened block introduced by `EXTENDED_LOGGING` prints `SET`/`NOT
+SET` with no count.
+
+**Why this overrides platform rule 1** ("never change an existing route's request or response
+shape; new fields only"). `length` was only ever a character count of an env var, and this route
+is **public by necessity** (`multiTenancy.ts` labels it so) — a length is a small but real fact
+about a secret reachable by anyone who can hit the URL, and `set` is the entire diagnostic the
+route exists for ("is the deployment missing the variable?"). The product owner scoped the
+removal explicitly. The blast radius is one field on one diagnostic route; every consumer already
+reads `set`, and the contract test that pinned `length` (`tests/apiContract.test.ts`) is updated
+in the same change rather than left to fail.
+
+**Rejected.** *Keep `length` for compatibility.* The only "compatibility" it buys is for a reader
+of a secret's size. *Deprecate it to `null`/keep the key.* A key that is always absent-or-null is
+a second reporting shape in one object for no benefit — the trap the route's own comment warns
+about. *Gate the startup count removal behind the flag too.* Then the default process still leaks
+it; but leaving it ungated would change the flag-off startup log and break the phase gates, so the
+count stays where it always was and only the *new* block is presence-only.
+

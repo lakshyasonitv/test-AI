@@ -53,6 +53,50 @@ export function isRateLimitError(err: any): boolean {
 }
 
 /**
+ * How much of an upstream response body may travel inside an Error's `.message`.
+ *
+ * gemini.ts and azureOpenAI.ts used to build `new Error(\`<provider> <status>: \${fullBody}\`)`,
+ * while their own console line cut the body at 200 chars. The cut was cosmetic: the untruncated
+ * body then rode the Error into ir.ts (`non-retryable infrastructure error`, `rate-limited`,
+ * `gemini/parse error`) and backoff.ts's own network line, all of which print `err.message`
+ * whole. An upstream body is uncontrolled text — it is provider prose, and a 4xx can quote back
+ * part of the request it rejected — so bounding it belongs at the point the Error is CONSTRUCTED,
+ * where every downstream printer inherits the bound, not at one printer.
+ *
+ * Collapsed to a single line because one `console.*` call must be one log line: a body carrying
+ * its own newlines would otherwise fan out into several, and ACA wraps but does not re-indent.
+ */
+export const ERROR_BODY_LIMIT = 200;
+
+export function boundErrorBody(text: string, limit = ERROR_BODY_LIMIT): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= limit) return oneLine;
+  return `${oneLine.slice(0, limit)}...[+${oneLine.length - limit} chars]`;
+}
+
+/**
+ * A server-advised retry delay read from an error BODY rather than the `retry-after` header.
+ *
+ * Exists because bounding `.message` would otherwise silently drop this signal: Gemini's 429 body
+ * puts `Please retry after Ns` well past the first ERROR_BODY_LIMIT characters, so `parseRetryDelay`
+ * — which is fed `err.message` — would stop seeing it and every quota wait would fall back to a
+ * local exponential guess. Checked only when the header is absent, and only used for a delay the
+ * server itself asked for. Returns seconds, matching what `parseRetryDelay` expects of
+ * `err.retryAfter`.
+ */
+export function retryAfterFromBody(text: string): number | null {
+  // Two wordings, deliberately: `retry after Ns` (Gemini's quota prose) and `try again in Nms`
+  // (the Groq body TD-03 was filed over). `parseRetryDelay` — which used to be the only reader
+  // of this string, via `err.message` — matches the same two, so bounding the message does not
+  // narrow what can be found.
+  const m = text.match(/(?:retry|try again)\s+(?:after|in)\s+(\d+(?:\.\d+)?)\s*(ms|s)\b/i);
+  if (!m) return null;
+  const value = parseFloat(m[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return m[2].toLowerCase() === "ms" ? value / 1000 : value;
+}
+
+/**
  * True for a network-transport failure (DNS hiccup, connection reset, TLS handshake, a
  * timeout waiting for response headers — the exact shape seen in practice: `TypeError:
  * fetch failed` wrapping `HeadersTimeoutError` / `UND_ERR_HEADERS_TIMEOUT` while calling
@@ -94,12 +138,21 @@ export async function callWithPool<T>(
   let lastErr: unknown;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const key = pool.next();
+    const entry = pool.nextEntry();
+    const key = entry.key;
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
     try {
-      console.log("[backoff] attempt", attempt + 1, "/", maxRetries, "| key:", key.slice(0, 8) + "...");
+      // Which provider, which slot, how big the pool is — never anything derived from the key.
+      // This line used to read `key.slice(0, 8) + "..."`, which is the same secret in a shorter
+      // spelling: short enough to be guessed, long enough to be worth correlating across logs,
+      // and in Log Analytics it is durable storage. keyPool.ts carries the label; `index` is a
+      // rotation position, not a fingerprint.
+      console.log(
+        "[backoff] attempt", attempt + 1, "/", maxRetries,
+        "| provider:", entry.label, "| key", entry.index + 1, "of", entry.size,
+      );
       const p = fn(key, controller.signal);
       p.catch(() => {}); // avoid an unhandled rejection if the timeout below wins the race
       return await Promise.race([
@@ -121,9 +174,12 @@ export async function callWithPool<T>(
       // AbortError if the abort lands mid-body-read.
       if (isNetworkError(err) || timedOut || (err as any)?.name === "AbortError") {
         const wait = Math.min(base * 2 ** attempt, 10_000) + Math.random() * 300;
+        // Bounded like every other untrusted string printed here: `err.message` for an abort can
+        // be whatever the transport put in it, and this is a printer, so it does its own cut
+        // rather than trusting the constructor it did not see.
         console.error(
           "[backoff]", timedOut ? "timeout" : "network error", "(",
-          (err as any)?.cause?.code ?? (err as any)?.message,
+          boundErrorBody(String((err as any)?.cause?.code ?? (err as any)?.message ?? err)),
           ") — retrying in", Math.round(wait), "ms (attempt", attempt + 1, ")"
         );
         await sleep(wait);

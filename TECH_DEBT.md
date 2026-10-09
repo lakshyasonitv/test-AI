@@ -4957,3 +4957,43 @@ org to check it against, and this sandbox cannot reach one. Least certain: the t
 claim that create/edit forms open in a modal dialog in every org. A wrong rule costs a wrong test, not
 a crash. Verify by running a create-a-record case on a sandbox with the checkbox ticked and reading the
 generated IR; the guidance text is data in one file and cheap to correct.
+
+### TD-115. `findVerbatim`'s near-miss slack can carry whole extra words into a `toHaveText` assertion — Medium / Accidental — **Open (documented, deliberately not fixed)**
+
+`findVerbatim` (`src/stages/liveExtend.ts:483-524`) accepts a candidate up to
+`max(16, ceil(guess.length * 0.5))` characters **longer** than the guess, in both its line scan
+(`:504`) and its sliding-window scan (`:518`). On a short guess that bound is generous: a 20-char
+guess tolerates up to 26 chars, so "Order complete" can be "corrected" to "Order complete, thanks"
+— additional text, not a respelling. The emitted `toHaveText` then pins the longer string, so a
+page that says the shorter one fails.
+
+Phase 2 STEP 2 **corrected the log line** to state this tolerance honestly (it previously claimed
+only case/punctuation/whitespace could differ) and **left the predicate unchanged on purpose**: a
+tighter bound risks re-introducing the exact reported failure the near-miss tier exists to fix
+(`TECH_DEBT.md`'s "THANK YOU FOR YOUR ORDER" vs "Thank you for your order!"). Narrowing it is a
+behaviour change that needs its own evidence, not a log fix. See `tests/misleadingLogs.test.ts`.
+
+### TD-116. Credential redaction in the Playwright child log covers `secretEnv` values only — Medium / Unverified — **Open**
+
+`src/stages/executor.ts` redacts `[PW STDOUT]`/`[PW STDERR]` against `secretCreds(secretEnv)` —
+the literal secret strings known to the run's credential map. **Verified in Phase 2 that this DOES
+cover the runtime UI path**: a credential typed at the prompt is settled with `secret: true`
+(`index.ts:369`/`:1693`), so `credentialEnvVars` puts it into the child's env as
+`TEST_USERNAME`/`TEST_PASSWORD` — the exact keys `secretCreds` reads. The runtime and dev-env
+paths are the same channel, not two.
+
+What it does **not** cover is a value the spec or a page could emit that was never in `secretEnv`:
+a value carried forward from a prior step, one Playwright resolved from storage state, or a secret
+injected by the target site itself. Whether the child can actually emit such a value was not
+established; this entry records that gap so redaction is not mistaken for a completeness
+guarantee. If a new path can surface a credential, add it to `secretEnv` (or scrub it) rather than
+widening `redactCredentials` blindly.
+
+### TD-117. Provider error bodies are length-bounded but not content-redacted — Low / Unverified — **Open**
+
+`boundErrorBody` (`src/llm/backoff.ts`) truncates a provider error body to `ERROR_BODY_LIMIT = 200`
+chars; it does not redact. A provider that echoes request content in an error payload (a prompt
+fragment, or a credential a caller embedded in the request) would have its first 200 chars logged
+verbatim. No provider observed doing this, and the request body itself should never carry a bare
+key, but the bound is a size guard, not a secrecy guard — recorded so it is not read as one.
+

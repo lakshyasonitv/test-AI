@@ -87,7 +87,9 @@ import {
   describeOrgLlmConfig, llmConfigForOrg, maxCallsForOrg, orgLlmConfigEnabled, setOrgLlmConfig,
 } from "./orgLlmConfig.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
-import { enterWithLlmConfig } from "../llm/llmContext.js";
+import { enterWithLlmConfig, resolvedProvider } from "../llm/llmContext.js";
+import { extendedLoggingEnabled } from "../logging.js";
+import { withRunId } from "../runContext.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
 import {
   credentialsFromEnv, credentialKindsNeeded, restoreCredentialRefs, isEnvValueRef,
@@ -467,11 +469,13 @@ app.post("/api/runs/:runId/case-selection/rewrite", requireRunRole("tester"), ex
     return res.status(400).json({ error: "steps must be an array of sentences" });
   }
   try {
-    res.json(await proposeGateRewrite(
+    // The ambient run id for anything the model call logs (llm/client.ts). Scoped, not entered:
+    // this handler must not leave the id set for the next request that shares the worker.
+    res.json(await withRunId(req.params.runId, () => proposeGateRewrite(
       typeof title === "string" ? title : "",
       steps,
       typeof instruction === "string" ? instruction : ""
-    ));
+    )));
   } catch (err) { sendAccessError(res, err); }
 });
 
@@ -713,9 +717,13 @@ app.delete("/api/runs/:runId", requireRunRole("admin"), (req, res) => {
 // Health-check / diagnostic endpoint — never exposes secret values, only reports
 // whether each critical env var is present so deployment problems surface fast.
 app.get("/api/health", (_req, res) => {
+  // Presence ONLY — deliberately not the value's length. This route is public (multiTenancy.ts:
+  // "public by necessity"), so a character count is a small but real fact about a secret leaking
+  // to anyone who can reach the URL; `set` is the entire diagnostic ("is the deployment missing
+  // the variable?"). Phase 2 Q3.
   const check = (name: string) => {
     const val = process.env[name];
-    return { set: !!val, length: val?.length ?? 0 };
+    return { set: !!val };
   };
   res.json({
     status: "ok",
@@ -745,8 +753,8 @@ app.get("/api/health", (_req, res) => {
       // Reported through the same `check()` as everything else rather than as a resolved boolean:
       // the failure this is built to catch is an ABSENT variable (`set: false`), which `check()`
       // already distinguishes, and a second reporting shape in one object is its own trap. Note
-      // the values are never exposed — name, presence and length only — which is what makes this
-      // route safe to leave public.
+      // the values are never exposed — name and presence only — which is what makes this route
+      // safe to leave public.
       NL_STEPS_ENABLED:  check("NL_STEPS_ENABLED"),
       GATE_CASE_EDIT_AI: check("GATE_CASE_EDIT_AI"),
     },
@@ -1589,8 +1597,10 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
     res.status(202).json({ jobId, mode: "verifying", ...estimate, ...(credentialNote ? { credentialNote } : {}) });
 
     // Deliberately not awaited: the response is already sent. Every outcome ends in a `done` or
-    // `error` event, which is what closes the stream.
-    void (async () => {
+    // `error` event, which is what closes the stream. The whole job runs inside the case's source
+    // run id (scoped, so it does not leak to the next request on this worker) so the re-ground
+    // walk's own logs — `[caseEdit]`, the LLM client — can say which run they belong to.
+    void withRunId(found.sourceRunId, async () => {
       emitJobEvent(jobId, "ir", "started", { ...estimate, caseId });
       try {
         // Prefer what the person just typed — they are demonstrably the right credentials for the
@@ -1660,7 +1670,7 @@ app.post("/api/cases/:caseId/steps", requireRole("tester"), async (req, res) => 
           currentVersion: err instanceof CaseConflictError ? err.currentVersion : undefined,
         }, err?.message ?? String(err));
       }
-    })();
+    });
   } catch (err) { sendAccessError(res, err); }
 });
 
@@ -1845,8 +1855,8 @@ app.post("/api/cases/:caseId/rewrite", requireRole("tester"), async (req, res) =
     }
     // The source run is where the case's own page snapshot lives — without it the model is
     // guessing element names from the instruction's wording (TD-91).
-    res.json(await proposeRewrite(
-      found.ir, typeof instruction === "string" ? instruction : "", found.sourceRunId ?? null));
+    res.json(await withRunId(found.sourceRunId, () => proposeRewrite(
+      found.ir, typeof instruction === "string" ? instruction : "", found.sourceRunId ?? null)));
   } catch (err) { sendAccessError(res, err); }
 });
 
@@ -1875,7 +1885,7 @@ app.post("/api/cases/:caseId/steps/translate", requireRole("tester"), async (req
   }
   try {
     const found = await getCase(...libraryCtx(req), req.params.caseId);
-    res.json(await proposeStepTranslation(found.ir, req.body?.steps));
+    res.json(await withRunId(found.sourceRunId, () => proposeStepTranslation(found.ir, req.body?.steps)));
   } catch (err) { sendAccessError(res, err); }
 });
 
@@ -2097,6 +2107,10 @@ export const BOOLEAN_ENV_FLAGS = [
   "DETERMINISTIC_HEAL",
   "DISCOVERY_LIVE_DOM",
   "ENABLE_CASE_SELECTION_GATE",
+  // Phase 2: gates the new diagnostic OUTPUT only (per-call provider/model/token line, per-run
+  // token summary, widened startup block). The Phase 2 FIXES — credential redaction, corrected
+  // misleading lines — are deliberately NOT behind a flag. See src/logging.ts.
+  "EXTENDED_LOGGING",
   "NL_STEPS_ENABLED",
   "ORG_LLM_CONFIG_ENABLED",
   "REPLAY_REGROUND",
@@ -2338,6 +2352,26 @@ if (isMain) {
   for (const v of ["GEMINI_API_KEYS", "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_MODEL_LITE", "NODE_ENV", "PORT"]) {
     const val = process.env[v];
     console.log(`  ${v}: ${val ? `SET (${val.length} chars)` : "NOT SET"}`);
+  }
+
+  // ADDITIVE and GATED behind EXTENDED_LOGGING (logging.ts). With the flag unset this whole block
+  // is skipped, so the startup log above is byte-identical to what every prior phase's report
+  // quotes (Phase 2 Q2 — do not amend those reports). With it on, the deploy log answers the
+  // question the six vars above cannot: which provider each role will actually use, and whether
+  // the Azure vars that provider needs were injected. Presence only, never a value or a length —
+  // same reason /api/health reports only `set` (Phase 2 Q3).
+  if (extendedLoggingEnabled()) {
+    console.log("[startup] Provider variables (EXTENDED_LOGGING):");
+    for (const v of [
+      "LLM_PROVIDER", "LLM_PROVIDER_LITE",
+      "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY",
+      "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_DEPLOYMENT_LITE",
+      "LLM_CACHE_VERSION",
+    ]) {
+      const val = process.env[v];
+      console.log(`  ${v}: ${val ? "SET" : "NOT SET"}`);
+    }
+    console.log(`  resolved provider — main: ${resolvedProvider("main")}, lite: ${resolvedProvider("lite")}`);
   }
 
   app.listen(port, () => console.log(`AI Test Platform UI: http://localhost:${port}`));
