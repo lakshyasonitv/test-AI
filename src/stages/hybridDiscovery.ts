@@ -508,19 +508,45 @@ export function discoveryIsWorthCaching(model: AppModel): { ok: true } | { ok: f
 /** Paths that are never page-crawl-worthy: assets and file downloads. */
 const SKIP_CRAWL_PATH = /\.(pdf|zip|tar|gz|rar|7z|exe|msi|dmg|apk|mp3|mp4|mov|avi|mkv|jpe?g|png|gif|webp|svg|ico|css|js|m?jsx|json|xml|woff2?|ttf|eot|wasm)$/i;
 
+/** A host as `siteHost()` reports one — lower-case, no leading `www.` — so a related-host entry
+ *  compares equal to the `siteHost()` of any URL on that host. */
+const normaliseHost = (h: string) => h.trim().toLowerCase().replace(/^www\./, "");
+
+/**
+ * The hosts a successful login actually passed through, for `AuthOutcome.relatedHosts` (D-47):
+ * entry page, login form, landing page. Observed, never inferred from a host pattern, which is
+ * what lets it hold for any Salesforce org type, a custom domain or an Experience Cloud site.
+ *
+ * Undefined when they are all one host — the normal case — so a same-host login records nothing
+ * and its AppModel stays byte-identical to before this existed.
+ */
+export function loginHops(...urls: (string | null | undefined)[]): string[] | undefined {
+  const hosts = [...new Set(urls.map((u) => (u ? siteHost(u) : null)).filter((h): h is string => !!h))];
+  return hosts.length > 1 ? hosts : undefined;
+}
+
 /**
  * Turn a page's internal link URLs into the bounded, de-duplicated set of crawl
  * targets for the NEXT hop. Pure and testable: same-origin http(s) only, assets and
  * file downloads skipped, hash stripped, nothing visited twice. Every URL that
  * passes is marked in `visited` as it is queued, so it can never be queued twice.
+ *
+ * `relatedHosts` (D-47) is DATA, never a pattern: the hosts a successful login was observed to
+ * pass through (`AuthOutcome.relatedHosts`). A link to one of them is part of the application —
+ * a Salesforce login on `x.my.salesforce.com` lands the app on `x.lightning.force.com`, and an
+ * exact-host check would never follow it. Absent or empty, this is exactly the old exact-host
+ * rule.
  */
-export function collectCrawlTargets(candidateUrls: string[], entryUrl: string, visited: Set<string>): string[] {
+export function collectCrawlTargets(
+  candidateUrls: string[], entryUrl: string, visited: Set<string>, relatedHosts?: readonly string[],
+): string[] {
   let entryHost = "";
   try {
     entryHost = new URL(entryUrl).host;
   } catch {
     return [];
   }
+  const related = relatedHosts?.length ? new Set(relatedHosts.map(normaliseHost)) : null;
 
   const targets: string[] = [];
   for (const raw of candidateUrls) {
@@ -532,7 +558,7 @@ export function collectCrawlTargets(candidateUrls: string[], entryUrl: string, v
       continue;
     }
     if (u.protocol !== "http:" && u.protocol !== "https:") continue;
-    if (u.host !== entryHost) continue;
+    if (u.host !== entryHost && !(related && related.has(siteHost(u.href) ?? ""))) continue;
     u.hash = "";
     const key = u.href;
     if (visited.has(key)) continue;
@@ -759,9 +785,116 @@ const PASSWORD_INPUT = 'input[type="password"]:visible:not([disabled])';
  *  matches a button whose whole label is a login verb, not any button mentioning one. */
 const AUTH_VERB_TEXT = /^\s*(sign\s*in|log\s*in|login|authenticate|submit|continue)\s*$/i;
 
-/** True when this page presents a login gate — a live-DOM fact, no model required. */
+/**
+ * True when this page presents a login gate — a live-DOM fact, no model required.
+ *
+ * Two shapes (D-45). The password box, exactly as before — checked FIRST and unchanged, so a
+ * single-screen login answers identically. Or an IDENTIFIER-FIRST screen: Salesforce, Microsoft,
+ * Okta and Google ask only for the username, and the password box is not in the DOM until that is
+ * submitted, so the password-only check reported `no-gate` and the crawl went in anonymously.
+ */
 export async function hasLoginGate(page: Page): Promise<boolean> {
-  return await page.locator(PASSWORD_INPUT).count() > 0;
+  if (await page.locator(PASSWORD_INPUT).count() > 0) return true;
+  // A navigation mid-poll destroys the execution context and the evaluate throws. That moment has
+  // no password box (the check above ran first), so "no gate" is the same answer this function
+  // gave before identifier-first screens existed.
+  return (await identifierFirstFields(page).catch(() => null)) !== null;
+}
+
+/**
+ * The first screen of an identifier-first login, or null (D-45).
+ *
+ * STRUCTURE, never wording (CLAUDE.md's central rule, TD-01). The identifier is the one visible,
+ * enabled text/email/tel input whose `autocomplete` carries the `username` token — the HTML
+ * standard's own marker for a login identifier, verified on Salesforce's login page — and it must
+ * be the ONLY visible text-entry control in its form (the page, when there is no form), beside a
+ * submit control: `type="submit"` first, else a button whose whole label is a login verb.
+ *
+ * Why `autocomplete="username"` and not "any lone email box": a newsletter "Email [Submit]" box is
+ * a lone identifier-shaped input beside a submit verb too, and treating it as a login gate would
+ * prompt for credentials on ordinary sites that never asked before. And why `type="submit"` first:
+ * Salesforce's sandbox button reads "Log In to Sandbox", which the anchored AUTH_VERB_TEXT rejects
+ * — loginOnPage has always preferred `type="submit"` for the same reason.
+ *
+ * Adds nothing to the two-password caveat above: this only ever fires when there is NO password
+ * box at all, so a signup or change-password page is classified exactly as it was.
+ */
+async function identifierFirstFields(page: Page): Promise<{ user: string; submit: string } | null> {
+  // NO inner named or const-assigned functions anywhere in this callback, and the selector ladder
+  // is a deliberate COPY of loginOnPage's rather than a shared helper: esbuild (what tsx, i.e. the
+  // real server, runs) wraps named functions in a `__name()` call that does not exist in the
+  // browser. vitest does not inject it, so a helper here passes every test and throws only on a
+  // real `npm run serve` — TD-40, the same warning loginOnPage's comment carries.
+  return await page.evaluate((verbSource: string) => {
+    const inputs = Array.from(document.querySelectorAll("input"));
+    let userIdx = -1;
+    let candidates = 0;
+    for (let i = 0; i < inputs.length; i++) {
+      const el = inputs[i];
+      const type = (el.getAttribute("type") || "text").toLowerCase();
+      if (type !== "text" && type !== "email" && type !== "tel") continue;
+      if (el.disabled) continue;
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden")) continue;
+      const tokens = (el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+      if (tokens.indexOf("username") < 0) continue;
+      candidates++;
+      userIdx = i;
+    }
+    if (candidates !== 1) return null;
+    const userEl = inputs[userIdx];
+    const form = userEl.closest("form");
+    const scope: ParentNode = form ?? document;
+
+    // "Lone": a profile or settings page can carry an autocomplete="username" field too, but never
+    // as the only thing to type into.
+    let entries = 0;
+    for (const el of Array.from(scope.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input, textarea"))) {
+      const type = el.tagName.toLowerCase() === "textarea" ? "textarea" : (el.getAttribute("type") || "text").toLowerCase();
+      if (["text", "email", "tel", "number", "search", "url", "password", "textarea"].indexOf(type) < 0) continue;
+      if (el.disabled) continue;
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden")) continue;
+      entries++;
+    }
+    if (entries !== 1) return null;
+
+    let submitEl: HTMLElement | null = scope.querySelector<HTMLElement>('button[type="submit"], input[type="submit"]');
+    if (!submitEl) {
+      const verb = new RegExp(verbSource, "i");
+      for (const b of Array.from(scope.querySelectorAll<HTMLElement>('button, a[role="button"], input[type="button"]'))) {
+        const label = (b.textContent ?? (b as HTMLInputElement).value ?? "").replace(/\s+/g, " ").trim();
+        if (verb.test(label)) { submitEl = b; break; }
+      }
+    }
+    if (!submitEl) return null;
+
+    // Copied from loginOnPage on purpose (see the comment above the evaluate): unique selector per
+    // target, preferring identity the site itself declared, positional fallback last.
+    const targets: HTMLElement[] = [userEl, submitEl];
+    const selectors: string[] = [];
+    for (const el of targets) {
+      const tag = el.tagName.toLowerCase();
+      const attempts: string[] = [];
+      if (el.id) attempts.push("#" + CSS.escape(el.id));
+      for (const a of ["data-test", "data-testid", "data-cy", "name", "placeholder", "aria-label"]) {
+        const v = el.getAttribute(a);
+        if (v && !/["\\]/.test(v)) attempts.push(`${tag}[${a}="${v}"]`);
+      }
+      const t = el.getAttribute("type");
+      if (t && !/["\\]/.test(t)) attempts.push(`${tag}[type="${t}"]`);
+      let chosen: string | null = null;
+      for (const s of attempts) {
+        if (document.querySelectorAll(s).length === 1) { chosen = s; break; }
+      }
+      if (!chosen) {
+        const sameTag = Array.from(document.querySelectorAll(tag));
+        chosen = `${tag} >> nth=${sameTag.indexOf(el)}`;
+      }
+      selectors.push(chosen);
+    }
+    return { user: selectors[0], submit: selectors[1] };
+  }, AUTH_VERB_TEXT.source);
 }
 
 /**
@@ -825,6 +958,31 @@ export async function waitForLoginGateToClear(page: Page, budgetMs = AUTH_VERIFY
  * placeholder-as-name. It is the one universal signal, and it is also less code.
  */
 export async function loginOnPage(page: Page, creds: Credentials): Promise<AuthStep[] | null> {
+  // TWO-SCREEN LOGIN (D-46). When there is no password box yet, this may be the first screen of an
+  // identifier-first login: send the username, then wait for the password box to appear. The same
+  // "record first, then execute exactly that" rule as below holds, per screen — screen 2's
+  // selectors cannot be known until screen 1 has been submitted.
+  //
+  // A page that already HAS a password box never enters this block, so a single-screen login
+  // records and executes exactly the steps it always has.
+  const firstScreen: AuthStep[] = [];
+  if (await page.locator(PASSWORD_INPUT).count() === 0) {
+    const first = await identifierFirstFields(page);
+    if (!first) return null;
+    firstScreen.push({ action: "fill", css: first.user, credential: "username" });
+    firstScreen.push({ action: "click", css: first.submit });
+    await page.locator(first.user).first().fill(creds.username, { timeout: 10_000 });
+    await page.locator(first.submit).first().click({ timeout: 10_000 });
+    try {
+      // Same budget the generated spec gives the `waitFor` this becomes (an auto-waiting assert).
+      await page.locator(PASSWORD_INPUT).first().waitFor({ state: "visible", timeout: AUTH_VERIFY_TIMEOUT_MS() });
+    } catch {
+      // The username was refused, or the next screen is not a password (a verification code, an
+      // SSO hand-off). Nothing replayable was completed; verifySession reports the outcome.
+      return null;
+    }
+  }
+
   // One DOM pass picks BOTH fields and the submit control, and returns a unique CSS selector for
   // each. Selectors rather than indices because the result is replayed later — by the grounding
   // replay and by the generated Playwright spec — where "the 2nd input on the page" is not a
@@ -937,8 +1095,14 @@ export async function loginOnPage(page: Page, creds: Credentials): Promise<AuthS
 
   // Build the record FIRST, then execute exactly what it describes — so what gets replayed later
   // is provably the same thing that worked here, not a re-derivation of it.
-  const steps: AuthStep[] = [];
-  if (found.user) steps.push({ action: "fill", css: found.user, credential: "username" });
+  const steps: AuthStep[] = [...firstScreen];
+  if (firstScreen.length) {
+    // Screen 2. The username was already sent on screen 1; refilling an identifier the provider
+    // may now show read-only would fail, so only the password and its submit are recorded here.
+    steps.push({ action: "waitFor", css: found.pass });
+  } else if (found.user) {
+    steps.push({ action: "fill", css: found.user, credential: "username" });
+  }
   steps.push({ action: "fill", css: found.pass, credential: "password" });
   steps.push(found.submit
     ? { action: "click", css: found.submit }
@@ -946,12 +1110,15 @@ export async function loginOnPage(page: Page, creds: Credentials): Promise<AuthS
     // last resort rather than an error.
     : { action: "press", css: found.pass, key: "Enter" });
 
-  for (const s of steps) {
+  // Screen 1's steps (if any) already ran above; execute only what this screen added.
+  for (const s of steps.slice(firstScreen.length)) {
     const loc = page.locator(s.css).first();
     if (s.action === "fill") {
       await loc.fill(s.credential === "password" ? creds.password : creds.username, { timeout: 10_000 });
     } else if (s.action === "click") {
       await loc.click({ timeout: 10_000 });
+    } else if (s.action === "waitFor") {
+      await loc.waitFor({ state: "visible", timeout: AUTH_VERIFY_TIMEOUT_MS() });
     } else {
       await loc.press(s.key ?? "Enter");
     }
@@ -1234,7 +1401,13 @@ export async function discoverSiteHybrid(
         authenticated = await verifySession(authPage, gateUrl);
         const reached = authPage.url();
         if (authenticated) {
-          auth = { status: "authenticated", url: reached, loginUrl: gateUrl, loginSteps: loginSteps ?? [] };
+          // Spread, not `relatedHosts: hops`: a same-host login (hops undefined) must leave the key
+          // ABSENT so the AppModel — and every prompt and cache key built from it — is unchanged.
+          const hops = loginHops(url, entrySnapshot.finalUrl, gateUrl, reached);
+          auth = {
+            status: "authenticated", url: reached, loginUrl: gateUrl, loginSteps: loginSteps ?? [],
+            ...(hops ? { relatedHosts: hops } : {}),
+          };
           console.log(`[hybrid] logged in, crawling from ${reached} instead of the login page`);
           const postLogin = await extractDomModelFromPage(authPage, reached);
           const postLoginPage = postLogin?.pages[0];
@@ -1287,7 +1460,9 @@ export async function discoverSiteHybrid(
     // without navigating reports failure above, leaving the filter off while the shared context
     // may still hold a cookie — crawling /logout then is harmless, just not optimal.
     const crawlableFrom = (urls: string[]) => {
-      const targets = collectCrawlTargets(urls, url, visited);
+      // The login's observed hosts (D-47): after a cross-host login the app lives on the landing
+      // host, and only these let the crawl follow it there. Undefined for a same-host login.
+      const targets = collectCrawlTargets(urls, url, visited, auth.relatedHosts);
       if (!authenticated) return targets;
       return targets.filter((t) => {
         try {

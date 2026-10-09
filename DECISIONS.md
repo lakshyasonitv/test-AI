@@ -1148,3 +1148,122 @@ share at least one project").
 **Rejected.** *Filter in the Team screen only* — the roster would still be one `fetch` away.
 *Return all rows with emails blanked* — still discloses headcount, ids and roles. *A per-project
 role column* — `project_members` deliberately has none (Step 5.1); visibility stays one axis.
+
+## D-45. A login gate is a password box OR an identifier-first screen, recognised by `autocomplete="username"`
+
+**Context.** `hasLoginGate` asked one question — is there a visible password box — so a login whose
+first screen asks only for the username (Salesforce, Microsoft, Okta, Google) read as `no-gate`, no
+credentials were ever requested, and the crawl went in anonymously. Salesforce's real first screen
+(fetched from `login.salesforce.com` and a scratch org): a username box `type="email"
+autocomplete="username"`, a `type="submit"` control labelled "Log In to Sandbox", a hidden
+`passwordShown` input, and no password box at all.
+
+**Decision.** The password check runs first and is unchanged. Failing it, a page is a gate when it
+has exactly one visible, enabled text/email/tel input whose `autocomplete` carries the `username`
+token, that input is the only visible text-entry control in its form (the page, if formless), and
+the form has a submit control — `type="submit"` first, else a button whose whole label matches
+`AUTH_VERB_TEXT`.
+
+**Why not the rule as first requested** ("a lone identifier field beside a submit control matching
+`AUTH_VERB_TEXT`"): it would have missed Salesforce itself — "Log In to Sandbox" fails the anchored
+`AUTH_VERB_TEXT` — and it matches a newsletter "Email [Submit]" box, which would make ordinary sites
+start prompting for credentials. `autocomplete="username"` is the HTML standard's own marker for a
+login identifier, so this is structure, not wording (TD-01). The "lone" rule stops a profile page
+with a username field from qualifying. The two-password caveat is untouched: this branch only ever
+runs when there is no password box.
+
+**Always on — an exception to platform rule 2,** for the same reason as D-36: the env-flag
+registry (`src/server/index.ts`) and `.env.example` were out of scope for this change. The
+single-screen path is unchanged code, and a regression test pins its recorded steps. Covers D-48 too.
+
+## D-46. A two-screen login is recorded as fill, click, `waitFor`, fill, click — record-then-execute per screen
+
+**Decision.** `AuthStep.action` gains `"waitFor"` (additive). `loginOnPage`, finding no password box
+but an identifier-first screen, fills and submits the username, waits for the password box (the
+`AUTH_VERIFY_TIMEOUT_MS` budget), then runs its existing single-screen selection for screen 2,
+recording `waitFor` on the password selector and not re-filling the identifier, which a provider
+may now show read-only. The established rule — build the record first, execute exactly that —
+holds per screen; screen 2's selectors cannot exist before screen 1 is submitted.
+
+`buildLoginPrefix` turns `waitFor` into an `assert visible` on that selector: it auto-waits, costs
+nothing on a quick screen, and fails at the step that caused it when a username is refused.
+liveExtend's grounding replay skips assert steps; its `fill` auto-waits on the same selector, so the
+replay needs nothing extra. A single-screen login never records `waitFor` and builds the same prefix
+as before (pinned).
+
+**TD-40.** Every new `page.evaluate` is written with nothing named inside it, and the selector
+ladder is copied rather than shared. `tests/twoScreenLoginUnderTsx.test.ts` runs the login under
+tsx in a child process — the only kind of test that can see a `__name` failure. Negative-controlled:
+a named function added inside the evaluate failed that test and no other.
+
+## D-47. Related hosts are the hosts a login was OBSERVED to pass through — data, never a pattern
+
+**Decision.** After a successful login, discovery records `AuthOutcome.relatedHosts`: the distinct
+`siteHost()`s of the entry URL, the landed entry URL, the login page and the landing page.
+`isSameSite(a, b, related?)` and `collectCrawlTargets(…, related?)` take the set as an optional
+trailing parameter; absent or empty, both behave exactly as before, and `isSameSite` still returns
+`true` for unparseable input (TD-69).
+
+**Why observed hops.** It holds for every Salesforce org type, custom domains and Experience Cloud
+without one hardcoded host: a login on `x.my.salesforce.com` that lands on `x.lightning.force.com`
+records exactly those two. Another org's host is never in the set, however alike the names.
+
+**Absent unless it says something.** A same-host login — nearly every site — records no
+`relatedHosts`, so its AppModel, and every prompt and cache key built from it, is byte-identical to
+before. That matters because `toLiteModel` spreads `auth` into prompts.
+
+**Not finished — TD-112.** `detectBlocked` and its callers were out of scope, so the blocked-run
+check does not yet receive the set; until it does, a Salesforce run that lands on Lightning is
+still reported "blocked". The crawl half is live.
+
+## D-48. A `field()` hint must be proved from AppModel structure before the spec is generated
+
+**Context.** A real Salesforce run emitted `field(page, "passwordShown", "fill")` and timed out at
+run time. Mechanism, reproduced: the model wrote `{role:"textbox", name:"Password"}`;
+`bestNameMatch`, searching unfiltered elements, matched the hidden `passwordShown` input at its
+prefix tier; the name was "self-corrected" to `passwordShown`; with no `css`, the generator emitted
+it as a `field()` hint. Separately, `groundingError` skips any target without both a role and a name
+(TD-111), so a label-, placeholder- or name-only fill was never checked at all.
+
+**Decision.** `fieldHintError` runs for exactly `resolveCode()`'s condition — a fill/select/check
+with no `css` — using the generator's own `fieldHint()`/`isFieldAction()`, imported rather than
+restated (TD-07). It runs twice: before the role+name skip, and again after the role+name
+self-correction, which is where `passwordShown` was born. The hint is proved by a non-hidden form
+field's `label`/`placeholder`/`ariaLabel`, or by a visible, usable field-role element's `name` —
+unless that name is only a hidden input's name/value (`hiddenInputNames`) or only an HTML `name`
+attribute a form field records apart from its human-facing names. Case- and whitespace-insensitive.
+A failure names the hint, says why, and lists the field names that ARE on the page, so the existing
+correction/retry/truncate loop can converge.
+
+**Known gap.** An element outside any `<form>` whose name came from its HTML `name` attribute or
+was derived from an id cannot be told apart: the AppModel does not record where a name came from,
+and the Element schema was out of scope.
+
+**Evidence.** Replayed over the real-run IRs in `tests/fixtures` (4 css-less field steps): no false
+rejection. A small sample, so stated as such.
+
+## D-49. `checkSalesforceLogin` decides by structure, enforces the SSRF guard, and redacts as `secret`
+
+**Decision.** It drives the same generic code discovery uses (`hasLoginGate`, `loginOnPage`,
+`verifySession`) in a browser built from `chromiumLaunchOptions()` and `browserContextOptions()`,
+and classifies by page structure, never by Salesforce's wording:
+
+- `not-found`: the URL fails `isAllowedEntryUrl` (the POST /api/runs SSRF guard — the server opens
+  a URL an admin typed), cannot be opened, answers 404/410, or shows no login form;
+- `timeout`: navigation or a step timed out;
+- `bad-credentials`: a login form is still showing after submitting;
+- `verification-required`: a lone code-shaped input (`autocomplete="one-time-code"`, numeric
+  `inputmode`, tel/number type, or `maxlength` 4–10) and no `totpSecret`;
+- `mfa-required`: a code generated from `totpSecret` (RFC 6238, pinned to the RFC's own vectors)
+  was not accepted, or the secret is not base32;
+- `unknown`: anything else, with where it stopped.
+
+Every `detail` passes through `redactCredentials` with the credentials marked `secret: true` —
+without that flag `redactCredentials` is a no-op, which a test caught leaking a password quoted in a
+URL — and has the TOTP secret stripped. `landedUrl` is cut to origin + path, because a sign-in
+redirect can carry a session id (`sid=`).
+
+**Not verified against a real org.** Email-code and authenticator-app screens are structurally
+indistinguishable, so "no secret supplied" reads `verification-required` and "secret rejected" reads
+`mfa-required`; Salesforce's own verification-page markup has not been seen. The signature is
+unchanged; `totpCode` is an extra export for tests, not part of the contract.

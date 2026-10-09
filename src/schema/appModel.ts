@@ -248,7 +248,9 @@ export type PageModel = z.infer<typeof PageModel>;
  * every one of them needed the run's raw artifacts to answer a question the run should have
  * stated outright.
  *
- * `no-gate`        — no password field anywhere; nothing to log into.
+ * `no-gate`        — no login gate: neither a password field nor an identifier-first screen
+ *                    (a lone `autocomplete="username"` field with its own submit control, where
+ *                    the password box appears only after the username is sent — D-45).
  * `no-credentials` — a login gate, but the run had no credentials to try.
  * `login-failed`   — credentials were tried and no session resulted.
  * `authenticated`  — verified: the reached page reloads without a password field.
@@ -264,9 +266,14 @@ export type PageModel = z.infer<typeof PageModel>;
  *
  * Deliberately not `ir.ts`'s `Step`: appModel.ts must not import from ir.ts (ir.ts imports this
  * module, and the cycle would be real). `ir.ts` converts these into Steps when it splices them in.
+ *
+ * `waitFor` (D-46) exists only in a TWO-SCREEN login — fill username, click, waitFor the password
+ * box, fill password, click — because that box is not in the DOM until the first screen is sent,
+ * and filling both up front fails. Its `css` is the password box itself. A single-screen login
+ * never records one, so its recorded steps are exactly what they were before this existed.
  */
 export const AuthStep = z.object({
-  action: z.enum(["fill", "click", "press"]),
+  action: z.enum(["fill", "click", "press", "waitFor"]),
   /** Selector discovery verified on the live page — never LLM-invented (DECISIONS.md D-02). */
   css: z.string(),
   /** Which credential this field wants. Absent for the submit control. */
@@ -288,6 +295,17 @@ export const AuthOutcome = z.object({
   /** Replayable record of the successful login. Present only when status is "authenticated". */
   loginSteps: z.array(AuthStep).optional(),
   detail: z.string().optional(),
+  /**
+   * The hosts a successful login actually passed through — entry, login form, landing page —
+   * as `siteHost()` values (D-47). Recorded, never pattern-matched: a Salesforce login on
+   * `x.my.salesforce.com` that lands on `x.lightning.force.com` is ONE application, and this is
+   * the observed evidence of that for any org, sandbox, custom domain or Experience Cloud site.
+   *
+   * Present ONLY when that set has more than one host. A login that stays on one host — almost
+   * every site — leaves it absent, so its AppModel (and every prompt and cache key built from it)
+   * is byte-identical to before this field existed.
+   */
+  relatedHosts: z.array(z.string()).optional(),
 });
 export type AuthOutcome = z.infer<typeof AuthOutcome>;
 

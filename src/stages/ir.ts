@@ -15,6 +15,9 @@ import {
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
+// The generator's OWN rule for when a step becomes `field(page, hint, …)` and which slot supplies
+// the hint — imported, never restated, so the guard below cannot drift from what is emitted (TD-07).
+import { fieldHint, isFieldAction } from "./targetResolver.js";
 
 /** Return type for toIR that includes the updated AppModel after live-extension. */
 export interface IRResult {
@@ -332,6 +335,15 @@ export function buildLoginPrefix(auth: AuthOutcome | undefined): Step[] {
     { id: "auth-0", action: "navigate", target: { url: auth.loginUrl } },
   ];
   auth.loginSteps.forEach((s, i) => {
+    // A two-screen login's wait for the password box (D-46). An assertion, not a `wait`, for the
+    // same reason as the closing one below: toBeVisible() auto-waits, so it costs nothing when the
+    // box is quick and still covers a slow one, and a username the provider refuses fails HERE,
+    // at the step that caused it. liveExtend's replay skips assert steps; its fill auto-waits for
+    // the same selector, so the grounding replay needs no separate wait.
+    if (s.action === "waitFor") {
+      steps.push({ id: `auth-${i + 1}`, action: "assert", target: { css: s.css }, assertion: "visible" });
+      return;
+    }
     steps.push({
       id: `auth-${i + 1}`,
       action: s.action,
@@ -441,6 +453,87 @@ export interface GroundingScope {
    * strictly better evidence than that fallback, so it wins where it exists.
    */
   reachedUrlAt?: Map<number, string>;
+}
+
+/**
+ * A step the generator will emit as `field(page, hint, action)` whose hint cannot be proved to
+ * exist on the recorded page — or null when it can, or when the step is not a `field()` step at
+ * all (D-48).
+ *
+ * WHY. `field()` resolves by label, placeholder and accessible name (then by visible text next
+ * to a control). A hint that is none of those resolves nothing, and the step sits out its full
+ * timeout at RUN time with an error that names no cause. A real Salesforce run emitted
+ * `field(page, "passwordShown", "fill")`: `passwordShown` is the NAME of
+ * `<input type="hidden" name="passwordShown" value="false">` on Salesforce's login page — the only
+ * thing on screen 1 with "password" in it, reached by grounding's substring tier.
+ *
+ * STRUCTURE ONLY, never page or prompt wording (CLAUDE.md's central rule, TD-01). Proof is one of:
+ *   - a non-hidden form field whose recorded `label`, `placeholder` or `ariaLabel` IS the hint;
+ *   - a visible, usable field-role element whose recorded `name` IS the hint — unless that name is
+ *     only a hidden input's name/value (`hiddenInputNames`) or only an HTML `name` attribute a
+ *     form field records separately from its human-facing names.
+ * Comparison is case- and whitespace-insensitive, so a capitalisation slip is not a rejection.
+ *
+ * Known gap, stated rather than hidden: an element OUTSIDE any <form> whose name came from its
+ * HTML `name` attribute or was derived from an id is indistinguishable here — the AppModel does not
+ * record where an element's name came from, and the Element schema is not this change's to extend.
+ */
+function fieldHintError(
+  step: Step, index: number, pages: PageModel[],
+): { index: number; message: string } | null {
+  const t = step.target;
+  // Exactly resolveCode()'s condition for emitting field(): a verified css wins first.
+  if (!t || t.css || !isFieldAction(step.action)) return null;
+  const hint = fieldHint(t);
+  if (!hint.trim()) return null;
+  const want = norm(hint);
+
+  const offered = new Set<string>();
+  let proved = false;
+  let hiddenOnly = false;
+  let attributeOnly = false;
+  for (const p of pages) {
+    const hidden = hiddenInputNames(p);
+    if ([...hidden].some((h) => norm(h) === want)) hiddenOnly = true;
+    // HTML `name` attributes a form field records apart from its human-facing names. An element
+    // NAMED one of these got that name from the attribute, which field() never matches.
+    const attributeNames = new Set<string>();
+    for (const form of p.forms ?? []) {
+      for (const fld of form.fields ?? []) {
+        if (fld.inputType === "hidden") continue;
+        const human = [fld.label, fld.placeholder, fld.ariaLabel].filter((v) => v && v.trim());
+        for (const v of human) offered.add(v.trim());
+        if (human.some((v) => norm(v) === want)) proved = true;
+        if (fld.name && !human.some((v) => norm(v) === norm(fld.name))) attributeNames.add(norm(fld.name));
+      }
+    }
+    if (attributeNames.has(want)) attributeOnly = true;
+    for (const e of p.elements) {
+      if (!FIELD_ROLE_GROUP.has(norm(e.role ?? ""))) continue;
+      if (e.visible === false || !isUsableElement(e, hidden)) continue;
+      const n = norm(e.name);
+      if (attributeNames.has(n)) continue;
+      offered.add(e.name.trim());
+      if (n === want) proved = true;
+    }
+  }
+  if (proved) return null;
+
+  const where = pages.length === 1 ? `on ${pages[0].url}` : "on any page in the application model";
+  const why = hiddenOnly
+    ? "it is only the name or value of a hidden input, which nothing can type into"
+    : attributeOnly
+      ? "it is only an HTML name attribute, which the field lookup never matches"
+      : "no field there is called that";
+  const list = [...offered].slice(0, 15).map((s) => `"${s}"`).join(", ");
+  return {
+    index,
+    message: `Step ${step.id} ${step.action}s the field "${hint}", which is not a label, ` +
+      `placeholder or accessible name of any field ${where} — ${why}. ` +
+      (list ? `Fields actually there: ${list}. ` : `No usable fields were recorded there. `) +
+      `Target one of those by its exact name; if the field only appears after an earlier action, ` +
+      `that action must come first.`,
+  };
 }
 
 export function groundingError(
@@ -621,6 +714,9 @@ export function groundingError(
       ? appModel.pages.find((p) => pageKey(p.url) === pageKey(reached))
       : undefined;
     const elements = reachedPage?.elements ?? trail.pageAt[index]?.elements ?? allElements;
+    // The same page evidence, as pages, for the field-hint guard (D-48).
+    const stepPage = reachedPage ?? trail.pageAt[index] ?? null;
+    const stepPages = stepPage ? [stepPage] : appModel.pages;
 
     // A bare `{ text: ... }` target on an ACTION step. The exemption below it — "no role+name,
     // nothing to check" — is right for an ASSERT (a flash message discovery never saw is the
@@ -681,7 +777,13 @@ export function groundingError(
       };
     }
 
-    if (!t?.role || !t?.name) continue; // navigate / text-only / wait steps
+    if (!t?.role || !t?.name) {
+      // A label-, placeholder- or name-only fill/select/check skips every name check below, and is
+      // exactly what reaches the generator as field(page, hint). Prove the hint first (D-48).
+      const hintErr = fieldHintError(step, index, stepPages);
+      if (hintErr) return hintErr;
+      continue; // navigate / text-only / wait steps
+    }
     const role = norm(t.role);
     const name = norm(t.name);
 
@@ -724,6 +826,12 @@ export function groundingError(
     // "never use CSS selectors" rule still holds for anything the model itself emits.
     if (matched?.css && !t.css) t.css = matched.css;
     if (matched?.testId && !t.testId) t.testId = matched.testId;
+    // Checked LAST, after the self-correction above: a matched element with a css is emitted by
+    // selector and never reaches field(); one without is emitted as field(page, <its name>), and
+    // a substring match can have just renamed the step to something that is no field's name —
+    // `{role:"textbox", name:"Password"}` became "passwordShown" exactly that way (D-48).
+    const hintErr = fieldHintError(step, index, stepPages);
+    if (hintErr) return hintErr;
   }
   return null;
 }

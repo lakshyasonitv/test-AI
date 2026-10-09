@@ -157,6 +157,10 @@ authority is its own heading, not this list.
 | TD-108 | Sign-in kept only Supabase's hour-long access token and discarded the refresh token, so a signed-in tab silently stopped working after an hour — every `/api` call 401'd, the sidebar emptied, saves failed, screenshots broke — and only the run poll said why. Recorded as deferred in `PHASE_3_4_REPORT.md` but never filed here — **fixed behind `AUTH_TOKEN_REFRESH`** (default off) | High | Accidental | ? |
 | TD-109 | `removeMember` deletes the organisation row but leaves the person's `project_members` rows, so a removed member stays "assigned" and their id still appears in an admin's assignments map. Access-harmless; D-36's paths guard against it | Low | Accidental | ? |
 | TD-110 | One `tenancy.test.ts` test (synthetic local user on `/api/runs`) fails only when run alongside `multiTenancy.test.ts` alone — pre-existing on `main`, likely shared-worker env leakage | Low | Accidental | ? |
+| TD-111 | `groundingError` skips any target lacking a role or a name, so css-only (even invented) and label-only targets were never verified — `field()` hints now are (D-48), invented css still is not | Medium | Accidental | ? |
+| TD-112 | D-47's related hosts never reach `detectBlocked`, so a Salesforce run landing on Lightning is still reported blocked; `replay.ts` has no source for the set at all | Medium | Accidental | ? |
+| TD-113 | Grounding's `bestNameMatch` searches unfiltered elements and can rename a step to a hidden input's name (how `passwordShown` happened) | Medium | Accidental | ? |
+| TD-114 | `isAllowedEntryUrl` blocks private hosts by hostname text only — a public name resolving to a private address passes the SSRF guard | Medium | Accidental | ? |
 > as detail sections with no table row for some time, which hid an **open security item (TD-67)**
 > from anyone reading only the summary. If you add an entry, add a row.
 >
@@ -4844,3 +4848,36 @@ valid selector`. The first is the dangerous one: a wrong element, no error. `det
 (`domDiscovery.ts`) builds `#${g.id}` with no escaping at all. The live walker uses the browser's
 `CSS.escape` and is not affected. Remediation: escape identifiers per the CSS spec (a port of
 `CSS.escape`) in both places, with the two ids above as test cases.
+
+### TD-111. `groundingError` never checks a target that lacks a role or a name — css-only and label-only targets pass unverified — Medium / Accidental — **Partly addressed (D-48)**
+
+`if (!t?.role || !t?.name) continue;` in `groundingError` (`src/stages/ir.ts`) skips every target
+without BOTH. Verified with a probe against the real function: `fill {label:"Nonexistent field"}`
+and `fill {css:"#totally-invented"}` both passed. D-48 now proves `field()` hints, which covers the
+label/placeholder/name-only fills. An invented `css` still passes, despite the IR prompt's "never
+invent CSS selectors" — a prompt rule with no code check behind it, the exact shape CLAUDE.md's
+central rule forbids. Remediation: a css target must be in `knownSelectors`, a login-prefix selector,
+or a user-supplied verified selector — measured first with artifact replay.
+
+### TD-112. A Salesforce run that lands on Lightning is still reported "blocked" — Medium / Accidental — **Open**
+
+D-47 records the login's hosts and `isSameSite` accepts them, but `detectBlocked` (`executor.ts`)
+and its callers (`orchestrator.ts`, `suiteRunner.ts` x3, `replay.ts`) were out of scope, so the set
+never reaches the check. Remediation: an optional `relatedHosts` parameter on `detectBlocked`,
+passed from `appModel.auth.relatedHosts` in the orchestrator and suite runner. `replay.ts` has no
+AppModel, so it needs the set saved with the case — a schema decision of its own.
+
+### TD-113. Grounding's name matcher can match a hidden input and rename the step to it — Medium / Accidental — **Open**
+
+`bestNameMatch` searches the page's unfiltered elements, so `{role:"textbox", name:"Password"}`
+matched Salesforce's hidden `passwordShown` input at its prefix tier and the step was "corrected"
+to that name (D-48). The `field()` outcome is now rejected; a match that ALSO carries a css is not,
+and would fail at run time on an invisible input. Remediation: skip `isHiddenInput` elements in
+`bestNameMatch`, as the prompt-side filter already does.
+
+### TD-114. `isAllowedEntryUrl` checks the hostname string, not where it resolves — Medium / Accidental — **Open**
+
+The SSRF guard blocks `127.*`, `10.*`, `169.254.*` and the like by text only, so a public hostname
+that resolves to a private address passes. It guards POST /api/runs and, since D-49,
+`checkSalesforceLogin`. Remediation: resolve the host and check the address too, at the point the
+browser connects.

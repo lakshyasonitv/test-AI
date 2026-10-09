@@ -446,14 +446,24 @@ export interface BlockedInfo {
  * an external provider; being wrong in that direction marks passing tests as blocked, which is
  * exactly the defect above. So "I cannot tell" must fall to the permissive side and report
  * nothing — the caller's own comment already called an unparseable URL "not a reliable signal".
+ *
+ * `relatedHosts` (D-47): hosts that are one application even though they differ — the hosts a
+ * login was OBSERVED to pass through (`AuthOutcome.relatedHosts`), supplied as data, never a
+ * pattern. A Salesforce login on `x.my.salesforce.com` that lands on `x.lightning.force.com` has
+ * not "left the application". Both hosts must be in the set. Absent or empty: exactly the old
+ * host-equality rule, including `true` for unparseable input.
  */
-export function isSameSite(a: string, b: string): boolean {
+export function isSameSite(a: string, b: string, relatedHosts?: readonly string[]): boolean {
   // `siteHost` is shared with ir.ts's `pageKey`, which had to learn the same lesson separately
   // (TD-82). One definition, so the next comparison that needs it cannot drift from this one.
   const ha = siteHost(a);
   const hb = siteHost(b);
   if (!ha || !hb) return true;
-  return ha === hb;
+  if (ha === hb) return true;
+  if (!relatedHosts?.length) return false;
+  // Normalised the way siteHost() normalises, so an entry recorded as "WWW.X.com" still matches.
+  const related = new Set(relatedHosts.map((h) => h.trim().toLowerCase().replace(/^www\./, "")));
+  return related.has(ha) && related.has(hb);
 }
 
 /**
