@@ -85,7 +85,7 @@ export interface TargetDiff {
 export function diffTargets(oldTarget: Target | undefined, newTarget: Target): TargetDiff[] {
   if (!oldTarget) return [{ field: "target", oldValue: undefined, newValue: JSON.stringify(newTarget) }];
   const diffs: TargetDiff[] = [];
-  for (const key of ["role", "name", "css", "testId", "nth", "text", "placeholder", "label"] as const) {
+  for (const key of ["role", "name", "css", "testId", "nth", "text", "placeholder", "label", "frame"] as const) {
     const ov = (oldTarget as any)[key];
     const nv = (newTarget as any)[key];
     if (ov !== nv) diffs.push({ field: key, oldValue: ov, newValue: nv });
@@ -187,7 +187,9 @@ export function healStepTarget(
   const sameName = norm(best.element.name ?? "") === normalizedName;
   const sameCss = best.element.css === target.css;
   const sameTestId = best.element.testId === target.testId;
-  if (sameRole && sameName && sameCss && sameTestId) return null;
+  // The same css inside a different iframe is a different element (LS-5), so frame counts too.
+  const sameFrame = (best.element.frame ?? "") === (target.frame ?? "");
+  if (sameRole && sameName && sameCss && sameTestId && sameFrame) return null;
 
   // Build the corrected target.
   const corrected: Target = { ...target };
@@ -195,6 +197,12 @@ export function healStepTarget(
   corrected.name = best.element.name ?? name;
   if (best.element.css) corrected.css = best.element.css;
   if (best.element.testId) corrected.testId = best.element.testId;
+  // The frame belongs to the element just matched, exactly like its css — never kept from the
+  // old target. Keeping it paired the new css with the OLD iframe (or dropped a frame the element
+  // now has), so the healed locator looked in the wrong document (LS-5). Unlike css, a missing
+  // frame is meaningful (top-level document), so it is removed rather than left alone.
+  if (best.element.frame) corrected.frame = best.element.frame;
+  else delete corrected.frame;
   // Clear nth if the match is unambiguous (single element of this role+name).
   if (best.tier <= 1) corrected.nth = undefined;
 

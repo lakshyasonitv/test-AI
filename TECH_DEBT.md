@@ -4904,7 +4904,7 @@ that resolves to a private address passes. It guards POST /api/runs and, since D
 `checkSalesforceLogin`. Remediation: resolve the host and check the address too, at the point the
 browser connects.
 
-### LS-5. Deterministic heal pairs the new element's `css` with the OLD step's `frame` — Medium / Accidental — **Open**
+### LS-5. Deterministic heal pairs the new element's `css` with the OLD step's `frame` — Medium / Accidental — **Fixed**
 
 *Filed by the live-DOM discovery stream (Lakshya).*
 
@@ -4922,3 +4922,8 @@ Remediation: set `corrected.frame = best.element.frame` (deleting it when the el
 the same place `css` is copied, and add `"frame"` to `diffTargets`'s key list. `stepText.ts` was
 checked for the same gap and does NOT have it: an edited target is rebuilt from scratch, so a stale
 `frame` is dropped with `css`.
+
+**Fixed.** `healStepTarget` now takes `frame` from the matched element exactly like `css` (and
+removes it when the element has none), counts `frame` in its "nothing changed, same element"
+early return (the same css in a different iframe is a different element, which that return was
+silently skipping), and `diffTargets` compares `frame`. `tests/deterministicHealFrame.test.ts`.
