@@ -4794,7 +4794,14 @@ in the full suite, where scheduling differs. The shape matches the env-leak warn
 `tests/runLocaleRoute.test.ts` (files that set `AUTH_ENABLED`/`DB_ENABLED` at module scope sharing
 a worker). Not investigated further; filed so the next person does not mistake it for a regression.
 
-### LS-1. Grounding ignores `nth`, so a duplicate target gets the FIRST duplicate's `css` and resolves to nothing — High / Accidental — **Open**
+### LS-1. Grounding ignores `nth`, so a duplicate target gets the FIRST duplicate's `css` and resolves to nothing — High / Accidental — **Fixed**
+
+**Fixed.** `groundingError` (`src/stages/ir.ts`) now picks the `nth` exact twin (same role, same name,
+model order) before attaching its `css`, then REBASES `nth` onto that css: dropped when the css names one
+element (`#add-2` alone), kept as that element's position among the elements sharing it when shared
+(`[data-test="add"]`). An `nth` past the duplicates the model holds is left exactly as before rather than
+silently retargeted at the first one. Same for a text-only action target. Each case is grounded and its
+emitted locator EXECUTED in a real Chromium (`tests/groundingNthVisible.test.ts`).
 
 *Filed by the live-DOM discovery stream (Lakshya); `LS-` prefix until renumbered.*
 
@@ -4813,7 +4820,13 @@ relies on `.nth()` working as it does. Remediation (in `src/stages/ir.ts`, not t
 when `t.nth` is set, pick the `nth` exact match among same-role+name elements in model order before
 attaching its `css`.
 
-### LS-2. Grounding does not prefer a visible element over a hidden twin with the same role+name — High / Accidental — **Open**
+### LS-2. Grounding does not prefer a visible element over a hidden twin with the same role+name — High / Accidental — **Fixed**
+
+**Fixed.** `bestNameMatch` breaks a tie (same tier, same length delta) in favour of `visible !== false`;
+a hidden exact match still beats a visible partial one, hidden elements stay in the model, and a step
+asserting something is HIDDEN keeps the old first-in-order choice. The password-mirror shape now fills the
+real box in a real Chromium (`tests/groundingNthVisible.test.ts`). TD-113 is narrowed, not closed: a hidden
+element with no visible twin can still be matched.
 
 *Filed by the live-DOM discovery stream (Lakshya).*
 

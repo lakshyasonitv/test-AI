@@ -578,10 +578,21 @@ export function groundingError(
   const CLICKABLE_ROLE_GROUP = new Set(["link", "button", "menuitem", "tab"]);
   // Best name-tiered match among `elements` whose role satisfies `roleOk`. Factored out so the
   // exact-role pass and the compatible-role fallback pass share identical ranking logic.
-  const bestNameMatch = (elements: Element[], name: string, sn: string, roleOk: (r: string) => boolean): Element | null => {
+  //
+  // `preferVisible` (LS-2): between two matches that are otherwise EQUAL (same tier, same length
+  // delta), a visible element beats one recorded `visible: false`. Before this, whichever came first
+  // in document order won — and Salesforce's login puts a hidden password MIRROR ahead of the real
+  // box, so a fill grounded to an element no one can type into. Only a tie-break: a hidden exact match
+  // still beats a visible partial one, and hidden elements stay in the model. Callers pass false for
+  // a step asserting something is HIDDEN, where the hidden element may be the one meant — that step
+  // keeps the old first-in-order choice.
+  const bestNameMatch = (
+    elements: Element[], name: string, sn: string, roleOk: (r: string) => boolean, preferVisible: boolean,
+  ): Element | null => {
     let matched: Element | null = null;
     let bestTier = 99;
     let bestDelta = Infinity;
+    let bestHidden = 1;
     for (const e of elements) {
       if (!roleOk(norm(e.role))) continue;
       const en = norm(e.name);
@@ -595,12 +606,40 @@ export function groundingError(
       else continue;
 
       const delta = Math.abs(en.length - name.length);
-      if (tier < bestTier || (tier === bestTier && delta < bestDelta)) {
-        matched = e; bestTier = tier; bestDelta = delta;
-        if (tier === 0 && delta === 0) break;                       // can't do better
+      const hidden = preferVisible && e.visible === false ? 1 : 0;
+      if (tier < bestTier || (tier === bestTier && delta < bestDelta)
+        || (tier === bestTier && delta === bestDelta && hidden < bestHidden)) {
+        matched = e; bestTier = tier; bestDelta = delta; bestHidden = hidden;
+        if (tier === 0 && delta === 0 && hidden === 0) break;       // can't do better
       }
     }
     return matched;
+  };
+
+  // LS-1: the `nth` duplicate the step means, and that element's position among the elements sharing
+  // its css — which is what `.nth()` on that css actually counts in the browser.
+  //
+  // Grounding used to attach the FIRST duplicate's css and keep `nth`, emitting e.g.
+  // `page.locator("#add-1").nth(1)`: a unique selector has no second match, so 0 elements. Now the
+  // nth exact twin (same role, same name, model order) is chosen, and `nth` is rebased onto its css —
+  // dropped when that css names one element (`#add-2` alone), kept as an index when the css is shared
+  // (`[data-test="add"]` across a list relies on `.nth()`). Structure only: role, name, css, order.
+  const nthTwin = (elements: Element[], chosen: Element, nth: number | undefined): Element => {
+    if (nth === undefined || nth === null || nth < 1) return chosen;
+    const twins = elements.filter((e) => norm(e.role) === norm(chosen.role) && norm(e.name) === norm(chosen.name));
+    return twins[nth] ?? chosen; // out of range: leave the match and `nth` exactly as before
+  };
+  const rebaseNth = (t: NonNullable<Step["target"]>, chosen: Element, elements: Element[]): void => {
+    if (t.nth === undefined || t.nth === null || !chosen.css || t.css !== chosen.css) return;
+    // An nth past the duplicates the model holds was NOT resolved by nthTwin; rebasing it would
+    // silently retarget the step at the first duplicate. Leave it failing loudly, as before.
+    const twins = elements.filter((e) => norm(e.role) === norm(chosen.role) && norm(e.name) === norm(chosen.name));
+    if (t.nth >= twins.length) return;
+    const css = chosen.css.toLowerCase();
+    const sameCss = elements.filter((e) => e.css?.toLowerCase() === css);
+    const pos = sameCss.indexOf(chosen);
+    if (sameCss.length <= 1) delete t.nth;
+    else if (pos >= 0) t.nth = pos;
   };
   // A navigate step's URL is every bit as invented-able as a CSS selector or a role+name, and
   // nothing checked it: told to reach a destination through the UI ("open the Admin section via
@@ -734,7 +773,10 @@ export function groundingError(
       const roleOk = FIELD_ACTIONS.has(step.action)
         ? (r: string) => FIELD_ROLE_GROUP.has(r)
         : (r: string) => CLICKABLE_ROLE_GROUP.has(r);
-      const found = bestNameMatch(elements, hint, stripGlyphs(hint), roleOk);
+      const preferVisible = step.assertion !== "hidden";
+      const best = bestNameMatch(elements, hint, stripGlyphs(hint), roleOk, preferVisible);
+      // LS-1: the duplicate the step's `nth` means, not the first one found.
+      const found = best ? nthTwin(elements, best, t.nth) : null;
       if (found) {
         // Upgrade the weak target into the verified one, exactly as the role+name path does
         // below: real role, model's literal name, plus whatever deterministic identity
@@ -745,6 +787,7 @@ export function groundingError(
         if (found.css && !t.css) t.css = found.css;
         if (found.testId && !t.testId) t.testId = found.testId;
         if (found.frame && !t.frame) t.frame = found.frame;
+        rebaseNth(t, found, elements);
         continue;
       }
       return {
@@ -796,14 +839,17 @@ export function groundingError(
     // because that happened to come first in element order. An exact match must always beat
     // a partial one, and among partials the closest-length name is the least wrong.
     const sn = stripGlyphs(name);
-    let matched = bestNameMatch(elements, name, sn, (r) => r === role);
+    const preferVisible = step.assertion !== "hidden"; // LS-2, see bestNameMatch
+    let matched = bestNameMatch(elements, name, sn, (r) => r === role, preferVisible);
     // Exact role found nothing — try again across the compatible-role group, but only when
     // the STEP'S OWN role is itself one of those roles (never widen a heading/textbox search).
     // An exact-role match always wins when one exists; this only runs when the pass above
     // found nothing at all.
     if (!matched && CLICKABLE_ROLE_GROUP.has(role)) {
-      matched = bestNameMatch(elements, name, sn, (r) => CLICKABLE_ROLE_GROUP.has(r));
+      matched = bestNameMatch(elements, name, sn, (r) => CLICKABLE_ROLE_GROUP.has(r), preferVisible);
     }
+    // LS-1: the duplicate the step's `nth` means, not the first one found.
+    if (matched) matched = nthTwin(elements, matched, t.nth);
     const matchedName = matched?.name ?? null;
     if (!matchedName) {
       const pageUrl = trail.pageAt[index]?.url ?? appModel.baseUrl;
@@ -834,6 +880,8 @@ export function groundingError(
     // written by the model (Target.frame). Only set when the element has one, so a target in the
     // top-level document stays key-for-key what it was.
     if (matched?.frame && !t.frame) t.frame = matched.frame;
+    // LS-1: `nth` now indexes the elements sharing the css just attached — or goes, if it is unique.
+    if (matched) rebaseNth(t, matched, elements);
     // Checked LAST, after the self-correction above: a matched element with a css is emitted by
     // selector and never reaches field(); one without is emitted as field(page, <its name>), and
     // a substring match can have just renamed the step to something that is no field's name —
