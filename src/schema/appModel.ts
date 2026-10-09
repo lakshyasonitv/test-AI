@@ -38,8 +38,8 @@ export const Element = z.object({
   /**
    * Path of the same-origin iframe(s) this element lives in, outermost first, each segment a CSS
    * selector for the `<iframe>` element, joined by `" >>> "`. Absent means the top-level
-   * document. Copied onto `Target.frame` at grounding, where `resolveCode` and the generator
-   * wrap the locator in `page.frameLocator(...)`.
+   * document. Intended to be copied onto `Target.frame` at grounding (that grounding lives in
+   * `src/stages/ir.ts`, outside this stream, and is not wired yet).
    */
   frame: z.string().optional(),
   /**

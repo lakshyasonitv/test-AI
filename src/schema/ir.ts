@@ -18,8 +18,9 @@ export const Target = z.object({
    * Same-origin iframe path the target lives in, outermost first: one CSS selector per
    * `<iframe>`, joined by `" >>> "`. Absent means the top-level document. Written in code during
    * grounding, copied from the matching AppModel element (like `css`) — never by the LLM.
-   * `resolveCode` and the generator both wrap the locator in `page.frameLocator(...)` once per
-   * segment. Additive and optional, so every stored IR parses unchanged.
+   * Once wired, `resolveCode` and the generator both wrap the locator in
+   * `page.frameLocator(...)` once per segment; until then nothing reads it. Additive and
+   * optional, so every stored IR parses unchanged.
    */
   frame: z.string().optional(),
   /**
