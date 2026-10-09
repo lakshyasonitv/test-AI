@@ -4789,3 +4789,58 @@ instead of 200. Reproduced on unmodified `main` (`df8002d`), so pre-existing; it
 in the full suite, where scheduling differs. The shape matches the env-leak warning in
 `tests/runLocaleRoute.test.ts` (files that set `AUTH_ENABLED`/`DB_ENABLED` at module scope sharing
 a worker). Not investigated further; filed so the next person does not mistake it for a regression.
+
+### LS-1. Grounding ignores `nth`, so a duplicate target gets the FIRST duplicate's `css` and resolves to nothing — High / Accidental — **Open**
+
+*Filed by the live-DOM discovery stream (Lakshya); `LS-` prefix until renumbered.*
+
+`bestNameMatch` (`src/stages/ir.ts`) returns the first exact role+name match and never reads
+`t.nth`; the auto-attach (`if (matched?.css && !t.css) t.css = matched.css`) then copies THAT
+element's `css`. `resolveCode` emits `page.locator(css).nth(t.nth)` — and a unique selector has no
+second match. Reproduced through the real code path: two "Add to cart" buttons (`#add-1`, `#add-2`)
+and a step `{ role: "button", name: "Add to cart", nth: 1 }` ground to
+`{ ..., nth: 1, css: "#add-1" }` and emit `page.locator("#add-1").nth(1)`, which a real Chromium
+counts as **0** elements; `getByRole("button", { name: "Add to cart" }).nth(1)` counts 1.
+
+Today this only bites duplicates that carry an `id`/test id. With `DISCOVERY_LIVE_DOM=true` every
+element carries a unique `css`, so it bites **every** `nth >= 1` duplicate — a blocker for turning
+that flag on. It cannot be fixed in `resolveCode`: a shared `[data-test="add"]` across repeated items
+relies on `.nth()` working as it does. Remediation (in `src/stages/ir.ts`, not this stream's file):
+when `t.nth` is set, pick the `nth` exact match among same-role+name elements in model order before
+attaching its `css`.
+
+### LS-2. Grounding does not prefer a visible element over a hidden twin with the same role+name — High / Accidental — **Open**
+
+*Filed by the live-DOM discovery stream (Lakshya).*
+
+`bestNameMatch` ranks by name tier and length delta only, then stops at the first exact match, so
+whichever same-named element comes first in document order wins regardless of `visible`.
+Reproduced: a model with a hidden `textbox "Password"` (`input[name="passwordShown"]`,
+`visible: false`) before the real one (`#password`, `visible: true`) grounds a `fill` step to the
+hidden one's `css`, with no grounding error. That is the Salesforce password-mirror shape. Live-DOM
+discovery now reports `visible` truthfully, which is what makes a fix possible. Remediation (in
+`src/stages/ir.ts`): among equal-tier matches prefer `visible !== false`. Not a reason to drop hidden
+elements from the model: assertions such as "is hidden" need them.
+
+### LS-3. `pageKey` exists twice with different normalisation — Medium / Accidental — **Open**
+
+*Filed by the live-DOM discovery stream (Lakshya); known before the stream started.*
+
+`src/text.ts:52` returns host+path (the TD-82 fix), while `src/schema/appModel.ts:486` still
+returns origin+path, and its comment ("same as ir.ts pageKey") wrongly claims they match. An
+`http://`/`https://` pair is one page to the first and two pages to the second. Remediation: make
+the schema's `pageKey` delegate to `text.ts` (or delete it and update its callers), then fix the
+comment.
+
+### LS-4. `stableSelector` builds `#id` without escaping, so a dotted id silently matches a different element — Medium / Accidental — **Open**
+
+*Filed by the live-DOM discovery stream (Lakshya).*
+
+`stableSelector` (`src/stages/discovery.ts`) emits `#${cssEscape(id)}`, but that `cssEscape` only
+escapes `"` and `\`, which is correct inside a quoted attribute value and wrong for an identifier.
+Executed in Chromium: id `a.b` gives `#a.b`, which means "id a AND class b" and matched a **different**
+element (`<button id="a" class="b">`); id `1x` gives `#1x`, which throws `SyntaxError: '#1x' is not a
+valid selector`. The first is the dangerous one: a wrong element, no error. `detectGenericClickables`
+(`domDiscovery.ts`) builds `#${g.id}` with no escaping at all. The live walker uses the browser's
+`CSS.escape` and is not affected. Remediation: escape identifiers per the CSS spec (a port of
+`CSS.escape`) in both places, with the two ids above as test cases.
