@@ -15,6 +15,14 @@ export const Target = z.object({
   // exists. It is what makes icon-only controls addressable at all.
   css: z.string().optional(),
   /**
+   * Same-origin iframe path the target lives in, outermost first: one CSS selector per
+   * `<iframe>`, joined by `" >>> "`. Absent means the top-level document. Written in code during
+   * grounding, copied from the matching AppModel element (like `css`) — never by the LLM.
+   * `resolveCode` and the generator both wrap the locator in `page.frameLocator(...)` once per
+   * segment. Additive and optional, so every stored IR parses unchanged.
+   */
+  frame: z.string().optional(),
+  /**
    * Provenance, not behaviour. `"replay"` marks a target that was grounded against the LIVE page
    * during a replay (`REPLAY_REGROUND`) rather than against the model discovery built — the case
    * of a control revealed by a click, which discovery never saw.

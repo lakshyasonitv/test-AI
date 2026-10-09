@@ -30,6 +30,37 @@ export const Element = z.object({
   count: z.number().optional(),
   landmark: z.string().optional(),
   order: z.number().optional(),
+  // --- Live-DOM discovery (DISCOVERY_LIVE_DOM) -------------------------------------------------
+  // Every field below is written ONLY by the live walker (`liveDomDiscovery.ts`). The cheerio
+  // path never sets them, so with the flag off an Element serialises byte-identically to before
+  // and every stored AppModel parses unchanged. Additive and optional, the same standard
+  // `Target.groundedAt` was added to.
+  /**
+   * Path of the same-origin iframe(s) this element lives in, outermost first, each segment a CSS
+   * selector for the `<iframe>` element, joined by `" >>> "`. Absent means the top-level
+   * document. Copied onto `Target.frame` at grounding, where `resolveCode` and the generator
+   * wrap the locator in `page.frameLocator(...)`.
+   */
+  frame: z.string().optional(),
+  /**
+   * True when the element sits inside an OPEN shadow root. Provenance for a person reading the
+   * model, and the reason its `css` may be a `>>` chain rather than a plain selector. Closed
+   * roots are unreachable by design, so no element is ever tagged for one.
+   */
+  inShadow: z.boolean().optional(),
+  /**
+   * Which accessible-name rule produced `name`: `aria-labelledby`, `aria-label`, `label`, `alt`,
+   * `placeholder`, `title`, `content`, or `value`. A free string rather than an enum so a new
+   * rule never invalidates a stored model. It makes the model auditable against the
+   * `domDiscovery.ts` precedence comment — the HTML `name` attribute is never a source.
+   */
+  nameSource: z.string().optional(),
+  /**
+   * `"computed"` marks `visible` as measured from `getComputedStyle` + `getBoundingClientRect`
+   * on the live element. Absent means `visible` came from the static DOM, where cheerio has no
+   * computed style and the value is an assumption. Provenance only; nothing branches on it.
+   */
+  visibleSource: z.literal("computed").optional(),
 });
 export type Element = z.infer<typeof Element>;
 
