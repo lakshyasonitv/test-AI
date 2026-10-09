@@ -144,3 +144,48 @@ describe("never applies where the generator does not emit field()", () => {
     expect(groundingError(ir, { baseUrl: URL_, pages: [SF_LOGIN], auth } as any)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Item 7: Target.frame is grounded like css — copied from the element discovery verified, never
+// from the model, and only when the element has one (so top-level targets stay key-for-key the
+// same; tests/frameTarget.test.ts holds the schema to that).
+
+describe("grounding copies Target.frame from the matched element, like css", () => {
+  const FRAMED = {
+    url: "https://acme.lightning.force.com/report", title: "Report", forms: [],
+    elements: [
+      { role: "textbox", name: "Amount", css: "#amt", frame: "iframe#vfFrame", visible: true },
+      { role: "button", name: "Run Report", css: "#run", frame: "iframe#vfFrame >>> iframe.inner", visible: true },
+      { role: "textbox", name: "Search", css: "#q", visible: true },
+    ],
+  };
+  const ground = (step: Record<string, unknown>) => {
+    const ir = { meta, steps: [{ id: "s0", action: "navigate", target: { url: FRAMED.url } }, { id: "s1", ...step }] } as any;
+    const err = groundingError(ir, { baseUrl: FRAMED.url, pages: [FRAMED] } as any);
+    return { err, target: ir.steps[1].target };
+  };
+
+  it("role+name: the frame comes with the css", () => {
+    const { err, target } = ground({ action: "fill", target: { role: "textbox", name: "Amount" }, value: "5" });
+    expect(err).toBeNull();
+    expect(target).toMatchObject({ css: "#amt", frame: "iframe#vfFrame" });
+  });
+
+  it("a text-only action target upgraded to the element carries its frame (nested path kept intact)", () => {
+    const { err, target } = ground({ action: "click", target: { text: "Run Report" } });
+    expect(err).toBeNull();
+    expect(target.frame).toBe("iframe#vfFrame >>> iframe.inner");
+  });
+
+  it("an already-verified selector gets the frame it lives in", () => {
+    const { err, target } = ground({ action: "fill", target: { css: "#amt" }, value: "5" });
+    expect(err).toBeNull();
+    expect(target.frame).toBe("iframe#vfFrame");
+  });
+
+  it("an element in the top-level document adds NO frame key at all", () => {
+    const { err, target } = ground({ action: "fill", target: { role: "textbox", name: "Search" }, value: "x" });
+    expect(err).toBeNull();
+    expect(Object.keys(target)).not.toContain("frame");
+  });
+});

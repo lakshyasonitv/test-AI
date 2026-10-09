@@ -687,6 +687,9 @@ export function groundingError(
       const known = bySelector.get(t.css.toLowerCase());
       const hiddenErr = known && hiddenVisibleAssertError(index, `css="${t.css}"`, known);
       if (hiddenErr) return hiddenErr;
+      // A verified selector inside an iframe resolves only within that frame, so the frame comes
+      // with it — from the element discovery verified, never from the model (Target.frame).
+      if (known?.frame && !t.frame) t.frame = known.frame;
       continue;
     }
     // Step 0's navigate is the entry URL the pipeline itself supplied, never a guess.
@@ -741,6 +744,7 @@ export function groundingError(
         delete t.text;
         if (found.css && !t.css) t.css = found.css;
         if (found.testId && !t.testId) t.testId = found.testId;
+        if (found.frame && !t.frame) t.frame = found.frame;
         continue;
       }
       return {
@@ -826,6 +830,10 @@ export function groundingError(
     // "never use CSS selectors" rule still holds for anything the model itself emits.
     if (matched?.css && !t.css) t.css = matched.css;
     if (matched?.testId && !t.testId) t.testId = matched.testId;
+    // The iframe path, copied like css and testId from the element discovery verified — never
+    // written by the model (Target.frame). Only set when the element has one, so a target in the
+    // top-level document stays key-for-key what it was.
+    if (matched?.frame && !t.frame) t.frame = matched.frame;
     // Checked LAST, after the self-correction above: a matched element with a css is emitted by
     // selector and never reaches field(); one without is emitted as field(page, <its name>), and
     // a substring match can have just renamed the step to something that is no field's name —

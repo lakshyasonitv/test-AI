@@ -1242,6 +1242,17 @@ and the Element schema was out of scope.
 **Evidence.** Replayed over the real-run IRs in `tests/fixtures` (4 css-less field steps): no false
 rejection. A small sample, so stated as such.
 
+**`Target.frame` is grounded the same way (item 7).** Wherever grounding copies `css` and `testId`
+from the element it matched — the text-target upgrade, the role+name match — it now copies
+`frame`, and a target whose `css` is an already-verified selector takes that element's `frame`,
+since a selector inside an iframe resolves only within it. Only when the element has one, so a
+top-level target stays key-for-key unchanged (`tests/frameTarget.test.ts`). Today nothing sets
+`Element.frame` — the live walker that will is another stream's — so this is inert until then.
+Two limits, stated for that stream: `knownSelectors`/`bySelector` index elements by `css` alone, so
+one selector present in two frames resolves to whichever was indexed last; and grounding does not
+strip a model-written `frame`, exactly as it does not strip a model-written `css` — the model never
+sees `Element.frame` (`toLiteModel` keeps role, name, concept), so it has nothing to copy one from.
+
 ## D-49. `checkSalesforceLogin` decides by structure, enforces the SSRF guard, and redacts as `secret`
 
 **Decision.** It drives the same generic code discovery uses (`hasLoginGate`, `loginOnPage`,
