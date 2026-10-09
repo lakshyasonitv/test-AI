@@ -158,8 +158,14 @@ describe("gatePageKey in app.js agrees with the server's pageKey", () => {
     "https://example.com/login#top",
     "https://example.com:8443/login",
     "http://example.com/login",
+    "https://www.example.com/login",
+    "https://EXAMPLE.com/Login",
     "not a url at all",
   ])("agrees on %s", (url) => {
     expect(browserKey(url)).toBe(pageKey(url));
+  });
+
+  it("treats an http case target and the https page discovery recorded as one page (LS-3)", () => {
+    expect(browserKey("http://example.com/dashboard")).toBe(browserKey("https://www.example.com/dashboard/"));
   });
 });

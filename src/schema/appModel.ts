@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pageKey } from "../text.js";
 
 // ---------------------------------------------------------------------------
 // Element (unchanged — backward compatible)
@@ -530,14 +531,15 @@ export function compressRepetitiveSiblings(elements: Element[]): Element[] {
   return result;
 }
 
-/** Origin + path, ignoring query/hash — same as ir.ts pageKey */
-/** Origin + path, ignoring query/hash — enough to decide whether two URLs are the same page. */
-export function pageKey(url: string): string {
-  try {
-    const u = new URL(url);
-    return u.origin + (u.pathname.replace(/\/+$/, "") || "/");
-  } catch { return url; }
-}
+/**
+ * "Which page is this?" — re-exported from `src/text.ts`, the ONE definition (host + path,
+ * ignoring scheme, port, `www.`, query and hash). This module used to carry its own origin + path
+ * copy whose comment claimed it matched; it did not, so an `http://` URL and the `https://` page
+ * discovery recorded were different pages here and the same page in ir.ts — `toMicroModel` then
+ * sent the model the wrong page (LS-3, the TD-82 mistake again). `text.ts` imports nothing, so
+ * importing it from a schema module creates no cycle.
+ */
+export { pageKey } from "../text.js";
 
 export function toMicroModel(
   model: AppModel,

@@ -4839,7 +4839,7 @@ discovery now reports `visible` truthfully, which is what makes a fix possible. 
 `src/stages/ir.ts`): among equal-tier matches prefer `visible !== false`. Not a reason to drop hidden
 elements from the model: assertions such as "is hidden" need them.
 
-### LS-3. `pageKey` exists twice with different normalisation — Medium / Accidental — **Open**
+### LS-3. `pageKey` exists twice with different normalisation — Medium / Accidental — **Fixed**
 
 *Filed by the live-DOM discovery stream (Lakshya); known before the stream started.*
 
@@ -4848,6 +4848,14 @@ returns origin+path, and its comment ("same as ir.ts pageKey") wrongly claims th
 `http://`/`https://` pair is one page to the first and two pages to the second. Remediation: make
 the schema's `pageKey` delegate to `text.ts` (or delete it and update its callers), then fix the
 comment.
+
+**Fixed.** There were three copies, not two: `public/app.js` carries `gatePageKey`, pinned equal to
+the schema's copy by `tests/gatePageElements.test.ts`, so it had the same `http`/`https` bug (the gate
+panel fell back to showing every page's elements). `src/schema/appModel.ts` now re-exports
+`src/text.ts`'s `pageKey` (`text.ts` imports nothing, so no cycle), and `gatePageKey` uses the same
+host + path rule. Measured before the fix: `toMicroModel` given `http://…/dashboard` sent the model
+the Home page instead of the recorded `https://…/dashboard`. `tests/pageKeyParity.test.ts` asserts the
+two server names are the same function; the existing parity test now also covers `www.` and case.
 
 ### LS-4. `stableSelector` builds `#id` without escaping, so a dotted id silently matches a different element — Medium / Accidental — **Fixed**
 

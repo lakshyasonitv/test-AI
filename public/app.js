@@ -2481,18 +2481,22 @@ let gatePageElementsRunId = null;
 // The step input a chip should insert into: the last one the reviewer touched.
 let gateLastStep = null;          // { index, step }
 
-/** Origin + path, ignoring query and hash.
+/** Host + path, ignoring scheme, port, a leading `www.`, query and hash.
  *
- *  A deliberate duplicate of `pageKey()` in src/schema/appModel.ts. app.js is a classic script
- *  with no module surface and cannot import from src/, the same reason it carries its own copy of
- *  `formatIrStep`. `tests/gatePageElements.test.ts` evaluates this copy and asserts it agrees with
- *  the server's on the URL shapes that matter, so the two cannot drift silently. If you change one,
- *  change both — the test will tell you.
+ *  A deliberate duplicate of `pageKey()` in src/text.ts (which src/schema/appModel.ts re-exports).
+ *  app.js is a classic script with no module surface and cannot import from src/, the same reason
+ *  it carries its own copy of `formatIrStep`. `tests/gatePageElements.test.ts` evaluates this copy
+ *  and asserts it agrees with the server's on the URL shapes that matter, so the two cannot drift
+ *  silently. If you change one, change both — the test will tell you.
+ *
+ *  Was origin + path, matching an old server copy that disagreed with the real one: an `http://`
+ *  case target and the `https://` page discovery recorded were different pages here, so the panel
+ *  fell back to showing every page's elements (LS-3).
  */
 function gatePageKey(url) {
   try {
     const u = new URL(url);
-    return u.origin + (u.pathname.replace(/\/+$/, "") || "/");
+    return u.hostname.replace(/^www\./i, "").toLowerCase() + (u.pathname.replace(/\/+$/, "") || "/");
   } catch { return url; }
 }
 
