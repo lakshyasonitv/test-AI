@@ -4,7 +4,9 @@ import path from "node:path";
 import { plan } from "./stages/planner.js";
 import { discoverSiteHybrid, discoverPagesHybrid } from "./stages/hybridDiscovery.js";
 import type { SpecModel } from "./schema/spec.js";
-import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor, NoTestCasesError, type TestCase } from "./stages/testCases.js";
+import { generateCases, generatorFor } from "./stages/caseGeneration.js";
+import { runSpecComparison } from "./stages/specIntake.js";
+import { generateCasesForNewPages, finalizeCaseSelection, budgetFor, NoTestCasesError, type TestCase } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
 import { LlmBudget, enterWithBudget, type LlmUsageSnapshot } from "./llm/llmBudget.js";
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
@@ -290,6 +292,13 @@ export async function runPipeline(
     }
 
     console.log("2. Generating test cases...");
+    // Pro document intake: the run's confirmed spec, or undefined for every standard run.
+    const proSpec = options?.spec;
+    // The spec-vs-application comparison — informational warnings for the side panel. Started,
+    // NOT awaited: it never throws (runSpecComparison catches and logs) and must never delay or
+    // fail the run; it simply finishes alongside case generation. Its warnings live in memory and
+    // are served by GET /api/runs/:runId/spec-warnings — never written to runs/.
+    if (proSpec) void runSpecComparison(runId, proSpec, appModel);
     // The case-selection gate pauses here: it generates a batch, parks the run on a selection
     // prompt, and regenerates on "not satisfied" — while the flag is off or no interactive
     // responder is supplied (CLI mode), the gate is never even imported.
@@ -303,10 +312,16 @@ export async function runPipeline(
       cases = await step("testcases", "03-cases.json", async () => {
         if (gateUsed) {
           const { runCaseSelectionGate } = await import("./stages/caseSelectionGate.js");
-          const { finalCases } = await runCaseSelectionGate({ runId, plan: thePlan, appModel, sourcePrompt: prompt });
+          // The generator is INJECTED: a Pro run's gate regenerates with the spec on every round,
+          // not only the first. A standard run gets toTestCases itself, exactly as before.
+          const { finalCases } = await runCaseSelectionGate({
+            runId, plan: thePlan, appModel, sourcePrompt: prompt, generate: generatorFor(proSpec),
+          });
           return finalCases;
         }
-        return toTestCases(thePlan, appModel, undefined, { sourcePrompt: prompt });
+        // The router: Pro with a spec, toTestCases (with exactly its old arguments) without one.
+        // A Pro failure is NOT caught — the run fails rather than quietly ignoring the document.
+        return generateCases(thePlan, appModel, undefined, { sourcePrompt: prompt, spec: proSpec });
       });
     } catch (err: any) {
       if (err instanceof NoTestCasesError) {
@@ -481,32 +496,41 @@ export async function runPipeline(
       emit("testcases", "completed", { newPages: newPages.map(p => p.url), skipped: "gate_closed" });
     }
     if (!gateUsed && newPages.length > 0) {
-      emit("testcases", "started", { newPages: newPages.map(p => p.url) });
-      // This is the ONE toTestCases call site outside step(), and it stayed that way because it
-      // needs a `started` event carrying `newPages` — which step() does not emit. The cost was
-      // that a throw here produced no `failed` event at all: `computePhaseStatus` still saw
-      // testcases:"started", so public/app.js rendered "Interrupted — pipeline ended before this
-      // step finished" over a stage that had in fact failed outright, naming neither the stage nor
-      // the reason. Seen for real on run 2026-09-17T12-39-49-110Z-73b0af4b.
-      //
-      // Emit the failure the way step() would, then rethrow — abort semantics are deliberately
-      // unchanged here; only the reporting is fixed.
-      let reactiveCases: TestCase[];
-      try {
-        reactiveCases = await generateCasesForNewPages(
-          updatedAppModel, resolvedUrls, thePlan, prompt, cases.map(c => c.title));
-      } catch (err: any) {
-        emit("testcases", "failed", undefined, err?.message ?? String(err));
-        throw err;
-      }
-      // Unconditional merge: this whole block is now gate-off only, so there is no reviewer
-      // decision to respect and nothing to offer a round to. (`runReactiveCaseRound` in
-      // caseSelectionGate.ts is consequently unused by the orchestrator — kept there rather than
-      // deleted, because it is the piece that would be needed if reactive generation ever returns
-      // as an opt-in behind its own flag.)
-      if (reactiveCases.length > 0) {
-        allCases = [...allCases, ...reactiveCases];
-        reactiveCount = reactiveCases.length;
+      if (proSpec) {
+        // Pro runs do not generate cases for pages found mid-run: that path
+        // (generateCasesForNewPages) is the standard generator and has never seen the document,
+        // so it would write cases the document may exclude — a suite that contradicts the upload
+        // with no explanation. Skipped and reported the same way as the gate-closed case above.
+        console.log(`[orchestrator] ${newPages.length} new page(s) found, but this is a Pro run — not generating spec-blind cases for them`);
+        emit("testcases", "completed", { newPages: newPages.map(p => p.url), skipped: "pro_spec" });
+      } else {
+        emit("testcases", "started", { newPages: newPages.map(p => p.url) });
+        // This is the ONE toTestCases call site outside step(), and it stayed that way because it
+        // needs a `started` event carrying `newPages` — which step() does not emit. The cost was
+        // that a throw here produced no `failed` event at all: `computePhaseStatus` still saw
+        // testcases:"started", so public/app.js rendered "Interrupted — pipeline ended before this
+        // step finished" over a stage that had in fact failed outright, naming neither the stage nor
+        // the reason. Seen for real on run 2026-09-17T12-39-49-110Z-73b0af4b.
+        //
+        // Emit the failure the way step() would, then rethrow — abort semantics are deliberately
+        // unchanged here; only the reporting is fixed.
+        let reactiveCases: TestCase[];
+        try {
+          reactiveCases = await generateCasesForNewPages(
+            updatedAppModel, resolvedUrls, thePlan, prompt, cases.map(c => c.title));
+        } catch (err: any) {
+          emit("testcases", "failed", undefined, err?.message ?? String(err));
+          throw err;
+        }
+        // Unconditional merge: this whole block is now gate-off only, so there is no reviewer
+        // decision to respect and nothing to offer a round to. (`runReactiveCaseRound` in
+        // caseSelectionGate.ts is consequently unused by the orchestrator — kept there rather than
+        // deleted, because it is the piece that would be needed if reactive generation ever returns
+        // as an opt-in behind its own flag.)
+        if (reactiveCases.length > 0) {
+          allCases = [...allCases, ...reactiveCases];
+          reactiveCount = reactiveCases.length;
+        }
       }
     }
 

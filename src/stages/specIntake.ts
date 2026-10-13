@@ -5,6 +5,10 @@ import { parseJson } from "../llm/json.js";
 import { currentLlmConfig, resolvedModel } from "../llm/llmContext.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { LlmSpecModel, isEmptySpec, type SpecModel } from "../schema/spec.js";
+import { z } from "zod";
+import { llm, cacheModelDimension } from "../llm/client.js";
+import { llmCacheDimension } from "../llm/llmContext.js";
+import type { AppModel } from "../schema/appModel.js";
 
 /**
  * Pro mode, phase A: accept ONE requirements document and decide whether it can be read.
@@ -429,4 +433,113 @@ export function setRunSpecWarnings(runId: string, value: RunSpecWarnings): void 
 export function getRunSpecWarnings(runId: string): RunSpecWarnings {
   const v = runWarnings.get(runId);
   return v ? { warnings: [...v.warnings], done: v.done } : { warnings: [], done: false };
+}
+
+// ============================================================================================
+// Spec vs. application comparison — informational warnings for the run's side panel
+// ============================================================================================
+
+/** At most this many comparison warnings per run, each at most this long. */
+const MAX_COMPARE_WARNINGS = 20;
+const MAX_WARNING_CHARS = 240;
+
+/**
+ * The comparison instructions. Their text is part of the cache key (D-10).
+ *
+ * Every warning must point at something that EXISTS — a rule by its number, a page by its URL —
+ * and the code below drops any that does not. The model's claim is a preference; the reference
+ * check is the constraint (CLAUDE.md's central design rule).
+ */
+export const SPEC_COMPARE_SYSTEM = `You compare a requirements specification with a model of a real web application that a crawler discovered, and report gaps a QA lead should know about before testing. Output ONLY a JSON object, no prose, no markdown fences.
+
+Report only two kinds of gap:
+1. "untestable_rule": a numbered rule that nothing in the application model can exercise — no page, field or control it would need. Give its "rule" number.
+2. "unmentioned": a page of the application that the specification never mentions at all. Give the page's "url" exactly as it appears in the application model.
+
+For each gap write "message": ONE short plain-English sentence (under 200 characters) for a non-technical reader. Describe the gap in your own words — do NOT quote the rule's text, e.g. "A rule about the Lead's phone number can't be tested — no phone field was found."
+Report nothing you are unsure of. No gaps is a valid answer.
+
+Shape: { "gaps": [ { "kind": "untestable_rule", "rule": 1, "message": "..." }, { "kind": "unmentioned", "url": "https://...", "message": "..." } ] }`;
+
+const CompareGap = z.object({
+  kind: z.enum(["untestable_rule", "unmentioned"]),
+  rule: z.number().int().optional(),
+  url: z.string().optional(),
+  message: z.string(),
+});
+
+/** What the comparison sees of the app: page URL, concepts, and each element's role + name. */
+function compareProjection(appModel: AppModel) {
+  return appModel.pages.map((p) => ({
+    url: p.url,
+    concepts: p.concepts,
+    elements: p.elements.slice(0, 150).map((e) => `${e.role}: ${e.name}`),
+  }));
+}
+
+/**
+ * Ask the lite model where the spec and the discovered application disagree. Returns plain
+ * sentences. THROWS on any provider failure — `runSpecComparison` is the never-throwing wrapper.
+ *
+ * Runs through `llm()` with role "lite", so it follows LLM_PROVIDER like the rest of the run (no
+ * PDF here, so no reason to pin it to Gemini). The lite role never sends `reasoning_effort`
+ * (llmContext.ts) — the lite Azure deployment rejects it.
+ */
+export async function compareSpecToApp(spec: SpecModel, appModel: AppModel): Promise<string[]> {
+  if (spec.rules.length === 0 && spec.criteria.length === 0) return [];
+  const projection = compareProjection(appModel);
+  const key = makeCacheKey(
+    "speccompare", JSON.stringify(spec), JSON.stringify(projection), SPEC_COMPARE_SYSTEM,
+    cacheModelDimension("lite"), llmCacheDimension("lite"), llmCacheVersion(),
+  );
+  const hit = llmCacheGet<string[]>(key, SPEC_CACHE_NS);
+  if (hit) return hit;
+
+  const numbered = spec.rules.map((r, i) => `${i + 1}. ${r}`).join("\n");
+  const prompt =
+    `Rules (numbered):\n${numbered || "(none)"}\n\n` +
+    (spec.criteria.length ? `Acceptance criteria:\n${spec.criteria.map((c) => `- ${c}`).join("\n")}\n\n` : "") +
+    (spec.outOfScope.length ? `Out of scope:\n${spec.outOfScope.map((c) => `- ${c}`).join("\n")}\n\n` : "") +
+    `Application model:\n${JSON.stringify(projection)}`;
+
+  const { content } = await llm(prompt, {
+    systemInstruction: SPEC_COMPARE_SYSTEM,
+    json: true,
+    role: "lite",
+    stage: "spec_compare",
+  });
+
+  const raw: any = parseJson(content);
+  const gaps = Array.isArray(raw?.gaps) ? raw.gaps : [];
+  const pageUrls = new Set(appModel.pages.map((p) => p.url));
+  const out: string[] = [];
+  for (const g of gaps) {
+    const parsed = CompareGap.safeParse(g);
+    if (!parsed.success) continue;
+    const gap = parsed.data;
+    // The deterministic half: the reference must exist, or the warning is the model's invention.
+    if (gap.kind === "untestable_rule" && !(gap.rule && gap.rule >= 1 && gap.rule <= spec.rules.length)) continue;
+    if (gap.kind === "unmentioned" && !(gap.url && pageUrls.has(gap.url))) continue;
+    const message = gap.message.trim().replace(/\s+/g, " ").slice(0, MAX_WARNING_CHARS);
+    if (message && !out.includes(message)) out.push(message);
+    if (out.length >= MAX_COMPARE_WARNINGS) break;
+  }
+  if (out.length > 0 && isCacheableResult(out)) llmCacheSet(key, out, SPEC_CACHE_NS);
+  return out;
+}
+
+/**
+ * Run the comparison for one run and record its warnings. NEVER THROWS and never fails the run:
+ * warnings are informational. A failure is logged and the panel simply shows none.
+ */
+export async function runSpecComparison(runId: string, spec: SpecModel, appModel: AppModel): Promise<void> {
+  setRunSpecWarnings(runId, { warnings: [], done: false });
+  try {
+    const warnings = await compareSpecToApp(spec, appModel);
+    setRunSpecWarnings(runId, { warnings, done: true });
+  } catch (err) {
+    console.error(`[spec_compare] comparison failed for run ${runId} — continuing without warnings:`,
+      (err as Error)?.message ?? err);
+    setRunSpecWarnings(runId, { warnings: [], done: true });
+  }
 }
