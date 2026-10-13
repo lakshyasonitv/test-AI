@@ -287,6 +287,7 @@ not been configured for a capability never advertises it.
 | `SUPABASE_SERVICE_ROLE_KEY` | — | **Secret.** Server-side only. Never sent to a browser |
 | `SIGNUP_ENABLED` | `true` | Note the default: sign-up is **on** unless set to `false`. Set it to `false` before exposing this server beyond localhost |
 | `NL_STEPS_ENABLED` | `false` | "Write it for me" — translate loosely-typed step lines. Spends one Gemini call per press |
+| `SPEC_INTAKE_ENABLED` | `false` | Pro document intake: a Pro toggle on the home screen to upload one requirements document (PDF/.docx ≤ 10 MB, Markdown ≤ 2 MB), distilled by one Gemini call — pinned to Gemini even under `LLM_PROVIDER=azure`, so `GEMINI_API_KEYS` must be set — into rules and open questions the user corrects before they steer case generation. The document is never stored. Off: no toggle, `/api/spec/*` return 403, `options.spec` is ignored. `SPEC_DISTILL_MAX_OUTPUT_TOKENS` (default 8192) caps that call's output |
 | `SALESFORCE_ENABLED` | `false` | Shows "This URL is a Salesforce org" under the URL box on the run screen. Ticking it sends `options.targetApp: "salesforce"` with the run, which stages read through `currentRunTargetApp()` (`src/runTarget.ts`) and which is recorded in `runs/<id>/00-run-target.json`. Nothing is stored or configured in advance — the URL and credentials are given exactly as for any run. Off: no checkbox, and the field is ignored. See `DECISIONS.md` D-50 |
 | `RUN_RETENTION_DAYS` | unset | Age off `runs/` directories after N days. Unset keeps everything |
 

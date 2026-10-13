@@ -307,7 +307,8 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `executor.ts` | No | Runs spec, captures artifacts, redacts secrets from served output. `extractFailureDetail` turns Playwright's own JSON report into the failing step number/title and the error line — the deterministic failure reason a replay gets with no model call (TD-80) |
 | `discovery.ts` | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
 | `liveExtend.ts` | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding. Its `select` step calls `chooseLive` rather than a bare `selectOption`, sharing option matching and waiting with the generated spec (TD-79). Credential fills resolve their kind from the step's `${env:...}` VALUE, the same way the compiled spec does (TD-84), and a walk that ends on the page it typed a credential into throws instead of snapshotting the login form. `refreshPageModelAt` additionally returns the landed URL, for TD-86's scoped grounding |
-| `testCases.ts` | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist, login-case cap |
+| `testCases.ts` | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist, login-case cap. **Not edited by Pro** — `tests/testCasesNoChange.test.ts` pins its prompt and cache key byte-for-byte |
+| `specIntake.ts` | Gemini (pinned) | Pro document intake behind `SPEC_INTAKE_ENABLED`. `checkSpecUpload`: byte limits, magic-byte sniffing, extension-vs-contents (a disagreement is rejected), per-format structure, DOCX text via mammoth — PDFs are never parsed. `distillSpec`: ONE Gemini call (pinned to Gemini even under `LLM_PROVIDER=azure`, since only it reads a PDF inline), cached in the `spec` namespace on the document's SHA-256 + model + instruction text. Never writes the document anywhere. Also holds the run's comparison warnings in memory |
 | `generator.ts` | No | IR -> Playwright spec (pure code) |
 | `hybridDiscovery.ts` | Gemini (text) | Discovery orchestrator: DOM first, auth-aware login + session verification, same-origin + click-probed site crawl, vision fallback; also owns `isAllowedEntryUrl`/`isPrivateOrLoopbackHost`, the entry-URL scheme + private-host allow-list |
 | `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry; `redactCredentials` skips DOM-keyword-colliding values. `restoreCredentialRefs` guards the editor save path: a credential typed as a literal step value goes back behind `${env:...}` before anything is written, classified by the step's own history / the DOM's `inputType` / a password-only name check (TD-67). `credentialKindForStep`/`credentialForStep` resolve VALUE-first (env reference), falling back to the target only when the value is not one — used by the live walk so it agrees with the compiled spec (TD-84) |
@@ -325,13 +326,14 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `caseEdit.ts` | Gemini (ceiling only) | Re-grounds the steps whose **target** changed, by replaying the earlier steps to arrive at the right page. Grounding is DOM-first, so it usually spends no model call at all. Passes a `GroundingScope` so only those steps are re-verified, and records the URL each walk reached so an edited step resolves against the page actually visited (TD-86). `caseElementContext` supplies the controls a rewrite may name — source-run model first, then cached walk snapshots for the same site (TD-91) |
 | `replay.ts` | No | Walks a stored IR prefix in a real browser and snapshots where it lands. Prefix-cached, so two edits on the same page share one walk. Also owns the replay pre-pass: `ungroundedStepIndexes` + `maybeRegroundForReplay` ground a replay's un-grounded steps against the live page behind `REPLAY_REGROUND` (default off, zero LLM calls, never writes back to the saved case — TD-77) |
 
-### `src/schema/` — Data Contracts (3 files)
+### `src/schema/` — Data Contracts (4 files)
 
 | File | Purpose |
 |------|---------|
 | `caseSelection.ts` | Case-selection decision schema + on-disk accepted-cases/history file shapes |
 | `ir.ts` | Target, Step (action/assertion enums), IR with truncation tracking |
 | `appModel.ts` | Element, PageModel, AppModel + DOM-structured types + `toLiteModel` |
+| `spec.ts` | Pro: `SpecModel` (strict, for what the browser sends — over-limit is rejected) and `LlmSpecModel` (for what the model returns — over-long lists are truncated, so `unresolved` is capped at 10 by the schema). Decides which cases get written; never reaches the IR |
 
 ### `src/` Core
 
@@ -347,7 +349,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 
 | File | Purpose |
 |------|---------|
-| `gemini.ts` | Google Gemini client (REST API, key-pool rotation, backoff); returns `{content, usage}` and records ambient per-stage spend via `llmBudget.ts` |
+| `gemini.ts` | Google Gemini client (REST API, key-pool rotation, backoff); returns `{content, usage}` and records ambient per-stage spend via `llmBudget.ts`. Takes an optional image (`imageBase64`) or document (`fileBase64` + `fileMime`, Pro's PDF) as an `inline_data` part — neither is counted by the `LLM_MAX_PROMPT_CHARS` guard |
 | `keyPool.ts` | Round-robin API key pool with cooldown tracking; `poolFromEnv` accepts a singular `_KEY` var as a fallback when the plural `_KEYS` var isn't set |
 | `llmBudget.ts` | Per-run hard cap on LLM calls across every stage (plan, discovery, testcases, ir, failure-analysis, heal), not just IR; usage recorded to `08-llm-usage.json`, broken down per stage. See `DECISIONS.md` D-21 |
 | `backoff.ts` | Exponential backoff, per-attempt timeout, rate-limit detection + key rotation |
@@ -403,7 +405,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 
 ## Schema Contracts
 
-Three Zod schemas: `src/schema/appModel.ts`, `src/schema/ir.ts`, `src/schema/caseSelection.ts`.
+Four Zod schemas: `src/schema/appModel.ts`, `src/schema/ir.ts`, `src/schema/caseSelection.ts`, and Pro's `src/schema/spec.ts`.
 
 ### AppModel (the discovery output)
 
@@ -527,6 +529,23 @@ CaseHistoryFile (runs/<id>/case-history.json)
                        status: "selected" | "selected_but_capped" | "rejected" }[] }[]
 ```
 
+### SpecModel (Pro document intake)
+
+```
+SpecModel — every field a list of short strings, each bounded (50 items, 500 chars)
+  actors, entities, actions
+  rules          testable constraints — the column the user edits
+  criteria       acceptance criteria
+  outOfScope     what the document excludes (suppresses cases)
+  unresolved     open questions, MAX 10 (schema-enforced)
+  answers        { question, answer }[] — only questions the user ACTUALLY answered;
+                 each question must be one of `unresolved` (checked by /api/spec/confirm)
+
+Lifecycle: upload -> distillSpec (cached, runs/_cache/spec/) -> browser shows it, user edits
+-> /api/spec/confirm -> browser holds it -> POST /api/runs options.spec (Zod-parsed, dropped
+when the flag is off) -> RunOptions.spec. The document itself is never stored.
+```
+
 ---
 
 ## LLM Integration
@@ -585,6 +604,18 @@ WATCHING A RUN
   GET    /api/runs/:runId/accepted-cases         run:viewer   accepted-pool state (count, cap)
   GET    /api/runs/:runId/case-selection-status  run:viewer   snapshot of the pending round
   GET    /api/runs/:runId/page-elements          run:viewer   role+name index from 02-appmodel.json
+  GET    /api/runs/:runId/spec-warnings          run:viewer   Pro: spec-vs-app comparison warnings,
+                                                     IN MEMORY only, never in runs/; 403 when
+                                                     SPEC_INTAKE_ENABLED is off
+
+PRO DOCUMENT INTAKE (mounted always; 403 when SPEC_INTAKE_ENABLED is off)
+  POST   /api/spec/upload?name=<file>            role:tester  raw application/octet-stream body
+                                                     (express.raw, 10mb — NOT the global
+                                                     json parser); checkSpecUpload then one
+                                                     Gemini distillation. Rejections are 200
+                                                     + warnings[]. The document is never stored
+  POST   /api/spec/confirm                       role:tester  validates the user-edited SpecModel
+                                                     and echoes it back; no server-side session
 
 RUN HISTORY
   GET    /api/runs                               role:viewer  newest first; filtered by access

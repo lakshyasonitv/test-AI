@@ -378,3 +378,55 @@ export async function distillSpec(
 
 /** The cache namespace for distilled specs — clearable on its own (`llmCacheClear("spec")`). */
 export const SPEC_CACHE_NS = "spec";
+
+// ============================================================================================
+// The flag, and the run's comparison warnings (in memory only)
+// ============================================================================================
+
+/**
+ * Whether this server offers Pro document intake. SPEC_INTAKE_ENABLED, default OFF, registered in
+ * BOOLEAN_ENV_FLAGS (server/index.ts) so a malformed value refuses to boot.
+ *
+ * The routes are mounted whether or not this is on and check it INSIDE the handler (403 when
+ * off): a route that exists only when a flag is set would make the route-table guards in
+ * tests/multiTenancy.test.ts and tests/tenancy.test.ts depend on the environment they run in, and
+ * flag-off must run flag-on's code path rather than skip it (CLAUDE.md rule 7).
+ */
+export function specIntakeEnabled(): boolean {
+  return process.env.SPEC_INTAKE_ENABLED === "true";
+}
+
+/** One run's comparison warnings, and whether the comparison has finished (successfully or not). */
+export interface RunSpecWarnings {
+  warnings: string[];
+  done: boolean;
+}
+
+/**
+ * Comparison warnings, held IN MEMORY beside the run — never written to runs/.
+ *
+ * The warnings describe the uploaded document, and runs/ is served over HTTP (TD-14). A file there
+ * would publish what intake deliberately discarded. Accepted consequence: they vanish when the
+ * container sleeps (`minReplicas: 0`), so a past run shows none. See DECISIONS.md before adding
+ * persistence — the safe form phrases warnings without quoting the document.
+ *
+ * Bounded so a long-lived process cannot grow it without limit: the oldest run is evicted first.
+ */
+const MAX_RUNS_WITH_WARNINGS = 200;
+const runWarnings = new Map<string, RunSpecWarnings>();
+
+export function setRunSpecWarnings(runId: string, value: RunSpecWarnings): void {
+  runWarnings.delete(runId);
+  runWarnings.set(runId, { warnings: [...value.warnings], done: value.done });
+  while (runWarnings.size > MAX_RUNS_WITH_WARNINGS) {
+    const oldest = runWarnings.keys().next().value;
+    if (oldest === undefined) break;
+    runWarnings.delete(oldest);
+  }
+}
+
+/** A run's warnings; `{ warnings: [], done: false }` for a run that has recorded none. */
+export function getRunSpecWarnings(runId: string): RunSpecWarnings {
+  const v = runWarnings.get(runId);
+  return v ? { warnings: [...v.warnings], done: v.done } : { warnings: [], done: false };
+}

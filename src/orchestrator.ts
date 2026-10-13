@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { plan } from "./stages/planner.js";
 import { discoverSiteHybrid, discoverPagesHybrid } from "./stages/hybridDiscovery.js";
+import type { SpecModel } from "./schema/spec.js";
 import { toTestCases, generateCasesForNewPages, finalizeCaseSelection, budgetFor, NoTestCasesError, type TestCase } from "./stages/testCases.js";
 import { toIR, type IRResult } from "./stages/ir.js";
 import { LlmBudget, enterWithBudget, type LlmUsageSnapshot } from "./llm/llmBudget.js";
@@ -90,6 +91,13 @@ export interface RunOptions {
    * known value or nothing. Omitted means an ordinary web app — what the CLI always gets.
    */
   targetApp?: TargetApp;
+  /**
+   * Pro document intake: the user's confirmed requirements spec. Parsed with Zod by the route and
+   * forced absent when SPEC_INTAKE_ENABLED is off, so this is a valid SpecModel or nothing. It
+   * decides WHICH cases get written; it never reaches plan, discovery, the IR or the executor.
+   * Omitted means the standard generator — what the CLI always gets.
+   */
+  spec?: SpecModel;
 }
 
 /**
