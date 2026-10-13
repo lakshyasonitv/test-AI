@@ -217,8 +217,15 @@ describe("the fresh-run compile path is untouched", () => {
     const calls = [...src.matchAll(/groundingError\((.*?)\)/g)].map((m) => m[1]);
     expect(calls.length).toBeGreaterThan(0);
     for (const args of calls) {
-      expect(args.split(",").length, `ir.ts must call groundingError with 2 args, got: ${args}`).toBe(2);
+      // Two args, or a third that is the screen scope (D-52) — which never narrows.
+      const third = args.split(",")[2]?.trim();
+      expect(third === undefined || third.startsWith("scopeFor("), `ir.ts calls groundingError with: ${args}`).toBe(true);
     }
+    // scopeFor() is undefined off Salesforce runs, and on them sets only the screen fields: the
+    // narrowing options (onlyIndexes, reachedUrlAt) never appear in toIR.
+    const scopeFor = src.slice(src.indexOf("const scopeFor = ()"), src.indexOf("let ungrounded = groundingError"));
+    expect(scopeFor).toContain("if (!screenMode) return undefined;");
+    expect(scopeFor).not.toMatch(/onlyIndexes|reachedUrlAt/);
   });
 
   it("two-argument calls behave exactly as before", () => {

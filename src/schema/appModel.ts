@@ -233,6 +233,20 @@ export const PageModel = z.object({
   visionReason: z.string().optional(),
   crawlTimeMs: z.number().optional(),
   discoveryMethod: z.enum(["dom", "vision", "hybrid"]).optional(),
+  /**
+   * Which SCREEN of this URL the page model is (D-52). Set only on pages captured by a screen
+   * capture (`captureScreenAt`, Salesforce runs) — a multi-step form or a modal changes the DOM
+   * without changing the URL, so one URL can hold several pages, told apart by this. Absent on
+   * every page discovery produced, which keeps every existing AppModel byte-identical.
+   * `key` is an exact hash for quick lookups; whether two captures are the SAME screen is decided
+   * loosely (`sameScreen` in src/stages/screens.ts), never by comparing keys.
+   */
+  screen: z.object({
+    key: z.string(),
+    title: z.string(),
+    tab: z.string(),
+    labels: z.array(z.string()),
+  }).optional(),
 });
 export type PageModel = z.infer<typeof PageModel>;
 

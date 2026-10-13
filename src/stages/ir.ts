@@ -6,7 +6,9 @@ import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary, siteHost, pageKey } from "../text.js";
-import { extendAppModel, refreshPageModel, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
+import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
+import { findScreen } from "./screens.js";
+import { currentRunTargetApp } from "../runTarget.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
@@ -454,6 +456,21 @@ export interface GroundingScope {
    * strictly better evidence than that fallback, so it wins where it exists.
    */
   reachedUrlAt?: Map<number, string>;
+  /**
+   * SCREENS (D-52). Each entry says: from step `at` on, the flow is on the screen whose key is
+   * `key` (a page in the model, `screens.ts`). A step uses the latest entry at or before it, until
+   * a `navigate` or a move to another URL ends that screen. A step with a screen is grounded
+   * against THAT screen's elements only — never the merged pool, which is how a second screen's
+   * "Next" bound to the first screen's "Next" — and a verified selector is accepted only when it
+   * is on that screen.
+   */
+  screenAt?: { at: number; key: string }[];
+  /**
+   * Step indexes that need a screen captured before they can be grounded: the first element step
+   * after a click that may have replaced the DOM. Reported as kind "screen-uncaptured", in step
+   * order with every other grounding error, so toIR captures exactly where the flow needs it.
+   */
+  captureBefore?: Set<number>;
 }
 
 /**
@@ -537,9 +554,47 @@ function fieldHintError(
   };
 }
 
+/**
+ * Where a screen must be captured before grounding can go on (D-52): the first step that needs an
+ * element after a click or key press that may have replaced the DOM without a navigation — any
+ * click whose target is not a link (links are followed by `trackPages` and the URL-keyed
+ * live-extend). `wait` steps are skipped, so the replay that captures the screen includes them.
+ */
+export function screenBoundaries(ir: IR): number[] {
+  const out: number[] = [];
+  for (let i = 1; i < ir.steps.length; i++) {
+    const prev = ir.steps[i - 1];
+    if (prev.action !== "click" && prev.action !== "press") continue;
+    if (norm(prev.target?.role ?? "") === "link") continue;
+    let j = i;
+    while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
+    const next = ir.steps[j];
+    if (!next) continue;
+    if (ACTION_STEPS.has(next.action) || (next.action === "assert" && next.target?.role)) {
+      if (!out.includes(j)) out.push(j);
+    }
+  }
+  return out;
+}
+
+/** Every selector string an element list makes addressable — the same forms `groundingError`'s
+ *  `knownSelectors` collects, lowercased. */
+function selectorsOf(elements: Element[]): Set<string> {
+  const out = new Set<string>();
+  for (const e of elements) {
+    if (e.css) out.add(e.css.toLowerCase());
+    if (e.id) out.add(`#${e.id}`.toLowerCase());
+    if (e.testId) {
+      out.add(`[data-test="${e.testId}"]`.toLowerCase());
+      out.add(`[data-testid="${e.testId}"]`.toLowerCase());
+    }
+  }
+  return out;
+}
+
 export function groundingError(
   ir: IR, appModel: AppModel, scope?: GroundingScope,
-): { index: number; message: string; kind?: "navigate-url" | "text-target" } | null {
+): { index: number; message: string; kind?: "navigate-url" | "text-target" | "screen-uncaptured" } | null {
   const allElements = appModel.pages.flatMap(p => p.elements);
   // Selectors the model is allowed to address directly, because discovery captured them.
   const knownSelectors = new Set<string>();
@@ -696,6 +751,19 @@ export function groundingError(
   // somewhere in the model. Falls back to allElements wherever the cursor is unresolved.
   const trail = trackPages(ir, appModel);
   const onlySet = scope?.onlyIndexes ? new Set(scope.onlyIndexes) : null;
+  /** The captured screen step `index` is on, or undefined when none applies (D-52): the latest
+   *  `screenAt` entry at or before it, ended by a navigate or by the page cursor moving to another
+   *  URL in between. */
+  const screenAtStep = (index: number): PageModel | undefined => {
+    let best: { at: number; key: string } | undefined;
+    for (const s of scope?.screenAt ?? []) if (s.at <= index && (!best || s.at >= best.at)) best = s;
+    if (!best) return undefined;
+    for (let k = best.at + 1; k <= index; k++) if (ir.steps[k]?.action === "navigate") return undefined;
+    const page = findScreen(appModel, best.key);
+    const cursor = trail.pageAt[index];
+    if (!page || (cursor && pageKey(cursor.url) !== pageKey(page.url))) return undefined;
+    return page;
+  };
   for (let index = 0; index < ir.steps.length; index++) {
     const step = ir.steps[index];
     const t = step.target;
@@ -720,6 +788,34 @@ export function groundingError(
     // unverified enters the case through this door. The fresh-run compile path passes no scope
     // and still checks every step.
     if (onlySet && !onlySet.has(index)) continue;
+    // The DOM may have changed under this step (a click on a button, not a link) and that screen
+    // has not been captured yet. Before the selector skip below: a selector known from ANOTHER
+    // screen of the same URL would otherwise wave the step through. D-52.
+    if (scope?.captureBefore?.has(index)) {
+      return {
+        index,
+        kind: "screen-uncaptured",
+        message: `Step ${step.id} runs after a click that can change the screen without changing the ` +
+          `URL; that screen has not been captured yet.`,
+      };
+    }
+    const screenPage = screenAtStep(index);
+    // A verified selector from a DIFFERENT screen of this URL resolves to nothing (or to a hidden
+    // twin) at run time. Not grounded: fall through to the name match on this screen, which either
+    // finds this screen's own control or reports the step as missing from it.
+    if (screenPage && t?.css && knownSelectors.has(t.css.toLowerCase())
+      && !selectorsOf(screenPage.elements).has(t.css.toLowerCase())) {
+      if (!t.role && !t.text) {
+        return {
+          index,
+          message: `Step ${step.id} targets css="${t.css}", which is on a different screen of this ` +
+            `page than the one the flow is on at that step. Target an element of the current screen.`,
+        };
+      }
+      delete t.css;
+      delete t.testId;
+      delete t.frame;
+    }
     // A target carrying a selector discovery verified is already grounded — that IS the
     // proof the element exists, and it's stronger than a role+name match. Covers the
     // selectors a user names in their own request.
@@ -756,9 +852,21 @@ export function groundingError(
     const reachedPage = reached
       ? appModel.pages.find((p) => pageKey(p.url) === pageKey(reached))
       : undefined;
-    const elements = reachedPage?.elements ?? trail.pageAt[index]?.elements ?? allElements;
+    // A captured screen beats all three (D-52): it is an observed fact about this exact step, and
+    // the URL-keyed evidence cannot tell one screen of a URL from another.
+    //
+    // Within a screen that has a dialog open, the dialog's own control wins when it has one by the
+    // step's exact name: behind a modal the page is inert, and Lightning puts "Save", "New" and
+    // "Cancel" both in the dialog and on the page behind it. Exact name only — anything looser
+    // looks at the whole screen as before.
+    const screenDialog = screenPage?.elements.filter((e) => e.visible !== false
+      && (norm(e.containerRole ?? "") === "dialog" || norm(e.pageSection ?? "") === "dialog")) ?? [];
+    const wanted = norm(t?.name ?? t?.text ?? "");
+    const dialogFirst = !!wanted && screenDialog.some((e) => norm(e.name) === wanted);
+    const elements = (dialogFirst ? screenDialog : undefined)
+      ?? screenPage?.elements ?? reachedPage?.elements ?? trail.pageAt[index]?.elements ?? allElements;
     // The same page evidence, as pages, for the field-hint guard (D-48).
-    const stepPage = reachedPage ?? trail.pageAt[index] ?? null;
+    const stepPage = screenPage ?? reachedPage ?? trail.pageAt[index] ?? null;
     const stepPages = stepPage ? [stepPage] : appModel.pages;
 
     // A bare `{ text: ... }` target on an ACTION step. The exemption below it — "no role+name,
@@ -1713,6 +1821,13 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // model`. replayAndSnapshot() caches by step prefix, so re-reaching an already-seen state
   // is cheap; only genuinely new pages cost a launch.
   const MAX_EXTENSIONS = Number(process.env.MAX_LIVE_EXTENSIONS ?? 5);
+  // SCREEN MODE (D-52) — Salesforce runs only, so every other run takes exactly the code path it
+  // took before. A Lightning form changes the DOM without changing the URL, so each screen the
+  // flow reaches is captured and each step grounded against its own screen. Separate budget: one
+  // capture per screen boundary is the expected cost, not a sign of a flow failing to converge.
+  const screenMode = currentRunTargetApp() === "salesforce";
+  const MAX_SCREEN_CAPTURES = Number(process.env.MAX_SCREEN_CAPTURES ?? 16);
+  let screenCaptures = 0;
   // Bound total LLM calls so a broken app/prompt still fails fast. Was a hardcoded 8;
   // stacked with backoff.ts's per-call retries that made a single case's worst case 48
   // real requests (originally against Groq; the same shape applies to Gemini now — see
@@ -1868,7 +1983,18 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       return prefix;
     };
 
-    let ungrounded = groundingError(parsed.data, currentModel);
+    // Screen state for THIS parsed IR: where each captured screen starts. Rebuilt per attempt —
+    // a fresh IR has different steps — while the screens themselves stay in currentModel.
+    const screenAt: { at: number; key: string }[] = [];
+    const scopeFor = (): GroundingScope | undefined => {
+      if (!screenMode) return undefined;
+      const captured = new Set(screenAt.map((s) => s.at));
+      return {
+        screenAt,
+        captureBefore: new Set(screenBoundaries(parsed.data).filter((i) => !captured.has(i))),
+      };
+    };
+    let ungrounded = groundingError(parsed.data, currentModel, scopeFor());
 
     // Live-extend hops are cheap relative to a fresh LLM generation — no new attempt spent —
     // so keep extending and re-grounding the SAME already-parsed IR until it grounds, extension
@@ -1890,6 +2016,37 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // steps that genuinely need discovery are relying on. Go straight to the next attempt,
       // where the correction above tells the model to click through the UI instead.
       if (ungrounded.kind === "navigate-url") break;
+
+      if (screenMode) {
+        // Capture the screen the flow is on at this step — whether the step is the first after a
+        // DOM-changing click or simply missing from the screen it is on. Once per step index: a
+        // second miss at the same point means the element is genuinely not on that screen (a
+        // removed field), and that is reported, not papered over by a lookup in other screens.
+        if (screenAt.some((s) => s.at === ungrounded!.index)) {
+          lastErr = `step ${parsed.data.steps[ungrounded.index]?.id} is not on the screen the flow reaches there: ${ungrounded.message}`;
+          break;
+        }
+        if (screenCaptures >= MAX_SCREEN_CAPTURES) {
+          lastErr = `screen capture budget (MAX_SCREEN_CAPTURES=${MAX_SCREEN_CAPTURES}) spent before step ${parsed.data.steps[ungrounded.index]?.id}`;
+          break;
+        }
+        try {
+          const before = currentModel.pages.length;
+          const cap = await captureScreenAt(currentModel, prefix, creds, credPolicy);
+          screenCaptures++;
+          currentModel = cap.model;
+          // A replaced screen has a new key; every step already pointing at it follows.
+          if (cap.replacedKey) for (const s of screenAt) if (s.key === cap.replacedKey) s.key = cap.key;
+          screenAt.push({ at: ungrounded.index, key: cap.key });
+          console.log(`[ir] screen capture at step ${parsed.data.steps[ungrounded.index]?.id}: ${cap.replacedKey ? "replaced" : "added"} screen ${cap.key} (${cap.reachedUrl}) — app model ${before} -> ${currentModel.pages.length} pages`);
+        } catch (err: any) {
+          lastErr = `could not capture the screen for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;
+          console.log("[ir]", lastErr);
+          break;
+        }
+        ungrounded = groundingError(parsed.data, currentModel, scopeFor());
+        continue;
+      }
 
       try {
         const before = currentModel.pages.length;
@@ -1919,7 +2076,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
 
       // Re-ground the SAME parsed IR against the newly-extended model — no fresh LLM call,
       // no attempt spent, just "does it ground now that the model has caught up."
-      ungrounded = groundingError(parsed.data, currentModel);
+      ungrounded = groundingError(parsed.data, currentModel, scopeFor());
     }
 
     if (!ungrounded) {
@@ -2000,7 +2157,10 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // modal's own fields; case-0 guessed a name matching the page header's search box, ground
       // clean, and shipped a test that filled the wrong control entirely.
       const revealIndex = postClickRevealIndex(parsed.data);
-      if (revealIndex > 0 && !postClickRefreshed && extensions < MAX_EXTENSIONS) {
+      // Not in screen mode: there every click that can reveal a form already had the screen after
+      // it captured and its steps grounded against that screen alone — and this check's
+      // refreshPageModel replaces by URL, which would throw away the other screens (D-52).
+      if (!screenMode && revealIndex > 0 && !postClickRefreshed && extensions < MAX_EXTENSIONS) {
         postClickRefreshed = true;
         const revealStep = parsed.data.steps[revealIndex];
         // slice(0, revealIndex) is the same prefix convention the live-extend path uses: every

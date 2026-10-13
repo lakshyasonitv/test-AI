@@ -15,6 +15,7 @@ import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, credentialFingerprint, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { cutAtBoundary, pageKey } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
+import { mergeScreenInto } from "./screens.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -127,6 +128,50 @@ export interface ReplayResult {
    * already has to.
    */
   pageTextRaw?: string;
+  /** The selected tab's name (`[role=tab][aria-selected=true]`) at capture time. Only a screen
+   *  capture reads it (`settle`), for the screen fingerprint (D-52). Optional for the same
+   *  cached-forever reason as `pageTextRaw`. */
+  tab?: string;
+}
+
+/** Options for a replay. Each one changes what is captured, so each one used is a cache-key part. */
+export interface ReplayOptions {
+  /**
+   * Wait for the screen to finish rendering before capturing it: no visible spinner and a control
+   * count that has stopped changing (D-52). Lightning renders a form's next screen in several
+   * async passes, and a capture taken between two of them models half a screen — the missing half
+   * then reads as "not on this screen" for the steps that need it.
+   */
+  settle?: boolean;
+}
+
+/** Spinners and busy regions: ARIA's own, plus the Lightning Design System's spinner class (a
+ *  product class, not org data). */
+const BUSY_SELECTOR =
+  '[role="progressbar"]:visible, [aria-busy="true"]:visible, .slds-spinner:visible, .slds-spinner_container:visible';
+const CONTROL_SELECTOR =
+  'input:visible, select:visible, textarea:visible, button:visible, [role="combobox"]:visible, [role="textbox"]:visible';
+
+/**
+ * Wait until no spinner is visible and the number of visible controls is the same on two polls in
+ * a row, bounded by `budgetMs`. Locator counts only — no `page.evaluate`, so nothing here can trip
+ * TD-40's `__name` trap under tsx. Best-effort: on timeout it returns and the capture proceeds.
+ */
+export async function waitForScreenSettle(page: Page, budgetMs = 6000, pollMs = 250): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  let last = -1;
+  let stableFor = 0;
+  while (Date.now() < deadline) {
+    const busy = await page.locator(BUSY_SELECTOR).count().catch(() => 0);
+    const controls = await page.locator(CONTROL_SELECTOR).count().catch(() => 0);
+    if (busy === 0 && controls === last) {
+      if (++stableFor >= 2) return;
+    } else {
+      stableFor = 0;
+    }
+    last = controls;
+    await page.waitForTimeout(pollMs);
+  }
 }
 
 /** Replay a step prefix in a real browser and snapshot+model whatever page it lands on.
@@ -138,6 +183,7 @@ async function replayAndSnapshot(
   prefix: Step[],
   creds?: Credentials,
   policy: CredentialPolicy = "full",
+  options: ReplayOptions = {},
 ): Promise<ReplayResult> {
   // Policy is folded in because the fill values it produces differ by policy, and relying on
   // that difference to always change the prefix's own JSON (rather than asserting it) is the
@@ -163,8 +209,13 @@ async function replayAndSnapshot(
   // cache never expires. That is the same defect as the credential case above with a different
   // input, and the three LLM keys do not have it: theirs already contain the AppModel or the page
   // text, so they re-key themselves (see docs/FINDINGS_2026-09-28.md §7.4). This one cannot.
-  const cacheKey = makeCacheKey(
-    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion());
+  //
+  // `settle` captures something different (a fully-rendered screen, plus its tab), so it is a key
+  // part — appended ONLY when set, so every existing walk keeps its exact key and cache entry.
+  const keyParts = [
+    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()];
+  if (options.settle) keyParts.push("screen-settle:1");
+  const cacheKey = makeCacheKey(...keyParts);
   const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
   if (cached) return cached;
 
@@ -232,6 +283,11 @@ async function replayAndSnapshot(
         .then(() => { dialogSeen = true; })
         .catch(() => page.waitForTimeout(600));
     }
+
+    if (options.settle) await waitForScreenSettle(page);
+    const tab = options.settle
+      ? ((await page.locator('[role="tab"][aria-selected="true"]:visible').first().textContent({ timeout: 500 }).catch(() => null)) ?? "").trim()
+      : undefined;
 
     const reachedUrl = page.url();
 
@@ -332,7 +388,8 @@ async function replayAndSnapshot(
     // routinely echoes the identifier back. Scrub before anything persists it: this result is
     // cached under runs/_cache and its pageModel ends up inside 04-ir.json, both of which the
     // server exposes as static files. No-op for the public demo accounts.
-    const result = redactCredentials<ReplayResult>({ reachedUrl, pageModel, pageText, pageTextRaw }, creds);
+    const result = redactCredentials<ReplayResult>(
+      { reachedUrl, pageModel, pageText, pageTextRaw, ...(tab !== undefined ? { tab } : {}) }, creds);
     if (isCacheableResult(result)) llmCacheSet(cacheKey, result, WALK_CACHE_NS);
     return result;
   } finally {
@@ -415,6 +472,26 @@ export async function refreshPageModelAt(
 ): Promise<{ model: AppModel; reachedUrl: string }> {
   const { reachedUrl, pageModel } = await replayAndSnapshot(model, prefix, creds, policy);
   return { model: mergePageInto(model, pageModel, reachedUrl), reachedUrl };
+}
+
+/**
+ * Capture the SCREEN the flow is on after `prefix` (D-52): replay it, wait for the screen to
+ * settle, and merge the result as a screen — replacing the screen it is the same as, or adding a
+ * new one beside the other screens of the same URL. Unlike `refreshPageModel`, which replaces
+ * whatever page shares the URL, this keeps a wizard's earlier screens.
+ *
+ * Returns the screen's key so the caller can ground the steps after `prefix` against exactly this
+ * screen, and `replacedKey` when an older capture of the same screen was replaced.
+ */
+export async function captureScreenAt(
+  model: AppModel,
+  prefix: Step[],
+  creds?: Credentials,
+  policy: CredentialPolicy = "full",
+): Promise<{ model: AppModel; reachedUrl: string; key: string; replacedKey?: string }> {
+  const { reachedUrl, pageModel, tab } = await replayAndSnapshot(model, prefix, creds, policy, { settle: true });
+  const merged = mergeScreenInto(model, { ...pageModel, url: pageModel.url || reachedUrl }, tab ?? "");
+  return { ...merged, reachedUrl };
 }
 
 // ---------------------------------------------------------------------------

@@ -4997,3 +4997,14 @@ fragment, or a credential a caller embedded in the request) would have its first
 verbatim. No provider observed doing this, and the request body itself should never carry a bare
 key, but the bound is a size guard, not a secrecy guard — recorded so it is not read as one.
 
+### TD-118. Multi-screen flows on one URL are handled only on Salesforce runs — Medium / Accidental — **Open (scoped on purpose)**
+
+D-52's screen capture runs only when the Salesforce checkbox is ticked. Any other single-URL wizard
+or modal form (React/Next.js apps do this too) still goes through `refreshPageModel`, which replaces
+the page by URL, so a flow that needs two screens of one URL can still ping-pong and truncate. The
+fix is the same code with a different gate, but it adds a browser launch per DOM-changing click, so
+widening it needs its own flag and evidence. Related costs inside screen mode: a capture whose
+replay sees a dialog also runs the vision pass (`replayAndSnapshot`'s pre-existing modal branch, one
+lite LLM call per such capture); and the settle wait's spinner selector knows ARIA and the Lightning
+Design System's spinner classes only.
+

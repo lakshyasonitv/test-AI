@@ -1454,6 +1454,53 @@ person saying so. *Interleaving Salesforce rules into the base prompts* — that
 ordinary run's cache keys. *Putting Salesforce names (app and tab names) in the prompts as facts* —
 they differ per org and profile.
 
+## D-52. A Salesforce run captures each SCREEN of a URL and grounds every step against its own screen
+
+**Context.** A Lightning "New" form, a multi-step wizard or a modal replaces the DOM without changing
+the URL. The model kept one page per `pageKey(url)`: when a step after "Next" missed, live-extend
+found the URL already modelled and `refreshPageModel` REPLACED the page with the second screen, so
+the first screen's fields were gone; re-grounding missed them, the next refresh swapped back, and
+the run truncated after the navigate (reproduced: a three-screen form compiled to `steps=1`).
+Even when a later screen did ground, a second screen's "Next" bound to the first screen's "Next" —
+the merged pool cannot tell same-named controls on different screens apart.
+
+**Decision** (Salesforce runs only — `currentRunTargetApp() === "salesforce"`):
+1. **Screens.** A captured page carries `PageModel.screen` — URL, title (an open dialog's name, else
+   the main heading), selected tab, field labels, and an exact hash `key` (`src/stages/screens.ts`).
+2. **Same screen or new screen is decided loosely**: same URL, same title or same non-empty tab, and
+   at least 70% of the smaller label set shared. Same → the capture REPLACES it (a removed field is
+   gone, the screen count holds); otherwise it is ADDED beside the URL's other screens. The exact key
+   is only a fast path and a reference — with an exact-key rule every re-capture of a changed screen
+   would have added a stale twin, which is the conflict the design review raised.
+3. **Capture where the DOM may have changed**: the first element step after a click or key press on
+   anything but a link (`screenBoundaries`) is reported by `groundingError` as `screen-uncaptured`,
+   in step order; toIR replays the prefix (`captureScreenAt`), merges the screen and grounds the
+   following steps against it. A step that misses on its screen is re-captured once at that exact
+   point; a second miss is reported (truncation), never satisfied from another screen.
+4. **Settle before capture** (`waitForScreenSettle`): no visible spinner and the visible-control count
+   unchanged on two polls in a row, bounded at 6 s. Locator counts only (TD-40). A cache-key part
+   only when used, so every existing walk keeps its key.
+5. **Within a screen with an open dialog**, the dialog's control wins when it has one with the step's
+   exact name — the page behind a modal is inert, and Lightning repeats Save/New/Cancel behind it.
+6. Its own budget, `MAX_SCREEN_CAPTURES` (default 16), separate from `MAX_LIVE_EXTENSIONS`: one capture
+   per boundary is the expected cost, not a symptom of non-convergence.
+
+**Ordinary runs are unchanged.** No scope is passed, the URL-keyed extend/refresh and the post-click
+reveal check run exactly as before (a test pins that the same wizard still truncates there). The
+post-click reveal check is skipped in screen mode: it replaces pages by URL, which would discard the
+other screens, and every click it guards is already a screen boundary.
+
+**Rejected.** *A run-time `:visible` tie-break in the generated spec* — the walker's css is verified
+unique when captured, so the defect is which element grounding picks, not how the spec resolves it.
+*Exact-hash screen identity* — see 2. *Turning it on for every run* — it costs a browser launch per
+DOM-changing click; behind the existing per-run Salesforce checkbox instead of a new flag.
+
+**Verified** in real Chromium against synthetic same-URL flows (`tests/multiScreenWizard.test.ts`):
+the three-screen form grounds every step, each "Next" is its own screen's button, and the compiled IR
+then EXECUTES to "was created"; a removed field truncates at that step with the screen count
+unchanged; a branching wizard grounds the branch chosen; a modal's Save beats the page's Save. Each
+mechanism was mutation-checked. NOT verified against a live org.
+
 ## D-37. Phase 2 logging: the FIXES are always on, the new OUTPUT is behind one flag
 
 **Decision.** Two different things were in scope for the logging-hardening phase and they are
