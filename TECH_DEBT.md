@@ -5008,3 +5008,23 @@ replay sees a dialog also runs the vision pass (`replayAndSnapshot`'s pre-existi
 lite LLM call per such capture); and the settle wait's spinner selector knows ARIA and the Lightning
 Design System's spinner classes only.
 
+
+### TD-119. Grounding chose a DISABLED twin by document order — High / Accidental — **Fixed**
+
+Real Salesforce Experience run `2026-10-13T11-06-23-259Z-5afedf16`: the project page lists one
+"Select for EOI" button per unit, and the first unit's is `disabled`. Grounding's tie-break between
+same-named elements knew visibility (LS-2) but not `enabled`, so it took the first, and the generated
+click waited 10 s on "element is not enabled". The screen capture after it replayed the same click,
+failed, and the case was truncated with a note ("that screen has not been captured yet") that hid
+the cause. Fixed: for an acting step (click/fill/select/check/press) an enabled twin beats a
+disabled one, one rank below visibility and only as a tie-break; assertions keep document order. A
+failed screen capture now appends its own error to the truncation note.
+`tests/groundingEnabled.test.ts` (real Chromium for the walker + click).
+
+### TD-120. `url_contains` assertions that can never hold were accepted — Medium / Accidental — **Fixed**
+
+Same run: `url_contains "tel:+91"` after clicking a phone link (a `tel:`/`mailto:` link hands off to
+another application; the page URL never changes) and `url_contains "#"` (no letters or digits — it
+names no page, and the browser dropped the fragment). `urlAssertionError` now rejects both shapes,
+which sends the case back to the model with the reason, as its existing check does. Always on: it
+only rejects assertions that cannot pass.

@@ -642,13 +642,21 @@ export function groundingError(
   // still beats a visible partial one, and hidden elements stay in the model. Callers pass false for
   // a step asserting something is HIDDEN, where the hidden element may be the one meant — that step
   // keeps the old first-in-order choice.
+  //
+  // `preferEnabled`, the same kind of tie-break one rank below visibility: for a step that ACTS on
+  // the element, an enabled twin beats one discovery measured as disabled (`enabled: false` —
+  // `:disabled` or `aria-disabled="true"`). A real Salesforce Experience site lists one
+  // "Select for EOI" button per unit, the first unit's disabled; first-in-order grounded onto it and
+  // the click waited out its timeout on "element is not enabled". Assertions pass false: asserting
+  // a disabled button is visible is legitimate.
   const bestNameMatch = (
     elements: Element[], name: string, sn: string, roleOk: (r: string) => boolean, preferVisible: boolean,
+    preferEnabled = false,
   ): Element | null => {
     let matched: Element | null = null;
     let bestTier = 99;
     let bestDelta = Infinity;
-    let bestHidden = 1;
+    let bestHidden = 3;
     for (const e of elements) {
       if (!roleOk(norm(e.role))) continue;
       const en = norm(e.name);
@@ -662,7 +670,8 @@ export function groundingError(
       else continue;
 
       const delta = Math.abs(en.length - name.length);
-      const hidden = preferVisible && e.visible === false ? 1 : 0;
+      // Rank of the tie-break: visibility first (2), then enabled (1). Lower is better.
+      const hidden = (preferVisible && e.visible === false ? 2 : 0) + (preferEnabled && e.enabled === false ? 1 : 0);
       if (tier < bestTier || (tier === bestTier && delta < bestDelta)
         || (tier === bestTier && delta === bestDelta && hidden < bestHidden)) {
         matched = e; bestTier = tier; bestDelta = delta; bestHidden = hidden;
@@ -883,7 +892,7 @@ export function groundingError(
         ? (r: string) => FIELD_ROLE_GROUP.has(r)
         : (r: string) => CLICKABLE_ROLE_GROUP.has(r);
       const preferVisible = step.assertion !== "hidden";
-      const best = bestNameMatch(elements, hint, stripGlyphs(hint), roleOk, preferVisible);
+      const best = bestNameMatch(elements, hint, stripGlyphs(hint), roleOk, preferVisible, true);
       // LS-1: the duplicate the step's `nth` means, not the first one found.
       const found = best ? nthTwin(elements, best, t.nth) : null;
       if (found) {
@@ -949,13 +958,14 @@ export function groundingError(
     // a partial one, and among partials the closest-length name is the least wrong.
     const sn = stripGlyphs(name);
     const preferVisible = step.assertion !== "hidden"; // LS-2, see bestNameMatch
-    let matched = bestNameMatch(elements, name, sn, (r) => r === role, preferVisible);
+    const preferEnabled = ACTION_STEPS.has(step.action);
+    let matched = bestNameMatch(elements, name, sn, (r) => r === role, preferVisible, preferEnabled);
     // Exact role found nothing — try again across the compatible-role group, but only when
     // the STEP'S OWN role is itself one of those roles (never widen a heading/textbox search).
     // An exact-role match always wins when one exists; this only runs when the pass above
     // found nothing at all.
     if (!matched && CLICKABLE_ROLE_GROUP.has(role)) {
-      matched = bestNameMatch(elements, name, sn, (r) => CLICKABLE_ROLE_GROUP.has(r), preferVisible);
+      matched = bestNameMatch(elements, name, sn, (r) => CLICKABLE_ROLE_GROUP.has(r), preferVisible, preferEnabled);
     }
     // LS-1: the duplicate the step's `nth` means, not the first one found.
     if (matched) matched = nthTwin(elements, matched, t.nth);
@@ -1168,6 +1178,26 @@ export function urlAssertionError(ir: IR, appModel: AppModel): { index: number; 
   for (let index = 0; index < ir.steps.length; index++) {
     const step = ir.steps[index];
     if (step.action !== "assert" || step.assertion !== "url_contains") continue;
+    // Two shapes that can never be a page's URL, whatever the model clicked before them. Seen on a
+    // real run (2026-10-13T11-06-23-259Z-5afedf16): `url_contains "tel:+91"` after clicking a
+    // phone link — a tel:/mailto: link hands off to another app and the page URL never changes —
+    // and `url_contains "#"`, true of nothing but a URL fragment the browser may drop.
+    const raw = (step.value ?? step.target?.url ?? "").trim();
+    if (/^(tel|mailto|sms|javascript):/i.test(raw)) {
+      return {
+        index,
+        message: `Step ${step.id} asserts url_contains "${raw}", but a ${raw.split(":")[0]}: link never ` +
+          `changes the page's URL — the browser hands it to another application. Assert something ` +
+          `visible on the page instead, or end the case after the click.`,
+      };
+    }
+    if (raw && !/[\p{L}\p{N}]/u.test(raw)) {
+      return {
+        index,
+        message: `Step ${step.id} asserts url_contains "${raw}", which names no page — it is only ` +
+          `punctuation. Assert the real destination path, or something visible on the page.`,
+      };
+    }
     const actualHref = trail.lastLinkHrefAt[index];
     if (!actualHref) continue; // no recently-resolved link click to check against — same
                                 // "don't validate" behavior as before this existed
@@ -2042,6 +2072,11 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         } catch (err: any) {
           lastErr = `could not capture the screen for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;
           console.log("[ir]", lastErr);
+          // The truncation note is otherwise "that screen has not been captured yet", which hides
+          // WHY: usually a step before it could not be replayed (a disabled button, a slow page).
+          if (bestPartial && bestPartial.steps.length === ungrounded.index) {
+            bestPartial = { ...bestPartial, note: `${ungrounded.message} The capture failed: ${String(err?.message ?? err).split("\n")[0]}` };
+          }
           break;
         }
         ungrounded = groundingError(parsed.data, currentModel, scopeFor());
