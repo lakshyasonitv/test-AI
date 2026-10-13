@@ -114,7 +114,8 @@ function runPoll(responses: (() => unknown)[]): PollHarness {
     `
     const {
       fetch, document, refreshNewRunState, resetRunUI, applyEvent,
-      submitBtn, finalResult, verdictEl, icon, paintVerdict, setSession, applyRoute
+      submitBtn, finalResult, verdictEl, icon, paintVerdict, setSession, applyRoute,
+      proAttachRunPanel, proPollWarnings
     } = deps;
     let pollGeneration = 0;
     let currentRunId = null;
@@ -172,6 +173,10 @@ function runPoll(responses: (() => unknown)[]): PollHarness {
       paintVerdict: (v: { head: string; detail?: string }) => { verdicts.push(v); },
       setSession: () => {},
       applyRoute: () => {},
+      // Pro document intake's two hooks in the loop. No-ops here: these tests pin the /state
+      // poll's own recovery behaviour, and a non-Pro run makes neither do anything anyway.
+      proAttachRunPanel: () => {},
+      proPollWarnings: async () => {},
     },
     // Zero-delay stand-in for the 1s inter-poll sleep.
     (fn: () => void) => fn(),

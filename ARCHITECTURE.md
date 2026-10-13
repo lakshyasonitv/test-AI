@@ -725,6 +725,17 @@ the URL in place. `login` and `signup` are reached by the router's auth guard ra
 **Theme.** Light only. The design this implements ships no dark variant, so the previous dark/light
 token pair and its toggle were removed rather than half-maintained.
 
+**Pro document intake (`SPEC_INTAKE_ENABLED`).** Built entirely by `app.js` and only when
+`/api/health` carries `specIntake: true`, the way the Salesforce checkbox is — flag off, the home view
+is byte-identical. A "Pro" checkbox (`.field-label`/`.lib-check`) under the URL box; ticking it
+creates, after the run form, an upload row, the two-column questions screen
+(`.cd-cols`/`.cd-left`/`.cd-right`, editable rules as `.cd-line` rows, answers as inputs) and a
+warnings panel (`.panel` + `.suite-add-list`); unticking deletes them. No new view, no `showView`, no
+`.hidden`, no new class. The confirmed spec is held in the page (`pro.confirmed`) and sent as
+`options.spec`. On the run screen a Pro run this tab started gets `#proRunWarnings` after
+`#stages`; its warnings are fetched inside `connectToRun`'s existing 1 s poll (`proPollWarnings`),
+never by a second loop. See `DECISIONS.md` D-53.
+
 ### Concurrency
 
 `concurrency.ts` implements an in-process semaphore that caps concurrent pipeline runs (default:
