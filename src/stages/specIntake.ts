@@ -1,4 +1,10 @@
 import mammoth from "mammoth";
+import { createHash } from "node:crypto";
+import { gemini } from "../llm/gemini.js";
+import { parseJson } from "../llm/json.js";
+import { currentLlmConfig, resolvedModel } from "../llm/llmContext.js";
+import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
+import { LlmSpecModel, isEmptySpec, type SpecModel } from "../schema/spec.js";
 
 /**
  * Pro mode, phase A: accept ONE requirements document and decide whether it can be read.
@@ -264,3 +270,111 @@ function checkText(format: "docx" | "md", text: string): SpecUploadCheck {
   if (text.length > SPEC_MAX_CHARS) return { ok: false, warning: SPEC_WARNINGS.tooManyChars(format, text.length) };
   return { ok: true, format, text };
 }
+
+// ============================================================================================
+// Distillation — ONE Gemini call, cached on the document's own bytes
+// ============================================================================================
+
+/**
+ * The distillation instructions.
+ *
+ * Their exact TEXT is part of the cache key (`DECISIONS.md` D-10), so editing a word here makes
+ * every document distil afresh on its next upload — nobody has to remember to bump a version, and
+ * an edited prompt can never keep serving answers the old one produced.
+ */
+export const SPEC_DISTILL_SYSTEM = `You read ONE software requirements document and distil it into a structured specification that a QA engineer will use to decide which test cases to write. Output ONLY a JSON object, no prose, no markdown fences.
+
+Fields — every field is an array of short, plain-English strings:
+- "actors": the kinds of user or system that act (e.g. "Sales Manager", "Guest").
+- "entities": the business objects the document talks about (e.g. "Lead", "Account").
+- "actions": what the actors do to those entities (e.g. "Convert a Lead to an Account").
+- "rules": TESTABLE constraints — each one a single sentence a tester could prove true or false
+  against the running application (e.g. "A Lead cannot be converted without a phone number").
+- "criteria": acceptance criteria the document states (e.g. "Converting shows a confirmation naming the new Account").
+- "outOfScope": anything the document explicitly excludes or defers.
+- "unresolved": questions a tester would need answered before testing, where the document is
+  ambiguous, contradictory or silent on something it clearly depends on. AT MOST 10, most
+  important first. If nothing is genuinely unclear, return an empty array — do not invent questions.
+
+Rules, follow exactly:
+- Take everything from the document. Never add a rule, actor or criterion the document does not support.
+- Keep each string under 300 characters. One idea per string.
+- Do not copy passwords, API keys, personal data or other secrets from the document into any field.
+- If the document contains no readable requirements text (for example it is a scanned image), return every field as an empty array.
+
+Shape: { "actors": [], "entities": [], "actions": [], "rules": [], "criteria": [], "outOfScope": [], "unresolved": [] }`;
+
+/** A distillation outcome: the spec, or the one sentence explaining why there isn't one. */
+export type SpecDistillResult =
+  | { ok: true; spec: SpecModel; cached: boolean }
+  | { ok: false; warning: string };
+
+/** Shown when the model's answer could not be used even after a retry. */
+export const DISTILL_FAILED_WARNING = "That document couldn't be summarised just now. Try uploading it again.";
+
+/**
+ * Distil one ALREADY-CHECKED document (the output of `checkSpecUpload`) into a SpecModel.
+ *
+ * Cache first: the key is the document's own SHA-256 plus every input that changes the answer —
+ * the pinned provider, the resolved model, the instruction text, the credential fingerprint and
+ * the global cache salt. The disk half of the cache never expires (`kb/llmCache.ts`), so a missing
+ * dimension would serve a wrong answer forever (TD-22, D-10). Entries live in their own "spec"
+ * namespace so they can be cleared without discarding the paid answers beside them.
+ *
+ * Pinned to GEMINI regardless of LLM_PROVIDER: only Gemini takes a PDF inline. Called from the
+ * upload route, outside any run, so no run budget covers it — the token usage is logged instead.
+ *
+ * The bytes are only read here. Nothing in this function stores them: the caller drops its
+ * reference when this returns, and the only thing written anywhere is the distilled SpecModel.
+ */
+export async function distillSpec(
+  bytes: Buffer,
+  checked: Extract<SpecUploadCheck, { ok: true }>,
+): Promise<SpecDistillResult> {
+  const model = resolvedModel();
+  const key = makeCacheKey(
+    "specmodel", "gemini", model, SPEC_DISTILL_SYSTEM,
+    createHash("sha256").update(bytes).digest("hex"),
+    `gemini:${currentLlmConfig()?.keyFingerprint ?? "env"}`, llmCacheVersion(),
+  );
+  const hit = llmCacheGet<SpecModel>(key, SPEC_CACHE_NS);
+  if (hit) return { ok: true, spec: hit, cached: true };
+
+  const prompt = checked.format === "pdf"
+    ? "The requirements document is attached as a PDF. Distil it."
+    : `The requirements document follows between the markers. Distil it.\n<<<DOCUMENT\n${checked.text}\nDOCUMENT>>>`;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { content, usage } = await gemini(prompt, {
+      systemInstruction: SPEC_DISTILL_SYSTEM,
+      ...(checked.format === "pdf"
+        ? { fileBase64: bytes.toString("base64"), fileMime: "application/pdf" }
+        : {}),
+      model,
+      json: true,
+      maxOutputTokens: specDistillMaxOutputTokens(),
+      stage: "spec_intake",
+    });
+    // Outside any run budget, so this line is the only record of what intake cost.
+    console.log(`[spec_intake] distillation tokens: prompt=${usage.promptTokens} completion=${usage.completionTokens} total=${usage.totalTokens} | format=${checked.format} | model=${model}`);
+
+    let parsed: ReturnType<typeof LlmSpecModel.safeParse>;
+    try {
+      parsed = LlmSpecModel.safeParse(parseJson(content));
+    } catch {
+      continue;
+    }
+    if (!parsed.success) continue;
+
+    const spec = parsed.data;
+    // "Found nothing" is an answer about THIS document (usually a scan), not a cacheable result —
+    // an empty answer served forever is exactly the failure isCacheableResult exists to stop.
+    if (isEmptySpec(spec)) return { ok: false, warning: SPEC_WARNINGS.noText };
+    if (isCacheableResult(spec)) llmCacheSet(key, spec, SPEC_CACHE_NS);
+    return { ok: true, spec, cached: false };
+  }
+  return { ok: false, warning: DISTILL_FAILED_WARNING };
+}
+
+/** The cache namespace for distilled specs — clearable on its own (`llmCacheClear("spec")`). */
+export const SPEC_CACHE_NS = "spec";
