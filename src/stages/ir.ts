@@ -774,6 +774,34 @@ export function groundingError(
     return { page, at: best.at };
   };
   /**
+   * The controls on the captured screen step `index` is on (disabled ones marked), as a sentence for a rejection
+   * message — or "" when no screen applies. The prompt's application model carries only the entry
+   * page (toMicroModel, TD-122), so without this a model told "X is not on this screen" has nothing
+   * to choose the missing step from. Names come from the capture, never invented (TD-124).
+   */
+  const screenControlsHint = (index: number, exclude = ""): string => {
+    const scr = screenAtStep(index);
+    if (!scr) return "";
+    const names = Array.from(new Set(scr.page.elements
+      .filter((e) => e.visible !== false && e.name?.trim()
+        && ["button", "link", "checkbox", "radio", "tab", "menuitem", "combobox", "textbox"].includes(norm(e.role))
+        && norm(e.name) !== norm(exclude))
+      // Disabled ones too, marked: "Express Interest (disabled)" beside "Select for EOI" is what
+      // tells the model the order the page expects.
+      .map((e) => `${e.role} "${e.name}"${e.enabled === false ? " (disabled)" : ""}`))).slice(0, 25);
+    return names.length ? ` Controls on the screen the flow is on at this step: ${names.join(", ")}.` : "";
+  };
+  /** For a step whose target is missing from its captured screen: what IS there, and the likely
+   *  cause — the step that opens the screen holding it was left out (TD-124). */
+  const missingOnScreenHint = (index: number): string => {
+    const controls = screenControlsHint(index);
+    return controls
+      ? ` It is not on the screen the flow is on at this step (seen in a live capture after the steps ` +
+        `before it). A step that opens the screen holding it is probably missing before this one — ` +
+        `for example clicking a button that opens the form.${controls}`
+      : "";
+  };
+  /**
    * An acting step bound to an element its screen shows as DISABLED (D-52, TD-121). Clicking it
    * waits out the whole timeout at run time ("element is not enabled"). Two cases:
    *   - the screen was captured at an EARLIER step: anything since (a fill, a choice) may have
@@ -793,22 +821,13 @@ export function groundingError(
           `screen was captured; capturing it again at this step.`,
       };
     }
-    // The prompt's application model carries only the entry page (toMicroModel), so the model
-    // cannot see this screen's controls. Name them here — from the capture, never invented —
-    // or "add the step that enables it" gives it nothing to pick from.
-    const options = Array.from(new Set(scr.page.elements
-      .filter((e) => e.visible !== false && e.enabled !== false && e.name?.trim()
-        && ["button", "link", "checkbox", "radio", "tab", "menuitem", "combobox"].includes(norm(e.role))
-        && norm(e.name) !== norm(matched.name))
-      .map((e) => `${e.role} "${e.name}"`))).slice(0, 20);
     return {
       index, kind: "disabled-target" as const,
       message: `Step ${step.id} ${step.action}s ${matched.role} "${matched.name}", but that element is ` +
         `DISABLED at this point in the flow (seen in a live capture of the page after the steps before ` +
         `it). Clicking it can never work. Something earlier in the flow must enable it — a step is ` +
         `missing before this one (for example choosing or selecting an item on the page first). Add ` +
-        `the step that enables it before this step.` +
-        (options.length ? ` Enabled controls on that screen: ${options.join(", ")}.` : ""),
+        `the step that enables it before this step.` + screenControlsHint(index, matched.name),
     };
   };
   for (let index = 0; index < ir.steps.length; index++) {
@@ -960,7 +979,7 @@ export function groundingError(
           `"${t.text}", which no element in the application model matches. Target it by ` +
           `accessibility role + name from the application model instead — { "text": ... } is ` +
           `for asserting on content that appears only after an action, never for choosing ` +
-          `what to click or fill.`,
+          `what to click or fill.` + missingOnScreenHint(index),
       };
     }
 
@@ -1021,7 +1040,8 @@ export function groundingError(
         index,
         message: `Step ${step.id} targets role="${t.role}" name="${t.name}", which is not present under any compatible role on page "${pageUrl}". ` +
           `If this element loads dynamically, verify that the page completed hydration/API rendering; ` +
-          `if it requires role-based access (e.g. Admin), verify that valid authorized credentials were provided.`,
+          `if it requires role-based access (e.g. Admin), verify that valid authorized credentials were provided.` +
+          missingOnScreenHint(index),
       };
     }
     const disErr = disabledTargetErr(index, step, matched);

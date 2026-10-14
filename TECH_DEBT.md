@@ -5073,3 +5073,14 @@ bug, so the screen after "Next" was never captured and the case stopped at "Purp
 `choose()` (generated spec) and `chooseLive()` (replay) now focus the `<select>` before
 `selectOption()`, as a person's click would. All sites: it only adds the focus change a real click
 makes. `tests/selectBlur.test.ts`, real Chromium, fails without the fix.
+
+### TD-124. "Not on this screen" told the model nothing about what WAS there — High / Accidental — **Fixed (Salesforce runs)**
+
+Run `2026-10-14T02-35-44-042Z-1fe67e2f`: the model's IR went "View Project" -> fill "Full Name",
+skipping "Select for EOI" and "Express Interest" (the form appears only after them). Screen
+grounding correctly rejected the fill, but the message said only "not present on page", and the
+model sees only the entry page (TD-122) — so the retry repeated the mistake, TD-74 stopped retrying,
+and the case shipped three steps. In screen mode a target missing from its captured screen (and the
+disabled-target rejection, TD-121) now names the controls the capture saw on that screen, disabled
+ones marked, and says a step opening the screen is probably missing. Real-browser test in
+`tests/multiScreenWizard.test.ts`; fails without the hint.

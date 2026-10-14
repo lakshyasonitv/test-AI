@@ -372,6 +372,51 @@ describe("late, below-the-fold content and disabled buttons (real-site shape)", 
   }, 240_000);
 });
 
+describe("a step whose target is not on its screen names what IS there (TD-124)", () => {
+  // Run 2026-10-14T02-35-44-042Z-1fe67e2f: the model went View Project -> fill "Full Name",
+  // skipping "Select for EOI" and "Express Interest". The rejection said only "not present", the
+  // retry repeated the mistake, and the case was cut to three steps.
+  const skipping = {
+    meta: meta("Express interest"),
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/estate" } },
+      click("s2", "View Project"),
+      fill("s5", "Full Name", "Test User"),
+      click("s6", "Submit"),
+    ],
+  };
+  const complete = {
+    meta: meta("Express interest"),
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/estate" } },
+      click("s2", "View Project"),
+      click("s3", "Select for EOI"),
+      click("s4", "Express Interest"),
+      fill("s5", "Full Name", "Test User"),
+      click("s6", "Submit"),
+    ],
+  };
+
+  it("the rejection lists the screen's controls, so the model can add the missing steps", async () => {
+    const model = await discover("/estate");
+    geminiMock.mockImplementation(async (prompt: string, opts: any) => {
+      if (/accessibility snapshot/i.test(opts?.systemInstruction ?? "")) {
+        return reply({ baseUrl: base, pages: [{ url: base, title: "", concepts: [], elements: [] }] });
+      }
+      // Fixes its IR only when the rejection names the controls that lead to the form.
+      return reply(/button "Select for EOI"/.test(prompt) && /Express Interest" \(disabled\)/.test(prompt) ? complete : skipping);
+    });
+    const { ir } = await withTargetApp("salesforce",
+      () => toIR(testCase("estate-skip"), model, unique(), base + "/estate"));
+
+    const irPrompts = geminiMock.mock.calls.map((c) => c[0] as string).filter((p) => /Return IR JSON/.test(p));
+    expect(irPrompts[1]).toMatch(/Full Name.*not on the screen the flow is on/s);
+    expect(ir.meta.truncated ?? false).toBe(false);
+    expect(ir.steps.map((s: any) => s.id)).toEqual(["s1", "s2", "s3", "s4", "s5", "s6"]);
+    expect(await executeSlow(ir)).toContain("Thank you");
+  }, 240_000);
+});
+
 /** `execute`, with the generated spec's own 10 s click timeout, for a page whose data is slow. */
 async function executeSlow(ir: any): Promise<string> {
   const browser = await chromium.launch(chromiumLaunchOptions());
