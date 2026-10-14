@@ -597,6 +597,10 @@ async function choose(page, target, value, root) {
       await page.waitForTimeout(100);
     }
     if (idx >= 0) {
+      // Focus first, as a person's click on the dropdown would. selectOption() alone leaves focus
+      // in the field typed before it, so that field never fires 'change' — and a form that keeps
+      // values on 'change' and re-renders on this choice wipes it (TD-123).
+      await target.focus({ timeout: ${SELECT_TIMEOUT_MS} }).catch(() => {});
       await target.selectOption({ index: idx }, { timeout: ${SELECT_TIMEOUT_MS} });
       return;
     }

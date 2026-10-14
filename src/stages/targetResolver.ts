@@ -621,6 +621,8 @@ export async function chooseLive(page: Page, target: Locator, value: string, roo
       await page.waitForTimeout(100);
     }
     if (idx >= 0) {
+      // Focus first, as a click would: commits the field typed before it (TD-123).
+      await target.focus({ timeout: SELECT_TIMEOUT_MS }).catch(() => {});
       await target.selectOption({ index: idx }, { timeout: SELECT_TIMEOUT_MS });
       return;
     }

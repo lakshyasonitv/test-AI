@@ -5061,3 +5061,15 @@ TD-121) has nothing on the model's side to remind it. TD-121's B works around th
 screen's controls in its rejection. A fuller fix — include a compact list of captured screens'
 element names in the retry prompt — changes the prompt for every multi-page run and wants its own
 measurement of prompt size and cache behaviour.
+
+### TD-123. Choosing an option did not commit the field typed before it — High / Accidental — **Fixed**
+
+Real Salesforce Experience run `2026-10-14T01-59-44-982Z-5d0a0e15`: the EOI form keeps a field's value
+in component state on `change`, which fires when the field loses focus. `fill()` focuses a field;
+`selectOption()` on the next control does not move focus. So the email was typed (screenshot after
+step 11), never committed, and choosing the phone code re-rendered the form from state with the
+email empty (screenshot after step 12); "Next" then failed validation. The live replay had the same
+bug, so the screen after "Next" was never captured and the case stopped at "Purpose". Both
+`choose()` (generated spec) and `chooseLive()` (replay) now focus the `<select>` before
+`selectOption()`, as a person's click would. All sites: it only adds the focus change a real click
+makes. `tests/selectBlur.test.ts`, real Chromium, fails without the fix.
