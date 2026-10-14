@@ -594,7 +594,7 @@ function selectorsOf(elements: Element[]): Set<string> {
 
 export function groundingError(
   ir: IR, appModel: AppModel, scope?: GroundingScope,
-): { index: number; message: string; kind?: "navigate-url" | "text-target" | "screen-uncaptured" } | null {
+): { index: number; message: string; kind?: "navigate-url" | "text-target" | "screen-uncaptured" | "disabled-target" } | null {
   const allElements = appModel.pages.flatMap(p => p.elements);
   // Selectors the model is allowed to address directly, because discovery captured them.
   const knownSelectors = new Set<string>();
@@ -763,7 +763,7 @@ export function groundingError(
   /** The captured screen step `index` is on, or undefined when none applies (D-52): the latest
    *  `screenAt` entry at or before it, ended by a navigate or by the page cursor moving to another
    *  URL in between. */
-  const screenAtStep = (index: number): PageModel | undefined => {
+  const screenAtStep = (index: number): { page: PageModel; at: number } | undefined => {
     let best: { at: number; key: string } | undefined;
     for (const s of scope?.screenAt ?? []) if (s.at <= index && (!best || s.at >= best.at)) best = s;
     if (!best) return undefined;
@@ -771,7 +771,45 @@ export function groundingError(
     const page = findScreen(appModel, best.key);
     const cursor = trail.pageAt[index];
     if (!page || (cursor && pageKey(cursor.url) !== pageKey(page.url))) return undefined;
-    return page;
+    return { page, at: best.at };
+  };
+  /**
+   * An acting step bound to an element its screen shows as DISABLED (D-52, TD-121). Clicking it
+   * waits out the whole timeout at run time ("element is not enabled"). Two cases:
+   *   - the screen was captured at an EARLIER step: anything since (a fill, a choice) may have
+   *     enabled it, so ask for a capture at exactly this step — kind "screen-uncaptured";
+   *   - the screen was captured AT this step: it really is disabled when the flow gets here, so a
+   *     step that enables it is missing. Rejected with that reason, for the model to fix.
+   * Only with a captured screen: a discovery snapshot predates every step, and a form's Submit is
+   * routinely disabled until it is filled in.
+   */
+  const disabledTargetErr = (index: number, step: Step, matched: Element | null | undefined) => {
+    const scr = screenAtStep(index);
+    if (!scr || !matched || matched.enabled !== false || !ACTION_STEPS.has(step.action)) return null;
+    if (scr.at !== index) {
+      return {
+        index, kind: "screen-uncaptured" as const,
+        message: `Step ${step.id} acts on ${matched.role} "${matched.name}", which was disabled when this ` +
+          `screen was captured; capturing it again at this step.`,
+      };
+    }
+    // The prompt's application model carries only the entry page (toMicroModel), so the model
+    // cannot see this screen's controls. Name them here — from the capture, never invented —
+    // or "add the step that enables it" gives it nothing to pick from.
+    const options = Array.from(new Set(scr.page.elements
+      .filter((e) => e.visible !== false && e.enabled !== false && e.name?.trim()
+        && ["button", "link", "checkbox", "radio", "tab", "menuitem", "combobox"].includes(norm(e.role))
+        && norm(e.name) !== norm(matched.name))
+      .map((e) => `${e.role} "${e.name}"`))).slice(0, 20);
+    return {
+      index, kind: "disabled-target" as const,
+      message: `Step ${step.id} ${step.action}s ${matched.role} "${matched.name}", but that element is ` +
+        `DISABLED at this point in the flow (seen in a live capture of the page after the steps before ` +
+        `it). Clicking it can never work. Something earlier in the flow must enable it — a step is ` +
+        `missing before this one (for example choosing or selecting an item on the page first). Add ` +
+        `the step that enables it before this step.` +
+        (options.length ? ` Enabled controls on that screen: ${options.join(", ")}.` : ""),
+    };
   };
   for (let index = 0; index < ir.steps.length; index++) {
     const step = ir.steps[index];
@@ -808,7 +846,7 @@ export function groundingError(
           `URL; that screen has not been captured yet.`,
       };
     }
-    const screenPage = screenAtStep(index);
+    const screenPage = screenAtStep(index)?.page;
     // A verified selector from a DIFFERENT screen of this URL resolves to nothing (or to a hidden
     // twin) at run time. Not grounded: fall through to the name match on this screen, which either
     // finds this screen's own control or reports the step as missing from it.
@@ -829,9 +867,14 @@ export function groundingError(
     // proof the element exists, and it's stronger than a role+name match. Covers the
     // selectors a user names in their own request.
     if (t?.css && knownSelectors.has(t.css.toLowerCase())) {
-      const known = bySelector.get(t.css.toLowerCase());
+      // On a captured screen, the screen's own element for this selector (its state is the one
+      // that holds at this step), else the model-wide one.
+      const known = (screenPage?.elements.find((e) => e.css?.toLowerCase() === t.css!.toLowerCase()))
+        ?? bySelector.get(t.css.toLowerCase());
       const hiddenErr = known && hiddenVisibleAssertError(index, `css="${t.css}"`, known);
       if (hiddenErr) return hiddenErr;
+      const disErr = disabledTargetErr(index, step, known);
+      if (disErr) return disErr;
       // A verified selector inside an iframe resolves only within that frame, so the frame comes
       // with it — from the element discovery verified, never from the model (Target.frame).
       if (known?.frame && !t.frame) t.frame = known.frame;
@@ -896,6 +939,8 @@ export function groundingError(
       // LS-1: the duplicate the step's `nth` means, not the first one found.
       const found = best ? nthTwin(elements, best, t.nth) : null;
       if (found) {
+        const disErr = disabledTargetErr(index, step, found);
+        if (disErr) return disErr;
         // Upgrade the weak target into the verified one, exactly as the role+name path does
         // below: real role, model's literal name, plus whatever deterministic identity
         // discovery captured. "Name" becoming textbox "Full Name" happens here.
@@ -979,6 +1024,8 @@ export function groundingError(
           `if it requires role-based access (e.g. Admin), verify that valid authorized credentials were provided.`,
       };
     }
+    const disErr = disabledTargetErr(index, step, matched);
+    if (disErr) return disErr;
     const hiddenErr = matched && hiddenVisibleAssertError(index, `role="${t.role}" name="${t.name}"`, matched);
     if (hiddenErr) return hiddenErr;
     // ponytail: self-correct to the app model's literal name so Playwright matches
@@ -2046,6 +2093,10 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // steps that genuinely need discovery are relying on. Go straight to the next attempt,
       // where the correction above tells the model to click through the UI instead.
       if (ungrounded.kind === "navigate-url") break;
+
+      // A disabled target seen in a capture taken AT this step is a fact about the flow, not a gap
+      // in discovery: no capture can change it. Back to the model with the reason (TD-121).
+      if (ungrounded.kind === "disabled-target") break;
 
       if (screenMode) {
         // Capture the screen the flow is on at this step — whether the step is the first after a

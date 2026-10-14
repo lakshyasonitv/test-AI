@@ -80,6 +80,31 @@ const MODAL = `<!doctype html><html><head><title>Contacts</title></head><body>
   };
 </script></body></html>`;
 
+// Modelled on the real Salesforce Experience site (runs 2026-10-13T11-06/11-24): "View Project" is
+// a button that swaps the view without changing the URL; "Express Interest" is DISABLED until a
+// unit is chosen with "Select for EOI"; the unit list is fetched late, below a tall page, and the
+// first unit's button is disabled (sold).
+const UNITS_DELAY_MS = 6000;
+const ESTATE = `<!doctype html><html><head><title>Estate</title></head><body><main id="m">
+<h1>Projects</h1><button id="vp">View Project</button></main>
+<script>
+  const m = document.getElementById("m");
+  document.getElementById("vp").onclick = () => {
+    m.innerHTML = '<h1>The Sanctuary</h1><aside><button id="ei" disabled>Express Interest</button></aside>' +
+      '<div style="height:2400px">Gallery</div><section id="units"></section>';
+    const ei = document.getElementById("ei");
+    fetch("/api/units").then((r) => r.json()).then((units) => {
+      document.getElementById("units").innerHTML = units.map((u, i) =>
+        '<div>Unit ' + u + ' <button id="sel-' + u + '"' + (i === 0 ? " disabled" : "") + '>Select for EOI</button></div>').join("");
+      document.getElementById("sel-102").onclick = () => { ei.disabled = false; };
+    });
+    ei.onclick = () => {
+      m.innerHTML = '<h2>Express Interest</h2><label>Full Name <input id="fn"></label><button id="go">Submit</button>';
+      document.getElementById("go").onclick = () => { m.innerHTML = "<p>Thank you, your interest was submitted.</p>"; };
+    };
+  };
+</script></body></html>`;
+
 let server: http.Server;
 let base = "";
 beforeAll(async () => {
@@ -88,6 +113,11 @@ beforeAll(async () => {
     if (req.url?.startsWith("/wizard-dropped")) res.end(WIZARD({ dropWebsite: true }));
     else if (req.url?.startsWith("/wizard")) res.end(WIZARD({}));
     else if (req.url?.startsWith("/contacts")) res.end(MODAL);
+    else if (req.url?.startsWith("/api/units")) {
+      // A slow Apex-style data call: the unit list arrives 6 s after the project view asks.
+      setTimeout(() => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(["101", "102"])); }, UNITS_DELAY_MS);
+    }
+    else if (req.url?.startsWith("/estate")) res.end(ESTATE);
     else { res.statusCode = 404; res.end("nope"); }
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -283,3 +313,77 @@ describe("waitForScreenSettle", () => {
     } finally { await browser.close(); }
   });
 });
+
+describe("late, below-the-fold content and disabled buttons (real-site shape)", () => {
+  const steps = (withSelect: boolean) => [
+    { id: "s1", action: "navigate", target: { url: "/estate" } },
+    click("s2", "View Project"),
+    ...(withSelect ? [click("s3", "Select for EOI")] : []),
+    click("s4", "Express Interest"),
+    fill("s5", "Full Name", "Test User"),
+    click("s6", "Submit"),
+  ];
+  const estateIr = (withSelect: boolean) => ({ meta: meta("Express interest"), steps: steps(withSelect) });
+
+  it("A: the capture waits for the late unit list, and the enabled unit's button is chosen", async () => {
+    const model = await discover("/estate");
+    geminiMock.mockImplementation(answer(estateIr(true)));
+    const { ir } = await withTargetApp("salesforce",
+      () => toIR(testCase("estate"), model, unique(), base + "/estate"));
+
+    expect(ir.meta.truncated ?? false).toBe(false);
+    expect(ir.steps.find((s: any) => s.id === "s3")!.target!.css).toBe("#sel-102");
+    expect(await executeSlow(ir)).toContain("Thank you");
+  }, 180_000);
+
+  it("B: a step missing before a DISABLED button is sent back to the model, naming the screen's controls", async () => {
+    const model = await discover("/estate");
+    geminiMock.mockImplementation(async (prompt: string, opts: any) => {
+      if (/accessibility snapshot/i.test(opts?.systemInstruction ?? "")) {
+        return reply({ baseUrl: base, pages: [{ url: base, title: "", concepts: [], elements: [] }] });
+      }
+      // The model's first answer skips "Select for EOI", exactly as the real run did; once told,
+      // it adds it.
+      return reply(estateIr(/DISABLED/.test(prompt)));
+    });
+    const { ir } = await withTargetApp("salesforce",
+      () => toIR(testCase("estate-b"), model, unique(), base + "/estate"));
+
+    const irPrompts = geminiMock.mock.calls.map((c) => c[0] as string).filter((p) => /Return IR JSON/.test(p));
+    expect(irPrompts.length).toBeGreaterThanOrEqual(2);
+    const correction = irPrompts[1];
+    expect(correction).toMatch(/Express Interest.*DISABLED/s);
+    expect(correction).toContain('button "Select for EOI"');
+    expect(ir.meta.truncated ?? false).toBe(false);
+    expect(ir.steps.map((s: any) => s.id)).toEqual(["s1", "s2", "s3", "s4", "s5", "s6"]);
+    expect(await executeSlow(ir)).toContain("Thank you");
+  }, 240_000);
+
+  it("B: if the model never adds the enabling step, the case stops at the disabled button with that reason", async () => {
+    const model = await discover("/estate");
+    geminiMock.mockImplementation(answer(estateIr(false)));
+    const { ir } = await withTargetApp("salesforce",
+      () => toIR(testCase("estate-c"), model, unique(), base + "/estate"));
+
+    expect(ir.meta.truncated).toBe(true);
+    expect(ir.meta.truncationKind).toBe("disabled-target");
+    expect(ir.meta.truncationNote).toMatch(/Express Interest.*DISABLED/s);
+    expect(ir.steps.map((s: any) => s.id)).toEqual(["s1", "s2"]);
+  }, 240_000);
+});
+
+/** `execute`, with the generated spec's own 10 s click timeout, for a page whose data is slow. */
+async function executeSlow(ir: any): Promise<string> {
+  const browser = await chromium.launch(chromiumLaunchOptions());
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(10_000);
+    for (const step of ir.steps) {
+      if (step.action === "assert") continue;
+      await runStepLive(page, step, base);
+      if (step.action === "click") await page.waitForTimeout(500);
+    }
+    return await page.locator("body").innerText();
+  } finally { await browser.close(); }
+}
+

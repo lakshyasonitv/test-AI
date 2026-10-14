@@ -5028,3 +5028,36 @@ another application; the page URL never changes) and `url_contains "#"` (no lett
 names no page, and the browser dropped the fragment). `urlAssertionError` now rejects both shapes,
 which sends the case back to the model with the reason, as its existing check does. Always on: it
 only rejects assertions that cannot pass.
+
+### TD-121. A captured screen missed late-loading content, and a click on a DISABLED button was accepted — High / Accidental — **Fixed (Salesforce runs)**
+
+Real Salesforce Experience run `2026-10-13T11-24-27-837Z-67382ff8`: the project page's unit list
+(its "Select for EOI" buttons) is fetched after the view renders and sits below the fold. The screen
+capture did not wait for it, so the step was not in the model, and the IR the model wrote went from
+"View Project" straight to "Express Interest" — a button the site keeps `disabled` until a unit is
+chosen. The click waited out its 10 s timeout.
+
+Fixed, in screen mode (D-52) only:
+- **A — capture waits for the data.** A screen capture now waits for the page's own fetch/XHR
+  requests to drain (counted from the replay's first request; `networkidle` fires once per
+  document and returns at once after an in-page click), scrolls through the page so lazy content
+  renders, waits again, and scrolls back. Bounded (5 s + 3 s + the scroll). Walk cache key bumped
+  to `screen-settle:2` so earlier, shallower captures are not served.
+- **B — a disabled target is rejected.** An acting step bound to an element its screen shows as
+  disabled is re-captured at exactly that step (an earlier fill may have enabled it); if it is
+  still disabled, it is rejected as `disabled-target` with a message naming the enabled controls
+  on that screen, so the model can add the missing step. If the model never does, the case stops
+  there with that reason instead of timing out at run time.
+
+`tests/multiScreenWizard.test.ts` ("real-site shape"), real Chromium, mutation-checked.
+
+### TD-122. The IR prompt shows the model only the ENTRY page — Medium / Deliberate trade-off — **Open**
+
+`toMicroModel` (`appModel.ts`) gives the IR prompt one page — the entry or case target page — capped
+at 30 elements, role and name only. Pages and screens captured later during live-extend are used for
+GROUNDING but never shown to the model, so on a multi-page flow it writes every later step from the
+request's wording alone. Grounding then corrects names, but a step the model leaves out (as in
+TD-121) has nothing on the model's side to remind it. TD-121's B works around this by naming the
+screen's controls in its rejection. A fuller fix — include a compact list of captured screens'
+element names in the retry prompt — changes the prompt for every multi-page run and wants its own
+measurement of prompt size and cache behaviour.

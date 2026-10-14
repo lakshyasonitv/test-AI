@@ -145,6 +145,54 @@ export interface ReplayOptions {
   settle?: boolean;
 }
 
+/**
+ * Count a page's in-flight fetch/XHR requests, and wait for them to drain. Fetch/XHR only: images,
+ * fonts and long-lived streams would keep the count above zero on a page that has finished
+ * rendering. `quiet` waits until none have been in flight for `idleMs`, bounded by `budgetMs`.
+ */
+export function trackInflightRequests(page: Page): { quiet: (budgetMs: number, idleMs?: number) => Promise<void> } {
+  const live = new Set<unknown>();
+  const counted = (r: { resourceType(): string }) => r.resourceType() === "fetch" || r.resourceType() === "xhr";
+  page.on("request", (r) => { if (counted(r)) live.add(r); });
+  page.on("requestfinished", (r) => { live.delete(r); });
+  page.on("requestfailed", (r) => { live.delete(r); });
+  return {
+    async quiet(budgetMs: number, idleMs = 500): Promise<void> {
+      const deadline = Date.now() + budgetMs;
+      let idleSince = live.size === 0 ? Date.now() : 0;
+      while (Date.now() < deadline) {
+        if (live.size === 0) {
+          if (!idleSince) idleSince = Date.now();
+          if (Date.now() - idleSince >= idleMs) return;
+        } else {
+          idleSince = 0;
+        }
+        await page.waitForTimeout(100);
+      }
+    },
+  };
+}
+
+/**
+ * Scroll the window to the bottom one viewport at a time, then back to the top, so lazily-rendered
+ * content is in the DOM before a capture. Returns whether the page was scrollable at all.
+ * Each `page.evaluate` callback is a single expression with no inner functions (TD-40).
+ */
+export async function scrollThroughPage(page: Page, maxSteps = 15, pauseMs = 300): Promise<boolean> {
+  let scrolled = false;
+  for (let i = 0; i < maxSteps; i++) {
+    const atBottom = await page.evaluate(
+      () => window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2,
+    ).catch(() => true);
+    if (atBottom) break;
+    await page.evaluate(() => window.scrollBy(0, window.innerHeight)).catch(() => {});
+    scrolled = true;
+    await page.waitForTimeout(pauseMs);
+  }
+  if (scrolled) await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+  return scrolled;
+}
+
 /** Spinners and busy regions: ARIA's own, plus the Lightning Design System's spinner class (a
  *  product class, not org data). */
 const BUSY_SELECTOR =
@@ -214,7 +262,8 @@ async function replayAndSnapshot(
   // part — appended ONLY when set, so every existing walk keeps its exact key and cache entry.
   const keyParts = [
     model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()];
-  if (options.settle) keyParts.push("screen-settle:1");
+  // :2 — captures now scroll through the page first; a :1 entry lacks below-the-fold content.
+  if (options.settle) keyParts.push("screen-settle:2");
   const cacheKey = makeCacheKey(...keyParts);
   const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
   if (cached) return cached;
@@ -231,6 +280,9 @@ async function replayAndSnapshot(
     // on newPage() — not newContext() + context.newPage(), which would lose sessionStorage
     // (TD-41 / D-23) on exactly the authenticated flows this function exists to replay.
     const page = await browser.newPage(browserContextOptions());
+    // Only a screen capture reads this; counting from the first request so a fetch a click starts
+    // is seen even if it began before the capture's own wait does.
+    const network = options.settle ? trackInflightRequests(page) : undefined;
     let urlBeforeLastStep = model.baseUrl;
     /** Where the flow was when it last typed a credential, and what it typed it into. Used
      *  below to tell "signed in" from "still sitting on the sign-in form". */
@@ -284,7 +336,21 @@ async function replayAndSnapshot(
         .catch(() => page.waitForTimeout(600));
     }
 
-    if (options.settle) await waitForScreenSettle(page);
+    if (options.settle) {
+      // Salesforce pages fetch their data (Apex/UI API calls) after the DOM is up; a list that
+      // arrives late is simply not in a capture taken before it. Not `networkidle`: that fires
+      // once per document load, so after an in-page click it returns at once. Bounded.
+      await network?.quiet(5000);
+      await waitForScreenSettle(page);
+      // Content below the fold that loads on scroll (a unit list, a related list) is not in the
+      // DOM until the page is scrolled, so a capture of the top alone misses it. Real run
+      // 2026-10-13T11-24-27-837Z-67382ff8: the project page's "Select for EOI" buttons were never
+      // in the model and the AI dropped the step. Scroll through, settle again, back to the top.
+      if (await scrollThroughPage(page)) {
+        await network?.quiet(3000);
+        await waitForScreenSettle(page);
+      }
+    }
     const tab = options.settle
       ? ((await page.locator('[role="tab"][aria-selected="true"]:visible').first().textContent({ timeout: 500 }).catch(() => null)) ?? "").trim()
       : undefined;
