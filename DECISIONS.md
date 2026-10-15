@@ -1678,3 +1678,41 @@ on Lightning. Everything is passed through `redactCredentials` before it is writ
 (`opened by clicking button "Next"`). The minimal-prompt run `2026-10-15T16-39-13` failed because
 the model never added the click that opens a form, even when told the button existed. The edge is
 exactly that fact, and it is still only a hint.
+
+## D-55. On a Salesforce run, locators come from role + accessible name and label text, not generated ids or positions
+
+**Decision.** On a Salesforce run only (`currentRunTargetApp() === "salesforce"`, passed INTO the
+in-page walker as an argument, TD-40), the live walker's selector ladder becomes:
+1. `data-test` / `data-testid` / `data-qa`.
+2. `#id`, **unless the id looks generated** (`/-d+$/` or `/^w+-d+-d+$/`, as in Lightning's
+   `input-145`, `combobox-button-12-34`). The same rule applies to the positional path's anchor id.
+3. `tag[name]`, `tag[aria-label]`.
+4. **`role=<role>[name="<accessible name>"s]`**: Playwright's role engine, exact and case-sensitive,
+   which pierces open shadow roots.
+5. **`<tag>:below(:text("<label>"))` / `:right-of(...)`** for a field with no accessible name.
+6. The positional path.
+
+Tiers 4 and 5 are Playwright engines, so they are never checked natively: `verifyWithPlaywright` now
+runs on every Salesforce walk and keeps a candidate only if it matches exactly one element, and that
+element is the walked node. An ordinary walk is byte-identical (fixture captured from the walker before
+the change).
+
+**Why.** Lightning numbers element ids per session, so `#email-145` is `#email-146` on the next load, and
+a positional path breaks on any layout change. Role + name is what a person reads, and it survives both.
+A real-Chromium test re-renders the form with new ids and fills the field through the emitted css, and
+through the generated spec's own expression.
+
+**Rejected.**
+- `:near()`: too loose, it can match a neighbour.
+- Role + name without `s`: Playwright's default is a case-insensitive SUBSTRING match, so `Next` would
+  also match `Next step`.
+- Changing the ordinary ladder: there is no evidence it is needed, and it has fixtures pinning it.
+
+**Cache.** A Salesforce run's "walks" cache key gains `sf-locators:1`. Captures are cached forever, so
+without it the old ladder's selectors would be served back. Ordinary keys are unchanged.
+
+**Trade-off, filed as TD-133.** The generated-id pattern cannot tell `input-145` from a meaningful
+`unit-102`. On a Salesforce run both are skipped, and a control that is not unique by role + name (one
+"Select for EOI" per unit) falls back to the positional path. That path is still verified, but it is
+less durable than a meaningful id would have been.
+

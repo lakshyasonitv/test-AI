@@ -332,7 +332,11 @@ describe("late, below-the-fold content and disabled buttons (real-site shape)", 
       () => toIR(testCase("estate"), model, unique(), base + "/estate"));
 
     expect(ir.meta.truncated ?? false).toBe(false);
-    expect(ir.steps.find((s: any) => s.id === "s3")!.target!.css).toBe("#sel-102");
+    // Unit 102's button (the first ENABLED one). Not `#sel-102` since handoff Phase 3: on a Salesforce
+    // run an id ending in "-<digits>" is treated as Lightning-generated and skipped, and "Select for
+    // EOI" is not unique by role+name, so the walker anchors on #units — the same element. The run
+    // below proves it is the right one.
+    expect(ir.steps.find((s: any) => s.id === "s3")!.target!.css).toBe("#units > div:nth-of-type(2) > button");
     expect(await executeSlow(ir)).toContain("Thank you");
   }, 180_000);
 

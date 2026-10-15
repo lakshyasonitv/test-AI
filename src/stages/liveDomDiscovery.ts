@@ -47,6 +47,7 @@
 import type { Frame, JSHandle, Page } from "playwright";
 import type { Element } from "../schema/appModel.js";
 import { deriveElementName } from "./discovery.js";
+import { currentRunTargetApp } from "../runTarget.js";
 
 /** One element as the in-page walk reports it, before Node-side naming fallbacks. */
 export interface LiveRawElement {
@@ -128,8 +129,13 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
   // and passes every vitest run, because vitest's transform does not inject that helper. The same
   // warning sits on the callbacks in hybridDiscovery.ts and discovery.ts.
   // tests/liveDomDiscovery.test.ts runs this module under real `tsx` to catch a regression.
+  // Handoff Phase 3 (Salesforce runs only): Lightning generates per-session id suffixes
+  // (`input-145`, `combobox-button-12`) and positional paths break on any layout change, so the
+  // ladder skips generated ids and adds a role + accessible-name selector and a label-anchored one
+  // (DECISIONS.md D-55). Passed IN as an argument, never closed over (TD-40).
+  const salesforce = currentRunTargetApp() === "salesforce";
   const handle = await page.evaluateHandle(
-    ({ selector, maxProximity }) => {
+    ({ selector, maxProximity, salesforce }) => {
       const items: Array<{
         tag: string; role: string; name: string; nameSource: string; proximity: string;
         visible: boolean; enabled: boolean; css: string; candidates: string[]; inShadow: boolean;
@@ -181,6 +187,7 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
           // chain for everything inside them. A candidate is kept only when it is unique WITHIN
           // the scope (native check); cross-scope uniqueness is Playwright's to confirm.
           const scoped: string[] = [];
+          let positionalPushed = false;
           const attrCands: Array<[string, string, string]> = [
             ["", "data-test", el.getAttribute("data-test") || ""],
             ["", "data-testid", el.getAttribute("data-testid") || ""],
@@ -194,6 +201,9 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             const attrName = attrCands[k][1];
             const value = attrCands[k][2];
             if (!value) continue;
+            // Salesforce: a generated id (`email-145`, `combobox-button-12-34`) is a different id
+            // next session; it is not a selector, whatever its uniqueness today.
+            if (salesforce && prefix === "#" && (/-\d+$/.test(value) || /^\w+-\d+-\d+$/.test(value))) continue;
             // Inside a double-quoted CSS string only backslash, the quote and newlines need
             // escaping. A plain id stays `#id`; an id that would need identifier escapes takes the
             // quoted `[id="…"]` form instead, because Playwright 1.49's own selector parser throws
@@ -218,7 +228,7 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             let anchored = false;
             while (node && node !== document.documentElement) {
               const nt = node.tagName.toLowerCase();
-              if (node !== el && node.id) {
+              if (node !== el && node.id && !(salesforce && (/-\d+$/.test(node.id) || /^\w+-\d+-\d+$/.test(node.id)))) {
                 // Same plain-or-quoted rule as the id candidate above.
                 const anchor = CSS.escape(node.id) === node.id
                   ? "#" + node.id
@@ -253,10 +263,11 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
               // `:scope` means nothing to a native ShadowRoot query, so this one is checked by
               // Playwright only (every selector is, once a shadow root has been seen).
               scoped.push(cand);
+              positionalPushed = true;
             } else {
               try {
                 const hits = scope.querySelectorAll(cand);
-                if (hits.length === 1 && hits[0] === el) scoped.push(cand);
+                if (hits.length === 1 && hits[0] === el) { scoped.push(cand); positionalPushed = true; }
               } catch { /* skipped */ }
             }
           }
@@ -388,6 +399,34 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             }
           }
 
+          // ---- Salesforce tiers 4 and 5, ahead of the positional path --------------------------
+          // 4: role + EXACT accessible name (`s` = case-sensitive whole match; Playwright's role
+          //    engine pierces open shadow roots).
+          // 5: a field with no accessible name, anchored below / right of its visible label text
+          //    (never :near, too loose).
+          // Neither is checked natively — both are Playwright engines — so verifyWithPlaywright
+          // confirms each is unique AND is this very node; one that is not is simply never chosen.
+          if (salesforce) {
+            const extra: string[] = [];
+            if (name && name.length <= 200) {
+              extra.push("role=" + role + "[name=\"" + name.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"s]");
+            }
+            if (!name && proximity && isField) {
+              const lt = proximity.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+              extra.push(tag + ":below(:text(\"" + lt + "\"))");
+              extra.push(tag + ":right-of(:text(\"" + lt + "\"))");
+            }
+            if (extra.length) {
+              // Before the positional path, which is the last candidate when it verified natively
+              // (tracked by positionalPushed).
+              const lastIsPositional = positionalPushed && candidates.length > 0;
+              const at = lastIsPositional ? candidates.length - 1 : candidates.length;
+              for (let k = extra.length - 1; k >= 0; k--) {
+                candidates.splice(at, 0, inShadow ? chain + " >> " + extra[k] : extra[k]);
+              }
+            }
+          }
+
           // ---- visibility: the recheckVisibility predicate, verbatim (NOT offsetParent) ---------
           const cs = getComputedStyle(el);
           const r = el.getBoundingClientRect();
@@ -455,13 +494,14 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
       }
       return { items, nodes, hasShadow, frameEls, frameNodes };
     },
-    { selector: LIVE_ELEMENT_SELECTOR, maxProximity: MAX_PROXIMITY_LABEL },
+    { selector: LIVE_ELEMENT_SELECTOR, maxProximity: MAX_PROXIMITY_LABEL, salesforce },
   );
   // </live-walk>
   try {
     const { items, hasShadow, frameEls } = await handle.evaluate(
       (w) => ({ items: w.items, hasShadow: w.hasShadow, frameEls: w.frameEls }));
-    if (hasShadow) await verifyWithPlaywright(page, handle as JSHandle<WalkResult>, items);
+    // Salesforce: always — tiers 4 and 5 are only ever confirmed by Playwright.
+    if (hasShadow || salesforce) await verifyWithPlaywright(page, handle as JSHandle<WalkResult>, items);
     return { items, handle: handle as JSHandle<WalkResult>, frameEls };
   } catch (err) {
     await handle.dispose();

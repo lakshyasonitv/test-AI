@@ -16,6 +16,7 @@ import { llmCacheGet, llmCacheSet, makeCacheKey, credentialFingerprint, isCachea
 import { cutAtBoundary, pageKey } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 import { mergeScreenInto } from "./screens.js";
+import { currentRunTargetApp } from "../runTarget.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -222,6 +223,28 @@ export async function waitForScreenSettle(page: Page, budgetMs = 6000, pollMs = 
   }
 }
 
+/**
+ * The "walks" cache key for one replay. Its parts are documented at its call site in
+ * replayAndSnapshot. Exported for tests.
+ *
+ * Handoff Phase 3 (D-55): on a Salesforce run the walker's selector ladder is different (no
+ * generated ids; role and label selectors), and the ladder is an input the other parts do not
+ * carry. A walk cached before it, holding `#email-145`, an id from a session long gone, would
+ * otherwise be served forever, since the disk half never expires. So a Salesforce run's key gains
+ * a ladder version, appended ONLY on Salesforce runs: every ordinary key and its entry are
+ * unchanged.
+ */
+export function walkCacheKey(
+  model: AppModel, prefix: Step[], creds: Credentials | undefined, policy: CredentialPolicy, options: ReplayOptions = {},
+): string {
+  const keyParts = [
+    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()];
+  // :2 — captures now scroll through the page first; a :1 entry lacks below-the-fold content.
+  if (options.settle) keyParts.push("screen-settle:2");
+  if (currentRunTargetApp() === "salesforce") keyParts.push("sf-locators:1");
+  return makeCacheKey(...keyParts);
+}
+
 /** Replay a step prefix in a real browser and snapshot+model whatever page it lands on.
  *  Shared by extendAppModel (wants a genuinely NEW page) and refreshPageModel (wants the
  *  CURRENT truth for a page it may already know) — they differ only in how the result gets
@@ -260,11 +283,7 @@ async function replayAndSnapshot(
   //
   // `settle` captures something different (a fully-rendered screen, plus its tab), so it is a key
   // part — appended ONLY when set, so every existing walk keeps its exact key and cache entry.
-  const keyParts = [
-    model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()];
-  // :2 — captures now scroll through the page first; a :1 entry lacks below-the-fold content.
-  if (options.settle) keyParts.push("screen-settle:2");
-  const cacheKey = makeCacheKey(...keyParts);
+  const cacheKey = walkCacheKey(model, prefix, creds, policy, options);
   const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
   if (cached) return cached;
 

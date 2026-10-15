@@ -5296,3 +5296,16 @@ rules still apply to cases with no category, and to ordinary runs. Tests:
 
 **Still open for ordinary runs:** the same "blank" / "without" / "missing" wording can flip a valid case
 there.
+
+### TD-133. The Salesforce generated-id rule also drops MEANINGFUL numbered ids — Low / Deliberate trade-off — **Open**
+
+D-55 skips any id matching `/-d+$/` or `/^w+-d+-d+$/` on a Salesforce run, because Lightning
+numbers ids per session. A developer's own `unit-102` / `sel-102` matches too.
+
+In `tests/multiScreenWizard.test.ts` ("A: … the enabled unit's button"), the button `#sel-102` is now
+`#units > div:nth-of-type(2) > button`. That is the same element, verified and executed, but it is
+positional, because "Select for EOI" is not unique by role + name.
+
+A better rule would need evidence across sessions: an id that is the same on two walks is not
+generated. The Phase 2 screen map could carry that, but it stores names only.
+
