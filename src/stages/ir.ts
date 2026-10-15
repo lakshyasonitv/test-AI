@@ -7,7 +7,8 @@ import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary, siteHost, pageKey } from "../text.js";
 import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
-import { findScreen, screenElements } from "./screens.js";
+import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
+import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
@@ -1821,9 +1822,19 @@ Example — handling duplicate selectors with nth:
   // `appModel` is serialised whole, so the normalised `baseUrl` is already in the key
   // transitively: normalising it changes the key by construction and no stale pre-TD-82 entry
   // can be served to a post-TD-82 run.
+  // Handoff Phase 2: the site's stored screen map (SCREEN_MAP_ENABLED, Salesforce runs only). Hints
+  // for the prompt, never grounding evidence (D-54). Loaded before the key because it changes the
+  // prompt; flag off or map empty, the key is byte-identical to before.
+  const useScreenMap = currentRunTargetApp() === "salesforce" && screenMapEnabled();
+  const storedMap = useScreenMap ? loadScreenMap(origin, creds, new Date()) : undefined;
+  const storedScreens = storedMap?.screens ?? [];
+  const mapSignature = storedScreens.length
+    ? [JSON.stringify([storedScreens.map((s) => [s.key, s.controls]), storedMap!.edges.map((e) => [e.from, e.action, e.to])])]
+    : [];
+  if (storedScreens.length) console.log(`[ir] screen map: ${storedScreens.length} screens, ${storedMap!.edges.length} edges stored for ${storedMap!.site}`);
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
-    entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion());
+    entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion(), ...mapSignature);
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -1839,27 +1850,56 @@ Example — handling duplicate selectors with nth:
    *  other prompt is unchanged (tests/fixtures/salesforceTarget/retry-prompt-ordinary.json). */
   const SCREEN_NAMES_CAP = 30;
   const SCREENS_CAP = 8;
+  /** A screen's controls as the block (and the screen map) show them: named, of a control role, a
+   *  dialog's own controls first (screenElements), deduped, at most SCREEN_NAMES_CAP. */
+  const controlsOf = (p: PageModel): ScreenMapControl[] => {
+    const seen = new Set<string>();
+    const out: ScreenMapControl[] = [];
+    for (const e of screenElements(p.elements)) {
+      if (!e.name?.trim() || !SCREEN_CONTROL_ROLES.has(norm(e.role))) continue;
+      const id = `${e.role}\u0000${e.name}\u0000${e.enabled === false}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({ role: e.role, name: e.name, ...(e.enabled === false ? { enabled: false } : {}) });
+    }
+    return out.slice(0, SCREEN_NAMES_CAP);
+  };
+  const namesOf = (controls: ScreenMapControl[]) =>
+    controls.map((c) => `${c.role} "${c.name}"${c.enabled === false ? " (disabled)" : ""}`).join(", ");
   const capturedScreensBlock = (model: AppModel, maxScreens = SCREENS_CAP): { text: string; screens: number } => {
     if (currentRunTargetApp() !== "salesforce") return { text: "", screens: 0 };
     const lines = new Set<string>();
-    for (const key of capturedScreenKeys) {
-      const p = findScreen(model, key);
-      if (!p) continue;
-      const names = Array.from(new Set(screenElements(p.elements)
-        .filter((e) => e.name?.trim() && SCREEN_CONTROL_ROLES.has(norm(e.role)))
-        .map((e) => `${e.role} "${e.name}"${e.enabled === false ? " (disabled)" : ""}`))).slice(0, SCREEN_NAMES_CAP);
-      if (names.length) lines.add(`- ${p.url}${p.title ? ` ("${p.title}")` : ""}: ${names.join(", ")}`);
+    // Phase 2: stored screens first (oldest first), so the cap below drops them before this run's.
+    // A stored screen this compile has captured again is shown once, as captured.
+    const captured = capturedScreenKeys.map((k) => findScreen(model, k)).filter((p): p is PageModel => !!p);
+    const storedLines = new Set<string>();
+    for (const s of [...storedScreens].sort((a, b) => a.lastSeen.localeCompare(b.lastSeen))) {
+      const fp = { url: s.url, fp: { key: s.key, title: s.title, tab: s.tab, labels: s.labels } };
+      if (captured.some((p) => sameScreen({ url: p.url, fp: fingerprintOf(p) }, fp)) || !s.controls.length) continue;
+      const openedBy = Array.from(new Set(storedMap!.edges.filter((e) => e.to === s.key)
+        .map((e) => `${e.action.role} "${e.action.name}"`))).slice(0, 3);
+      const line = `- ${s.url}${s.title ? ` ("${s.title}")` : ""}: ${namesOf(s.controls)}` +
+        `${openedBy.length ? `; opened by clicking ${openedBy.join(" or ")}` : ""} (from an earlier run — may have changed)`;
+      lines.add(line);
+      storedLines.add(line);
+    }
+    for (const p of captured) {
+      const controls = controlsOf(p);
+      if (controls.length) lines.add(`- ${p.url}${p.title ? ` ("${p.title}")` : ""}: ${namesOf(controls)}`);
     }
     // Not `.slice(-maxScreens)`: at 0 that is `.slice(-0)`, which keeps everything.
     const kept = [...lines].slice(Math.max(0, lines.size - Math.max(0, maxScreens)));
-    return kept.length
-      ? {
-          text: `\nScreens your earlier steps reached in a live run, in order, with the controls each one shows ` +
-            `(names exactly as captured). A step on one of these screens must use a name from THAT screen, ` +
-            `never a name from the application model's page or from another screen:\n${kept.join("\n")}\n`,
-          screens: kept.length,
-        }
-      : { text: "", screens: 0 };
+    if (!kept.length) return { text: "", screens: 0 };
+    const header = kept.some((l) => storedLines.has(l))
+      ? `\nScreens of this application, with the controls each one shows (names exactly as captured). Lines marked ` +
+        `"from an earlier run" were seen by an earlier run on this site and may have changed; the others were ` +
+        `reached by your earlier steps in this run. A step on one of these screens must use a name from THAT ` +
+        `screen, never a name from the application model's page or from another screen, and a screen that is ` +
+        `"opened by clicking" a control needs that click first:\n`
+      : `\nScreens your earlier steps reached in a live run, in order, with the controls each one shows ` +
+        `(names exactly as captured). A step on one of these screens must use a name from THAT screen, ` +
+        `never a name from the application model's page or from another screen:\n`;
+    return { text: `${header}${kept.join("\n")}\n`, screens: kept.length };
   };
 
   const buildUser = (model: AppModel, correction?: string) => {
@@ -1953,7 +1993,8 @@ Example — handling duplicate selectors with nth:
     // byte-identical answer back. Feeding the rejection reason in is what makes the
     // grounding and assertion guards actually able to converge.
     // `let`: the MAX_CHARS loop below shrinks the screens block before it drops any page.
-    let screens = correction ? capturedScreensBlock(model) : { text: "", screens: 0 };
+    // Retries only — or, with a stored screen map (Phase 2), the first attempt too.
+    let screens = correction || storedScreens.length ? capturedScreensBlock(model) : { text: "", screens: 0 };
     const screensAtStart = screens.screens;
     const correctionHead = correction
       ? `\nYour previous attempt was REJECTED. Fix exactly this and return corrected IR:\n${correction}\n`
@@ -2056,6 +2097,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   const screenMode = currentRunTargetApp() === "salesforce";
   const MAX_SCREEN_CAPTURES = Number(process.env.MAX_SCREEN_CAPTURES ?? 16);
   let screenCaptures = 0;
+  /** Phase 2: what this compile's captures add to the screen map (also `runs/<id>/09-screen-map.json`). */
+  const runMapScreens: ScreenMapScreen[] = [];
+  const runMapEdges: Omit<ScreenMapEdge, "seen">[] = [];
   // Bound total LLM calls so a broken app/prompt still fails fast. Was a hardcoded 8;
   // stacked with backoff.ts's per-call retries that made a single case's worst case 48
   // real requests (originally against Groq; the same shape applies to Gemini now — see
@@ -2268,6 +2312,16 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         captureBefore: new Set(screenBoundaries(parsed.data).filter((i) => !captured.has(i))),
       };
     };
+    // Phase 2: say where the stored map expects each screen-changing click to lead. A log only — the
+    // capture still happens (skipping it waits until the map has proven accurate).
+    if (storedMap?.edges.length) {
+      for (const at of screenBoundaries(parsed.data)) {
+        const click = parsed.data.steps.slice(0, at).filter((st) => st.action === "click" || st.action === "press").at(-1);
+        const to = storedMap.edges.filter((e) => click?.target?.name && e.action.name === click.target.name &&
+          norm(e.action.role) === norm(click.target.role ?? "")).map((e) => storedMap.screens.find((x) => x.key === e.to)).filter(Boolean);
+        if (to.length) console.log(`[ir] screen map predicts: ${click!.target!.role} "${click!.target!.name}" -> ${to.map((x) => `"${x!.title || x!.url}"`).join(" or ")}`);
+      }
+    }
     let ungrounded = groundingError(parsed.data, currentModel, scopeFor());
 
     // Live-extend hops are cheap relative to a fresh LLM generation — no new attempt spent —
@@ -2332,6 +2386,27 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           const was = cap.replacedKey ? capturedScreenKeys.indexOf(cap.replacedKey) : -1;
           if (was >= 0) capturedScreenKeys[was] = cap.key;
           if (!capturedScreenKeys.includes(cap.key)) capturedScreenKeys.push(cap.key);
+          // Phase 2: remember the screen, and the click that led to it from the screen before
+          // (role + name only, never css). Best-effort: a map that cannot be written costs nothing.
+          if (useScreenMap) {
+            try {
+              const page = findScreen(currentModel, cap.key);
+              if (page) {
+                const now = new Date();
+                const from = screenAt.filter((s) => s.at < ungrounded!.index && s.key !== cap.key)
+                  .sort((a, b) => a.at - b.at).at(-1)?.key ?? null;
+                const click = prefix.filter((s) => (s.action === "click" || s.action === "press") && s.target?.name).at(-1);
+                const screen = screenFromPage(page, controlsOf(page), now);
+                const edge = click ? [{ from, action: { role: click.target!.role ?? "", name: click.target!.name! }, to: cap.key }] : [];
+                runMapScreens.push(screen);
+                runMapEdges.push(...edge);
+                recordIntoScreenMap(origin, creds, [screen], edge, now);
+                writeRunScreenMap(origin, creds, runMapScreens, runMapEdges);
+              }
+            } catch (err: any) {
+              console.log("[ir] screen map: could not record the capture:", err?.message ?? err);
+            }
+          }
           console.log(`[ir] screen capture at step ${parsed.data.steps[ungrounded.index]?.id}: ${cap.replacedKey ? "replaced" : "added"} screen ${cap.key} (${cap.reachedUrl}) — app model ${before} -> ${currentModel.pages.length} pages`);
         } catch (err: any) {
           lastErr = `could not capture the screen for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;

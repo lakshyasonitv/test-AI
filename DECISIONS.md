@@ -1643,3 +1643,38 @@ about. *Gate the startup count removal behind the flag too.* Then the default pr
 it; but leaving it ungated would change the flag-off startup log and break the phase gates, so the
 count stays where it always was and only the *new* block is presence-only.
 
+## D-54. The Salesforce screen map is a disk-cache namespace of HINTS, never grounding evidence
+
+**Decision.** Behind `SCREEN_MAP_ENABLED` (default off), a Salesforce run remembers every screen its live
+captures reach, and the click that led from one screen to the next. They are stored per site, per
+organisation (`llmCacheDimension("main")`) and per login (`credentialFingerprint`), in the disk cache's
+`screenmap` namespace (`src/stages/screenMap.ts`). The next run's IR prompt lists those screens from its
+FIRST attempt. Each line is marked "from an earlier run — may have changed" and says which click opens
+it. Nothing else reads the map. A run's own additions are written to `runs/<id>/09-screen-map.json`.
+
+**Why hints and not evidence.** On Lightning and Experience Cloud a screen changes between sessions
+(generated ids, record data, permission-dependent controls). Grounding a step against a stored screen
+would let a stale map produce a test that cannot run. As a hint, a stale map costs at most one retry:
+the model writes a name, grounding still checks it against a live capture of THIS run, and a wrong name
+is rejected exactly as before. Correctness is unchanged; what improves is the model writing the right
+steps first time.
+
+**Why the disk cache and not the database.**
+- It is the same place discovery walks already live, keyed the same way, with no migration and no new
+  table.
+- The map is a cache by nature: losing it costs one slower run.
+- A 7-day TTL (`SCREEN_MAP_TTL_MS`) is enforced on read, because the disk cache itself never expires.
+
+**Names only.** A control is role + name (+ disabled). Never css, testId or ids, which are session-bound
+on Lightning. Everything is passed through `redactCredentials` before it is written.
+
+**Rejected.**
+- Skipping captures when the map predicts the next screen. That stays a later optimisation; this
+  phase only logs `[ir] screen map predicts`.
+- A database table: it needs a migration and a tenancy story for no gain over the cache keys.
+- Storing selectors: they are wrong on the next session.
+
+**Addition beyond the handoff.** Each stored screen's line also names the click that opens it
+(`opened by clicking button "Next"`). The minimal-prompt run `2026-10-15T16-39-13` failed because
+the model never added the click that opens a form, even when told the button existed. The edge is
+exactly that fact, and it is still only a hint.
