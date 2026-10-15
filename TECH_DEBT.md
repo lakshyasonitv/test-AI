@@ -5309,3 +5309,33 @@ positional, because "Select for EOI" is not unique by role + name.
 A better rule would need evidence across sessions: an id that is the same on two walks is not
 generated. The Phase 2 screen map could carry that, but it stores names only.
 
+
+### TD-134. Retained `trace.zip` files are not scrubbed and may hold filled credentials — High / Unverified — **Open**
+
+Found while writing `docs/research/reports/AI test automation competitor features.md` (plan item 0.2),
+from reading the code only. `scrubServedSecrets` (`src/stages/executor.ts`) redacts `results.json`,
+`final-page.txt` and error-context files, but not the Playwright trace. `playwright.config.ts` keeps
+traces on failure (`trace: "retain-on-failure"`) inside `runs/<id>/artifacts`, which is served over
+HTTP (behind `canAccessRun`, open while `AUTH_ENABLED` is off — TD-14). A trace records each action's
+parameters, so a failed case that typed `process.env.TEST_PASSWORD` very likely stores the real value
+inside the zip (CLAUDE.md rule 5).
+
+To confirm: run a failing login case with a canary password, unzip the retained trace and grep every
+served file for the canary. If confirmed, either scrub the trace's action parameters or stop serving
+traces until they are scrubbed. `executor.ts` and `playwright.config.ts` belong to Gunwant's stream;
+the fix needs his sign-off.
+
+### TD-135. `resolveScope` picks a HIDDEN modal-like element as the dialog scope — High / Accidental — **Open (confirmed in Chromium)**
+
+`resolveScope` (`src/stages/targetResolver.ts` ~487) filters dialog candidates with
+`page.locator(DIALOG_SELECTOR).filter({ visible: true } as any)`. On the pinned Playwright 1.49
+`Locator.filter()` has no `visible` option, so the filter is a no-op — the exact trap CLAUDE.md
+records for `generator.ts` (D-19). Confirmed 2026-10-15 in real Chromium: a page with a hidden
+`<div class="modal-backdrop" style="display:none">` and a visible main form — `resolveScope` returned
+the hidden div, not `body`; `.filter({visible:true}).count()` = 1 while `:visible` count = 0.
+
+Effect: the live resolver (replays, screen captures, deterministic heal) searches inside an invisible
+container whenever a page carries any hidden element matching `[class*="modal" i]` /
+`[class*="dialog" i]`, which Lightning and most component libraries render permanently. The generated
+spec's own `scopeOf` uses `':visible'` correctly, so specs and replays can disagree. Fix: use the same
+`':visible'` suffix as `scopeOf`, with a Chromium test that fails today.
