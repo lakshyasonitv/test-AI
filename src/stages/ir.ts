@@ -312,6 +312,8 @@ const FIELD_ACTIONS = new Set(["fill", "select", "check"]);
  *  never onto a textbox. Module-scope because toIR's post-click reveal check needs it too, to
  *  decide whether a re-snapshot actually revealed anything FILLABLE. */
 const FIELD_ROLE_GROUP = new Set(["textbox", "combobox", "searchbox", "checkbox", "radio", "spinbutton"]);
+// Fields a value is TYPED into. A `select` aimed at one of these becomes a `fill` (TD-125).
+const TEXT_ENTRY_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
 
 /**
  * The login steps discovery performed, as IR steps to run before the case's own.
@@ -1033,6 +1035,37 @@ export function groundingError(
     }
     // LS-1: the duplicate the step's `nth` means, not the first one found.
     if (matched) matched = nthTwin(elements, matched, t.nth);
+    // TD-125: a `select` whose dropdown is not on the captured screen, where the screen's control
+    // of that name is a TEXT BOX. The request said "in the Min Budget (AED) combobox, select 40";
+    // the live page has an <input> there, so the model followed the wording and the step was
+    // rejected until TD-74 cut the case short. Typing the value is what the step means, so it
+    // becomes a `fill` on that box — the same in-place self-correction as the name and role ones
+    // below. Decided only by role + accessible name from the screen capture, never page text.
+    // Salesforce screen mode only (D-52): an ordinary run is unchanged. A real dropdown of that
+    // name always wins, because this runs only when the step's own role matched nothing.
+    if (!matched && screenPage && step.action === "select") {
+      const box = bestNameMatch(elements, name, sn, (r) => TEXT_ENTRY_ROLES.has(r), preferVisible, preferEnabled);
+      if (box) {
+        matched = nthTwin(elements, box, t.nth);
+        step.action = "fill";
+        console.log(`[ir] step ${step.id}: select on a textbox -> fill (the page's field is a text box)`);
+      }
+    }
+    // TD-125, part B: the "dropdown" is a group of buttons ("Purpose": "Self Use" / "Investment"),
+    // so the step's VALUE names the control to press. Only when exactly one visible, enabled button
+    // or radio on the screen is named exactly that value — with two, which one is meant is a guess.
+    if (!matched && screenPage && step.action === "select" && step.value) {
+      const want = norm(step.value);
+      const options = elements.filter((e) => (norm(e.role) === "button" || norm(e.role) === "radio")
+        && e.visible !== false && e.enabled !== false && norm(e.name) === want);
+      if (options.length === 1) {
+        matched = options[0];
+        step.action = "click";
+        delete step.value;
+        delete t.nth; // counted the dropdowns the model imagined, not these buttons
+        console.log(`[ir] step ${step.id}: select on a button group -> click ${matched.role} "${matched.name}"`);
+      }
+    }
     const matchedName = matched?.name ?? null;
     if (!matchedName) {
       const pageUrl = trail.pageAt[index]?.url ?? appModel.baseUrl;

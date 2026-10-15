@@ -5084,3 +5084,37 @@ and the case shipped three steps. In screen mode a target missing from its captu
 disabled-target rejection, TD-121) now names the controls the capture saw on that screen, disabled
 ones marked, and says a step opening the screen is probably missing. Real-browser test in
 `tests/multiScreenWizard.test.ts`; fails without the hint.
+
+### TD-125. A `select` step aimed at a text box was rejected instead of typing into it — High / Accidental — **Fixed (Salesforce runs)**
+
+Run `2026-10-14T04-27-15-943Z-9a9cf014`, a Salesforce Experience site. The request said "In the
+Min Budget (AED) combobox, select 40, In the Max Budget (AED) combobox, select 50". On screen 2 of
+the form (same URL), those fields are text boxes: an `<input>` with an "AED" prefix and a
+"1,000,000" placeholder. The model followed the wording and wrote `select` on combobox
+"Min Budget (AED)". `groundingError` found no combobox of that name on the captured screen and
+rejected the step ("not present under any compatible role"). It was rejected twice, TD-74 stopped
+retrying, and the case shipped truncated after step 16.
+
+**Fix, in `groundingError`'s role+name path, screen mode only (D-52):**
+- When a `select` step's own role matches nothing and the same screen has a textbox, searchbox or
+  spinbutton of that name, the step becomes a `fill` on it. It is ranked with the same
+  `bestNameMatch` and `nthTwin` as every other match, keeps its value, and takes the box's role,
+  name, css, testId and frame. It is the same in-place self-correction grounding already makes
+  for names and roles.
+- A real dropdown of that name always wins.
+- Part B: when no field of that name exists and exactly one visible, enabled button or radio on
+  the screen is named exactly the step's value, the step becomes a `click` on it. This covers
+  "Purpose": "Self Use" / "Investment". With two or more such controls, nothing is converted and
+  the step is rejected as before.
+- The decision uses only role and accessible name from the capture, never page prose.
+  `missingActions` is unaffected, because `fill` and `click` are counted like `select`.
+
+**Ordinary runs are unchanged.** The same IR on a non-Salesforce run is still rejected. TD-118
+covers why screen mode is Salesforce-only.
+
+**Not fixed, and not a tool bug:** the values "40" and "50" are the user's test data. The site may
+refuse a budget that small. Grounding neither checks nor changes a value.
+
+Real-browser tests in `tests/selectOnTextbox.test.ts` (5) execute the compiled IR. Each of these
+mutations fails at least one test: no select→fill conversion, no select→click conversion, part B
+converting with two matches, and the conversion running outside screen mode.
