@@ -320,6 +320,29 @@ const TEXT_ENTRY_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
 const SCREEN_CONTROL_ROLES = new Set([
   "button", "link", "checkbox", "radio", "tab", "menuitem", "combobox", "textbox", "searchbox", "spinbutton",
 ]);
+/**
+ * TD-131: re-grounding the final text assertion would REPLACE text the person quoted in their request.
+ *
+ * Run 2026-10-15T17-13-59: the request said check that "Thank You" is shown. The model clicked Next
+ * past a screen without filling it, the replay ended on that screen's validation error, and
+ * groundTerminalTextAssertion's fallback (any message-shaped line, "please" included) rewrote the
+ * assertion to "Please select a purpose (Self Use or Investment)." The case reported PASSED on a form
+ * that was never submitted.
+ *
+ * The person's quoted text is the success criterion; the model's guess is not. So when the guess IS
+ * one of the request's quoted phrases, only a respelling of it is accepted (the corrected text still
+ * contains it, ignoring case, spacing and punctuation). Anything else means the replay did not reach
+ * it, and the test must fail on it. Reads the person's request, not model prose (the same input
+ * TD-127 reads).
+ */
+export function replacesQuotedSuccessText(guessed: string, corrected: string, request: string): boolean {
+  const n = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const g = n(guessed);
+  if (!g || n(corrected) === g) return false;
+  const quoted = [...request.matchAll(/"([^"]{2,200})"|'([^']{2,200})'|“([^”]{2,200})”/g)].map((m) => n(m[1] ?? m[2] ?? m[3]));
+  return quoted.includes(g) && !n(corrected).includes(g);
+}
+
 /** `needle` occurs in `hay` as whole words: "self" in "self use", never "use" in "user" (TD-126).
  *  Both already lower-cased and space-collapsed by `norm`. */
 const hasWholeWords = (hay: string, needle: string): boolean => {
@@ -2514,7 +2537,11 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         // can be the success banner, which would be a false PASS. The guard below would
         // reject it anyway, but only at the cost of a whole attempt out of MAX_ATTEMPTS.
         // Keeping the model's guess instead lets the test fail honestly at execution.
-        if (!assertionContradictsCase(reground, testCase)) parsed.data = reground;
+        const guessed = parsed.data.steps[parsed.data.steps.length - 1]?.target?.text ?? "";
+        const regrounded = reground.steps[reground.steps.length - 1]?.target?.text ?? "";
+        if (screenMode && replacesQuotedSuccessText(guessed, regrounded, sourcePrompt)) {
+          console.log(`[ir] kept the request's own success text "${guessed}" rather than "${regrounded}" — the replay did not reach it, so the test should fail, not pass on another message`);
+        } else if (!assertionContradictsCase(reground, testCase)) parsed.data = reground;
       }
 
       const contradiction = assertionContradictsCase(parsed.data, testCase);

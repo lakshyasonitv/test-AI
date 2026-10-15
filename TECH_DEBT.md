@@ -5258,3 +5258,23 @@ Playwright's own verdict is read from the exit code, which the override keeps (`
 passed. A real failure on a truncated IR has a non-zero exit code and is still `failed`. This applies to
 all sites, because it is a status bug, not a capability. `tests/primaryCaseStatus.test.ts`: both
 mutations caught.
+
+### TD-131. A stalled flow PASSED by asserting a validation error in place of the requested success text — Critical / Accidental — **Fixed (Salesforce runs)**
+
+Run `2026-10-15T17-13-59-354Z-53e5e62c`. The request said check that "Thank You" is shown.
+- The model clicked Next three times without filling form screen 2, so the flow stayed on that screen
+  with the error "Please select a purpose (Self Use or Investment)."
+- `groundTerminalTextAssertion`'s tier-3 fallback takes any message-shaped line, and `MESSAGE_LIKE`
+  includes "please". It rewrote the final assertion to that error, and the case **passed** with the form
+  never submitted (screenshot step-20).
+
+Fixed in `src/stages/ir.ts` (`replacesQuotedSuccessText`, Salesforce runs). When the final assertion's
+text is one of the request's own quoted phrases, a re-grounding is accepted only if it still contains
+that text, ignoring case, spacing and punctuation. Otherwise the request's text is kept and the test
+fails honestly. The check reads the person's request, not model prose.
+
+**Still open for ordinary runs and for unquoted expectations.** The tier-3 fallback can still swap a
+success guess for an error line there. That is the same class of bug, and a structural fix (prefer lines
+that appear only after the final action, and never an element marked invalid or as an alert) wants its
+own change. Tests: `tests/quotedSuccessText.test.ts`, which reproduces the run in real Chromium. Both
+mutations were caught.
