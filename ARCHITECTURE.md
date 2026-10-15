@@ -302,12 +302,15 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `deterministicHeal.ts` | No | Pure-code structural target matcher: re-matches a failing step's IR target (role/name) against the AppModel — no LLM, no browser relaunch. Tiered name matching shared in shape with `ir.ts`'s `bestNameMatch` |
 | `targetResolver.ts` | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`). Every branch hangs off `frameRoot`/`frameRootCode` — `page`, or the `page.frameLocator(...)` chain `Target.frame` names; `tests/frameTarget.test.ts` pins the live and emitted forms to the same element |
 | `failureAnalysis.ts` | Gemini + Vision | Failure diagnosis; deterministic auth-bounce check runs first |
-| `caseSelectionGate.ts` | Gemini (via testCases) | Optional human-review loop over generated case batches, incl. reactive-case rounds |
+| `caseSelectionGate.ts` | Gemini (via testCases) | Optional human-review loop over generated case batches, incl. reactive-case rounds. Its generator is INJECTED (`generate`, default `toTestCases`), so a Pro run's "not satisfied" rounds regenerate with the spec too |
+| `caseGeneration.ts` | No | The router — the only place that chooses a generator. `generateCases`: a spec means `proTestCases`, none means `toTestCases` with exactly its old arguments. `generatorFor(spec)` is what the gate is handed. Never catches a Pro failure (no fallback) |
+| `proTestCases.ts` | Gemini | Pro's own case generator. A copy of `toTestCases`' prompt, cache key and retry loop, plus the confirmed spec (rules, criteria, the user's answers, out-of-scope). Imports — never copies — the TestCase schema, `dropCompoundLoginCases` and `NoTestCasesError`. Key = the same eleven dimensions in the same order + the spec, pinned by `tests/proTestCases.test.ts`. Failures are prefixed "Pro generation failed — run again without Pro." |
 | `suiteRunner.ts` | No | Runs every case in its own browser context, per-case artifacts. `buildSuiteSummary` also reads each failed case's own `05-result.json` off disk and surfaces the failing step and error onto the case (optional additive fields, TD-80) |
 | `executor.ts` | No | Runs spec, captures artifacts, redacts secrets from served output. `extractFailureDetail` turns Playwright's own JSON report into the failing step number/title and the error line — the deterministic failure reason a replay gets with no model call (TD-80) |
 | `discovery.ts` | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
 | `liveExtend.ts` | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding. Its `select` step calls `chooseLive` rather than a bare `selectOption`, sharing option matching and waiting with the generated spec (TD-79). Credential fills resolve their kind from the step's `${env:...}` VALUE, the same way the compiled spec does (TD-84), and a walk that ends on the page it typed a credential into throws instead of snapshotting the login form. `refreshPageModelAt` additionally returns the landed URL, for TD-86's scoped grounding |
-| `testCases.ts` | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist, login-case cap |
+| `testCases.ts` | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist, login-case cap. **Not edited by Pro** — `tests/testCasesNoChange.test.ts` pins its prompt and cache key byte-for-byte |
+| `specIntake.ts` | Gemini (pinned) + lite | Pro document intake behind `SPEC_INTAKE_ENABLED`. `checkSpecUpload`: byte limits, magic-byte sniffing, extension-vs-contents (a disagreement is rejected), per-format structure, DOCX text via mammoth — PDFs are never parsed. `distillSpec`: ONE Gemini call (pinned to Gemini even under `LLM_PROVIDER=azure`, since only it reads a PDF inline), cached in the `spec` namespace on the document's SHA-256 + model + instruction text. Never writes the document anywhere. `compareSpecToApp`/`runSpecComparison`: the per-run spec-vs-AppModel comparison on the LITE role via `llm()` (follows `LLM_PROVIDER`); every warning must name a real rule number or discovered page URL or it is dropped; never throws, never fails a run; warnings held in memory only. A Pro run skips reactive (new-page) case generation, which has never seen the spec |
 | `generator.ts` | No | IR -> Playwright spec (pure code) |
 | `hybridDiscovery.ts` | Gemini (text) | Discovery orchestrator: DOM first, auth-aware login + session verification, same-origin + click-probed site crawl, vision fallback; also owns `isAllowedEntryUrl`/`isPrivateOrLoopbackHost`, the entry-URL scheme + private-host allow-list |
 | `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry; `redactCredentials` skips DOM-keyword-colliding values. `restoreCredentialRefs` guards the editor save path: a credential typed as a literal step value goes back behind `${env:...}` before anything is written, classified by the step's own history / the DOM's `inputType` / a password-only name check (TD-67). `credentialKindForStep`/`credentialForStep` resolve VALUE-first (env reference), falling back to the target only when the value is not one — used by the live walk so it agrees with the compiled spec (TD-84) |
@@ -325,13 +328,14 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `caseEdit.ts` | Gemini (ceiling only) | Re-grounds the steps whose **target** changed, by replaying the earlier steps to arrive at the right page. Grounding is DOM-first, so it usually spends no model call at all. Passes a `GroundingScope` so only those steps are re-verified, and records the URL each walk reached so an edited step resolves against the page actually visited (TD-86). `caseElementContext` supplies the controls a rewrite may name — source-run model first, then cached walk snapshots for the same site (TD-91) |
 | `replay.ts` | No | Walks a stored IR prefix in a real browser and snapshots where it lands. Prefix-cached, so two edits on the same page share one walk. Also owns the replay pre-pass: `ungroundedStepIndexes` + `maybeRegroundForReplay` ground a replay's un-grounded steps against the live page behind `REPLAY_REGROUND` (default off, zero LLM calls, never writes back to the saved case — TD-77) |
 
-### `src/schema/` — Data Contracts (3 files)
+### `src/schema/` — Data Contracts (4 files)
 
 | File | Purpose |
 |------|---------|
 | `caseSelection.ts` | Case-selection decision schema + on-disk accepted-cases/history file shapes |
 | `ir.ts` | Target, Step (action/assertion enums), IR with truncation tracking |
 | `appModel.ts` | Element, PageModel, AppModel + DOM-structured types + `toLiteModel` |
+| `spec.ts` | Pro: `SpecModel` (strict, for what the browser sends — over-limit is rejected) and `LlmSpecModel` (for what the model returns — over-long lists are truncated, so `unresolved` is capped at 10 by the schema). Decides which cases get written; never reaches the IR |
 
 ### `src/` Core
 
@@ -347,7 +351,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 
 | File | Purpose |
 |------|---------|
-| `gemini.ts` | Google Gemini client (REST API, key-pool rotation, backoff); returns `{content, usage}` and records ambient per-stage spend via `llmBudget.ts` |
+| `gemini.ts` | Google Gemini client (REST API, key-pool rotation, backoff); returns `{content, usage}` and records ambient per-stage spend via `llmBudget.ts`. Takes an optional image (`imageBase64`) or document (`fileBase64` + `fileMime`, Pro's PDF) as an `inline_data` part — neither is counted by the `LLM_MAX_PROMPT_CHARS` guard |
 | `keyPool.ts` | Round-robin API key pool with cooldown tracking; `poolFromEnv` accepts a singular `_KEY` var as a fallback when the plural `_KEYS` var isn't set |
 | `llmBudget.ts` | Per-run hard cap on LLM calls across every stage (plan, discovery, testcases, ir, failure-analysis, heal), not just IR; usage recorded to `08-llm-usage.json`, broken down per stage. See `DECISIONS.md` D-21 |
 | `backoff.ts` | Exponential backoff, per-attempt timeout, rate-limit detection + key rotation |
@@ -403,7 +407,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 
 ## Schema Contracts
 
-Three Zod schemas: `src/schema/appModel.ts`, `src/schema/ir.ts`, `src/schema/caseSelection.ts`.
+Four Zod schemas: `src/schema/appModel.ts`, `src/schema/ir.ts`, `src/schema/caseSelection.ts`, and Pro's `src/schema/spec.ts`.
 
 ### AppModel (the discovery output)
 
@@ -527,6 +531,23 @@ CaseHistoryFile (runs/<id>/case-history.json)
                        status: "selected" | "selected_but_capped" | "rejected" }[] }[]
 ```
 
+### SpecModel (Pro document intake)
+
+```
+SpecModel — every field a list of short strings, each bounded (50 items, 500 chars)
+  actors, entities, actions
+  rules          testable constraints — the column the user edits
+  criteria       acceptance criteria
+  outOfScope     what the document excludes (suppresses cases)
+  unresolved     open questions, MAX 10 (schema-enforced)
+  answers        { question, answer }[] — only questions the user ACTUALLY answered;
+                 each question must be one of `unresolved` (checked by /api/spec/confirm)
+
+Lifecycle: upload -> distillSpec (cached, runs/_cache/spec/) -> browser shows it, user edits
+-> /api/spec/confirm -> browser holds it -> POST /api/runs options.spec (Zod-parsed, dropped
+when the flag is off) -> RunOptions.spec. The document itself is never stored.
+```
+
 ---
 
 ## LLM Integration
@@ -585,6 +606,18 @@ WATCHING A RUN
   GET    /api/runs/:runId/accepted-cases         run:viewer   accepted-pool state (count, cap)
   GET    /api/runs/:runId/case-selection-status  run:viewer   snapshot of the pending round
   GET    /api/runs/:runId/page-elements          run:viewer   role+name index from 02-appmodel.json
+  GET    /api/runs/:runId/spec-warnings          run:viewer   Pro: spec-vs-app comparison warnings,
+                                                     IN MEMORY only, never in runs/; 403 when
+                                                     SPEC_INTAKE_ENABLED is off
+
+PRO DOCUMENT INTAKE (mounted always; 403 when SPEC_INTAKE_ENABLED is off)
+  POST   /api/spec/upload?name=<file>            role:tester  raw application/octet-stream body
+                                                     (express.raw, 10mb — NOT the global
+                                                     json parser); checkSpecUpload then one
+                                                     Gemini distillation. Rejections are 200
+                                                     + warnings[]. The document is never stored
+  POST   /api/spec/confirm                       role:tester  validates the user-edited SpecModel
+                                                     and echoes it back; no server-side session
 
 RUN HISTORY
   GET    /api/runs                               role:viewer  newest first; filtered by access
@@ -691,6 +724,17 @@ the URL in place. `login` and `signup` are reached by the router's auth guard ra
 
 **Theme.** Light only. The design this implements ships no dark variant, so the previous dark/light
 token pair and its toggle were removed rather than half-maintained.
+
+**Pro document intake (`SPEC_INTAKE_ENABLED`).** Built entirely by `app.js` and only when
+`/api/health` carries `specIntake: true`, the way the Salesforce checkbox is — flag off, the home view
+is byte-identical. A "Pro" checkbox (`.field-label`/`.lib-check`) under the URL box; ticking it
+creates, after the run form, an upload row, the two-column questions screen
+(`.cd-cols`/`.cd-left`/`.cd-right`, editable rules as `.cd-line` rows, answers as inputs) and a
+warnings panel (`.panel` + `.suite-add-list`); unticking deletes them. No new view, no `showView`, no
+`.hidden`, no new class. The confirmed spec is held in the page (`pro.confirmed`) and sent as
+`options.spec`. On the run screen a Pro run this tab started gets `#proRunWarnings` after
+`#stages`; its warnings are fetched inside `connectToRun`'s existing 1 s poll (`proPollWarnings`),
+never by a second loop. See `DECISIONS.md` D-53.
 
 ### Concurrency
 

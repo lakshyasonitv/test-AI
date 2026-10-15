@@ -4794,6 +4794,11 @@ in the full suite, where scheduling differs. The shape matches the env-leak warn
 `tests/runLocaleRoute.test.ts` (files that set `AUTH_ENABLED`/`DB_ENABLED` at module scope sharing
 a worker). Not investigated further; filed so the next person does not mistake it for a regression.
 
+*Re-observed 2026-10-13 (Pro document intake work, branch `vaibhav/determined-dijkstra-0t2ec9`):* it
+is INTERMITTENT, not a reliable pair-run failure — 1 of 6 paired runs failed with the Pro routes
+stashed (base `d3efa58`), and the same rate with them applied. A pair-run that passes therefore does
+not show it is fixed; anyone closing this should run the pair at least ten times.
+
 ### LS-1. Grounding ignores `nth`, so a duplicate target gets the FIRST duplicate's `css` and resolves to nothing — High / Accidental — **Fixed**
 
 **Fixed.** `groundingError` (`src/stages/ir.ts`) now picks the `nth` exact twin (same role, same name,

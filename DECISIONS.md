@@ -1501,6 +1501,95 @@ then EXECUTES to "was created"; a removed field truncates at that step with the 
 unchanged; a branching wizard grounds the branch chosen; a modal's Save beats the page's Save. Each
 mechanism was mutation-checked. NOT verified against a live org.
 
+## D-53. Pro document intake is a second generator behind a router, steered by a spec the browser holds
+
+**Decision.** Behind `SPEC_INTAKE_ENABLED` (default off), the home screen gains a Pro toggle. The
+user uploads ONE requirements document (PDF ≤ 10 MB, .docx ≤ 10 MB, Markdown ≤ 2 MB); one Gemini
+call distils it into a `SpecModel` (`src/schema/spec.ts`); the user corrects the rules and answers
+the open questions on one two-column screen; the confirmed spec rides `POST /api/runs` as
+`options.spec` and steers which cases get written. Plan, discovery, the IR, grounding, the
+generator and the executor never see it — it decides WHICH cases are written, never what a step
+resolves to.
+
+**Two roads, one router — and the duplication that costs.** `src/stages/testCases.ts` is not
+edited at all; `tests/testCasesNoChange.test.ts` pins its prompt and its eleven-part cache key
+byte-for-byte against a fixture captured before Pro existed. Pro has its own generator,
+`proTestCases.ts`, and `caseGeneration.ts` is the only place that chooses. Pro will need its own
+generation *logic* later, not just extra prompt text; in its own file that divergence can never
+regress the standard path. The price, accepted knowingly: `proTestCases.ts` carries a COPY of the
+standard prompt, cache key and retry loop. Its real hazard is the cache key — the disk half never
+expires, so a dimension added to one key and not the other would serve stale suites forever with
+no error. `tests/proTestCases.test.ts` pins the two keys position-for-position (same eleven inputs,
+same order, plus the spec as a twelfth). The pieces that are *correctness* rather than wording —
+the `TestCase` schema, `dropCompoundLoginCases`, `NoTestCasesError` — are IMPORTED, not copied:
+copying the error class would have broken the orchestrator's `instanceof` check and silently lost
+`03-cases-raw.txt` for every Pro failure.
+
+**The gate is injected, not taught.** `caseSelectionGate.ts` calls its generator on every round, so
+it takes one as a parameter (`generate`, default `toTestCases`) instead of choosing. Without that, a
+Pro run's round 1 would read the document and the user's first "not satisfied" would produce cases
+that had forgotten it.
+
+**No fallback.** A Pro generation failure fails the run ("Pro generation failed — run again without
+Pro."). Falling back to `toTestCases` looks safe and is the dangerous choice: the user uploaded a
+document and would get a suite that ignores it, with no explanation.
+
+**Pages found mid-run.** A Pro run skips reactive (new-page) case generation. That path,
+`generateCasesForNewPages`, is the standard generator and has never seen the document, so it could
+write cases the document excludes. Recorded in the event log as `skipped: "pro_spec"`.
+
+**Distillation is pinned to Gemini.** Only Gemini takes a PDF inline; production runs
+`LLM_PROVIDER=azure`, whose chat completions take images, not PDFs. This is the first call in the
+codebase that goes to `gemini()` while the provider is azure; `GEMINI_API_KEYS` is already mounted
+in `app.yaml`. PDFs are never parsed on our side. The cache key hashes the instruction TEXT, not a
+version constant (D-10), plus `llmCacheVersion()`; an all-empty answer is the "may be a scan"
+warning and is never cached. Output is capped at 8192 tokens (`SPEC_DISTILL_MAX_OUTPUT_TOKENS`)
+because thinking tokens count against the cap. No run budget covers the call; its usage is logged.
+
+**The comparison follows the provider.** The per-run spec-vs-AppModel comparison carries no file,
+so it runs on the LITE role through `llm()` and follows `LLM_PROVIDER` rather than being pinned. It
+is started un-awaited and never throws. Every warning must name a real rule number or a discovered
+page URL; code drops any that does not — the model's report is a preference, the reference check
+is the constraint.
+
+**The browser holds the spec.** There is no server-side session: the container scales to zero
+when idle (`minReplicas: 0`), so a server-held spec would vanish while the user was away and Pro
+would silently do nothing. `POST /api/spec/confirm` validates and echoes the spec back.
+
+**Warnings are memory-only — read this before adding persistence.** The document's bytes are
+dropped as soon as distillation returns; nothing goes to `runs/` or Supabase except the distilled
+spec in the `spec` cache namespace. The comparison warnings are held in memory and served by
+`GET /api/runs/:runId/spec-warnings`, never written to `runs/` (served over HTTP, TD-14). They
+vanish when the container sleeps — agreed for v1. When persistence is added, the safe form phrases
+a warning WITHOUT quoting the document ("A rule about the Lead's phone number can't be tested — no
+phone field found", not the rule's own text), or the file publishes what intake discarded. Two
+artifacts do carry spec-shaped content, accepted: `03-cases.json` (the suite the spec steered — the
+product working) and `03-cases-raw.txt` on a no-cases failure (the model's raw answer may restate a
+rule; kept because it is the only diagnosis there is).
+
+**Routes always mounted, 403 when off.** The two `/api/spec/*` routes and `spec-warnings` are
+mounted unconditionally and check the flag inside the handler: a route that exists only with a flag
+set would make the route-table guards in `multiTenancy.test.ts`/`tenancy.test.ts` depend on the
+environment, and flag-off must run flag-on's code path (rule 7). 403, not 404 — the route exists.
+
+**Departures from the original brief, each chosen with the product owner.** Pro requires a
+document (the brief allowed Pro with none, which needed an undescribed LLM call to invent
+questions). The comparison is on the lite role via `llm()` rather than pinned to Gemini. Oversize
+files are refused by the browser before upload; a direct API caller over 10 MB gets the body
+parser's bare 413.
+
+**A gap, stated.** `outOfScope` is honoured by the prompt alone. Nothing links a generated case to
+an out-of-scope item, and filtering on the case's wording would be the regex-over-model-prose
+check CLAUDE.md warns against (TD-01). A structural check needs a structural link first — for
+example cases citing the rule they prove — which is Pro's own logic to add later.
+
+**Rejected.** An optional field on `toTestCases` (one edit, but every future Pro change would reopen
+the standard path's file). A JSON upload carrying base64 (the global `express.json()` has a 100 KB
+limit; the route uses `express.raw` on itself only). Trusting the browser's MIME type (browsers
+disagree about `.md`; the bytes and the extension decide). A PDF parsing library (the model reads
+the PDF). A field on the run-state response for warnings (a bare array `app.js` reads in many
+places).
+
 ## D-37. Phase 2 logging: the FIXES are always on, the new OUTPUT is behind one flag
 
 **Decision.** Two different things were in scope for the logging-hardening phase and they are

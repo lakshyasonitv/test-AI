@@ -28,6 +28,10 @@ export interface CaseSelectionGateParams {
   /** The original user prompt. The Plan type does not carry it, but the gate needs it to seed
    *  the "prompt that generated the current batch" that round 1 is attributed to. */
   sourcePrompt: string;
+  /** The case generator for every round. Defaults to `toTestCases`. Injected so the gate never
+   *  chooses between generators itself: a Pro run passes one that carries its spec, and round 2+
+   *  then regenerate with the document too, not only round 1 (stages/caseGeneration.ts). */
+  generate?: typeof toTestCases;
 }
 
 export interface CaseSelectionGateResult {
@@ -55,12 +59,13 @@ async function caseSelectionBatch(
   rejectedTitles: string[],
   forcePrimary: boolean,
   latestPrompt: string,
-  sourcePrompt: string
+  sourcePrompt: string,
+  generate: typeof toTestCases
 ): Promise<TestCase[]> {
   if (attempt === 1) {
-    return toTestCases(plan, appModel, undefined, { sourcePrompt });
+    return generate(plan, appModel, undefined, { sourcePrompt });
   }
-  return toTestCases(plan, appModel, {
+  return generate(plan, appModel, {
     existingTitles: acceptedTitles,
     rejectedTitles,
     mintPrimary: forcePrimary,
@@ -79,6 +84,7 @@ export async function runCaseSelectionGate({
   plan,
   appModel,
   sourcePrompt,
+  generate = toTestCases,
 }: CaseSelectionGateParams): Promise<CaseSelectionGateResult> {
   let attempt = 1;
   let promptThatGeneratedCurrentBatch = sourcePrompt;
@@ -98,7 +104,7 @@ export async function runCaseSelectionGate({
     // thing entirely: generation SUCCEEDED but every case was a duplicate of one already seen.)
     const generated = await caseSelectionBatch(
       plan, appModel, attempt, acceptedTitles, rejectedTitles, forcePrimary,
-      promptThatGeneratedCurrentBatch, sourcePrompt
+      promptThatGeneratedCurrentBatch, sourcePrompt, generate
     );
 
     // Hard filter: the model (or the LLM cache) may restate an already-seen case despite the

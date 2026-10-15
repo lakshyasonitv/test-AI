@@ -3503,6 +3503,7 @@ async function connectToRun(runId) {
   // at the end of that handler.
   refreshNewRunState();
   resetRunUI();
+  proAttachRunPanel(runId);
 
   let seen = 0;
   let fails = 0;
@@ -3578,6 +3579,11 @@ async function connectToRun(runId) {
       }
     }
 
+    // Pro: this run's spec-comparison warnings ride THIS loop — no second poller. A no-op for any
+    // run this browser did not start in Pro mode, and once the comparison has reported done.
+    await proPollWarnings(runId);
+    if (generation !== pollGeneration) return;
+
     if (done) { fails = 0; return; }
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -3602,6 +3608,10 @@ form.addEventListener("submit", async (e) => {
   }
   clearUrlError();
 
+  // Pro on with nothing confirmed: not started, and the Pro block says why. Pro off: null.
+  const proOptions = proRunOptions();
+  if (proOptions === false) return;
+
   // The scheme lives beside the field, so the absolute URL is assembled at the last moment. The
   // request body is byte-for-byte the shape it always was: { prompt, url, coverage, options }.
   const url = absoluteUrl();
@@ -3612,17 +3622,21 @@ form.addEventListener("submit", async (e) => {
   submitBtn.innerHTML = `${icon("loader", { size: 14 })} <span class="run-btn-text">Running\u2026</span>`;
 
   try {
+    // Unticked (or flag off, so no box at all): exactly `runOptions`, the same object as always,
+    // so the body is byte-identical. Ticked: one extra key, `targetApp` (D-50). Pro adds one more,
+    // `spec`, and only when Pro is on with a confirmed document.
+    const baseOptions = targetAppBoxEl?.checked ? { ...runOptions, targetApp: "salesforce" } : runOptions;
     const res = await fetch("/api/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      // Unticked (or flag off, so no box at all): exactly `runOptions`, the same object as always,
-      // so the body is byte-identical. Ticked: one extra key, `targetApp` (D-50).
       body: JSON.stringify({ prompt, url, coverage,
-        options: targetAppBoxEl?.checked ? { ...runOptions, targetApp: "salesforce" } : runOptions }),
+        options: proOptions ? { ...baseOptions, ...proOptions } : baseOptions }),
     });
     if (!res.ok) throw new Error(`Server responded with HTTP ${res.status}`);
     const { runId } = await res.json();
     if (!runId) throw new Error("Server didn't return a run id");
+    // The run screen's warnings panel starts with everything intake already said.
+    if (proOptions) proRuns.set(runId, { warnings: [...pro.warnings], done: false });
     runInFlight = false;
     navigate("#/run/" + runId);
   } catch (err) {
@@ -5612,12 +5626,348 @@ fetch("/api/health")
   .then((r) => r.json())
   .then((h) => {
     if (h && Array.isArray(h.targetApps) && h.targetApps.includes("salesforce")) renderTargetAppBox();
+    if (h && h.specIntake === true) renderProToggle();
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);
     if (!("selfHeal" in runOptions)) paintToggle(healToggleEl, optionDefaults.selfHeal);
   })
   .catch(() => { /* health is a diagnostic; the toggles still work without it */ });
+
+// -----------------------------------------------------------------------------
+// Pro document intake (SPEC_INTAKE_ENABLED)
+//
+// The user uploads ONE requirements document; the server distils it into rules and open questions
+// (POST /api/spec/upload); the user corrects the rules and answers what they want on one
+// two-column screen; Continue validates it (POST /api/spec/confirm) and the browser holds the
+// confirmed spec until the run is started, when it rides along as `options.spec`.
+//
+// Rule-keeping, stated once for the whole block:
+//   - Nothing here exists unless /api/health says `specIntake: true`. Flag off, the home view is
+//     byte-identical: no element is created, nothing is hidden with .hidden (rule 4).
+//   - No new view, no showView(), no modal, no toast. Everything is created on the HOME view and
+//     removed again by deleting elements, never by toggling .hidden.
+//   - No new style.css class (rule 3). Reused contracts: .field-label/.lib-check (the toggle, as
+//     the Salesforce box does), .composer-save-btn (buttons), .panel + h2 (the warnings panel),
+//     .suite-add-list/.suite-add-row (its scrollable rows), .cd-cols/.cd-left/.cd-right (the two
+//     columns — they already wrap, left first, on a narrow window), .cd-card/.cd-card-head,
+//     .cd-lines/.cd-line/.cd-line-input/.cd-line-btn/.cd-line-del/.cd-add (editable rules),
+//     .team-error (the one blocking line).
+//   - The server keeps no session: the spec lives here, in memory, because the container sleeps.
+//   - One document at a time. A second accepted upload REPLACES the first and says so.
+//   - The run screen's warnings are picked up by the EXISTING poll loop (connectToRun), never by a
+//     second one. They live in server memory only, so a run opened later, or after the server
+//     slept, shows none — agreed for v1.
+// -----------------------------------------------------------------------------
+
+const PRO_MB = 1024 * 1024;
+/** Mirrors SPEC_BYTE_LIMITS in src/stages/specIntake.ts, so an oversized file is refused BEFORE it
+ *  is sent. The server enforces the same limits; this only saves the upload. */
+const PRO_LIMITS = { pdf: 10 * PRO_MB, docx: 10 * PRO_MB, md: 2 * PRO_MB };
+const PRO_NOUN = { pdf: "PDFs", docx: "Word documents", md: "Markdown files" };
+const PRO_FAILED = "That document couldn't be summarised just now. Try uploading it again.";
+
+const pro = {
+  on: false,
+  toggleEl: null,
+  root: null,          // the Pro block on the home view, or null while Pro is off
+  busy: false,
+  fileName: null,      // the document currently in use
+  spec: null,          // the distilled spec, as the server returned it
+  draftRules: [],      // the left column, as the user is editing it
+  draftAnswers: [],    // the right column, one string per question ("" = unanswered)
+  confirmed: null,     // the spec after Continue — what a run will carry
+  notice: "",          // the one blocking line under the upload row
+  warnings: [],        // every warning of this intake, append-only
+};
+
+/** Runs this browser started in Pro mode -> their warnings (intake + comparison), append-only. */
+const proRuns = new Map();
+
+/** "pdf" | "docx" | "md" by extension, for the size check only; the SERVER decides the format. */
+function proFormatOf(name) {
+  const ext = (String(name).toLowerCase().match(/\.([a-z0-9]+)$/) || [])[1];
+  if (ext === "pdf") return "pdf";
+  if (ext === "docx" || ext === "doc") return "docx";
+  if (ext === "md" || ext === "markdown" || ext === "txt") return "md";
+  return null;
+}
+
+/** Same rounding as the server's sentence, so both say "14 MB" for the same file. */
+function proMb(bytes) { return `${Math.round((bytes / PRO_MB) * 10) / 10} MB`; }
+
+function proWarn(text) {
+  if (text && !pro.warnings.includes(text)) pro.warnings.push(text);
+  renderProWarnings();
+}
+
+function proWarningsPanelHtml(list, emptyText) {
+  const rows = list.length
+    ? list.map((w) => `<div class="suite-add-row" style="cursor:default;font-size:.78rem;line-height:1.5">${escapeHtml(w)}</div>`).join("")
+    : `<div class="suite-add-row" style="cursor:default;font-size:.78rem;color:var(--muted)">${escapeHtml(emptyText)}</div>`;
+  return `<div class="panel" style="margin-top:var(--sp-3)">
+      <h2>Warnings</h2>
+      <div class="suite-add-list" style="margin:0;padding:var(--sp-2)" aria-live="polite">${rows}</div>
+    </div>`;
+}
+
+function renderProToggle() {
+  if (pro.toggleEl) return;
+  const form = document.getElementById("runForm");
+  const foot = form?.querySelector(".composer-foot");
+  if (!form || !foot) return;
+  const label = document.createElement("label");
+  label.className = "field-label";
+  label.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer";
+  label.innerHTML = `<input type="checkbox" class="lib-check" id="proToggle" /> Pro &mdash; steer the tests with a requirements document`;
+  // After the Salesforce box when it exists, so the two controls keep a stable order.
+  (targetAppBoxEl?.closest("label") || foot).insertAdjacentElement("afterend", label);
+  pro.toggleEl = label.querySelector("input");
+  pro.toggleEl.addEventListener("change", () => {
+    pro.on = pro.toggleEl.checked;
+    if (pro.on) buildProBlock();
+    else { pro.root?.remove(); pro.root = null; pro.notice = ""; }
+  });
+}
+
+function buildProBlock() {
+  if (pro.root) return;
+  const form = document.getElementById("runForm");
+  if (!form) return;
+  pro.root = document.createElement("div");
+  pro.root.innerHTML = `
+    <div class="panel" style="padding:var(--sp-4);margin-top:var(--sp-3)">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+        <button type="button" class="composer-save-btn" data-pro="pick">Upload requirements</button>
+        <span class="field-label" data-pro="file"></span>
+        <input type="file" data-pro="input" accept=".pdf,.docx,.md,.markdown,.txt" style="display:none" />
+      </div>
+      <div data-pro="notice"></div>
+    </div>
+    <div data-pro="questions"></div>
+    <div data-pro="warnings"></div>`;
+  // OUTSIDE the run form: nothing in the Pro block can submit a run by pressing Enter.
+  form.insertAdjacentElement("afterend", pro.root);
+
+  const input = pro.root.querySelector('[data-pro="input"]');
+  pro.root.querySelector('[data-pro="pick"]').addEventListener("click", () => { if (!pro.busy) input.click(); });
+  input.addEventListener("change", () => {
+    const file = input.files && input.files[0];
+    input.value = ""; // choosing the same file again must fire `change` again
+    if (file) void proUpload(file);
+  });
+  renderProFileLine();
+  renderProQuestions();
+  renderProWarnings();
+}
+
+function renderProFileLine() {
+  if (!pro.root) return;
+  const line = pro.root.querySelector('[data-pro="file"]');
+  line.textContent = pro.busy
+    ? "Reading the document…"
+    : pro.fileName
+      ? `Using “${pro.fileName}”. Upload another to replace it.`
+      : "PDF, Word (.docx) or Markdown — one document.";
+  pro.root.querySelector('[data-pro="pick"]').disabled = pro.busy;
+  const notice = pro.root.querySelector('[data-pro="notice"]');
+  notice.innerHTML = pro.notice
+    ? `<p class="team-error" role="alert" style="margin-top:var(--sp-3)">${escapeHtml(pro.notice)}</p>`
+    : "";
+}
+
+function renderProWarnings() {
+  if (!pro.root) return;
+  // On the home view the panel appears only once there is something in it.
+  pro.root.querySelector('[data-pro="warnings"]').innerHTML =
+    pro.warnings.length ? proWarningsPanelHtml(pro.warnings, "") : "";
+}
+
+async function proUpload(file) {
+  pro.notice = "";
+  const format = proFormatOf(file.name);
+  if (file.size === 0) { proWarn("That file is empty."); renderProFileLine(); return; }
+  if (format && file.size > PRO_LIMITS[format]) {
+    proWarn(`That file is ${proMb(file.size)}. ${PRO_NOUN[format]} can be up to ${proMb(PRO_LIMITS[format])}.`);
+    renderProFileLine();
+    return;
+  }
+
+  pro.busy = true;
+  renderProFileLine();
+  try {
+    const res = await fetch(`/api/spec/upload?name=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      // Always octet-stream: the server reads the format from the bytes and the extension, never
+      // from the browser's own guess at a MIME type (which is empty for .md in some browsers).
+      headers: { "content-type": "application/octet-stream" },
+      body: file,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    for (const w of body.warnings || []) proWarn(w);
+    if (body.ok && body.spec) {
+      if (pro.fileName && pro.fileName !== file.name) proWarn(`Replaced “${pro.fileName}” with “${file.name}”.`);
+      pro.fileName = file.name;
+      pro.spec = body.spec;
+      pro.draftRules = [...body.spec.rules];
+      pro.draftAnswers = body.spec.unresolved.map(() => "");
+      pro.confirmed = null;
+    }
+  } catch {
+    proWarn(PRO_FAILED);
+  } finally {
+    pro.busy = false;
+    renderProFileLine();
+    renderProQuestions();
+  }
+}
+
+function renderProQuestions() {
+  if (!pro.root) return;
+  const host = pro.root.querySelector('[data-pro="questions"]');
+  if (!pro.spec) { host.innerHTML = ""; return; }
+
+  if (pro.confirmed) {
+    const n = pro.confirmed.rules.length, a = pro.confirmed.answers.length;
+    host.innerHTML = `
+      <div class="panel" style="padding:var(--sp-3) var(--sp-4);margin-top:var(--sp-3);display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+        <span class="field-label" style="flex:1">Confirmed: ${n} rule${n === 1 ? "" : "s"} and ${a} answer${a === 1 ? "" : "s"} will steer the next run.</span>
+        <button type="button" class="composer-save-btn" data-pro="edit">Edit</button>
+      </div>`;
+    host.querySelector('[data-pro="edit"]').addEventListener("click", () => { pro.confirmed = null; renderProQuestions(); });
+    return;
+  }
+
+  const questions = pro.spec.unresolved;
+  const rules = pro.draftRules.map((r, i) => `
+      <div class="cd-line" style="align-items:flex-start">
+        <textarea class="cd-ask-text" style="min-height:0;resize:vertical" rows="2" data-pro-rule="${i}"
+          maxlength="500" aria-label="Rule ${i + 1}">${escapeHtml(r)}</textarea>
+        <button type="button" class="cd-line-btn cd-line-del" data-pro-del="${i}"
+          aria-label="Remove rule ${i + 1}" title="Remove this rule">&#x2715;</button>
+      </div>`).join("");
+  const answers = questions.map((q, i) => `
+      <div style="margin-bottom:var(--sp-3)">
+        <label class="field-label" for="proAnswer${i}" style="display:block;margin-bottom:4px">${escapeHtml(q)}</label>
+        <input type="text" id="proAnswer${i}" class="cd-line-input" style="width:100%" maxlength="1000"
+          data-pro-answer="${i}" value="${escapeHtml(pro.draftAnswers[i] || "")}" placeholder="Optional — leave blank to skip" />
+      </div>`).join("");
+
+  host.innerHTML = `
+    <div class="cd-cols" style="margin-top:var(--sp-3)">
+      <div class="cd-left">
+        <div class="cd-card">
+          <div class="cd-card-head">What I understood</div>
+          <div class="cd-lines">${rules || `<p class="field-label" style="margin:0">The document gave no testable rules. Add your own below.</p>`}</div>
+          <button type="button" class="cd-add" data-pro="add">+ add</button>
+        </div>
+      </div>
+      <div class="cd-right">
+        <div class="cd-card">
+          <div class="cd-card-head">Needs your answer</div>
+          ${answers || `<p class="field-label" style="margin:0">The document left nothing open &mdash; there are no questions.</p>`}
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:var(--sp-3)">
+      <button type="button" class="composer-save-btn" data-pro="continue">Continue</button>
+    </div>`;
+
+  host.querySelectorAll("[data-pro-rule]").forEach((el) =>
+    el.addEventListener("input", () => { pro.draftRules[Number(el.dataset.proRule)] = el.value; }));
+  host.querySelectorAll("[data-pro-answer]").forEach((el) =>
+    el.addEventListener("input", () => { pro.draftAnswers[Number(el.dataset.proAnswer)] = el.value; }));
+  // Enter in a field never submits anything — every field here is free text the user is typing.
+  // In a rule's textarea it also adds no line break: a rule is one sentence; it wraps on its own.
+  host.querySelectorAll("input, textarea").forEach((el) =>
+    el.addEventListener("keydown", (ev) => { if (ev.key === "Enter") ev.preventDefault(); }));
+  host.querySelectorAll("[data-pro-del]").forEach((b) => b.addEventListener("click", () => {
+    pro.draftRules.splice(Number(b.dataset.proDel), 1);
+    renderProQuestions();
+  }));
+  host.querySelector('[data-pro="add"]').addEventListener("click", () => {
+    pro.draftRules.push("");
+    renderProQuestions();
+    host.querySelector(`[data-pro-rule="${pro.draftRules.length - 1}"]`)?.focus();
+  });
+  host.querySelector('[data-pro="continue"]').addEventListener("click", () => void proConfirm());
+}
+
+async function proConfirm() {
+  if (!pro.spec) return;
+  const questions = pro.spec.unresolved;
+  const spec = {
+    ...pro.spec,
+    rules: pro.draftRules.map((r) => r.trim()).filter(Boolean),
+    // An unanswered question is simply ABSENT — never defaulted, never "N/A".
+    answers: questions
+      .map((q, i) => ({ question: q, answer: (pro.draftAnswers[i] || "").trim() }))
+      .filter((a) => a.answer),
+  };
+  try {
+    const res = await fetch("/api/spec/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spec }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    pro.confirmed = (await res.json()).spec;
+    pro.notice = "";
+  } catch {
+    proWarn("Those requirements couldn't be confirmed. Check them and press Continue again.");
+  }
+  renderProFileLine();
+  renderProQuestions();
+}
+
+/**
+ * What the run form adds for Pro: `null` when Pro is off (the request body is then exactly what it
+ * was before Pro existed), `{ spec }` when a confirmed spec is ready, or `false` when Pro is on but
+ * nothing is confirmed yet — the run is then not started, and one line says why.
+ */
+function proRunOptions() {
+  if (!pro.on) return null;
+  if (pro.confirmed) return { spec: pro.confirmed };
+  pro.notice = pro.spec
+    ? "Press Continue to confirm the requirements, or turn Pro off."
+    : "Upload a requirements document, or turn Pro off.";
+  renderProFileLine();
+  return false;
+}
+
+/** The run screen's panel for a Pro run this browser started; removed for any other run. */
+function proAttachRunPanel(runId) {
+  document.getElementById("proRunWarnings")?.remove();
+  const entry = proRuns.get(runId);
+  if (!entry) return;
+  const panel = document.createElement("div");
+  panel.id = "proRunWarnings";
+  document.getElementById("stages")?.insertAdjacentElement("afterend", panel);
+  renderProRunPanel(runId);
+}
+
+function renderProRunPanel(runId) {
+  const panel = document.getElementById("proRunWarnings");
+  const entry = proRuns.get(runId);
+  if (!panel || !entry) return;
+  panel.innerHTML = proWarningsPanelHtml(entry.warnings,
+    entry.done ? "Nothing to flag." : "Checking the document against the app…");
+}
+
+/** Called from connectToRun's existing poll loop, once per tick. Never throws. */
+async function proPollWarnings(runId) {
+  const entry = proRuns.get(runId);
+  if (!entry || entry.done) return;
+  try {
+    const res = await fetch(`/api/runs/${runId}/spec-warnings`);
+    if (!res.ok) return;
+    const body = await res.json();
+    for (const w of body.warnings || []) if (!entry.warnings.includes(w)) entry.warnings.push(w);
+    entry.done = body.done === true;
+    renderProRunPanel(runId);
+  } catch { /* informational only — the next tick tries again */ }
+}
 
 /**
  * Clear the cached browser walks the step editor uses to verify an edit.

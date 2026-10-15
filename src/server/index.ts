@@ -107,6 +107,10 @@ import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
 import { isTargetApp, salesforceEnabled, TARGET_APPS, type TargetApp } from "../runTarget.js";
+import {
+  checkSpecUpload, distillSpec, getRunSpecWarnings, specIntakeEnabled, DISTILL_FAILED_WARNING,
+} from "../stages/specIntake.js";
+import { SpecModel } from "../schema/spec.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -276,6 +280,13 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
       ...(typeof options.selfHeal === "boolean" ? { selfHeal: options.selfHeal } : {}),
       // Already validated above, so this forwards a known-good tag, never the raw body value.
       ...(isSupportedRunLocale(options.locale) ? { locale: options.locale } : {}),
+      // Pro document intake: the confirmed spec. Client input, so parsed with Zod here and
+      // forwarded only as the PARSED value. Absent, malformed, or SPEC_INTAKE_ENABLED off -> not
+      // forwarded, and the run is exactly the run it was before Pro existed. Ignored rather than
+      // rejected so a flag-off server answers every existing request shape exactly as before.
+      ...(specIntakeEnabled() && options.spec !== undefined && SpecModel.safeParse(options.spec).success
+        ? { spec: SpecModel.parse(options.spec) }
+        : {}),
     }
     : undefined;
 
@@ -628,6 +639,16 @@ app.get("/api/runs/:runId/events", requireRunRole("viewer"), (req, res) => {
   subscribe(req.params.runId, res);
 });
 
+// Pro document intake: the run's spec-vs-application comparison warnings.
+//
+// A NEW route rather than a field on /state: /state is a bare event array that public/app.js reads
+// in many places (rule 1). Served from memory only — the warnings quote the uploaded document and
+// are never written to runs/ (see specIntake.ts). Always mounted; 403 when the flag is off.
+app.get("/api/runs/:runId/spec-warnings", requireRunRole("viewer"), (req, res) => {
+  if (!specIntakeEnabled()) return res.sendStatus(403);
+  res.json(getRunSpecWarnings(req.params.runId));
+});
+
 // Full event log as one JSON snapshot. Polling this can't be buffered by a proxy the way
 // a stream can — the RunStore already persists every event, so this is just a read.
 app.get("/api/runs/:runId/state", requireRunRole("viewer"), (req, res) => {
@@ -784,7 +805,89 @@ app.get("/api/health", (_req, res) => {
     // `options.targetApp` accepts. The run screen renders "This URL is a Salesforce org" only when
     // this lists "salesforce"; with the flag off the body is byte-identical to before.
     ...(salesforceEnabled() ? { targetApps: [...TARGET_APPS] } : {}),
+    // ADDITIVE, appended, and present ONLY when SPEC_INTAKE_ENABLED=true — the same shape as
+    // `targetApps` above and for the same reason: the home screen renders the Pro toggle only when
+    // this is true, and with the flag off the body is byte-identical to before.
+    ...(specIntakeEnabled() ? { specIntake: true } : {}),
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Pro document intake — upload one requirements document, get back its distilled SpecModel.
+//
+// Both routes are MOUNTED UNCONDITIONALLY and check SPEC_INTAKE_ENABLED inside the handler, 403
+// when off. Mounting them only with the flag on would make the route-table guards in
+// tests/multiTenancy.test.ts and tests/tenancy.test.ts depend on the environment they run in, and
+// flag-off must run flag-on's code path, not skip it (CLAUDE.md rule 7). 403, not 404: the route
+// exists, and a 404 would send whoever is debugging it looking for a typo.
+//
+// Neither route names a stored resource or reads a row; both are EXEMPT in multiTenancy.test.ts.
+// ---------------------------------------------------------------------------------------------
+
+app.post(
+  "/api/spec/upload",
+  requireRole("tester"),
+  // express.raw, NOT the global express.json() near the top of this file — that one has a 100 KB
+  // default limit. Do not "simplify" this to a JSON body carrying base64: every upload over 100 KB
+  // would then fail with an error that points nowhere useful.
+  //
+  // Only application/octet-stream is parsed. The browser's own MIME type for a file is a claim,
+  // and browsers disagree about .md entirely (empty, text/markdown, octet-stream), so the client
+  // always sends octet-stream and checkSpecUpload decides the format from the bytes + extension.
+  // 10mb is the largest per-format limit (PDF/DOCX); the browser refuses anything larger before
+  // sending it, so a bigger body here is a direct API caller and gets the parser's own 413.
+  express.raw({ type: "application/octet-stream", limit: "10mb" }),
+  async (req, res) => {
+    if (!specIntakeEnabled()) return res.sendStatus(403);
+    const name = typeof req.query.name === "string" ? req.query.name.slice(0, 255) : "";
+    if (!name) return res.status(400).json({ error: "the file name is required as ?name=" });
+    if (!Buffer.isBuffer(req.body)) {
+      return res.status(400).json({ error: "send the file as Content-Type: application/octet-stream" });
+    }
+
+    // Rejections are HTTP 200 with a warnings array: the client renders them in the warnings
+    // panel, and a 4xx would make it treat a rejected document as a failed request.
+    let bytes: Buffer | null = req.body;
+    try {
+      const checked = await checkSpecUpload(bytes!, name);
+      if (!checked.ok) return res.json({ ok: false, warnings: [checked.warning] });
+      const result = await distillSpec(bytes!, checked);
+      if (!result.ok) return res.json({ ok: false, warnings: [result.warning] });
+      return res.json({ ok: true, spec: result.spec, cached: result.cached, warnings: [] });
+    } catch (err) {
+      // A provider failure (quota, network, an oversized prompt) is not the user's document's
+      // fault. Logged with the reason; the panel gets one plain sentence, never the error text.
+      console.error("[spec_intake] distillation failed:", (err as Error)?.message ?? err);
+      return res.json({ ok: false, warnings: [DISTILL_FAILED_WARNING] });
+    } finally {
+      // Drop the document. Nothing above wrote it anywhere; this releases the last reference so
+      // the bytes do not outlive the request.
+      bytes = null;
+      req.body = undefined;
+    }
+  },
+);
+
+// Takes the rules the user edited and the answers they gave, validates them, and hands the
+// confirmed SpecModel BACK to the browser, which sends it with POST /api/runs as options.spec.
+// Deliberately no server-side session store: the container scales to zero when idle
+// (minReplicas: 0), so a server-held spec would vanish while the user was away and Pro would
+// silently do nothing. The browser does not sleep, and the payload is a few KB.
+app.post("/api/spec/confirm", requireRole("tester"), (req, res) => {
+  if (!specIntakeEnabled()) return res.sendStatus(403);
+  const parsed = SpecModel.safeParse(req.body?.spec);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "the confirmed spec is not valid", issues: parsed.error.issues.map((i) => i.message) });
+  }
+  // Structural, not textual: an answer must answer a question that is actually on the screen.
+  // Anything else is a client bug or a forged request, and would put an unasked "answer" into the
+  // generation prompt.
+  const asked = new Set(parsed.data.unresolved);
+  const stray = parsed.data.answers.filter((a) => !asked.has(a.question));
+  if (stray.length > 0) {
+    return res.status(400).json({ error: "an answer was given to a question that was not asked" });
+  }
+  res.json({ spec: parsed.data });
 });
 
 // What the browser needs to talk to Supabase Auth directly (Step 2.2). A NEW route rather than
@@ -2123,6 +2226,9 @@ export const BOOLEAN_ENV_FLAGS = [
   "SCRIPT_OVERRIDE_ENABLED",
   "SELF_HEAL_DEFAULT",
   "SIGNUP_ENABLED",
+  // Pro document intake (src/stages/specIntake.ts). Off: no Pro toggle, the /api/spec/* routes
+  // 403, and options.spec on POST /api/runs is ignored.
+  "SPEC_INTAKE_ENABLED",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

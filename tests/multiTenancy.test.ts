@@ -325,6 +325,8 @@ const RESOURCE_ROUTES: { name: string; method: Method; path: string; body?: unkn
   { name: "read org A's run events", method: "get", path: `/api/runs/${RUN_A}/events`, mounted: "GET /api/runs/:runId/events" },
   { name: "read org A's accepted cases", method: "get", path: `/api/runs/${RUN_A}/accepted-cases`, mounted: "GET /api/runs/:runId/accepted-cases" },
   { name: "read org A's selection status", method: "get", path: `/api/runs/${RUN_A}/case-selection-status`, mounted: "GET /api/runs/:runId/case-selection-status" },
+  // Pro document intake: names a run, so cross-org must be proven.
+  { name: "read org A's spec warnings", method: "get", path: `/api/runs/${RUN_A}/spec-warnings`, mounted: "GET /api/runs/:runId/spec-warnings" },
   { name: "read org A's page elements", method: "get", path: `/api/runs/${RUN_A}/page-elements`, mounted: "GET /api/runs/:runId/page-elements" },
   // The report is built from another org's run artifacts -- step titles, error text, screenshots.
   // Reading it is reading their run, so it is isolated exactly like the artifacts it renders.
@@ -367,6 +369,8 @@ const EXEMPT: Record<string, string> = {
   "POST /api/auth/bootstrap": "scoped to req.user; gives the caller an organisation, never reads another's",
   "POST /api/organisations": "creates a NEW organisation for the caller — it is the one route that acts outside every organisation",
   "POST /api/runs": "creates a run in the caller's own org; there is no org-A resource to name",
+  "POST /api/spec/upload": "takes a file from the caller and returns a result to the caller; names no stored resource, reads no row",
+  "POST /api/spec/confirm": "echoes the caller's own answers back; names no stored resource, reads no row",
   "POST /api/projects": "creates a project in the caller's own org",
   "POST /api/suites": "creates a suite; the projectId in the body IS cross-org tested, in the body-id table below",
   "POST /api/cache/walks/clear": "org-admin gated but clears a GLOBAL cache — a real cross-tenant side effect, audit finding F-2, out of scope here and deliberately recorded rather than hidden",

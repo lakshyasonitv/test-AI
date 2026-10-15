@@ -35,6 +35,20 @@ export interface GeminiOpts {
   systemInstruction?: string;
   imageBase64?: string;       // optional vision input
   imageMime?: string;         // default image/png
+  /**
+   * Optional document input — today, a PDF for Pro document intake (`stages/specIntake.ts`).
+   *
+   * Two names for one wire format: both become an `inline_data` part, exactly as an image does.
+   * `imageBase64`/`imageMime` are NOT renamed to something generic, because every existing vision
+   * call site reads them; these are a separate pair so a document never has to pretend to be an
+   * image, and so `fileMime` has no image default to fall back on silently.
+   *
+   * Like an image, the file is NOT counted by the LLM_MAX_PROMPT_CHARS guard below — that guard
+   * measures `prompt.length` before the parts are built. A caller sending a file must bound its
+   * size itself (Pro intake caps PDFs at 10 MB at the route).
+   */
+  fileBase64?: string;
+  fileMime?: string;
   /** No provider default here (unlike Groq's 0.2) — omitted entirely means Gemini's own
    *  default applies. IR generation sets this explicitly; every other stage is unaffected by
    *  this option existing. (azureOpenAI never sends temperature regardless — the gpt-5 family
@@ -110,11 +124,17 @@ export async function gemini(prompt: string, opts: GeminiOpts = {}): Promise<Gem
     throw new PromptTooLargeError(stage, prompt.length, limit);
   }
 
+  // A caller bug, not a provider failure: refused before the pool so it is never retried or billed.
+  if (opts.fileBase64 && !opts.fileMime) throw new Error("gemini(): fileBase64 needs an explicit fileMime");
+
   try {
     const result = await callWithPool(runConfig?.pool ?? getPool(), async (apiKey, signal) => {
       const parts: any[] = [{ text: prompt }];
       if (opts.imageBase64) {
         parts.push({ inline_data: { mime_type: opts.imageMime ?? "image/png", data: opts.imageBase64 } });
+      }
+      if (opts.fileBase64) {
+        parts.push({ inline_data: { mime_type: opts.fileMime, data: opts.fileBase64 } });
       }
       const body: any = { contents: [{ role: "user", parts }] };
       if (opts.systemInstruction) body.system_instruction = { parts: [{ text: opts.systemInstruction }] };
