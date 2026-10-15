@@ -1811,10 +1811,13 @@ Example — handling duplicate selectors with nth:
   // "Budget Range", the HOME page's search filter, for the EOI form's "Min Budget (AED)".
   const capturedScreenKeys: string[] = [];
   /** On a RETRY of a Salesforce run only: each captured screen's control names, as captured — names
-   *  only, at most SCREEN_NAMES_CAP per screen. "" otherwise, so every other prompt is unchanged. */
+   *  only, at most SCREEN_NAMES_CAP per screen, and at most `maxScreens` screens, the NEWEST kept (the
+   *  screen the failing step is on is the last one reached). "" with 0 screens otherwise, so every
+   *  other prompt is unchanged (tests/fixtures/salesforceTarget/retry-prompt-ordinary.json). */
   const SCREEN_NAMES_CAP = 30;
-  const capturedScreensBlock = (model: AppModel): string => {
-    if (currentRunTargetApp() !== "salesforce") return "";
+  const SCREENS_CAP = 8;
+  const capturedScreensBlock = (model: AppModel, maxScreens = SCREENS_CAP): { text: string; screens: number } => {
+    if (currentRunTargetApp() !== "salesforce") return { text: "", screens: 0 };
     const lines = new Set<string>();
     for (const key of capturedScreenKeys) {
       const p = findScreen(model, key);
@@ -1824,11 +1827,16 @@ Example — handling duplicate selectors with nth:
         .map((e) => `${e.role} "${e.name}"${e.enabled === false ? " (disabled)" : ""}`))).slice(0, SCREEN_NAMES_CAP);
       if (names.length) lines.add(`- ${p.url}${p.title ? ` ("${p.title}")` : ""}: ${names.join(", ")}`);
     }
-    return lines.size
-      ? `\nScreens your earlier steps reached in a live run, in order, with the controls each one shows ` +
-        `(names exactly as captured). A step on one of these screens must use a name from THAT screen, ` +
-        `never a name from the application model's page or from another screen:\n${[...lines].join("\n")}\n`
-      : "";
+    // Not `.slice(-maxScreens)`: at 0 that is `.slice(-0)`, which keeps everything.
+    const kept = [...lines].slice(Math.max(0, lines.size - Math.max(0, maxScreens)));
+    return kept.length
+      ? {
+          text: `\nScreens your earlier steps reached in a live run, in order, with the controls each one shows ` +
+            `(names exactly as captured). A step on one of these screens must use a name from THAT screen, ` +
+            `never a name from the application model's page or from another screen:\n${kept.join("\n")}\n`,
+          screens: kept.length,
+        }
+      : { text: "", screens: 0 };
   };
 
   const buildUser = (model: AppModel, correction?: string) => {
@@ -1921,10 +1929,13 @@ Example — handling duplicate selectors with nth:
     // Retries previously re-sent a byte-identical prompt and predictably got a
     // byte-identical answer back. Feeding the rejection reason in is what makes the
     // grounding and assertion guards actually able to converge.
-    const correctionBlock = correction
-      ? `\nYour previous attempt was REJECTED. Fix exactly this and return corrected IR:\n${correction}\n` +
-        capturedScreensBlock(model)
+    // `let`: the MAX_CHARS loop below shrinks the screens block before it drops any page.
+    let screens = correction ? capturedScreensBlock(model) : { text: "", screens: 0 };
+    const screensAtStart = screens.screens;
+    const correctionHead = correction
+      ? `\nYour previous attempt was REJECTED. Fix exactly this and return corrected IR:\n${correction}\n`
       : "";
+    let correctionBlock = correctionHead + screens.text;
 
     // Selectors the user wrote in their own request, filtered to the ones discovery has
     // actually seen. Verified against the CURRENT model, so a selector on a page reached
@@ -1950,6 +1961,15 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     console.log("[ir] prompt chars:", prompt.length, "| approx tokens:", Math.round(prompt.length / 4), "| pages sent:", pages.length, "/", model.pages.length);
 
     const MAX_CHARS = 30_000;
+    // Over budget with a screens block (Salesforce retries only): drop its OLDEST screen first, one
+    // at a time, before any page goes. The newest screen is where the failing step is.
+    while (prompt.length > MAX_CHARS && screens.screens > 0) {
+      screens = capturedScreensBlock(model, screens.screens - 1);
+      correctionBlock = correctionHead + screens.text;
+      prompt = render(modelJson);
+      console.warn("[ir] prompt still exceeds", MAX_CHARS, "chars — dropped the oldest captured screen,", screens.screens, "left");
+    }
+    if (screensAtStart) console.log(`[ir] screens block: ${screens.screens} screens, ${screens.text.length} chars`);
     // toLiteModel's own per-page array caps should make this rare now — this is the fallback
     // for when even capped pages, combined, are still too large. Drops lowest-relevance pages
     // one at a time (entry page always kept) rather than blindly slicing the assembled prompt.

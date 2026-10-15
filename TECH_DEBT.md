@@ -5083,6 +5083,13 @@ the four attempts.
 Still open: the FIRST attempt is written blind, and ordinary runs get nothing. Tests are in
 `tests/selectOnTextbox.test.ts` ("a retry shows the model the screens it reached"). They fail if
 the block is dropped or if spinbuttons are left out of it.
+**Capped (handoff Phase 1b, 2026-10-15).** The block keeps at most 8 screens, the newest ones,
+because the failing step is on the last screen reached. When a retry prompt is over `MAX_CHARS`, the
+oldest screens are dropped one at a time before any page is. Each such prompt logs
+`[ir] screens block: N screens, M chars`. Tests: `tests/screensBlockCap.test.ts` (real Chromium, a
+10-screen wizard on one URL). `tests/retryPromptOrdinary.test.ts` pins an ordinary run's retry
+prompts byte-for-byte against `tests/fixtures/salesforceTarget/retry-prompt-ordinary.json`, which
+was captured before the cap.
 
 ### TD-123. Choosing an option did not commit the field typed before it — High / Accidental — **Fixed**
 
