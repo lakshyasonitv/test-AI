@@ -11,6 +11,8 @@ import {
 } from "../kb/testStrategy.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { salesforceGuidance } from "./salesforceGuidance.js";
+import { currentRunTargetApp } from "../runTarget.js";
+import { restoreControlNames } from "./controlNames.js";
 import { looksLikeCompoundLoginCase } from "./credentials.js";
 import { llmCacheDimension, resolvedDeployment, resolvedModel } from "../llm/llmContext.js";
 
@@ -510,8 +512,19 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     (extend?.existingTitles ?? []).join("|"), (extend?.rejectedTitles ?? []).join("|"),
     opts.sourcePrompt ?? "", extend?.latestPrompt ?? "",
     system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion());
+  // TD-127: on a Salesforce run, the control names the person wrote ("Select for EOI", "Min Budget
+  // (AED)") are put back into the cases exactly, in code — the prompt rule above asks for that and
+  // was not enough. Every other run returns the model's cases untouched. Idempotent, so it is
+  // safe on a cached batch too.
+  const withRequestNames = (cases: TestCase[]): TestCase[] => {
+    if (currentRunTargetApp() !== "salesforce") return cases;
+    const request = [opts.sourcePrompt ?? "", extend?.latestPrompt ?? ""].join("\n");
+    const { cases: fixed, changed } = restoreControlNames(cases, request);
+    if (changed) console.log(`[testCases] restored the request's exact control names in ${changed} step(s)/outcome(s)`);
+    return fixed;
+  };
   const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
-  if (cachedCases) return cachedCases;
+  if (cachedCases) return withRequestNames(cachedCases);
 
   // Additive focus for a regeneration round: the user's "not satisfied" reply steers WHAT to
   // cover, but the plan, the checklist floor, and the element-grounding rules still apply — a
@@ -571,7 +584,7 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
           throw new NoTestCasesError(provider, modelOrDeployment, raw, finishReason);
         }
         if (isCacheableResult(finalCases)) llmCacheSet(cacheKey, finalCases);
-        return finalCases;
+        return withRequestNames(finalCases);
       }
       lastErr = result.error.message;
     } catch (err: any) {

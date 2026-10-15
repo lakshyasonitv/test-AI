@@ -7,7 +7,7 @@ import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary, siteHost, pageKey } from "../text.js";
 import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
-import { findScreen } from "./screens.js";
+import { findScreen, screenElements } from "./screens.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
@@ -312,6 +312,21 @@ const FIELD_ACTIONS = new Set(["fill", "select", "check"]);
  *  never onto a textbox. Module-scope because toIR's post-click reveal check needs it too, to
  *  decide whether a re-snapshot actually revealed anything FILLABLE. */
 const FIELD_ROLE_GROUP = new Set(["textbox", "combobox", "searchbox", "checkbox", "radio", "spinbutton"]);
+// Fields a value is TYPED into. A `select` aimed at one of these becomes a `fill` (TD-125).
+const TEXT_ENTRY_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
+// Controls worth naming to the model when describing a captured screen: what a step can act on.
+// spinbutton/searchbox included — "Min Budget (AED)" is an <input type=number>, and leaving it out
+// meant no rejection ever told the model the field's real name (TD-122).
+const SCREEN_CONTROL_ROLES = new Set([
+  "button", "link", "checkbox", "radio", "tab", "menuitem", "combobox", "textbox", "searchbox", "spinbutton",
+]);
+/** `needle` occurs in `hay` as whole words: "self" in "self use", never "use" in "user" (TD-126).
+ *  Both already lower-cased and space-collapsed by `norm`. */
+const hasWholeWords = (hay: string, needle: string): boolean => {
+  if (!needle) return false;
+  const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${esc}($|[^\\p{L}\\p{N}])`, "u").test(hay);
+};
 
 /**
  * The login steps discovery performed, as IR steps to run before the case's own.
@@ -784,7 +799,7 @@ export function groundingError(
     if (!scr) return "";
     const names = Array.from(new Set(scr.page.elements
       .filter((e) => e.visible !== false && e.name?.trim()
-        && ["button", "link", "checkbox", "radio", "tab", "menuitem", "combobox", "textbox"].includes(norm(e.role))
+        && SCREEN_CONTROL_ROLES.has(norm(e.role))
         && norm(e.name) !== norm(exclude))
       // Disabled ones too, marked: "Express Interest (disabled)" beside "Select for EOI" is what
       // tells the model the order the page expects.
@@ -1033,6 +1048,51 @@ export function groundingError(
     }
     // LS-1: the duplicate the step's `nth` means, not the first one found.
     if (matched) matched = nthTwin(elements, matched, t.nth);
+    // TD-125: a `select` whose dropdown is not on the captured screen, where the screen's control
+    // of that name is a TEXT BOX. The request said "in the Min Budget (AED) combobox, select 40";
+    // the live page has an <input> there, so the model followed the wording and the step was
+    // rejected until TD-74 cut the case short. Typing the value is what the step means, so it
+    // becomes a `fill` on that box — the same in-place self-correction as the name and role ones
+    // below. Decided only by role + accessible name from the screen capture, never page text.
+    // Salesforce screen mode only (D-52): an ordinary run is unchanged. A real dropdown of that
+    // name always wins, because this runs only when the step's own role matched nothing.
+    if (!matched && screenPage && step.action === "select") {
+      const box = bestNameMatch(elements, name, sn, (r) => TEXT_ENTRY_ROLES.has(r), preferVisible, preferEnabled);
+      if (box) {
+        matched = nthTwin(elements, box, t.nth);
+        step.action = "fill";
+        console.log(`[ir] step ${step.id}: select on a textbox -> fill (the page's field is a text box)`);
+      }
+    }
+    // TD-125, part B: the "dropdown" is a group of buttons ("Purpose": "Self Use" / "Investment"),
+    // so the step's VALUE names the control to press — among the visible, enabled buttons and
+    // radios on the screen. An exact name wins. Failing that, a WHOLE-WORD partial match either way
+    // ("Self" in "Self Use"), but only when exactly one control matches: with two, which one is
+    // meant is a guess, so the step is rejected naming them (TD-126).
+    if (!matched && screenPage && step.action === "select" && step.value) {
+      const want = norm(step.value);
+      const pressable = elements.filter((e) => (norm(e.role) === "button" || norm(e.role) === "radio")
+        && e.visible !== false && e.enabled !== false && norm(e.name));
+      const exact = pressable.filter((e) => norm(e.name) === want);
+      const options = exact.length ? exact
+        : pressable.filter((e) => hasWholeWords(norm(e.name), want) || hasWholeWords(want, norm(e.name)));
+      if (options.length > 1) {
+        return {
+          index,
+          message: `Step ${step.id} selects "${step.value}" in "${t.name}", which is not a dropdown on this ` +
+            `screen; it is a group of buttons, and ${options.length} of them match "${step.value}": ` +
+            `${options.map((e) => `${e.role} "${e.name}"`).join(", ")}. Click the one that is meant, by ` +
+            `its exact name, instead of selecting.`,
+        };
+      }
+      if (options.length === 1) {
+        matched = options[0];
+        step.action = "click";
+        delete step.value;
+        delete t.nth; // counted the dropdowns the model imagined, not these buttons
+        console.log(`[ir] step ${step.id}: select on a button group -> click ${matched.role} "${matched.name}"`);
+      }
+    }
     const matchedName = matched?.name ?? null;
     if (!matchedName) {
       const pageUrl = trail.pageAt[index]?.url ?? appModel.baseUrl;
@@ -1744,6 +1804,33 @@ Example — handling duplicate selectors with nth:
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
+  // TD-122: the screens a live capture has reached during THIS compile, by key, in the order they
+  // were first captured (a re-capture that replaces a screen swaps its key in place). The prompt's
+  // application model is the entry page only, so without these a model writing a later screen's
+  // steps borrows names from the entry page — run 2026-10-15T03-01-14 asked for combobox
+  // "Budget Range", the HOME page's search filter, for the EOI form's "Min Budget (AED)".
+  const capturedScreenKeys: string[] = [];
+  /** On a RETRY of a Salesforce run only: each captured screen's control names, as captured — names
+   *  only, at most SCREEN_NAMES_CAP per screen. "" otherwise, so every other prompt is unchanged. */
+  const SCREEN_NAMES_CAP = 30;
+  const capturedScreensBlock = (model: AppModel): string => {
+    if (currentRunTargetApp() !== "salesforce") return "";
+    const lines = new Set<string>();
+    for (const key of capturedScreenKeys) {
+      const p = findScreen(model, key);
+      if (!p) continue;
+      const names = Array.from(new Set(screenElements(p.elements)
+        .filter((e) => e.name?.trim() && SCREEN_CONTROL_ROLES.has(norm(e.role)))
+        .map((e) => `${e.role} "${e.name}"${e.enabled === false ? " (disabled)" : ""}`))).slice(0, SCREEN_NAMES_CAP);
+      if (names.length) lines.add(`- ${p.url}${p.title ? ` ("${p.title}")` : ""}: ${names.join(", ")}`);
+    }
+    return lines.size
+      ? `\nScreens your earlier steps reached in a live run, in order, with the controls each one shows ` +
+        `(names exactly as captured). A step on one of these screens must use a name from THAT screen, ` +
+        `never a name from the application model's page or from another screen:\n${[...lines].join("\n")}\n`
+      : "";
+  };
+
   const buildUser = (model: AppModel, correction?: string) => {
     // Only send pages relevant to this test case: the entry page + pages whose
     // concepts or URL overlap with the test feature. Never send the full model.
@@ -1835,7 +1922,8 @@ Example — handling duplicate selectors with nth:
     // byte-identical answer back. Feeding the rejection reason in is what makes the
     // grounding and assertion guards actually able to converge.
     const correctionBlock = correction
-      ? `\nYour previous attempt was REJECTED. Fix exactly this and return corrected IR:\n${correction}\n`
+      ? `\nYour previous attempt was REJECTED. Fix exactly this and return corrected IR:\n${correction}\n` +
+        capturedScreensBlock(model)
       : "";
 
     // Selectors the user wrote in their own request, filtered to the ones discovery has
@@ -1938,6 +2026,35 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   /** Longest grounded prefix seen across all attempts — the fallback that keeps a run alive
    *  when the attempt budget is spent extending the model rather than converging. */
   let bestPartial: { ir: IR; steps: Step[]; note: string; kind?: string } | undefined;
+  /** The truncated IR shipped from `bestPartial`. One builder for both exits that ship it. */
+  const fromBestPartial = (bp: NonNullable<typeof bestPartial>): IR => ({
+    ...bp.ir,
+    steps: bp.steps,
+    meta: {
+      ...bp.ir.meta,
+      truncated: true,
+      truncationNote: bp.note,
+      ...(bp.kind ? { truncationKind: bp.kind } : {}),
+      hasTerminalAssertion: hasTerminalAssertion(bp.steps),
+    },
+  });
+  // Set when the screen-capture budget runs out, so a truncation note says so instead of the
+  // misleading "that screen has not been captured yet" (TD-128).
+  let captureBudgetSpent = false;
+  /**
+   * Screens already captured in THIS compile, keyed by the steps that reach them (TD-128). A retry
+   * writes a fresh IR whose first steps are usually the same clicks as before, and every attempt
+   * used to replay and re-capture each of those screens from scratch: run 2026-10-15T05-37-13 spent
+   * 15 of its 16 captures re-taking screens it already had, and its last attempt stopped at step 2
+   * for want of one more. Same steps reach the same screen, so the earlier capture is reused —
+   * no browser, no budget. A key replaced by a newer capture of the same screen follows the swap.
+   */
+  const capturedByPrefix = new Map<string, string>();
+  const prefixSignature = (steps: Step[]): string => JSON.stringify(steps
+    // waits and assertions do not move the flow, so a retry adding or dropping one is the same path
+    .filter((s) => s.action !== "wait" && s.action !== "assert")
+    .map((s) => [s.action, s.target?.css ?? "", norm(s.target?.role ?? ""), norm(s.target?.name ?? ""),
+      s.target?.text ?? "", s.target?.url ?? "", s.target?.frame ?? "", s.target?.nth ?? "", s.value ?? ""]));
 
   /**
    * Grounding rejections already seen, so an unfixable one is not paid for four times.
@@ -2127,8 +2244,18 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           lastErr = `step ${parsed.data.steps[ungrounded.index]?.id} is not on the screen the flow reaches there: ${ungrounded.message}`;
           break;
         }
+        // The same steps were already captured in an earlier attempt: reuse that screen (TD-128).
+        const sig = prefixSignature(prefix);
+        const reuse = capturedByPrefix.get(sig);
+        if (reuse && findScreen(currentModel, reuse)) {
+          screenAt.push({ at: ungrounded.index, key: reuse });
+          console.log(`[ir] screen at step ${parsed.data.steps[ungrounded.index]?.id}: reused screen ${reuse}, captured earlier for the same steps (no replay)`);
+          ungrounded = groundingError(parsed.data, currentModel, scopeFor());
+          continue;
+        }
         if (screenCaptures >= MAX_SCREEN_CAPTURES) {
           lastErr = `screen capture budget (MAX_SCREEN_CAPTURES=${MAX_SCREEN_CAPTURES}) spent before step ${parsed.data.steps[ungrounded.index]?.id}`;
+          captureBudgetSpent = true;
           break;
         }
         try {
@@ -2139,6 +2266,12 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           // A replaced screen has a new key; every step already pointing at it follows.
           if (cap.replacedKey) for (const s of screenAt) if (s.key === cap.replacedKey) s.key = cap.key;
           screenAt.push({ at: ungrounded.index, key: cap.key });
+          if (cap.replacedKey) for (const [k, v] of capturedByPrefix) if (v === cap.replacedKey) capturedByPrefix.set(k, cap.key);
+          capturedByPrefix.set(sig, cap.key);
+          // The compile-wide list the retry prompt reads (TD-122): same key swap, then append if new.
+          const was = cap.replacedKey ? capturedScreenKeys.indexOf(cap.replacedKey) : -1;
+          if (was >= 0) capturedScreenKeys[was] = cap.key;
+          if (!capturedScreenKeys.includes(cap.key)) capturedScreenKeys.push(cap.key);
           console.log(`[ir] screen capture at step ${parsed.data.steps[ungrounded.index]?.id}: ${cap.replacedKey ? "replaced" : "added"} screen ${cap.key} (${cap.reachedUrl}) — app model ${before} -> ${currentModel.pages.length} pages`);
         } catch (err: any) {
           lastErr = `could not capture the screen for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;
@@ -2402,9 +2535,19 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       );
     }
     if (prefix.length) {
+      // TD-128: an EARLIER attempt may have grounded further than this one. Run
+      // 2026-10-15T05-37-13: attempt 2 grounded 27 steps, the last attempt 2 — and the 2 shipped.
+      // The longest grounded prefix is the test worth running, whichever attempt produced it.
+      if (bestPartial && bestPartial.steps.length > prefix.length) {
+        console.log(`[ir] shipping the best attempt's ${bestPartial.steps.length} grounded steps, not this attempt's ${prefix.length}`);
+        return { ir: finalize(fromBestPartial(bestPartial)), updatedAppModel: currentModel };
+      }
       const truncated: IR = { ...parsed.data, steps: prefix };
       truncated.meta = {
-        ...parsed.data.meta, truncated: true, truncationNote: lastErr,
+        ...parsed.data.meta, truncated: true,
+        truncationNote: captureBudgetSpent
+          ? `${lastErr} The screen-capture budget (MAX_SCREEN_CAPTURES=${MAX_SCREEN_CAPTURES}) was spent before this step.`
+          : lastErr,
         // Structured, so isHealable can decide without reading the prose note (TD-83).
         ...(ungrounded.kind ? { truncationKind: ungrounded.kind } : {}),
         hasTerminalAssertion: hasTerminalAssertion(prefix),
@@ -2458,18 +2601,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       `[ir] attempts exhausted while still extending — shipping the grounded prefix ` +
       `(${bestPartial.steps.length} of ${bestPartial.ir.steps.length} steps)`
     );
-    const truncated: IR = {
-      ...bestPartial.ir,
-      steps: bestPartial.steps,
-      meta: {
-        ...bestPartial.ir.meta,
-        truncated: true,
-        truncationNote: bestPartial.note,
-        ...(bestPartial.kind ? { truncationKind: bestPartial.kind } : {}),
-        hasTerminalAssertion: hasTerminalAssertion(bestPartial.steps),
-      },
-    };
-    return { ir: finalize(truncated), updatedAppModel: currentModel };
+    return { ir: finalize(fromBestPartial(bestPartial)), updatedAppModel: currentModel };
   }
 
   throw new Error(`IR failed schema validation after retry: ${lastErr}`);

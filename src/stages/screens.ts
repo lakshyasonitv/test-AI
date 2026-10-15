@@ -41,7 +41,7 @@ export interface ScreenFingerprint {
 
 /** The elements that make up "the screen": an open dialog's own controls when one is open (the
  *  modal IS the screen; the page behind it is chrome), else everything outside header/nav/footer. */
-function screenElements(elements: Element[]): Element[] {
+export function screenElements(elements: Element[]): Element[] {
   const visible = elements.filter((e) => e.visible !== false);
   const inDialog = visible.filter((e) => norm(e.containerRole) === "dialog" || norm(e.pageSection) === "dialog");
   if (inDialog.length) return inDialog;

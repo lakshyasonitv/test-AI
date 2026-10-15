@@ -5056,7 +5056,7 @@ Fixed, in screen mode (D-52) only:
 
 `tests/multiScreenWizard.test.ts` ("real-site shape"), real Chromium, mutation-checked.
 
-### TD-122. The IR prompt shows the model only the ENTRY page — Medium / Deliberate trade-off — **Open**
+### TD-122. The IR prompt shows the model only the ENTRY page — Medium / Deliberate trade-off — **Partly fixed (Salesforce retries)**
 
 `toMicroModel` (`appModel.ts`) gives the IR prompt one page — the entry or case target page — capped
 at 30 elements, role and name only. Pages and screens captured later during live-extend are used for
@@ -5066,6 +5066,23 @@ TD-121) has nothing on the model's side to remind it. TD-121's B works around th
 screen's controls in its rejection. A fuller fix — include a compact list of captured screens'
 element names in the retry prompt — changes the prompt for every multi-page run and wants its own
 measurement of prompt size and cache behaviour.
+
+**Partly fixed 2026-10-15, on Salesforce runs and on RETRIES only.** Run
+`2026-10-15T03-01-14-320Z-9079e296` showed the cost. On the EOI form's second screen, the model
+asked for combobox **"Budget Range"**, which is the *home page's* search filter and the only page
+its prompt showed. The real field is spinbutton "Min Budget (AED)". Each wrong name costs one of
+the four attempts.
+- A retry prompt now appends every screen captured so far in this compile, in capture order. Each
+  screen gets its URL and title, then up to 30 control names (role + name, disabled ones marked;
+  no selectors, no other fields). The names come from `screenElements`, so a modal's own controls
+  are listed rather than the page behind it.
+- `screenControlsHint` and the new block now include spinbutton and searchbox. Before this,
+  "Min Budget (AED)" (an `<input type=number>`) was never named in any rejection.
+- First attempts and every non-Salesforce prompt are unchanged.
+
+Still open: the FIRST attempt is written blind, and ordinary runs get nothing. Tests are in
+`tests/selectOnTextbox.test.ts` ("a retry shows the model the screens it reached"). They fail if
+the block is dropped or if spinbuttons are left out of it.
 
 ### TD-123. Choosing an option did not commit the field typed before it — High / Accidental — **Fixed**
 
@@ -5089,3 +5106,121 @@ and the case shipped three steps. In screen mode a target missing from its captu
 disabled-target rejection, TD-121) now names the controls the capture saw on that screen, disabled
 ones marked, and says a step opening the screen is probably missing. Real-browser test in
 `tests/multiScreenWizard.test.ts`; fails without the hint.
+
+### TD-125. A `select` step aimed at a text box was rejected instead of typing into it — High / Accidental — **Fixed (Salesforce runs)**
+
+Run `2026-10-14T04-27-15-943Z-9a9cf014`, a Salesforce Experience site. The request said "In the
+Min Budget (AED) combobox, select 40, In the Max Budget (AED) combobox, select 50". On screen 2 of
+the form (same URL), those fields are text boxes: an `<input>` with an "AED" prefix and a
+"1,000,000" placeholder. The model followed the wording and wrote `select` on combobox
+"Min Budget (AED)". `groundingError` found no combobox of that name on the captured screen and
+rejected the step ("not present under any compatible role"). It was rejected twice, TD-74 stopped
+retrying, and the case shipped truncated after step 16.
+
+**Fix, in `groundingError`'s role+name path, screen mode only (D-52):**
+- When a `select` step's own role matches nothing and the same screen has a textbox, searchbox or
+  spinbutton of that name, the step becomes a `fill` on it. It is ranked with the same
+  `bestNameMatch` and `nthTwin` as every other match, keeps its value, and takes the box's role,
+  name, css, testId and frame. It is the same in-place self-correction grounding already makes
+  for names and roles.
+- A real dropdown of that name always wins.
+- Part B: when no field of that name exists and exactly one visible, enabled button or radio on
+  the screen is named exactly the step's value, the step becomes a `click` on it. This covers
+  "Purpose": "Self Use" / "Investment". With two or more such controls, nothing is converted and
+  the step is rejected as before.
+- The decision uses only role and accessible name from the capture, never page prose.
+  `missingActions` is unaffected, because `fill` and `click` are counted like `select`.
+
+**Ordinary runs are unchanged.** The same IR on a non-Salesforce run is still rejected. TD-118
+covers why screen mode is Salesforce-only.
+
+**Not fixed, and not a tool bug:** the values "40" and "50" are the user's test data. The site may
+refuse a budget that small. Grounding neither checks nor changes a value.
+
+Real-browser tests in `tests/selectOnTextbox.test.ts` (5) execute the compiled IR. Each of these
+mutations fails at least one test: no select→fill conversion, no select→click conversion, part B
+converting with two matches, and the conversion running outside screen mode.
+
+### TD-126. A `select` on a group of buttons needed the button's EXACT name — Medium / Accidental — **Fixed (Salesforce runs)**
+
+TD-125's part B converted `select "Self Use"` on a non-existent "Purpose" dropdown into a click on
+the "Self Use" button, but only on an exact name. A request like "choose the option that represents
+self", or a model value of "Self", converted nothing, and the step was rejected as "not present".
+Now, among the screen's visible, enabled buttons and radios:
+- an exact name wins;
+- failing that, a **whole-word** partial match in either direction counts ("Self" in "Self Use",
+  never "use" in "user"), but only when exactly ONE control matches;
+- with two or more matches, the step is rejected with a message naming every matching control, so
+  the model can click the right one. It is no longer rejected as "not present".
+This decides on role + accessible name from the capture only. Tests in
+`tests/selectOnTextbox.test.ts`. They fail if the partial match is dropped or if the
+multiple-match rejection is removed.
+
+### TD-127. Test-case generation paraphrased the control names the person wrote — High / Accidental — **Fixed (Salesforce runs)**
+
+The test-case prompt says to keep element names verbatim, but run
+`2026-10-15T03-01-14-320Z-9079e296` still turned "select for eoi" into "click the control labelled
+'Select' for EOI". The IR stage then looked for a button named "Select", and the first attempt was
+spent on it.
+
+**Fix: a check in code after generation** (`src/stages/controlNames.ts`, called at both return
+points of `toTestCases`), on Salesforce runs only. It takes the names the person wrote in the
+request and in a refinement round. A name is:
+- anything quoted;
+- a phrase of two or more Capitalised words, where "(AED)" counts as a word;
+- or one Capitalised word right before a control noun ("Next button").
+
+It restores them in each case's steps and expected outcome, in two ways:
+- **Re-join:** a name cut short inside quotes with the rest following, as in `'Select' for EOI`,
+  becomes `'Select for EOI'`.
+- **Casing:** the person's casing comes back, but only inside quotes or right before a control
+  noun. Open prose such as "the phone number" (the digits) is never rewritten.
+
+It is idempotent, so it also runs safely on a cached batch.
+
+**Limit, stated:** a name written entirely in lower case in unquoted prose ("select for eoi", the
+real run's wording) cannot be told apart from the sentence around it, so it is not recovered.
+Writing it as "Select for EOI", or quoting it, makes it exact. Tests in
+`tests/controlNames.test.ts` use the run's real request. They fail if the Salesforce gate is
+dropped, if the fresh path is not wired, or if either restore rule is removed.
+
+### TD-128. Retries shipped the LAST attempt's steps, and re-captured every screen until the budget ran out — High / Accidental — **Fixed (Salesforce runs)**
+
+Run `2026-10-15T05-37-13-526Z-55a06398` shipped a 2-step test, although attempt 2 had grounded 27
+steps. There were two coupled defects:
+- **The wrong attempt shipped.** The in-loop truncation exit on the last attempt (or after a
+  repeated rejection) shipped the CURRENT attempt's grounded prefix. It ignored `bestPartial`,
+  which already tracked the longest prefix across attempts but was only used on the
+  attempts-exhausted exit. It now ships whichever is longer. Both exits build the truncated IR
+  with one helper (`fromBestPartial`).
+- **The capture budget went on repeats.** Each attempt is a fresh IR, so each attempt replayed and
+  re-captured every screen from scratch. Attempts 1-3 used 7 + 8 + 1 of the 16 captures
+  (`MAX_SCREEN_CAPTURES`), mostly re-taking screens the model already had, and the last attempt
+  stopped at step 2 for want of one more. Captures are now keyed by the steps that reach them
+  (action + grounded target + value, ignoring waits and assertions). The same steps reuse the
+  earlier screen with no browser and no budget, and a replaced screen's key follows the swap.
+  When the budget does run out, the truncation note now says so, instead of the misleading
+  "that screen has not been captured yet".
+
+**Verified on the real site:** run `2026-10-15T06-47-57-725Z-1dc29613` used the same prompt.
+Screens were reused across attempts, the test came out with 26 steps through Submit, and every
+step passed in the browser. The site showed its "Thank You" page. Tests in
+`tests/selectOnTextbox.test.ts` ("TD-128") fail if either fix is reverted.
+
+### TD-129. `PLAYWRIGHT_VIDEO` never reached the Playwright child, so no recording was kept — High / Accidental — **Fixed**
+
+`152e4a5` (2026-10-09) replaced `...process.env` with an allow-list for the Playwright child and
+did not list `PLAYWRIGHT_VIDEO`. That is the variable `playwright.config.ts` reads to decide
+recording. From then on the child saw it unset and fell back to `retain-on-failure`. The
+2026-10-04 "videos for blocked / unconfirmed cases" behaviour (`=on`) has silently done nothing
+since, in Azure too. Added to the allow-list; it is not a secret. Test in
+`tests/executorChildEnv.test.ts`, which fails without it.
+
+Shipped with it: `PLAYWRIGHT_VIDEO=all` records every case and KEEPS every recording, passed
+cases included, so every case has a video. `on` keeps its meaning (record all, prune passed).
+Tests in `tests/ffmpegVideo.test.ts` and `tests/videoPruning.test.ts`.
+
+**Local gotcha found on the way:** a hung `npx playwright install ffmpeg` left a TRUNCATED
+`ffmpeg-win64.exe` (3,459,626 of 3,490,816 bytes) plus a stale `__dirlock`. The executor's probe
+only checks that the file exists, so recording was attempted and every case died at
+`browserContext.newPage: spawn EBUSY`. Fixed locally by unzipping the official build by hand.
