@@ -1,40 +1,35 @@
 # Progress — where we are
 
-*Last updated: 2026-10-13, end of the Pro document intake session.*
+*Last updated: 2026-10-15, Salesforce org login hardening session.*
 
-## Branch and commits
+## Branch
 
-`vaibhav/determined-dijkstra-0t2ec9`, pushed to origin (plus the commit that added this folder). No pull request yet. On top of `097554f`:
+`vaibhav/determined-dijkstra-0t2ec9`, reset onto `origin/main` at `5196487` on 2026-10-15 (Pro document
+intake — PR #8 — is merged into `main`; its history is in `main`). Salesforce org login hardening
+(D-54) is in the working tree on top of that — **not yet committed** at the time of writing; check
+`git log` before trusting this line.
 
-| Commit | What |
-|---|---|
-| `6bd6380` | Stage 0 — fixture pinning `toTestCases`' prompt and cache key (proof of no change) |
-| `49652fa` | Stage 1 — `SpecModel` schema, upload validation, mammoth 1.13.0 |
-| `d3efa58` | Stage 2 — distillation (one Gemini call) and its cache |
-| `96687eb` | Stage 3 — `/api/spec/*` routes, `SPEC_INTAKE_ENABLED`, `options.spec` on runs |
-| `2ba5611` | Stage 4 — `proTestCases.ts`, router, gate injection, spec comparison |
-| `6a8e455` | Stage 5 — UI (toggle, questions screen, warnings panel), D-53, TD-110 note |
+## Shipped (behind flags, default OFF)
 
-## Shipped (behind a flag, default OFF)
-
-**Pro document intake** — `SPEC_INTAKE_ENABLED`. Design and rationale: `DECISIONS.md` D-53. Files:
-`ARCHITECTURE.md` (search "Pro"). With the flag off, the server and UI behave exactly as before;
-`tests/testCasesNoChange.test.ts` proves the standard generator's prompt and cache key are unchanged.
-`app.yaml` has `SPEC_INTAKE_ENABLED=false`. Not deployed.
+- **Pro document intake** — `SPEC_INTAKE_ENABLED`, `DECISIONS.md` D-53. Merged in PR #8.
+- **Salesforce org login hardening** — only when "This URL is a Salesforce org" is ticked
+  (`SALESFORCE_ENABLED` + `options.targetApp`), D-54. New file `src/stages/salesforceOrgLogin.ts`;
+  production guard (scratch/sandbox only, fails closed), `c.salesforce.com` ad block, email-first
+  "Log In with Username" switch, 2.5 s one-screen grace, failure reasons from page structure.
+  `loginOnPage` still logs in and records the steps the generated spec replays (D-24).
 
 ## Verification baseline
 
 - `npx tsc --noEmit` — clean.
-- `npx vitest run` — **2143 passed, 2 failed, 23 skipped, 153 files** (before this session: 2027
-  passed, 142 files).
-- The 2 failures pre-date this work: `booleanEnvFlags` ("has no reader for any reserved flag yet" —
-  `DISCOVERY_LIVE_DOM` and `SALESFORCE_ENABLED` now have readers but are still in its RESERVED list)
-  and `safeClickBrowser` ("still navigates a REAL href").
-- **Cloud-container caveat:** Playwright 1.49 expects `chromium_headless_shell-1148`; the container
-  has `-1194`. Without a workaround ~21 browser tests fail with "Executable doesn't exist". The
-  baseline above was measured with `PLAYWRIGHT_BROWSERS_PATH` pointing at a scratch directory of
-  symlinks (`chromium_headless_shell-1148 -> /opt/pw-browsers/chromium_headless_shell-1194`).
-- `tests/tenancy.test.ts` + `tests/multiTenancy.test.ts` run as a pair fail ~1 in 6 (TD-110).
+- `npx vitest run` on `main` at `5196487`: **2173 passed, 2 failed, 23 skipped, 156 files**. With D-54:
+  see the journal for the current number.
+- The 2 failures pre-date all of this: `booleanEnvFlags` (stale RESERVED list) and
+  `safeClickBrowser` (needs `example.com`, blocked in the cloud container; passes in CI).
+- CI also fails `discoveryStrategy` "shadowAndFrame" on `main` (Chromium-version dependent
+  `srcdoc` serialisation) — passes in the cloud container's newer Chromium.
+- **Cloud-container caveat:** run vitest with `PLAYWRIGHT_BROWSERS_PATH` pointing at a scratch dir of
+  symlinks (`chromium_headless_shell-1148 -> /opt/pw-browsers/chromium_headless_shell-1194`), or ~21
+  browser tests fail with "Executable doesn't exist".
 
 ## Not yet done
 

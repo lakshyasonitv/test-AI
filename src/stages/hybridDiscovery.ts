@@ -34,6 +34,9 @@ import { resolveLive } from "./targetResolver.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { cutAtBoundary, siteHost } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
+import {
+  salesforceRun, assertTestOrg, blockLoginAds, reachUsernameForm, waitForOneScreenPassword, describeLoginFailure,
+} from "./salesforceOrgLogin.js";
 
 // ---------------------------------------------------------------------------
 // Concept labeling — the ONE remaining Gemini call in the primary path
@@ -336,6 +339,9 @@ async function discoverUsingVision(url: string): Promise<AppModel> {
  * Discover multiple pages. Uses DOM discovery for each, with vision fallback.
  */
 export async function discoverPagesHybrid(urls: string[]): Promise<AppModel> {
+  // A ticked Salesforce run is refused before any page is opened unless EVERY URL is a scratch org
+  // or a sandbox (salesforceOrgLogin.ts). Unticked runs never reach this line's body.
+  if (salesforceRun()) for (const u of urls) assertTestOrg(u);
   const seen = new Set<string>();
   // `urls[0]` verbatim was wrong twice over: it keeps the entered SCHEME (so a redirected site
   // leaves every page disagreeing with the base — TD-82) and it keeps the PATH, so a base of
@@ -1211,6 +1217,11 @@ export async function discoverSiteHybrid(
    *  the user skips or the prompt times out, which is a `no-credentials` outcome, not an error. */
   askCredentials?: () => Promise<Credentials | null>,
 ): Promise<AppModel> {
+  // A ticked Salesforce run against anything but a scratch org or a sandbox stops HERE — before the
+  // cache, before a browser exists — so a production org is never opened, and a model cached for it
+  // is never served either. The run fails at its discovery stage with the refusal's sentence.
+  if (salesforceRun()) assertTestOrg(url);
+
   // The cache lookup CANNOT happen here when askCredentials is in play: the key includes the
   // credential identity and we don't know it yet. Reading with a stale key and writing with the
   // real one means the read and write keys differ on every authenticated run, so nothing ever
@@ -1260,7 +1271,12 @@ export async function discoverSiteHybrid(
     // (see the comments above), and the one page it opens must stay the only one for
     // sessionStorage to survive. Options belong wherever the context is created.
     state.context ??= await state.browser.newContext(browserContextOptions());
-    state.page ??= await state.context.newPage();
+    if (!state.page) {
+      state.page = await state.context.newPage();
+      // Salesforce runs only: abort the login page's ad requests on this one page, which every hop
+      // of the crawl reuses — so the block covers the whole crawl and no other run.
+      if (salesforceRun()) await blockLoginAds(state.page);
+    }
     return state.page;
   };
 
@@ -1371,6 +1387,14 @@ export async function discoverSiteHybrid(
     try {
       await authPage.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await authPage.waitForTimeout(800);
+      if (salesforceRun()) {
+        // Salesforce's first screen varies by visit (email-first, username-first, one or two
+        // screens). Bring the USERNAME form up, then let a one-screen form finish drawing its
+        // password box, so hasLoginGate and loginOnPage below see the settled form. A throw lands
+        // in the catch below as a gate-detection error that names where it stopped.
+        await reachUsernameForm(authPage);
+        await waitForOneScreenPassword(authPage);
+      }
       if (await hasLoginGate(authPage)) {
         gateUrl = authPage.url();
       } else {
@@ -1468,18 +1492,24 @@ export async function discoverSiteHybrid(
               + `contain only the login page, and will not be cached`);
           }
         } else {
+          // Salesforce runs: name the actual reason (wrong password, verification code, SSO, forced
+          // password change) from the page's structure where the login stopped; null keeps the
+          // generic sentence below.
+          const sfReason = salesforceRun() ? await describeLoginFailure(authPage, url).catch(() => null) : null;
           auth = {
             status: "login-failed", url: reached,
             // States only what verifySession established: a password field was STILL visible on
             // the landed page after the poll. The old wording ("Check the values are correct for
             // this site") asserted a cause the probe cannot see — a second password step, a
             // change-password page or an inline error all look identical to this check.
-            detail: `Credentials were submitted at ${gateUrl}, but ${reached} still showed a password field after the post-login check, so no session was established. That is evidence the login did not take; it is not proof the values are wrong.`,
+            detail: sfReason ?? `Credentials were submitted at ${gateUrl}, but ${reached} still showed a password field after the post-login check, so no session was established. That is evidence the login did not take; it is not proof the values are wrong.`,
           };
           console.warn(`[hybrid] login FAILED — ${reached} still shows a password field. Crawling anonymously.`);
         }
       } catch (err: any) {
-        auth = { status: "login-failed", url: gateUrl, detail: `Login attempt threw: ${err?.message ?? err}` };
+        // Salesforce runs: the page where it stopped usually says more than the exception does.
+        const sfReason = salesforceRun() ? await describeLoginFailure(authPage, url).catch(() => null) : null;
+        auth = { status: "login-failed", url: gateUrl, detail: sfReason ?? `Login attempt threw: ${err?.message ?? err}` };
         console.warn(`[hybrid] login attempt failed: ${err?.message ?? err} — crawling anonymously`);
       }
     }

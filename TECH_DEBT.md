@@ -5224,3 +5224,32 @@ Tests in `tests/ffmpegVideo.test.ts` and `tests/videoPruning.test.ts`.
 `ffmpeg-win64.exe` (3,459,626 of 3,490,816 bytes) plus a stale `__dirlock`. The executor's probe
 only checks that the file exists, so recording was attempted and every case died at
 `browserContext.newPage: spawn EBUSY`. Fixed locally by unzipping the official build by hand.
+
+### TD-130. A generated test may meet Salesforce's email-first screen the discovery browser never saw — Medium / Unverified — **Open (check on the first real-org run)**
+
+Discovery now clicks "Log In with Username" when Salesforce shows its email-first screen (D-54), then
+records the login it performs on the username form. Each generated test replays those recorded steps
+in a FRESH browser with no cookies (D-24). Which first screen Salesforce shows depends on cookies, so
+a fresh browser might get the email-first screen — where the email box may also be `id="username"` —
+and the replayed `fill #username` would type a Salesforce username into an email field. Not observed;
+nobody has run a ticked run against a real org since D-54. **Check:** on the first real run, look at
+the generated test's first login screenshot. If it is the email-first screen, the fix is a
+Salesforce-only login step in the generated spec (`generator.ts`), weighed against D-24.
+
+### TD-131. `loginOnPage` decides one-screen vs two-screen from one instant check — Medium / Accidental — **Open (fixed for Salesforce runs only)**
+
+`loginOnPage` (`hybridDiscovery.ts`) counts password boxes once. A one-screen form whose password box
+renders a moment after the username box is treated as two-screen and submitted with an EMPTY
+password first — reproduced in real Chromium (`tests/salesforceOrgLogin.test.ts`, the 8c control).
+Salesforce runs wait up to 2.5 s for the box before `loginOnPage` runs (D-54). Every other site still
+has the race; fixing it in `loginOnPage` itself changes behaviour for every site, so it needs its own
+decision and its own run against the non-Salesforce fixtures in `tests/authCrawl.test.ts`.
+
+### TD-132. Generated tests' screenshots of login steps show the username — Low / Accidental — **Open**
+
+The generated spec screenshots each step, the login prefix included. The password box renders as
+dots; the USERNAME renders as readable text, and `runs/` is served over HTTP with its guard off by
+default (TD-14). Not specific to Salesforce — every authenticated run does it. Fix direction: skip the
+screenshot for `auth-*` steps (they have no diagnostic value once masked), or take the first one after
+the submit. Touches `generator.ts`.
+

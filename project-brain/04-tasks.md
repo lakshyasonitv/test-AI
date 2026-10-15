@@ -1,6 +1,6 @@
 # Open tasks
 
-*Last updated: 2026-10-13.*
+*Last updated: 2026-10-15.*
 
 ## Pro document intake (D-53)
 
@@ -9,11 +9,21 @@
 - [ ] Confirm production `GET /api/health` shows `env.GEMINI_API_KEYS.set: true` before turning
       `SPEC_INTAKE_ENABLED` on: distillation is the first call pinned to Gemini under
       `LLM_PROVIDER=azure`.
-- [ ] Open a pull request for `vaibhav/determined-dijkstra-0t2ec9` — only when the user asks.
+- [x] Pull request #8 opened and merged into `main`.
 - [ ] Later (Pro's own logic): a structural link from a generated case to the rule it proves, so
       `outOfScope` can be enforced in code, not only in the prompt (D-53, "A gap, stated").
 - [ ] Later: if comparison warnings are ever persisted, phrase them without quoting the document
       (D-53).
+
+## Salesforce org login hardening (D-54)
+
+- [ ] Commit and push (ask first), then a PR when the user asks.
+- [ ] First real-org run (ask first — costs money, holds the run slot): check TD-130 (does a fresh
+      browser get the email-first screen?) on the generated test's first login screenshot.
+- [ ] TD-131 — fix the one-screen race in `loginOnPage` for every site (needs its own decision).
+- [ ] TD-132 — stop screenshotting login steps in generated tests (username visible).
+- [ ] If Developer Edition orgs should be testable, widen `classifyOrg` (refused today, by choice).
+- [ ] Pro follow-up still waiting on the user: the one-way comparison + quoted warnings brief (B3/B4, 12b).
 
 ## Pre-existing, found or re-confirmed this session
 
