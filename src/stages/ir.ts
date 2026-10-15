@@ -1191,6 +1191,12 @@ const SUCCESS_SIGNAL = /\b(success(ful|fully)?|succeeded|valid|welcome|logged\s*
 export function assertionContradictsCase(
   ir: IR, testCase: TestCase
 ): { stepIds: string[]; message: string } | null {
+  // TD-132 (Salesforce runs): a case whose structured category is "valid" is a success case, full
+  // stop — the wording regexes below are for cases that carry no category. Run 2026-10-15T18-02-40:
+  // a category-"valid" case expected "...the user is not left on the BLANK form screen", NEGATIVE_CASE
+  // matched "blank", "Thank You" was rejected twice as a contradiction, and the model fell back to a
+  // url_contains that proved nothing — on a flow that had in fact reached the Thank You page.
+  if (testCase.category === "valid" && currentRunTargetApp() === "salesforce") return null;
   const isNegative =
     (testCase.category ? NEGATIVE_CATEGORIES.has(testCase.category) : false) ||
     NEGATIVE_CASE.test(testCase.title) ||

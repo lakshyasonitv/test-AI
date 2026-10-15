@@ -5278,3 +5278,21 @@ success guess for an error line there. That is the same class of bug, and a stru
 that appear only after the final action, and never an element marked invalid or as an alert) wants its
 own change. Tests: `tests/quotedSuccessText.test.ts`, which reproduces the run in real Chromium. Both
 mutations were caught.
+
+### TD-132. A valid case was treated as NEGATIVE because its expected text contained "blank" — High / Accidental — **Fixed (Salesforce runs)**
+
+Run `2026-10-15T18-02-40-894Z-e269fbfa`. The case was category **"valid"**, with expected text "…the user is
+not left on the **blank** form screen".
+- `assertionContradictsCase` ORs the structured category with `NEGATIVE_CASE`, a regex over the title and
+  expected PROSE. "blank" matched, so the "Thank You" assertion was rejected twice as "asserts SUCCESS on
+  a case that expects FAIL".
+- The model then ended on a `url_contains` that proved nothing (the form is on the same URL), although the
+  flow really reached the Thank You page (screenshot step-22).
+
+This is CLAUDE.md's named failure mode: a "deterministic" check over model-authored prose. Fixed
+structurally: on a Salesforce run, a case whose `category` is `"valid"` is never negative. The wording
+rules still apply to cases with no category, and to ordinary runs. Tests:
+`tests/validCaseNotNegative.test.ts`. 2 mutations caught.
+
+**Still open for ordinary runs:** the same "blank" / "without" / "missing" wording can flip a valid case
+there.
