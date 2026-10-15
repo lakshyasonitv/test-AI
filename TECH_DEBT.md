@@ -5339,3 +5339,30 @@ container whenever a page carries any hidden element matching `[class*="modal" i
 `[class*="dialog" i]`, which Lightning and most component libraries render permanently. The generated
 spec's own `scopeOf` uses `':visible'` correctly, so specs and replays can disagree. Fix: use the same
 `':visible'` suffix as `scopeOf`, with a Chromium test that fails today.
+
+### TD-136. The case writer DROPPED the request's values from the primary case — High / Accidental — **Fixed (Salesforce runs)**
+
+Run `2026-10-15T18-02-40-894Z-e269fbfa`. The short request named Self Use, Buying Timeline "Later", Preferred
+Project "The Sanctuary", Preferred Areas "Abu Dhabi" and Preferred Unit Type "Office". The `fromPrompt`
+case said "provide valid preference selections" and "provide any requested property-specific
+details", and every value was gone. The IR stage builds from the case's own steps only, so nothing
+downstream could recover them. TD-127 restores a name the case still contains; it cannot restore one
+that was dropped. The prompt already says "use the plan/request values VERBATIM", which made it a
+preference, not a constraint.
+
+Fixed in `src/stages/requestValues.ts`, wired into `toTestCases` after TD-127, on Salesforce runs only.
+- **The check.** Code lists the request's quoted values and multi-word Capitalised names. It drops a
+  leading imperative verb ("Click Explore Projects" → "Explore Projects") and never crosses a
+  sentence end. It then finds which of them the `fromPrompt` case's steps and expected outcome do not
+  mention.
+- **The repair.** Only if some are missing: ONE focused model call (stage `testcases-values`) rewrites
+  that case's steps to carry them verbatim.
+- **Acceptance.** Code re-checks the rewrite and takes it only if strictly fewer values are missing
+  and none it already had is lost. An accepted repair is cached (`requestvalues` namespace).
+
+Ordinary runs and the Pro generator are untouched, and `tests/testCasesNoChange.test.ts` (Pro's
+`toTestCases` pin) still passes. Tests: `tests/requestValues.test.ts`. 5 mutations, all caught.
+
+**Still open:** a lower-case unquoted name ("select for eoi") is not recognised (TD-127's limit).
+Values the person did not write (the form's other dropdowns) are still the model's choice; that is
+Gap 2.

@@ -13,6 +13,7 @@ import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVers
 import { salesforceGuidance } from "./salesforceGuidance.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { restoreControlNames } from "./controlNames.js";
+import { restoreDroppedValues } from "./requestValues.js";
 import { looksLikeCompoundLoginCase } from "./credentials.js";
 import { llmCacheDimension, resolvedDeployment, resolvedModel } from "../llm/llmContext.js";
 
@@ -523,8 +524,16 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     if (changed) console.log(`[testCases] restored the request's exact control names in ${changed} step(s)/outcome(s)`);
     return fixed;
   };
+  // Gap 5 / TD-136: then put back any request value the fromPrompt case DROPPED entirely (one
+  // checked, cached repair call). Salesforce runs only; every other run is returned untouched.
+  const withRequestValues = async (cases: TestCase[]): Promise<TestCase[]> => {
+    const named = withRequestNames(cases);
+    if (currentRunTargetApp() !== "salesforce") return named;
+    const request = [opts.sourcePrompt ?? "", extend?.latestPrompt ?? ""].join("\n");
+    return (await restoreDroppedValues(named, request)).cases;
+  };
   const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
-  if (cachedCases) return withRequestNames(cachedCases);
+  if (cachedCases) return withRequestValues(cachedCases);
 
   // Additive focus for a regeneration round: the user's "not satisfied" reply steers WHAT to
   // cover, but the plan, the checklist floor, and the element-grounding rules still apply — a
@@ -584,7 +593,7 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
           throw new NoTestCasesError(provider, modelOrDeployment, raw, finishReason);
         }
         if (isCacheableResult(finalCases)) llmCacheSet(cacheKey, finalCases);
-        return withRequestNames(finalCases);
+        return withRequestValues(finalCases);
       }
       lastErr = result.error.message;
     } catch (err: any) {
