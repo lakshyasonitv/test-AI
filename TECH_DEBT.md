@@ -2950,6 +2950,17 @@ already rebuilds from `toMicroModel(filtered, { currentPageUrl })` — one page,
 which is exactly why per-call size is flat at ~3,800 tokens across every run. There was nothing to
 trim, and trimming further would have cost grounding accuracy for no measurable saving.
 
+
+**Made progress-aware on Salesforce runs (handoff Phase 1c, 2026-10-15).** The rule's premise, "the
+element is absent, so more attempts cannot ground it", was false twice on a real Experience site. In run
+`2026-10-15T08-19-57`, button "Select for EOI" was rejected in attempt 1, grounded in attempt 2 (which
+reached step 21) and rejected again in attempt 3, and TD-74 stopped there. On a Salesforce run a repeat
+is now fatal only when the target was **never grounded** in any attempt's prefix **and** this attempt got
+**no further** (counting grounded steps other than waits and asserts) than when that target was last
+rejected. Both checks read IR structure, not wording. `MAX_ATTEMPTS` still bounds the cost, and ordinary
+runs keep the old rule. Run `2026-10-15T16-39-13` ("Full Name" again, the same steps plus one wait)
+still stops. Tests: `tests/repeatRejectionProgress.test.ts` (real Chromium). 5 mutations, all caught.
+
 ### TD-75. An element's accessible name can be an entire inlined stylesheet — High / Accidental — Open
 
 **What it is.** On the amazon.in homepage, discovery recorded a `main` element whose `name` is
@@ -5231,3 +5242,19 @@ Tests in `tests/ffmpegVideo.test.ts` and `tests/videoPruning.test.ts`.
 `ffmpeg-win64.exe` (3,459,626 of 3,490,816 bytes) plus a stale `__dirlock`. The executor's probe
 only checks that the file exists, so recording was attempted and every case died at
 `browserContext.newPage: spawn EBUSY`. Fixed locally by unzipping the official build by hand.
+
+### TD-130. A truncated run whose steps all passed was shown as "Failed" — Medium / Accidental — **Fixed**
+
+Run `2026-10-15T16-39-13-396Z-43d0d427`: 6 grounded steps, no terminal assertion, Playwright exit 0 in
+8.7 s. The diagnosis said "the test passed fully", and the case card said **Failed**.
+- `orchestrator.ts` (~468) overrides a truncated-without-assertion result to `passed: false, status:
+  "truncated_no_assertion"`, so the run can never read as a pass when nothing was verified.
+- The suite runner REUSES that result for the primary case. `computeCaseStatus` checks `!passed`
+  first (TD-101), so it read the override as a runtime failure and blamed the site.
+
+Fixed in `src/stages/suiteRunner.ts` only (`primaryCaseStatus`). When the result carries that override,
+Playwright's own verdict is read from the exit code, which the override keeps (`executor.ts`:
+`passed: exitCode === 0`). The status becomes `truncated_no_assertion`, which is still never counted as
+passed. A real failure on a truncated IR has a non-zero exit code and is still `failed`. This applies to
+all sites, because it is a status bug, not a capability. `tests/primaryCaseStatus.test.ts`: both
+mutations caught.

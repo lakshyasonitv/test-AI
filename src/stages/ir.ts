@@ -2101,6 +2101,23 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       url: t.url ?? null,
     });
   };
+  /**
+   * Salesforce runs only (handoff Phase 1c): a repeat is fatal only when it carries no new
+   * information. TD-74's premise — "the element is absent, so more attempts cannot ground it" — is
+   * false in two cases, both seen on real runs, and both read from IR structure, never wording:
+   *   1. The target WAS grounded in an earlier attempt's prefix, so it exists. Run
+   *      2026-10-15T08-19-57: button "Select for EOI" rejected in attempt 1, grounded in attempt 2
+   *      (which reached step 21), rejected again in attempt 3 — and TD-74 stopped there.
+   *   2. This attempt got further than when the target was last rejected (more grounded steps,
+   *      waits and asserts not counted), so the model is converging, not repeating itself.
+   * Otherwise it is still a stop, as before: run 2026-10-15T16-39-13 repeated "Full Name" with the
+   * same grounded prefix plus one wait. MAX_ATTEMPTS still bounds the cost either way.
+   */
+  const targetKey = (t: Step["target"] | undefined): string =>
+    JSON.stringify({ role: t?.role ?? null, name: t?.name ?? null, text: t?.text ?? null, url: t?.url ?? null });
+  const reach = (steps: Step[]): number => steps.filter((s) => s.action !== "wait" && s.action !== "assert").length;
+  const groundedTargets = new Set<string>();
+  const rejectedReach = new Map<string, number>();
   /** The post-click reveal check (see postClickRevealIndex) runs at most ONCE per toIR call.
    *  It costs a browser launch, and — more importantly — it is the mitigation for its own only
    *  real false-positive risk: a flow where a click reveals new fields but the step legitimately
@@ -2541,8 +2558,20 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     // grounded prefix and records `truncationNote`, so the UI already has the reason and needs
     // no new status. TECH_DEBT.md TD-74.
     const key = rejectionKey(ungrounded, parsed.data);
-    const repeated = seenRejections.has(key);
+    let repeated = seenRejections.has(key);
     seenRejections.add(key);
+    if (screenMode) {
+      const rejectedTarget = targetKey(parsed.data.steps[ungrounded.index]?.target);
+      if (repeated && groundedTargets.has(rejectedTarget)) {
+        repeated = false;
+        console.log(`[ir] target rejected again, but an earlier attempt grounded it — it exists, retrying`);
+      } else if (repeated && reach(prefix) > (rejectedReach.get(key) ?? Infinity)) {
+        repeated = false;
+        console.log(`[ir] target rejected again, but this attempt got further (${reach(prefix)} grounded steps, was ${rejectedReach.get(key)}) — retrying`);
+      }
+      rejectedReach.set(key, reach(prefix));
+      for (const s of prefix) if (s.target) groundedTargets.add(targetKey(s.target));
+    }
 
     if (prefix.length && attempt < MAX_ATTEMPTS - 1 && !repeated) {
       console.log(`[ir] grounding rejected step ("${ungrounded.message}") — retrying with feedback (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
