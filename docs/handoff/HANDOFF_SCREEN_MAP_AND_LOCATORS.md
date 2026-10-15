@@ -1,7 +1,9 @@
 # Handoff: screens in the prompt, a persistent screen map, sturdier Salesforce locators
 
-Written 2026-10-15 against branch `shadowdom` at `4aed61e`. Four phases, each shippable and
-testable on its own. **Do one phase per session. Do not start the next phase until the previous
+Written 2026-10-15 against branch `shadowdom` at `ffc3d60`. Four phases, each shippable and
+testable on its own. **Phase 1 is already done** (commit `98c706b`, verified on the real site:
+run `2026-10-15T07-00-35-932Z-25d84b75` compiled 27 steps and passed through Submit); what is
+left of it is a short hardening list. **Do one phase per session. Do not start the next phase until the previous
 one's gate (its "Done when" list) is met and the work is pushed.**
 
 This is a plan, not a topic owner (`CLAUDE.md` documentation map): defects go in `TECH_DEBT.md`,
@@ -50,7 +52,12 @@ rationale in `DECISIONS.md`, and each shipped phase gets its own `docs/phases/PH
    not match, point `PLAYWRIGHT_BROWSERS_PATH` at a matching one as earlier sessions did.
 6. **Mutation-check** each mechanism: break it on purpose, confirm a test fails, restore. Say in
    the phase report which mutation each test caught.
-7. Each phase ends with: `docs/phases/PHASE_<NAME>_REPORT.md` (what changed, new flags, new
+7. **Known breakage on this branch, fix before Phase 2:** `ffc3d60` deleted `.env.example`.
+   `tests/extendedLogging.test.ts` reads that file and now fails; `CLAUDE.md`, `README.md` and
+   `src/server/index.ts` refer to it; and every flag (including Phase 2's) is supposed to be
+   documented there. It is Gunwant's file — **ask Lakshya whether to restore it**
+   (`git checkout 4aed61e -- .env.example`) before adding any flag.
+8. Each phase ends with: `docs/phases/PHASE_<NAME>_REPORT.md` (what changed, new flags, new
    routes, schema changes, how to verify, how to roll back, deliberately not fixed), a
    `DECISIONS.md` entry if a design choice was made, `TECH_DEBT.md` entries for anything found.
 
@@ -70,60 +77,37 @@ rationale in `DECISIONS.md`, and each shipped phase gets its own `docs/phases/PH
 | Disk cache (never expires), namespaces, `makeCacheKey`, `credentialFingerprint` | `src/kb/llmCache.ts` |
 | Run artifacts (`runs/<id>/0N-*.json`) | `src/orchestrator.ts` `step(...)`, ~183 |
 | Salesforce prompt rules | `src/stages/salesforceGuidance.ts` |
+| **Captured screens in the retry prompt** (Phase 1, done): `capturedScreenKeys` (~1812), `capturedScreensBlock` (~1815), `SCREEN_CONTROL_ROLES`, `SCREEN_NAMES_CAP` | `src/stages/ir.ts` |
+| Best-attempt shipping (`fromBestPartial`), capture reuse by prefix, select-on-button partial match | `src/stages/ir.ts` (TD-126, TD-128) |
+| Request's quoted control names restored in test cases | `src/stages/controlNames.ts` (TD-127) |
+| Numbers already taken | `DECISIONS.md` up to D-52; `TECH_DEBT.md` up to TD-129 — new entries start at D-53 / TD-130 |
 | Existing real-browser tests to extend | `tests/multiScreenWizard.test.ts`, `tests/screens.test.ts`, `tests/selectOnTextbox.test.ts` |
 
 ---
 
-## Phase 1 — Show the model the captured screens on retry (TD-122)
+## Phase 1 — Show the model the captured screens on retry (TD-122) — DONE in `98c706b`
 
-### Why
-`toMicroModel` hands the IR model **one page** (the entry page), 30 elements, role+name only.
-Screens the run captures later are used for grounding but never shown to the model, so it writes
-every later step from the user's sentence alone and invents or drops names ("Select" for
-"Select for EOI", skipping "Select for EOI" entirely — runs `2026-10-14T02-35-44`,
-`2026-10-14T01-59-44`). `screenControlsHint` (TD-124) patches this per rejection; this phase fixes
-it at the source.
+What landed: on a Salesforce **retry**, `capturedScreensBlock` lists each captured screen
+(`capturedScreenKeys`, in capture order) as `- <url> ("<title>"): role "name", role "name" (disabled), …`,
+dialog controls first, ≤ `SCREEN_NAMES_CAP` (30) names per screen. First attempts and
+non-Salesforce runs are untouched. Also in that commit: the last attempt ships `bestPartial`
+rather than its own short prefix (TD-128), captures are reused by prefix instead of re-taken,
+"Self" → "Self Use" on a button group when exactly one matches (TD-126), and quoted control
+names from the request are restored in generated cases (TD-127).
 
-### Design
-- In `buildUser`, when `screenMode` **and** this is a retry (`correction` is set), append a block
-  **after** the application model and **before** the test case:
-  ```
-  Screens captured so far on this site (live, after the steps that reach them). Use ONLY these
-  names for steps after the entry page:
-  - Screen "The Sanctuary" (url /project-details): button "Select for EOI", button "Express Interest" (disabled), ...
-  - Screen "Your Contact Details" (url /project-details): textbox "Full Name", textbox "Email Address", ...
-  ```
-  Source of truth: `currentModel.pages.filter(p => p.screen)`, in the order they were added.
-  Per screen: `screen.title` (fallback: page title, then pageKey), the pageKey, and the visible
-  controls as `role "name"` with ` (disabled)` for `enabled === false`. Roles: button, link, tab,
-  menuitem, textbox, combobox, searchbox, checkbox, radio, spinbutton. Cap **30 controls per
-  screen** and **8 screens** (newest kept). Names come from the capture, never invented.
-- **First attempt unchanged.** No block when `correction` is undefined. Non-Salesforce runs:
-  no block ever. This keeps first-attempt prompts (and their LLM cache keys) byte-identical.
-- Budget: the existing `MAX_CHARS` loop drops pages; make it also drop the oldest screens from
-  this block before dropping pages. Log `[ir] screens block: N screens, M chars`.
-- Keep `screenControlsHint` as is (it still helps when the retry is for a different reason).
-
-### Do not
-- Do not put screens in `toMicroModel` or the first-attempt prompt. (Measure first; a later phase
-  can move it if retries still dominate.)
-- Do not change the system prompt (`salesforceGuidance.ts`) — the block goes in the user turn.
-
-### Tests (`tests/multiScreenWizard.test.ts`, real Chromium, LLM mocked)
-1. Wizard: model's first IR skips "Select for EOI"; assert the **second** IR prompt contains the
-   block with `button "Select for EOI"` and `button "Express Interest" (disabled)`, and the first
-   prompt does **not** contain "Screens captured". Final IR complete and executes.
-2. Non-Salesforce run: the retry prompt is byte-identical to a fixture captured BEFORE this
-   change (add `tests/fixtures/salesforceTarget/retry-prompt-ordinary.json`, captured from the
-   code before the edit).
-3. Cap: 10 screens × 40 controls → block holds 8 screens × 30, newest screens.
-4. Mutation: remove the block → test 1 fails.
+### Phase 1b — hardening (small; do it in the Phase 2 session before 2a)
+- **Screen cap.** The block caps names per screen but not screens. Cap at 8 screens, newest
+  kept, and make the existing `MAX_CHARS` loop drop the oldest screens from the block before it
+  drops pages. Log `[ir] screens block: N screens, M chars`.
+- **Byte-identical fixture for ordinary retries.** Capture the retry prompt of a NON-Salesforce
+  run from the code as it is now into `tests/fixtures/salesforceTarget/retry-prompt-ordinary.json`
+  and assert against it (same discipline as `null-run-prompts.json`), so Phase 2 cannot leak the
+  block into ordinary runs.
+- **Mutation check** on the block (empty it → the wizard "skips Select for EOI" test must fail).
 
 ### Done when
-- Tests above pass; `tsc` clean; full vitest at baseline (2 known failures).
-- Real run on `th1790674436190--realestate.sandbox.my.site.com` reaches at least step 17 with
-  **fewer IR attempts** than run `2026-10-14T04-27-15` (16 IR calls). Record the number.
-- `TECH_DEBT.md` TD-122 marked fixed; `docs/phases/PHASE_SCREENS_IN_PROMPT_REPORT.md`.
+- Both tests pass; `tsc` clean; vitest at baseline.
+- Nothing else changes: this is tests plus a cap.
 
 ---
 
@@ -161,8 +145,9 @@ interface ScreenMap { version: 1; site: string; screens: ScreenMapScreen[]; edge
 
 **2b. Use (read side).** At the start of `toIR` when `screenMode && flag`:
 - Load the site's map. **Stored screens are hints for the model, never grounding evidence**: feed
-  them into the Phase 1 block (now also on the **first** attempt, marked
-  `(from an earlier run — may have changed)`), and nothing else. Grounding still requires a live
+  them through `capturedScreensBlock` — give it a second source besides `capturedScreenKeys`
+  (stored screens, marked `(from an earlier run — may have changed)`), and emit the block on the
+  **first** attempt too when stored screens exist. Nothing else reads the map. Grounding still requires a live
   capture, so correctness is unchanged; what improves is the model writing the right steps first
   time, which cuts retries and captures.
 - Edges: when `screenBoundaries` marks a step and the map has an edge from the current screen via
@@ -190,7 +175,8 @@ interface ScreenMap { version: 1; site: string; screens: ScreenMapScreen[]; edge
 - Flag off: everything byte-identical to Phase 1 (fixture).
 - Flag on, real site: second run of the same request shows `[ir] screen map predicts` lines and
   fewer IR calls than the first. Record both numbers.
-- `DECISIONS.md` D-53 (why disk cache not DB, why hints-not-evidence), phase report.
+- `DECISIONS.md` D-53 (why disk cache not DB, why hints-not-evidence), `TECH_DEBT.md` TD-130+
+  for anything found, phase report.
 
 ---
 
@@ -246,7 +232,7 @@ anywhere on the way to the spec — grep for `.toLowerCase()` on `css` in `ir.ts
 - Real site: `04-ir.json` for the EOI case shows no `-\d+` ids in `css`, the form steps use
   role/label selectors, and the case executes as far as before or further.
 - `DECISIONS.md` D-54 (ladder change, why role engine, why generated-id rule), phase report,
-  TD entry if any step regressed.
+  TD-13x entry if any step regressed.
 
 ---
 
@@ -275,10 +261,14 @@ screen map has proven itself.
 
 | Session | Do | Gate |
 |---|---|---|
-| 1 | Phase 1 | tests + real-site run with fewer IR attempts |
-| 2 | Phase 2a+2b (after flag-file approval) | flag-off identical; flag-on second run cheaper |
+| 1 | `.env.example` decision, Phase 1b, then Phase 2a+2b (after flag-file approval) | flag-off identical; flag-on second run cheaper |
+| 2 | Phase 2 real-site check if session 1 ran out | second run cheaper than the first |
 | 3 | Phase 3 | `-146` re-render test; real-site `04-ir.json` free of generated ids |
 | 4 | Phase 4 design doc only | reviewed by Lakshya |
+
+Baseline to beat, from `98c706b`'s verification: run `2026-10-15T07-00-35-932Z-25d84b75`, 27 steps,
+passed through Submit. Record IR call count and screen-capture count of every later real run next
+to it in the phase report.
 
 If a phase's real-site check fails, stop, write the failure (run id, `04-ir.json` truncation
 note, screenshots) into the phase report, and do not start the next phase.
