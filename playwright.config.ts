@@ -1,6 +1,12 @@
 import { defineConfig } from "@playwright/test";
 import { chromiumLaunchOptions, browserContextOptions } from "./src/browserLaunch.js";
 
+// `PLAYWRIGHT_VIDEO=all` RECORDS exactly like "on" — it differs only in what happens afterwards:
+// pruneVideosForPassedCases (suiteRunner.ts) runs for "on" alone, so under "all" every recording is
+// kept, passed cases included. Normalised here so the `video:` entry below only ever names real
+// Playwright VideoModes (tests/playwrightVideoMode.test.ts reads that entry's literals).
+const VIDEO_SETTING = process.env.PLAYWRIGHT_VIDEO === "all" ? "on" : process.env.PLAYWRIGHT_VIDEO;
+
 export default defineConfig({
   testDir: "./runs",
   // TD-24: this used to be hardcoded and silently ignore PLAYWRIGHT_TIMEOUT, which executor.ts
@@ -33,8 +39,10 @@ export default defineConfig({
     //
     // "off" is checked FIRST and stays absolute: executor.ts sets it when ffmpeg is missing, and
     // that is a hard capability limit, not a preference — `on` must never override it.
-    video: process.env.PLAYWRIGHT_VIDEO === "off" ? "off"
-      : process.env.PLAYWRIGHT_VIDEO === "on" ? "on"
+    //
+    // "all" arrives here as "on" (VIDEO_SETTING, above) and nothing prunes it afterwards.
+    video: VIDEO_SETTING === "off" ? "off"
+      : VIDEO_SETTING === "on" ? "on"
         : "retain-on-failure",
     // Same flags the four in-process chromium.launch() sites get (src/browserLaunch.ts), so
     // the generated spec's browser — launched by the Playwright runner, not by the pipeline —

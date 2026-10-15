@@ -119,6 +119,13 @@ describe("playwright.config.ts honours PLAYWRIGHT_VIDEO", () => {
     expect(cfg.use.video).toBe("retain-on-failure");
   });
 
+  it("records every case under PLAYWRIGHT_VIDEO=all, exactly as under =on", async () => {
+    process.env.PLAYWRIGHT_VIDEO = "all";
+    vi.resetModules();
+    const cfg = (await import("../playwright.config.js")).default as any;
+    expect(cfg.use.video).toBe("on");
+  });
+
   it("turns recording off when executor.ts sets the var", async () => {
     process.env.PLAYWRIGHT_VIDEO = "off";
     vi.resetModules();

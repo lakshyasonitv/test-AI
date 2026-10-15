@@ -97,6 +97,13 @@ describe("pruneVideosForPassedCases", () => {
     expect(existsSync(f), "pruned while the flag was off").toBe(true);
   });
 
+  it("KEEPS a passed case's recording under PLAYWRIGHT_VIDEO=all — every case keeps its video", () => {
+    process.env.PLAYWRIGHT_VIDEO = "all";
+    const f = putVideo("c-passed");
+    expect(pruneVideosForPassedCases([result("c-passed", "passed")], runDir)).toBe(0);
+    expect(existsSync(f), "a passed case lost its video under =all").toBe(true);
+  });
+
   it("is a no-op, not a throw, when a case has no video or no directory at all", () => {
     expect(() => pruneVideosForPassedCases([
       result("never-ran", "passed"), result("also-missing", "blocked"),

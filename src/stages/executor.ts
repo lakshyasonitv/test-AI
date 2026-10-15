@@ -334,6 +334,11 @@ async function executePlaywright(
               // Playwright's own configuration, read by the child and its loaded config file.
               "PLAYWRIGHT_BROWSERS_PATH",         // browser location (Dockerfile / Azure set it)
               "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
+              // Read by playwright.config.ts's `video` option ("on" / "all"). Missing from this list
+              // since the allow-list landed (152e4a5), so the child never saw it, recording fell back
+              // to retain-on-failure, and blocked / unconfirmed / passed cases had no video at all
+              // (TD-129). Not a secret. Set to "off" further down when ffmpeg is missing.
+              "PLAYWRIGHT_VIDEO",
               "CHROMIUM_EXTRA_ARGS",              // chromiumLaunchOptions(): Azure needs --disable-dev-shm-usage
               // The run's locale/timezone. specLocaleEnv() below overwrites these with the resolved
               // pair when pinning is ON; inheriting the operator's value here is what keeps the

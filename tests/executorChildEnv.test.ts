@@ -93,6 +93,13 @@ describe("the Playwright child's environment", () => {
     expect(env.RUN_TIMEZONE).toBe("Europe/London");
   });
 
+  it("forwards PLAYWRIGHT_VIDEO, which playwright.config.ts reads to decide recording (TD-129)", async () => {
+    vi.stubEnv("PLAYWRIGHT_VIDEO", "all");
+    await runSpec("test('x', async () => {});", runDir, {});
+    // "off" is forced only when ffmpeg is missing; otherwise the operator's choice must reach the child.
+    expect(["all", "off"]).toContain(childEnv().PLAYWRIGHT_VIDEO);
+  });
+
   it("still hands the child the run's own credentials and the explicit Playwright vars", async () => {
     await runSpec("test('x', async () => {});", runDir, {
       TEST_USERNAME: "zoe.secret.user@example.com",

@@ -29,11 +29,13 @@ const { chromiumLaunchOptions } = await import("../src/browserLaunch.js");
  *   dupSelf: two buttons both named "Self Use" — no way to tell which one "select Self Use" means
  *   single: the fields are on the entry page itself, no Next (for the ordinary-run comparison)
  */
-const BUDGET = (o: { both?: boolean; dupSelf?: boolean; single?: boolean }) => {
+const BUDGET = (o: { both?: boolean; dupSelf?: boolean; single?: boolean; num?: boolean }) => {
+  // num: the budgets are <input type="number"> (role spinbutton), as on the real site.
+  const ty = o.num ? ' type="number"' : "";
   const screen2 =
     (o.both ? `<label>Min Budget (AED) <select id="minsel"><option>10</option><option>40</option></select></label>` : "") +
-    `<label>Min Budget (AED) <span>AED</span><input id="min" placeholder="1,000,000"></label>` +
-    `<label>Max Budget (AED) <span>AED</span><input id="max" placeholder="5,000,000"></label>` +
+    `<label>Min Budget (AED) <span>AED</span><input id="min"${ty} placeholder="1,000,000"></label>` +
+    `<label>Max Budget (AED) <span>AED</span><input id="max"${ty} placeholder="5,000,000"></label>` +
     `<label>Buying Timeline <select id="when"><option>Now</option><option>Later</option></select></label>` +
     `<div role="group" aria-label="Purpose"><button type="button" id="self">Self Use</button>` +
     (o.dupSelf ? `<button type="button" id="self2">Self Use</button>` : "") +
@@ -65,7 +67,7 @@ beforeAll(async () => {
     const q = new URL(req.url ?? "/", "http://x").searchParams;
     res.setHeader("content-type", "text/html");
     if (req.url?.startsWith("/budget")) {
-      res.end(BUDGET({ both: q.has("both"), dupSelf: q.has("dup"), single: q.has("single") }));
+      res.end(BUDGET({ both: q.has("both"), dupSelf: q.has("dup"), single: q.has("single"), num: q.has("num") }));
     } else { res.statusCode = 404; res.end("nope"); }
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -195,6 +197,26 @@ describe("a select step aimed at a group of buttons (Salesforce run, TD-125 part
     expect(await execute(ir)).toContain("purpose=Self Use");
   }, 120_000);
 
+  it("a partial value (\"Self\") clicks the ONE button whose name holds it as a whole word (TD-126)", async () => {
+    const model = await discover("/budget");
+    geminiMock.mockImplementation(answer(BUDGET_IR("/budget", [choose("s8", "Purpose", "Self")])));
+    const { ir } = await withTargetApp("salesforce", () => toIR(testCase("partial"), model, unique(), base + "/budget"));
+
+    expect(ir.meta.truncated ?? false).toBe(false);
+    expect(step(ir, "s8")).toMatchObject({ action: "click", target: { role: "button", name: "Self Use", css: "#self" } });
+    expect(await execute(ir)).toContain("purpose=Self Use");
+  }, 120_000);
+
+  it("a partial value matching TWO buttons is rejected, naming both", async () => {
+    const model = await discover("/budget?dup=1");
+    geminiMock.mockImplementation(answer(BUDGET_IR("/budget?dup=1", [choose("s8", "Purpose", "Self")])));
+    const { ir } = await withTargetApp("salesforce", () => toIR(testCase("dup-partial"), model, unique(), base + "/budget?dup=1"));
+
+    expect(ir.meta.truncated).toBe(true);
+    expect(ir.steps.map((s: any) => s.id)).toEqual(["s1", "s2", "s3", "s4", "s5", "s6", "s7"]);
+    expect(ir.meta.truncationNote).toMatch(/2 of them match "Self": button "Self Use", button "Self Use"/);
+  }, 120_000);
+
   it("two buttons with that name: no conversion, the step is rejected as before", async () => {
     const model = await discover("/budget?dup=1");
     geminiMock.mockImplementation(answer(BUDGET_IR("/budget?dup=1", [purpose])));
@@ -204,4 +226,127 @@ describe("a select step aimed at a group of buttons (Salesforce run, TD-125 part
     expect(ir.steps.map((s: any) => s.id)).toEqual(["s1", "s2", "s3", "s4", "s5", "s6", "s7"]);
     expect(JSON.stringify(ir.meta)).toMatch(/Purpose/);
   }, 120_000);
+});
+
+describe("a retry shows the model the screens it reached (Salesforce run, TD-122)", () => {
+  // Run 2026-10-15T03-01-14: on the EOI form's second screen the model asked for combobox
+  // "Budget Range" — the HOME page's search filter, the only page its prompt shows — for the real
+  // spinbutton "Min Budget (AED)". On a retry, the captured screens' control names now go in too.
+  const SCREENS = /Screens your earlier steps reached in a live run[^\n]*\n((?:- [^\n]*\n)+)/;
+  const ir = (minName: string) => ({
+    meta: meta("Budget"),
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/budget?num=1" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Full Name" }, value: "Ann" },
+      { id: "s3", action: "click", target: { role: "button", name: "Next" } },
+      { id: "s4", action: "wait", value: "500" },
+      { id: "s5", action: "fill", target: { role: "spinbutton", name: minName }, value: "40" },
+      { id: "s9", action: "click", target: { role: "button", name: "Submit" } },
+    ],
+  });
+  /** The IR prompts the model received (not the vision pass's). */
+  const irPrompts = () => geminiMock.mock.calls.map((c) => c[0] as string).filter((p) => /Return IR JSON/.test(p));
+
+  it("the retry lists the captured screen's controls (spinbuttons included), and the model's fix grounds", async () => {
+    const model = await discover("/budget?num=1");
+    geminiMock.mockImplementation(async (prompt: string, opts: any) => {
+      if (/accessibility snapshot/i.test(opts?.systemInstruction ?? "")) {
+        return reply({ baseUrl: base, pages: [{ url: base, title: "", concepts: [], elements: [] }] });
+      }
+      // Writes the right name only when the screens block names it.
+      const block = SCREENS.exec(prompt)?.[1] ?? "";
+      return reply(ir(/spinbutton "Min Budget \(AED\)/.test(block) ? "Min Budget (AED)" : "Budget Range"));
+    });
+    const { ir: out } = await withTargetApp("salesforce", () => toIR(testCase("screens"), model, unique(), base + "/budget?num=1"));
+
+    const prompts = irPrompts();
+    expect(prompts.length).toBeGreaterThanOrEqual(2);
+    expect(prompts[0]).not.toMatch(SCREENS); // retries only
+    const block = SCREENS.exec(prompts[1])![1];
+    expect(block).toMatch(/spinbutton "Min Budget \(AED\)[^"]*", spinbutton "Max Budget \(AED\)/);
+    expect(block).toContain('combobox "Buying Timeline"');
+    // Names only: no selectors or other element fields.
+    expect(block).not.toMatch(/#min|css|"role"/);
+    expect(out.meta.truncated ?? false).toBe(false);
+    expect(step(out, "s5")).toMatchObject({ action: "fill", target: { role: "spinbutton", css: "#min" } });
+    expect(await execute(out)).toContain("min=40");
+  }, 180_000);
+
+  it("an ordinary (non-Salesforce) run's retry prompt has no screens block", async () => {
+    const model = await discover("/budget?single=1");
+    const bad = {
+      meta: meta("Budget"),
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/budget?single=1" } },
+        { id: "s5", action: "fill", target: { role: "spinbutton", name: "Budget Range" }, value: "40" },
+        { id: "s9", action: "click", target: { role: "button", name: "Submit" } },
+      ],
+    };
+    geminiMock.mockImplementation(answer(bad));
+    await toIR(testCase("ordinary-retry"), model, unique(), base + "/budget?single=1");
+
+    const prompts = irPrompts();
+    expect(prompts.length).toBeGreaterThanOrEqual(2);
+    for (const p of prompts) expect(p).not.toMatch(/Screens your earlier steps reached/);
+  }, 120_000);
+});
+
+describe("retries keep the best attempt and reuse captured screens (Salesforce run, TD-128)", () => {
+  // Run 2026-10-15T05-37-13: attempt 2 grounded 27 steps, but every attempt re-captured each screen
+  // from scratch, the 16-capture budget ran out, the last attempt stopped at step 2 — and the code
+  // shipped the LAST attempt's 2 steps instead of the best attempt's 27.
+  const irPrompts = () => geminiMock.mock.calls.map((c) => c[0] as string).filter((p) => /Return IR JSON/.test(p));
+  const answerIrs = (first: any, rest: any) => async (prompt: string, opts: any) => {
+    if (/accessibility snapshot/i.test(opts?.systemInstruction ?? "")) {
+      return reply({ baseUrl: base, pages: [{ url: base, title: "", concepts: [], elements: [] }] });
+    }
+    return reply(irPrompts().length <= 1 ? first : rest);
+  };
+  const head = [
+    { id: "s1", action: "navigate", target: { url: "/budget" } },
+    { id: "s2", action: "fill", target: { role: "textbox", name: "Full Name" }, value: "Ann" },
+    { id: "s3", action: "click", target: { role: "button", name: "Next" } },
+    { id: "s4", action: "wait", value: "500" },
+  ];
+  const submit = { id: "s9", action: "click", target: { role: "button", name: "Submit" } };
+
+  it("Q1: the last attempt failing early still ships the best attempt's longer prefix", async () => {
+    const deep = { meta: meta("Budget"), steps: [...head,
+      { id: "s5", action: "fill", target: { role: "textbox", name: "Min Budget (AED)" }, value: "40" },
+      { id: "s6", action: "fill", target: { role: "textbox", name: "Max Budget (AED)" }, value: "50" },
+      choose("s7", "Buying Timeline", "Later"),
+      { id: "s8", action: "click", target: { role: "button", name: "No Such Button" } }, submit] };
+    const shallow = { meta: meta("Budget"), steps: [head[0],
+      { id: "s2", action: "fill", target: { role: "textbox", name: "No Such Field" }, value: "x" }, submit] };
+    const model = await discover("/budget");
+    geminiMock.mockImplementation(answerIrs(deep, shallow));
+    const { ir } = await withTargetApp("salesforce", () => toIR(testCase("best"), model, unique(), base + "/budget"));
+
+    expect(irPrompts().length).toBeGreaterThanOrEqual(2); // the shallow IR really was the last one
+    expect(ir.meta.truncated).toBe(true);
+    expect(ir.steps.map((s: any) => s.id)).toEqual(["s1", "s2", "s3", "s4", "s5", "s6", "s7"]);
+  }, 180_000);
+
+  it("Q2: a retry reuses the screen an earlier attempt captured for the same steps", async () => {
+    const prev = process.env.MAX_SCREEN_CAPTURES;
+    process.env.MAX_SCREEN_CAPTURES = "2"; // attempt 1 spends both; attempt 2 needs the same screen again
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...a: any[]) => { logs.push(a.join(" ")); });
+    try {
+      const wrong = { meta: meta("Budget"), steps: [...head,
+        { id: "s5", action: "fill", target: { role: "textbox", name: "Budget Range" }, value: "40" }, submit] };
+      const right = { meta: meta("Budget"), steps: [...head,
+        { id: "s5", action: "fill", target: { role: "textbox", name: "Min Budget (AED)" }, value: "40" }, submit] };
+      const model = await discover("/budget");
+      geminiMock.mockImplementation(answerIrs(wrong, right));
+      const { ir } = await withTargetApp("salesforce", () => toIR(testCase("reuse"), model, unique(), base + "/budget"));
+
+      expect(logs.some((l) => /reused screen \w+, captured earlier for the same steps/.test(l))).toBe(true);
+      expect(ir.meta.truncated ?? false).toBe(false);
+      expect(step(ir, "s5")).toMatchObject({ action: "fill", target: { css: "#min" } });
+    } finally {
+      spy.mockRestore();
+      if (prev === undefined) delete process.env.MAX_SCREEN_CAPTURES; else process.env.MAX_SCREEN_CAPTURES = prev;
+    }
+  }, 180_000);
 });
