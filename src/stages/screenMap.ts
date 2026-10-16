@@ -242,3 +242,40 @@ export function edgeForCapture(
   if (clicks.length !== 1) return undefined;
   return { from, action: { role: clicks[0].target!.role ?? "", name: clicks[0].target!.name! }, to };
 }
+
+/**
+ * TD-142: the click(s) that lead from screen `fromKey` to the nearest screen holding a control named
+ * `name`, as a sentence for a rejection message — or undefined when the map has no such route.
+ *
+ * Run 2026-10-16T09-07-56: the case put "Preferred Project" on form screen 2. Grounding said "not on
+ * this screen; a step that opens the screen holding it is probably missing", and the retry still left
+ * the "Next" out. The map knew: screen 2 --Next--> screen 3, which holds "Preferred Project". Breadth-
+ * first over the stored edges, at most 4 clicks. Exact names only (case and spacing ignored). Pure.
+ */
+export function routeToControl(
+  map: { screens: Pick<ScreenMapScreen, "key" | "controls">[]; edges: Omit<ScreenMapEdge, "seen">[] }, fromKey: string, name: string,
+): string | undefined {
+  const n = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const want = n(name);
+  if (!want) return undefined;
+  const holds = new Set(map.screens.filter((s) => s.key !== fromKey && s.controls.some((c) => n(c.name) === want)).map((s) => s.key));
+  if (!holds.size) return undefined;
+  const queue: { key: string; path: ScreenMapEdge["action"][] }[] = [{ key: fromKey, path: [] }];
+  const seen = new Set([fromKey]);
+  while (queue.length) {
+    const { key, path } = queue.shift()!;
+    if (path.length >= 4) continue;
+    for (const e of map.edges) {
+      if (e.from !== key || seen.has(e.to)) continue;
+      const next = [...path, e.action];
+      if (holds.has(e.to)) {
+        return `Earlier runs on this site found it on a LATER screen, opened from this one by clicking ` +
+          `${next.map((a) => `${a.role} "${a.name}"`).join(", then ")}. Put that click BEFORE this step, and ` +
+          `this step (and the others for that screen) after it, even where the test case lists them earlier.`;
+      }
+      seen.add(e.to);
+      queue.push({ key: e.to, path: next });
+    }
+  }
+  return undefined;
+}

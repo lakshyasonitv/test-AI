@@ -5442,3 +5442,96 @@ The structural fix is a test-only cache root, e.g. `LLM_CACHE_ROOT` set in `vite
 several Pro tests (`specDistill`, `specRoutes`) assert on the real `runs/_cache/spec` path, so that needs
 coordinating with Pro's owner. A side effect of the unique-version isolation: each test run leaves small entries under unique keys in `runs/_cache/screenmap` and `runs/_cache/requestvalues`. They are harmless (never read by a real run), but they accumulate until the cache folder is cleaned.
 
+### TD-139. The compiled steps could drop the request's values and still be accepted — High / Accidental — **Fixed (Salesforce runs)**
+
+**Found 2026-10-16, run `2026-10-16T06-16-25`.** Gap 5 (TD-136) puts the request's values into the
+primary CASE, but nothing checked the compiled STEPS. The IR filled form screen 1, clicked Next and
+asserted "Thank You"; "Later", "The Sanctuary", "Abu Dhabi" and "Office" appeared nowhere. Grounding
+verifies that each step's element exists, not that the request was carried out, so it was accepted.
+
+**Fix:** `stepsMissingValues` (`requestValues.ts`, pure). For the fromPrompt case of a Salesforce run, every
+request value the case carries must appear in some step's value or target text. The comparison uses
+letters and digits only, so a page label "Preferred Area(s)" still carries "Preferred Areas". A miss is
+rejected with a correction naming the values, retried, and kept as an `incomplete-coverage` partial (the
+same floor as `missingActions`), so it can never kill a run. The IR cache key gains `ir-values:1` on
+Salesforce runs only, so an IR cached before the check cannot replay.
+
+**Replay over every saved Salesforce run (14 since 2026-10-15T09):** it flags every failed or truncated
+run and no clean pass. It also flags two runs that showed PASSED (`17-13-59` asserted a validation
+message, `18-02-40` a URL; neither checked "Thank You"). Both were false passes. Tests:
+`tests/stableLoop.test.ts`.
+
+### TD-140. After the automatic login, a case navigated straight back to the login page — High / Accidental — **Fixed**
+
+**Found 2026-10-16, run `2026-10-16T08-34-26` (saucedemo).** Every case compiles with the run's entry URL
+as "the page under test". On a site whose entry URL IS its login page, the login prefix signed in and
+landed on `/inventory.html`, then the case's own first step navigated to `/`, which is the login form
+again. "Add to cart" was never there, so two cart cases ended `truncated_no_assertion`.
+
+**Fix:** `redirectPostLoginNavigate` (`ir.ts`). Only the FIRST step after the prefix moves, only when it
+is a navigate to the login page, and only when the login really landed somewhere else (`auth.url`). It
+then goes to that landing page. A site whose login has its own path (`/login`) is untouched, because
+`/` is not its login page. Ordinary runs (a normal-site change, approved by the owner 2026-10-16).
+
+### TD-141. A step naming an element by its test id was rejected — Medium / Accidental — **Fixed**
+
+**Found 2026-10-16, run `2026-10-16T08-34-26` (saucedemo).** Six buttons are all named "Add to cart". The
+model picked one by the id discovery recorded (`add-to-cart-sauce-labs-backpack`) and put it in `name`.
+Grounding matches names only, so the step was rejected on all three attempts and the primary case was
+truncated after the login.
+
+**Fix:** in `groundingError`, only when the name matched nothing, an element whose `testId` or `id` EQUALS
+that text (case-insensitive, compatible role, with a css or testId) is taken. The step is pinned to it:
+its css follows, `nth` is dropped (the id already chose), and the name becomes the element's real name.
+Partial ids and incompatible roles are still rejected. Ordinary runs (approved by the owner 2026-10-16).
+
+**Not fixed here (recorded for later):**
+- A `select` of an option the dropdown does not have ("Option 3" on the-internet's /dropdown) reaches
+  Playwright and fails. Discovery does not record a native `<select>`'s options on the element. This is
+  Gap 2 for ordinary sites; the owner chose to do it later.
+- A security case asserting that its own typed payload (`<script>…`) is echoed on the next screen is an
+  invented assertion (run `08-18-24` case-3); it fails as `element_missing`.
+
+### TD-142. "A step is probably missing" did not say WHICH step — Medium / Accidental — **Fixed (Salesforce runs with a screen map)**
+
+**Found 2026-10-16, run `2026-10-16T09-07-56`.** The case put "Preferred Project" on form screen 2, though
+the case writer's screen block listed it on screen 3. Grounding rejected the step with "not on this
+screen; a step that opens the screen holding it is probably missing", and the retry still left the
+"Next" out, so the case was truncated.
+
+**Fix:** `routeToControl` (`screenMap.ts`, pure) searches breadth-first over the map's edges, the stored
+ones plus this run's, at most 4 clicks. It finds the nearest screen holding a control of that exact name
+and returns the click(s) that lead there from the current screen. `missingOnScreenHint` uses that sentence
+in place of the generic one: "opened from this one by clicking button \"Next\". Put that click BEFORE
+this step…". It changes a rejection's wording only, never what grounds (D-54). Wired through
+`GroundingScope.mapRoute`, which is set only when `useScreenMap`. The next short-prompt run
+(`09-53-49`) passed end to end.
+
+### TD-143. A field named by its words was rejected ("zip code" for "Zip/Postal Code") — Medium / Accidental — **Fixed**
+
+**Found 2026-10-16, run `2026-10-16T09-38-53` (saucedemo checkout).** None of the name tiers (exact, prefix,
+suffix, substring) matches "zip code" against "Zip/Postal Code", so the fill was rejected on all three
+attempts. **Fix:** in `groundingError`, only when nothing else matched: a text-entry step (textbox,
+searchbox, spinbutton) whose name has at least two words grounds to the ONE field of that role whose name
+contains every word whole. With two such fields it is still rejected. A step that grounds today cannot
+change. Ordinary runs (the owner approved it on the condition that it does not break current behaviour).
+
+### TD-144. An unlabeled checkbox was named "on", so every step on it timed out — High / Accidental — **Fixed (DOM extraction)**
+
+**Found 2026-10-16, run `2026-10-16T09-44-36` (the-internet /checkboxes: `<input type=checkbox> checkbox 1<br>`).**
+Cheerio reports a checkbox with no `value` attribute as `value="on"`, the browser default, and
+`extractInteractiveElements` used the value as the accessible name. Both boxes were called "on", with no
+selector. The form-field path labelled both "Checkboxes" (the heading above them). Every case timed out
+in `field(page, "on")`.
+
+**Fix (`domExtract.ts`):**
+- A checkbox or radio with no value ATTRIBUTE is never named by its value.
+- Its label is the text right after it (`followingLabel`: a text node, or a short `<label>`/`<span>`
+  sibling), tried before the text in front of it.
+- When it has no id or test id, it gets an exact `positionalSelector` (`#checkboxes > input:nth-of-type(2)`),
+  because two boxes in one form are told apart only by position. A locator by nearby text matches both.
+
+Text boxes, and checkboxes with a real value or a label, are unchanged. Tests: `tests/stableLoop.test.ts`.
+
+**Still open (Gap F, the owner chose "later"):** the IR has no `checked` / `unchecked` assertion, so a
+checkbox case can only assert `enabled`, which proves nothing.

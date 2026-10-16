@@ -56,6 +56,28 @@ export function missingValues(c: Pick<TestCase, "steps" | "expected">, values: s
   return values.filter((v) => !text.includes(norm(v)));
 }
 
+/** Letters and digits only: a page label "Preferred Area(s)" still carries the request's "Preferred Areas". */
+const loose = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
+/** A compiled step, reduced to the fields a request value can land in. */
+type StepText = { value?: string; target?: { name?: string; text?: string; label?: string; placeholder?: string } };
+
+/**
+ * TD-139: the request values the CASE carries that the compiled steps lost.
+ *
+ * Run 2026-10-16T06-16-25: the case named "Later", "The Sanctuary", "Abu Dhabi" and "Office", and
+ * the IR filled one form screen and asserted "Thank You" without any of them. Grounding checks that
+ * each step's element exists, not that the request's values were used, so it was accepted. Only
+ * values the case itself mentions are demanded (Gap 5 already put the request's values into the
+ * case), and each must appear in some step's value or target text.
+ */
+export function stepsMissingValues(steps: StepText[], c: Pick<TestCase, "steps" | "expected">, values: string[]): string[] {
+  const carried = values.filter((v) => missingValues(c, [v]).length === 0);
+  const hay = steps.flatMap((s) => [s.value, s.target?.name, s.target?.text, s.target?.label, s.target?.placeholder])
+    .filter((x): x is string => typeof x === "string" && x.length > 0).map(loose).join("|");
+  return carried.filter((v) => !hay.includes(loose(v)));
+}
+
 const Rewrite = z.object({ steps: z.array(z.string().min(1)).min(1), expected: z.string().min(1) });
 
 const SYSTEM = `You repair ONE QA test case so it carries the concrete values the person asked for. Output ONLY a JSON object {"steps": string[], "expected": string}, no prose, no markdown fences.

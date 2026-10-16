@@ -8,8 +8,9 @@ import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, t
 import { cutAtBoundary, siteHost, pageKey } from "../text.js";
 import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
-import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, edgeForCapture, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
+import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, edgeForCapture, routeToControl, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
 import { currentRunTargetApp } from "../runTarget.js";
+import { requestValues, stepsMissingValues } from "./requestValues.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
@@ -428,6 +429,33 @@ export function buildLoginPrefix(auth: AuthOutcome | undefined): Step[] {
 }
 
 /**
+ * After the login prefix, a case's own first `navigate` to the LOGIN page is sent to the page the
+ * login landed on instead (TD-140). Returns the moved step's id, or undefined.
+ *
+ * Every case is compiled with the run's entry URL as "the page under test", and on a site whose
+ * entry URL is its login page that is where the case then navigates — straight back to the login
+ * form, after signing in. Run 2026-10-16T08-34-26 (saucedemo): the prefix landed on
+ * /inventory.html, the case navigated to "/", and "Add to cart" was never on the page. Signing in
+ * and then opening the login form is never what a signed-in case means; the landing page is where
+ * discovery itself arrived (`auth.url`). Decided by URLs only — the step's own target and the
+ * login outcome — and only for the FIRST step after the prefix.
+ */
+export function redirectPostLoginNavigate(
+  steps: Step[], prefixLength: number, auth: AuthOutcome | undefined, origin: string,
+): string | undefined {
+  const first = steps[prefixLength];
+  if (!first || first.action !== "navigate" || !first.target?.url || !auth?.url || !auth.loginUrl) return undefined;
+  if (pageKey(auth.url) === pageKey(auth.loginUrl)) return undefined;
+  let to: string;
+  try { to = new URL(first.target.url, origin).href; } catch { return undefined; }
+  if (pageKey(to) !== pageKey(auth.loginUrl)) return undefined;
+  const landed = new URL(auth.url);
+  if (siteHost(landed.href) !== siteHost(origin)) return undefined;
+  first.target.url = landed.pathname + landed.search;
+  return first.id;
+}
+
+/**
  * Should this case be signed in before its own steps run?
  *
  * Yes for everything except cases that are ABOUT the login page — the whole app is behind the
@@ -510,6 +538,13 @@ export interface GroundingScope {
    * order with every other grounding error, so toIR captures exactly where the flow needs it.
    */
   captureBefore?: Set<number>;
+  /**
+   * Salesforce runs with a screen map (TD-142): given the screen a step is on and the name it
+   * misses, the sentence naming the click(s) that lead from that screen to the one holding it —
+   * or undefined when the map does not know. Hints only (D-54): it changes a rejection's wording,
+   * never what grounds.
+   */
+  mapRoute?: (fromKey: string, name: string) => string | undefined;
 }
 
 /**
@@ -802,7 +837,7 @@ export function groundingError(
   /** The captured screen step `index` is on, or undefined when none applies (D-52): the latest
    *  `screenAt` entry at or before it, ended by a navigate or by the page cursor moving to another
    *  URL in between. */
-  const screenAtStep = (index: number): { page: PageModel; at: number } | undefined => {
+  const screenAtStep = (index: number): { page: PageModel; at: number; key: string } | undefined => {
     let best: { at: number; key: string } | undefined;
     for (const s of scope?.screenAt ?? []) if (s.at <= index && (!best || s.at >= best.at)) best = s;
     if (!best) return undefined;
@@ -810,7 +845,7 @@ export function groundingError(
     const page = findScreen(appModel, best.key);
     const cursor = trail.pageAt[index];
     if (!page || (cursor && pageKey(cursor.url) !== pageKey(page.url))) return undefined;
-    return { page, at: best.at };
+    return { page, at: best.at, key: best.key };
   };
   /**
    * The controls on the captured screen step `index` is on (disabled ones marked), as a sentence for a rejection
@@ -834,11 +869,15 @@ export function groundingError(
    *  cause — the step that opens the screen holding it was left out (TD-124). */
   const missingOnScreenHint = (index: number): string => {
     const controls = screenControlsHint(index);
-    return controls
-      ? ` It is not on the screen the flow is on at this step (seen in a live capture after the steps ` +
-        `before it). A step that opens the screen holding it is probably missing before this one — ` +
-        `for example clicking a button that opens the form.${controls}`
-      : "";
+    if (!controls) return "";
+    // TD-142: when the screen map knows which click leads from here to the screen holding it, say
+    // so — "a step is probably missing" alone left the model guessing which one.
+    const scr = screenAtStep(index);
+    const t = ir.steps[index]?.target;
+    const route = scr && scope?.mapRoute ? scope.mapRoute(scr.key, t?.name ?? t?.text ?? "") : undefined;
+    return ` It is not on the screen the flow is on at this step (seen in a live capture after the steps ` +
+      `before it). ` + (route ?? `A step that opens the screen holding it is probably missing before this ` +
+      `one — for example clicking a button that opens the form.`) + controls;
   };
   /**
    * An acting step bound to an element its screen shows as DISABLED (D-52, TD-121). Clicking it
@@ -1072,6 +1111,39 @@ export function groundingError(
     }
     // LS-1: the duplicate the step's `nth` means, not the first one found.
     if (matched) matched = nthTwin(elements, matched, t.nth);
+    // TD-141: no element has that NAME, but one has it as its test id or id, exactly. Six buttons
+    // all named "Add to cart" leave the model one way to say which: the id discovery recorded
+    // ("add-to-cart-sauce-labs-backpack"), and it used it as the name. That identifies one element
+    // without guessing, so the step is pinned to it (its css follows below), and `nth` goes: the id
+    // already chose. Exact equality only, and only when the name found nothing.
+    if (!matched && t.name.trim()) {
+      const want = t.name.trim().toLowerCase();
+      const roleOk = (r: string) => norm(r) === role || (CLICKABLE_ROLE_GROUP.has(role) && CLICKABLE_ROLE_GROUP.has(norm(r)));
+      const byId = elements.filter((e) => roleOk(e.role) && (e.css || e.testId)
+        && (e.testId?.toLowerCase() === want || e.id?.toLowerCase() === want));
+      // The same element captured on two pages (or twice on one) is still one element.
+      if (byId.length && byId.every((e) => (e.css ?? e.testId) === (byId[0].css ?? byId[0].testId))) {
+        matched = byId[0];
+        delete t.nth;
+        console.log(`[ir] step ${step.id}: "${t.name}" is an element's id -> ${matched.role} "${matched.name}"`);
+      }
+    }
+    // TD-143: a field named by its words, not its exact label: "zip code" for "Zip/Postal Code"
+    // (run 2026-10-16T09-38-53, saucedemo checkout; rejected three times). Text-entry fields only,
+    // at least two words, every word whole in the field's name, and exactly ONE such field: with
+    // two, which one is meant is a guess, and the step is rejected as before.
+    if (!matched && TEXT_ENTRY_ROLES.has(role)) {
+      const words = name.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+      if (words.length >= 2) {
+        const hits = elements.filter((e) => norm(e.role) === role && e.visible !== false && e.name
+          && words.every((w) => hasWholeWords(norm(e.name), w)));
+        const one = new Set(hits.map((e) => e.css ?? e.testId ?? e.name));
+        if (hits.length && one.size === 1) {
+          matched = hits[0];
+          console.log(`[ir] step ${step.id}: "${t.name}" -> the one ${matched.role} whose name has those words: "${matched.name}"`);
+        }
+      }
+    }
     // TD-125: a `select` whose dropdown is not on the captured screen, where the screen's control
     // of that name is a TEXT BOX. The request said "in the Min Budget (AED) combobox, select 40";
     // the live page has an <input> there, so the model followed the wording and the step was
@@ -1840,7 +1912,9 @@ Example — handling duplicate selectors with nth:
   if (storedScreens.length) console.log(`[ir] screen map: ${storedScreens.length} screens, ${storedMap!.edges.length} edges stored for ${storedMap!.site}`);
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
-    entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion(), ...mapSignature);
+    entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion(), ...mapSignature,
+    // TD-139: an IR cached before the request-values check could replay one that drops the values.
+    ...(currentRunTargetApp() === "salesforce" ? ["ir-values:1"] : []));
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -2292,6 +2366,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       if (prefix.length) {
         parsed.data.steps = [...prefix, ...parsed.data.steps];
         console.log(`[ir] prepended ${prefix.length} login step(s) — the test signs in before its own steps`);
+        const moved = redirectPostLoginNavigate(parsed.data.steps, prefix.length, currentModel.auth, origin);
+        if (moved) console.log(`[ir] step ${moved}: navigate to the login page after signing in -> the page the login lands on`);
       }
     }
 
@@ -2316,6 +2392,13 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       return {
         screenAt,
         captureBefore: new Set(screenBoundaries(parsed.data).filter((i) => !captured.has(i))),
+        // TD-142: this run's own screens and edges count too, so a first run can name the route.
+        ...(useScreenMap ? {
+          mapRoute: (from: string, name: string) => routeToControl({
+            screens: [...runMapScreens, ...(storedMap?.screens ?? [])],
+            edges: [...runMapEdges, ...(storedMap?.edges ?? [])],
+          }, from, name),
+        } : {}),
       };
     };
     // Phase 2: say where the stored map expects each screen-changing click to lead. A log only — the
@@ -2523,6 +2606,26 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           };
         }
         continue;
+      }
+
+      // TD-139: the request's values must reach the steps, not just the case. Salesforce runs, the
+      // fromPrompt case only (a negative suite case leaves values out on purpose). Same floor as
+      // missingActions above: it rejects and retries, and the IR is kept as a partial so a run is
+      // never lost to it.
+      if (screenMode && testCase.fromPrompt) {
+        const lost = stepsMissingValues(parsed.data.steps, testCase, requestValues(sourcePrompt));
+        if (lost.length) {
+          const message = `The steps leave out ${lost.map((v) => `"${v}"`).join(", ")}, which the test case ` +
+            `uses. Carry out the WHOLE case: each value goes in the step where the case uses it (a value ` +
+            `chosen or typed in a field is that step's "value", a button or link is the target of its ` +
+            `click, an expected message is the final assertion's text). Do not skip a form screen.`;
+          console.log("[ir] request values missing from the steps:", lost.join(", "));
+          reject("missing-values", message);
+          if (parsed.data.steps.length > (bestPartial?.steps.length ?? 0)) {
+            bestPartial = { ir: parsed.data, steps: parsed.data.steps, note: message, kind: "incomplete-coverage" };
+          }
+          continue;
+        }
       }
 
       // Everything above is free. This one costs a browser launch, so it goes last among the
