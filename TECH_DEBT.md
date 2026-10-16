@@ -5535,3 +5535,68 @@ Text boxes, and checkboxes with a real value or a label, are unchanged. Tests: `
 
 **Still open (Gap F, the owner chose "later"):** the IR has no `checked` / `unchecked` assertion, so a
 checkbox case can only assert `enabled`, which proves nothing.
+
+### TD-145. A form submitted with an empty required field gave a rejection that did not say why — Medium / Accidental — **Fixed (rejection wording)**
+
+**Found 2026-10-16, run `2026-10-16T10-59-00` (saucedemo checkout).** The case typed "Test User" into First
+Name and left Last Name empty. "Continue" therefore never advanced, and "Finish" was reported as "not
+present" on three attempts, with nothing pointing at the empty field.
+
+**Fix:** `unfilledFormFields` (`ir.ts`, pure). When a missing-element step follows a click that submitted
+a form the steps filled part of, the rejection names that form's typed fields that no step filled (`page.forms`
+from discovery, so a search box elsewhere on the page is never named) and asks for every field the form
+needs, splitting a full name where needed. Wording only: nothing that grounds or is rejected changes.
+Normal and Salesforce runs (the owner approved it 2026-10-16). Tests: `tests/stableLoop.test.ts`.
+
+### TD-146. An ordinary run's rejection never said what WAS on the page — Medium / Accidental — **Fixed (rejection wording)**
+
+**Found 2026-10-16, runs `12-08-10` and `12-10-27` (saucedemo).** The model asked for button
+"Add to cart - Sauce Labs Backpack" (and "… Onesie") on every attempt. A Salesforce run's rejection lists
+its screen's controls (TD-124); an ordinary run's said only "not present", so the retry had nothing to
+choose from.
+
+**Fix:** `similarElementsHint` (`ir.ts`, pure). When there is no screen to list, the rejection names up
+to 10 elements of a compatible role, closest first (words shared with the element's name or test id).
+A duplicated name carries its test ids (TD-141 grounds a test id given as the name), or, on a site
+without test ids, the hint to choose one by `nth`. Wording only.
+
+**This changes the ordinary retry prompt on purpose** (approved by the owner 2026-10-16).
+`tests/fixtures/salesforceTarget/retry-prompt-ordinary.json` was regenerated with
+`WRITE_RETRY_PROMPT_FIXTURE=1`; the only difference is the added sentence
+`Elements of that kind the application model does have, closest first: button "Go".`
+
+### TD-147. A guessed url_contains after a button click could only fail — Medium / Accidental — **Fixed (Salesforce screen mode)**
+
+**Found 2026-10-16, run `12-14-09`.** The smoke case clicked "Explore Projects", which scrolls the home
+page, then asserted `url_contains "/project"`. `urlAssertionError` checks a URL only after a LINK whose
+href is known, so a guess after a button went unchecked and the case failed at run time.
+
+**Fix:** in screen mode, a `url_contains` right after a button click is a screen boundary
+(`screenBoundaries`), so a live capture is taken there. `groundingError` then compares the value with
+the URL that capture reached, and only a capture taken AT that step counts. A mismatch is rejected with
+the real URL and the screen's controls, so the retry asserts something visible instead. Ordinary runs
+are unchanged, because they have no screens.
+
+### TD-148. A case could "pass" by checking the site's header after its action — High / Accidental — **Fixed**
+
+**Found 2026-10-16, run `13-49-29` (Salesforce smoke).** The case clicked "Explore Projects", then asserted
+that link "Projects" is visible. That is the site HEADER's link, visible on every page, so the case would
+pass even if the click did nothing. The prompt rule against "persistent, site-wide elements" had no check
+behind it.
+
+**Fix:** `chromeSuccessAssertion` (`ir.ts`, pure). It rejects (and retries) an IR in which EVERY
+assertion after the last action is `visible` on an element in a `nav`/`header`/`footer` landmark that was
+already visible on the page the flow started from. The landmark comes from discovery's DOM path, never
+from names or page text. Allowed:
+- a check after only opening a page (a smoke "header has Projects");
+- chrome plus any real check;
+- an element discovery saw hidden (a menu that opens).
+
+A replay over all 286 saved IRs since 2026-10-15 flags only that one smoke case. Both run types
+(approved by the owner 2026-10-16).
+
+**Also recorded, not fixed:**
+- run `13-49-29`'s Salesforce search case asserted "Dubai" visible right after selecting "Dubai" (the
+  dropdown shows it). Blocking "assert a value you just entered" would also block the legitimate "edit, then
+  see it shown" pattern, so it is left to review.
+- On one add/remove case, the failure diagnosis named step s2 when s3 failed (off by one).

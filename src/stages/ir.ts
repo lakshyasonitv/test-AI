@@ -456,6 +456,158 @@ export function redirectPostLoginNavigate(
 }
 
 /**
+ * TD-146: for a role+name that matched nothing, the elements of a compatible role that ARE there,
+ * closest first, as a sentence — "" when there are none. Duplicated names carry their test ids, the
+ * one thing that tells them apart (and TD-141 grounds a test id given as the name).
+ *
+ * Run 2026-10-16T12-08-10 (saucedemo): the model asked for button "Add to cart - Sauce Labs Backpack"
+ * on two attempts. An ordinary run's rejection said only "not present", so the retry had nothing to
+ * choose from; a Salesforce run already lists its screen's controls (TD-124). Closeness is the number
+ * of words the wanted name shares with an element's name or test id. Pure, generic to any site.
+ */
+export function similarElementsHint(pages: { url: string; elements: Element[] }[], role: string, name: string): string {
+  const clickable = new Set(["link", "button", "menuitem", "tab"]);
+  const roleOk = (r: string) => {
+    const e = norm(r);
+    return e === role || (clickable.has(role) && clickable.has(e)) || (FIELD_ROLE_GROUP.has(role) && FIELD_ROLE_GROUP.has(e));
+  };
+  const words = (s: string) => new Set(s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1));
+  const want = words(name);
+  // Which page the flow is on is unknown when more than one page is given: then each element says
+  // where it is, so a field of an undiscovered page is never swapped for a same-kind field elsewhere
+  // (run 13-33-16 filled the LOGIN form's Username after "Checkout" when only its name was listed).
+  const many = pages.length > 1;
+  const pathOf = (url: string) => { try { const u = new URL(url); return u.pathname + u.search; } catch { return url; } };
+  const groups = new Map<string, { role: string; name: string; page: string; ids: string[]; twins: number; score: number; order: number }>();
+  let order = 0;
+  for (const p of pages) {
+    for (const e of p.elements) {
+      order++;
+      if (!e.name?.trim() || e.visible === false || !roleOk(e.role)) continue;
+      const page = many ? pathOf(p.url) : "";
+      const key = `${norm(e.role)}\u0000${e.name}\u0000${page}`;
+      const have = new Set([...words(e.name), ...words(e.testId ?? "")]);
+      const score = [...want].filter((w) => have.has(w)).length;
+      const g = groups.get(key) ?? { role: e.role, name: e.name, page, ids: [], twins: 0, score: 0, order };
+      g.twins++;
+      g.score = Math.max(g.score, score);
+      if (e.testId && !g.ids.includes(e.testId)) g.ids.push(e.testId);
+      groups.set(key, g);
+    }
+  }
+  const ranked = [...groups.values()].sort((a, b) => b.score - a.score || a.order - b.order).slice(0, 10);
+  if (!ranked.length) return "";
+  const show = ranked.map((g) => {
+    // Most client sites have no test ids: then the only way to say which twin is its position (nth).
+    const ids = g.twins <= 1 ? ""
+      : g.ids.length ? ` (${g.twins} of them; test ids: ${g.ids.slice(0, 8).join(", ")})`
+        : ` (${g.twins} of them, in page order: pick one with "nth", 0 = first)`;
+    return `${g.role} "${g.name}"${ids}${g.page ? ` on ${g.page}` : ""}`;
+  });
+  return ` Elements of that kind the application model does have, closest first: ${show.join(", ")}. ` +
+    `Use one of these names exactly when it is the element meant; where several share a name, name the one ` +
+    `meant by its test id.` + (many ? ` Each is on the page shown: an element of a page not discovered yet is ` +
+    `not among them, so keep the name the test case uses for it rather than borrowing one from another page.` : "");
+}
+
+/** Page regions present on every page of a site: a check on one of their controls proves nothing. */
+const CHROME_LANDMARKS = new Set(["nav", "header", "footer"]);
+
+/**
+ * TD-148: the case's success check is only site chrome. Every assertion after the last action is
+ * `visible` on an element of the header / navigation / footer that was ALREADY visible on the page
+ * the flow started from, so it passes whatever the actions did. Null otherwise. Pure.
+ *
+ * Run 2026-10-16T13-40 (sf-smoke): click "Explore Projects", then assert link "Projects" visible —
+ * the site header's link, on every page. Allowed: a check after only opening a page (nothing acted
+ * on), an element not in a chrome landmark, and one discovery saw hidden (a menu that opens). The
+ * landmark comes from discovery's DOM path (`landmark`), never from names or page text.
+ */
+export function chromeSuccessAssertion(ir: IR, appModel: AppModel): { stepIds: string[]; message: string } | null {
+  const steps = ir.steps;
+  let lastAction = -1;
+  steps.forEach((s, i) => { if (ACTION_STEPS.has(s.action)) lastAction = i; });
+  if (lastAction < 0) return null;
+  const asserts = steps.slice(lastAction + 1).filter((s) => s.action === "assert");
+  if (!asserts.length) return null;
+  let nav = -1;
+  for (let i = 0; i < lastAction; i++) if (steps[i].action === "navigate") nav = i;
+  if (nav < 0 || !steps[nav].target?.url) return null;
+  let startKey: string;
+  try { startKey = pageKey(new URL(steps[nav].target!.url!, appModel.baseUrl).href); } catch { return null; }
+  const start = appModel.pages.find((p) => pageKey(p.url) === startKey);
+  if (!start) return null;
+  const chromeOf = (s: Step) => {
+    const t = s.target;
+    if (s.assertion !== "visible" || !t?.role || !t?.name) return undefined;
+    return start.elements.find((e) => norm(e.role) === norm(t.role!) && e.name === t.name
+      && e.visible !== false && CHROME_LANDMARKS.has(norm(e.landmark ?? "")));
+  };
+  const chrome = asserts.map(chromeOf);
+  if (chrome.some((e) => !e)) return null;
+  const a = asserts.at(-1)!;
+  return {
+    stepIds: asserts.map((s) => s.id),
+    message: `Step ${a.id} asserts ${a.target!.role} "${a.target!.name}" is visible, but that element is part of ` +
+      `the site's ${chrome.at(-1)!.landmark} and was already visible before the steps before it ran, so the ` +
+      `check passes whatever those steps do. Assert something the action itself makes appear: a heading, a ` +
+      `message, or an element of the page or section it opens.`,
+  };
+}
+
+/** Text-entry input types a person types into (a checkbox, button or hidden input is not one). */
+const TYPED_INPUT_TYPES = new Set(["text", "email", "password", "tel", "number", "search", "url", "date", ""]);
+
+/**
+ * TD-145: what a form the steps before `index` partly filled still needs: `empty`, its typed fields
+ * no step filled, and `submit`, its own submit control when no click/press after the last fill
+ * submitted it. `{ empty: [] }` when no step filled a discovered form. Pure.
+ *
+ * Run 2026-10-16T10-59-00 (saucedemo checkout): the case typed "Test User" into First Name, left Last
+ * Name empty and clicked Continue, so "Finish" never appeared. Run 11-39-31: the same case filled the
+ * form and went straight to "Finish" without clicking Continue. Both times "Finish" was reported
+ * missing with nothing pointing at the cause. The form comes from discovery (`page.forms`), so a search box
+ * elsewhere on the page is never named; a field counts as filled when a fill step's target names it
+ * (label, aria-label, placeholder or name) or its css carries the field's id or name.
+ */
+export function unfilledFormFields(ir: IR, appModel: AppModel, index: number): { empty: string[]; submit?: string } {
+  const before = ir.steps.slice(0, index);
+  if (!before.some((s) => s.action === "fill" && s.target)) return { empty: [] };
+  const n = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const fieldName = (f: DomForm["fields"][number]) => f.label || f.ariaLabel || f.placeholder || f.name;
+  /** Index of the last step before `index` that fills this field, or -1. */
+  const filledAt = (f: DomForm["fields"][number]): number => {
+    const names = [f.label, f.ariaLabel, f.placeholder, f.name].filter(Boolean).map(n);
+    for (let i = before.length - 1; i >= 0; i--) {
+      const s = before[i];
+      if (s.action !== "fill" || !s.target) continue;
+      const t = s.target;
+      if (t.name && names.includes(n(t.name))) return i;
+      if (t.label && names.includes(n(t.label))) return i;
+      const css = (t.css ?? "").toLowerCase();
+      if (css && [f.id, f.name].filter(Boolean).some((v) => css.includes(v.toLowerCase()))) return i;
+    }
+    return -1;
+  };
+  for (const page of appModel.pages) {
+    for (const form of page.forms ?? []) {
+      const typed = form.fields.filter((f) => (f.tag === "textarea" || (f.tag === "input" && TYPED_INPUT_TYPES.has(f.inputType.toLowerCase())))
+        && fieldName(f));
+      const lastFill = Math.max(-1, ...typed.map(filledAt));
+      if (lastFill < 0) continue;
+      const empty = [...new Set(typed.filter((f) => filledAt(f) < 0).map(fieldName))].slice(0, 6);
+      // Submitted = some click/press after the last fill into this form. If not, name its own submit.
+      const submitted = before.slice(lastFill + 1).some((s) => s.action === "click" || s.action === "press");
+      const control = form.fields.find((f) => f.tag === "input" && ["submit", "button"].includes(f.inputType.toLowerCase())
+        && (f.value || f.ariaLabel));
+      const submit = !submitted && control ? (control.value || control.ariaLabel) : undefined;
+      if (empty.length || submit) return { empty, ...(submit ? { submit } : {}) };
+    }
+  }
+  return { empty: [] };
+}
+
+/**
  * Should this case be signed in before its own steps run?
  *
  * Yes for everything except cases that are ABOUT the login page — the whole app is behind the
@@ -644,7 +796,9 @@ export function screenBoundaries(ir: IR): number[] {
     while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
     const next = ir.steps[j];
     if (!next) continue;
-    if (ACTION_STEPS.has(next.action) || (next.action === "assert" && next.target?.role)) {
+    // A url_contains right after a button click is a guess about where the click leads (TD-147):
+    // capture there too, so the assertion is checked against the URL the flow really reaches.
+    if (ACTION_STEPS.has(next.action) || (next.action === "assert" && (next.target?.role || next.assertion === "url_contains"))) {
       if (!out.includes(j)) out.push(j);
     }
   }
@@ -879,6 +1033,22 @@ export function groundingError(
       `before it). ` + (route ?? `A step that opens the screen holding it is probably missing before this ` +
       `one — for example clicking a button that opens the form.`) + controls;
   };
+  /** TD-145: after a submitted form left fields empty, name them — a required one keeps the form
+   *  from moving on, which is why this step's element never appears. */
+  const unfilledHint = (index: number): string => {
+    const { empty, submit } = unfilledFormFields(ir, appModel, index);
+    let out = "";
+    if (empty.length) {
+      out += ` The steps before it leave ${empty.map((f) => `"${f}"`).join(", ")} empty in the form they fill. A ` +
+        `required field left empty keeps the form from moving on, so this element never appears: fill every ` +
+        `field the form needs, splitting a value the test case gives (a full name into first and last name) where needed.`;
+    }
+    if (submit) {
+      out += ` That form is never submitted: no step clicks its "${submit}" button after filling it, so the page ` +
+        `holding this element is never reached. Click "${submit}" first.`;
+    }
+    return out;
+  };
   /**
    * An acting step bound to an element its screen shows as DISABLED (D-52, TD-121). Clicking it
    * waits out the whole timeout at run time ("element is not enabled"). Two cases:
@@ -944,6 +1114,20 @@ export function groundingError(
       };
     }
     const screenPage = screenAtStep(index)?.page;
+    // TD-147: a url_contains checked against the URL a live capture reached at this very step. Run
+    // 2026-10-16T12-14-09 asserted "/project" after "Explore Projects", which scrolls the home page;
+    // the URL never changes, so the test could only fail. Salesforce screen mode only (screenAt).
+    if (step.action === "assert" && step.assertion === "url_contains" && screenPage && screenAtStep(index)?.at === index) {
+      const want = (step.value ?? t?.url ?? "").trim();
+      if (want && !screenPage.url.toLowerCase().includes(want.toLowerCase())) {
+        return {
+          index,
+          message: `Step ${step.id} asserts url_contains "${want}", but after the steps before it the page is at ` +
+            `"${screenPage.url}" (seen in a live capture at this step): that click does not lead to such a URL. ` +
+            `Assert something visible on the screen it does show instead.` + screenControlsHint(index),
+        };
+      }
+    }
     // A verified selector from a DIFFERENT screen of this URL resolves to nothing (or to a hidden
     // twin) at run time. Not grounded: fall through to the name match on this screen, which either
     // finds this screen's own control or reports the step as missing from it.
@@ -1197,7 +1381,7 @@ export function groundingError(
         message: `Step ${step.id} targets role="${t.role}" name="${t.name}", which is not present under any compatible role on page "${pageUrl}". ` +
           `If this element loads dynamically, verify that the page completed hydration/API rendering; ` +
           `if it requires role-based access (e.g. Admin), verify that valid authorized credentials were provided.` +
-          missingOnScreenHint(index),
+          (missingOnScreenHint(index) || similarElementsHint(stepPage && elements !== allElements ? [{ url: stepPage.url, elements }] : appModel.pages, role, name)) + unfilledHint(index),
       };
     }
     const disErr = disabledTargetErr(index, step, matched);
@@ -2542,6 +2726,13 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
 
     if (!ungrounded) {
+      const chrome = chromeSuccessAssertion(parsed.data, currentModel);
+      if (chrome) {
+        console.log("[ir] site-chrome success assertion rejected:", chrome.message);
+        reject("chrome-assertion", chrome.message);
+        lastContradiction = { ir: parsed.data, ...chrome };
+        continue;
+      }
       const vacuous = vacuousAssertion(parsed.data, currentModel);
       if (vacuous) {
         console.log("[ir] vacuous assertion rejected:", vacuous.message);

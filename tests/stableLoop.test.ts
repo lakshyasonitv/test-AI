@@ -213,3 +213,153 @@ describe("TD-144 an unlabeled checkbox is named by the text after it", async () 
     expect(box.css).toBe("");
   });
 });
+
+describe("TD-145 a submitted form's empty fields are named when the next step's element is missing", async () => {
+  const { unfilledFormFields } = await import("../src/stages/ir.js");
+  const field = (id: string, placeholder: string, inputType = "text") =>
+    ({ tag: "input", inputType, name: id, placeholder, label: "", required: false, value: "", options: [], id, ariaLabel: placeholder });
+  const model = {
+    baseUrl: "https://www.saucedemo.com",
+    pages: [{
+      url: "https://www.saucedemo.com/checkout-step-one.html", title: "", elements: [],
+      forms: [{ action: "", method: "GET", id: "", name: "", ariaLabel: "", fields: [
+        field("firstName", "First Name"), field("lastName", "Last Name"), field("postalCode", "Zip/Postal Code"),
+        { ...field("continue", "", "submit"), value: "Continue" },
+      ] }],
+    }, {
+      url: "https://www.saucedemo.com/inventory.html", title: "", elements: [],
+      forms: [{ action: "", method: "GET", id: "", name: "", ariaLabel: "", fields: [field("search", "Search")] }],
+    }],
+  } as any;
+  const fill = (name: string, css?: string) => ({ id: "f", action: "fill", target: { role: "textbox", name, ...(css ? { css } : {}) }, value: "x" });
+  const ir = (steps: any[]) => ({ meta, steps: [...steps, { id: "z", action: "click", target: { role: "button", name: "Finish" } }] }) as any;
+
+  it("run 10-59-00: First Name and Zip filled, Continue clicked -> 'Last Name' is named", () => {
+    const steps = [fill("First Name"), fill("Zip/Postal Code", "[data-test=\"postalCode\"]"), { id: "c", action: "click", target: { role: "button", name: "Continue" } }];
+    expect(unfilledFormFields(ir(steps), model, 3)).toEqual({ empty: ["Last Name"] });
+  });
+
+  it("every field filled: nothing", () => {
+    const steps = [fill("First Name"), fill("Last Name"), fill("Zip/Postal Code"), { id: "c", action: "click", target: { role: "button", name: "Continue" } }];
+    expect(unfilledFormFields(ir(steps), model, 4)).toEqual({ empty: [] });
+  });
+
+  it("run 11-39-31: filled, never submitted -> the empty fields AND its submit button", () => {
+    expect(unfilledFormFields(ir([fill("First Name"), fill("Zip/Postal Code")]), model, 2)).toEqual({ empty: ["Last Name"], submit: "Continue" });
+  });
+
+  it("every field filled, never submitted -> only the submit button", () => {
+    expect(unfilledFormFields(ir([fill("First Name"), fill("Last Name"), fill("Zip/Postal Code")]), model, 3)).toEqual({ empty: [], submit: "Continue" });
+  });
+
+  it("a form no step touched (the search box) is never named", () => {
+    const steps = [fill("Unrelated"), { id: "c", action: "click", target: { role: "button", name: "Go" } }];
+    expect(unfilledFormFields(ir(steps), model, 2)).toEqual({ empty: [] });
+  });
+});
+
+describe("TD-146 a missing role+name is answered with the closest real elements", async () => {
+  const { similarElementsHint } = await import("../src/stages/ir.js");
+  const els = [
+    { role: "button", name: "Add to cart", testId: "add-to-cart-sauce-labs-backpack", visible: true },
+    { role: "button", name: "Add to cart", testId: "add-to-cart-sauce-labs-onesie", visible: true },
+    { role: "link", name: "About", visible: true },
+    { role: "textbox", name: "Search", visible: true },
+    { role: "button", name: "Hidden thing", visible: false },
+  ] as any[];
+
+  it("run 12-08-10: 'Add to cart - Sauce Labs Backpack' -> 'Add to cart' first, with its test ids", () => {
+    const s = similarElementsHint([{ url: "https://www.saucedemo.com/inventory.html", elements: els }], "button", "add to cart - sauce labs backpack");
+    expect(s.indexOf('button "Add to cart" (2 of them; test ids: add-to-cart-sauce-labs-backpack, add-to-cart-sauce-labs-onesie)')).toBeGreaterThan(0);
+    expect(s.indexOf('"Add to cart"')).toBeLessThan(s.indexOf('"About"'));
+    expect(s).not.toContain("Search");       // a textbox is not a button
+    expect(s).not.toContain("Hidden thing"); // not visible
+  });
+
+  it("a site with no test ids: twins are told apart by nth", () => {
+    const s = similarElementsHint([{ url: "https://x.example.com/", elements: [{ role: "button", name: "Buy", visible: true }, { role: "button", name: "Buy", visible: true }] as any }], "button", "buy now");
+    expect(s).toContain('"Buy" (2 of them, in page order: pick one with "nth"');
+  });
+
+  it("run 13-33-16: page unknown -> every element names its page, and the model is told not to borrow", () => {
+    const s = similarElementsHint([
+      { url: "https://www.saucedemo.com/", elements: [{ role: "textbox", name: "Username", visible: true }] as any },
+      { url: "https://www.saucedemo.com/cart.html", elements: [{ role: "button", name: "Checkout", visible: true }] as any },
+    ], "textbox", "first name");
+    expect(s).toContain('textbox "Username" on /');
+    expect(s).toContain("rather than borrowing one from another page");
+  });
+
+  it("nothing of a compatible role: no hint", () => {
+    expect(similarElementsHint([{ url: "https://x.example.com/", elements: [{ role: "heading", name: "Hi", visible: true }] as any }], "button", "go")).toBe("");
+  });
+});
+
+describe("TD-147 a url_contains after a button click is checked against the live capture (Salesforce screen mode)", async () => {
+  const { screenBoundaries } = await import("../src/stages/ir.js");
+  const { fingerprintOf } = await import("../src/stages/screens.js");
+  const home = {
+    url: "https://acme.my.site.com/", title: "Home", forms: [],
+    elements: [{ role: "button", name: "Explore Projects", css: "#explore", visible: true }, { role: "button", name: "View Project", css: "#view", visible: true }],
+  };
+  const model = { baseUrl: "https://acme.my.site.com", pages: [home] } as any;
+  const key = fingerprintOf(home as any).key;
+  const ir = (value: string) => ({ meta, steps: [
+    { id: "s1", action: "navigate", target: { url: "/" } },
+    { id: "s2", action: "click", target: { role: "button", name: "Explore Projects" } },
+    { id: "s3", action: "assert", value, assertion: "url_contains" },
+  ] }) as any;
+
+  it("a url_contains right after a button click is a screen boundary (so it gets captured)", () => {
+    expect(screenBoundaries(ir("/project"))).toContain(2);
+  });
+
+  it("run 12-14-09: '/project' after a click that stays on '/' is rejected, naming the real URL", () => {
+    const err = groundingError(ir("/project"), model, { screenAt: [{ at: 2, key }] });
+    expect(err?.index).toBe(2);
+    expect(err?.message).toContain('"https://acme.my.site.com/"');
+    expect(err?.message).toContain('button "View Project"');
+  });
+
+  it("a URL the capture really shows passes", () => {
+    expect(groundingError(ir("acme.my.site.com"), model, { screenAt: [{ at: 2, key }] })).toBeNull();
+  });
+
+  it("an older capture (not at this step) is never used to judge it", () => {
+    expect(groundingError(ir("/project"), model, { screenAt: [{ at: 1, key }] })).toBeNull();
+  });
+
+  it("an ordinary run (no screens) is unchanged", () => {
+    expect(groundingError(ir("/project"), model)).toBeNull();
+  });
+});
+
+describe("TD-148 a success check that is only site chrome is rejected", async () => {
+  const { chromeSuccessAssertion } = await import("../src/stages/ir.js");
+  const home = { url: "https://acme.example.com/", title: "", forms: [], elements: [
+    { role: "link", name: "Projects", landmark: "nav", visible: true },
+    { role: "link", name: "Careers", landmark: "footer", visible: false },
+    { role: "button", name: "Explore Projects", landmark: "main", visible: true },
+    { role: "heading", name: "Our projects", landmark: "main", visible: true },
+  ] };
+  const model = { baseUrl: "https://acme.example.com", pages: [home] } as any;
+  const ir = (...tail: any[]) => ({ meta, steps: [{ id: "s1", action: "navigate", target: { url: "/" } }, ...tail] }) as any;
+  const click = { id: "s2", action: "click", target: { role: "button", name: "Explore Projects" } };
+  const see = (role: string, name: string, id = "s3") => ({ id, action: "assert", target: { role, name }, assertion: "visible" });
+
+  it("run 13-49-29: click, then assert the header's 'Projects' link -> rejected", () => {
+    expect(chromeSuccessAssertion(ir(click, see("link", "Projects")), model)?.message).toContain("part of the site's nav");
+  });
+  it("a check of page content after the click is fine", () => {
+    expect(chromeSuccessAssertion(ir(click, see("heading", "Our projects")), model)).toBeNull();
+  });
+  it("chrome plus one real check is fine", () => {
+    expect(chromeSuccessAssertion(ir(click, see("link", "Projects"), see("heading", "Our projects", "s4")), model)).toBeNull();
+  });
+  it("a smoke check after only opening the page is fine", () => {
+    expect(chromeSuccessAssertion(ir(see("link", "Projects", "s2")), model)).toBeNull();
+  });
+  it("a chrome element that was hidden before (a menu that opens) is fine", () => {
+    expect(chromeSuccessAssertion(ir(click, see("link", "Careers")), model)).toBeNull();
+  });
+});
