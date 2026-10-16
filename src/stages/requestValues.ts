@@ -70,7 +70,7 @@ Rules, follow exactly:
  * the ones changed) and how many were fixed. Never throws: a failed repair keeps the original case.
  */
 export async function restoreDroppedValues(
-  cases: TestCase[], request: string,
+  cases: TestCase[], request: string, screens = "",
 ): Promise<{ cases: TestCase[]; fixed: number }> {
   const values = requestValues(request);
   if (!values.length) return { cases, fixed: 0 };
@@ -79,19 +79,23 @@ export async function restoreDroppedValues(
   for (const c of cases) {
     const missing = c.fromPrompt ? missingValues(c, values) : [];
     if (!missing.length) { out.push(c); continue; }
-    const repaired = await repairCase(c, request, values, missing);
+    const repaired = await repairCase(c, request, values, missing, screens);
     if (repaired) { out.push(repaired); fixed++; } else out.push(c);
   }
   return { cases: out, fixed };
 }
 
-async function repairCase(c: TestCase, request: string, values: string[], missing: string[]): Promise<TestCase | null> {
+async function repairCase(
+  c: TestCase, request: string, values: string[], missing: string[], screens: string,
+): Promise<TestCase | null> {
   const key = makeCacheKey("request-values:1", JSON.stringify({ steps: c.steps, expected: c.expected }), request,
-    JSON.stringify(missing), SYSTEM, llmCacheDimension("main"), llmCacheVersion());
+    JSON.stringify(missing), SYSTEM, llmCacheDimension("main"), llmCacheVersion(), ...(screens ? [screens] : []));
   let rewrite = llmCacheGet<z.infer<typeof Rewrite>>(key, "requestvalues");
   if (!rewrite) {
     const user = `The person's request:\n${request}\n\nThe test case:\n${JSON.stringify({ title: c.title, steps: c.steps, expected: c.expected })}\n\n` +
-      `Values from the request that the case DROPPED — put each one back, verbatim and quoted:\n${missing.map((m) => `- "${m}"`).join("\n")}`;
+      `Values from the request that the case DROPPED — put each one back, verbatim and quoted:\n${missing.map((m) => `- "${m}"`).join("\n")}` +
+      // Gap 1: which screen holds which field, so each value lands in the step for ITS screen.
+      (screens ? `\n${screens}` : "");
     try {
       const { content } = await llm(user, { systemInstruction: SYSTEM, json: true, role: "main", stage: "testcases-values" });
       const parsed = Rewrite.safeParse(parseJson(content));

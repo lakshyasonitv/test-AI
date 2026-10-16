@@ -34,7 +34,7 @@ export interface ScreenMapScreen {
   key: string; url: string; title: string; tab: string; labels: string[];
   controls: ScreenMapControl[]; seen: number; lastSeen: string;
 }
-export interface ScreenMap { version: 1; site: string; screens: ScreenMapScreen[]; edges: ScreenMapEdge[] }
+export interface ScreenMap { version: 2; site: string; screens: ScreenMapScreen[]; edges: ScreenMapEdge[] }
 
 export const SCREEN_MAP_NS = "screenmap";
 export const MAX_MAP_SCREENS = 60;
@@ -59,7 +59,7 @@ export function screenMapKey(baseUrl: string, creds?: Credentials): string {
 }
 
 export function emptyScreenMap(baseUrl: string): ScreenMap {
-  return { version: 1, site: siteHost(baseUrl) ?? baseUrl, screens: [], edges: [] };
+  return { version: 2, site: siteHost(baseUrl) ?? baseUrl, screens: [], edges: [] };
 }
 
 /** A captured page as a map screen. `controls` is what the caller already shows the model. */
@@ -123,7 +123,9 @@ export function withinTtl(map: ScreenMap, now: Date, ttlMs = screenMapTtlMs()): 
 
 export function loadScreenMap(baseUrl: string, creds: Credentials | undefined, now: Date): ScreenMap {
   const stored = llmCacheGet<ScreenMap>(screenMapKey(baseUrl, creds), SCREEN_MAP_NS);
-  if (!stored || stored.version !== 1) return emptyScreenMap(baseUrl);
+  // v2 (2026-10-16): v1 maps hold edges recorded by the "last click before the capture" rule,
+  // which named the wrong click; they are dropped rather than trusted, and rebuild on the next run.
+  if (!stored || stored.version !== 2) return emptyScreenMap(baseUrl);
   return withinTtl(stored, now);
 }
 
@@ -148,4 +150,95 @@ export function writeRunScreenMap(baseUrl: string, creds: Credentials | undefine
   mkdirSync(dir, { recursive: true });
   const map = mergeIntoMap(emptyScreenMap(baseUrl), screens, edges);
   writeFileSync(path.join(dir, "09-screen-map.json"), JSON.stringify(redactCredentials(map, creds), null, 2));
+}
+
+/**
+ * The stored screens in the order a person reaches them: follow the recorded clicks from the entry
+ * page (edges whose `from` is null), breadth first; screens no click path reaches come last, oldest
+ * first. Pure.
+ */
+export function orderedScreens(map: ScreenMap): ScreenMapScreen[] {
+  const byKey = new Map(map.screens.map((s) => [s.key, s]));
+  const out: ScreenMapScreen[] = [];
+  const seen = new Set<string>();
+  // Edges are recorded only when unambiguous (edgeForCapture), so a chain can start mid-flow: after
+  // following everything from the entry page, the OLDEST screen not yet placed starts the next chain.
+  const byAge = [...map.screens].sort((a, b) => a.lastSeen.localeCompare(b.lastSeen));
+  let root: string | null = null;
+  for (;;) {
+    const queue: Array<string | null> = [root];
+    if (root !== null) { seen.add(root); out.push(byKey.get(root)!); }
+    while (queue.length) {
+      const from = queue.shift()!;
+      for (const e of map.edges) {
+        if (e.from !== from || seen.has(e.to) || !byKey.has(e.to)) continue;
+        seen.add(e.to);
+        out.push(byKey.get(e.to)!);
+        queue.push(e.to);
+      }
+    }
+    const next = byAge.find((s) => !seen.has(s.key));
+    if (!next) break;
+    root = next.key;
+  }
+  return out;
+}
+
+/**
+ * Gap 1: the stored screens as a block for the TEST-CASE prompt, so a case that crosses screens puts
+ * each field on the screen that really holds it. "" when there is nothing to show. Names only, in
+ * reach order, each with the click that opens it. Capped at `maxScreens`.
+ */
+export function screensForCases(map: ScreenMap, maxScreens = 12): string {
+  const screens = orderedScreens(map).filter((s) => s.controls.length).slice(0, maxScreens);
+  if (!screens.length) return "";
+  // Several screens of ONE URL (a form's steps) repeat the page around them — a chat button, the
+  // header, a list behind a modal. A control on EVERY screen of that URL tells the case writer
+  // nothing about which screen holds what, so it is left out (unless nothing would remain).
+  const controlId = (c: ScreenMapControl) => `${c.role}\u0000${c.name}`;
+  const sharedByUrl = new Map<string, Set<string>>();
+  for (const url of new Set(screens.map((s) => s.url))) {
+    const group = screens.filter((s) => s.url === url);
+    if (group.length < 2) continue;
+    const sets = group.map((s) => new Set(s.controls.map(controlId)));
+    sharedByUrl.set(url, new Set([...sets[0]].filter((id) => sets.every((set) => set.has(id)))));
+  }
+  const lines = screens.map((s, i) => {
+    let path = s.url;
+    try { const u = new URL(s.url); path = u.pathname + u.search; } catch { /* keep the raw url */ }
+    const openedBy = Array.from(new Set(map.edges.filter((e) => e.to === s.key)
+      .map((e) => `${e.action.role} "${e.action.name}"`))).slice(0, 3);
+    const shared = sharedByUrl.get(s.url);
+    const own = shared ? s.controls.filter((c) => !shared.has(controlId(c))) : s.controls;
+    const controls = (own.length ? own : s.controls)
+      .map((c) => `${c.role} "${c.name}"${c.enabled === false ? " (disabled)" : ""}`).join(", ");
+    return `- Screen ${i + 1} (${path}${s.title ? `, "${s.title}"` : ""})${openedBy.length ? `, opened by clicking ${openedBy.join(" or ")}` : ""}: ${controls}`;
+  });
+  return `\nScreens of this application seen by an earlier run (they may have changed), in the order a person reaches them. ` +
+    `A multi-screen form on ONE URL appears here as several screens. When a case goes past the first page, use these ` +
+    `control names verbatim (quoted), and put each action in the step for the screen that holds that control — never ` +
+    `list a later screen's fields under an earlier screen, and include the click that opens each screen:\n${lines.join("\n")}\n`;
+}
+
+/**
+ * The edge a capture adds, or none. `screenAt` holds this attempt's earlier screens by the step index
+ * where each begins (`at`); `prefix` is the steps replayed to reach the new screen `to`, which begins
+ * at step `index`. An edge says "clicking X on screen A opens screen B", so it is recorded only when
+ * that is unambiguous (run 2026-10-16T05-34-49 stored two wrong ones under the old "last click" rule):
+ *  - A is the latest earlier screen (null = the entry page);
+ *  - exactly ONE click/press happened since A began — after "View Project" then "Select for EOI",
+ *    which of them changed the screen is unknown;
+ *  - A is not B — a click that re-renders the screen it is on ("Self Use") opens nothing.
+ * Pure.
+ */
+export function edgeForCapture(
+  screenAt: { at: number; key: string }[], prefix: Array<{ action: string; target?: { role?: string; name?: string } }>,
+  index: number, to: string,
+): Omit<ScreenMapEdge, "seen"> | undefined {
+  const prev = screenAt.filter((s) => s.at < index).sort((a, b) => a.at - b.at).at(-1);
+  const from = prev?.key ?? null;
+  if (from === to) return undefined;
+  const clicks = prefix.slice(prev?.at ?? 0).filter((s) => (s.action === "click" || s.action === "press") && s.target?.name);
+  if (clicks.length !== 1) return undefined;
+  return { from, action: { role: clicks[0].target!.role ?? "", name: clicks[0].target!.name! }, to };
 }

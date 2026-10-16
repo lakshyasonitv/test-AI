@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 
 // Gap 5 / TD-136: the request's own values survive into the primary test case on a Salesforce run.
 const { geminiMock } = vi.hoisted(() => ({ geminiMock: vi.fn() }));
@@ -7,7 +7,6 @@ vi.mock("../src/llm/gemini.js", () => ({ gemini: geminiMock }));
 const { requestValues, missingValues, restoreDroppedValues } = await import("../src/stages/requestValues.js");
 const { toTestCases } = await import("../src/stages/testCases.js");
 const { withTargetApp } = await import("../src/runTarget.js");
-const { llmCacheClear } = await import("../src/kb/llmCache.js");
 
 // The user's real short request (run 2026-10-15T18-02-40) and the case the model wrote for it.
 const REQUEST = `Click Explore Projects, then View Project, then Select for EOI on an available unit, then Express Interest. Fill the 3-screen form with valid test data: Self Use as purpose, Buying Timeline "Later", Preferred Project "The Sanctuary", Preferred Areas "Abu Dhabi", Preferred Unit Type "Office". Submit and check that "Thank You" is shown.`;
@@ -38,7 +37,13 @@ const REPAIRED = {
 };
 const reply = (body: unknown) => ({ content: JSON.stringify(body), usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } });
 
-beforeEach(() => { geminiMock.mockReset(); llmCacheClear("requestvalues"); });
+// Isolation: these tests share the on-disk cache (runs/_cache) with a running local server, so they
+// must NEVER clear a namespace. Each test gets its own LLM_CACHE_VERSION, which every key here
+// includes, so nothing written or read can meet the server's real entries (or another test's).
+const savedCacheVersion = process.env.LLM_CACHE_VERSION;
+const freshCacheVersion = () => { process.env.LLM_CACHE_VERSION = `test-${Date.now()}-${Math.random()}`; };
+beforeEach(() => { geminiMock.mockReset(); freshCacheVersion(); });
+afterAll(() => { if (savedCacheVersion === undefined) delete process.env.LLM_CACHE_VERSION; else process.env.LLM_CACHE_VERSION = savedCacheVersion; });
 
 describe("requestValues", () => {
   it("takes every quoted value and multi-word name, drops the opening verb, never crosses a sentence", () => {

@@ -5259,6 +5259,18 @@ passed. A real failure on a truncated IR has a non-zero exit code and is still `
 all sites, because it is a status bug, not a capability. `tests/primaryCaseStatus.test.ts`: both
 mutations caught.
 
+
+**Correction, 2026-10-16: the first fix never fired in a real run.** It looked for
+`result.status === "truncated_no_assertion"`, but `orchestrator.ts` rebuilds the result it hands the
+suite from five fields (`passed`, `exitCode`, `artifactsDir`, `resultsJsonPath`, `raw`) with no
+`status`. The unit test passed a result that HAD `status`, a shape no real run sends, so it went green
+while run `2026-10-16T05-34-49` still showed "failed".
+
+Now `primaryCaseStatus` reads the one signal that does arrive: `passed: false` with exit code 0. Only
+the override produces that combination (`executor.ts` sets `passed: exitCode === 0`; a heal sets
+`passed: true`). The test now uses the exact handoff shape, and a second test pins that
+`orchestrator.ts` still hands over no `status`. The old check, re-applied as a mutation, is caught.
+
 ### TD-131. A stalled flow PASSED by asserting a validation error in place of the requested success text — Critical / Accidental — **Fixed (Salesforce runs)**
 
 Run `2026-10-15T17-13-59-354Z-53e5e62c`. The request said check that "Thank You" is shown.
@@ -5366,3 +5378,67 @@ Ordinary runs and the Pro generator are untouched, and `tests/testCasesNoChange.
 **Still open:** a lower-case unquoted name ("select for eoi") is not recognised (TD-127's limit).
 Values the person did not write (the form's other dropdowns) are still the model's choice; that is
 Gap 2.
+
+### TD-137. The test-case writer could not see which screen holds which field — Medium / Accidental — **Fixed (Salesforce runs, anonymous maps)**
+
+Run `2026-10-15T19-34-46-890Z-06cc4de5` (short prompt, after TD-136) listed screen 3's Preferred
+Project / Areas / Unit Type under "the second form screen". The case writer sees only the discovered
+entry page, and a multi-screen form on one URL is invisible to it. The IR stage recovered by retrying,
+at 8 IR calls against 6.
+
+Fixed. On a Salesforce run with `SCREEN_MAP_ENABLED`, `toTestCases` appends the stored screen map to its
+prompt (`screensForCases`, `src/stages/screenMap.ts`):
+- in the order a person reaches the screens (`orderedScreens` follows the recorded clicks);
+- each screen with the click that opens it;
+- each screen with only the controls that are its OWN (controls repeated on every screen of the same
+  URL are left out, unless nothing would remain).
+
+The same block goes to TD-136's value repair, and joins both cache keys only when non-empty, so
+ordinary and flag-off prompts and keys are byte-identical (`tests/testCasesNoChange.test.ts`). Tests:
+`tests/screensForCases.test.ts`, on the real map run `17-50-49` stored. 6 mutations caught.
+
+**Still open:**
+- **Only the ANONYMOUS map is read.** Case generation runs before the run's credentials are asked for
+  (`orchestrator.ts`), and one login's screens must never reach another's prompt. A logged-in org's
+  case writer therefore still sees nothing. Fixing that needs the credentials at case-generation time,
+  which is an `orchestrator.ts` change and needs the owner's approval.
+- The first run on a site still has no map (Gap 3).
+
+**The edge rule was wrong (found by run `2026-10-16T05-34-49`; fixed the same day).** An edge ("clicking
+X on screen A opens screen B") was recorded with X = the LAST click before the capture, and A = the
+latest earlier capture that was not B. Two wrong edges followed:
+- `form 1 --Self Use--> form 2`: Self Use re-renders the screen it is on;
+- `home --Select for EOI--> project page`: View Project, then Select for EOI, with no capture
+  between.
+
+The case writer read "form 2 is opened by clicking Self Use" and wrote a FOUR-screen form. Now
+`edgeForCapture` (`screenMap.ts`, pure) records an edge only when exactly ONE click happened since
+the previous screen and that screen is not the new one. `orderedScreens` continues a chain from the
+oldest unplaced screen, so a flow is still ordered when an ambiguous edge is missing. The map format
+is now **v2**: v1 maps, whose edges came from the old rule, are dropped on read and rebuild on the
+next run. Tests: 4 `edgeForCapture` cases, a v1-drop test, and an out-of-order chain test; 4
+mutations caught.
+
+### TD-138. Tests clear cache namespaces that a running local server shares — Medium / Accidental — **Partly fixed**
+
+`llmCache` keeps its disk half in `runs/_cache/<namespace>` for tests and the server alike. A test that
+calls `llmCacheClear(ns)` deletes the server's real entries too.
+
+**Found the hard way, 2026-10-16.** The screen-map tests (Phase 2, Gap 1) cleared `screenmap`, and the
+value-repair tests cleared `requestvalues`. Every full suite run wiped the EOI site's learned screen map,
+so the owner's next real run (`2026-10-16T05-04-07`) started with an empty map. Gap 1's block was empty,
+and the case batch was served from the pre-Gap-1 cache.
+
+**Fixed for those four files** (`screenMap`, `screenMapRuns`, `screensForCases`, `requestValues`): they no
+longer clear anything. Each test sets its own `LLM_CACHE_VERSION`, which every key involved includes, so
+it can neither read nor overwrite real entries. This was verified by running the four suites twice with a
+real map's md5 unchanged.
+
+**Still open:** `tests/walkCredentials.test.ts` (6 calls) and `tests/editorGuards.test.ts` (2) clear the
+`walks` namespace. That throws away a running server's cached captures (slower next run, no data loss).
+`llmCacheGuard.test.ts` has one more. Not changed here, because they are not this stream's tests.
+
+The structural fix is a test-only cache root, e.g. `LLM_CACHE_ROOT` set in `vitest.config.ts`. But
+several Pro tests (`specDistill`, `specRoutes`) assert on the real `runs/_cache/spec` path, so that needs
+coordinating with Pro's owner. A side effect of the unique-version isolation: each test run leaves small entries under unique keys in `runs/_cache/screenmap` and `runs/_cache/requestvalues`. They are harmless (never read by a real run), but they accumulate until the cache folder is cleaned.
+

@@ -10,7 +10,6 @@ vi.mock("../src/llm/llmContext.js", async (orig) => ({
 }));
 
 const m = await import("../src/stages/screenMap.js");
-const { llmCacheClear } = await import("../src/kb/llmCache.js");
 const { withRunId } = await import("../src/runContext.js");
 
 const NOW = new Date("2026-10-15T12:00:00Z");
@@ -21,8 +20,13 @@ const screen = (key: string, title: string, labels: string[], lastSeen = at(0), 
 });
 const click = (name: string) => ({ role: "button", name });
 
-beforeEach(() => { dim.value = "azure:env"; llmCacheClear(m.SCREEN_MAP_NS); });
-afterAll(() => llmCacheClear(m.SCREEN_MAP_NS));
+// Isolation: these tests share the on-disk cache (runs/_cache) with a running local server, so they
+// must NEVER clear a namespace. Each test gets its own LLM_CACHE_VERSION, which every key here
+// includes, so nothing written or read can meet the server's real entries (or another test's).
+const savedCacheVersion = process.env.LLM_CACHE_VERSION;
+const freshCacheVersion = () => { process.env.LLM_CACHE_VERSION = `test-${Date.now()}-${Math.random()}`; };
+beforeEach(() => { dim.value = "azure:env"; freshCacheVersion(); });
+afterAll(() => { if (savedCacheVersion === undefined) delete process.env.LLM_CACHE_VERSION; else process.env.LLM_CACHE_VERSION = savedCacheVersion; });
 
 describe("mergeIntoMap", () => {
   const base = m.mergeIntoMap(m.emptyScreenMap(SITE), [screen("a1", "details", ["full name", "email"])], []);
@@ -104,5 +108,43 @@ describe("stored per site, organisation and login", () => {
 
   it("outside a run nothing is written", () => {
     expect(() => m.writeRunScreenMap(SITE, creds, [], [])).not.toThrow();
+  });
+});
+
+describe("edgeForCapture: an edge only when the click that opened the screen is unambiguous (v2)", () => {
+  const click = (name: string) => ({ action: "click", target: { role: "button", name } });
+  const fill = (name: string) => ({ action: "fill", target: { role: "textbox", name } });
+  const nav = { action: "navigate", target: {} };
+
+  it("one click since the previous screen: recorded, from that screen", () => {
+    // form 1 began at step 3; Full Name, then Next; the new screen begins at step 5.
+    const steps = [nav, click("Express Interest"), fill("Full Name"), click("Next")] as any[];
+    expect(m.edgeForCapture([{ at: 2, key: "form1" }], steps, 4, "form2"))
+      .toEqual({ from: "form1", action: { role: "button", name: "Next" }, to: "form2" });
+  });
+
+  it("from the entry page (no earlier capture): from is null", () => {
+    expect(m.edgeForCapture([], [nav, click("Explore Projects")] as any[], 2, "projects")?.from).toBeNull();
+  });
+
+  it("a click that re-renders the screen it is on opens nothing (run 05-34-49's \"Self Use\")", () => {
+    const steps = [nav, click("Next"), click("Self Use")] as any[];
+    expect(m.edgeForCapture([{ at: 2, key: "form2" }], steps, 3, "form2")).toBeUndefined();
+  });
+
+  it("two clicks since the previous screen: which one changed it is unknown, so nothing", () => {
+    const steps = [nav, click("Explore Projects"), click("View Project"), click("Select for EOI")] as any[];
+    expect(m.edgeForCapture([{ at: 2, key: "home" }], steps, 4, "project")).toBeUndefined();
+  });
+});
+
+describe("loadScreenMap drops a v1 map (its edges came from the old, wrong rule)", () => {
+  it("v1 is ignored; v2 is read", async () => {
+    const { llmCacheSet } = await import("../src/kb/llmCache.js");
+    const site = `https://v1-${Date.now()}.example.my.site.com`;
+    llmCacheSet(m.screenMapKey(site), { version: 1, site, screens: [screen("a", "a", ["a"])], edges: [] }, m.SCREEN_MAP_NS);
+    expect(m.loadScreenMap(site, undefined, NOW).screens).toEqual([]);
+    m.recordIntoScreenMap(site, undefined, [screen("a", "a", ["a"])], [], NOW);
+    expect(m.loadScreenMap(site, undefined, NOW).screens).toHaveLength(1);
   });
 });

@@ -86,7 +86,11 @@ export function primaryCaseStatus(
   result: { passed: boolean; status?: string; exitCode?: number | null },
   blocked: unknown,
 ): CaseRunResult["status"] {
-  const overridden = result.status === "truncated_no_assertion" && !result.passed;
+  // NOT `result.status`: orchestrator.ts rebuilds the result it hands the suite as { passed,
+  // exitCode, artifactsDir, resultsJsonPath, raw } — the status field never arrives (run
+  // 2026-10-16T05-34-49 still showed "failed"). The override is the only way to get passed:false
+  // with a ZERO exit code: executor.ts sets `passed: exitCode === 0`, and a heal sets passed:true.
+  const overridden = !result.passed && result.exitCode === 0;
   return computeCaseStatus(ir, overridden ? { passed: result.exitCode === 0 } : result, blocked);
 }
 

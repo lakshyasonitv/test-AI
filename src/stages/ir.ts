@@ -8,7 +8,7 @@ import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, t
 import { cutAtBoundary, siteHost, pageKey } from "../text.js";
 import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
-import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
+import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, edgeForCapture, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
@@ -2399,11 +2399,10 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
               const page = findScreen(currentModel, cap.key);
               if (page) {
                 const now = new Date();
-                const from = screenAt.filter((s) => s.at < ungrounded!.index && s.key !== cap.key)
-                  .sort((a, b) => a.at - b.at).at(-1)?.key ?? null;
-                const click = prefix.filter((s) => (s.action === "click" || s.action === "press") && s.target?.name).at(-1);
+                // The click that opened this screen, only when unambiguous (edgeForCapture).
                 const screen = screenFromPage(page, controlsOf(page), now);
-                const edge = click ? [{ from, action: { role: click.target!.role ?? "", name: click.target!.name! }, to: cap.key }] : [];
+                const found = edgeForCapture(screenAt, prefix, ungrounded!.index, cap.key);
+                const edge = found ? [found] : [];
                 runMapScreens.push(screen);
                 runMapEdges.push(...edge);
                 recordIntoScreenMap(origin, creds, [screen], edge, now);

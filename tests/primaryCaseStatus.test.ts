@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { primaryCaseStatus, computeCaseStatus } from "../src/stages/suiteRunner.js";
 
 // TD-130: the REUSED primary case of a truncated-without-assertion run showed "failed" although
@@ -7,7 +8,10 @@ import { primaryCaseStatus, computeCaseStatus } from "../src/stages/suiteRunner.
 
 /** Run 2026-10-15T16-39-13's shapes: 6 grounded steps, no terminal assertion, Playwright exit 0. */
 const truncatedIr = { meta: { truncated: true, hasTerminalAssertion: false } };
-const overridden = (exitCode: number) => ({ passed: false, status: "truncated_no_assertion", exitCode });
+// EXACTLY the object orchestrator.ts hands runSuite as `primaryCaseResult.result` — rebuilt from five
+// fields, with NO `status`. The first version of this test included `status`, a shape no real run
+// sends, so the fix passed here and did nothing in run 2026-10-16T05-34-49.
+const overridden = (exitCode: number) => ({ passed: false, exitCode, artifactsDir: "runs/x/artifacts", resultsJsonPath: "runs/x/results.json", raw: {} });
 
 describe("primaryCaseStatus (the reused primary case)", () => {
   it("an override whose steps all passed is truncated_no_assertion, not failed", () => {
@@ -32,5 +36,15 @@ describe("primaryCaseStatus (the reused primary case)", () => {
       [truncatedIr, { passed: true, exitCode: 0 }],
     ];
     for (const [ir, r] of cases) expect(primaryCaseStatus(ir, r, null)).toBe(computeCaseStatus(ir, r, null));
+  });
+});
+
+describe("the shape the suite really receives", () => {
+  it("orchestrator.ts still hands the primary result over without a status field", () => {
+    // If this ever changes, primaryCaseStatus may again be reading a field that never arrives.
+    const orch = readFileSync(new URL("../src/orchestrator.ts", import.meta.url), "utf8");
+    const handoff = orch.match(/result: \{ passed: finalResult\.passed,[^}]*\}/)?.[0] ?? "";
+    expect(handoff).toContain("exitCode: finalResult.exitCode");
+    expect(handoff).not.toContain("status");
   });
 });

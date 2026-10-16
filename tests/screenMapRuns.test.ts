@@ -16,7 +16,6 @@ const { extractDomModelFromPage } = await import("../src/stages/domDiscovery.js"
 const { withTargetApp } = await import("../src/runTarget.js");
 const { withRunId } = await import("../src/runContext.js");
 const { chromiumLaunchOptions } = await import("../src/browserLaunch.js");
-const { llmCacheClear } = await import("../src/kb/llmCache.js");
 const { SCREEN_MAP_NS } = await import("../src/stages/screenMap.js");
 
 /** Screen 1: Full Name + Next. Screen 2, same URL: Min Budget (a spinbutton, as on the real site) + Submit. */
@@ -43,10 +42,15 @@ beforeAll(async () => {
 });
 afterAll(() => {
   if (savedFlag === undefined) delete process.env.SCREEN_MAP_ENABLED; else process.env.SCREEN_MAP_ENABLED = savedFlag;
-  llmCacheClear(SCREEN_MAP_NS);
+  if (savedCacheVersion === undefined) delete process.env.LLM_CACHE_VERSION; else process.env.LLM_CACHE_VERSION = savedCacheVersion;
   return new Promise<void>((r) => server.close(() => r()));
 });
-beforeEach(() => { geminiMock.mockReset(); llmCacheClear(SCREEN_MAP_NS); });
+// Isolation: these tests share the on-disk cache (runs/_cache) with a running local server, so they
+// must NEVER clear a namespace. Each test gets its own LLM_CACHE_VERSION, which every key here
+// includes, so nothing written or read can meet the server's real entries (or another test's).
+const savedCacheVersion = process.env.LLM_CACHE_VERSION;
+const freshCacheVersion = () => { process.env.LLM_CACHE_VERSION = `test-${Date.now()}-${Math.random()}`; };
+beforeEach(() => { geminiMock.mockReset(); freshCacheVersion(); });
 
 const reply = (ir: any) => ({ content: JSON.stringify(ir), usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } });
 const testCase: any = { title: "Form", priority: "high", feature: "Form", steps: ["Fill both screens and submit"],
