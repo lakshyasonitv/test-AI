@@ -451,3 +451,24 @@ describe("TD-151 a screen's unfilled fields are named when the flow cannot move 
     expect(m.slice(m.indexOf("This screen still shows"), m.indexOf("then click its forward button"))).not.toContain("Full Name");
   });
 });
+
+describe("TD-152 a click on a heading that has a same-name link is the link", () => {
+  const home = { url: "https://shop.example.com/", title: "", forms: [], elements: [
+    { role: "link", name: "Samsung galaxy s6", visible: true },
+    { role: "heading", name: "Samsung galaxy s6", visible: true },
+    { role: "heading", name: "Categories", visible: true },
+  ] };
+  const model = { baseUrl: "https://shop.example.com", pages: [home] } as any;
+  const ground = (name: string) => {
+    const ir = { meta, steps: [{ id: "s1", action: "navigate", target: { url: "/" } }, { id: "s2", action: "click", target: { role: "heading", name } }] } as any;
+    return { err: groundingError(ir, model), t: ir.steps[1].target };
+  };
+  it("run 18-46-08: heading 'Samsung galaxy s6' -> the link", () => {
+    const { err, t } = ground("Samsung galaxy s6");
+    expect(err).toBeNull();
+    expect(t.role).toBe("link");
+  });
+  it("a heading with no same-name link stays a heading", () => {
+    expect(ground("Categories").t.role).toBe("heading");
+  });
+});

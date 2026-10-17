@@ -1423,6 +1423,19 @@ export function groundingError(
         console.log(`[ir] step ${step.id}: select on a button group -> click ${matched.role} "${matched.name}"`);
       }
     }
+    // TD-152: a click on a HEADING when the same page has a LINK of exactly that name means the link —
+    // a product card's title is a heading wrapping its link. Clicking the heading does open the page at
+    // run time, but the flow tracker only follows links, so the next step was looked for on the page
+    // the flow had left (demoblaze, run 2026-10-17T18-46-08: "Add to cart" not found after clicking
+    // heading "Samsung galaxy s6"). Exact name, and exactly one such link on the page.
+    if (matched && step.action === "click" && norm(matched.role) === "heading") {
+      const links = elements.filter((e) => norm(e.role) === "link" && norm(e.name) === norm(matched!.name) && e.visible !== false);
+      if (links.length === 1) {
+        console.log(`[ir] step ${step.id}: click on heading "${matched.name}" -> its link of the same name`);
+        matched = links[0];
+        delete t.nth;
+      }
+    }
     const matchedName = matched?.name ?? null;
     if (!matchedName) {
       const pageUrl = trail.pageAt[index]?.url ?? appModel.baseUrl;

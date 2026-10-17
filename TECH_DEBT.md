@@ -5637,3 +5637,21 @@ The next run of the same prompt (`18-46-05`) passed end to end.
 - the live container may lose `runs/_cache` (the screen map) on every new revision;
 - the first run on a new site is still not reliable for minimal prompts. The detailed prompt teaches the map in
   one run.
+
+### TD-152. A click on a product HEADING lost track of the page change — Medium / Accidental — **Fixed**
+
+**Found 2026-10-17, demoblaze runs `18-17-51` and `18-46-08`.** The model clicked heading "Samsung galaxy s6",
+which wraps the product link. The click opens the product page at run time, but the flow tracker follows links
+only, so "Add to cart" was looked for on the home page and rejected on every attempt.
+
+**Fix:** in `groundingError`, a `click` matched to a heading becomes the page's link of exactly that name, when
+there is exactly one such link. After the fix, demoblaze passed (`19-33-38`). Normal and Salesforce runs
+(approved by the owner 2026-10-17).
+
+**Found while re-testing (not fixed here):** the `walks` cache never expires. A replay snapshot taken too early
+(a product page before its JavaScript content, a checkout step) is therefore pinned for every later run with
+the same steps. Cleared by hand with `POST /api/cache/walks/clear`.
+
+**Also found:** a long-running local server (hours of tsx-watch reloads) stopped advancing past saucedemo's
+"Continue" in its replays, while the same steps replayed outside it did. A server restart fixed it
+(`19-55`). Cause unknown.
