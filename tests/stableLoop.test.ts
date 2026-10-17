@@ -363,3 +363,91 @@ describe("TD-148 a success check that is only site chrome is rejected", async ()
     expect(chromeSuccessAssertion(ir(click, see("link", "Careers")), model)).toBeNull();
   });
 });
+
+describe("TD-149 first run, no map: the buttons a screen brought that no step clicked are named", async () => {
+  const { fingerprintOf } = await import("../src/stages/screens.js");
+  const header = [{ role: "button", name: "Book a Viewing", css: "#bv", visible: true }];
+  const project = { url: "https://acme.my.site.com/p", title: "P", forms: [], elements: [
+    ...header, { role: "button", name: "Express Interest", css: "#ei", visible: true }] };
+  const form1 = { url: "https://acme.my.site.com/p", title: "P", forms: [], elements: [
+    ...header, { role: "button", name: "Close", css: "#x", visible: true },
+    { role: "textbox", name: "Full Name", css: "#fn", visible: true }, { role: "button", name: "Next", css: "#next", visible: true }] };
+  const model = { baseUrl: "https://acme.my.site.com", pages: [project, form1] } as any;
+  const kp = fingerprintOf(project as any).key, kf = fingerprintOf(form1 as any).key;
+  const ir = { meta, steps: [
+    { id: "s1", action: "navigate", target: { url: "/p" } },
+    { id: "s2", action: "click", target: { role: "button", name: "Express Interest" } },
+    { id: "s3", action: "fill", target: { role: "textbox", name: "Full Name" }, value: "Test User" },
+    { id: "s4", action: "select", target: { role: "combobox", name: "Form Purpose" }, value: "Self Use" },
+  ] } as any;
+
+  it("run 17-12-23: names 'Close' and 'Next' (new on this screen), not the header's 'Book a Viewing'", () => {
+    const err = groundingError(ir, model, { screenAt: [{ at: 1, key: kp }, { at: 2, key: kf }] });
+    expect(err?.index).toBe(3);
+    const m = err!.message;
+    const hint = m.slice(m.indexOf("No step since"), m.indexOf("Controls on the screen"));
+    expect(hint).toContain('button "Next"');
+    expect(hint).toContain('button "Close"');
+    expect(hint).not.toContain("Book a Viewing");
+  });
+
+  it("a map route, when there is one, still wins", () => {
+    const err = groundingError(ir, model, { screenAt: [{ at: 1, key: kp }, { at: 2, key: kf }], mapRoute: () => "ROUTE-SENTENCE" });
+    expect(err?.message).toContain("ROUTE-SENTENCE");
+    expect(err?.message).not.toContain("No step since");
+  });
+});
+
+describe("TD-149 on a wizard, each screen's own 'Next' is still named", async () => {
+  const { fingerprintOf } = await import("../src/stages/screens.js");
+  const header = [{ role: "button", name: "Book a Viewing", css: "#bv", visible: true }];
+  const project = { url: "https://acme.my.site.com/p", title: "P", forms: [], elements: [...header, { role: "button", name: "Express Interest", css: "#ei", visible: true }] };
+  const form1 = { url: "https://acme.my.site.com/p", title: "P", forms: [], elements: [...header, { role: "textbox", name: "Full Name", css: "#fn", visible: true }, { role: "button", name: "Next", css: "#n1", visible: true }] };
+  const form2 = { url: "https://acme.my.site.com/p", title: "P", forms: [], elements: [...header, { role: "button", name: "Self Use", css: "#su", visible: true }, { role: "button", name: "Back", css: "#b2", visible: true }, { role: "button", name: "Next", css: "#n2", visible: true }] };
+  const model = { baseUrl: "https://acme.my.site.com", pages: [project, form1, form2] } as any;
+  const k = (p: any) => fingerprintOf(p).key;
+  const ir = { meta, steps: [
+    { id: "s1", action: "navigate", target: { url: "/p" } },
+    { id: "s2", action: "click", target: { role: "button", name: "Express Interest" } },
+    { id: "s3", action: "fill", target: { role: "textbox", name: "Full Name" }, value: "T" },
+    { id: "s4", action: "click", target: { role: "button", name: "Next" } },
+    { id: "s5", action: "click", target: { role: "button", name: "Self Use" } },
+    { id: "s6", action: "select", target: { role: "combobox", name: "Preferred Project" }, value: "X" },
+  ] } as any;
+
+  it("cold run 17-54-21: screen 2's 'Next' is named although screen 1 had a 'Next' too", () => {
+    const m = groundingError(ir, model, { screenAt: [{ at: 1, key: k(project) }, { at: 2, key: k(form1) }, { at: 4, key: k(form2) }] })!.message;
+    const hint = m.slice(m.indexOf("No step since"), m.indexOf("Controls on the screen"));
+    expect(hint).toContain('button "Next"');
+    expect(hint).not.toContain("Self Use");       // clicked since this screen appeared
+    expect(hint).not.toContain("Book a Viewing"); // page chrome
+  });
+});
+
+describe("TD-151 a screen's unfilled fields are named when the flow cannot move on", async () => {
+  const { fingerprintOf } = await import("../src/stages/screens.js");
+  const form1 = { url: "https://acme.my.site.com/p", title: "P", forms: [], elements: [
+    { role: "button", name: "Book a Viewing", css: "#bv", visible: true },
+    { role: "textbox", name: "Full Name", css: "#fn", visible: true },
+    { role: "textbox", name: "Email Address", css: "#em", visible: true },
+    { role: "button", name: "Next", css: "#n", visible: true }] };
+  const model = { baseUrl: "https://acme.my.site.com", pages: [form1] } as any;
+  const key = fingerprintOf(form1 as any).key;
+  const ir = (fill: boolean) => ({ meta, steps: [
+    { id: "s1", action: "navigate", target: { url: "/p" } },
+    ...(fill ? [{ id: "f", action: "fill", target: { role: "textbox", name: "Full Name" }, value: "T" }] : []),
+    { id: "s2", action: "click", target: { role: "button", name: "Next" } },
+    { id: "s3", action: "click", target: { role: "button", name: "Self Use" } },
+  ] }) as any;
+
+  it("run 18-29-40: Next clicked on an empty form -> the empty fields are named", () => {
+    const m = groundingError(ir(false), model, { screenAt: [{ at: 2, key }] })!.message;
+    expect(m).toContain('This screen still shows fields no step fills: textbox "Full Name", textbox "Email Address"');
+  });
+
+  it("a field a step filled is not named", () => {
+    const m = groundingError(ir(true), model, { screenAt: [{ at: 3, key }] })!.message;
+    expect(m).toContain('textbox "Email Address"');
+    expect(m.slice(m.indexOf("This screen still shows"), m.indexOf("then click its forward button"))).not.toContain("Full Name");
+  });
+});

@@ -5600,3 +5600,40 @@ A replay over all 286 saved IRs since 2026-10-15 flags only that one smoke case.
   dropdown shows it). Blocking "assert a value you just entered" would also block the legitimate "edit, then
   see it shown" pattern, so it is left to review.
 - On one add/remove case, the failure diagnosis named step s2 when s3 failed (off by one).
+
+### TD-149. On a site's first run, nothing named the click that opens a form's next screen — Medium / Accidental — **Fixed (Salesforce screen mode)**
+
+**Found 2026-10-16, live run `17-12-23` (Azure, empty screen map).** Form screen 1 was filled, then a screen-2
+field was looked for without clicking "Next". With no map there is no TD-142 route, and the generic hint
+("a step is probably missing") plus ~25 listed controls did not lead the retry to "Next".
+
+**Fix:** `unclickedButtonsHint` (inside `groundingError`). With no map route, it names the buttons the current
+screen brought that no step clicked since that screen appeared. "Brought" means the button is not on the
+flow's FIRST captured screen, so page chrome drops out. A first version compared with the PREVIOUS screen and
+dropped "Next", because every wizard screen has one (cold run `17-54-21`). Wording only.
+
+### TD-150. A multi-screen form on an empty map ran out of attempts one screen short — Medium / Accidental — **Fixed (Salesforce screen mode)**
+
+**Found 2026-10-16, cold-start runs `17-35-53` and `17-54-21`.** With no screen map, each form screen is
+discovered by one attempt, and `MAX_IR_ATTEMPTS` (4) ended the flow on screen 1, then screen 2.
+
+**Fix:** in screen mode, when entering the last attempt, one more attempt is granted if the previous attempt
+grew the grounded prefix, at most 3 times. An attempt without progress still ends it. See DECISIONS
+(2026-10-16). Ordinary runs are unchanged.
+
+### TD-151. "Click Next" was suggested when Next had been clicked on an empty form — Medium / Accidental — **Fixed (Salesforce screen mode)**
+
+**Found 2026-10-17, run `18-29-40`.** The request never mentioned contact details, so the case left out Full
+Name, Email and Phone. The IR clicked "Next" on an empty form, the form stayed on screen 1, and every retry
+looked for "Self Use" there.
+
+**Fix:** `emptyScreenFieldsHint` names the fields the live capture shows (text boxes, dropdowns, number boxes)
+that no earlier step fills or selects. It says a form does not move on with required fields empty, and asks
+for realistic test data where the case gives none. Wording only.
+
+The next run of the same prompt (`18-46-05`) passed end to end.
+
+**Still open:**
+- the live container may lose `runs/_cache` (the screen map) on every new revision;
+- the first run on a new site is still not reliable for minimal prompts. The detailed prompt teaches the map in
+  one run.

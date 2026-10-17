@@ -1030,8 +1030,58 @@ export function groundingError(
     const t = ir.steps[index]?.target;
     const route = scr && scope?.mapRoute ? scope.mapRoute(scr.key, t?.name ?? t?.text ?? "") : undefined;
     return ` It is not on the screen the flow is on at this step (seen in a live capture after the steps ` +
-      `before it). ` + (route ?? `A step that opens the screen holding it is probably missing before this ` +
-      `one — for example clicking a button that opens the form.`) + controls;
+      `before it). ` + (route ?? (unclickedButtonsHint(index) || `A step that opens the screen holding it is ` +
+      `probably missing before this one — for example clicking a button that opens the form.`)) +
+      emptyScreenFieldsHint(index) + controls;
+  };
+  /**
+   * TD-151: the fields the current screen shows that NO step fills. Run 2026-10-17T18-29-40: the case
+   * left out the contact fields (the request never mentioned them), the IR clicked "Next" on an empty
+   * form, the form stayed put, and the hint only said "click Next" — which had been done. Fields come
+   * from the live capture (text boxes, dropdowns, number boxes); a field counts as filled when any step
+   * before this one fills or selects it by name. Wording only.
+   */
+  const emptyScreenFieldsHint = (index: number): string => {
+    const scr = screenAtStep(index);
+    if (!scr) return "";
+    const filled = new Set(ir.steps.slice(0, index).filter((s) => s.action === "fill" || s.action === "select" || s.action === "check")
+      .map((s) => norm(s.target?.name ?? s.target?.label ?? "")));
+    const empty = [...new Set(scr.page.elements.filter((e) => (TEXT_ENTRY_ROLES.has(norm(e.role)) || norm(e.role) === "combobox")
+      && e.name?.trim() && e.visible !== false && e.enabled !== false && !filled.has(norm(e.name)))
+      .map((e) => `${e.role} "${e.name}"`))].slice(0, 8);
+    return empty.length
+      ? ` This screen still shows fields no step fills: ${empty.join(", ")}. A form does not move on while its ` +
+        `required fields are empty, so fill them first (with realistic test data where the test case gives none), ` +
+        `then click its forward button.`
+      : "";
+  };
+  /**
+   * TD-149: with no screen map yet (a site's first run), name the buttons this screen brought that no
+   * step has clicked since it appeared. Run 2026-10-16T17-12-23 (live, empty map): screen 1 of a
+   * 3-screen form was filled, then a screen-2 field was looked for without clicking "Next"; the
+   * generic hint listed ~25 controls, header ones included, and the retry still left "Next" out.
+   * "Brought" = not on the screen before it (header and page chrome repeat, so they drop out). From
+   * the captures and the steps only; never a button-name list.
+   */
+  const unclickedButtonsHint = (index: number): string => {
+    const scr = screenAtStep(index);
+    if (!scr) return "";
+    // Chrome = what the page had before the flow's FIRST screen. Not the screen just before this one:
+    // every screen of a wizard has its own "Next", and comparing with the previous screen dropped it
+    // (cold-start run 2026-10-16T17-54-21 listed only "Investment" and "Back").
+    const earliest = (scope?.screenAt ?? []).filter((s) => s.at < scr.at).sort((a, b) => a.at - b.at)[0];
+    const prevPage = earliest ? findScreen(appModel, earliest.key) : trail.pageAt[scr.at];
+    const before = new Set((prevPage?.elements ?? []).filter((e) => norm(e.role) === "button").map((e) => norm(e.name)));
+    const clicked = new Set(ir.steps.slice(scr.at, index).filter((s) => s.action === "click" || s.action === "press")
+      .map((s) => norm(s.target?.name ?? "")));
+    const fresh = [...new Set(scr.page.elements.filter((e) => norm(e.role) === "button" && e.name?.trim()
+      && e.visible !== false && e.enabled !== false && !before.has(norm(e.name)) && !clicked.has(norm(e.name)))
+      .map((e) => e.name))].slice(0, 8);
+    return fresh.length
+      ? `No step since this screen appeared clicks the buttons it brought: ${fresh.map((n) => `button "${n}"`).join(", ")}. ` +
+        `On a form spread over several screens, the next screen's fields appear only after its forward button ` +
+        `is clicked: add that click before this step, and put this step after it.`
+      : "";
   };
   /** TD-145: after a submitted form left fields empty, name them — a required one keeps the form
    *  from moving on, which is why this step's element never appears. */
@@ -2465,13 +2515,26 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   let rateLimitRetries = 0;
   const MAX_RATE_LIMIT_RETRIES = 3;
 
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  // TD-150: a Salesforce flow is discovered one screen per attempt on a site the screen map has not
+  // learned yet (run 2026-10-16T17-35-53, cold start: the 4th attempt reached form screen 2, then the
+  // loop ended). While the previous attempt got FURTHER (a longer grounded prefix), grant one more,
+  // at most SCREEN_EXTRA_ATTEMPTS times. An attempt without progress still ends it, as before.
+  const SCREEN_EXTRA_ATTEMPTS = 3;
+  let attemptCap = MAX_ATTEMPTS;
+  const reachAt: number[] = [];
+  for (let attempt = 0; attempt < attemptCap; attempt++) {
+    reachAt[attempt] = bestPartial?.steps.length ?? 0;
+    if (screenMode && attempt === attemptCap - 1 && attemptCap < MAX_ATTEMPTS + SCREEN_EXTRA_ATTEMPTS
+      && attempt > 0 && reachAt[attempt] > reachAt[attempt - 1]) {
+      attemptCap++;
+      console.log(`[ir] the last attempt got further (${reachAt[attempt - 1]} -> ${reachAt[attempt]} grounded steps): one more attempt (${attemptCap})`);
+    }
     if (budget && !budget.hasBudget) {
       lastErr = `LLM per-run budget exhausted (${budget.snapshot().calls} calls)`;
       console.warn("[ir]", lastErr, "— stopping retries early");
       break;
     }
-    console.log("[ir] attempt", attempt + 1, "/", MAX_ATTEMPTS);
+    console.log("[ir] attempt", attempt + 1, "/", attemptCap);
     /**
      * Set the retry state AND record why, so the run's own 08-llm-usage.json can answer
      * "what were all these attempts spent on" without anyone reading container logs.
@@ -2946,7 +3009,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     // Strictly better to run the step unverified than to ship a prefix that tests nothing:
     // the run that motivated this reported `truncated_no_assertion` and checked zero of the
     // user's eight steps. Every other rejection kind still truncates as before.
-    if (ungrounded.kind === "text-target" && attempt === MAX_ATTEMPTS - 1) {
+    if (ungrounded.kind === "text-target" && attempt === attemptCap - 1) {
       console.log("[ir] shipping unverified text targets (best-effort):", ungrounded.message);
       return { ir: finalize(parsed.data), updatedAppModel: currentModel };
     }
@@ -2974,8 +3037,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       for (const s of prefix) if (s.target) groundedTargets.add(targetKey(s.target));
     }
 
-    if (prefix.length && attempt < MAX_ATTEMPTS - 1 && !repeated) {
-      console.log(`[ir] grounding rejected step ("${ungrounded.message}") — retrying with feedback (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
+    if (prefix.length && attempt < attemptCap - 1 && !repeated) {
+      console.log(`[ir] grounding rejected step ("${ungrounded.message}") — retrying with feedback (attempt ${attempt + 1}/${attemptCap})`);
       continue;
     }
     if (repeated) {
