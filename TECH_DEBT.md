@@ -5655,3 +5655,35 @@ the same steps. Cleared by hand with `POST /api/cache/walks/clear`.
 **Also found:** a long-running local server (hours of tsx-watch reloads) stopped advancing past saucedemo's
 "Continue" in its replays, while the same steps replayed outside it did. A server restart fixed it
 (`19-55`). Cause unknown.
+
+### TD-153. A wrong first attempt spent the whole live-extend budget, so the corrected attempt could not replay — High / Accidental — **Fixed**
+
+**Found 2026-10-18** (the owner reported the saucedemo checkout "stopped working", live run `12-01-06`).
+Proven with a temporary per-attempt trace over 4 wordings of one prompt:
+- **Attempt 1** filled the checkout form and went for "Finish" without clicking "Continue". Live-extend replayed
+  those same 11 steps, the walk cache handed back the identical step-one snapshot ("already in the model", so
+  a refresh), and it did this 4 more times until `MAX_LIVE_EXTENSIONS` (5) was spent.
+- **Attempt 2** had the right steps (Continue, then Finish) but `extensions` was already 5, so it could not
+  replay; "Finish" stayed missing and the case stopped `truncated_no_assertion`.
+
+Whether the checkout passed depended only on whether the model's FIRST attempt included "Continue", which is
+why it looked random. It was not the server's age and not the cache contents (both were tested and ruled out).
+
+**Fix:** the toIR extension loop never replays the EXACT same step list twice in one compile (`replayedPrefixes`).
+- The comparison is exact JSON, waits included, as in the walk key. A retry that only adds a wait still replays.
+- A second replay of identical steps is served the identical cached snapshot, so skipping it loses no information.
+- Salesforce screen mode has its own path and already refused a second capture at one step.
+
+**Evidence:**
+- `tests/replayBudget.test.ts` drives the real toIR loop with a mocked model and browser. It FAILS with the guard
+  disabled (truncated) and passes with it.
+- Live: the traced wording that was truncated passed on the identical (cached) model answers.
+
+**Accepted side effect:** `tests/repeatRejectionProgress.test.ts` ("ordinary run: the same target twice stops")
+expected exactly 2 attempts, which held only because the budget ran out. Now attempt 2 replays; on that one-URL
+two-screen form the refresh replaces the page and the next rejection names a different target, so it can use
+up to MAX_IR_ATTEMPTS (4). Same outcome (truncated), up to 2 more model calls in a case that fails anyway.
+
+**Found alongside, not fixed here:** discovery records a phantom button named after an input's HTML `name`
+attribute (saucedemo "login-button", no css). A step can bind to it, and the login click then fails at run
+time (traced run `sauce-trace-0`, before and after this fix).

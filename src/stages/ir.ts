@@ -2464,6 +2464,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
    * no browser, no budget. A key replaced by a newer capture of the same screen follows the swap.
    */
   const capturedByPrefix = new Map<string, string>();
+  /** TD-153: exact step lists live-extend has already replayed in this compile. */
+  const replayedPrefixes = new Set<string>();
   const prefixSignature = (steps: Step[]): string => JSON.stringify(steps
     // waits and assertions do not move the flow, so a retry adding or dropping one is the same path
     .filter((s) => s.action !== "wait" && s.action !== "assert")
@@ -2770,6 +2772,18 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         continue;
       }
 
+      // TD-153: never replay the EXACT same steps twice in one compile. The walk cache hands the
+      // second replay the identical snapshot, so it can teach nothing — but it still spent one of
+      // MAX_EXTENSIONS. Traced 2026-10-18 (saucedemo): attempt 1 omitted "Continue", replayed the
+      // same 11 steps four times looking for "Finish", and spent the whole budget; attempt 2 had
+      // the right steps and could not replay them, so the case stopped. Exact JSON (waits
+      // included, as in the walk key), so a retry that only adds a wait still replays.
+      const exactPrefix = JSON.stringify(prefix);
+      if (replayedPrefixes.has(exactPrefix)) {
+        console.log(`[ir] live-extend: these ${prefix.length} step(s) were already replayed and did not reach step ${parsed.data.steps[ungrounded.index]?.id} — not replaying them again`);
+        break;
+      }
+      replayedPrefixes.add(exactPrefix);
       try {
         const before = currentModel.pages.length;
         console.log("[ir] calling extendAppModel...");
