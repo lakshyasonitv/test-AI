@@ -272,3 +272,25 @@ to it in the phase report.
 
 If a phase's real-site check fails, stop, write the failure (run id, `04-ir.json` truncation
 note, screenshots) into the phase report, and do not start the next phase.
+
+---
+
+## Other streams' edits to shared files (log here to avoid merge surprises)
+
+### 2026-10-19 — `src/stages/generator.ts`, `src/stages/ir.ts`, `src/schema/ir.ts` — fixed Salesforce login (D-57)
+
+Branch `vaibhav/determined-dijkstra-0t2ec9`. Behind `SALESFORCE_FIXED_LOGIN` (default off) AND a ticked
+Salesforce run. Off: every compile and every spec is byte-identical (pinned by
+`tests/fixtures/salesforceFixedLogin/flag-off-specs.json`, captured from the generator before the change).
+
+- `src/schema/ir.ts`: one optional field, `IR.meta.fixedLogin: "salesforce"`. Set only by `toIR`; a
+  model-written value is stripped.
+- `src/stages/ir.ts`: `swapInRecordedLogin` (a login case that signs in with the real credentials gets the
+  recorded login instead of the model's); `toIR` sets `meta.fixedLogin` when the IR starts with the login
+  prefix; the IR cache key gains `"sf-fixed-login:1"` only when on.
+- `src/stages/generator.ts`: new `SALESFORCE_LOGIN_HELPER` and `fixedLoginBlock`. In `generateSpec`, a marked
+  IR's leading `auth-*` steps become one `salesforceLogin(page, loginUrl)` call in step 1; the other `auth-*`
+  steps stay as empty `test.step`s (one test.step per IR step is still true — executor/failureAnalysis rely
+  on it) and take no screenshot. The generator also requires the flag itself, so a saved case still
+  carrying the marker goes back to the step-by-step login when the flag is off. No existing helper,
+  emitter or label was changed.

@@ -870,6 +870,120 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
 }
 
 // -----------------------------------------------------------------------------
+// The fixed Salesforce login (D-57) — emitted only when ir.meta.fixedLogin === "salesforce"
+// -----------------------------------------------------------------------------
+
+/**
+ * One fixed login routine for a Salesforce test, instead of replaying the recorded clicks one by one.
+ *
+ * WHY: the recorded steps are a list of clicks taken on the page DISCOVERY saw. A test runs in a
+ * fresh browser that can be shown a different first screen (the email-first "Log In with Username"
+ * screen, TD-154), ad requests that slow the page, or a one-screen form whose password box draws
+ * late. Discovery already handles all of these (D-56, `salesforceOrgLogin.ts`); this is the same
+ * logic, restated as plain Playwright code because the spec is a standalone file that shares
+ * nothing with the pipeline (D-06). It is NOT an import, and nothing pins the two equal — the same
+ * accepted drift risk as TD-07. `tests/salesforceFixedLoginSpec.test.ts` runs THIS text in Chromium.
+ *
+ * The decisions are structural, as in D-56: which inputs are visible and which host the page is on.
+ * No `page.evaluate` (TD-40), so nothing here is affected by esbuild's `__name` wrapping. The
+ * credentials are read from process.env at run time, exactly as the replayed steps read them.
+ */
+const SALESFORCE_LOGIN_HELPER = `
+async function salesforceLogin(page, loginUrl) {
+  // c.salesforce.com serves the login page's marketing panel; it is never needed to log in.
+  await page.route((url) => url.hostname === "c.salesforce.com", (route) => route.abort());
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+  const username = page.locator('#username, input[name="username"]').first();
+  const password = page.locator('#password, input[name="pw"], input[type="password"]').first();
+  const submit = page.locator('#Login, input[type="submit"], button[type="submit"]').first();
+  const switchLink = page.getByText(/log in with username/i).first();
+  // The email-first screen's email box can ALSO be #username, so the switch link is checked first.
+  const deadline = Date.now() + 20000;
+  for (;;) {
+    // Checked FIRST on every pass: a switch link that never goes away must not loop forever.
+    if (Date.now() > deadline) {
+      throw new Error("Salesforce login: no username form appeared within 20s. Still at " + salesforceWhere(page) + ".");
+    }
+    if (await switchLink.isVisible().catch(() => false)) {
+      await switchLink.click({ timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(500);
+      continue;
+    }
+    if (await username.isVisible().catch(() => false)) break;
+    await page.waitForTimeout(250);
+  }
+  await username.fill(process.env.TEST_USERNAME ?? "", { timeout: 10000 });
+  // One screen or two: give a one-screen form 2.5s to draw its password box before deciding.
+  const oneScreen = await password.waitFor({ state: "visible", timeout: 2500 }).then(() => true, () => false);
+  if (!oneScreen) {
+    await submit.click({ timeout: 10000 });
+    const screenTwo = await password.waitFor({ state: "visible", timeout: 15000 }).then(() => true, () => false);
+    if (!screenTwo) throw new Error((await salesforceLoginFailure(page, "no password box appeared after the username was sent")).message);
+  }
+  await password.fill(process.env.TEST_PASSWORD ?? "", { timeout: 10000 });
+  await submit.click({ timeout: 10000 });
+  const landed = await password.waitFor({ state: "hidden", timeout: 30000 }).then(() => true, () => false);
+  if (!landed) throw new Error((await salesforceLoginFailure(page, "the login form was still showing 30s after submitting")).message);
+  // The password box also disappears when Salesforce swaps in a verification-code screen or hands
+  // the login to another company's sign-in page, so "hidden" alone is not proof of a session.
+  const after = await salesforceLoginFailure(page, "");
+  if (after.kind === "verification" || after.kind === "sso") throw new Error(after.message);
+}
+
+function salesforceWhere(page) {
+  // Origin and path only: a sign-in redirect can carry a session id in its query (sid=).
+  try { const u = new URL(page.url()); return u.origin + u.pathname; } catch { return "an unknown page"; }
+}
+
+async function salesforceLoginFailure(page, fallback) {
+  // Which screen the login stopped on, decided from which inputs are visible and which host the
+  // page is on — never from Salesforce's wording (D-56). Returns { kind, message }.
+  let host = "";
+  try { host = new URL(page.url()).hostname.toLowerCase(); } catch {}
+  const salesforceHost = ["salesforce.com", "force.com", "salesforce-setup.com", "visualforce.com"]
+    .some((d) => host === d || host.endsWith("." + d));
+  if (host && !salesforceHost) {
+    return { kind: "sso", message: "Salesforce login: the login left Salesforce for " + host + ": this org signs in through "
+      + "single sign-on, which a test can't drive. Use a user who logs in with a Salesforce username and password." };
+  }
+  const passwords = await page.locator('input[type="password"]:visible').count().catch(() => 0);
+  const usernames = await page.locator('#username:visible, input[name="username"]:visible').count().catch(() => 0);
+  const codes = await page.locator('input[autocomplete="one-time-code"]:visible, input[inputmode="numeric"]:visible, '
+    + 'input[type="tel"]:visible, input[type="number"]:visible').count().catch(() => 0);
+  if (codes > 0 && passwords === 0 && usernames === 0) {
+    return { kind: "verification", message: "Salesforce login: Salesforce asked for a verification code — it doesn't "
+      + "recognise this IP address. Add 0.0.0.0–255.255.255.255 to the Login IP Ranges on this user's profile." };
+  }
+  if (passwords >= 2) {
+    return { kind: "passwordChange", message: "Salesforce login: Salesforce wants this user's password changed. "
+      + "Log in once by hand, set a new password, and run again." };
+  }
+  if (passwords > 0 || usernames > 0) {
+    return { kind: "badCredentials", message: "Salesforce login: still on the login form after submitting — the username "
+      + "or password was not accepted. Sandbox usernames are the production username plus the sandbox name, e.g. user@example.com.uat" };
+  }
+  return { kind: null, message: "Salesforce login: " + fallback + ". Stopped at " + salesforceWhere(page) + "." };
+}
+`;
+
+/**
+ * The fixed-login block of an IR: the indices of its leading `auth-*` steps, when the first one is
+ * the prefix's navigate to the login page. Empty when the IR is not marked or the block is not
+ * recognisable (an edited case whose login was rearranged) — the steps are then emitted one by one.
+ */
+function fixedLoginBlock(ir: IR): { loginUrl: string; ids: Set<number> } | null {
+  if (ir.meta.fixedLogin !== "salesforce") return null;
+  // Switching the flag off switches it off everywhere — including a case saved to the library while
+  // it was on, which still carries the marker. Its login is then emitted step by step, as before.
+  if (process.env.SALESFORCE_FIXED_LOGIN !== "true") return null;
+  const first = ir.steps[0];
+  if (first?.id !== "auth-0" || first.action !== "navigate" || !first.target?.url) return null;
+  const ids = new Set<number>();
+  for (let i = 0; i < ir.steps.length && /^auth-\d+$/.test(ir.steps[i].id); i++) ids.add(i);
+  return { loginUrl: first.target.url, ids };
+}
+
+// -----------------------------------------------------------------------------
 // Generate Playwright spec
 // -----------------------------------------------------------------------------
 
@@ -886,8 +1000,22 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   // escaping inside a JS string literal.
   const shotDir = screenshotDir.replace(/\\/g, "/").replace(/\/+$/, "");
 
+  // D-57: on a fixed-login IR the leading auth-* steps become ONE login routine. Still one
+  // test.step() per IR step (executor.ts and failureAnalysis.ts map steps by position): the first
+  // runs the whole login and screenshots where it landed; the rest record that it is done and take
+  // no screenshot, so no login frame (with the username readable) is written (TD-156).
+  const login = fixedLoginBlock(ir);
   const body = ir.steps
     .map((step, i) => {
+      if (login?.ids.has(i)) {
+        if (i === 0) {
+          return `    await test.step(${q("Log in to Salesforce (fixed login)")}, async () => {\n` +
+            `      await salesforceLogin(page, ${q(login.loginUrl)});\n` +
+            `      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)});\n    });`;
+        }
+        return `    await test.step(${q(`${stepLabel(step, i, ir.meta.baseUrl)} (done by the Salesforce login)`)}, async () => {\n` +
+          `      // Performed inside salesforceLogin() in the first step.\n    });`;
+      }
       const label = stepLabel(step, i, ir.meta.baseUrl);
       const code = emitStep(step, ir.meta.baseUrl);
       const indented = code.split("\n").map((l) => "    " + l).join("\n");
@@ -935,6 +1063,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     needsAssertChoice ? ASSERT_CHOICE_HELPER : "",
     needsAssertGone ? ASSERT_GONE_HELPER : "",
     needsAuthSettle ? AUTH_SETTLE_HELPER : "",
+    login ? SALESFORCE_LOGIN_HELPER : "",
   ]
     .filter(Boolean)
     .join("\n\n");

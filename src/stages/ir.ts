@@ -14,8 +14,9 @@ import { requestValues, stepsMissingValues } from "./requestValues.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
-  NEGATIVE_CATEGORIES, type Credentials,
+  NEGATIVE_CATEGORIES, type Credentials, type CredentialKind,
 } from "./credentials.js";
+import { fixedLoginRun } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { salesforceGuidance } from "./salesforceGuidance.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
@@ -640,6 +641,43 @@ export function irAlreadyLogsIn(ir: IR, auth: AuthOutcome | undefined, model: Ap
     s.action === "fill"
     && ((pwCss && s.target?.css?.toLowerCase() === pwCss)
       || credentialKindForTarget(s.target, fieldMap) === "password"));
+}
+
+/**
+ * A login case that signs in with the REAL credentials gets the RECORDED login instead of the one
+ * the model wrote (D-57, stage 1). Returns the new step list, or null to leave the IR untouched.
+ *
+ * Why: a case whose own page is the login page never receives the prefix (`needsLoginPrefix`), so
+ * the model writes the login itself. On a two-screen login (Salesforce) its password step lands on
+ * a screen nothing captured, and grounding truncated the case right before the password — run
+ * 2026-10-16T12-47-28, whose `auth.loginSteps` held the full five-step login all along.
+ *
+ * Decided by structure only: the run recorded a login, the case's credential policy is "full"
+ * (decided by `credentialPolicyFor`, so a wrong-password or empty-field case is never touched), and
+ * the IR fills a credential field — by the recorded selector or by the credential field map. The
+ * model's login is everything up to and including the first click/press after its LAST credential
+ * fill; it is replaced by `buildLoginPrefix`, and the steps after it are kept as written. No click
+ * or press after the fill means the shape is unrecognised, and the IR is left alone.
+ *
+ * The caller decides WHEN (a ticked Salesforce run with SALESFORCE_FIXED_LOGIN on, and no prefix
+ * already added); this function only decides WHAT.
+ */
+export function swapInRecordedLogin(
+  steps: Step[], auth: AuthOutcome | undefined, fieldMap: Map<string, CredentialKind>,
+): Step[] | null {
+  if (auth?.status !== "authenticated" || !auth.loginUrl || !auth.loginSteps?.length) return null;
+  const recorded = new Set(auth.loginSteps.filter((s) => s.credential).map((s) => s.css.toLowerCase()));
+  const isCredentialFill = (s: Step) => s.action === "fill"
+    && ((!!s.target?.css && recorded.has(s.target.css.toLowerCase()))
+      || credentialKindForTarget(s.target, fieldMap) !== undefined);
+  let lastFill = -1;
+  steps.forEach((s, i) => { if (isCredentialFill(s)) lastFill = i; });
+  if (lastFill < 0) return null;
+  const submit = steps.findIndex((s, i) => i > lastFill && (s.action === "click" || s.action === "press"));
+  if (submit < 0) return null;
+  const prefix = buildLoginPrefix(auth);
+  if (!prefix.length) return null;
+  return [...prefix, ...steps.slice(submit + 1)];
 }
 
 /**
@@ -2161,7 +2199,10 @@ Example — handling duplicate selectors with nth:
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
     entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion(), ...mapSignature,
     // TD-139: an IR cached before the request-values check could replay one that drops the values.
-    ...(currentRunTargetApp() === "salesforce" ? ["ir-values:1"] : []));
+    ...(currentRunTargetApp() === "salesforce" ? ["ir-values:1"] : []),
+    // D-57: a fixed-login compile swaps a login case's own login for the recorded one, so it must
+    // never share a cache entry with a compile that does not. Absent when off: every key unchanged.
+    ...(fixedLoginRun() ? ["sf-fixed-login:1"] : []));
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -2618,6 +2659,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
 
     parsed.data.meta.baseUrl = origin;
+    // D-57: only this function decides whether the spec runs the fixed Salesforce login.
+    delete parsed.data.meta.fixedLogin;
 
     // Sign in BEFORE grounding. The spec runs in a fresh browser with no session, and so does
     // liveExtend's grounding replay — without this the flow bounces to the login page and every
@@ -2627,9 +2670,19 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       const prefix = buildLoginPrefix(currentModel.auth);
       if (prefix.length) {
         parsed.data.steps = [...prefix, ...parsed.data.steps];
+        if (fixedLoginRun()) parsed.data.meta.fixedLogin = "salesforce";
         console.log(`[ir] prepended ${prefix.length} login step(s) — the test signs in before its own steps`);
         const moved = redirectPostLoginNavigate(parsed.data.steps, prefix.length, currentModel.auth, origin);
         if (moved) console.log(`[ir] step ${moved}: navigate to the login page after signing in -> the page the login lands on`);
+      }
+    } else if (fixedLoginRun() && credPolicy === "full") {
+      // D-57 stage 1: no prefix was added because the case logs in itself. With the real
+      // credentials, its login becomes the recorded one, which already handles a two-screen login.
+      const swapped = swapInRecordedLogin(parsed.data.steps, currentModel.auth, credentialFieldMap(currentModel));
+      if (swapped) {
+        parsed.data.steps = swapped;
+        parsed.data.meta.fixedLogin = "salesforce";
+        console.log(`[ir] login case: its own login steps replaced by the recorded login (D-57)`);
       }
     }
 

@@ -1,6 +1,6 @@
 # Open tasks
 
-*Last updated: 2026-10-15.*
+*Last updated: 2026-10-19.*
 
 ## Pro document intake (D-53)
 
@@ -21,9 +21,20 @@
 - [ ] First real-org run (ask first — costs money, holds the run slot): check TD-154 (does a fresh
       browser get the email-first screen?) on the generated test's first login screenshot.
 - [ ] TD-155 — fix the one-screen race in `loginOnPage` for every site (needs its own decision).
-- [ ] TD-156 — stop screenshotting login steps in generated tests (username visible).
+- [ ] TD-156 — stop screenshotting login steps in generated tests (username visible). Done for
+      fixed-login Salesforce runs (D-57); every other run still does it.
 - [ ] If Developer Edition orgs should be testable, widen `classifyOrg` (refused today, by choice).
 - [ ] Pro follow-up still waiting on the user: the one-way comparison + quoted warnings brief (B3/B4, 12b).
+
+## Fixed Salesforce login (D-57, plan B)
+
+- [ ] Commit and push (ask first). Then a PR for `83bf2bc` + D-57 when the user asks.
+- [ ] First real-org run with `SALESFORCE_FIXED_LOGIN=true` (ask first — costs money): the user's scratch
+      org `ruby-data-2200-dev-ed.scratch.my.salesforce.com`, one "Create an Account" case and one
+      "Log in with valid credentials" case. Check step 1 lands on Lightning, and TD-154.
+- [ ] TD-157 — a test that runs `salesforceOrgLogin.ts` and the spec helper on the same pages.
+- [ ] TD-158 — negative login cases on a two-screen login (plan C: why screen 2 was not captured).
+- [ ] TD-159 — allow `test.salesforce.com`, check the landed host after login.
 
 ## Pre-existing, found or re-confirmed this session
 

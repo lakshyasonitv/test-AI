@@ -2223,6 +2223,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // RESERVED: registered before its reader lands (same reason as DISCOVERY_LIVE_DOM above). Names
   // the Salesforce-specific discovery support; nothing reads it yet.
   "SALESFORCE_ENABLED",
+  // D-57: the fixed Salesforce login for generated tests (src/stages/salesforceOrgLogin.ts). Off:
+  // every compile and every spec is exactly what it was. Read only on a ticked Salesforce run.
+  "SALESFORCE_FIXED_LOGIN",
   "SCRIPT_OVERRIDE_ENABLED",
   "SELF_HEAL_DEFAULT",
   "SIGNUP_ENABLED",

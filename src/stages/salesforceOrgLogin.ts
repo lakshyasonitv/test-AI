@@ -2,6 +2,19 @@ import type { Page } from "playwright";
 import { currentRunTargetApp } from "../runTarget.js";
 
 /**
+ * `SALESFORCE_FIXED_LOGIN` (D-57) — the fixed Salesforce login for GENERATED TESTS. Default off.
+ * Registered in `BOOLEAN_ENV_FLAGS`. Off, every compile and every spec is exactly what it was.
+ */
+export function salesforceFixedLoginEnabled(): boolean {
+  return process.env.SALESFORCE_FIXED_LOGIN === "true";
+}
+
+/** A ticked Salesforce run with the fixed login switched on. The one gate every D-57 path reads. */
+export function fixedLoginRun(): boolean {
+  return salesforceFixedLoginEnabled() && currentRunTargetApp() === "salesforce";
+}
+
+/**
  * Salesforce org login hardening — everything Salesforce-specific about SIGNING IN, in one file.
  *
  * Active only on a run where the person ticked "This URL is a Salesforce org"

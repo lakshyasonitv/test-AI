@@ -110,6 +110,13 @@ export const IR = z.object({
      * discards the result anyway because a heal that truncates is not a heal.
      */
     truncationKind: z.string().optional(),
+    /**
+     * D-57: set by `toIR` (never by the model — it strips any it is given) on a ticked Salesforce
+     * run with SALESFORCE_FIXED_LOGIN on, when the IR starts with the recorded login (`auth-*`).
+     * `generateSpec` then runs that login block as ONE fixed Salesforce login routine. Absent
+     * everywhere else, so every other IR and every other spec is unchanged.
+     */
+    fixedLogin: z.literal("salesforce").optional(),
   }),
   steps: z.array(Step).min(1),
 });
