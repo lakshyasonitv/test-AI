@@ -64,6 +64,42 @@ describe("TD-156: no credential value reaches a cache", () => {
     });
   });
 
+  it("a SHORT or common credential does not rewrite ordinary text that happens to contain it", () => {
+    const run = "test-run-td156-short";
+    withRunId(run, () => {
+      // "test" passes the length-4 rule; "admin" is on the DOM-keyword list (never treated as a secret).
+      rememberRunSecrets(run, { username: "admin", password: "test", secret: true });
+      const key = makeCacheKey("short", String(Math.random()));
+      llmCacheSet(key, {
+        steps: [
+          "Type 'test' into the 'Password' field.",   // the quoted typed value: replaced
+          "Run the test suite as the admin user.",     // ordinary words: untouched
+          "Check the testing banner says contest.",    // substrings: untouched
+        ],
+        fill: { value: "test" },                       // a whole field value: replaced
+        user: { value: "admin" },                      // a keyword username: left as is (documented)
+      }, NS);
+      const got = llmCacheGet<any>(key, NS);
+      expect(got.steps[0]).toBe("Type '${env:TEST_PASSWORD}' into the 'Password' field.");
+      expect(got.steps[1]).toBe("Run the test suite as the admin user.");
+      expect(got.steps[2]).toBe("Check the testing banner says contest.");
+      expect(got.fill.value).toBe("${env:TEST_PASSWORD}");
+      expect(got.user.value).toBe("admin");
+      // And a key built from ordinary text containing the short value is not rewritten.
+      expect(makeCacheKey("test the login form")).not.toBe(makeCacheKey("${env:TEST_PASSWORD} the login form"));
+    });
+  });
+
+  it("a LONG credential is replaced as a whole token inside text, never inside a longer word", () => {
+    const run = "test-run-td156-long";
+    withRunId(run, () => {
+      rememberRunSecrets(run, { username: "standard_user_q", password: "secret_sauce_q", secret: true });
+      const key = makeCacheKey("long", String(Math.random()));
+      llmCacheSet(key, { text: "Password for all users: secret_sauce_q. Not secret_sauce_qx." }, NS);
+      expect(llmCacheGet<any>(key, NS).text).toBe("Password for all users: ${env:TEST_PASSWORD}. Not secret_sauce_qx.");
+    });
+  });
+
   it("outside any run with credentials, nothing changes", () => {
     const key = makeCacheKey("plain", String(Math.random()));
     llmCacheSet(key, { text: "no secrets here" }, NS);
