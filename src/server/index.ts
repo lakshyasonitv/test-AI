@@ -2231,6 +2231,7 @@ export const BOOLEAN_ENV_FLAGS = [
   "SPEC_INTAKE_ENABLED",
   "SCREEN_MAP_ENABLED",
   "NETWORK_SETTLE_ENABLED",
+  "SCREEN_BEST_MATCH_ENABLED",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

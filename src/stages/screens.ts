@@ -109,6 +109,46 @@ export function sameScreen(
   return titleMatch && labelOverlap(a.fp.labels, b.fp.labels) >= SAME_SCREEN_OVERLAP;
 }
 
+/** Discovery upgrade Phase 3 (default off; README). */
+export function screenBestMatchEnabled(): boolean {
+  return process.env.SCREEN_BEST_MATCH_ENABLED === "true";
+}
+
+/**
+ * Which stored screen a fresh capture replaces, or -1 for "none, add it". Shared by
+ * `mergeScreenInto` and `screenMap.mergeIntoMap`, so the model and the stored map agree.
+ *
+ * Flag off: the FIRST candidate `sameScreen` accepts, exactly as before. That is wrong when two
+ * stored screens both pass the loose rule. Two steps of one wizard share a title and most labels, so
+ * a recapture of step 2 can match step 1 first, replace it, and step 1 is lost while step 2 is
+ * duplicated. Flag on (`SCREEN_BEST_MATCH_ENABLED`): among every candidate `sameScreen` accepts, the
+ * one with the highest `labelOverlap`; ties go to the exact key, then the exact title, then the
+ * earliest. Structure only: url, title, tab, field labels.
+ */
+export function matchingScreenIndex<T>(
+  candidates: T[], toFp: (c: T) => { url: string; fp: ScreenFingerprint },
+  target: { url: string; fp: ScreenFingerprint },
+): number {
+  if (!screenBestMatchEnabled()) return candidates.findIndex((c) => sameScreen(toFp(c), target));
+  let best = -1;
+  let bestScore: [number, number, number] = [-1, -1, -1];
+  candidates.forEach((c, i) => {
+    const o = toFp(c);
+    if (!sameScreen(o, target)) return;
+    const score: [number, number, number] = [
+      labelOverlap(o.fp.labels, target.fp.labels),
+      o.fp.key === target.fp.key ? 1 : 0,
+      o.fp.title === target.fp.title ? 1 : 0,
+    ];
+    // Strictly better only, so on a full tie the earliest candidate keeps it.
+    const better = score[0] !== bestScore[0] ? score[0] > bestScore[0]
+      : score[1] !== bestScore[1] ? score[1] > bestScore[1]
+        : score[2] > bestScore[2];
+    if (better) { best = i; bestScore = score; }
+  });
+  return best;
+}
+
 /**
  * Put a captured screen into the model. Replaces the page it is the SAME screen as (the fresh
  * capture wins, so a field removed since is gone), otherwise appends it beside the other screens
@@ -120,7 +160,7 @@ export function mergeScreenInto(
 ): { model: AppModel; key: string; replacedKey?: string } {
   const fp = screenFingerprint(captured, tab);
   const page: PageModel = { ...captured, screen: fp };
-  const idx = model.pages.findIndex((p) => sameScreen({ url: p.url, fp: fingerprintOf(p) }, { url: page.url, fp }));
+  const idx = matchingScreenIndex(model.pages, (p) => ({ url: p.url, fp: fingerprintOf(p) }), { url: page.url, fp });
   if (idx < 0) return { model: AppModel.parse({ ...model, pages: [...model.pages, page] }), key: fp.key };
   const replacedKey = fingerprintOf(model.pages[idx]).key;
   const pages = model.pages.slice();
