@@ -150,6 +150,13 @@ export const DIALOG_SELECTOR =
   '[role="dialog"], [aria-modal="true"], [class*="dialog" i], [class*="modal" i]';
 
 /**
+ * DIALOG_SELECTOR with `:visible` on EVERY alternative (TD-135). Appending `:visible` to the whole
+ * comma list applies it to the last alternative only, so a hidden `[role="dialog"]` still matched.
+ * The live resolver and the generated spec's `scopeOf` both use this one string.
+ */
+export const VISIBLE_DIALOG_SELECTOR = DIALOG_SELECTOR.split(",").map((s) => `${s.trim()}:visible`).join(", ");
+
+/**
  * Find the control a visible label belongs to, by DOM ORDER rather than by pixel distance.
  *
  * THE FAILURE THIS REPLACES. Run `2026-09-06T13-05-36-248Z-db2c0b4c`: a New User modal with
@@ -484,7 +491,10 @@ async function resolveRoleWithFallback(page: LocatorRoot, role: string, name: st
  * `.last()` because a stacked dialog puts the newest on top.
  */
 export async function resolveScope(page: LocatorRoot): Promise<Locator> {
-  const dialogs = page.locator(DIALOG_SELECTOR).filter({ visible: true } as any);
+  // TD-135: `.filter({ visible: true })` was a silent no-op on the pinned Playwright 1.49, so a
+  // hidden `.modal-backdrop` or `[role="dialog"]` (rendered permanently by most UI libraries) became
+  // the scope and every lookup searched an invisible container.
+  const dialogs = page.locator(VISIBLE_DIALOG_SELECTOR);
   try {
     if (await dialogs.count() > 0) return dialogs.last();
   } catch { /* selector unsupported on some engines — fall through to the page */ }

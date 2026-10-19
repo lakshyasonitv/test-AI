@@ -1,7 +1,7 @@
 import type { IR, Step } from "../schema/ir.js";
 import {
   resolveCode as locator, frameRootCode,
-  DOM_ORDER_FIELD_JS, FIELD_SELECTOR, DIALOG_SELECTOR,
+  DOM_ORDER_FIELD_JS, FIELD_SELECTOR, VISIBLE_DIALOG_SELECTOR,
   SELECTABLE_JS, OPTION_PROBE_JS, MATCH_OPTION_INDEX_JS, OPTION_ERROR_JS, SELECT_TIMEOUT_MS,
 } from "./targetResolver.js";
 import { isAuthTriggeringStep } from "./authSettle.js";
@@ -440,7 +440,7 @@ const SCOPE_HELPER = `
 // against the document while a dialog is open can act on something the user cannot even see.
 // Returns a Locator either way, so callers use one uniform API. TECH_DEBT.md TD-72.
 async function scopeOf(page) {
-  const dialogs = page.locator(${JSON.stringify(DIALOG_SELECTOR)} + ':visible');
+  const dialogs = page.locator(${JSON.stringify(VISIBLE_DIALOG_SELECTOR)});
   try {
     if (await dialogs.count() > 0) return dialogs.last();
   } catch (e) {}
