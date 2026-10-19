@@ -5289,7 +5289,7 @@ fails honestly. The check reads the person's request, not model prose.
 success guess for an error line there. That is the same class of bug, and a structural fix (prefer lines
 that appear only after the final action, and never an element marked invalid or as an alert) wants its
 own change. Tests: `tests/quotedSuccessText.test.ts`, which reproduces the run in real Chromium. Both
-mutations were caught.
+mutations were caught. **The open part is tracked as TD-162** (2026-10-19: an unquoted request, the email error).
 
 ### TD-132. A valid case was treated as NEGATIVE because its expected text contained "blank" — High / Accidental — **Fixed (Salesforce runs)**
 
@@ -5856,3 +5856,44 @@ rewrote longer words (`secret_saucepan`). It now matches per string value:
 Unchanged: the 4-character minimum and the DOM-keyword skip, so a username such as `admin` is never treated as a
 secret (safe for text, but such a username can remain in a cache). `redactCredentials` (the event scrub, a
 `[redacted]` placeholder for display) still matches substrings; over-redacting a display copy is the safe direction.
+
+### TD-162. A valid case can PASS by asserting the site's own error, or by stopping before the flow finishes — Critical / Accidental — **Open**
+
+**Found 2026-10-19**, Salesforce run `2026-10-19T13-44-20-358Z-8e01a75f` (3/3 "passed"). The request: fill the enquiry
+form "with full name, email and phone country code, submit it and verify the confirmation". The primary case typed
+the literal words `full name` and `email`, clicked Next on step 1 of a 3-step form, and asserted the site's own
+"Please enter a valid email address." visible. `step-18.png`: the modal still on STEP 1 OF 3, nothing submitted, no
+confirmation. Read-only forensics (5 investigators, each checked by a refuter); the chain, in pipeline order:
+
+1. **The case writer wrote the field names as values** (verified: the cached batch is byte-equal to `03-cases.json`;
+   no code rewrites step text). `testCases.ts` says to use the request's values verbatim and never invent an address,
+   and nothing covers a request that names fields WITHOUT values. Ten earlier runs of the same request varied:
+   placeholders, an invented "Test User", "the provided full name". It also called step 1's Next "submit".
+2. **The IR copied them** (it may not change what the case says, `ir.ts` "BUT ONLY THE CASE"). The Email Address field
+   is `inputType: "email"` in the model; nothing checks a fill value against its field.
+3. **The terminal assertion became the error: TD-131's still-open part.** `groundTerminalTextAssertion`'s replay ended
+   on step 1 showing the error; tier 3 takes any `MESSAGE_LIKE` line ("please" included), closest in length to the
+   guess, so any guess of 64 chars or fewer became the error (almost certain, not provable: the raw model answer and
+   the server log were not saved). `replacesQuotedSuccessText` needs quoted text (none here);
+   `assertionContradictsCase` checks only NEGATIVE cases, and its `SUCCESS_SIGNAL` even matches this sentence via
+   "valid". The replay HAD the error as `{role: "alert"}` in its page model; the regrounder reads page text only.
+4. **The verdict is Playwright's exit code** (`executor.ts`, `passed: exitCode === 0`); nothing compares the outcome
+   with the case's `expected`.
+
+**Stopping early is the same defect.** With a valid email the IR still ends at STEP 2 OF 3 (no steps for screens 2 and 3)
+and passes on the sidebar line "Fully refundable … confirmed booking …" (the "SF hollow pass" in the discovery-upgrade
+reports, never filed until now). The confirmation is reachable: run `2026-10-18T13-52-48-541Z-eb251145` named every
+screen's values and reached "Thank You. Your interest has been registered."
+
+Not caused by the discovery upgrade: none of its flags was on in that process, and the code involved predates `adf2097`.
+
+**Planned fix, behind `HOLLOW_PASS_GUARDS_ENABLED` (default off), structural checks only (TD-01):**
+- the regrounder never takes an alert / `aria-invalid` message as a valid case's final text (closes TD-131's open part);
+- a valid case's fill value is checked against the field (type=email, number/tel, never the field's own name);
+- a valid case that completes a form must not end on a screen still holding that form's fields or forward button;
+- a case-writer rule for "fields named, no values" (a preference; the value check is the constraint behind it).
+
+**Cache clean-up (2026-10-19):** the two entries that would replay this (the cached cases
+`runs/_cache/llm/7525e72685f6e0ef6bac5a9ddba2303546d206ff.json` and the cached compiled case-0 IR
+`runs/_cache/llm/3ad0d7e1d6e34d6c57d26edd07261a4498acc784.json`) were MOVED to
+`testbench/cache-backups/20261019-td162-hollow-pass/`, not deleted.
