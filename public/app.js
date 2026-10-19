@@ -1976,6 +1976,10 @@ function renderEnterpriseDiagnostic(data, stage, error) {
     } else if (kind === "incomplete-coverage") {
       description = "It couldn't carry out every step your request described, so it ran the part it could verify.";
       fixPrompt = "Try describing fewer steps in one go, or split the request into separate tests.";
+    } else if (kind === "error-assertion") {
+      // TD-162 (HOLLOW_PASS_GUARDS_ENABLED): the replayed flow ended on the form's own error message.
+      description = "The form showed its own error message, so the flow never reached a success screen.";
+      fixPrompt = "Check the values in your request — for example a real-looking email address or phone number — so the form accepts them, and describe every step up to the final confirmation.";
     } else {
       // role-name, and anything unrecognised.
       description = "It couldn't find a button, link, or field it needed on the page.";
