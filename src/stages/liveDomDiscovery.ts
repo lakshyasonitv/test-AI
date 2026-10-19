@@ -48,6 +48,7 @@ import type { Frame, JSHandle, Page } from "playwright";
 import type { Element } from "../schema/appModel.js";
 import { deriveElementName } from "./discovery.js";
 import { currentRunTargetApp } from "../runTarget.js";
+import { applyIdEvidence, volatileIdDetectionEnabled } from "./volatileIds.js";
 
 /** One element as the in-page walk reports it, before Node-side naming fallbacks. */
 export interface LiveRawElement {
@@ -500,6 +501,15 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
   try {
     const { items, hasShadow, frameEls } = await handle.evaluate(
       (w) => ({ items: w.items, hasShadow: w.hasShadow, frameEls: w.frameEls }));
+    // Phase 4: drop ids proven volatile across walks, restore ids proven stable (TD-133), before
+    // the same verification every candidate gets. Node side only: the in-page walk is unchanged.
+    if (volatileIdDetectionEnabled()) {
+      const r = applyIdEvidence(page.url(), items, salesforce);
+      if (r.volatileDropped || r.stableKept || r.firstSightings) {
+        console.log(`[volatile-ids] ${page.url()}: ${r.volatileDropped} volatile id(s) dropped, `
+          + `${r.stableKept} stable id(s) kept, ${r.firstSightings} first sighting(s), ${r.ambiguous} ambiguous`);
+      }
+    }
     // Salesforce: always — tiers 4 and 5 are only ever confirmed by Playwright.
     if (hasShadow || salesforce) await verifyWithPlaywright(page, handle as JSHandle<WalkResult>, items);
     return { items, handle: handle as JSHandle<WalkResult>, frameEls };

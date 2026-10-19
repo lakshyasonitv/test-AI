@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { AppModel } from "../schema/appModel.js";
 import { localeCacheDimension } from "../browserLaunch.js";
+import { dropVolatileIdCss, volatileIdDetectionEnabled } from "../stages/volatileIds.js";
 import { cacheSafe } from "../runSecrets.js";
 
 const DIR = path.join("runs", "_cache", "appmodels");
@@ -41,7 +42,11 @@ export function cacheGet(url: string): AppModel | null {
   if (!existsSync(f)) return null;
   try {
     if (Date.now() - statSync(f).mtimeMs > TTL_MS) return null;   // stale: rediscover
-    return AppModel.parse(JSON.parse(readFileSync(f, "utf8")));
+    const model = AppModel.parse(JSON.parse(readFileSync(f, "utf8")));
+    // Discovery upgrade Phase 4: a model cached before an id was proven volatile must not serve that
+    // id back as a locator. Every app-model cache hit passes through here.
+    if (volatileIdDetectionEnabled()) for (const p of model.pages) dropVolatileIdCss(p.url, p.elements);
+    return model;
   } catch {
     return null;
   }

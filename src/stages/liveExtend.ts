@@ -18,6 +18,7 @@ import { llmCacheDimension } from "../llm/llmContext.js";
 import { mergeScreenInto } from "./screens.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForScreenSettle } from "./networkSettle.js";
+import { dropVolatileIdCss, volatileIdDetectionEnabled } from "./volatileIds.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -221,6 +222,8 @@ export function walkCacheKey(
   // Phase 1: a settled capture can hold content an unsettled one missed, and this cache never
   // expires on disk (TD-22). Appended only with the flag on, so every existing key is unchanged.
   if (networkSettleEnabled()) keyParts.push("net-settle:1");
+  // Phase 4: walks taken while id evidence is applied pick different css (TD-22).
+  if (volatileIdDetectionEnabled()) keyParts.push("volatile-ids:1");
   return makeCacheKey(...keyParts);
 }
 
@@ -264,7 +267,12 @@ async function replayAndSnapshot(
   // part — appended ONLY when set, so every existing walk keeps its exact key and cache entry.
   const cacheKey = walkCacheKey(model, prefix, creds, policy, options);
   const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
-  if (cached) return cached;
+  if (cached) {
+    // Phase 4: this walk never expires, so an id proven volatile SINCE it was cached must not be
+    // served back as a locator.
+    if (volatileIdDetectionEnabled()) dropVolatileIdCss(cached.reachedUrl, cached.pageModel.elements);
+    return cached;
+  }
 
   const fieldMap = credentialFieldMap(model);
   // Same "only the LAST attempt at a given credential kind gets substituted" rule

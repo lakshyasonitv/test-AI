@@ -35,6 +35,7 @@ import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVers
 import { cutAtBoundary, siteHost } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 import { networkSettleEnabled, trackNetwork } from "./networkSettle.js";
+import { volatileIdDetectionEnabled } from "./volatileIds.js";
 
 // ---------------------------------------------------------------------------
 // Concept labeling — the ONE remaining Gemini call in the primary path
@@ -606,7 +607,8 @@ export const siteCacheKey = (url: string, creds?: Credentials) => {
  * Empty for the static strategy, so every pre-existing key is unchanged.
  */
 const strategySuffix = () => (elementStrategy() === "live" ? "#live" : "")
-  + (networkSettleEnabled() ? "#settled" : ""); // Phase 1: a settled crawl is a different model (TD-22)
+  + (networkSettleEnabled() ? "#settled" : "") // Phase 1: a settled crawl is a different model (TD-22)
+  + (volatileIdDetectionEnabled() ? "#vid" : ""); // Phase 4: so is one walked with id evidence
 /** The bare-URL key `discoverHybrid` uses, with the same strategy dimension. */
 const hybridKey = (url: string) => `${url}${strategySuffix()}`;
 

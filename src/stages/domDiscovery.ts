@@ -19,6 +19,7 @@ import { stableSelector } from "./discovery.js";
 import { enumerateLiveElements } from "./liveDomDiscovery.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork } from "./networkSettle.js";
+import { volatileIdDetectionEnabled } from "./volatileIds.js";
 
 const REQUEST_TIMEOUT = 30_000;
 
@@ -611,7 +612,9 @@ export async function extractDomModelFromPage(
 export function domCacheKey(url: string): string {
   const base = elementStrategy() === "live" ? `dom-live:${url}` : `dom:${url}`;
   // Phase 1: a settled snapshot is a different model; flag off keeps the key exactly as before.
-  return networkSettleEnabled() ? `settled:${base}` : base;
+  const settled = networkSettleEnabled() ? `settled:${base}` : base;
+  // Phase 4: ids chosen with cross-walk evidence are a different model; flag off: unchanged.
+  return volatileIdDetectionEnabled() ? `vid:${settled}` : settled;
 }
 
 /**
