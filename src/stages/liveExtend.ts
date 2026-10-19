@@ -17,6 +17,7 @@ import { cutAtBoundary, pageKey } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 import { mergeScreenInto } from "./screens.js";
 import { currentRunTargetApp } from "../runTarget.js";
+import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForScreenSettle } from "./networkSettle.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -194,34 +195,9 @@ export async function scrollThroughPage(page: Page, maxSteps = 15, pauseMs = 300
   return scrolled;
 }
 
-/** Spinners and busy regions: ARIA's own, plus the Lightning Design System's spinner class (a
- *  product class, not org data). */
-const BUSY_SELECTOR =
-  '[role="progressbar"]:visible, [aria-busy="true"]:visible, .slds-spinner:visible, .slds-spinner_container:visible';
-const CONTROL_SELECTOR =
-  'input:visible, select:visible, textarea:visible, button:visible, [role="combobox"]:visible, [role="textbox"]:visible';
-
-/**
- * Wait until no spinner is visible and the number of visible controls is the same on two polls in
- * a row, bounded by `budgetMs`. Locator counts only — no `page.evaluate`, so nothing here can trip
- * TD-40's `__name` trap under tsx. Best-effort: on timeout it returns and the capture proceeds.
- */
-export async function waitForScreenSettle(page: Page, budgetMs = 6000, pollMs = 250): Promise<void> {
-  const deadline = Date.now() + budgetMs;
-  let last = -1;
-  let stableFor = 0;
-  while (Date.now() < deadline) {
-    const busy = await page.locator(BUSY_SELECTOR).count().catch(() => 0);
-    const controls = await page.locator(CONTROL_SELECTOR).count().catch(() => 0);
-    if (busy === 0 && controls === last) {
-      if (++stableFor >= 2) return;
-    } else {
-      stableFor = 0;
-    }
-    last = controls;
-    await page.waitForTimeout(pollMs);
-  }
-}
+// waitForScreenSettle now lives in networkSettle.ts (so domDiscovery can use it without an import
+// cycle); re-exported here so every existing import keeps working.
+export { waitForScreenSettle };
 
 /**
  * The "walks" cache key for one replay. Its parts are documented at its call site in
@@ -242,6 +218,9 @@ export function walkCacheKey(
   // :2 — captures now scroll through the page first; a :1 entry lacks below-the-fold content.
   if (options.settle) keyParts.push("screen-settle:2");
   if (currentRunTargetApp() === "salesforce") keyParts.push("sf-locators:1");
+  // Phase 1: a settled capture can hold content an unsettled one missed, and this cache never
+  // expires on disk (TD-22). Appended only with the flag on, so every existing key is unchanged.
+  if (networkSettleEnabled()) keyParts.push("net-settle:1");
   return makeCacheKey(...keyParts);
 }
 
@@ -301,7 +280,11 @@ async function replayAndSnapshot(
     const page = await browser.newPage(browserContextOptions());
     // Only a screen capture reads this; counting from the first request so a fetch a click starts
     // is seen even if it began before the capture's own wait does.
-    const network = options.settle ? trackInflightRequests(page) : undefined;
+    // Phase 1 (NETWORK_SETTLE_ENABLED): the long-poll-aware tracker replaces the old one, and is
+    // attached here, before the first navigation, so it sees every request the replay causes.
+    const settleOn = networkSettleEnabled();
+    if (settleOn) trackNetwork(page);
+    const network = options.settle && !settleOn ? trackInflightRequests(page) : undefined;
     let urlBeforeLastStep = model.baseUrl;
     /** Where the flow was when it last typed a credential, and what it typed it into. Used
      *  below to tell "signed in" from "still sitting on the sign-in form". */
@@ -359,16 +342,25 @@ async function replayAndSnapshot(
       // Salesforce pages fetch their data (Apex/UI API calls) after the DOM is up; a list that
       // arrives late is simply not in a capture taken before it. Not `networkidle`: that fires
       // once per document load, so after an in-page click it returns at once. Bounded.
-      await network?.quiet(5000);
-      await waitForScreenSettle(page);
+      if (settleOn) await settleBeforeSnapshot(page, "screen capture");
+      else {
+        await network?.quiet(5000);
+        await waitForScreenSettle(page);
+      }
       // Content below the fold that loads on scroll (a unit list, a related list) is not in the
       // DOM until the page is scrolled, so a capture of the top alone misses it. Real run
       // 2026-10-13T11-24-27-837Z-67382ff8: the project page's "Select for EOI" buttons were never
       // in the model and the AI dropped the step. Scroll through, settle again, back to the top.
       if (await scrollThroughPage(page)) {
-        await network?.quiet(3000);
-        await waitForScreenSettle(page);
+        if (settleOn) await settleBeforeSnapshot(page, "screen capture, after scroll");
+        else {
+          await network?.quiet(3000);
+          await waitForScreenSettle(page);
+        }
       }
+    } else if (settleOn) {
+      // Phase 1 on an ordinary replay: the same wait, before the page text and the model below.
+      await settleBeforeSnapshot(page, "replay");
     }
     const tab = options.settle
       ? ((await page.locator('[role="tab"][aria-selected="true"]:visible').first().textContent({ timeout: 500 }).catch(() => null)) ?? "").trim()
@@ -418,7 +410,7 @@ async function replayAndSnapshot(
     // cached under dom:reachedUrl for every later run.
     let fresh: AppModel | null = null;
     try {
-      fresh = await extractDomModelFromPage(page, reachedUrl);
+      fresh = await extractDomModelFromPage(page, reachedUrl, settleOn ? { alreadySettled: true } : undefined);
     } catch {
       // DOM discovery failed for the reached page
     }

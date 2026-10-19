@@ -8,6 +8,7 @@ import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, t
 import { cutAtBoundary, siteHost, pageKey } from "../text.js";
 import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
 import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
+import { networkSettleEnabled } from "./networkSettle.js";
 import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, edgeForCapture, routeToControl, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { requestValues, stepsMissingValues } from "./requestValues.js";
@@ -2932,10 +2933,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         // vision merge for dialogs built without semantic HTML) engages on exactly this shape.
         const prefix = parsed.data.steps.slice(0, revealIndex);
         const pageBefore = trackPages(parsed.data, currentModel).pageAt[revealIndex];
-        const beforeKeys = new Set(
-          (pageBefore?.elements ?? currentModel.pages.flatMap(p => p.elements))
-            .map(e => `${norm(e.role)}|${norm(e.name)}`)
-        );
+        // Captured BEFORE the refresh below replaces currentModel (the TD-158 check needs them too).
+        const beforeEls = pageBefore?.elements ?? currentModel.pages.flatMap(p => p.elements);
+        const beforeKeys = new Set(beforeEls.map(e => `${norm(e.role)}|${norm(e.name)}`));
         try {
           console.log(`[ir] post-click reveal check: re-snapshotting after step ${parsed.data.steps[revealIndex - 1]?.id}`);
           const refreshed = await refreshPageModel(currentModel, prefix, creds, credPolicy);
@@ -2947,10 +2947,31 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           // modal is now modelled for every later step.
           currentModel = refreshed;
 
-          const revealed = refreshed.pages
-            .flatMap(p => p.elements)
-            .filter(e => !beforeKeys.has(`${norm(e.role)}|${norm(e.name)}`));
-          const fillable = revealed.filter(e => FIELD_ROLE_GROUP.has(norm(e.role)));
+          const afterEls = refreshed.pages.flatMap(p => p.elements);
+          let revealed = afterEls.filter(e => !beforeKeys.has(`${norm(e.role)}|${norm(e.name)}`));
+          // TD-158 (with NETWORK_SETTLE_ENABLED, the Phase 1 follow-up). New NAMES alone miss a form
+          // whose fields discovery already holds, hidden, because its modal was closed: the click
+          // reveals nothing new by name, and a fill bound to an unrelated HIDDEN field (Demoblaze:
+          // the Sign-up "Username:" instead of the order form's field) was accepted. Settled
+          // discovery makes that shape common. So, by css (structure, never text): a field HIDDEN
+          // before the click and VISIBLE after it is revealed too, and a target still hidden after the
+          // click is wrong. A target the click itself made visible is exactly right: nothing to redirect.
+          let targetStillHidden = false;
+          if (networkSettleEnabled()) {
+            const cssOf = (e: Element) => e.css?.toLowerCase();
+            const targetCss = revealStep.target?.css?.toLowerCase();
+            const hiddenBefore = new Set(beforeEls.filter(e => e.visible === false && e.css).map(e => cssOf(e)!));
+            const nowVisible = afterEls.filter(e => e.visible !== false && e.css && hiddenBefore.has(cssOf(e)!));
+            if (targetCss && nowVisible.some(e => cssOf(e) === targetCss)) {
+              revealed = [];
+            } else {
+              for (const e of nowVisible) if (!revealed.includes(e)) revealed.push(e);
+              if (targetCss) revealed = revealed.filter(e => cssOf(e) !== targetCss);
+              targetStillHidden = !!targetCss && afterEls.find(e => cssOf(e) === targetCss)?.visible === false;
+            }
+          }
+          const fillable = revealed.filter(e => FIELD_ROLE_GROUP.has(norm(e.role))
+            && (!networkSettleEnabled() || e.visible !== false));
           // Nothing fillable appeared — either no modal opened, or its fields share a name with
           // something already modelled (in which case the diff hides them and there is nothing
           // to redirect to). Either way a correction would name nothing useful, so accept.
@@ -2966,8 +2987,10 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
             const names = fillable.map(e => `${e.role} "${e.name}"`).join(", ");
             const message =
               `Step ${revealStep.id} targets ${revealStep.target?.role ?? "an element"} ` +
-              `"${revealStep.target?.name ?? revealStep.target?.text ?? ""}", which already existed on the ` +
-              `page BEFORE the preceding click. Clicking ` +
+              `"${revealStep.target?.name ?? revealStep.target?.text ?? ""}", which ` +
+              (targetStillHidden
+                ? `is still hidden on the page after the preceding click (it belongs to another, closed form). Clicking `
+                : `already existed on the page BEFORE the preceding click. Clicking `) +
               `"${parsed.data.steps[revealIndex - 1]?.target?.name ?? "that control"}" revealed a form that ` +
               `was not in the application model until now, so that target is almost certainly the wrong ` +
               `control (a page header, sidebar or list item that happens to share the name). Use one of the ` +

@@ -18,6 +18,7 @@ import { extractCrawlResponse, type CrawlResponse } from "./domExtract.js";
 import { stableSelector } from "./discovery.js";
 import { enumerateLiveElements } from "./liveDomDiscovery.js";
 import { currentRunTargetApp } from "../runTarget.js";
+import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork } from "./networkSettle.js";
 
 const REQUEST_TIMEOUT = 30_000;
 
@@ -516,8 +517,14 @@ async function recheckVisibility(page: Page, elements: Element[]): Promise<void>
  * would start a fresh, session-less browser, which hits the login redirect for an
  * authenticated URL and models the LOGIN page instead — and caches that wrong snapshot.)
  */
-export async function extractDomModelFromPage(page: Page, url: string): Promise<AppModel | null> {
+export async function extractDomModelFromPage(
+  page: Page, url: string, opts: { alreadySettled?: boolean } = {},
+): Promise<AppModel | null> {
   try {
+    // Phase 1 (NETWORK_SETTLE_ENABLED): every discovery snapshot passes through here (the single-
+    // page path, each hybrid crawl hop, the post-login page, live-extend replays), so this is the
+    // one place to wait for the page's late data. A caller that has just settled says so.
+    if (networkSettleEnabled() && !opts.alreadySettled) await settleBeforeSnapshot(page, `snapshot ${url}`);
     const strategy = elementStrategy();
     let html = await page.content();
     let crawlResult = extractCrawlResponse(html, url, 200);
@@ -602,7 +609,9 @@ export async function extractDomModelFromPage(page: Page, url: string): Promise<
  * Flag off keeps the original `dom:${url}`, so existing cache entries stay valid.
  */
 export function domCacheKey(url: string): string {
-  return elementStrategy() === "live" ? `dom-live:${url}` : `dom:${url}`;
+  const base = elementStrategy() === "live" ? `dom-live:${url}` : `dom:${url}`;
+  // Phase 1: a settled snapshot is a different model; flag off keeps the key exactly as before.
+  return networkSettleEnabled() ? `settled:${base}` : base;
 }
 
 /**
@@ -629,6 +638,7 @@ export async function discoverUsingCrawler(url: string): Promise<AppModel | null
     // here rather than by promoting this to newContext() + context.newPage(): a second page on a
     // context does not carry sessionStorage (TD-41 / D-23), and this path needs no extra page.
     const page = await browser.newPage(browserContextOptions());
+    if (networkSettleEnabled()) trackNetwork(page); // before goto, so it sees every request (Phase 1)
     const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: REQUEST_TIMEOUT });
 
     const statusCode = response?.status() ?? 0;

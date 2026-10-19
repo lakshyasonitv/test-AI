@@ -34,6 +34,7 @@ import { resolveLive } from "./targetResolver.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { cutAtBoundary, siteHost } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
+import { networkSettleEnabled, trackNetwork } from "./networkSettle.js";
 
 // ---------------------------------------------------------------------------
 // Concept labeling — the ONE remaining Gemini call in the primary path
@@ -604,7 +605,8 @@ export const siteCacheKey = (url: string, creds?: Credentials) => {
  * URL (up to APPMODEL_CACHE_TTL_MS) and the checkbox appeared to do nothing — TD-22, D-10 again.
  * Empty for the static strategy, so every pre-existing key is unchanged.
  */
-const strategySuffix = () => (elementStrategy() === "live" ? "#live" : "");
+const strategySuffix = () => (elementStrategy() === "live" ? "#live" : "")
+  + (networkSettleEnabled() ? "#settled" : ""); // Phase 1: a settled crawl is a different model (TD-22)
 /** The bare-URL key `discoverHybrid` uses, with the same strategy dimension. */
 const hybridKey = (url: string) => `${url}${strategySuffix()}`;
 
@@ -1260,7 +1262,11 @@ export async function discoverSiteHybrid(
     // (see the comments above), and the one page it opens must stay the only one for
     // sessionStorage to survive. Options belong wherever the context is created.
     state.context ??= await state.browser.newContext(browserContextOptions());
-    state.page ??= await state.context.newPage();
+    if (!state.page) {
+      state.page = await state.context.newPage();
+      // Phase 1: attach before the first goto, so the entry page's early requests are counted.
+      if (networkSettleEnabled()) trackNetwork(state.page);
+    }
     return state.page;
   };
 

@@ -2230,6 +2230,7 @@ export const BOOLEAN_ENV_FLAGS = [
   // 403, and options.spec on POST /api/runs is ignored.
   "SPEC_INTAKE_ENABLED",
   "SCREEN_MAP_ENABLED",
+  "NETWORK_SETTLE_ENABLED",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */
