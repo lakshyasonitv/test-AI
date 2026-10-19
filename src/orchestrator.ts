@@ -26,6 +26,7 @@ import { attemptHeal, isHealable, selfHealDefault } from "./stages/heal.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 import { rememberRunSecrets, scrubRunSecrets } from "./runSecrets.js";
+import { buttonExplorerEnabled, exploreButtons } from "./stages/buttonExplorer.js";
 import { ALL_SCOPES } from "./kb/testStrategy.js";
 import type { IR, Step } from "./schema/ir.js";
 
@@ -274,10 +275,16 @@ export async function runPipeline(
       }
       : undefined;
 
-    const appModel = await step("discovery", "02-appmodel.json", async () =>
-      resolvedUrls.length === 1
-        ? discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery)
-        : discoverPagesHybrid(resolvedUrls),
+    const appModel = await step("discovery", "02-appmodel.json", async () => {
+      const discovered = resolvedUrls.length === 1
+        ? await discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery)
+        : await discoverPagesHybrid(resolvedUrls);
+      // Discovery upgrade Phase 5 (BUTTON_EXPLORER_ENABLED, default off): safe clicks that reveal
+      // screens discovery cannot reach by URL. Inside the step, so 02-appmodel.json holds what it
+      // found; it never throws, so a failed exploration leaves discovery's model as it was.
+      if (!buttonExplorerEnabled()) return discovered;
+      return (await exploreButtons(discovered, { runDir, creds: discoveredCreds })).model;
+    },
       // The full model still goes to 02-appmodel.json; only the EVENT is narrowed. `data.pages`
       // stays an array of objects carrying `url` and `concepts`, which is everything app.js reads
       // from this event (`Discovered N page(s) — Concepts: …`) and exactly the shape preview.js's

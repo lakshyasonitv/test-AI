@@ -320,7 +320,7 @@ const TEXT_ENTRY_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
 // Controls worth naming to the model when describing a captured screen: what a step can act on.
 // spinbutton/searchbox included — "Min Budget (AED)" is an <input type=number>, and leaving it out
 // meant no rejection ever told the model the field's real name (TD-122).
-const SCREEN_CONTROL_ROLES = new Set([
+export const SCREEN_CONTROL_ROLES = new Set([
   "button", "link", "checkbox", "radio", "tab", "menuitem", "combobox", "textbox", "searchbox", "spinbutton",
 ]);
 /**
