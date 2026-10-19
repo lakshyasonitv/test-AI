@@ -543,6 +543,32 @@ export function redactCredentials<T>(value: T, creds?: Credentials): T {
 }
 
 /**
+ * `value` with the credential VALUES replaced by the `${env:...}` references the generated spec
+ * uses (TD-156), for anything that is cached. Unlike `redactCredentials`' placeholder, a reference
+ * keeps meaning: a cached answer that said "type the password" still does when it is served again,
+ * to the run whose own credentials fill the reference. Same eligibility rule as `redactCredentials`
+ * (secret credentials only; values of 4+ characters that are not DOM keywords); longer values first,
+ * so a password containing the username is not half-replaced.
+ */
+export function credentialsAsEnvRefs<T>(value: T, creds?: Credentials): T {
+  if (!creds?.secret) return value;
+  const pairs = ([["password", creds.password], ["username", creds.username]] as const)
+    .filter(([, s]) => s && s.length >= 4 && !DOM_KEYWORDS.has(s.toLowerCase()))
+    .sort((a, b) => b[1].length - a[1].length);
+  if (!pairs.length) return value;
+  let json = JSON.stringify(value);
+  if (json === undefined) return value;
+  let changed = false;
+  for (const [kind, secret] of pairs) {
+    const needle = JSON.stringify(secret).slice(1, -1);
+    if (!json.includes(needle)) continue;
+    changed = true;
+    json = json.split(needle).join(ENV_VALUE_PREFIX + ENV_VAR[kind] + ENV_VALUE_SUFFIX);
+  }
+  return changed ? JSON.parse(json) as T : value;
+}
+
+/**
  * Taxonomy categories (from kb/testStrategy.ts) whose whole point is that the action must
  * FAIL. Substituting working credentials into these would defeat the case; asserting a
  * success message in these is the inverted-assertion bug. Shared by both checks.
@@ -725,6 +751,20 @@ export function applyCredentials(
   legUrlAt?: (string | null | undefined)[],
   fieldMap?: Map<string, CredentialKind>,
 ): void {
+  // A fill whose value IS the user's real credential becomes the env reference whatever the
+  // case's policy (TECH_DEBT.md TD-156). The same value is typed at run time (the executor puts it
+  // in the child's env), so no test changes; only the literal stops reaching 04-ir.json and the
+  // generated spec. It runs before every rule below because a negative case ("locked-out user" +
+  // the real password, read off a login page that prints it) is exactly where the model types the
+  // real value and those rules, by design, leave the case's own values alone.
+  if (creds.secret) {
+    for (const step of steps) {
+      if (step.action !== "fill" || typeof step.value !== "string") continue;
+      const literal: CredentialKind | undefined = step.value === creds.password ? "password"
+        : step.value === creds.username ? "username" : undefined;
+      if (literal) step.value = ENV_VALUE_PREFIX + ENV_VAR[literal] + ENV_VALUE_SUFFIX;
+    }
+  }
   if (policy === "none") return;
   const lastOfKind = lastFillIndexByKind(steps, fieldMap, legUrlAt);
   for (let i = 0; i < steps.length; i++) {

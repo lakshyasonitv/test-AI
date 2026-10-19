@@ -3,6 +3,7 @@ import path from "node:path";
 import type { StageEvent } from "./orchestrator.js";
 import { findScreenshot } from "./stages/executor.js";
 import { shadowCompareRuns } from "./db.js";
+import { forgetRunSecretsSoon, scrubRunSecrets } from "./runSecrets.js";
 
 /**
  * Durable per-run event log — the one seam that separates "demo" from "product".
@@ -39,7 +40,9 @@ export const store: RunStore = {
   append(event) {
     const f = fileFor(event.runId);
     mkdirSync(path.dirname(f), { recursive: true });
-    appendFileSync(f, JSON.stringify(event) + "\n", "utf8");
+    // Every writer of events comes through here, so this is where no credential may pass (TD-154).
+    appendFileSync(f, JSON.stringify(scrubRunSecrets(event.runId, event)) + "\n", "utf8");
+    if (event.stage === "done" || event.stage === "error") forgetRunSecretsSoon(event.runId);
   },
   read(runId) {
     let events: StageEvent[] = [];
@@ -153,7 +156,9 @@ export const store: RunStore = {
       }
     }
 
-    return events;
+    // The reconstructed legacy events above come from stage files, not from append(), so they are
+    // scrubbed here too; for an events.ndjson written by append() this is a no-op.
+    return scrubRunSecrets(runId, events);
   },
 };
 

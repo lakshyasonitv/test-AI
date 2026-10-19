@@ -25,6 +25,7 @@ import { analyzeFailure } from "./stages/failureAnalysis.js";
 import { attemptHeal, isHealable, selfHealDefault } from "./stages/heal.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
+import { rememberRunSecrets, scrubRunSecrets } from "./runSecrets.js";
 import { ALL_SCOPES } from "./kb/testStrategy.js";
 import type { IR, Step } from "./schema/ir.js";
 
@@ -189,8 +190,14 @@ export async function runPipeline(
   // because the alternative is nesting the rest of this 450-line function. See runContext.ts.
   enterWithRunId(runId);
 
+  // Model-authored text only (TD-156): a plan or case step can quote a credential the model read
+  // off the page. Nothing reads these two back to run them (only runStore's legacy history view),
+  // so scrubbing the file changes no behaviour. 04-ir.json is deliberately NOT scrubbed here: it is
+  // what runs, and its credential fills are already env references (applyCredentials).
+  const SCRUB_ON_SAVE = new Set(["01-plan.json", "03-cases.json"]);
   const save = (name: string, data: unknown) =>
-    writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));
+    writeFileSync(path.join(runDir, name),
+      JSON.stringify(SCRUB_ON_SAVE.has(name) ? scrubRunSecrets(runId, data) : data, null, 2));
 
   const emit = (stage: StageName, status: StageEvent["status"], data?: unknown, error?: string) => {
     const event: StageEvent = { runId, stage, status, data, error, ts: Date.now() };
@@ -232,6 +239,7 @@ export async function runPipeline(
     // plaintext passwords on a public path. The redacted copy goes to disk and to the event; the
     // original stays in memory for the stages that need it.
     const promptCreds = extractCredentialsFromPrompt(prompt);
+    rememberRunSecrets(runId, promptCreds); // so no later event or saved case can carry them (TD-154)
     const safePrompt = redactCredentials(prompt, promptCreds);
     save("00-input.json", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
     emit("input", "completed", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });

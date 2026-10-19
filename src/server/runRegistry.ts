@@ -1,6 +1,7 @@
 import type { StageEvent } from "../orchestrator.js";
 import type { Response } from "express";
 import { store } from "../runStore.js";
+import { scrubRunSecrets } from "../runSecrets.js";
 
 // Live SSE fan-out only. History/durability now lives in the RunStore (../runStore),
 // so this holds just the open connections per run — nothing that matters is lost on
@@ -10,7 +11,8 @@ const subscribers = new Map<string, Set<Response>>();
 /** Broadcast a live event to any open connections. Durability is the orchestrator's
  *  job (it appends to the RunStore before calling back), so this only pushes. */
 export function record(event: StageEvent): void {
-  const line = `data: ${JSON.stringify(event)}\n\n`;
+  // The caller hands over the same raw object it appended; the store scrubbed only its own copy.
+  const line = `data: ${JSON.stringify(scrubRunSecrets(event.runId, event))}\n\n`;
   for (const res of subscribers.get(event.runId) ?? []) res.write(line);
 }
 

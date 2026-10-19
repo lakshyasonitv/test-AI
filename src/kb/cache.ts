@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { AppModel } from "../schema/appModel.js";
 import { localeCacheDimension } from "../browserLaunch.js";
+import { cacheSafe } from "../runSecrets.js";
 
 const DIR = path.join("runs", "_cache", "appmodels");
 /**
@@ -49,5 +50,6 @@ export function cacheGet(url: string): AppModel | null {
 export function cacheSet(url: string, model: AppModel): void {
   if (TTL_MS <= 0) return;
   mkdirSync(DIR, { recursive: true });
-  writeFileSync(path.join(DIR, keyFor(url) + ".json"), JSON.stringify(model, null, 2));
+  // TD-156: a discovered page can PRINT the run's password (SauceDemo's login page does). Never cached as a value.
+  writeFileSync(path.join(DIR, keyFor(url) + ".json"), JSON.stringify(cacheSafe(model), null, 2));
 }
