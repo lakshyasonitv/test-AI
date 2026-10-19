@@ -19,6 +19,7 @@ import { mergeScreenInto } from "./screens.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForScreenSettle } from "./networkSettle.js";
 import { dropVolatileIdCss, volatileIdDetectionEnabled } from "./volatileIds.js";
+import { captureErrorMarkers, errorMarkersOf, type ErrorMarker } from "./hollowPassGuards.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -135,6 +136,9 @@ export interface ReplayResult {
    *  capture reads it (`settle`), for the screen fingerprint (D-52). Optional for the same
    *  cached-forever reason as `pageTextRaw`. */
   tab?: string;
+  /** TD-162: what the page itself marks as an error at capture time (`captureErrorMarkers`). Only a
+   *  replay asked for `errorSignals` reads it; optional for the same cached-forever reason. */
+  errorMarkers?: ErrorMarker[];
 }
 
 /** Options for a replay. Each one changes what is captured, so each one used is a cache-key part. */
@@ -146,6 +150,8 @@ export interface ReplayOptions {
    * then reads as "not on this screen" for the steps that need it.
    */
   settle?: boolean;
+  /** TD-162 (HOLLOW_PASS_GUARDS_ENABLED): also read the page's own error markers (`errorMarkers`). */
+  errorSignals?: boolean;
 }
 
 /**
@@ -224,6 +230,9 @@ export function walkCacheKey(
   if (networkSettleEnabled()) keyParts.push("net-settle:1");
   // Phase 4: walks taken while id evidence is applied pick different css (TD-22).
   if (volatileIdDetectionEnabled()) keyParts.push("volatile-ids:1");
+  // TD-162: a walk that read the page's error markers holds a field an older one lacks. Appended
+  // only when asked for, so every existing key is unchanged.
+  if (options.errorSignals) keyParts.push("error-signals:1");
   return makeCacheKey(...keyParts);
 }
 
@@ -409,6 +418,7 @@ async function replayAndSnapshot(
     const title = await page.title();
     const pageText = await capturePageText(page);
     const pageTextRaw = await capturePageTextContent(page);
+    const errorMarkers = options.errorSignals ? await captureErrorMarkers(page) : undefined;
 
     // Try DOM-based discovery first for the reached page. Snapshot the replay's OWN page
     // handle — its session/cookies are intact, so an authenticated URL is modeled as the
@@ -474,7 +484,8 @@ async function replayAndSnapshot(
     // cached under runs/_cache and its pageModel ends up inside 04-ir.json, both of which the
     // server exposes as static files. No-op for the public demo accounts.
     const result = redactCredentials<ReplayResult>(
-      { reachedUrl, pageModel, pageText, pageTextRaw, ...(tab !== undefined ? { tab } : {}) }, creds);
+      { reachedUrl, pageModel, pageText, pageTextRaw, ...(tab !== undefined ? { tab } : {}),
+        ...(errorMarkers !== undefined ? { errorMarkers } : {}) }, creds);
     if (isCacheableResult(result)) llmCacheSet(cacheKey, result, WALK_CACHE_NS);
     return result;
   } finally {
@@ -787,6 +798,9 @@ export function isPureTextAssertion(step: Step): boolean {
  */
 export async function groundTerminalTextAssertion(
   ir: IR, model: AppModel, creds?: Credentials, policy: CredentialPolicy = "full",
+  /** Passed to the replay. toIR asks for `errorSignals` when `finalScreenErrors` already replayed the
+   *  same prefix that way (TD-162), so the two share one walk instead of launching two browsers. */
+  replayOptions: ReplayOptions = {},
 ): Promise<{ ir: IR; grounded: boolean; corrected: boolean }> {
   const last = ir.steps[ir.steps.length - 1];
   if (!isPureTextAssertion(last)) return { ir, grounded: false, corrected: false };
@@ -802,7 +816,7 @@ export async function groundTerminalTextAssertion(
     // function existed is returned verbatim, forever. Without the default, norm() below
     // throws on it, outside this try, escaping toIR's loop instead of degrading to
     // "leave the assertion alone" like every other failure here.
-    ({ pageText = "", pageTextRaw = "" } = await replayAndSnapshot(model, prefix, creds, policy));
+    ({ pageText = "", pageTextRaw = "" } = await replayAndSnapshot(model, prefix, creds, policy, replayOptions));
   } catch (err: any) {
     console.log("[liveExtend] text-assertion grounding: replay failed, leaving assertion as-is:", err?.message ?? err);
     return { ir, grounded: false, corrected: false };
@@ -911,4 +925,29 @@ export async function groundTerminalTextAssertion(
 
   console.log(`[liveExtend] text-assertion grounding: corrected "${last.target!.text}" -> "${best}"`);
   return { ir: writeTerminalText(ir, best), grounded: true, corrected: true };
+}
+
+/**
+ * TD-162 (HOLLOW_PASS_GUARDS_ENABLED): the error markers the page itself shows on the screen a case
+ * ENDS on, after every step before its final assertion (all of them, when the last step is not one).
+ * toIR asks this of a positive case before accepting its IR, whatever kind of final assertion it has:
+ * a form error marked on that screen is the structural proof that the flow did not succeed, so no
+ * assertion there can make the case pass. Without it, run 8e01a75f's re-check skips the error and
+ * lands on any other message on the screen, its sidebar's "Fully refundable…" line.
+ *
+ * The replay is the one `groundTerminalTextAssertion` makes for the same prefix when it is given
+ * `errorSignals` too, so the two share one walk. Best-effort, like that re-check: a replay that fails
+ * reports no errors and leaves every other guard in place.
+ */
+export async function finalScreenErrors(
+  ir: IR, model: AppModel, creds?: Credentials, policy: CredentialPolicy = "full",
+): Promise<ErrorMarker[]> {
+  const prefix = ir.steps.at(-1)?.action === "assert" ? ir.steps.slice(0, -1) : ir.steps;
+  if (!prefix.length) return [];
+  try {
+    return errorMarkersOf(await replayAndSnapshot(model, prefix, creds, policy, { errorSignals: true }));
+  } catch (err: any) {
+    console.log("[liveExtend] final-screen error check: replay failed, no errors read:", err?.message ?? err);
+    return [];
+  }
 }

@@ -6,12 +6,13 @@ import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary, siteHost, pageKey } from "../text.js";
-import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
+import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion, finalScreenErrors } from "./liveExtend.js";
 import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
 import { networkSettleEnabled } from "./networkSettle.js";
 import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, edgeForCapture, routeToControl, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { requestValues, stepsMissingValues } from "./requestValues.js";
+import { hollowPassGuardsEnabled, isPositiveCase, describeMarkers } from "./hollowPassGuards.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
@@ -2158,11 +2159,16 @@ Example — handling duplicate selectors with nth:
     ? [JSON.stringify([storedScreens.map((s) => [s.key, s.controls]), storedMap!.edges.map((e) => [e.from, e.action, e.to])])]
     : [];
   if (storedScreens.length) console.log(`[ir] screen map: ${storedScreens.length} screens, ${storedMap!.edges.length} edges stored for ${storedMap!.site}`);
+  // TD-162 (HOLLOW_PASS_GUARDS_ENABLED): a positive case may not end on a screen where the page shows
+  // its own error. Negative cases keep today's behaviour: there the error is the point.
+  const refuseErrors = hollowPassGuardsEnabled() && isPositiveCase(testCase);
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
     entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion(), ...mapSignature,
     // TD-139: an IR cached before the request-values check could replay one that drops the values.
-    ...(currentRunTargetApp() === "salesforce" ? ["ir-values:1"] : []));
+    ...(currentRunTargetApp() === "salesforce" ? ["ir-values:1"] : []),
+    // TD-162: an IR cached without the guard can end on the page's own error. Only guarded cases' keys change.
+    ...(refuseErrors ? ["hollow-guards:1"] : []));
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -2453,6 +2459,48 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       hasTerminalAssertion: hasTerminalAssertion(bp.steps),
     },
   });
+
+  /**
+   * TD-162: the flow WITHOUT the assertions that watched the error screen — every trailing assert, and
+   * the waits between them, back to the last action. So hasTerminalAssertion is false and the case
+   * reports truncated_no_assertion; a kept assertion would make it "truncated", which counts as passed.
+   */
+  const withoutErrorAsserts = (steps: Step[]): Step[] => {
+    let end = steps.length;
+    while (end > 0 && (steps[end - 1].action === "assert" || steps[end - 1].action === "wait")) end--;
+    return steps.slice(0, end);
+  };
+  /** TD-162: why this IR may not ship for a positive case — the screen it ends on shows the page's own
+   *  error — or undefined. One replay, shared with the terminal-text re-check below. The marker that
+   *  triggered it is logged and carried in the reason (and so in the truncation note and
+   *  08-llm-usage.json), so false incompletes can be counted on real runs. */
+  const errorScreenRefusal = async (ir: IR): Promise<string | undefined> => {
+    if (!refuseErrors) return undefined;
+    const markers = await finalScreenErrors(ir, currentModel, creds, credPolicy);
+    if (!markers.length) return undefined;
+    const shown = describeMarkers(markers);
+    console.log(`[ir] error-assertion: the final screen shows the page's own error marker(s): ${shown} — a positive case cannot end there`);
+    return `Replaying the steps before the final assertion ends on a screen where the page itself marks an ERROR ` +
+      `(error marker: ${shown}): the flow did NOT succeed there, so no assertion on that screen can prove this ` +
+      `case. Find the step that caused the error (for example a value the field rejects, or a required field ` +
+      `left empty) and fix it, or carry the flow on to its real end, then assert what the page shows there.`;
+  };
+  /**
+   * TD-162: every exit that ships an IR able to pass checks its final screen first; one showing the
+   * page's own error ships without its trailing assertions, truncated: incomplete. "Able to pass" is
+   * anything but a truncation with no assertion at its end: an untruncated IR passes on any assertion,
+   * even one in the middle of the flow. The main path checks before it accepts; this covers the side
+   * exits (best effort, truncation, the contradiction strip), whose IRs never reached that check.
+   */
+  const guardExit = async (ir: IR): Promise<IR> => {
+    if (!refuseErrors || ir.meta.truncationKind === "error-assertion"
+      || (ir.meta.truncated && !hasTerminalAssertion(ir.steps))) return ir;
+    const why = await errorScreenRefusal(ir);
+    if (!why) return ir;
+    const steps = withoutErrorAsserts(ir.steps);
+    return { ...ir, steps, meta: { ...ir.meta, truncated: true, truncationNote: why, truncationKind: "error-assertion",
+      hasTerminalAssertion: hasTerminalAssertion(steps) } };
+  };
   // Set when the screen-capture budget runs out, so a truncation note says so instead of the
   // misleading "that screen has not been captured yet" (TD-128).
   let captureBudgetSpent = false;
@@ -3010,6 +3058,22 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         }
       }
 
+      // TD-162 (HOLLOW_PASS_GUARDS_ENABLED): a positive case may not end on a screen showing the page's
+      // own error, whatever its final assertion says (run 8e01a75f passed on exactly that). A rejection
+      // like any other: back to the model with the reason, and if every attempt ends here, the flow
+      // ships without those assertions, truncated — incomplete, never passed.
+      const errorScreen = await errorScreenRefusal(parsed.data);
+      if (errorScreen) {
+        reject("error-assertion", errorScreen);
+        const steps = withoutErrorAsserts(parsed.data.steps);
+        if (steps.length > (bestPartial?.steps.length ?? 0)) {
+          bestPartial = { ir: parsed.data, steps, note: errorScreen, kind: "error-assertion" };
+        }
+        // An earlier attempt's contradiction must not ship instead: its stripped IR can look complete.
+        lastContradiction = undefined;
+        continue;
+      }
+
       // A pure-text terminal assertion (the one kind groundingError can't check — no
       // role/name to match against the discovered model) is otherwise just an unvalidated
       // LLM guess. Replay the prefix, read the real page, and correct the guess when it's
@@ -3017,7 +3081,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // banner on a failing case" shape assertionContradictsCase below catches. Best-effort:
       // on replay failure this returns the IR unchanged and the existing guards still apply.
       if (isPureTextAssertion(parsed.data.steps[parsed.data.steps.length - 1])) {
-        const { ir: reground } = await groundTerminalTextAssertion(parsed.data, currentModel, creds, credPolicy);
+        // Guarded, the replay is the walk errorScreenRefusal just took (same prefix, same options).
+        const { ir: reground } = await groundTerminalTextAssertion(parsed.data, currentModel, creds, credPolicy,
+          refuseErrors ? { errorSignals: true } : {});
         // Only take the correction if it doesn't turn a negative case into a success
         // assertion. groundTerminalTextAssertion picks the message-shaped page line closest
         // in length to the guess — on a negative case whose replay actually succeeded, that
@@ -3061,7 +3127,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     // user's eight steps. Every other rejection kind still truncates as before.
     if (ungrounded.kind === "text-target" && attempt === attemptCap - 1) {
       console.log("[ir] shipping unverified text targets (best-effort):", ungrounded.message);
-      return { ir: finalize(parsed.data), updatedAppModel: currentModel };
+      return { ir: finalize(await guardExit(parsed.data)), updatedAppModel: currentModel };
     }
 
     const prefix = trackBestPartial(ungrounded);
@@ -3103,7 +3169,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // The longest grounded prefix is the test worth running, whichever attempt produced it.
       if (bestPartial && bestPartial.steps.length > prefix.length) {
         console.log(`[ir] shipping the best attempt's ${bestPartial.steps.length} grounded steps, not this attempt's ${prefix.length}`);
-        return { ir: finalize(fromBestPartial(bestPartial)), updatedAppModel: currentModel };
+        return { ir: finalize(await guardExit(fromBestPartial(bestPartial))), updatedAppModel: currentModel };
       }
       const truncated: IR = { ...parsed.data, steps: prefix };
       truncated.meta = {
@@ -3115,7 +3181,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         ...(ungrounded.kind ? { truncationKind: ungrounded.kind } : {}),
         hasTerminalAssertion: hasTerminalAssertion(prefix),
       };
-      return { ir: finalize(truncated), updatedAppModel: currentModel };
+      return { ir: finalize(await guardExit(truncated)), updatedAppModel: currentModel };
     }
   }
 
@@ -3152,7 +3218,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           hasTerminalAssertion: hasTerminalAssertion(steps),
         },
       };
-      return { ir: finalize(stripped), updatedAppModel: currentModel };
+      return { ir: finalize(await guardExit(stripped)), updatedAppModel: currentModel };
     }
   }
   // Attempts exhausted without ever reaching the in-loop truncation path (every attempt ended
@@ -3164,7 +3230,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       `[ir] attempts exhausted while still extending — shipping the grounded prefix ` +
       `(${bestPartial.steps.length} of ${bestPartial.ir.steps.length} steps)`
     );
-    return { ir: finalize(fromBestPartial(bestPartial)), updatedAppModel: currentModel };
+    return { ir: finalize(await guardExit(fromBestPartial(bestPartial))), updatedAppModel: currentModel };
   }
 
   throw new Error(`IR failed schema validation after retry: ${lastErr}`);

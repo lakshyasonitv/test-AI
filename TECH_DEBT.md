@@ -5897,3 +5897,38 @@ Not caused by the discovery upgrade: none of its flags was on in that process, a
 `runs/_cache/llm/7525e72685f6e0ef6bac5a9ddba2303546d206ff.json` and the cached compiled case-0 IR
 `runs/_cache/llm/3ad0d7e1d6e34d6c57d26edd07261a4498acc784.json`) were MOVED to
 `testbench/cache-backups/20261019-td162-hollow-pass/`, not deleted.
+
+**Fix 1 (2026-10-19, behind `HOLLOW_PASS_GUARDS_ENABLED`): a positive case may not end on the page's own error.**
+- Positive = category `valid` or `state-change` (`hollowPassGuards.ts`); negative and `functional-other` cases
+  are unchanged.
+- Before toIR accepts a positive case's IR, `finalScreenErrors` (`liveExtend.ts`) replays the steps before its
+  final assertion and reads the screen's error markers (`captureErrorTexts`): the message an `aria-invalid` field
+  points at, and a shown `role="alert"` / `aria-live="assertive"` region inside a form (a page-level alert is not
+  an error: Next.js's route announcer is one), plus the walker's form alerts as a backup. Any marker means the flow
+  did not succeed, WHATEVER the final assertion says: back to the model with the reason (`error-assertion`); when
+  the attempts run out, the flow ships without its trailing assertions, truncated (truncated_no_assertion). Every
+  side exit of toIR (best effort, truncation, the contradiction strip) is checked the same way (`guardExit`), and
+  `heal.ts` never heals an `error-assertion` truncation.
+- A first version, which only stopped the re-check from TAKING the error line, still passed run 8e01a75f: with
+  any guess other than the error itself, the re-check moved to the sidebar's "Fully refundable … confirmed
+  booking …" line. An adversarial review also found three exits where "incomplete" could still pass. All are
+  covered by tests now.
+- Offline replay of 8e01a75f from its own artifacts (the saved walk, the run's IR; no browser, no model): flag off
+  reproduces the pass; flag on, with the run's IR and with a "Thank you" guess, 4 attempts are refused and 16 of 18
+  steps ship, truncated, with no assertion.
+- Tests: `tests/hollowPassGuards.test.ts`, `tests/hollowPassIr.test.ts` (real Chromium); 17/17 mutations caught.
+- **Limits (it reads ARIA, nothing else):** an error shown only visually (no alert role, no `aria-invalid`, as
+  GOV.UK's summary outside the form) is not seen, so that case behaves as before; a SUCCESS message rendered as
+  `role="alert"` inside a form (Bootstrap's `alert-success`, MUI's `<Alert>`) is read as an error, so that case
+  goes incomplete, never passed. A co-signal (an invalid field in the same form) would remove the second, at the
+  cost of missing a custom form that marks nothing invalid, like 8e01a75f's. A flow that stops early on a screen
+  WITHOUT an error (8e01a75f with a valid email stops at STEP 2 OF 3) is Fix 3's, not this one's.
+
+### TD-163. A deterministic heal can turn a truncated_no_assertion case into a passed run — Medium / Accidental — **Open**
+
+**Found 2026-10-19** by the TD-162 review. `orchestrator.ts` computes `truncatedNoAssertion` from the ORIGINAL IR
+and skips its "cannot report passed" override when the case was `healed`. A deterministic heal keeps the IR's
+truncation meta (`heal.ts`, `healedIr = {...ir, steps}`), so a truncated IR with no terminal assertion that fails,
+heals, and then passes is reported as a passed run although it still verifies nothing. `isHealable` excludes only
+`navigate-url` and (TD-162) `error-assertion` truncations. A structural fix: apply the override to the HEALED IR's
+meta, not skip it. `orchestrator.ts` needs its owner's sign-off.

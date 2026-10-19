@@ -2234,6 +2234,7 @@ export const BOOLEAN_ENV_FLAGS = [
   "SCREEN_BEST_MATCH_ENABLED",
   "VOLATILE_ID_DETECTION_ENABLED",
   "BUTTON_EXPLORER_ENABLED",
+  "HOLLOW_PASS_GUARDS_ENABLED",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

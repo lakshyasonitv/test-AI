@@ -61,8 +61,12 @@ export interface HealResult {
  * Deliberately NARROW. `element_missing` as a RUNTIME diagnosis stays healable: an element that
  * was there at discovery and gone at run time is precisely what heal exists for. What is excluded
  * is only the case where GROUNDING already refused, deterministically, before the test ever ran.
+ *
+ * `error-assertion` (TD-162, HOLLOW_PASS_GUARDS_ENABLED) is the same shape: the replayed flow ends on
+ * the page's own error, so a regeneration meets the same screen. Worse here, a deterministic heal that
+ * passed would turn an "incomplete" case into a passed run.
  */
-const UNHEALABLE_TRUNCATIONS = new Set(["navigate-url"]);
+const UNHEALABLE_TRUNCATIONS = new Set(["navigate-url", "error-assertion"]);
 
 /**
  * Does a run self-heal when the client says nothing about it?
