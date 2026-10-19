@@ -22,8 +22,11 @@ earlier commit and completed in the later one. Each commit type-checks on its ow
    test `volatileIds`.
 6. `6a4b23b` **feat: Phase 5, safe explorer (with the Screen Flow / Lightning-app rules).** `buttonExplorer.ts`
    (new), `orchestrator.ts`, `ir.ts`, `index.ts`; test `buttonExplorer`.
-7. (this commit) **docs:** README, DECISIONS D-56..D-60, TECH_DEBT TD-154..161, the phase reports,
+7. `6fbd5b6` **docs:** README, DECISIONS D-56..D-60, TECH_DEBT TD-154..161, the phase reports,
    `PLAN_RECORD_ONCE.md` (Phase 6, plan only), this summary.
+8. `c4b00ae` **fix(security): TD-156 edge case.** The cache redaction never rewrites ordinary text holding a short
+   credential. `credentials.ts`; two new cases in `llmCacheCredentials`.
+9. (this commit) **docs:** the final checks below.
 
 ## Flags (all default OFF; flag off = the old behaviour and cache keys)
 
@@ -48,7 +51,8 @@ The local `.env` currently has all four boolean flags ON (cumulative, per the pl
 | Before (`b12013f`, untouched) | clean | 2279 / 8 / 23 | 169 |
 | After the TD-154/156 event fix (Session 77) | clean | 2286 / 8 / 23 | 171 |
 | After Phases 1–5 (Session 79) | clean | 2329 / 7 / 23 | 177 |
-| **After the review fixes** (TD-156 cache, Phase 4 fallback, Phase 5 flow safety) | clean | **2335 / 8 / 23** | 178 |
+| After the review fixes (TD-156 cache, Phase 4 fallback, Phase 5 flow safety) | clean | 2335 / 8 / 23 | 178 |
+| **After the TD-156 edge-case fix (final)** | clean | **2337 / 8 / 23** | 178 |
 
 Why the numbers moved:
 - **2279 vs 2286:** 2279 is the untouched commit, and 2286 is after the first leak fix (+7 tests). Both are
@@ -117,6 +121,83 @@ and took the long right path.
 The per-run ledger is `project-brain/topics/discovery-upgrade-performance.md`; the per-phase reports are
 `docs/phases/PHASE_*`.
 
+## Final checks before sharing (2026-10-19)
+
+### Mutation sweep on the final committed code
+
+Several edits were made through a shell that collapses `\\` to `\`, which silently broke two regexes and one test
+assertion before they were committed. So every phase's core logic was broken on purpose, one line at a time, against
+the FINAL code. Each change was confirmed to have landed, its tests were run, and it was restored with
+`git checkout` (the tree was clean afterwards). **18 of 18 caught:**
+
+| Phase | Mutation | Caught by (first failing test) |
+|---|---|---|
+| TD-154 | events written without the scrub (`runStore.append`) | eventCredentialScrub › credentials typed into the run's prompt form are scrubbed… |
+| TD-156 | `llmCacheSet` without `cacheSafe` | llmCacheCredentials › the stored body on disk has the env reference, not the value |
+| TD-156 | long values matched as a substring, not a whole token | llmCacheCredentials › a LONG credential is replaced as a whole token… |
+| TD-156 | short values matched anywhere, not only quoted | llmCacheCredentials › a SHORT or common credential does not rewrite ordinary text… |
+| TD-156 | real-credential fill left literal (`applyCredentials`) | literalCredentialFill › negative case (policy none): the real password becomes the env reference… |
+| Phase 1 | long-poll never recognised by shape | networkSettle › a never-ending CometD long-poll is ignored by its shape… |
+| Phase 1 | no settle before the snapshot | networkSettle › [cheerio] a field loaded by a delayed fetch is missed with the flag OFF and captured with it ON |
+| Phase 1 | a second tracker per page | networkSettle (3 tests fail) |
+| Phase 1 (TD-158) | visibility check disabled | irRevealVisibility › flag ON: a target still hidden after the click is rejected… |
+| Phase 2 | `:visible` on the last comma alternative only | hiddenDialogScope › live resolver: hidden backdrop + hidden role=dialog → the scope is the page body (4 fail) |
+| Phase 3 | always the first match | screenBestMatch › flag ON: step 2 is replaced and step 1 is untouched |
+| Phase 4 | volatile id never dropped | volatileIds › flag ON, ordinary site: … the second marks the id volatile and drops it |
+| Phase 4 | stable id put FIRST again | volatileIds › flag ON, Salesforce: a stable numbered id is only a FALLBACK… |
+| Phase 5 | deny list off | buttonExplorer › the policy: deny always wins… |
+| Phase 5 | submit-in-form check off | buttonExplorer › finds the tab's screen, the dialog and the new page; never deletes, never submits |
+| Phase 5 | network guard off | buttonExplorer › the network guard aborts a form POST even when the clicked control was allowed |
+| Phase 5 | Screen Flow deny off | buttonExplorer › Salesforce safety: a Lightning app's Next/Finish and anything inside a Screen Flow… |
+| Phase 5 | Lightning-app Next/Finish deny off | buttonExplorer › Salesforce safety: … (the same test) |
+
+### Regex / escape audit of all added code
+
+Every line ADDED to `src/` and `tests/` across the commits (`git diff b12013f..HEAD`) was scanned for:
+- control bytes: **0**;
+- damage shapes: `d+` / `s*` / `w+` with a lost backslash, a host regex starting with a bare `.`, and `\b` inside
+  a string.
+
+All **26** added regex literals and `new RegExp(...)` calls were then read one by one. They are correct:
+- `/\.lightning\.force\.com$/`, `/-\d+$/`, `/^\w+-\d+-\d+$/`;
+- `LONG_LIVED_URL` (`\/cometd\b|…|\/socket(?:\.io)?\b`), `/"connectionType"\s*:\s*"long-polling"/`;
+- `escapeRegExp`'s `/[.*+?^${}()|[\]\\]/g`, the whole-token `(?<![A-Za-z0-9_])…(?![A-Za-z0-9_])`, and the
+  quoted-value backreference `\\1` in a template literal;
+- the test assertions `/^#save-\d+$/`, `/open-\d+/`.
+
+The only two flags were `"\\b(delete|…)\\b"` in `DENY_NAME`: ordinary JS strings, where `"\\b"` correctly becomes
+a `\b` word boundary in the RegExp (and the deny-list mutation above proves it works).
+
+### TD-156 edge case: short or common credentials
+
+The redaction used to replace the credential as a SUBSTRING of the serialised whole. With password `test`, "Run the
+test suite" became "Run the ${env:TEST_PASSWORD} suite", and a long value rewrote longer words
+(`secret_saucepan`). Fixed in `c4b00ae`, matching per string value:
+- a value that IS the credential is replaced;
+- inside text, a value of 8+ characters only as a whole token, and a shorter one only where quoted (`'test'`),
+  which is how a model writes a typed value.
+
+The minimum length (4) and the keyword list are unchanged, so a username like `admin` is never treated as a secret.
+That is the safe direction for text, but it means such a username can stay in a cache. Two new tests failed before
+the fix.
+
+### Phase 4 live proof (fallback rule)
+
+Two Salesforce runs with ONLY `VOLATILE_ID_DETECTION_ENABLED=true`: a warm-up with all caches cleared, then a
+measured run with only the llm cache cleared.
+
+| | before the fallback rule (P4 measured) | **with it** (warm-up / measured) |
+|---|---|---|
+| Locators on numbered ids | 12/42 | **0/35 / 0/39** |
+| Stable ids restored as candidates | 27 | 24 / 18 |
+| Primary | pass* | fail / **pass*** |
+| Cases gen / pass / fail | 4/4/0 | 4/2/1 +1t / 4/3/0 +1t |
+
+The stable ids are still offered, but every step found a unique role/label locator first, so none was used. Runs:
+warm-up `2026-10-19T11-32-18-843Z-6f4032c0`, measured `2026-10-19T11-42-47-107Z-a7839359`. The flag was turned off
+again in `.env` afterwards (the line removed, the file's original ending restored). Password grep afterwards: 0 hits
+in `runs/`.
+
 ## Found but not fixed
 
 | Id | What | Severity |
@@ -131,7 +212,7 @@ The per-run ledger is `project-brain/topics/discovery-upgrade-performance.md`; t
 | TD-159 | Replays move on right after a click, so a request it started can be aborted (empty cart) | Low |
 | TD-160 | `firstUnique`'s `:visible` narrowing is a no-op (latent; a later rung compensates) | Low |
 | TD-161 | A truncated best attempt can ship a vacuous assertion, and the generator then errors the whole run | Medium |
-| — | Phase 4 trusts a pattern-looking Lightning id after 2 identical sightings; render-order changes could shift it. **Reduced in review:** a stable id is now only a fallback, after role/label locators (live counts above predate this; no live re-run) | Risk (reduced) |
+| — | Phase 4 trusts a pattern-looking Lightning id after 2 identical sightings; render-order changes could shift it. **Reduced in review:** a stable id is now only a fallback, after role/label locators. Proven live: 12/42 → 0/39 generated-id locators | Risk (reduced) |
 | — | **Before enabling the explorer on a real Lightning ORG:** "Next" is on the allow list, and the network guard blocks only non-GET NAVIGATIONS. Aura writes data through POST XHR, so a Screen Flow that commits records between screens would not be stopped: only the name lists stand in the way, and "Next" passes them. Tested only on Experience Cloud (LS-7 open). **Mitigated in review:** no control inside `lightning-flow` / `flowruntime-*` (through shadow roots) is ever clicked, "Next"/"Finish" are denied on Lightning-app URLs, and the README says the explorer must stay OFF against production orgs (Chromium test: 0 flow clicks counted by the server) | Risk (mitigated) |
 | — | With `TEST_USERNAME`/`TEST_PASSWORD` set globally, `store.read` stringifies and parses each run's whole event log on every `/state` poll and every `/api/runs` listing (the TD-154 scrub) | Perf |
 | — | Phase 3's effect is not measurable from the logs: log which screen a capture replaced and its overlap | Measurement gap |

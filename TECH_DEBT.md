@@ -5846,3 +5846,13 @@ requestvalues), `makeCacheKey` (the key's INPUT, before hashing) and the app-mod
 `tests/llmCacheCredentials.test.ts`: 3 of 4 FAILED before (the body on disk, the key input and the discovery cache all
 carried the canary). Clean-up grep over the whole `testbench/` tree: two old backup entries (a walk snapshot of
 SauceDemo's login page and one model answer) were rewritten the same way; 0 hits now, apart from `.env` itself.
+
+**TD-156 edge case fixed (`c4b00ae`).** The cache redaction replaced the credential as a SUBSTRING of the
+serialised whole, so a short or common password (`test`) rewrote ordinary text ("Run the test suite") and a long one
+rewrote longer words (`secret_saucepan`). It now matches per string value:
+- a value that IS the credential is replaced;
+- inside text, a value of 8+ characters only as a whole token, and a shorter one only where quoted (`'test'`).
+
+Unchanged: the 4-character minimum and the DOM-keyword skip, so a username such as `admin` is never treated as a
+secret (safe for text, but such a username can remain in a cache). `redactCredentials` (the event scrub, a
+`[redacted]` placeholder for display) still matches substrings; over-redacting a display copy is the safe direction.

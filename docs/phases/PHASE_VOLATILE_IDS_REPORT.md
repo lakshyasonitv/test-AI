@@ -123,4 +123,10 @@ It went UP on Salesforce once Phase 4 trusted stable ids, because the restored i
   - a new twin-button page (a page "Open" and a dialog "Open", both with stable ids, role + name not unique) gets
     `#open-12` / `#open-34` instead of the positional path, and each resolves to exactly 1 element;
   - mutation: putting the id first again fails the test.
-- The live counts above were taken BEFORE this change. No live re-run was made for it.
+- The live counts above were taken BEFORE this change.
+- **Live proof afterwards** (only `VOLATILE_ID_DETECTION_ENABLED` on; a warm-up with all caches cleared, then a
+  measured run with only the llm cache cleared):
+  - generated-id locators: warm-up **0/35**, measured **0/39** (was 12/42);
+  - stable ids still restored as candidates: 24 and 18 (every step found a unique role/label locator first);
+  - measured primary passed* (3 cases passed, 1 truncated).
+  - Runs: warm-up `2026-10-19T11-32-18-843Z-6f4032c0`, measured `2026-10-19T11-42-47-107Z-a7839359`.
