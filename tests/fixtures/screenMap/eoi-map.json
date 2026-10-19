@@ -1,0 +1,685 @@
+{
+ "version": 2,
+ "site": "org.example.my.site.com",
+ "screens": [
+  {
+   "key": "5aac58ba815d",
+   "url": "https://org.example.my.site.com/",
+   "title": "homes shaped by light,space, and craft.",
+   "tab": "",
+   "labels": [
+    "bedrooms",
+    "budget range",
+    "email address",
+    "emirate",
+    "full name",
+    "phone number",
+    "property type"
+   ],
+   "controls": [
+    {
+     "role": "link",
+     "name": "Skip to Main"
+    },
+    {
+     "role": "button",
+     "name": "Hello, have a question? Let’s chat."
+    },
+    {
+     "role": "link",
+     "name": "Projects"
+    },
+    {
+     "role": "link",
+     "name": "Residences"
+    },
+    {
+     "role": "link",
+     "name": "About"
+    },
+    {
+     "role": "link",
+     "name": "Journal"
+    },
+    {
+     "role": "link",
+     "name": "Contact"
+    },
+    {
+     "role": "button",
+     "name": "Book a Viewing"
+    },
+    {
+     "role": "button",
+     "name": "Explore Projects"
+    },
+    {
+     "role": "link",
+     "name": "Our Story"
+    },
+    {
+     "role": "button",
+     "name": "Search"
+    },
+    {
+     "role": "combobox",
+     "name": "Property Type"
+    },
+    {
+     "role": "combobox",
+     "name": "Budget Range"
+    },
+    {
+     "role": "combobox",
+     "name": "Bedrooms"
+    },
+    {
+     "role": "combobox",
+     "name": "Emirate"
+    },
+    {
+     "role": "link",
+     "name": "View All Projects"
+    },
+    {
+     "role": "button",
+     "name": "View Project"
+    },
+    {
+     "role": "button",
+     "name": "Download Brochure"
+    },
+    {
+     "role": "textbox",
+     "name": "Full Name"
+    },
+    {
+     "role": "textbox",
+     "name": "Email Address"
+    },
+    {
+     "role": "combobox",
+     "name": "Phone Number"
+    },
+    {
+     "role": "textbox",
+     "name": "Phone Number"
+    },
+    {
+     "role": "button",
+     "name": "Next"
+    },
+    {
+     "role": "link",
+     "name": "Careers"
+    },
+    {
+     "role": "link",
+     "name": "Privacy Policy"
+    },
+    {
+     "role": "link",
+     "name": "Terms of Service"
+    },
+    {
+     "role": "link",
+     "name": "+00 0000000000"
+    },
+    {
+     "role": "link",
+     "name": "contact@example.com"
+    }
+   ],
+   "seen": 1,
+   "lastSeen": "2026-10-15T17:55:00.000Z"
+  },
+  {
+   "key": "8a5937275c1e",
+   "url": "https://org.example.my.site.com/project-details?id=a51PROJECT",
+   "title": "the sanctuary",
+   "tab": "",
+   "labels": [
+    "+00 0000000000",
+    "about",
+    "all units",
+    "available only",
+    "book a viewing",
+    "careers",
+    "contact",
+    "download brochure",
+    "express interest",
+    "hello, have a question? let’s chat.",
+    "journal",
+    "contact@example.com",
+    "privacy policy",
+    "projects",
+    "residences",
+    "schedule consultation",
+    "select for eoi",
+    "selected",
+    "skip to main",
+    "terms of service",
+    "{\"attributes\":{\"isguest\":true}}dubai, uaeresidential · off plan · sellingthe sanctuaryan architectural statement composed with full-height glazing and interiors shaped by natural materials, delivered to the highest standard of craft.download brochureproject codesanc-dhactive buildings1total sub-floors2market livedownload brochureavailable units50 unitsall unitsavailable onlyactive phasegarden villasactivebuilding codesanc-gvtotal floors2total units50unit detailsspecificationspricingavailabilityactionv-101villasanctuary villa 1013,200 sqft3 bedroomsaed 2,500,000est. $680,735bookedselect for eoiv-102villasanctuary villa 1023,210 sqft3 bedroomsaed 2,510,000est. $683,458availableselect for eoiv-103villasanctuary villa 1033,220 sqft3 bedroomsaed 2,520,000est. $686,181availableselect for eoiv-104villasanctuary villa 1043,230 sqft3 bedroomsaed 2,530,000est. $688,904availableselectedv-105villasanctuary villa 1053,240 sqft3 bedroomsaed 2,540,000est. $691,627availableselect for eoiv-106villasanctuary villa 1063,250 sqft3 bedroomsaed 2,550,000est. $694,350availableselect for eoiv-107villasanctuary villa 1073,260 sqft3 bedroomsaed 2,560,000est. $697,073availableselect for eoiv-108villasanctuary villa 1083,270 sqft3 bedroomsaed 2,570,000est. $699,796availableselect for eoiv-109villasanctuary villa 1093,280 sqft3 bedroomsaed 2,580,000est. $702,519availableselect for eoiv-110villasanctuary villa 1103,290 sqft3 bedroomsaed 2,590,000est. $705,242availableselect for eoiv-111villasanctuary villa 1113,300 sqft3 bedroomsaed 2,600,000est. $707,965availableselect for eoiv-112villasanctuary villa 1123,310 sqft3 bedroomsaed 2,610,000est. $710,688availableselect for eoiv-113villasanctuary villa 1133,320 sqft3 bedroomsaed 2,620,000est. $713,410availableselect for eoiv-114villasanctuary villa 1143,330 sqft3 bedroomsaed 2,630,000est. $716,133availableselect for eoiv-115villasanctuary villa 1153,340 sqft3 bedroomsaed 2,640,000est. $718,856availableselect for eoiv-116villasanctuary villa 1163,350 sqft3 bedroomsaed 2,650,000est. $721,579availableselect for eoiv-117villasanctuary villa 1173,360 sqft3 bedroomsaed 2,660,000est. $724,302availableselect for eoiv-118villasanctuary villa 1183,370 sqft3 bedroomsaed 2,670,000est. $727,025availableselect for eoiv-119villasanctuary villa 1193,380 sqft3 bedroomsaed 2,680,000est. $729,748availableselect for eoiv-120villasanctuary villa 1203,390 sqft3 bedroomsaed 2,690,000est. $732,471availableselect for eoiv-121villasanctuary villa 1213,400 sqft3 bedroomsaed 2,700,000est. $735,194availableselect for eoiv-122villasanctuary villa 1223,410 sqft3 bedroomsaed 2,710,000est. $737,917availableselect for eoiv-123villasanctuary villa 1233,420 sqft3 bedroomsaed 2,720,000est. $740,640availableselect for eoiv-124villasanctuary villa 1243,430 sqft3 bedroomsaed 2,730,000est. $743,363availableselect for eoiv-125villasanctuary villa 1253,440 sqft3 bedroomsaed 2,740,000est. $746,086availableselect for eoiv-126villasanctuary villa 1263,450 sqft3 bedroomsaed 2,750,000est. $748,809availableselect for eoiv-127villasanctuary villa 1273,460 sqft3 bedroomsaed 2,760,000est. $751,532availableselect for eoiv-128villasanctuary villa 1283,470 sqft3 bedroomsaed 2,770,000est. $754,255availableselect for eoiv-129villasanctuary villa 1293,480 sqft3 bedroomsaed 2,780,000est. $756,978availableselect for eoiv-130villasanctuary villa 1303,490 sqft3 bedroomsaed 2,790,000est. $759,700availableselect for eoiv-131villasanctuary villa 1313,500 sqft3 bedroomsaed 2,800,000est. $762,423availableselect for eoiv-132villasanctuary villa 1323,510 sqft3 bedroomsaed 2,810,000est. $765,146availableselect for eoiv-133villasanctuary villa 1333,520 sqft3 bedroomsaed 2,820,000est. $767,869availableselect for eoiv-134villasanctuary villa 1343,530 sqft3 bedroomsaed 2,830,000est. $770,592availableselect for eoiv-135villasanctuary villa 1353,540 sqft3 bedroomsaed 2,840,000est. $773,315availableselect for eoiv-136villasanctuary villa 1363,550 sqft3 bedroomsaed 2,850,000est. $776,038availableselect for eoiv-137villasanctuary villa 1373,560 sqft3 bedroomsaed 2,860,000est. $778,761availableselect for eoiv-138villasanctuary villa 1383,570 sqft3 bedroomsaed 2,870,000est. $781,484availableselect for eoiv-139villasanctuary villa 1393,580 sqft3 bedroomsaed 2,880,000est. $784,207availableselect for eoiv-140villasanctuary villa 1403,590 sqft3 bedroomsaed 2,890,000est. $786,930availableselect for eoiv-141villasanctuary villa 1413,600 sqft3 bedroomsaed 2,900,000est. $789,653availableselect for eoiv-142villasanctuary villa 1423,610 sqft3 bedroomsaed 2,910,000est. $792,376availableselect for eoiv-143villasanctuary villa 1433,620 sqft3 bedroomsaed 2,920,000est. $795,099availableselect for eoiv-144villasanctuary villa 1443,630 sqft3 bedroomsaed 2,930,000est. $797,822availableselect for eoiv-145villasanctuary villa 1453,640 sqft3 bedroomsaed 2,940,000est. $800,545availableselect for eoiv-146villasanctuary villa 1463,650 sqft3 bedroomsaed 2,950,000est. $803,268availableselect for eoiv-147villasanctuary villa 1473,660 sqft3 bedroomsaed 2,960,000est. $805,990availableselect for eoiv-148villasanctuary villa 1483,670 sqft3 bedroomsaed 2,970,000est. $808,713availableselect for eoiv-149villasanctuary villa 1493,680 sqft3 bedroomsaed 2,980,000est. $811,436availableselect for eoiv-150villasanctuary villa 1503,690 sqft3 bedroomsaed 2,990,000est. $814,159availableselect for eoiexpress interestselected unitv-104villa3 bedrooms·3,230 sqftcurrent selling priceaed 2,530,000refundable token commitment fee5% of selling priceaed 126,500fully refundable if this does not convert to a confirmed booking within the allocation window.express interestagent conciergeinvestment advisoryglobal investment directorschedule consultation\"redefining the global standard for luxury living — where architectural rigour meets untamed ambition.\"{\"type\":\"comm__namedpage\",\"url\":\"https://th1790674436190--realestate.sandbox.my.site.com/project-details?id=a51ig000000dle3aak\",\"urlreferrer\":\"\"}"
+   ],
+   "controls": [
+    {
+     "role": "link",
+     "name": "Skip to Main"
+    },
+    {
+     "role": "button",
+     "name": "Hello, have a question? Let’s chat."
+    },
+    {
+     "role": "link",
+     "name": "Projects"
+    },
+    {
+     "role": "link",
+     "name": "Residences"
+    },
+    {
+     "role": "link",
+     "name": "About"
+    },
+    {
+     "role": "link",
+     "name": "Journal"
+    },
+    {
+     "role": "link",
+     "name": "Contact"
+    },
+    {
+     "role": "button",
+     "name": "Book a Viewing"
+    },
+    {
+     "role": "button",
+     "name": "Download Brochure"
+    },
+    {
+     "role": "button",
+     "name": "All Units"
+    },
+    {
+     "role": "button",
+     "name": "Available Only"
+    },
+    {
+     "role": "button",
+     "name": "Select for EOI",
+     "enabled": false
+    },
+    {
+     "role": "button",
+     "name": "Select for EOI"
+    },
+    {
+     "role": "button",
+     "name": "Selected"
+    },
+    {
+     "role": "button",
+     "name": "Express Interest"
+    },
+    {
+     "role": "button",
+     "name": "Schedule Consultation"
+    },
+    {
+     "role": "link",
+     "name": "Careers"
+    },
+    {
+     "role": "link",
+     "name": "Privacy Policy"
+    },
+    {
+     "role": "link",
+     "name": "Terms of Service"
+    },
+    {
+     "role": "link",
+     "name": "+00 0000000000"
+    },
+    {
+     "role": "link",
+     "name": "contact@example.com"
+    }
+   ],
+   "seen": 1,
+   "lastSeen": "2026-10-15T17:55:01.000Z"
+  },
+  {
+   "key": "e17c131be715",
+   "url": "https://org.example.my.site.com/project-details?id=a51PROJECT",
+   "title": "the sanctuary",
+   "tab": "",
+   "labels": [
+    "email address",
+    "full name",
+    "phone number"
+   ],
+   "controls": [
+    {
+     "role": "link",
+     "name": "Skip to Main"
+    },
+    {
+     "role": "button",
+     "name": "Hello, have a question? Let’s chat."
+    },
+    {
+     "role": "link",
+     "name": "Projects"
+    },
+    {
+     "role": "link",
+     "name": "Residences"
+    },
+    {
+     "role": "link",
+     "name": "About"
+    },
+    {
+     "role": "link",
+     "name": "Journal"
+    },
+    {
+     "role": "link",
+     "name": "Contact"
+    },
+    {
+     "role": "button",
+     "name": "Book a Viewing"
+    },
+    {
+     "role": "button",
+     "name": "Download Brochure"
+    },
+    {
+     "role": "button",
+     "name": "All Units"
+    },
+    {
+     "role": "button",
+     "name": "Available Only"
+    },
+    {
+     "role": "button",
+     "name": "Select for EOI",
+     "enabled": false
+    },
+    {
+     "role": "button",
+     "name": "Select for EOI"
+    },
+    {
+     "role": "button",
+     "name": "Selected"
+    },
+    {
+     "role": "button",
+     "name": "Express Interest"
+    },
+    {
+     "role": "button",
+     "name": "Schedule Consultation"
+    },
+    {
+     "role": "button",
+     "name": "Close"
+    },
+    {
+     "role": "button",
+     "name": "← Return to site"
+    },
+    {
+     "role": "textbox",
+     "name": "Full Name"
+    },
+    {
+     "role": "textbox",
+     "name": "Email Address"
+    },
+    {
+     "role": "combobox",
+     "name": "Phone Number"
+    },
+    {
+     "role": "textbox",
+     "name": "Phone Number"
+    },
+    {
+     "role": "button",
+     "name": "Next"
+    },
+    {
+     "role": "link",
+     "name": "Careers"
+    },
+    {
+     "role": "link",
+     "name": "Privacy Policy"
+    },
+    {
+     "role": "link",
+     "name": "Terms of Service"
+    },
+    {
+     "role": "link",
+     "name": "+00 0000000000"
+    },
+    {
+     "role": "link",
+     "name": "contact@example.com"
+    }
+   ],
+   "seen": 1,
+   "lastSeen": "2026-10-15T17:55:02.000Z"
+  },
+  {
+   "key": "b8b2751745d0",
+   "url": "https://org.example.my.site.com/project-details?id=a51PROJECT",
+   "title": "the sanctuary",
+   "tab": "",
+   "labels": [
+    "buying timeline",
+    "max budget (aed)",
+    "min budget (aed)"
+   ],
+   "controls": [
+    {
+     "role": "link",
+     "name": "Skip to Main"
+    },
+    {
+     "role": "button",
+     "name": "Hello, have a question? Let’s chat."
+    },
+    {
+     "role": "link",
+     "name": "Projects"
+    },
+    {
+     "role": "link",
+     "name": "Residences"
+    },
+    {
+     "role": "link",
+     "name": "About"
+    },
+    {
+     "role": "link",
+     "name": "Journal"
+    },
+    {
+     "role": "link",
+     "name": "Contact"
+    },
+    {
+     "role": "button",
+     "name": "Book a Viewing"
+    },
+    {
+     "role": "button",
+     "name": "Download Brochure"
+    },
+    {
+     "role": "button",
+     "name": "All Units"
+    },
+    {
+     "role": "button",
+     "name": "Available Only"
+    },
+    {
+     "role": "button",
+     "name": "Select for EOI",
+     "enabled": false
+    },
+    {
+     "role": "button",
+     "name": "Selected"
+    },
+    {
+     "role": "button",
+     "name": "Select for EOI"
+    },
+    {
+     "role": "button",
+     "name": "Express Interest"
+    },
+    {
+     "role": "button",
+     "name": "Schedule Consultation"
+    },
+    {
+     "role": "button",
+     "name": "Close"
+    },
+    {
+     "role": "button",
+     "name": "← Return to site"
+    },
+    {
+     "role": "button",
+     "name": "Self Use"
+    },
+    {
+     "role": "button",
+     "name": "Investment"
+    },
+    {
+     "role": "spinbutton",
+     "name": "Min Budget (AED)"
+    },
+    {
+     "role": "spinbutton",
+     "name": "Max Budget (AED)"
+    },
+    {
+     "role": "combobox",
+     "name": "Buying Timeline"
+    },
+    {
+     "role": "button",
+     "name": "Back"
+    },
+    {
+     "role": "button",
+     "name": "Next"
+    },
+    {
+     "role": "link",
+     "name": "Careers"
+    },
+    {
+     "role": "link",
+     "name": "Privacy Policy"
+    },
+    {
+     "role": "link",
+     "name": "Terms of Service"
+    },
+    {
+     "role": "link",
+     "name": "+00 0000000000"
+    },
+    {
+     "role": "link",
+     "name": "contact@example.com"
+    }
+   ],
+   "seen": 1,
+   "lastSeen": "2026-10-15T17:55:03.000Z"
+  },
+  {
+   "key": "779aae4b65a1",
+   "url": "https://org.example.my.site.com/project-details?id=a51PROJECT",
+   "title": "the sanctuary",
+   "tab": "",
+   "labels": [
+    "preferred areas",
+    "preferred project",
+    "preferred unit type"
+   ],
+   "controls": [
+    {
+     "role": "link",
+     "name": "Skip to Main"
+    },
+    {
+     "role": "button",
+     "name": "Hello, have a question? Let’s chat."
+    },
+    {
+     "role": "link",
+     "name": "Projects"
+    },
+    {
+     "role": "link",
+     "name": "Residences"
+    },
+    {
+     "role": "link",
+     "name": "About"
+    },
+    {
+     "role": "link",
+     "name": "Journal"
+    },
+    {
+     "role": "link",
+     "name": "Contact"
+    },
+    {
+     "role": "button",
+     "name": "Book a Viewing"
+    },
+    {
+     "role": "button",
+     "name": "Download Brochure"
+    },
+    {
+     "role": "button",
+     "name": "All Units"
+    },
+    {
+     "role": "button",
+     "name": "Available Only"
+    },
+    {
+     "role": "button",
+     "name": "Select for EOI",
+     "enabled": false
+    },
+    {
+     "role": "button",
+     "name": "Selected"
+    },
+    {
+     "role": "button",
+     "name": "Select for EOI"
+    },
+    {
+     "role": "button",
+     "name": "Express Interest"
+    },
+    {
+     "role": "button",
+     "name": "Schedule Consultation"
+    },
+    {
+     "role": "button",
+     "name": "Close"
+    },
+    {
+     "role": "button",
+     "name": "← Return to site"
+    },
+    {
+     "role": "combobox",
+     "name": "Preferred Project"
+    },
+    {
+     "role": "combobox",
+     "name": "Preferred Areas"
+    },
+    {
+     "role": "combobox",
+     "name": "Preferred Unit Type"
+    },
+    {
+     "role": "button",
+     "name": "Back"
+    },
+    {
+     "role": "button",
+     "name": "Submit"
+    },
+    {
+     "role": "link",
+     "name": "Careers"
+    },
+    {
+     "role": "link",
+     "name": "Privacy Policy"
+    },
+    {
+     "role": "link",
+     "name": "Terms of Service"
+    },
+    {
+     "role": "link",
+     "name": "+00 0000000000"
+    },
+    {
+     "role": "link",
+     "name": "contact@example.com"
+    }
+   ],
+   "seen": 1,
+   "lastSeen": "2026-10-15T17:55:04.000Z"
+  }
+ ],
+ "edges": [
+  {
+   "from": null,
+   "action": {
+    "role": "button",
+    "name": "Explore Projects"
+   },
+   "to": "5aac58ba815d",
+   "seen": 1
+  },
+  {
+   "from": "8a5937275c1e",
+   "action": {
+    "role": "button",
+    "name": "Express Interest"
+   },
+   "to": "e17c131be715",
+   "seen": 1
+  },
+  {
+   "from": "e17c131be715",
+   "action": {
+    "role": "button",
+    "name": "Next"
+   },
+   "to": "b8b2751745d0",
+   "seen": 1
+  },
+  {
+   "from": "b8b2751745d0",
+   "action": {
+    "role": "button",
+    "name": "Next"
+   },
+   "to": "779aae4b65a1",
+   "seen": 1
+  }
+ ]
+}

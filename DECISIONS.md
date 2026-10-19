@@ -1590,51 +1590,6 @@ disagree about `.md`; the bytes and the extension decide). A PDF parsing library
 the PDF). A field on the run-state response for warnings (a bare array `app.js` reads in many
 places).
 
-## D-54. Salesforce org login hardening reuses the existing login and only prepares and explains it
-
-**Decision.** On a run with "This URL is a Salesforce org" ticked (`currentRunTargetApp() ===
-"salesforce"`, D-50), discovery now (1) refuses any URL that is not a scratch org or a sandbox
-before a browser is launched, (2) aborts requests to `c.salesforce.com` on its one shared page,
-(3) clicks "Log In with Username" when Salesforce shows its email-first screen and waits for the
-username form, (4) gives a one-screen form 2.5 s to draw its password box, and (5) explains a failed
-login — wrong credentials (with the sandbox-username hint), verification code, forced password
-change, single sign-on — from the page's structure. All of it is in `src/stages/salesforceOrgLogin.ts`;
-`hybridDiscovery.ts` calls it only behind `salesforceRun()`. Unticked, no new code runs.
-
-**What was deliberately NOT built, though a brief asked for it.** A brief for this work proposed a
-new login routine, a new `options.salesforce` field, a new checkbox and a crawl host-filter change.
-All but the routine already existed: the checkbox and `options.targetApp` (D-50), two-screen login
-(D-45/D-46), the cross-host crawl (`relatedHosts`, D-47) and `isSameSite` across hosts. The routine
-was not built either, because replacing `loginOnPage` would drop the `loginSteps` it records — the
-steps the generated spec replays so each test logs itself in (D-24). Copying a login routine into
-`generator.ts` instead was considered and rejected for now: it contradicts D-24 (one login, injected
-into the IR once, not duplicated into the generator) and would touch files another stream is
-editing (`docs/handoff/HANDOFF_SCREEN_MAP_AND_LOCATORS.md`). The cases it would cover (a fresh browser
-shown the email-first screen) are unverified; TD-130 records the check to make on the first real-org run.
-
-**Why the slow-form wait is Salesforce-only.** `loginOnPage` decides one-screen vs two-screen with
-one instant count of password boxes. A real-Chromium test (`tests/salesforceOrgLogin.test.ts`, 8c
-control) shows a one-screen form that draws its password box late is submitted with an EMPTY
-password first. Waiting before `loginOnPage` runs fixes it for Salesforce without changing
-`loginOnPage`, which every other site still uses — the fix for all sites is TD-131.
-
-**The guard fails closed.** Production (`*.my.salesforce.com` without `.scratch.`/`.sandbox.`) and
-anything unrecognised are refused — including Developer Edition, `login.salesforce.com`,
-`test.salesforce.com`, legacy `cs##` hosts and custom domains. That refuses some legitimate test
-orgs; the message names the host and says why. A `.sandbox.` label outside Salesforce's own domains
-is not a sandbox.
-
-**Structure, not wording.** Failure reasons are decided by which inputs exist and where the address
-points, never by Salesforce's error text (CLAUDE.md's central rule, D-49). The verification-code
-detector `codeEntryField` moved from `src/server/salesforceLogin.ts` into the new file, unchanged —
-discovery needs it, and a stage importing that server module would be an import cycle. The one
-label match is the "Log In with Username" control, which is how a control to CLICK is found (like
-`AUTH_VERB_TEXT`); no outcome is decided from it.
-
-**Rejected.** The ad block in `browserLaunch.ts` (it would apply to every run). Blocking
-`*.edgesuite.net` (Akamai's shared CDN). Logging in once and reusing the session across test cases
-(D-23: a saved session is a live token, and it would be written under `runs/`).
-
 ## D-37. Phase 2 logging: the FIXES are always on, the new OUTPUT is behind one flag
 
 **Decision.** Two different things were in scope for the logging-hardening phase and they are
@@ -1688,3 +1643,120 @@ about. *Gate the startup count removal behind the flag too.* Then the default pr
 it; but leaving it ungated would change the flag-off startup log and break the phase gates, so the
 count stays where it always was and only the *new* block is presence-only.
 
+## D-54. The Salesforce screen map is a disk-cache namespace of HINTS, never grounding evidence
+
+**Decision.** Behind `SCREEN_MAP_ENABLED` (default off), a Salesforce run remembers every screen its live
+captures reach, and the click that led from one screen to the next. They are stored per site, per
+organisation (`llmCacheDimension("main")`) and per login (`credentialFingerprint`), in the disk cache's
+`screenmap` namespace (`src/stages/screenMap.ts`). The next run's IR prompt lists those screens from its
+FIRST attempt. Each line is marked "from an earlier run — may have changed" and says which click opens
+it. Nothing else reads the map. A run's own additions are written to `runs/<id>/09-screen-map.json`.
+
+**Why hints and not evidence.** On Lightning and Experience Cloud a screen changes between sessions
+(generated ids, record data, permission-dependent controls). Grounding a step against a stored screen
+would let a stale map produce a test that cannot run. As a hint, a stale map costs at most one retry:
+the model writes a name, grounding still checks it against a live capture of THIS run, and a wrong name
+is rejected exactly as before. Correctness is unchanged; what improves is the model writing the right
+steps first time.
+
+**Why the disk cache and not the database.**
+- It is the same place discovery walks already live, keyed the same way, with no migration and no new
+  table.
+- The map is a cache by nature: losing it costs one slower run.
+- A 7-day TTL (`SCREEN_MAP_TTL_MS`) is enforced on read, because the disk cache itself never expires.
+
+**Names only.** A control is role + name (+ disabled). Never css, testId or ids, which are session-bound
+on Lightning. Everything is passed through `redactCredentials` before it is written.
+
+**Rejected.**
+- Skipping captures when the map predicts the next screen. That stays a later optimisation; this
+  phase only logs `[ir] screen map predicts`.
+- A database table: it needs a migration and a tenancy story for no gain over the cache keys.
+- Storing selectors: they are wrong on the next session.
+
+**Addition beyond the handoff.** Each stored screen's line also names the click that opens it
+(`opened by clicking button "Next"`). The minimal-prompt run `2026-10-15T16-39-13` failed because
+the model never added the click that opens a form, even when told the button existed. The edge is
+exactly that fact, and it is still only a hint.
+
+## D-55. On a Salesforce run, locators come from role + accessible name and label text, not generated ids or positions
+
+**Decision.** On a Salesforce run only (`currentRunTargetApp() === "salesforce"`, passed INTO the
+in-page walker as an argument, TD-40), the live walker's selector ladder becomes:
+1. `data-test` / `data-testid` / `data-qa`.
+2. `#id`, **unless the id looks generated** (`/-d+$/` or `/^w+-d+-d+$/`, as in Lightning's
+   `input-145`, `combobox-button-12-34`). The same rule applies to the positional path's anchor id.
+3. `tag[name]`, `tag[aria-label]`.
+4. **`role=<role>[name="<accessible name>"s]`**: Playwright's role engine, exact and case-sensitive,
+   which pierces open shadow roots.
+5. **`<tag>:below(:text("<label>"))` / `:right-of(...)`** for a field with no accessible name.
+6. The positional path.
+
+Tiers 4 and 5 are Playwright engines, so they are never checked natively: `verifyWithPlaywright` now
+runs on every Salesforce walk and keeps a candidate only if it matches exactly one element, and that
+element is the walked node. An ordinary walk is byte-identical (fixture captured from the walker before
+the change).
+
+**Why.** Lightning numbers element ids per session, so `#email-145` is `#email-146` on the next load, and
+a positional path breaks on any layout change. Role + name is what a person reads, and it survives both.
+A real-Chromium test re-renders the form with new ids and fills the field through the emitted css, and
+through the generated spec's own expression.
+
+**Rejected.**
+- `:near()`: too loose, it can match a neighbour.
+- Role + name without `s`: Playwright's default is a case-insensitive SUBSTRING match, so `Next` would
+  also match `Next step`.
+- Changing the ordinary ladder: there is no evidence it is needed, and it has fixtures pinning it.
+
+**Cache.** A Salesforce run's "walks" cache key gains `sf-locators:1`. Captures are cached forever, so
+without it the old ladder's selectors would be served back. Ordinary keys are unchanged.
+
+**Trade-off, filed as TD-133.** The generated-id pattern cannot tell `input-145` from a meaningful
+`unit-102`. On a Salesforce run both are skipped, and a control that is not unique by role + name (one
+"Select for EOI" per unit) falls back to the positional path. That path is still verified, but it is
+less durable than a meaningful id would have been.
+
+## D-56. Salesforce org login hardening reuses the existing login and only prepares and explains it
+
+**Decision.** On a run with "This URL is a Salesforce org" ticked (`currentRunTargetApp() ===
+"salesforce"`, D-50), discovery now (1) refuses any URL that is not a scratch org or a sandbox
+before a browser is launched, (2) aborts requests to `c.salesforce.com` on its one shared page,
+(3) clicks "Log In with Username" when Salesforce shows its email-first screen and waits for the
+username form, (4) gives a one-screen form 2.5 s to draw its password box, and (5) explains a failed
+login — wrong credentials (with the sandbox-username hint), verification code, forced password
+change, single sign-on — from the page's structure. All of it is in `src/stages/salesforceOrgLogin.ts`;
+`hybridDiscovery.ts` calls it only behind `salesforceRun()`. Unticked, no new code runs.
+
+**What was deliberately NOT built, though a brief asked for it.** A brief for this work proposed a
+new login routine, a new `options.salesforce` field, a new checkbox and a crawl host-filter change.
+All but the routine already existed: the checkbox and `options.targetApp` (D-50), two-screen login
+(D-45/D-46), the cross-host crawl (`relatedHosts`, D-47) and `isSameSite` across hosts. The routine
+was not built either, because replacing `loginOnPage` would drop the `loginSteps` it records — the
+steps the generated spec replays so each test logs itself in (D-24). Copying a login routine into
+`generator.ts` instead was considered and rejected for now: it contradicts D-24 (one login, injected
+into the IR once, not duplicated into the generator) and would touch files another stream is
+editing (`docs/handoff/HANDOFF_SCREEN_MAP_AND_LOCATORS.md`). The cases it would cover (a fresh browser
+shown the email-first screen) are unverified; TD-154 records the check to make on the first real-org run.
+
+**Why the slow-form wait is Salesforce-only.** `loginOnPage` decides one-screen vs two-screen with
+one instant count of password boxes. A real-Chromium test (`tests/salesforceOrgLogin.test.ts`, 8c
+control) shows a one-screen form that draws its password box late is submitted with an EMPTY
+password first. Waiting before `loginOnPage` runs fixes it for Salesforce without changing
+`loginOnPage`, which every other site still uses — the fix for all sites is TD-155.
+
+**The guard fails closed.** Production (`*.my.salesforce.com` without `.scratch.`/`.sandbox.`) and
+anything unrecognised are refused — including Developer Edition, `login.salesforce.com`,
+`test.salesforce.com`, legacy `cs##` hosts and custom domains. That refuses some legitimate test
+orgs; the message names the host and says why. A `.sandbox.` label outside Salesforce's own domains
+is not a sandbox.
+
+**Structure, not wording.** Failure reasons are decided by which inputs exist and where the address
+points, never by Salesforce's error text (CLAUDE.md's central rule, D-49). The verification-code
+detector `codeEntryField` moved from `src/server/salesforceLogin.ts` into the new file, unchanged —
+discovery needs it, and a stage importing that server module would be an import cycle. The one
+label match is the "Log In with Username" control, which is how a control to CLICK is found (like
+`AUTH_VERB_TEXT`); no outcome is decided from it.
+
+**Rejected.** The ad block in `browserLaunch.ts` (it would apply to every run). Blocking
+`*.edgesuite.net` (Akamai's shared CDN). Logging in once and reusing the session across test cases
+(D-23: a saved session is a live token, and it would be written under `runs/`).

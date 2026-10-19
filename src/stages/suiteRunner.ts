@@ -67,6 +67,33 @@ export function computeCaseStatus(
   return "passed";
 }
 
+/**
+ * computeCaseStatus for the REUSED primary case (TECH_DEBT.md TD-130).
+ *
+ * orchestrator.ts marks a truncated-without-assertion result `passed: false, status:
+ * "truncated_no_assertion"`, so the RUN can never read as a pass when nothing was verified. That
+ * is a statement about what was checked, not a runtime failure. But computeCaseStatus reads
+ * `!passed` as one (TD-101's order), so the primary case's card said "failed" with every step
+ * green. Run 2026-10-15T16-39-13: 6 steps passed in 8.7 s, the diagnosis said "the test passed
+ * fully", and the card blamed the site.
+ *
+ * Playwright's own verdict is the exit code (executor.ts: `passed: exitCode === 0`), which that
+ * override keeps. So the override is undone ONLY when the exit code says the steps passed. A real
+ * failure on a truncated IR still has a non-zero exit code and is still "failed".
+ */
+export function primaryCaseStatus(
+  ir: Parameters<typeof computeCaseStatus>[0],
+  result: { passed: boolean; status?: string; exitCode?: number | null },
+  blocked: unknown,
+): CaseRunResult["status"] {
+  // NOT `result.status`: orchestrator.ts rebuilds the result it hands the suite as { passed,
+  // exitCode, artifactsDir, resultsJsonPath, raw } — the status field never arrives (run
+  // 2026-10-16T05-34-49 still showed "failed"). The override is the only way to get passed:false
+  // with a ZERO exit code: executor.ts sets `passed: exitCode === 0`, and a heal sets passed:true.
+  const overridden = !result.passed && result.exitCode === 0;
+  return computeCaseStatus(ir, overridden ? { passed: result.exitCode === 0 } : result, blocked);
+}
+
 export interface CaseRunResult {
   caseId: string;
   title: string;
@@ -329,7 +356,7 @@ export async function runSuite(
         // already produced — without this the run verdict said "blocked" while this case's own
         // card still said "passed".
         const primaryBlocked = detectBlocked(primaryResult.result.artifactsDir, originOf(entryUrl));
-        const status = computeCaseStatus(primaryResult.ir, primaryResult.result, primaryBlocked);
+        const status = primaryCaseStatus(primaryResult.ir, primaryResult.result, primaryBlocked);
 
         const resultPath = path.join(caseDir, "05-result.json");
         writeFileSync(resultPath, JSON.stringify({

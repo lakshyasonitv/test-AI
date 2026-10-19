@@ -13,6 +13,8 @@ import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVers
 import { salesforceGuidance } from "./salesforceGuidance.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { restoreControlNames } from "./controlNames.js";
+import { restoreDroppedValues } from "./requestValues.js";
+import { screenMapEnabled, loadScreenMap, screensForCases } from "./screenMap.js";
 import { looksLikeCompoundLoginCase } from "./credentials.js";
 import { llmCacheDimension, resolvedDeployment, resolvedModel } from "../llm/llmContext.js";
 
@@ -507,11 +509,21 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
   // `system` joins for the same reason every other real input does: the disk cache never
   // expires, so a rule this prompt gains or loses would otherwise never reach any plan+model
   // combination already seen. Hashing the text means nobody has to remember to bump a version.
+  // Gap 1 (TD-137): on a Salesforce run with SCREEN_MAP_ENABLED, the screens an earlier run reached,
+  // in reach order, so a case that crosses a multi-screen form puts each field on the screen that
+  // really holds it (run 2026-10-15T19-34-46 listed screen 3's fields under screen 2). Read from the
+  // map stored for ANONYMOUS walks only: this stage runs before the run's credentials are asked
+  // for, and one login's screens must never reach another's prompt. "" otherwise — and then the
+  // prompt and the key below are byte-identical to before (tests/testCasesNoChange.test.ts).
+  const screensBlock = currentRunTargetApp() === "salesforce" && screenMapEnabled()
+    ? screensForCases(loadScreenMap(appModel.baseUrl, undefined, new Date()))
+    : "";
   const cacheKey = makeCacheKey(
     JSON.stringify(p), JSON.stringify(liteModel), scope.join(","),
     (extend?.existingTitles ?? []).join("|"), (extend?.rejectedTitles ?? []).join("|"),
     opts.sourcePrompt ?? "", extend?.latestPrompt ?? "",
-    system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion());
+    system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion(),
+    ...(screensBlock ? [screensBlock] : []));
   // TD-127: on a Salesforce run, the control names the person wrote ("Select for EOI", "Min Budget
   // (AED)") are put back into the cases exactly, in code — the prompt rule above asks for that and
   // was not enough. Every other run returns the model's cases untouched. Idempotent, so it is
@@ -523,8 +535,16 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     if (changed) console.log(`[testCases] restored the request's exact control names in ${changed} step(s)/outcome(s)`);
     return fixed;
   };
+  // Gap 5 / TD-136: then put back any request value the fromPrompt case DROPPED entirely (one
+  // checked, cached repair call). Salesforce runs only; every other run is returned untouched.
+  const withRequestValues = async (cases: TestCase[]): Promise<TestCase[]> => {
+    const named = withRequestNames(cases);
+    if (currentRunTargetApp() !== "salesforce") return named;
+    const request = [opts.sourcePrompt ?? "", extend?.latestPrompt ?? ""].join("\n");
+    return (await restoreDroppedValues(named, request, screensBlock)).cases;
+  };
   const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
-  if (cachedCases) return withRequestNames(cachedCases);
+  if (cachedCases) return withRequestValues(cachedCases);
 
   // Additive focus for a regeneration round: the user's "not satisfied" reply steers WHAT to
   // cover, but the plan, the checklist floor, and the element-grounding rules still apply — a
@@ -540,7 +560,7 @@ ${extend.latestPrompt}
 
   const user =
     `Plan: ${JSON.stringify(p)}
-Application model: ${JSON.stringify(liteModel)}
+Application model: ${JSON.stringify(liteModel)}${screensBlock}
 
 Coverage checklist floor (produce one grounded case per applicable item):
 ${strategyList}
@@ -584,7 +604,7 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
           throw new NoTestCasesError(provider, modelOrDeployment, raw, finishReason);
         }
         if (isCacheableResult(finalCases)) llmCacheSet(cacheKey, finalCases);
-        return withRequestNames(finalCases);
+        return withRequestValues(finalCases);
       }
       lastErr = result.error.message;
     } catch (err: any) {

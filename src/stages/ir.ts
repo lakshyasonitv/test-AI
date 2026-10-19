@@ -7,8 +7,10 @@ import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary, siteHost, pageKey } from "../text.js";
 import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
-import { findScreen, screenElements } from "./screens.js";
+import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
+import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, edgeForCapture, routeToControl, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
 import { currentRunTargetApp } from "../runTarget.js";
+import { requestValues, stepsMissingValues } from "./requestValues.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
@@ -320,6 +322,29 @@ const TEXT_ENTRY_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
 const SCREEN_CONTROL_ROLES = new Set([
   "button", "link", "checkbox", "radio", "tab", "menuitem", "combobox", "textbox", "searchbox", "spinbutton",
 ]);
+/**
+ * TD-131: re-grounding the final text assertion would REPLACE text the person quoted in their request.
+ *
+ * Run 2026-10-15T17-13-59: the request said check that "Thank You" is shown. The model clicked Next
+ * past a screen without filling it, the replay ended on that screen's validation error, and
+ * groundTerminalTextAssertion's fallback (any message-shaped line, "please" included) rewrote the
+ * assertion to "Please select a purpose (Self Use or Investment)." The case reported PASSED on a form
+ * that was never submitted.
+ *
+ * The person's quoted text is the success criterion; the model's guess is not. So when the guess IS
+ * one of the request's quoted phrases, only a respelling of it is accepted (the corrected text still
+ * contains it, ignoring case, spacing and punctuation). Anything else means the replay did not reach
+ * it, and the test must fail on it. Reads the person's request, not model prose (the same input
+ * TD-127 reads).
+ */
+export function replacesQuotedSuccessText(guessed: string, corrected: string, request: string): boolean {
+  const n = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const g = n(guessed);
+  if (!g || n(corrected) === g) return false;
+  const quoted = [...request.matchAll(/"([^"]{2,200})"|'([^']{2,200})'|“([^”]{2,200})”/g)].map((m) => n(m[1] ?? m[2] ?? m[3]));
+  return quoted.includes(g) && !n(corrected).includes(g);
+}
+
 /** `needle` occurs in `hay` as whole words: "self" in "self use", never "use" in "user" (TD-126).
  *  Both already lower-cased and space-collapsed by `norm`. */
 const hasWholeWords = (hay: string, needle: string): boolean => {
@@ -401,6 +426,185 @@ export function buildLoginPrefix(auth: AuthOutcome | undefined): Step[] {
     });
   }
   return steps;
+}
+
+/**
+ * After the login prefix, a case's own first `navigate` to the LOGIN page is sent to the page the
+ * login landed on instead (TD-140). Returns the moved step's id, or undefined.
+ *
+ * Every case is compiled with the run's entry URL as "the page under test", and on a site whose
+ * entry URL is its login page that is where the case then navigates — straight back to the login
+ * form, after signing in. Run 2026-10-16T08-34-26 (saucedemo): the prefix landed on
+ * /inventory.html, the case navigated to "/", and "Add to cart" was never on the page. Signing in
+ * and then opening the login form is never what a signed-in case means; the landing page is where
+ * discovery itself arrived (`auth.url`). Decided by URLs only — the step's own target and the
+ * login outcome — and only for the FIRST step after the prefix.
+ */
+export function redirectPostLoginNavigate(
+  steps: Step[], prefixLength: number, auth: AuthOutcome | undefined, origin: string,
+): string | undefined {
+  const first = steps[prefixLength];
+  if (!first || first.action !== "navigate" || !first.target?.url || !auth?.url || !auth.loginUrl) return undefined;
+  if (pageKey(auth.url) === pageKey(auth.loginUrl)) return undefined;
+  let to: string;
+  try { to = new URL(first.target.url, origin).href; } catch { return undefined; }
+  if (pageKey(to) !== pageKey(auth.loginUrl)) return undefined;
+  const landed = new URL(auth.url);
+  if (siteHost(landed.href) !== siteHost(origin)) return undefined;
+  first.target.url = landed.pathname + landed.search;
+  return first.id;
+}
+
+/**
+ * TD-146: for a role+name that matched nothing, the elements of a compatible role that ARE there,
+ * closest first, as a sentence — "" when there are none. Duplicated names carry their test ids, the
+ * one thing that tells them apart (and TD-141 grounds a test id given as the name).
+ *
+ * Run 2026-10-16T12-08-10 (saucedemo): the model asked for button "Add to cart - Sauce Labs Backpack"
+ * on two attempts. An ordinary run's rejection said only "not present", so the retry had nothing to
+ * choose from; a Salesforce run already lists its screen's controls (TD-124). Closeness is the number
+ * of words the wanted name shares with an element's name or test id. Pure, generic to any site.
+ */
+export function similarElementsHint(pages: { url: string; elements: Element[] }[], role: string, name: string): string {
+  const clickable = new Set(["link", "button", "menuitem", "tab"]);
+  const roleOk = (r: string) => {
+    const e = norm(r);
+    return e === role || (clickable.has(role) && clickable.has(e)) || (FIELD_ROLE_GROUP.has(role) && FIELD_ROLE_GROUP.has(e));
+  };
+  const words = (s: string) => new Set(s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1));
+  const want = words(name);
+  // Which page the flow is on is unknown when more than one page is given: then each element says
+  // where it is, so a field of an undiscovered page is never swapped for a same-kind field elsewhere
+  // (run 13-33-16 filled the LOGIN form's Username after "Checkout" when only its name was listed).
+  const many = pages.length > 1;
+  const pathOf = (url: string) => { try { const u = new URL(url); return u.pathname + u.search; } catch { return url; } };
+  const groups = new Map<string, { role: string; name: string; page: string; ids: string[]; twins: number; score: number; order: number }>();
+  let order = 0;
+  for (const p of pages) {
+    for (const e of p.elements) {
+      order++;
+      if (!e.name?.trim() || e.visible === false || !roleOk(e.role)) continue;
+      const page = many ? pathOf(p.url) : "";
+      const key = `${norm(e.role)}\u0000${e.name}\u0000${page}`;
+      const have = new Set([...words(e.name), ...words(e.testId ?? "")]);
+      const score = [...want].filter((w) => have.has(w)).length;
+      const g = groups.get(key) ?? { role: e.role, name: e.name, page, ids: [], twins: 0, score: 0, order };
+      g.twins++;
+      g.score = Math.max(g.score, score);
+      if (e.testId && !g.ids.includes(e.testId)) g.ids.push(e.testId);
+      groups.set(key, g);
+    }
+  }
+  const ranked = [...groups.values()].sort((a, b) => b.score - a.score || a.order - b.order).slice(0, 10);
+  if (!ranked.length) return "";
+  const show = ranked.map((g) => {
+    // Most client sites have no test ids: then the only way to say which twin is its position (nth).
+    const ids = g.twins <= 1 ? ""
+      : g.ids.length ? ` (${g.twins} of them; test ids: ${g.ids.slice(0, 8).join(", ")})`
+        : ` (${g.twins} of them, in page order: pick one with "nth", 0 = first)`;
+    return `${g.role} "${g.name}"${ids}${g.page ? ` on ${g.page}` : ""}`;
+  });
+  return ` Elements of that kind the application model does have, closest first: ${show.join(", ")}. ` +
+    `Use one of these names exactly when it is the element meant; where several share a name, name the one ` +
+    `meant by its test id.` + (many ? ` Each is on the page shown: an element of a page not discovered yet is ` +
+    `not among them, so keep the name the test case uses for it rather than borrowing one from another page.` : "");
+}
+
+/** Page regions present on every page of a site: a check on one of their controls proves nothing. */
+const CHROME_LANDMARKS = new Set(["nav", "header", "footer"]);
+
+/**
+ * TD-148: the case's success check is only site chrome. Every assertion after the last action is
+ * `visible` on an element of the header / navigation / footer that was ALREADY visible on the page
+ * the flow started from, so it passes whatever the actions did. Null otherwise. Pure.
+ *
+ * Run 2026-10-16T13-40 (sf-smoke): click "Explore Projects", then assert link "Projects" visible —
+ * the site header's link, on every page. Allowed: a check after only opening a page (nothing acted
+ * on), an element not in a chrome landmark, and one discovery saw hidden (a menu that opens). The
+ * landmark comes from discovery's DOM path (`landmark`), never from names or page text.
+ */
+export function chromeSuccessAssertion(ir: IR, appModel: AppModel): { stepIds: string[]; message: string } | null {
+  const steps = ir.steps;
+  let lastAction = -1;
+  steps.forEach((s, i) => { if (ACTION_STEPS.has(s.action)) lastAction = i; });
+  if (lastAction < 0) return null;
+  const asserts = steps.slice(lastAction + 1).filter((s) => s.action === "assert");
+  if (!asserts.length) return null;
+  let nav = -1;
+  for (let i = 0; i < lastAction; i++) if (steps[i].action === "navigate") nav = i;
+  if (nav < 0 || !steps[nav].target?.url) return null;
+  let startKey: string;
+  try { startKey = pageKey(new URL(steps[nav].target!.url!, appModel.baseUrl).href); } catch { return null; }
+  const start = appModel.pages.find((p) => pageKey(p.url) === startKey);
+  if (!start) return null;
+  const chromeOf = (s: Step) => {
+    const t = s.target;
+    if (s.assertion !== "visible" || !t?.role || !t?.name) return undefined;
+    return start.elements.find((e) => norm(e.role) === norm(t.role!) && e.name === t.name
+      && e.visible !== false && CHROME_LANDMARKS.has(norm(e.landmark ?? "")));
+  };
+  const chrome = asserts.map(chromeOf);
+  if (chrome.some((e) => !e)) return null;
+  const a = asserts.at(-1)!;
+  return {
+    stepIds: asserts.map((s) => s.id),
+    message: `Step ${a.id} asserts ${a.target!.role} "${a.target!.name}" is visible, but that element is part of ` +
+      `the site's ${chrome.at(-1)!.landmark} and was already visible before the steps before it ran, so the ` +
+      `check passes whatever those steps do. Assert something the action itself makes appear: a heading, a ` +
+      `message, or an element of the page or section it opens.`,
+  };
+}
+
+/** Text-entry input types a person types into (a checkbox, button or hidden input is not one). */
+const TYPED_INPUT_TYPES = new Set(["text", "email", "password", "tel", "number", "search", "url", "date", ""]);
+
+/**
+ * TD-145: what a form the steps before `index` partly filled still needs: `empty`, its typed fields
+ * no step filled, and `submit`, its own submit control when no click/press after the last fill
+ * submitted it. `{ empty: [] }` when no step filled a discovered form. Pure.
+ *
+ * Run 2026-10-16T10-59-00 (saucedemo checkout): the case typed "Test User" into First Name, left Last
+ * Name empty and clicked Continue, so "Finish" never appeared. Run 11-39-31: the same case filled the
+ * form and went straight to "Finish" without clicking Continue. Both times "Finish" was reported
+ * missing with nothing pointing at the cause. The form comes from discovery (`page.forms`), so a search box
+ * elsewhere on the page is never named; a field counts as filled when a fill step's target names it
+ * (label, aria-label, placeholder or name) or its css carries the field's id or name.
+ */
+export function unfilledFormFields(ir: IR, appModel: AppModel, index: number): { empty: string[]; submit?: string } {
+  const before = ir.steps.slice(0, index);
+  if (!before.some((s) => s.action === "fill" && s.target)) return { empty: [] };
+  const n = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const fieldName = (f: DomForm["fields"][number]) => f.label || f.ariaLabel || f.placeholder || f.name;
+  /** Index of the last step before `index` that fills this field, or -1. */
+  const filledAt = (f: DomForm["fields"][number]): number => {
+    const names = [f.label, f.ariaLabel, f.placeholder, f.name].filter(Boolean).map(n);
+    for (let i = before.length - 1; i >= 0; i--) {
+      const s = before[i];
+      if (s.action !== "fill" || !s.target) continue;
+      const t = s.target;
+      if (t.name && names.includes(n(t.name))) return i;
+      if (t.label && names.includes(n(t.label))) return i;
+      const css = (t.css ?? "").toLowerCase();
+      if (css && [f.id, f.name].filter(Boolean).some((v) => css.includes(v.toLowerCase()))) return i;
+    }
+    return -1;
+  };
+  for (const page of appModel.pages) {
+    for (const form of page.forms ?? []) {
+      const typed = form.fields.filter((f) => (f.tag === "textarea" || (f.tag === "input" && TYPED_INPUT_TYPES.has(f.inputType.toLowerCase())))
+        && fieldName(f));
+      const lastFill = Math.max(-1, ...typed.map(filledAt));
+      if (lastFill < 0) continue;
+      const empty = [...new Set(typed.filter((f) => filledAt(f) < 0).map(fieldName))].slice(0, 6);
+      // Submitted = some click/press after the last fill into this form. If not, name its own submit.
+      const submitted = before.slice(lastFill + 1).some((s) => s.action === "click" || s.action === "press");
+      const control = form.fields.find((f) => f.tag === "input" && ["submit", "button"].includes(f.inputType.toLowerCase())
+        && (f.value || f.ariaLabel));
+      const submit = !submitted && control ? (control.value || control.ariaLabel) : undefined;
+      if (empty.length || submit) return { empty, ...(submit ? { submit } : {}) };
+    }
+  }
+  return { empty: [] };
 }
 
 /**
@@ -486,6 +690,13 @@ export interface GroundingScope {
    * order with every other grounding error, so toIR captures exactly where the flow needs it.
    */
   captureBefore?: Set<number>;
+  /**
+   * Salesforce runs with a screen map (TD-142): given the screen a step is on and the name it
+   * misses, the sentence naming the click(s) that lead from that screen to the one holding it —
+   * or undefined when the map does not know. Hints only (D-54): it changes a rejection's wording,
+   * never what grounds.
+   */
+  mapRoute?: (fromKey: string, name: string) => string | undefined;
 }
 
 /**
@@ -585,7 +796,9 @@ export function screenBoundaries(ir: IR): number[] {
     while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
     const next = ir.steps[j];
     if (!next) continue;
-    if (ACTION_STEPS.has(next.action) || (next.action === "assert" && next.target?.role)) {
+    // A url_contains right after a button click is a guess about where the click leads (TD-147):
+    // capture there too, so the assertion is checked against the URL the flow really reaches.
+    if (ACTION_STEPS.has(next.action) || (next.action === "assert" && (next.target?.role || next.assertion === "url_contains"))) {
       if (!out.includes(j)) out.push(j);
     }
   }
@@ -778,7 +991,7 @@ export function groundingError(
   /** The captured screen step `index` is on, or undefined when none applies (D-52): the latest
    *  `screenAt` entry at or before it, ended by a navigate or by the page cursor moving to another
    *  URL in between. */
-  const screenAtStep = (index: number): { page: PageModel; at: number } | undefined => {
+  const screenAtStep = (index: number): { page: PageModel; at: number; key: string } | undefined => {
     let best: { at: number; key: string } | undefined;
     for (const s of scope?.screenAt ?? []) if (s.at <= index && (!best || s.at >= best.at)) best = s;
     if (!best) return undefined;
@@ -786,7 +999,7 @@ export function groundingError(
     const page = findScreen(appModel, best.key);
     const cursor = trail.pageAt[index];
     if (!page || (cursor && pageKey(cursor.url) !== pageKey(page.url))) return undefined;
-    return { page, at: best.at };
+    return { page, at: best.at, key: best.key };
   };
   /**
    * The controls on the captured screen step `index` is on (disabled ones marked), as a sentence for a rejection
@@ -810,11 +1023,81 @@ export function groundingError(
    *  cause — the step that opens the screen holding it was left out (TD-124). */
   const missingOnScreenHint = (index: number): string => {
     const controls = screenControlsHint(index);
-    return controls
-      ? ` It is not on the screen the flow is on at this step (seen in a live capture after the steps ` +
-        `before it). A step that opens the screen holding it is probably missing before this one — ` +
-        `for example clicking a button that opens the form.${controls}`
+    if (!controls) return "";
+    // TD-142: when the screen map knows which click leads from here to the screen holding it, say
+    // so — "a step is probably missing" alone left the model guessing which one.
+    const scr = screenAtStep(index);
+    const t = ir.steps[index]?.target;
+    const route = scr && scope?.mapRoute ? scope.mapRoute(scr.key, t?.name ?? t?.text ?? "") : undefined;
+    return ` It is not on the screen the flow is on at this step (seen in a live capture after the steps ` +
+      `before it). ` + (route ?? (unclickedButtonsHint(index) || `A step that opens the screen holding it is ` +
+      `probably missing before this one — for example clicking a button that opens the form.`)) +
+      emptyScreenFieldsHint(index) + controls;
+  };
+  /**
+   * TD-151: the fields the current screen shows that NO step fills. Run 2026-10-17T18-29-40: the case
+   * left out the contact fields (the request never mentioned them), the IR clicked "Next" on an empty
+   * form, the form stayed put, and the hint only said "click Next" — which had been done. Fields come
+   * from the live capture (text boxes, dropdowns, number boxes); a field counts as filled when any step
+   * before this one fills or selects it by name. Wording only.
+   */
+  const emptyScreenFieldsHint = (index: number): string => {
+    const scr = screenAtStep(index);
+    if (!scr) return "";
+    const filled = new Set(ir.steps.slice(0, index).filter((s) => s.action === "fill" || s.action === "select" || s.action === "check")
+      .map((s) => norm(s.target?.name ?? s.target?.label ?? "")));
+    const empty = [...new Set(scr.page.elements.filter((e) => (TEXT_ENTRY_ROLES.has(norm(e.role)) || norm(e.role) === "combobox")
+      && e.name?.trim() && e.visible !== false && e.enabled !== false && !filled.has(norm(e.name)))
+      .map((e) => `${e.role} "${e.name}"`))].slice(0, 8);
+    return empty.length
+      ? ` This screen still shows fields no step fills: ${empty.join(", ")}. A form does not move on while its ` +
+        `required fields are empty, so fill them first (with realistic test data where the test case gives none), ` +
+        `then click its forward button.`
       : "";
+  };
+  /**
+   * TD-149: with no screen map yet (a site's first run), name the buttons this screen brought that no
+   * step has clicked since it appeared. Run 2026-10-16T17-12-23 (live, empty map): screen 1 of a
+   * 3-screen form was filled, then a screen-2 field was looked for without clicking "Next"; the
+   * generic hint listed ~25 controls, header ones included, and the retry still left "Next" out.
+   * "Brought" = not on the screen before it (header and page chrome repeat, so they drop out). From
+   * the captures and the steps only; never a button-name list.
+   */
+  const unclickedButtonsHint = (index: number): string => {
+    const scr = screenAtStep(index);
+    if (!scr) return "";
+    // Chrome = what the page had before the flow's FIRST screen. Not the screen just before this one:
+    // every screen of a wizard has its own "Next", and comparing with the previous screen dropped it
+    // (cold-start run 2026-10-16T17-54-21 listed only "Investment" and "Back").
+    const earliest = (scope?.screenAt ?? []).filter((s) => s.at < scr.at).sort((a, b) => a.at - b.at)[0];
+    const prevPage = earliest ? findScreen(appModel, earliest.key) : trail.pageAt[scr.at];
+    const before = new Set((prevPage?.elements ?? []).filter((e) => norm(e.role) === "button").map((e) => norm(e.name)));
+    const clicked = new Set(ir.steps.slice(scr.at, index).filter((s) => s.action === "click" || s.action === "press")
+      .map((s) => norm(s.target?.name ?? "")));
+    const fresh = [...new Set(scr.page.elements.filter((e) => norm(e.role) === "button" && e.name?.trim()
+      && e.visible !== false && e.enabled !== false && !before.has(norm(e.name)) && !clicked.has(norm(e.name)))
+      .map((e) => e.name))].slice(0, 8);
+    return fresh.length
+      ? `No step since this screen appeared clicks the buttons it brought: ${fresh.map((n) => `button "${n}"`).join(", ")}. ` +
+        `On a form spread over several screens, the next screen's fields appear only after its forward button ` +
+        `is clicked: add that click before this step, and put this step after it.`
+      : "";
+  };
+  /** TD-145: after a submitted form left fields empty, name them — a required one keeps the form
+   *  from moving on, which is why this step's element never appears. */
+  const unfilledHint = (index: number): string => {
+    const { empty, submit } = unfilledFormFields(ir, appModel, index);
+    let out = "";
+    if (empty.length) {
+      out += ` The steps before it leave ${empty.map((f) => `"${f}"`).join(", ")} empty in the form they fill. A ` +
+        `required field left empty keeps the form from moving on, so this element never appears: fill every ` +
+        `field the form needs, splitting a value the test case gives (a full name into first and last name) where needed.`;
+    }
+    if (submit) {
+      out += ` That form is never submitted: no step clicks its "${submit}" button after filling it, so the page ` +
+        `holding this element is never reached. Click "${submit}" first.`;
+    }
+    return out;
   };
   /**
    * An acting step bound to an element its screen shows as DISABLED (D-52, TD-121). Clicking it
@@ -881,6 +1164,20 @@ export function groundingError(
       };
     }
     const screenPage = screenAtStep(index)?.page;
+    // TD-147: a url_contains checked against the URL a live capture reached at this very step. Run
+    // 2026-10-16T12-14-09 asserted "/project" after "Explore Projects", which scrolls the home page;
+    // the URL never changes, so the test could only fail. Salesforce screen mode only (screenAt).
+    if (step.action === "assert" && step.assertion === "url_contains" && screenPage && screenAtStep(index)?.at === index) {
+      const want = (step.value ?? t?.url ?? "").trim();
+      if (want && !screenPage.url.toLowerCase().includes(want.toLowerCase())) {
+        return {
+          index,
+          message: `Step ${step.id} asserts url_contains "${want}", but after the steps before it the page is at ` +
+            `"${screenPage.url}" (seen in a live capture at this step): that click does not lead to such a URL. ` +
+            `Assert something visible on the screen it does show instead.` + screenControlsHint(index),
+        };
+      }
+    }
     // A verified selector from a DIFFERENT screen of this URL resolves to nothing (or to a hidden
     // twin) at run time. Not grounded: fall through to the name match on this screen, which either
     // finds this screen's own control or reports the step as missing from it.
@@ -1048,6 +1345,39 @@ export function groundingError(
     }
     // LS-1: the duplicate the step's `nth` means, not the first one found.
     if (matched) matched = nthTwin(elements, matched, t.nth);
+    // TD-141: no element has that NAME, but one has it as its test id or id, exactly. Six buttons
+    // all named "Add to cart" leave the model one way to say which: the id discovery recorded
+    // ("add-to-cart-sauce-labs-backpack"), and it used it as the name. That identifies one element
+    // without guessing, so the step is pinned to it (its css follows below), and `nth` goes: the id
+    // already chose. Exact equality only, and only when the name found nothing.
+    if (!matched && t.name.trim()) {
+      const want = t.name.trim().toLowerCase();
+      const roleOk = (r: string) => norm(r) === role || (CLICKABLE_ROLE_GROUP.has(role) && CLICKABLE_ROLE_GROUP.has(norm(r)));
+      const byId = elements.filter((e) => roleOk(e.role) && (e.css || e.testId)
+        && (e.testId?.toLowerCase() === want || e.id?.toLowerCase() === want));
+      // The same element captured on two pages (or twice on one) is still one element.
+      if (byId.length && byId.every((e) => (e.css ?? e.testId) === (byId[0].css ?? byId[0].testId))) {
+        matched = byId[0];
+        delete t.nth;
+        console.log(`[ir] step ${step.id}: "${t.name}" is an element's id -> ${matched.role} "${matched.name}"`);
+      }
+    }
+    // TD-143: a field named by its words, not its exact label: "zip code" for "Zip/Postal Code"
+    // (run 2026-10-16T09-38-53, saucedemo checkout; rejected three times). Text-entry fields only,
+    // at least two words, every word whole in the field's name, and exactly ONE such field: with
+    // two, which one is meant is a guess, and the step is rejected as before.
+    if (!matched && TEXT_ENTRY_ROLES.has(role)) {
+      const words = name.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+      if (words.length >= 2) {
+        const hits = elements.filter((e) => norm(e.role) === role && e.visible !== false && e.name
+          && words.every((w) => hasWholeWords(norm(e.name), w)));
+        const one = new Set(hits.map((e) => e.css ?? e.testId ?? e.name));
+        if (hits.length && one.size === 1) {
+          matched = hits[0];
+          console.log(`[ir] step ${step.id}: "${t.name}" -> the one ${matched.role} whose name has those words: "${matched.name}"`);
+        }
+      }
+    }
     // TD-125: a `select` whose dropdown is not on the captured screen, where the screen's control
     // of that name is a TEXT BOX. The request said "in the Min Budget (AED) combobox, select 40";
     // the live page has an <input> there, so the model followed the wording and the step was
@@ -1093,6 +1423,19 @@ export function groundingError(
         console.log(`[ir] step ${step.id}: select on a button group -> click ${matched.role} "${matched.name}"`);
       }
     }
+    // TD-152: a click on a HEADING when the same page has a LINK of exactly that name means the link —
+    // a product card's title is a heading wrapping its link. Clicking the heading does open the page at
+    // run time, but the flow tracker only follows links, so the next step was looked for on the page
+    // the flow had left (demoblaze, run 2026-10-17T18-46-08: "Add to cart" not found after clicking
+    // heading "Samsung galaxy s6"). Exact name, and exactly one such link on the page.
+    if (matched && step.action === "click" && norm(matched.role) === "heading") {
+      const links = elements.filter((e) => norm(e.role) === "link" && norm(e.name) === norm(matched!.name) && e.visible !== false);
+      if (links.length === 1) {
+        console.log(`[ir] step ${step.id}: click on heading "${matched.name}" -> its link of the same name`);
+        matched = links[0];
+        delete t.nth;
+      }
+    }
     const matchedName = matched?.name ?? null;
     if (!matchedName) {
       const pageUrl = trail.pageAt[index]?.url ?? appModel.baseUrl;
@@ -1101,7 +1444,7 @@ export function groundingError(
         message: `Step ${step.id} targets role="${t.role}" name="${t.name}", which is not present under any compatible role on page "${pageUrl}". ` +
           `If this element loads dynamically, verify that the page completed hydration/API rendering; ` +
           `if it requires role-based access (e.g. Admin), verify that valid authorized credentials were provided.` +
-          missingOnScreenHint(index),
+          (missingOnScreenHint(index) || similarElementsHint(stepPage && elements !== allElements ? [{ url: stepPage.url, elements }] : appModel.pages, role, name)) + unfilledHint(index),
       };
     }
     const disErr = disabledTargetErr(index, step, matched);
@@ -1167,6 +1510,12 @@ const SUCCESS_SIGNAL = /\b(success(ful|fully)?|succeeded|valid|welcome|logged\s*
 export function assertionContradictsCase(
   ir: IR, testCase: TestCase
 ): { stepIds: string[]; message: string } | null {
+  // TD-132 (Salesforce runs): a case whose structured category is "valid" is a success case, full
+  // stop — the wording regexes below are for cases that carry no category. Run 2026-10-15T18-02-40:
+  // a category-"valid" case expected "...the user is not left on the BLANK form screen", NEGATIVE_CASE
+  // matched "blank", "Thank You" was rejected twice as a contradiction, and the model fell back to a
+  // url_contains that proved nothing — on a flow that had in fact reached the Thank You page.
+  if (testCase.category === "valid" && currentRunTargetApp() === "salesforce") return null;
   const isNegative =
     (testCase.category ? NEGATIVE_CATEGORIES.has(testCase.category) : false) ||
     NEGATIVE_CASE.test(testCase.title) ||
@@ -1798,9 +2147,21 @@ Example — handling duplicate selectors with nth:
   // `appModel` is serialised whole, so the normalised `baseUrl` is already in the key
   // transitively: normalising it changes the key by construction and no stale pre-TD-82 entry
   // can be served to a post-TD-82 run.
+  // Handoff Phase 2: the site's stored screen map (SCREEN_MAP_ENABLED, Salesforce runs only). Hints
+  // for the prompt, never grounding evidence (D-54). Loaded before the key because it changes the
+  // prompt; flag off or map empty, the key is byte-identical to before.
+  const useScreenMap = currentRunTargetApp() === "salesforce" && screenMapEnabled();
+  const storedMap = useScreenMap ? loadScreenMap(origin, creds, new Date()) : undefined;
+  const storedScreens = storedMap?.screens ?? [];
+  const mapSignature = storedScreens.length
+    ? [JSON.stringify([storedScreens.map((s) => [s.key, s.controls]), storedMap!.edges.map((e) => [e.from, e.action, e.to])])]
+    : [];
+  if (storedScreens.length) console.log(`[ir] screen map: ${storedScreens.length} screens, ${storedMap!.edges.length} edges stored for ${storedMap!.site}`);
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
-    entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion());
+    entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion(), ...mapSignature,
+    // TD-139: an IR cached before the request-values check could replay one that drops the values.
+    ...(currentRunTargetApp() === "salesforce" ? ["ir-values:1"] : []));
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -1811,24 +2172,61 @@ Example — handling duplicate selectors with nth:
   // "Budget Range", the HOME page's search filter, for the EOI form's "Min Budget (AED)".
   const capturedScreenKeys: string[] = [];
   /** On a RETRY of a Salesforce run only: each captured screen's control names, as captured — names
-   *  only, at most SCREEN_NAMES_CAP per screen. "" otherwise, so every other prompt is unchanged. */
+   *  only, at most SCREEN_NAMES_CAP per screen, and at most `maxScreens` screens, the NEWEST kept (the
+   *  screen the failing step is on is the last one reached). "" with 0 screens otherwise, so every
+   *  other prompt is unchanged (tests/fixtures/salesforceTarget/retry-prompt-ordinary.json). */
   const SCREEN_NAMES_CAP = 30;
-  const capturedScreensBlock = (model: AppModel): string => {
-    if (currentRunTargetApp() !== "salesforce") return "";
-    const lines = new Set<string>();
-    for (const key of capturedScreenKeys) {
-      const p = findScreen(model, key);
-      if (!p) continue;
-      const names = Array.from(new Set(screenElements(p.elements)
-        .filter((e) => e.name?.trim() && SCREEN_CONTROL_ROLES.has(norm(e.role)))
-        .map((e) => `${e.role} "${e.name}"${e.enabled === false ? " (disabled)" : ""}`))).slice(0, SCREEN_NAMES_CAP);
-      if (names.length) lines.add(`- ${p.url}${p.title ? ` ("${p.title}")` : ""}: ${names.join(", ")}`);
+  const SCREENS_CAP = 8;
+  /** A screen's controls as the block (and the screen map) show them: named, of a control role, a
+   *  dialog's own controls first (screenElements), deduped, at most SCREEN_NAMES_CAP. */
+  const controlsOf = (p: PageModel): ScreenMapControl[] => {
+    const seen = new Set<string>();
+    const out: ScreenMapControl[] = [];
+    for (const e of screenElements(p.elements)) {
+      if (!e.name?.trim() || !SCREEN_CONTROL_ROLES.has(norm(e.role))) continue;
+      const id = `${e.role}\u0000${e.name}\u0000${e.enabled === false}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({ role: e.role, name: e.name, ...(e.enabled === false ? { enabled: false } : {}) });
     }
-    return lines.size
-      ? `\nScreens your earlier steps reached in a live run, in order, with the controls each one shows ` +
+    return out.slice(0, SCREEN_NAMES_CAP);
+  };
+  const namesOf = (controls: ScreenMapControl[]) =>
+    controls.map((c) => `${c.role} "${c.name}"${c.enabled === false ? " (disabled)" : ""}`).join(", ");
+  const capturedScreensBlock = (model: AppModel, maxScreens = SCREENS_CAP): { text: string; screens: number } => {
+    if (currentRunTargetApp() !== "salesforce") return { text: "", screens: 0 };
+    const lines = new Set<string>();
+    // Phase 2: stored screens first (oldest first), so the cap below drops them before this run's.
+    // A stored screen this compile has captured again is shown once, as captured.
+    const captured = capturedScreenKeys.map((k) => findScreen(model, k)).filter((p): p is PageModel => !!p);
+    const storedLines = new Set<string>();
+    for (const s of [...storedScreens].sort((a, b) => a.lastSeen.localeCompare(b.lastSeen))) {
+      const fp = { url: s.url, fp: { key: s.key, title: s.title, tab: s.tab, labels: s.labels } };
+      if (captured.some((p) => sameScreen({ url: p.url, fp: fingerprintOf(p) }, fp)) || !s.controls.length) continue;
+      const openedBy = Array.from(new Set(storedMap!.edges.filter((e) => e.to === s.key)
+        .map((e) => `${e.action.role} "${e.action.name}"`))).slice(0, 3);
+      const line = `- ${s.url}${s.title ? ` ("${s.title}")` : ""}: ${namesOf(s.controls)}` +
+        `${openedBy.length ? `; opened by clicking ${openedBy.join(" or ")}` : ""} (from an earlier run — may have changed)`;
+      lines.add(line);
+      storedLines.add(line);
+    }
+    for (const p of captured) {
+      const controls = controlsOf(p);
+      if (controls.length) lines.add(`- ${p.url}${p.title ? ` ("${p.title}")` : ""}: ${namesOf(controls)}`);
+    }
+    // Not `.slice(-maxScreens)`: at 0 that is `.slice(-0)`, which keeps everything.
+    const kept = [...lines].slice(Math.max(0, lines.size - Math.max(0, maxScreens)));
+    if (!kept.length) return { text: "", screens: 0 };
+    const header = kept.some((l) => storedLines.has(l))
+      ? `\nScreens of this application, with the controls each one shows (names exactly as captured). Lines marked ` +
+        `"from an earlier run" were seen by an earlier run on this site and may have changed; the others were ` +
+        `reached by your earlier steps in this run. A step on one of these screens must use a name from THAT ` +
+        `screen, never a name from the application model's page or from another screen, and a screen that is ` +
+        `"opened by clicking" a control needs that click first:\n`
+      : `\nScreens your earlier steps reached in a live run, in order, with the controls each one shows ` +
         `(names exactly as captured). A step on one of these screens must use a name from THAT screen, ` +
-        `never a name from the application model's page or from another screen:\n${[...lines].join("\n")}\n`
-      : "";
+        `never a name from the application model's page or from another screen:\n`;
+    return { text: `${header}${kept.join("\n")}\n`, screens: kept.length };
   };
 
   const buildUser = (model: AppModel, correction?: string) => {
@@ -1921,10 +2319,14 @@ Example — handling duplicate selectors with nth:
     // Retries previously re-sent a byte-identical prompt and predictably got a
     // byte-identical answer back. Feeding the rejection reason in is what makes the
     // grounding and assertion guards actually able to converge.
-    const correctionBlock = correction
-      ? `\nYour previous attempt was REJECTED. Fix exactly this and return corrected IR:\n${correction}\n` +
-        capturedScreensBlock(model)
+    // `let`: the MAX_CHARS loop below shrinks the screens block before it drops any page.
+    // Retries only — or, with a stored screen map (Phase 2), the first attempt too.
+    let screens = correction || storedScreens.length ? capturedScreensBlock(model) : { text: "", screens: 0 };
+    const screensAtStart = screens.screens;
+    const correctionHead = correction
+      ? `\nYour previous attempt was REJECTED. Fix exactly this and return corrected IR:\n${correction}\n`
       : "";
+    let correctionBlock = correctionHead + screens.text;
 
     // Selectors the user wrote in their own request, filtered to the ones discovery has
     // actually seen. Verified against the CURRENT model, so a selector on a page reached
@@ -1950,6 +2352,15 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     console.log("[ir] prompt chars:", prompt.length, "| approx tokens:", Math.round(prompt.length / 4), "| pages sent:", pages.length, "/", model.pages.length);
 
     const MAX_CHARS = 30_000;
+    // Over budget with a screens block (Salesforce retries only): drop its OLDEST screen first, one
+    // at a time, before any page goes. The newest screen is where the failing step is.
+    while (prompt.length > MAX_CHARS && screens.screens > 0) {
+      screens = capturedScreensBlock(model, screens.screens - 1);
+      correctionBlock = correctionHead + screens.text;
+      prompt = render(modelJson);
+      console.warn("[ir] prompt still exceeds", MAX_CHARS, "chars — dropped the oldest captured screen,", screens.screens, "left");
+    }
+    if (screensAtStart) console.log(`[ir] screens block: ${screens.screens} screens, ${screens.text.length} chars`);
     // toLiteModel's own per-page array caps should make this rare now — this is the fallback
     // for when even capped pages, combined, are still too large. Drops lowest-relevance pages
     // one at a time (entry page always kept) rather than blindly slicing the assembled prompt.
@@ -2013,6 +2424,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   const screenMode = currentRunTargetApp() === "salesforce";
   const MAX_SCREEN_CAPTURES = Number(process.env.MAX_SCREEN_CAPTURES ?? 16);
   let screenCaptures = 0;
+  /** Phase 2: what this compile's captures add to the screen map (also `runs/<id>/09-screen-map.json`). */
+  const runMapScreens: ScreenMapScreen[] = [];
+  const runMapEdges: Omit<ScreenMapEdge, "seen">[] = [];
   // Bound total LLM calls so a broken app/prompt still fails fast. Was a hardcoded 8;
   // stacked with backoff.ts's per-call retries that made a single case's worst case 48
   // real requests (originally against Groq; the same shape applies to Gemini now — see
@@ -2050,6 +2464,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
    * no browser, no budget. A key replaced by a newer capture of the same screen follows the swap.
    */
   const capturedByPrefix = new Map<string, string>();
+  /** TD-153: exact step lists live-extend has already replayed in this compile. */
+  const replayedPrefixes = new Set<string>();
   const prefixSignature = (steps: Step[]): string => JSON.stringify(steps
     // waits and assertions do not move the flow, so a retry adding or dropping one is the same path
     .filter((s) => s.action !== "wait" && s.action !== "assert")
@@ -2081,6 +2497,23 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       url: t.url ?? null,
     });
   };
+  /**
+   * Salesforce runs only (handoff Phase 1c): a repeat is fatal only when it carries no new
+   * information. TD-74's premise — "the element is absent, so more attempts cannot ground it" — is
+   * false in two cases, both seen on real runs, and both read from IR structure, never wording:
+   *   1. The target WAS grounded in an earlier attempt's prefix, so it exists. Run
+   *      2026-10-15T08-19-57: button "Select for EOI" rejected in attempt 1, grounded in attempt 2
+   *      (which reached step 21), rejected again in attempt 3 — and TD-74 stopped there.
+   *   2. This attempt got further than when the target was last rejected (more grounded steps,
+   *      waits and asserts not counted), so the model is converging, not repeating itself.
+   * Otherwise it is still a stop, as before: run 2026-10-15T16-39-13 repeated "Full Name" with the
+   * same grounded prefix plus one wait. MAX_ATTEMPTS still bounds the cost either way.
+   */
+  const targetKey = (t: Step["target"] | undefined): string =>
+    JSON.stringify({ role: t?.role ?? null, name: t?.name ?? null, text: t?.text ?? null, url: t?.url ?? null });
+  const reach = (steps: Step[]): number => steps.filter((s) => s.action !== "wait" && s.action !== "assert").length;
+  const groundedTargets = new Set<string>();
+  const rejectedReach = new Map<string, number>();
   /** The post-click reveal check (see postClickRevealIndex) runs at most ONCE per toIR call.
    *  It costs a browser launch, and — more importantly — it is the mitigation for its own only
    *  real false-positive risk: a flow where a click reveals new fields but the step legitimately
@@ -2097,13 +2530,26 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   let rateLimitRetries = 0;
   const MAX_RATE_LIMIT_RETRIES = 3;
 
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  // TD-150: a Salesforce flow is discovered one screen per attempt on a site the screen map has not
+  // learned yet (run 2026-10-16T17-35-53, cold start: the 4th attempt reached form screen 2, then the
+  // loop ended). While the previous attempt got FURTHER (a longer grounded prefix), grant one more,
+  // at most SCREEN_EXTRA_ATTEMPTS times. An attempt without progress still ends it, as before.
+  const SCREEN_EXTRA_ATTEMPTS = 3;
+  let attemptCap = MAX_ATTEMPTS;
+  const reachAt: number[] = [];
+  for (let attempt = 0; attempt < attemptCap; attempt++) {
+    reachAt[attempt] = bestPartial?.steps.length ?? 0;
+    if (screenMode && attempt === attemptCap - 1 && attemptCap < MAX_ATTEMPTS + SCREEN_EXTRA_ATTEMPTS
+      && attempt > 0 && reachAt[attempt] > reachAt[attempt - 1]) {
+      attemptCap++;
+      console.log(`[ir] the last attempt got further (${reachAt[attempt - 1]} -> ${reachAt[attempt]} grounded steps): one more attempt (${attemptCap})`);
+    }
     if (budget && !budget.hasBudget) {
       lastErr = `LLM per-run budget exhausted (${budget.snapshot().calls} calls)`;
       console.warn("[ir]", lastErr, "— stopping retries early");
       break;
     }
-    console.log("[ir] attempt", attempt + 1, "/", MAX_ATTEMPTS);
+    console.log("[ir] attempt", attempt + 1, "/", attemptCap);
     /**
      * Set the retry state AND record why, so the run's own 08-llm-usage.json can answer
      * "what were all these attempts spent on" without anyone reading container logs.
@@ -2182,6 +2628,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       if (prefix.length) {
         parsed.data.steps = [...prefix, ...parsed.data.steps];
         console.log(`[ir] prepended ${prefix.length} login step(s) — the test signs in before its own steps`);
+        const moved = redirectPostLoginNavigate(parsed.data.steps, prefix.length, currentModel.auth, origin);
+        if (moved) console.log(`[ir] step ${moved}: navigate to the login page after signing in -> the page the login lands on`);
       }
     }
 
@@ -2206,8 +2654,25 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       return {
         screenAt,
         captureBefore: new Set(screenBoundaries(parsed.data).filter((i) => !captured.has(i))),
+        // TD-142: this run's own screens and edges count too, so a first run can name the route.
+        ...(useScreenMap ? {
+          mapRoute: (from: string, name: string) => routeToControl({
+            screens: [...runMapScreens, ...(storedMap?.screens ?? [])],
+            edges: [...runMapEdges, ...(storedMap?.edges ?? [])],
+          }, from, name),
+        } : {}),
       };
     };
+    // Phase 2: say where the stored map expects each screen-changing click to lead. A log only — the
+    // capture still happens (skipping it waits until the map has proven accurate).
+    if (storedMap?.edges.length) {
+      for (const at of screenBoundaries(parsed.data)) {
+        const click = parsed.data.steps.slice(0, at).filter((st) => st.action === "click" || st.action === "press").at(-1);
+        const to = storedMap.edges.filter((e) => click?.target?.name && e.action.name === click.target.name &&
+          norm(e.action.role) === norm(click.target.role ?? "")).map((e) => storedMap.screens.find((x) => x.key === e.to)).filter(Boolean);
+        if (to.length) console.log(`[ir] screen map predicts: ${click!.target!.role} "${click!.target!.name}" -> ${to.map((x) => `"${x!.title || x!.url}"`).join(" or ")}`);
+      }
+    }
     let ungrounded = groundingError(parsed.data, currentModel, scopeFor());
 
     // Live-extend hops are cheap relative to a fresh LLM generation — no new attempt spent —
@@ -2272,6 +2737,26 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           const was = cap.replacedKey ? capturedScreenKeys.indexOf(cap.replacedKey) : -1;
           if (was >= 0) capturedScreenKeys[was] = cap.key;
           if (!capturedScreenKeys.includes(cap.key)) capturedScreenKeys.push(cap.key);
+          // Phase 2: remember the screen, and the click that led to it from the screen before
+          // (role + name only, never css). Best-effort: a map that cannot be written costs nothing.
+          if (useScreenMap) {
+            try {
+              const page = findScreen(currentModel, cap.key);
+              if (page) {
+                const now = new Date();
+                // The click that opened this screen, only when unambiguous (edgeForCapture).
+                const screen = screenFromPage(page, controlsOf(page), now);
+                const found = edgeForCapture(screenAt, prefix, ungrounded!.index, cap.key);
+                const edge = found ? [found] : [];
+                runMapScreens.push(screen);
+                runMapEdges.push(...edge);
+                recordIntoScreenMap(origin, creds, [screen], edge, now);
+                writeRunScreenMap(origin, creds, runMapScreens, runMapEdges);
+              }
+            } catch (err: any) {
+              console.log("[ir] screen map: could not record the capture:", err?.message ?? err);
+            }
+          }
           console.log(`[ir] screen capture at step ${parsed.data.steps[ungrounded.index]?.id}: ${cap.replacedKey ? "replaced" : "added"} screen ${cap.key} (${cap.reachedUrl}) — app model ${before} -> ${currentModel.pages.length} pages`);
         } catch (err: any) {
           lastErr = `could not capture the screen for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;
@@ -2287,6 +2772,18 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         continue;
       }
 
+      // TD-153: never replay the EXACT same steps twice in one compile. The walk cache hands the
+      // second replay the identical snapshot, so it can teach nothing — but it still spent one of
+      // MAX_EXTENSIONS. Traced 2026-10-18 (saucedemo): attempt 1 omitted "Continue", replayed the
+      // same 11 steps four times looking for "Finish", and spent the whole budget; attempt 2 had
+      // the right steps and could not replay them, so the case stopped. Exact JSON (waits
+      // included, as in the walk key), so a retry that only adds a wait still replays.
+      const exactPrefix = JSON.stringify(prefix);
+      if (replayedPrefixes.has(exactPrefix)) {
+        console.log(`[ir] live-extend: these ${prefix.length} step(s) were already replayed and did not reach step ${parsed.data.steps[ungrounded.index]?.id} — not replaying them again`);
+        break;
+      }
+      replayedPrefixes.add(exactPrefix);
       try {
         const before = currentModel.pages.length;
         console.log("[ir] calling extendAppModel...");
@@ -2319,6 +2816,13 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
 
     if (!ungrounded) {
+      const chrome = chromeSuccessAssertion(parsed.data, currentModel);
+      if (chrome) {
+        console.log("[ir] site-chrome success assertion rejected:", chrome.message);
+        reject("chrome-assertion", chrome.message);
+        lastContradiction = { ir: parsed.data, ...chrome };
+        continue;
+      }
       const vacuous = vacuousAssertion(parsed.data, currentModel);
       if (vacuous) {
         console.log("[ir] vacuous assertion rejected:", vacuous.message);
@@ -2383,6 +2887,26 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           };
         }
         continue;
+      }
+
+      // TD-139: the request's values must reach the steps, not just the case. Salesforce runs, the
+      // fromPrompt case only (a negative suite case leaves values out on purpose). Same floor as
+      // missingActions above: it rejects and retries, and the IR is kept as a partial so a run is
+      // never lost to it.
+      if (screenMode && testCase.fromPrompt) {
+        const lost = stepsMissingValues(parsed.data.steps, testCase, requestValues(sourcePrompt));
+        if (lost.length) {
+          const message = `The steps leave out ${lost.map((v) => `"${v}"`).join(", ")}, which the test case ` +
+            `uses. Carry out the WHOLE case: each value goes in the step where the case uses it (a value ` +
+            `chosen or typed in a field is that step's "value", a button or link is the target of its ` +
+            `click, an expected message is the final assertion's text). Do not skip a form screen.`;
+          console.log("[ir] request values missing from the steps:", lost.join(", "));
+          reject("missing-values", message);
+          if (parsed.data.steps.length > (bestPartial?.steps.length ?? 0)) {
+            bestPartial = { ir: parsed.data, steps: parsed.data.steps, note: message, kind: "incomplete-coverage" };
+          }
+          continue;
+        }
       }
 
       // Everything above is free. This one costs a browser launch, so it goes last among the
@@ -2477,7 +3001,11 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         // can be the success banner, which would be a false PASS. The guard below would
         // reject it anyway, but only at the cost of a whole attempt out of MAX_ATTEMPTS.
         // Keeping the model's guess instead lets the test fail honestly at execution.
-        if (!assertionContradictsCase(reground, testCase)) parsed.data = reground;
+        const guessed = parsed.data.steps[parsed.data.steps.length - 1]?.target?.text ?? "";
+        const regrounded = reground.steps[reground.steps.length - 1]?.target?.text ?? "";
+        if (screenMode && replacesQuotedSuccessText(guessed, regrounded, sourcePrompt)) {
+          console.log(`[ir] kept the request's own success text "${guessed}" rather than "${regrounded}" — the replay did not reach it, so the test should fail, not pass on another message`);
+        } else if (!assertionContradictsCase(reground, testCase)) parsed.data = reground;
       }
 
       const contradiction = assertionContradictsCase(parsed.data, testCase);
@@ -2508,7 +3036,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     // Strictly better to run the step unverified than to ship a prefix that tests nothing:
     // the run that motivated this reported `truncated_no_assertion` and checked zero of the
     // user's eight steps. Every other rejection kind still truncates as before.
-    if (ungrounded.kind === "text-target" && attempt === MAX_ATTEMPTS - 1) {
+    if (ungrounded.kind === "text-target" && attempt === attemptCap - 1) {
       console.log("[ir] shipping unverified text targets (best-effort):", ungrounded.message);
       return { ir: finalize(parsed.data), updatedAppModel: currentModel };
     }
@@ -2521,11 +3049,23 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     // grounded prefix and records `truncationNote`, so the UI already has the reason and needs
     // no new status. TECH_DEBT.md TD-74.
     const key = rejectionKey(ungrounded, parsed.data);
-    const repeated = seenRejections.has(key);
+    let repeated = seenRejections.has(key);
     seenRejections.add(key);
+    if (screenMode) {
+      const rejectedTarget = targetKey(parsed.data.steps[ungrounded.index]?.target);
+      if (repeated && groundedTargets.has(rejectedTarget)) {
+        repeated = false;
+        console.log(`[ir] target rejected again, but an earlier attempt grounded it — it exists, retrying`);
+      } else if (repeated && reach(prefix) > (rejectedReach.get(key) ?? Infinity)) {
+        repeated = false;
+        console.log(`[ir] target rejected again, but this attempt got further (${reach(prefix)} grounded steps, was ${rejectedReach.get(key)}) — retrying`);
+      }
+      rejectedReach.set(key, reach(prefix));
+      for (const s of prefix) if (s.target) groundedTargets.add(targetKey(s.target));
+    }
 
-    if (prefix.length && attempt < MAX_ATTEMPTS - 1 && !repeated) {
-      console.log(`[ir] grounding rejected step ("${ungrounded.message}") — retrying with feedback (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
+    if (prefix.length && attempt < attemptCap - 1 && !repeated) {
+      console.log(`[ir] grounding rejected step ("${ungrounded.message}") — retrying with feedback (attempt ${attempt + 1}/${attemptCap})`);
       continue;
     }
     if (repeated) {

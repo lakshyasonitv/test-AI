@@ -119,6 +119,43 @@ function computeGenericPath($: CQ, el: AnyNode): string {
   return parts.join(">");
 }
 
+/**
+ * TD-144: the text right AFTER a checkbox or radio, which is where such a control's visible label
+ * sits when it has no <label> ("<input type=checkbox> checkbox 1<br>"). A text node, or a short
+ * <label>/<span> sibling. "" when the next thing is another control, or nothing short.
+ */
+function followingLabel(el: AnyNode): string {
+  let node: any = (el as any).next;
+  while (node && node.type === "text" && !String(node.data ?? "").trim()) node = node.next;
+  if (!node) return "";
+  let t = "";
+  if (node.type === "text") t = String(node.data ?? "");
+  else if (node.type === "tag" && ["label", "span"].includes(String(node.name).toLowerCase())) {
+    t = (node.children ?? []).filter((c: any) => c.type === "text").map((c: any) => c.data).join(" ");
+  }
+  t = t.replace(/\s+/g, " ").trim();
+  return t.length <= MAX_PROXIMITY_LABEL ? t : "";
+}
+
+/**
+ * TD-144: an exact CSS path to an element with no id or test id, anchored at the nearest ancestor
+ * with an id ("#checkboxes > input:nth-of-type(2)"), else at <html>. Two unlabeled checkboxes in one
+ * form are told apart only by position, and a locator by nearby text matches both.
+ */
+function positionalSelector(el: AnyNode): string {
+  const parts: string[] = [];
+  let node: any = el;
+  while (node && node.type === "tag") {
+    const tag = String(node.name).toLowerCase();
+    const id = node.attribs?.id;
+    if (id && node !== el && /^[A-Za-z][\w-]*$/.test(id)) { parts.unshift(`#${id}`); break; }
+    const sameTag = (node.parent?.children ?? []).filter((c: any) => c.type === "tag" && String(c.name).toLowerCase() === tag);
+    parts.unshift(sameTag.length > 1 ? `${tag}:nth-of-type(${sameTag.indexOf(node) + 1})` : tag);
+    node = node.parent;
+  }
+  return parts.join(" > ");
+}
+
 const classesOf = ($el: cheerio.Cheerio<AnyNode>): string[] => attr($el, "class").split(/\s+/).filter(Boolean);
 
 // Class-attribute substring match — BeautifulSoup's `class_=lambda c: "x" in c` pattern.
@@ -222,7 +259,9 @@ function extractForms($: CQ, baseUrl: string): CrawlResponse["forms"] {
       // `textbox "you@thinkvibes.com"` and once as `textbox "Email"`, and the IR then targeted
       // the name that is not in the DOM.
       if (!labelText && !attr($in, "placeholder") && !attr($in, "aria-label")) {
-        labelText = proximityLabel($, $in);
+        // A checkbox/radio is labelled by the text after it, not the heading above (TD-144).
+        const toggle = tag === "input" && (inputType === "checkbox" || inputType === "radio");
+        labelText = (toggle ? followingLabel(inputEl) : "") || proximityLabel($, $in);
       }
 
       const options: string[] = [];
@@ -427,7 +466,9 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
     // The visible text labelling an otherwise-anonymous field. Sits after the real
     // programmatic sources and before the attribute-derived guesses, because it is what a
     // user actually sees and therefore what a test prompt will call the field.
-    const nearby = isField ? proximityLabel($, $el) : "";
+    // A checkbox or radio with no <label> is labelled by the text AFTER it (TD-144).
+    const isToggle = tag === "input" && (role === "checkbox" || role === "radio");
+    const nearby = isField ? ((isToggle ? followingLabel(el) : "") || proximityLabel($, $el)) : "";
 
     // Accessible name in accname precedence order — see roleForField's comment in
     // domDiscovery.ts for why the HTML `name` attribute must come last, not first.
@@ -438,7 +479,9 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
     const isHiddenField = (attr($el, "type") || "").toLowerCase() === "hidden";
     const name0 =
       attr($el, "aria-label") || attr($el, "placeholder") || ownText
-      || (isHiddenField ? "" : attr($el, "value")) || attr($el, "title") || attr($el, "name");
+      // TD-144: a checkbox/radio with no value ATTRIBUTE reports "on" (the default), which is no name.
+      || (isHiddenField || (isToggle && (el as any).attribs?.value === undefined) ? "" : attr($el, "value"))
+      || attr($el, "title") || attr($el, "name");
 
     const testId = attr($el, "data-test") || attr($el, "data-testid") || attr($el, "data-qa");
     const id = attr($el, "id");
@@ -467,7 +510,7 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
     const selector = stableSelector({
       dataTest: attr($el, "data-test"), dataTestid: attr($el, "data-testid"),
       dataQa: attr($el, "data-qa"), id
-    });
+    }) || (isToggle && nameFromProximity ? positionalSelector(el) : "");
     const key = selector || `${role}:${name}:${elements.length}`;
     if (seen.has(key)) return;
     seen.add(key);

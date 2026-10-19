@@ -2950,6 +2950,17 @@ already rebuilds from `toMicroModel(filtered, { currentPageUrl })` — one page,
 which is exactly why per-call size is flat at ~3,800 tokens across every run. There was nothing to
 trim, and trimming further would have cost grounding accuracy for no measurable saving.
 
+
+**Made progress-aware on Salesforce runs (handoff Phase 1c, 2026-10-15).** The rule's premise, "the
+element is absent, so more attempts cannot ground it", was false twice on a real Experience site. In run
+`2026-10-15T08-19-57`, button "Select for EOI" was rejected in attempt 1, grounded in attempt 2 (which
+reached step 21) and rejected again in attempt 3, and TD-74 stopped there. On a Salesforce run a repeat
+is now fatal only when the target was **never grounded** in any attempt's prefix **and** this attempt got
+**no further** (counting grounded steps other than waits and asserts) than when that target was last
+rejected. Both checks read IR structure, not wording. `MAX_ATTEMPTS` still bounds the cost, and ordinary
+runs keep the old rule. Run `2026-10-15T16-39-13` ("Full Name" again, the same steps plus one wait)
+still stops. Tests: `tests/repeatRejectionProgress.test.ts` (real Chromium). 5 mutations, all caught.
+
 ### TD-75. An element's accessible name can be an entire inlined stylesheet — High / Accidental — Open
 
 **What it is.** On the amazon.in homepage, discovery recorded a `main` element whose `name` is
@@ -5083,6 +5094,13 @@ the four attempts.
 Still open: the FIRST attempt is written blind, and ordinary runs get nothing. Tests are in
 `tests/selectOnTextbox.test.ts` ("a retry shows the model the screens it reached"). They fail if
 the block is dropped or if spinbuttons are left out of it.
+**Capped (handoff Phase 1b, 2026-10-15).** The block keeps at most 8 screens, the newest ones,
+because the failing step is on the last screen reached. When a retry prompt is over `MAX_CHARS`, the
+oldest screens are dropped one at a time before any page is. Each such prompt logs
+`[ir] screens block: N screens, M chars`. Tests: `tests/screensBlockCap.test.ts` (real Chromium, a
+10-screen wizard on one URL). `tests/retryPromptOrdinary.test.ts` pins an ordinary run's retry
+prompts byte-for-byte against `tests/fixtures/salesforceTarget/retry-prompt-ordinary.json`, which
+was captured before the cap.
 
 ### TD-123. Choosing an option did not commit the field typed before it — High / Accidental — **Fixed**
 
@@ -5225,31 +5243,475 @@ Tests in `tests/ffmpegVideo.test.ts` and `tests/videoPruning.test.ts`.
 only checks that the file exists, so recording was attempted and every case died at
 `browserContext.newPage: spawn EBUSY`. Fixed locally by unzipping the official build by hand.
 
-### TD-130. A generated test may meet Salesforce's email-first screen the discovery browser never saw — Medium / Unverified — **Open (check on the first real-org run)**
+### TD-130. A truncated run whose steps all passed was shown as "Failed" — Medium / Accidental — **Fixed**
 
-Discovery now clicks "Log In with Username" when Salesforce shows its email-first screen (D-54), then
+Run `2026-10-15T16-39-13-396Z-43d0d427`: 6 grounded steps, no terminal assertion, Playwright exit 0 in
+8.7 s. The diagnosis said "the test passed fully", and the case card said **Failed**.
+- `orchestrator.ts` (~468) overrides a truncated-without-assertion result to `passed: false, status:
+  "truncated_no_assertion"`, so the run can never read as a pass when nothing was verified.
+- The suite runner REUSES that result for the primary case. `computeCaseStatus` checks `!passed`
+  first (TD-101), so it read the override as a runtime failure and blamed the site.
+
+Fixed in `src/stages/suiteRunner.ts` only (`primaryCaseStatus`). When the result carries that override,
+Playwright's own verdict is read from the exit code, which the override keeps (`executor.ts`:
+`passed: exitCode === 0`). The status becomes `truncated_no_assertion`, which is still never counted as
+passed. A real failure on a truncated IR has a non-zero exit code and is still `failed`. This applies to
+all sites, because it is a status bug, not a capability. `tests/primaryCaseStatus.test.ts`: both
+mutations caught.
+
+
+**Correction, 2026-10-16: the first fix never fired in a real run.** It looked for
+`result.status === "truncated_no_assertion"`, but `orchestrator.ts` rebuilds the result it hands the
+suite from five fields (`passed`, `exitCode`, `artifactsDir`, `resultsJsonPath`, `raw`) with no
+`status`. The unit test passed a result that HAD `status`, a shape no real run sends, so it went green
+while run `2026-10-16T05-34-49` still showed "failed".
+
+Now `primaryCaseStatus` reads the one signal that does arrive: `passed: false` with exit code 0. Only
+the override produces that combination (`executor.ts` sets `passed: exitCode === 0`; a heal sets
+`passed: true`). The test now uses the exact handoff shape, and a second test pins that
+`orchestrator.ts` still hands over no `status`. The old check, re-applied as a mutation, is caught.
+
+### TD-131. A stalled flow PASSED by asserting a validation error in place of the requested success text — Critical / Accidental — **Fixed (Salesforce runs)**
+
+Run `2026-10-15T17-13-59-354Z-53e5e62c`. The request said check that "Thank You" is shown.
+- The model clicked Next three times without filling form screen 2, so the flow stayed on that screen
+  with the error "Please select a purpose (Self Use or Investment)."
+- `groundTerminalTextAssertion`'s tier-3 fallback takes any message-shaped line, and `MESSAGE_LIKE`
+  includes "please". It rewrote the final assertion to that error, and the case **passed** with the form
+  never submitted (screenshot step-20).
+
+Fixed in `src/stages/ir.ts` (`replacesQuotedSuccessText`, Salesforce runs). When the final assertion's
+text is one of the request's own quoted phrases, a re-grounding is accepted only if it still contains
+that text, ignoring case, spacing and punctuation. Otherwise the request's text is kept and the test
+fails honestly. The check reads the person's request, not model prose.
+
+**Still open for ordinary runs and for unquoted expectations.** The tier-3 fallback can still swap a
+success guess for an error line there. That is the same class of bug, and a structural fix (prefer lines
+that appear only after the final action, and never an element marked invalid or as an alert) wants its
+own change. Tests: `tests/quotedSuccessText.test.ts`, which reproduces the run in real Chromium. Both
+mutations were caught.
+
+### TD-132. A valid case was treated as NEGATIVE because its expected text contained "blank" — High / Accidental — **Fixed (Salesforce runs)**
+
+Run `2026-10-15T18-02-40-894Z-e269fbfa`. The case was category **"valid"**, with expected text "…the user is
+not left on the **blank** form screen".
+- `assertionContradictsCase` ORs the structured category with `NEGATIVE_CASE`, a regex over the title and
+  expected PROSE. "blank" matched, so the "Thank You" assertion was rejected twice as "asserts SUCCESS on
+  a case that expects FAIL".
+- The model then ended on a `url_contains` that proved nothing (the form is on the same URL), although the
+  flow really reached the Thank You page (screenshot step-22).
+
+This is CLAUDE.md's named failure mode: a "deterministic" check over model-authored prose. Fixed
+structurally: on a Salesforce run, a case whose `category` is `"valid"` is never negative. The wording
+rules still apply to cases with no category, and to ordinary runs. Tests:
+`tests/validCaseNotNegative.test.ts`. 2 mutations caught.
+
+**Still open for ordinary runs:** the same "blank" / "without" / "missing" wording can flip a valid case
+there.
+
+### TD-133. The Salesforce generated-id rule also drops MEANINGFUL numbered ids — Low / Deliberate trade-off — **Open**
+
+D-55 skips any id matching `/-d+$/` or `/^w+-d+-d+$/` on a Salesforce run, because Lightning
+numbers ids per session. A developer's own `unit-102` / `sel-102` matches too.
+
+In `tests/multiScreenWizard.test.ts` ("A: … the enabled unit's button"), the button `#sel-102` is now
+`#units > div:nth-of-type(2) > button`. That is the same element, verified and executed, but it is
+positional, because "Select for EOI" is not unique by role + name.
+
+A better rule would need evidence across sessions: an id that is the same on two walks is not
+generated. The Phase 2 screen map could carry that, but it stores names only.
+
+
+### TD-134. Retained `trace.zip` files are not scrubbed and may hold filled credentials — High / Unverified — **Open**
+
+Found while writing `docs/research/reports/AI test automation competitor features.md` (plan item 0.2),
+from reading the code only. `scrubServedSecrets` (`src/stages/executor.ts`) redacts `results.json`,
+`final-page.txt` and error-context files, but not the Playwright trace. `playwright.config.ts` keeps
+traces on failure (`trace: "retain-on-failure"`) inside `runs/<id>/artifacts`, which is served over
+HTTP (behind `canAccessRun`, open while `AUTH_ENABLED` is off — TD-14). A trace records each action's
+parameters, so a failed case that typed `process.env.TEST_PASSWORD` very likely stores the real value
+inside the zip (CLAUDE.md rule 5).
+
+To confirm: run a failing login case with a canary password, unzip the retained trace and grep every
+served file for the canary. If confirmed, either scrub the trace's action parameters or stop serving
+traces until they are scrubbed. `executor.ts` and `playwright.config.ts` belong to Gunwant's stream;
+the fix needs his sign-off.
+
+### TD-135. `resolveScope` picks a HIDDEN modal-like element as the dialog scope — High / Accidental — **Open (confirmed in Chromium)**
+
+`resolveScope` (`src/stages/targetResolver.ts` ~487) filters dialog candidates with
+`page.locator(DIALOG_SELECTOR).filter({ visible: true } as any)`. On the pinned Playwright 1.49
+`Locator.filter()` has no `visible` option, so the filter is a no-op — the exact trap CLAUDE.md
+records for `generator.ts` (D-19). Confirmed 2026-10-15 in real Chromium: a page with a hidden
+`<div class="modal-backdrop" style="display:none">` and a visible main form — `resolveScope` returned
+the hidden div, not `body`; `.filter({visible:true}).count()` = 1 while `:visible` count = 0.
+
+Effect: the live resolver (replays, screen captures, deterministic heal) searches inside an invisible
+container whenever a page carries any hidden element matching `[class*="modal" i]` /
+`[class*="dialog" i]`, which Lightning and most component libraries render permanently. The generated
+spec's own `scopeOf` uses `':visible'` correctly, so specs and replays can disagree. Fix: use the same
+`':visible'` suffix as `scopeOf`, with a Chromium test that fails today.
+
+### TD-136. The case writer DROPPED the request's values from the primary case — High / Accidental — **Fixed (Salesforce runs)**
+
+Run `2026-10-15T18-02-40-894Z-e269fbfa`. The short request named Self Use, Buying Timeline "Later", Preferred
+Project "The Sanctuary", Preferred Areas "Abu Dhabi" and Preferred Unit Type "Office". The `fromPrompt`
+case said "provide valid preference selections" and "provide any requested property-specific
+details", and every value was gone. The IR stage builds from the case's own steps only, so nothing
+downstream could recover them. TD-127 restores a name the case still contains; it cannot restore one
+that was dropped. The prompt already says "use the plan/request values VERBATIM", which made it a
+preference, not a constraint.
+
+Fixed in `src/stages/requestValues.ts`, wired into `toTestCases` after TD-127, on Salesforce runs only.
+- **The check.** Code lists the request's quoted values and multi-word Capitalised names. It drops a
+  leading imperative verb ("Click Explore Projects" → "Explore Projects") and never crosses a
+  sentence end. It then finds which of them the `fromPrompt` case's steps and expected outcome do not
+  mention.
+- **The repair.** Only if some are missing: ONE focused model call (stage `testcases-values`) rewrites
+  that case's steps to carry them verbatim.
+- **Acceptance.** Code re-checks the rewrite and takes it only if strictly fewer values are missing
+  and none it already had is lost. An accepted repair is cached (`requestvalues` namespace).
+
+Ordinary runs and the Pro generator are untouched, and `tests/testCasesNoChange.test.ts` (Pro's
+`toTestCases` pin) still passes. Tests: `tests/requestValues.test.ts`. 5 mutations, all caught.
+
+**Still open:** a lower-case unquoted name ("select for eoi") is not recognised (TD-127's limit).
+Values the person did not write (the form's other dropdowns) are still the model's choice; that is
+Gap 2.
+
+### TD-137. The test-case writer could not see which screen holds which field — Medium / Accidental — **Fixed (Salesforce runs, anonymous maps)**
+
+Run `2026-10-15T19-34-46-890Z-06cc4de5` (short prompt, after TD-136) listed screen 3's Preferred
+Project / Areas / Unit Type under "the second form screen". The case writer sees only the discovered
+entry page, and a multi-screen form on one URL is invisible to it. The IR stage recovered by retrying,
+at 8 IR calls against 6.
+
+Fixed. On a Salesforce run with `SCREEN_MAP_ENABLED`, `toTestCases` appends the stored screen map to its
+prompt (`screensForCases`, `src/stages/screenMap.ts`):
+- in the order a person reaches the screens (`orderedScreens` follows the recorded clicks);
+- each screen with the click that opens it;
+- each screen with only the controls that are its OWN (controls repeated on every screen of the same
+  URL are left out, unless nothing would remain).
+
+The same block goes to TD-136's value repair, and joins both cache keys only when non-empty, so
+ordinary and flag-off prompts and keys are byte-identical (`tests/testCasesNoChange.test.ts`). Tests:
+`tests/screensForCases.test.ts`, on the real map run `17-50-49` stored. 6 mutations caught.
+
+**Still open:**
+- **Only the ANONYMOUS map is read.** Case generation runs before the run's credentials are asked for
+  (`orchestrator.ts`), and one login's screens must never reach another's prompt. A logged-in org's
+  case writer therefore still sees nothing. Fixing that needs the credentials at case-generation time,
+  which is an `orchestrator.ts` change and needs the owner's approval.
+- The first run on a site still has no map (Gap 3).
+
+**The edge rule was wrong (found by run `2026-10-16T05-34-49`; fixed the same day).** An edge ("clicking
+X on screen A opens screen B") was recorded with X = the LAST click before the capture, and A = the
+latest earlier capture that was not B. Two wrong edges followed:
+- `form 1 --Self Use--> form 2`: Self Use re-renders the screen it is on;
+- `home --Select for EOI--> project page`: View Project, then Select for EOI, with no capture
+  between.
+
+The case writer read "form 2 is opened by clicking Self Use" and wrote a FOUR-screen form. Now
+`edgeForCapture` (`screenMap.ts`, pure) records an edge only when exactly ONE click happened since
+the previous screen and that screen is not the new one. `orderedScreens` continues a chain from the
+oldest unplaced screen, so a flow is still ordered when an ambiguous edge is missing. The map format
+is now **v2**: v1 maps, whose edges came from the old rule, are dropped on read and rebuild on the
+next run. Tests: 4 `edgeForCapture` cases, a v1-drop test, and an out-of-order chain test; 4
+mutations caught.
+
+### TD-138. Tests clear cache namespaces that a running local server shares — Medium / Accidental — **Partly fixed**
+
+`llmCache` keeps its disk half in `runs/_cache/<namespace>` for tests and the server alike. A test that
+calls `llmCacheClear(ns)` deletes the server's real entries too.
+
+**Found the hard way, 2026-10-16.** The screen-map tests (Phase 2, Gap 1) cleared `screenmap`, and the
+value-repair tests cleared `requestvalues`. Every full suite run wiped the EOI site's learned screen map,
+so the owner's next real run (`2026-10-16T05-04-07`) started with an empty map. Gap 1's block was empty,
+and the case batch was served from the pre-Gap-1 cache.
+
+**Fixed for those four files** (`screenMap`, `screenMapRuns`, `screensForCases`, `requestValues`): they no
+longer clear anything. Each test sets its own `LLM_CACHE_VERSION`, which every key involved includes, so
+it can neither read nor overwrite real entries. This was verified by running the four suites twice with a
+real map's md5 unchanged.
+
+**Still open:** `tests/walkCredentials.test.ts` (6 calls) and `tests/editorGuards.test.ts` (2) clear the
+`walks` namespace. That throws away a running server's cached captures (slower next run, no data loss).
+`llmCacheGuard.test.ts` has one more. Not changed here, because they are not this stream's tests.
+
+The structural fix is a test-only cache root, e.g. `LLM_CACHE_ROOT` set in `vitest.config.ts`. But
+several Pro tests (`specDistill`, `specRoutes`) assert on the real `runs/_cache/spec` path, so that needs
+coordinating with Pro's owner. A side effect of the unique-version isolation: each test run leaves small entries under unique keys in `runs/_cache/screenmap` and `runs/_cache/requestvalues`. They are harmless (never read by a real run), but they accumulate until the cache folder is cleaned.
+
+### TD-139. The compiled steps could drop the request's values and still be accepted — High / Accidental — **Fixed (Salesforce runs)**
+
+**Found 2026-10-16, run `2026-10-16T06-16-25`.** Gap 5 (TD-136) puts the request's values into the
+primary CASE, but nothing checked the compiled STEPS. The IR filled form screen 1, clicked Next and
+asserted "Thank You"; "Later", "The Sanctuary", "Abu Dhabi" and "Office" appeared nowhere. Grounding
+verifies that each step's element exists, not that the request was carried out, so it was accepted.
+
+**Fix:** `stepsMissingValues` (`requestValues.ts`, pure). For the fromPrompt case of a Salesforce run, every
+request value the case carries must appear in some step's value or target text. The comparison uses
+letters and digits only, so a page label "Preferred Area(s)" still carries "Preferred Areas". A miss is
+rejected with a correction naming the values, retried, and kept as an `incomplete-coverage` partial (the
+same floor as `missingActions`), so it can never kill a run. The IR cache key gains `ir-values:1` on
+Salesforce runs only, so an IR cached before the check cannot replay.
+
+**Replay over every saved Salesforce run (14 since 2026-10-15T09):** it flags every failed or truncated
+run and no clean pass. It also flags two runs that showed PASSED (`17-13-59` asserted a validation
+message, `18-02-40` a URL; neither checked "Thank You"). Both were false passes. Tests:
+`tests/stableLoop.test.ts`.
+
+### TD-140. After the automatic login, a case navigated straight back to the login page — High / Accidental — **Fixed**
+
+**Found 2026-10-16, run `2026-10-16T08-34-26` (saucedemo).** Every case compiles with the run's entry URL
+as "the page under test". On a site whose entry URL IS its login page, the login prefix signed in and
+landed on `/inventory.html`, then the case's own first step navigated to `/`, which is the login form
+again. "Add to cart" was never there, so two cart cases ended `truncated_no_assertion`.
+
+**Fix:** `redirectPostLoginNavigate` (`ir.ts`). Only the FIRST step after the prefix moves, only when it
+is a navigate to the login page, and only when the login really landed somewhere else (`auth.url`). It
+then goes to that landing page. A site whose login has its own path (`/login`) is untouched, because
+`/` is not its login page. Ordinary runs (a normal-site change, approved by the owner 2026-10-16).
+
+### TD-141. A step naming an element by its test id was rejected — Medium / Accidental — **Fixed**
+
+**Found 2026-10-16, run `2026-10-16T08-34-26` (saucedemo).** Six buttons are all named "Add to cart". The
+model picked one by the id discovery recorded (`add-to-cart-sauce-labs-backpack`) and put it in `name`.
+Grounding matches names only, so the step was rejected on all three attempts and the primary case was
+truncated after the login.
+
+**Fix:** in `groundingError`, only when the name matched nothing, an element whose `testId` or `id` EQUALS
+that text (case-insensitive, compatible role, with a css or testId) is taken. The step is pinned to it:
+its css follows, `nth` is dropped (the id already chose), and the name becomes the element's real name.
+Partial ids and incompatible roles are still rejected. Ordinary runs (approved by the owner 2026-10-16).
+
+**Not fixed here (recorded for later):**
+- A `select` of an option the dropdown does not have ("Option 3" on the-internet's /dropdown) reaches
+  Playwright and fails. Discovery does not record a native `<select>`'s options on the element. This is
+  Gap 2 for ordinary sites; the owner chose to do it later.
+- A security case asserting that its own typed payload (`<script>…`) is echoed on the next screen is an
+  invented assertion (run `08-18-24` case-3); it fails as `element_missing`.
+
+### TD-142. "A step is probably missing" did not say WHICH step — Medium / Accidental — **Fixed (Salesforce runs with a screen map)**
+
+**Found 2026-10-16, run `2026-10-16T09-07-56`.** The case put "Preferred Project" on form screen 2, though
+the case writer's screen block listed it on screen 3. Grounding rejected the step with "not on this
+screen; a step that opens the screen holding it is probably missing", and the retry still left the
+"Next" out, so the case was truncated.
+
+**Fix:** `routeToControl` (`screenMap.ts`, pure) searches breadth-first over the map's edges, the stored
+ones plus this run's, at most 4 clicks. It finds the nearest screen holding a control of that exact name
+and returns the click(s) that lead there from the current screen. `missingOnScreenHint` uses that sentence
+in place of the generic one: "opened from this one by clicking button \"Next\". Put that click BEFORE
+this step…". It changes a rejection's wording only, never what grounds (D-54). Wired through
+`GroundingScope.mapRoute`, which is set only when `useScreenMap`. The next short-prompt run
+(`09-53-49`) passed end to end.
+
+### TD-143. A field named by its words was rejected ("zip code" for "Zip/Postal Code") — Medium / Accidental — **Fixed**
+
+**Found 2026-10-16, run `2026-10-16T09-38-53` (saucedemo checkout).** None of the name tiers (exact, prefix,
+suffix, substring) matches "zip code" against "Zip/Postal Code", so the fill was rejected on all three
+attempts. **Fix:** in `groundingError`, only when nothing else matched: a text-entry step (textbox,
+searchbox, spinbutton) whose name has at least two words grounds to the ONE field of that role whose name
+contains every word whole. With two such fields it is still rejected. A step that grounds today cannot
+change. Ordinary runs (the owner approved it on the condition that it does not break current behaviour).
+
+### TD-144. An unlabeled checkbox was named "on", so every step on it timed out — High / Accidental — **Fixed (DOM extraction)**
+
+**Found 2026-10-16, run `2026-10-16T09-44-36` (the-internet /checkboxes: `<input type=checkbox> checkbox 1<br>`).**
+Cheerio reports a checkbox with no `value` attribute as `value="on"`, the browser default, and
+`extractInteractiveElements` used the value as the accessible name. Both boxes were called "on", with no
+selector. The form-field path labelled both "Checkboxes" (the heading above them). Every case timed out
+in `field(page, "on")`.
+
+**Fix (`domExtract.ts`):**
+- A checkbox or radio with no value ATTRIBUTE is never named by its value.
+- Its label is the text right after it (`followingLabel`: a text node, or a short `<label>`/`<span>`
+  sibling), tried before the text in front of it.
+- When it has no id or test id, it gets an exact `positionalSelector` (`#checkboxes > input:nth-of-type(2)`),
+  because two boxes in one form are told apart only by position. A locator by nearby text matches both.
+
+Text boxes, and checkboxes with a real value or a label, are unchanged. Tests: `tests/stableLoop.test.ts`.
+
+**Still open (Gap F, the owner chose "later"):** the IR has no `checked` / `unchecked` assertion, so a
+checkbox case can only assert `enabled`, which proves nothing.
+
+### TD-145. A form submitted with an empty required field gave a rejection that did not say why — Medium / Accidental — **Fixed (rejection wording)**
+
+**Found 2026-10-16, run `2026-10-16T10-59-00` (saucedemo checkout).** The case typed "Test User" into First
+Name and left Last Name empty. "Continue" therefore never advanced, and "Finish" was reported as "not
+present" on three attempts, with nothing pointing at the empty field.
+
+**Fix:** `unfilledFormFields` (`ir.ts`, pure). When a missing-element step follows a click that submitted
+a form the steps filled part of, the rejection names that form's typed fields that no step filled (`page.forms`
+from discovery, so a search box elsewhere on the page is never named) and asks for every field the form
+needs, splitting a full name where needed. Wording only: nothing that grounds or is rejected changes.
+Normal and Salesforce runs (the owner approved it 2026-10-16). Tests: `tests/stableLoop.test.ts`.
+
+### TD-146. An ordinary run's rejection never said what WAS on the page — Medium / Accidental — **Fixed (rejection wording)**
+
+**Found 2026-10-16, runs `12-08-10` and `12-10-27` (saucedemo).** The model asked for button
+"Add to cart - Sauce Labs Backpack" (and "… Onesie") on every attempt. A Salesforce run's rejection lists
+its screen's controls (TD-124); an ordinary run's said only "not present", so the retry had nothing to
+choose from.
+
+**Fix:** `similarElementsHint` (`ir.ts`, pure). When there is no screen to list, the rejection names up
+to 10 elements of a compatible role, closest first (words shared with the element's name or test id).
+A duplicated name carries its test ids (TD-141 grounds a test id given as the name), or, on a site
+without test ids, the hint to choose one by `nth`. Wording only.
+
+**This changes the ordinary retry prompt on purpose** (approved by the owner 2026-10-16).
+`tests/fixtures/salesforceTarget/retry-prompt-ordinary.json` was regenerated with
+`WRITE_RETRY_PROMPT_FIXTURE=1`; the only difference is the added sentence
+`Elements of that kind the application model does have, closest first: button "Go".`
+
+### TD-147. A guessed url_contains after a button click could only fail — Medium / Accidental — **Fixed (Salesforce screen mode)**
+
+**Found 2026-10-16, run `12-14-09`.** The smoke case clicked "Explore Projects", which scrolls the home
+page, then asserted `url_contains "/project"`. `urlAssertionError` checks a URL only after a LINK whose
+href is known, so a guess after a button went unchecked and the case failed at run time.
+
+**Fix:** in screen mode, a `url_contains` right after a button click is a screen boundary
+(`screenBoundaries`), so a live capture is taken there. `groundingError` then compares the value with
+the URL that capture reached, and only a capture taken AT that step counts. A mismatch is rejected with
+the real URL and the screen's controls, so the retry asserts something visible instead. Ordinary runs
+are unchanged, because they have no screens.
+
+### TD-148. A case could "pass" by checking the site's header after its action — High / Accidental — **Fixed**
+
+**Found 2026-10-16, run `13-49-29` (Salesforce smoke).** The case clicked "Explore Projects", then asserted
+that link "Projects" is visible. That is the site HEADER's link, visible on every page, so the case would
+pass even if the click did nothing. The prompt rule against "persistent, site-wide elements" had no check
+behind it.
+
+**Fix:** `chromeSuccessAssertion` (`ir.ts`, pure). It rejects (and retries) an IR in which EVERY
+assertion after the last action is `visible` on an element in a `nav`/`header`/`footer` landmark that was
+already visible on the page the flow started from. The landmark comes from discovery's DOM path, never
+from names or page text. Allowed:
+- a check after only opening a page (a smoke "header has Projects");
+- chrome plus any real check;
+- an element discovery saw hidden (a menu that opens).
+
+A replay over all 286 saved IRs since 2026-10-15 flags only that one smoke case. Both run types
+(approved by the owner 2026-10-16).
+
+**Also recorded, not fixed:**
+- run `13-49-29`'s Salesforce search case asserted "Dubai" visible right after selecting "Dubai" (the
+  dropdown shows it). Blocking "assert a value you just entered" would also block the legitimate "edit, then
+  see it shown" pattern, so it is left to review.
+- On one add/remove case, the failure diagnosis named step s2 when s3 failed (off by one).
+
+### TD-149. On a site's first run, nothing named the click that opens a form's next screen — Medium / Accidental — **Fixed (Salesforce screen mode)**
+
+**Found 2026-10-16, live run `17-12-23` (Azure, empty screen map).** Form screen 1 was filled, then a screen-2
+field was looked for without clicking "Next". With no map there is no TD-142 route, and the generic hint
+("a step is probably missing") plus ~25 listed controls did not lead the retry to "Next".
+
+**Fix:** `unclickedButtonsHint` (inside `groundingError`). With no map route, it names the buttons the current
+screen brought that no step clicked since that screen appeared. "Brought" means the button is not on the
+flow's FIRST captured screen, so page chrome drops out. A first version compared with the PREVIOUS screen and
+dropped "Next", because every wizard screen has one (cold run `17-54-21`). Wording only.
+
+### TD-150. A multi-screen form on an empty map ran out of attempts one screen short — Medium / Accidental — **Fixed (Salesforce screen mode)**
+
+**Found 2026-10-16, cold-start runs `17-35-53` and `17-54-21`.** With no screen map, each form screen is
+discovered by one attempt, and `MAX_IR_ATTEMPTS` (4) ended the flow on screen 1, then screen 2.
+
+**Fix:** in screen mode, when entering the last attempt, one more attempt is granted if the previous attempt
+grew the grounded prefix, at most 3 times. An attempt without progress still ends it. See DECISIONS
+(2026-10-16). Ordinary runs are unchanged.
+
+### TD-151. "Click Next" was suggested when Next had been clicked on an empty form — Medium / Accidental — **Fixed (Salesforce screen mode)**
+
+**Found 2026-10-17, run `18-29-40`.** The request never mentioned contact details, so the case left out Full
+Name, Email and Phone. The IR clicked "Next" on an empty form, the form stayed on screen 1, and every retry
+looked for "Self Use" there.
+
+**Fix:** `emptyScreenFieldsHint` names the fields the live capture shows (text boxes, dropdowns, number boxes)
+that no earlier step fills or selects. It says a form does not move on with required fields empty, and asks
+for realistic test data where the case gives none. Wording only.
+
+The next run of the same prompt (`18-46-05`) passed end to end.
+
+**Still open:**
+- the live container may lose `runs/_cache` (the screen map) on every new revision;
+- the first run on a new site is still not reliable for minimal prompts. The detailed prompt teaches the map in
+  one run.
+
+### TD-152. A click on a product HEADING lost track of the page change — Medium / Accidental — **Fixed**
+
+**Found 2026-10-17, demoblaze runs `18-17-51` and `18-46-08`.** The model clicked heading "Samsung galaxy s6",
+which wraps the product link. The click opens the product page at run time, but the flow tracker follows links
+only, so "Add to cart" was looked for on the home page and rejected on every attempt.
+
+**Fix:** in `groundingError`, a `click` matched to a heading becomes the page's link of exactly that name, when
+there is exactly one such link. After the fix, demoblaze passed (`19-33-38`). Normal and Salesforce runs
+(approved by the owner 2026-10-17).
+
+**Found while re-testing (not fixed here):** the `walks` cache never expires. A replay snapshot taken too early
+(a product page before its JavaScript content, a checkout step) is therefore pinned for every later run with
+the same steps. Cleared by hand with `POST /api/cache/walks/clear`.
+
+**Also found:** a long-running local server (hours of tsx-watch reloads) stopped advancing past saucedemo's
+"Continue" in its replays, while the same steps replayed outside it did. A server restart fixed it
+(`19-55`). Cause unknown.
+
+### TD-153. A wrong first attempt spent the whole live-extend budget, so the corrected attempt could not replay — High / Accidental — **Fixed**
+
+**Found 2026-10-18** (the owner reported the saucedemo checkout "stopped working", live run `12-01-06`).
+Proven with a temporary per-attempt trace over 4 wordings of one prompt:
+- **Attempt 1** filled the checkout form and went for "Finish" without clicking "Continue". Live-extend replayed
+  those same 11 steps, the walk cache handed back the identical step-one snapshot ("already in the model", so
+  a refresh), and it did this 4 more times until `MAX_LIVE_EXTENSIONS` (5) was spent.
+- **Attempt 2** had the right steps (Continue, then Finish) but `extensions` was already 5, so it could not
+  replay; "Finish" stayed missing and the case stopped `truncated_no_assertion`.
+
+Whether the checkout passed depended only on whether the model's FIRST attempt included "Continue", which is
+why it looked random. It was not the server's age and not the cache contents (both were tested and ruled out).
+
+**Fix:** the toIR extension loop never replays the EXACT same step list twice in one compile (`replayedPrefixes`).
+- The comparison is exact JSON, waits included, as in the walk key. A retry that only adds a wait still replays.
+- A second replay of identical steps is served the identical cached snapshot, so skipping it loses no information.
+- Salesforce screen mode has its own path and already refused a second capture at one step.
+
+**Evidence:**
+- `tests/replayBudget.test.ts` drives the real toIR loop with a mocked model and browser. It FAILS with the guard
+  disabled (truncated) and passes with it.
+- Live: the traced wording that was truncated passed on the identical (cached) model answers.
+
+**Accepted side effect:** `tests/repeatRejectionProgress.test.ts` ("ordinary run: the same target twice stops")
+expected exactly 2 attempts, which held only because the budget ran out. Now attempt 2 replays; on that one-URL
+two-screen form the refresh replaces the page and the next rejection names a different target, so it can use
+up to MAX_IR_ATTEMPTS (4). Same outcome (truncated), up to 2 more model calls in a case that fails anyway.
+
+**Found alongside, not fixed here:** discovery records a phantom button named after an input's HTML `name`
+attribute (saucedemo "login-button", no css). A step can bind to it, and the login click then fails at run
+time (traced run `sauce-trace-0`, before and after this fix).
+
+### TD-154. A generated test may meet Salesforce's email-first screen the discovery browser never saw — Medium / Unverified — **Open (check on the first real-org run)**
+
+Discovery now clicks "Log In with Username" when Salesforce shows its email-first screen (D-56), then
 records the login it performs on the username form. Each generated test replays those recorded steps
 in a FRESH browser with no cookies (D-24). Which first screen Salesforce shows depends on cookies, so
 a fresh browser might get the email-first screen — where the email box may also be `id="username"` —
 and the replayed `fill #username` would type a Salesforce username into an email field. Not observed;
-nobody has run a ticked run against a real org since D-54. **Check:** on the first real run, look at
+nobody has run a ticked run against a real org since D-56. **Check:** on the first real run, look at
 the generated test's first login screenshot. If it is the email-first screen, the fix is a
 Salesforce-only login step in the generated spec (`generator.ts`), weighed against D-24.
 
-### TD-131. `loginOnPage` decides one-screen vs two-screen from one instant check — Medium / Accidental — **Open (fixed for Salesforce runs only)**
+### TD-155. `loginOnPage` decides one-screen vs two-screen from one instant check — Medium / Accidental — **Open (fixed for Salesforce runs only)**
 
 `loginOnPage` (`hybridDiscovery.ts`) counts password boxes once. A one-screen form whose password box
 renders a moment after the username box is treated as two-screen and submitted with an EMPTY
 password first — reproduced in real Chromium (`tests/salesforceOrgLogin.test.ts`, the 8c control).
-Salesforce runs wait up to 2.5 s for the box before `loginOnPage` runs (D-54). Every other site still
+Salesforce runs wait up to 2.5 s for the box before `loginOnPage` runs (D-56). Every other site still
 has the race; fixing it in `loginOnPage` itself changes behaviour for every site, so it needs its own
 decision and its own run against the non-Salesforce fixtures in `tests/authCrawl.test.ts`.
 
-### TD-132. Generated tests' screenshots of login steps show the username — Low / Accidental — **Open**
+### TD-156. Generated tests' screenshots of login steps show the username — Low / Accidental — **Open**
 
 The generated spec screenshots each step, the login prefix included. The password box renders as
 dots; the USERNAME renders as readable text, and `runs/` is served over HTTP with its guard off by
 default (TD-14). Not specific to Salesforce — every authenticated run does it. Fix direction: skip the
 screenshot for `auth-*` steps (they have no diagnostic value once masked), or take the first one after
 the submit. Touches `generator.ts`.
-

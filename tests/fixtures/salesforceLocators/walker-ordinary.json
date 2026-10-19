@@ -1,0 +1,55 @@
+[
+ {
+  "role": "heading",
+  "name": "Express Interest",
+  "css": "body > h1",
+  "candidates": [
+   "body > h1"
+  ]
+ },
+ {
+  "role": "textbox",
+  "name": "Email Address",
+  "css": "#host >> #email-145",
+  "candidates": [
+   "#host >> #email-145",
+   "#host >> :scope > section:nth-of-type(1) > input:nth-of-type(1)"
+  ]
+ },
+ {
+  "role": "textbox",
+  "name": "Phone Number",
+  "css": "#host >> #phone-145",
+  "candidates": [
+   "#host >> #phone-145",
+   "#host >> :scope > section:nth-of-type(1) > input:nth-of-type(2)"
+  ]
+ },
+ {
+  "role": "button",
+  "name": "Next",
+  "css": "#host >> #next-145",
+  "candidates": [
+   "#host >> #next-145",
+   "#host >> :scope > section:nth-of-type(1) > button"
+  ]
+ },
+ {
+  "role": "textbox",
+  "name": "",
+  "css": "#host >> #budget-145",
+  "candidates": [
+   "#host >> #budget-145",
+   "#host >> :scope > section:nth-of-type(2) > input"
+  ]
+ },
+ {
+  "role": "button",
+  "name": "Next",
+  "css": "#host >> #next2-145",
+  "candidates": [
+   "#host >> #next2-145",
+   "#host >> :scope > section:nth-of-type(2) > button"
+  ]
+ }
+]

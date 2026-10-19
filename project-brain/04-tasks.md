@@ -15,13 +15,13 @@
 - [ ] Later: if comparison warnings are ever persisted, phrase them without quoting the document
       (D-53).
 
-## Salesforce org login hardening (D-54)
+## Salesforce org login hardening (D-56)
 
 - [ ] Commit and push (ask first), then a PR when the user asks.
-- [ ] First real-org run (ask first — costs money, holds the run slot): check TD-130 (does a fresh
+- [ ] First real-org run (ask first — costs money, holds the run slot): check TD-154 (does a fresh
       browser get the email-first screen?) on the generated test's first login screenshot.
-- [ ] TD-131 — fix the one-screen race in `loginOnPage` for every site (needs its own decision).
-- [ ] TD-132 — stop screenshotting login steps in generated tests (username visible).
+- [ ] TD-155 — fix the one-screen race in `loginOnPage` for every site (needs its own decision).
+- [ ] TD-156 — stop screenshotting login steps in generated tests (username visible).
 - [ ] If Developer Edition orgs should be testable, widen `classifyOrg` (refused today, by choice).
 - [ ] Pro follow-up still waiting on the user: the one-way comparison + quoted warnings brief (B3/B4, 12b).
 
