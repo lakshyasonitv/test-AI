@@ -1716,3 +1716,121 @@ without it the old ladder's selectors would be served back. Ordinary keys are un
 "Select for EOI" per unit) falls back to the positional path. That path is still verified, but it is
 less durable than a meaningful id would have been.
 
+
+## D-56. "Page finished loading" = no counted request in flight for 500 ms, long-lived requests ignored, capped at 5 s
+
+**Decision.** Behind `NETWORK_SETTLE_ENABLED` (default off, discovery upgrade Phase 1). Before every discovery
+snapshot (`extractDomModelFromPage`, the seam the single-page path, every hybrid crawl hop, the post-login page and
+the live-extend replay all pass through) and every screen capture, `src/stages/networkSettle.ts`:
+1. counts in-flight **fetch/XHR** requests on the page (`page.on("request" / "requestfinished" / "requestfailed")`,
+   attached before the page's first `goto` wherever the page is created);
+2. **ignores long-lived ones**: by shape (CometD / streaming / long-poll / SSE / socket URLs, or a Bayeux body with
+   `"connectionType":"long-polling"`) and by age (open longer than 3 s);
+3. waits until none of the rest have been in flight for **500 ms**, at most **5 s**, and then runs the existing
+   `waitForScreenSettle` (no spinner, stable control count). At the cap it proceeds; nothing here fails a run.
+
+**Why.** Salesforce (and any SPA) fetches a page's data after the DOM looks ready, so a snapshot at the call sites'
+fixed 800 ms models half a page. Copado's open-source QWeb engine targets Lightning with the same idea: its own
+pending-request counter that skips the CometD long-poll (docs/research/.../salesforce_specialists.md §2).
+
+**Rejected.**
+- `waitForLoadState("networkidle")`: Salesforce holds a CometD long-poll open, so the network never goes idle and
+  every wait runs to its timeout. Playwright marks it DISCOURAGED, and this codebase already strips it from
+  generated specs (`generator.ts`) and avoids it in replays (`liveExtend.ts`).
+- Ignoring long-lived requests by URL pattern only: an org's own streaming endpoint has no fixed name, so age is
+  the general backstop.
+- A spinner/selector-specific "ready" signal per site: it ties the wait to one site's markup (the general-purpose
+  rule for Salesforce work).
+- Changing the generated spec's waits: the generated spec already auto-waits per action (Playwright actionability),
+  and `generator.ts` stays pure code (D-06). This phase is about what DISCOVERY sees.
+
+**Cache.** With the flag on, the walk key gains `net-settle:1`, the single-page key gains `settled:` and the hybrid
+crawl key (`siteCacheKey`, `hybridDiscovery.ts`, approved by the owner) gains `#settled`. Flag off: every key is unchanged.
+The crawl's shared page attaches the tracker at creation, so the entry page's early requests are counted too.
+
+**Also gated on this flag: a grounding change (TD-158).** Settled discovery holds a closed modal's fields (hidden), so the
+post-click reveal check's name diff stopped seeing them appear, and a fill bound to an unrelated hidden field was accepted
+(Demoblaze, 5 of 5 runs). With the flag on, the check also compares visibility by css. Turning the flag on "just to wait
+longer" therefore also changes grounding.
+
+## D-57. One visible-dialog selector, with `:visible` on every alternative, for the replay resolver and the generated spec
+
+**Decision.** `VISIBLE_DIALOG_SELECTOR` (`targetResolver.ts`) is `DIALOG_SELECTOR` with `:visible` appended to EACH
+comma alternative. `resolveScope` (live replays, captures, deterministic heal) and the generated spec's `scopeOf`
+both use this one string (TD-135, discovery upgrade Phase 2, no flag).
+
+**Why.** Two different bugs had the same effect, a hidden modal-like element becoming the scope:
+`.filter({ visible: true })` does not exist on the pinned Playwright 1.49 (a no-op, the D-19 trap), and
+`DIALOG_SELECTOR + ':visible'` filters only the last alternative of a comma list. One shared string keeps the
+replay and the spec from disagreeing again.
+
+**Rejected.** `.and(page.locator(":visible"))`: it requires both sides in the same frame and would break the
+frame-aware locators (`Target.frame`). Separate strings per caller: that is how the two drifted.
+
+## D-58. A recaptured screen replaces the stored screen it matches BEST, not the first that passes the loose rule
+
+**Decision.** Behind `SCREEN_BEST_MATCH_ENABLED` (discovery upgrade Phase 3). `matchingScreenIndex` (`screens.ts`)
+decides which stored screen a capture replaces, for the run's model (`mergeScreenInto`) AND the stored screen map
+(`mergeIntoMap`): among every candidate `sameScreen` accepts, the highest `labelOverlap`; ties go to the exact
+key, then the exact title, then the earliest. Flag off: the first match, as before.
+
+**Why.** Two steps of one same-URL wizard share a title and most labels, so a half-rendered recapture of step 2
+passes the 70% rule against step 1 as well. With "first match wins", step 1 was overwritten and step 2 kept a
+stale twin. Seen live in Phase 2's Salesforce run: project-page, unit-selected and form screens replaced one
+another, and the IR could not find "Full Name" where it put it.
+
+**Rejected.** Tightening `SAME_SCREEN_OVERLAP`: it would split one screen's genuine recaptures (a field added
+since) into duplicates. Keying on the exact fingerprint only: the same, worse. One chooser for both callers, so the
+model and the stored map cannot disagree about which screen a capture is.
+
+## D-59. An element id is judged by evidence across walks, not by its shape
+
+**Decision.** Behind `VOLATILE_ID_DETECTION_ENABLED` (Phase 4). The same element (role + accessible name on the same
+screen: page key + dialog name) seen on two walks with a DIFFERENT id has that id marked volatile: it is never
+offered as a locator again. The SAME id twice is trusted even if it looks generated (TD-133), **but only as a
+fallback**: it goes in after every role / label candidate (D-55) and just before the positional path, so
+Playwright's first-unique pick uses it only when no role or label locator is unique. (Revised 2026-10-19: putting
+it FIRST raised generated-id locators on the Salesforce site from 0 to 12, and Lightning numbers ids by render
+order, so a different render can still shift them.) One sighting keeps today's rule. Applied in Node between the in-page walk and the Playwright verification (`liveDomDiscovery.ts`), so
+the TD-40 walker is unchanged and every candidate it keeps is still verified. Cached models (walks, app models)
+lose an id css once the id is proven volatile (`dropVolatileIdCss`), and the walk / single-page / crawl keys gain a
+part with the flag on.
+
+**What is stored** (namespace `volatileids`, keyed per site, org, credential fingerprint, locale and cache version,
+TD-22): role, name, screen, stable yes/no/unknown, seen count and a **12-hex SHA-1 of the last id**. The plan said
+"role, name, screen key and stable yes/no". The hash is the one addition, because "is this the same id as last
+time?" cannot be answered without remembering something about the last id. The id itself, css, values and
+credentials are never stored. Elements that share role + name on one screen (one "Select" per unit) record nothing:
+they cannot be told apart across walks.
+
+**Rejected.** A better regex: no pattern separates `input-145` from `unit-102`. Storing the id: the screen map's
+names-only rule. Changing the in-page walker: TD-40's risk for no gain, since Node can edit the candidate list.
+
+## D-60. The exploration clicks are decided by a deterministic policy, with a network guard, never by the model
+
+**Decision.** Behind `BUTTON_EXPLORER_ENABLED` (Phase 5; `EXPLORER_MAX_CLICKS` 15, `EXPLORER_BUDGET_MS` 120 s). After
+discovery (inside the orchestrator's discovery step), the explorer:
+- clicks only allowed controls: deny always wins (destructive or committing names, a submit button inside a form,
+  an off-site link, any control inside a Salesforce Screen Flow, and "Next"/"Finish" on a Salesforce Lightning
+  app); then structure (`role=tab`, `aria-haspopup`, `aria-expanded`); then a short list of
+  navigational names;
+- aborts any non-GET navigation while exploring, and never types;
+- after each click: settles, records, restores (Escape, the dialog's Close, Back, reload) and checks the original
+  screen is back, abandoning a page it cannot restore;
+- adds new same-origin pages to the app model; on a Salesforce run with the screen map on, records screens + edges
+  in the map as hints (D-54);
+- writes every click and every skip, with the reason, to `runs/<id>/explorer.json`.
+
+**Why.** Research (WebGuard) shows frontier models miss most high-risk actions, so the model is never asked. A name
+list is page text (TD-01), so it is only one layer: the structural submit check and the network guard stand on their
+own. In the Chromium test, without the guard the server received 2 posts from an ALLOWED control's script.
+
+**Salesforce orgs (added 2026-10-19).** On an internal org a Screen Flow's "Next" can COMMIT records between screens,
+over the same Aura/LWC POSTs as its reads, so no network rule can tell them apart. So, structurally: a control whose
+ancestors (walked up through shadow-root hosts) include `lightning-flow` or `flowruntime-*` is never clicked on any
+site, and on a Lightning-app URL (`*.lightning.force.com`, `*.my.salesforce.com`, `/lightning/`) "Next"/"Finish" are
+never clicked anywhere. The README says the explorer must stay off against production orgs.
+
+**Rejected.** Blocking every non-GET request: Salesforce Aura and many SPAs READ over POST, so pages would not render.
+Exploring every button (rejected on 2026-10-16 as TD-150's alternative): too slow and could submit forms; the allow
+list plus the budget bound it. Letting the explorer type: it could commit data.

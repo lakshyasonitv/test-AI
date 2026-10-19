@@ -5337,7 +5337,7 @@ served file for the canary. If confirmed, either scrub the trace's action parame
 traces until they are scrubbed. `executor.ts` and `playwright.config.ts` belong to Gunwant's stream;
 the fix needs his sign-off.
 
-### TD-135. `resolveScope` picks a HIDDEN modal-like element as the dialog scope — High / Accidental — **Open (confirmed in Chromium)**
+### TD-135. `resolveScope` picks a HIDDEN modal-like element as the dialog scope — High / Accidental — **Fixed (2026-10-19, discovery upgrade Phase 2)**
 
 `resolveScope` (`src/stages/targetResolver.ts` ~487) filters dialog candidates with
 `page.locator(DIALOG_SELECTOR).filter({ visible: true } as any)`. On the pinned Playwright 1.49
@@ -5351,6 +5351,15 @@ container whenever a page carries any hidden element matching `[class*="modal" i
 `[class*="dialog" i]`, which Lightning and most component libraries render permanently. The generated
 spec's own `scopeOf` uses `':visible'` correctly, so specs and replays can disagree. Fix: use the same
 `':visible'` suffix as `scopeOf`, with a Chromium test that fails today.
+
+**Fixed 2026-10-19 (discovery upgrade Phase 2, no flag).** The generated spec's `scopeOf` was NOT correct either: it appended
+`':visible'` to the whole comma-separated `DIALOG_SELECTOR`, so only the last alternative (`[class*="modal" i]`) was
+filtered, and a hidden `[role="dialog"]` (Demoblaze keeps three, Lightning keeps them too) still matched. Both now use
+`VISIBLE_DIALOG_SELECTOR` (`targetResolver.ts`): `:visible` on every alternative, one string for both.
+`tests/hiddenDialogScope.test.ts` (real Chromium): with a hidden `.modal-backdrop` and a hidden `role=dialog`, each holding
+an "Email", the scope is `<body>` and a fill lands in the visible field, in the live resolver AND in the spec's own
+`scopeOf`/`field()`. 4 of 5 FAILED before the fix (scope = hidden DIV; the fills timed out), and an open dialog is still
+the scope. No other `filter({ visible` in `src/` (comments only). Found alongside: TD-160.
 
 ### TD-136. The case writer DROPPED the request's values from the primary case — High / Accidental — **Fixed (Salesforce runs)**
 
@@ -5687,3 +5696,153 @@ up to MAX_IR_ATTEMPTS (4). Same outcome (truncated), up to 2 more model calls in
 **Found alongside, not fixed here:** discovery records a phantom button named after an input's HTML `name`
 attribute (saucedemo "login-button", no css). A step can bind to it, and the login click then fails at run
 time (traced run `sauce-trace-0`, before and after this fix).
+
+### TD-154. The run's credentials reached `events.ndjson` and `/api/runs/:id/state` through the event payloads — High / Accidental — **Fixed**
+
+**Found 2026-10-18** in the SauceDemo baseline run `2026-10-18T17-22-54-631Z-7e5d7867`, by grepping the run folder
+for the real password the run had been given.
+- `events.ndjson` line 8, the `testcases`/`completed` event, carries EVERY candidate case the model wrote (14 here,
+  4 kept). Two of them ("Submit login with empty username", "Login with malformed email-like username") had the step
+  "Type the text '<password>' into the 'Password' field." SauceDemo prints "Password for all users: …" on its
+  login page, so the model read the value off the page. The general risk is any credential visible on the page or
+  written into the request.
+- The file is served through `/runs/:runId/*`, `/api/runs/:id/state` and the SSE replay, all open while `AUTH_ENABLED`
+  is off (TD-14). No event payload was scrubbed anywhere; only the `input` event's prompt was.
+- Every other file in that run (108) and the server log had 0 hits.
+
+**Fix:** a per-run credential registry in process memory (`src/runSecrets.ts`). Every event is passed through
+`redactCredentials` with that run's credentials at the shared writer, so no event can carry them, now or later:
+- `runStore.append` (`events.ndjson`, for all five writers: orchestrator, suite runner, replay, gate, replay route)
+- `runStore.read` (`/state` and the SSE replay)
+- `runRegistry.record` (the live SSE push, which receives the raw object the writer appended)
+
+Credentials are registered where they arrive: `pendingCredentials.settle` (anything typed into the in-run prompt,
+for runs, replays and re-ground jobs) and the orchestrator for credentials written into the request.
+`TEST_USERNAME`/`TEST_PASSWORD` from the environment are always scrubbed too. Only the value changes, to the usual
+`[redacted]`; no event or route shape changes. An entry is dropped 60 s after the run's terminal event and after
+2 hours at the latest. `scrubServedSecrets` and `redactCredentials` are unchanged.
+
+**Evidence:** `tests/eventCredentialScrub.test.ts` drives the real orchestrator with only the model stages stubbed,
+on a page that prints the password, and checks `events.ndjson`, `getEvents` (what `/state` returns) and a live SSE
+subscriber. Before the fix, both credential tests FAILED (the canary was in `events.ndjson`); after, they pass. A run
+with no credentials is written byte-for-byte as before. The leaked line in the run above was rewritten to
+`[redacted]`.
+
+**Not fixed here:** traces (TD-134). The same value in kept cases and IR is TD-156.
+
+### TD-155. A retained `trace.zip` can be truncated and unreadable — Low / Accidental — **Open**
+
+**Found 2026-10-18** while checking TD-134 on run `2026-10-18T17-22-54-631Z-7e5d7867`, case-2 (a failed case, so its
+trace was kept). The 190 KB `trace.zip` has no end-of-central-directory record: `unzip` and `tar` both refuse it.
+Walking its local headers decodes only 3 resource entries (a source file, a screenshot and one 200 KB resource), with
+no `trace.trace` or `trace.network`. The trace viewer therefore cannot open it, and the actions it should record are
+missing. Likely cause, unverified: the trace is copied or served before Playwright finishes writing it, or the
+worker is stopped mid-write. It also means TD-134 could not be tested on this run. `playwright.config.ts` and
+`executor.ts` are Gunwant's.
+
+### TD-156. A kept case that types the real credential literally keeps it in `03-cases.json`, `04-ir.json` and the spec — High / Accidental — **Fixed (2026-10-19: IR, spec, cases file, and every cache)**
+
+**Found 2026-10-18** by the TD-154 clean-up grep over all of `runs/`. Seven older SauceDemo runs from 10-16..10-18 (22 files) hold
+the real password in a kept case: in `03-cases.json` / `accepted-cases.json` ("Type 'locked_out_user' into the
+'Username' field. Type '<password>' into the 'Password' field.") and in `cases/<n>/04-ir.json` (`"value": "<password>"`)
+and the generated spec (`.fill("<password>")`). Two mechanisms:
+- `03-cases.json` / `accepted-cases.json` are saved as the model wrote them. Nothing scrubs case step text (the clean
+  kept cases in the TD-154 run were clean only because the model phrased them without the value).
+- `applyCredentials` (`credentials.ts`) skips, on purpose, the password of a negative-category or identifier-only
+  case, and every fill that is not the last of its kind. A model fill whose literal value EQUALS the real
+  credential therefore stays literal. Rewriting exactly that case to the `${env:...}` reference would keep the test
+  identical (same value typed) without the literal on disk.
+
+The LLM disk cache (`runs/_cache/llm`, not served: `_cache` fails the `runId` check) also holds model answers that
+contain the value. It is disk, not HTTP, but CLAUDE.md rule 5 says credentials never touch disk.
+
+**Fix (2026-10-18, with TD-154):**
+- `applyCredentials` first turns any fill whose value IS the real (secret) credential into the `${env:...}`
+  reference, under every policy. The same value is typed (the executor passes `credentialEnvVars(runCreds)` to
+  every suite case), so no test changes. A deliberately wrong value stays literal. `ir.ts` needed no change: it
+  calls `applyCredentials` whenever the run has credentials. `tests/literalCredentialFill.test.ts`: 2 of 4 FAIL
+  without the change.
+- The orchestrator scrubs `01-plan.json` and `03-cases.json` (model text, read back only by runStore's legacy
+  history view) with the run's credentials on save. `04-ir.json` is deliberately not scrubbed on save: it is what
+  runs.
+- Clean-up: all 41 files (21 in 7 old runs, 1 in `runs/_cache/llm`, 19 in `cache-backups`) had the value replaced
+  with `[redacted]` in place (68 occurrences, all JSON still valid). Those old cases' IR/spec now type
+  `[redacted]` if replayed.
+
+**Still open:** the LLM disk cache stores each model answer as returned, so a new run whose model writes the
+literal puts it back in `runs/_cache/llm` (disk, not served). The cache does not know the run, so scrubbing it needs
+the credentials passed through `llmCacheSet` or a scrub keyed on the env pair. `accepted-cases.json` (the gate's
+`caseAccumulator`, off-limits Pro/gate area) is not scrubbed.
+
+### TD-157. A model-written `nth` past the real duplicates ships to the spec and can only time out — Medium / Accidental — **Open**
+
+**Found 2026-10-19**, Phase 1 flag-ON Salesforce run `2026-10-18T19-08-24-792Z-25b2c21b`. The primary failed with
+`locator.fill: Timeout 10000ms` on `…role=textbox[name="Phone Number"s]').nth(1)`. The captured screen holds ONE
+textbox named "Phone Number" (plus a combobox of the same name), and the model set `"nth": 1`, most likely counting
+the combobox as a duplicate. `nthTwin` / `rebaseNth` in `ir.ts` (~920-936) deliberately leave an out-of-range `nth`
+untouched ("leave it failing loudly"), so grounding accepts a step that cannot match anything at run time. The
+flag-OFF run of the same request did not set `nth` and passed that step with the same locator. A structural fix:
+treat `nth >= twins.length` (same role + name) as a grounding rejection with feedback, so the model retries.
+`ir.ts` is Garvit's.
+
+### TD-158. A fill can be grounded on a HIDDEN element when the visible field's accessible name is odd — Medium / Accidental — **Partly fixed (post-click reveal path, with NETWORK_SETTLE_ENABLED)**
+
+**Found 2026-10-19**, Phase 1 flag-ON Demoblaze run `2026-10-18T19-26-51-088Z-af777456` (also seen 2026-10-18 on
+the Azure path, Session 76). The order form's Name input gets the live-DOM name "Total: Name:" (or
+"Total: 360 Name:"; the label text runs into the cart total). The model wrote "Username:", which exactly matches
+the HIDDEN Sign-up modal's `#sign-username`, and grounding accepted it. The run then waited 10 s for a field that
+never becomes visible. Grounding should not accept a `fill`/`click` target that discovery measured as hidden while
+the step's page is open, at least not without a visible alternative. Proposed earlier as "prefer a visible partial
+match"; not built. `ir.ts` is Garvit's.
+
+### TD-159. A replay can snapshot the cart before its own "Add to cart" request finished — Low / Accidental — **Open**
+
+**Found 2026-10-19** while ruling Phase 1 in or out for TD-158. Replaying the same 6 Demoblaze steps (Phones →
+product → Add to cart → Cart → Place Order) locally through `refreshPageModel`, 3x with `NETWORK_SETTLE_ENABLED`
+off and 3x on, gave an EMPTY cart (order field "Total: Name:") 1 of 3 times off and 2 of 3 on. So the race exists
+with the flag off too, and it is not caused by Phase 1. `runStepLive` moves on right after a click, so a click that
+fires a request (add to cart) can be followed by a navigation that aborts it. Phase 1 settles only before the
+snapshot, not between replay steps. A possible extension: settle after a replayed click that started a request.
+
+### TD-160. `firstUnique`'s visible narrowing (`c.locator(":visible")`) is a no-op — Low / Accidental — **Open (latent)**
+
+**Found 2026-10-19** in the Phase 2 grep (TD-135's family). In both `targetResolver.ts` and the generated spec's
+`firstUnique`, `c.locator(":visible")` searches the candidate's DESCENDANTS, not the candidate. Verified in Chromium:
+two `getByLabel("Email")` matches, one hidden → `c.locator(":visible").count()` = 0, while
+`c.and(page.locator(":visible")).count()` = 1. Today a later rung still picks the visible twin
+(`tests/hiddenDialogScope.test.ts` pins that, in both the resolver and the spec), so there is no observed failure and
+no code change was made. If it is ever fixed: check `nth(i).isVisible()` per match (works inside frames), not
+`.and(page.locator(":visible"))`, which needs both sides in the same frame.
+
+### TD-161. A truncated best attempt can ship a vacuous assertion, and the generator then errors the whole run — Medium / Accidental — **Open**
+
+**Found 2026-10-19**, Phase 3 SauceDemo run `2026-10-19T08-17-38-536Z-29782e27`. The IR stopped after 2 attempts and
+logged "shipping the best attempt's 9 grounded steps". The shipped (truncated) prefix still held a `text_equals`
+step with no value. `generator.ts` correctly refuses to emit a vacuous assertion ("Step s8: "text_equals" has no
+comparison value…"), but that refusal is thrown at the `generate` stage, so the RUN ends in `error` instead of a
+truncated case. The vacuous-assertion check in grounding runs on the full attempt, not on the best-attempt prefix
+that is shipped. A structural fix: drop (or reject) a vacuous assertion from the shipped prefix in `ir.ts`, so the
+run degrades to `truncated_no_assertion` like any other truncation.
+
+**TD-158 update 2026-10-19 (root cause found while measuring Phase 1-3).** In 5 of 5 Demoblaze runs the outcome followed the
+replayed cart: with a populated cart (total in the label: "Total: 360 Name:") the post-click reveal check saw a NEW
+name, rejected "Username:", and the retry chose the order field; with an empty cart ("Total: Name:", the SAME name
+discovery already held, hidden) nothing looked new by name, and the hidden Sign-up field was accepted. The check
+compared NAMES only. With settled discovery (Phase 1) attempt 1 grounds directly, so this one check is all that
+stands between the model and the hidden field. **Fix (with `NETWORK_SETTLE_ENABLED`, in `ir.ts`'s post-click reveal
+check):** by css, a field HIDDEN before the click and VISIBLE after it counts as revealed; a target that is STILL
+hidden after the click is rejected, naming the fields the click revealed; a target the click itself made visible is
+accepted. The "before" elements are captured before the refresh replaces `currentModel` (an early version read the
+after-state by mistake). `tests/irRevealVisibility.test.ts`: flag off reproduces the bug (the hidden
+`#sign-username` ships); flag on rejects it and retries to `#name`, and accepts a correct `#name` in one attempt.
+Still open: a hidden target in any step that is NOT the first fill after a click (the reveal check runs once per
+compile).
+
+**TD-156 closed 2026-10-19 (the cache half).** `llmCacheSet` (every namespace: llm, walks, screenmap, volatileids,
+requestvalues), `makeCacheKey` (the key's INPUT, before hashing) and the app-model `cacheSet` now pass through
+`cacheSafe` (`runSecrets.ts`): the current run's credentials (and `TEST_USERNAME`/`TEST_PASSWORD`) become
+`${env:TEST_PASSWORD}` / `${env:TEST_USERNAME}`, the references the generated spec already resolves. A reference, not
+`[redacted]`, so a cached answer that said "type the password" still does, for the run serving it.
+`tests/llmCacheCredentials.test.ts`: 3 of 4 FAILED before (the body on disk, the key input and the discovery cache all
+carried the canary). Clean-up grep over the whole `testbench/` tree: two old backup entries (a walk snapshot of
+SauceDemo's login page and one model answer) were rewritten the same way; 0 hits now, apart from `.env` itself.
