@@ -5944,6 +5944,17 @@ Not caused by the discovery upgrade: none of its flags was on in that process, a
   cost of missing a custom form that marks nothing invalid, like 8e01a75f's. A flow that stops early on a screen
   WITHOUT an error (8e01a75f with a valid email stops at STEP 2 OF 3) is Fix 3's, not this one's.
 
+**Phase A (2026-10-20): page-level error toasts.** A Salesforce save error is a toast OUTSIDE the form, which the form-only
+rule above did not see. `replayAndSnapshot` (error-signals replays only) now records the page-level `role="alert"` /
+`aria-live="assertive"` regions on screen just before the replay's last interaction (fill, click, select, check, press;
+a navigate is not one), and `captureErrorMarkers` adds a `page-alert` marker for one that is shown, bigger than 1x1,
+not `role="status"`, and was NOT in that set. So a banner already showing, a 1px screen-reader route announcer (Next.js)
+and a success `role="status"` toast never count; a toast that was in the page hidden (display:none or faded out) and
+Save showed it does. The walk key part is now `error-signals:2`. Tests: `tests/hollowPassToasts.test.ts` (8, real
+Chromium); 7/7 mutations caught. Live (flag on, empty LLM cache): no page-level toast appeared on the three sites, so
+the rule did not fire; the Salesforce main case still "passed" on STEP 2 OF 3 (a hollow pass: no error on that screen,
+Phase D's job).
+
 ### TD-163. A deterministic heal can turn a truncated_no_assertion case into a passed run — Medium / Accidental — **Open**
 
 **Found 2026-10-19** by the TD-162 review. `orchestrator.ts` computes `truncatedNoAssertion` from the ORIGINAL IR

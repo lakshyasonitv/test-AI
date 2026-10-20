@@ -19,7 +19,7 @@ import { mergeScreenInto } from "./screens.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForScreenSettle } from "./networkSettle.js";
 import { dropVolatileIdCss, volatileIdDetectionEnabled } from "./volatileIds.js";
-import { captureErrorMarkers, errorMarkersOf, type ErrorMarker } from "./hollowPassGuards.js";
+import { captureErrorMarkers, errorMarkersOf, lastInteractionIndex, pageAlertTexts, type ErrorMarker } from "./hollowPassGuards.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -231,8 +231,9 @@ export function walkCacheKey(
   // Phase 4: walks taken while id evidence is applied pick different css (TD-22).
   if (volatileIdDetectionEnabled()) keyParts.push("volatile-ids:1");
   // TD-162: a walk that read the page's error markers holds a field an older one lacks. Appended
-  // only when asked for, so every existing key is unchanged.
-  if (options.errorSignals) keyParts.push("error-signals:1");
+  // only when asked for, so every existing key is unchanged. :2 — Phase A also reads page-level
+  // alerts that are new after the last interaction; a :1 walk lacks them.
+  if (options.errorSignals) keyParts.push("error-signals:2");
   return makeCacheKey(...keyParts);
 }
 
@@ -306,8 +307,13 @@ async function replayAndSnapshot(
     /** Where the flow was when it last typed a credential, and what it typed it into. Used
      *  below to tell "signed in" from "still sitting on the sign-in form". */
     let credentialFill: { url: string; target: Step["target"] } | undefined;
+    // TD-162 Phase A: the page-level alerts on screen just before the last interaction, so one that is
+    // new after it counts as its outcome (`captureErrorMarkers`). Only for an error-signals replay.
+    const lastInteraction = options.errorSignals ? lastInteractionIndex(prefix) : -1;
+    let pageAlertsBefore: string[] | undefined;
     for (let i = 0; i < prefix.length; i++) {
       if (i === prefix.length - 1) urlBeforeLastStep = page.url();
+      if (i === lastInteraction) pageAlertsBefore = await pageAlertTexts(page);
       const step = prefix[i];
       // Value-first, matching runStepLive and lastFillIndexByKind. All three have to agree about
       // which fills are credential fills or `isFinalAttempt` is computed against a different set
@@ -418,7 +424,7 @@ async function replayAndSnapshot(
     const title = await page.title();
     const pageText = await capturePageText(page);
     const pageTextRaw = await capturePageTextContent(page);
-    const errorMarkers = options.errorSignals ? await captureErrorMarkers(page) : undefined;
+    const errorMarkers = options.errorSignals ? await captureErrorMarkers(page, pageAlertsBefore) : undefined;
 
     // Try DOM-based discovery first for the reached page. Snapshot the replay's OWN page
     // handle — its session/cookies are intact, so an authenticated URL is modeled as the
