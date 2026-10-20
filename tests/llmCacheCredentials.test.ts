@@ -93,10 +93,10 @@ describe("TD-156: no credential value reaches a cache", () => {
   it("a LONG credential is replaced as a whole token inside text, never inside a longer word", () => {
     const run = "test-run-td156-long";
     withRunId(run, () => {
-      rememberRunSecrets(run, { username: "standard_user_q", password: "secret_sauce_q", secret: true });
+      rememberRunSecrets(run, { username: "zqcanaryuser_q", password: "zqcanarypw_q", secret: true });
       const key = makeCacheKey("long", String(Math.random()));
-      llmCacheSet(key, { text: "Password for all users: secret_sauce_q. Not secret_sauce_qx." }, NS);
-      expect(llmCacheGet<any>(key, NS).text).toBe("Password for all users: ${env:TEST_PASSWORD}. Not secret_sauce_qx.");
+      llmCacheSet(key, { text: "Password for all users: zqcanarypw_q. Not zqcanarypw_qx." }, NS);
+      expect(llmCacheGet<any>(key, NS).text).toBe("Password for all users: ${env:TEST_PASSWORD}. Not zqcanarypw_qx.");
     });
   });
 

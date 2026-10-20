@@ -555,7 +555,7 @@ export function redactCredentials<T>(value: T, creds?: Credentials): T {
  * "Run the test suite" into "Run the ${env:...} suite"):
  * - a string that IS the value (a fill value, a field) is replaced, at any eligible length;
  * - inside longer text, a value of LONG_CREDENTIAL+ characters is replaced only as a whole token
- *   (not inside "secret_saucepan"); a shorter one only where it is QUOTED ('test', "test", `test`),
+ *   (not inside "zqcanarypwpan"); a shorter one only where it is QUOTED ('test', "test", `test`),
  *   which is how a model writes a typed value ("Type 'test' into the Password field").
  */
 const LONG_CREDENTIAL = 8;

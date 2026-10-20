@@ -172,7 +172,7 @@ a `\b` word boundary in the RegExp (and the deny-list mutation above proves it w
 
 The redaction used to replace the credential as a SUBSTRING of the serialised whole. With password `test`, "Run the
 test suite" became "Run the ${env:TEST_PASSWORD} suite", and a long value rewrote longer words
-(`secret_saucepan`). Fixed in `c4b00ae`, matching per string value:
+(`zqcanarypwpan`). Fixed in `c4b00ae`, matching per string value:
 - a value that IS the credential is replaced;
 - inside text, a value of 8+ characters only as a whole token, and a shorter one only where quoted (`'test'`),
   which is how a model writes a typed value.

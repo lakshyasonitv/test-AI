@@ -5849,7 +5849,7 @@ SauceDemo's login page and one model answer) were rewritten the same way; 0 hits
 
 **TD-156 edge case fixed (`c4b00ae`).** The cache redaction replaced the credential as a SUBSTRING of the
 serialised whole, so a short or common password (`test`) rewrote ordinary text ("Run the test suite") and a long one
-rewrote longer words (`secret_saucepan`). It now matches per string value:
+rewrote longer words (`zqcanarypwpan`). It now matches per string value:
 - a value that IS the credential is replaced;
 - inside text, a value of 8+ characters only as a whole token, and a shorter one only where quoted (`'test'`).
 
@@ -5868,6 +5868,14 @@ is untouched. At run time the reference resolves because every case's process ge
 the real password and username become references (IR and spec); wrong/empty values are kept; the generated spec of a
 none-policy case passes in a REAL Playwright run with the run's credentials in its env and fails without them.
 3 of 4 fail with the fix removed. The 6 files were redacted (`[redacted]`).
+
+**Public demo credential in history, accepted (2026-10-20).** A full byte scan of the machine's checkout found
+SauceDemo's demo password — which is also the `.env` SAUCE_PASSWORD — inside example words in a comment
+(`credentials.ts`), a test fixture (`tests/llmCacheCredentials.test.ts`), this file and a phase report, all written
+in `c4b00ae` / `7ac3cb6`, and in older history (2026-07/08, the original demo-account map). The current files now use
+a made-up canary. History is NOT rewritten: those commits are on `origin/shadowdom`, so a rewrite would need a
+force-push to a shared branch, and the value is a public demo password printed on the site's own login page.
+**Rule from now on: test fixtures and docs use made-up canaries only, never a real or demo credential.**
 
 ### TD-162. A valid case can PASS by asserting the site's own error, or by stopping before the flow finishes — Critical / Accidental — **Open**
 
