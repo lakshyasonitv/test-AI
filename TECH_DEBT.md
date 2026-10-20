@@ -5857,6 +5857,18 @@ Unchanged: the 4-character minimum and the DOM-keyword skip, so a username such 
 secret (safe for text, but such a username can remain in a cache). `redactCredentials` (the event scrub, a
 `[redacted]` placeholder for display) still matches substrings; over-redacting a display copy is the safe direction.
 
+**TD-156 follow-up (2026-10-20): negative cases skipped the literal pass.** Run `2026-10-20T04-19-54-377Z-240a1566`
+(SauceDemo) wrote the `.env` password into 6 files: `04-ir.json` and both spec copies of case-1 (`security-injection`)
+and case-3 (`invalid-input`). The model read it off the login page, which prints it. Those categories get credential
+policy `none`, so toIR compiled them with `creds` undefined and `finalize` never called `applyCredentials`, whose first
+pass is the literal → `${env:...}` rewrite. Fixed in `ir.ts` (`finalize`): the RUN's credentials go in with the
+case's own policy; for `none`, `applyCredentials` stops right after that pass, so a deliberately wrong or empty value
+is untouched. At run time the reference resolves because every case's process gets the run's credentials
+(`suiteRunner.ts:429`, `runSpec(spec, caseDir, credentialEnvVars(runCreds))`). `tests/negativeCaseCredentials.test.ts`:
+the real password and username become references (IR and spec); wrong/empty values are kept; the generated spec of a
+none-policy case passes in a REAL Playwright run with the run's credentials in its env and fails without them.
+3 of 4 fail with the fix removed. The 6 files were redacted (`[redacted]`).
+
 ### TD-162. A valid case can PASS by asserting the site's own error, or by stopping before the flow finishes — Critical / Accidental — **Open**
 
 **Found 2026-10-19**, Salesforce run `2026-10-19T13-44-20-358Z-8e01a75f` (3/3 "passed"). The request: fill the enquiry

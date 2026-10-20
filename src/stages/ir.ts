@@ -2405,8 +2405,13 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   const finalize = (ir: IR): IR => {
     ir.meta.baseUrl = origin;
     ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
-    if (creds) {
-      applyCredentials(ir.steps, creds, credPolicy, legUrls(ir, currentModel, entryUrl),
+    // TD-156 follow-up: a "none"-policy case (most negative cases) has no `creds`, so the literal ->
+    // ${env:} pre-pass inside applyCredentials never ran, and a password the model read off a login
+    // page reached 04-ir.json and the spec (run 2026-10-20T04-19-54-377Z-240a1566). With the RUN's
+    // credentials and the case's own policy, applyCredentials does only that pre-pass for "none".
+    const finalCreds = creds ?? runCreds;
+    if (finalCreds) {
+      applyCredentials(ir.steps, finalCreds, credPolicy, legUrls(ir, currentModel, entryUrl),
         credentialFieldMap(currentModel));
     }
     if (!ir.meta.truncated) {
