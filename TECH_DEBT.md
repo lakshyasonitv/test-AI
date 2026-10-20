@@ -5944,3 +5944,15 @@ truncation meta (`heal.ts`, `healedIr = {...ir, steps}`), so a truncated IR with
 heals, and then passes is reported as a passed run although it still verifies nothing. `isHealable` excludes only
 `navigate-url` and (TD-162) `error-assertion` truncations. A structural fix: apply the override to the HEALED IR's
 meta, not skip it. `orchestrator.ts` needs its owner's sign-off.
+
+### TD-164. Running the test suite deleted every saved walk on the machine — Medium / Accidental — **Fixed (2026-10-20)**
+
+**Found 2026-10-20.** `tests/editorGuards.test.ts` (TD-91's "the rewrite can see the site") called
+`llmCacheClear(WALK_CACHE_NS)` before and after every test, so `npx vitest run` in a real checkout emptied the
+REAL `runs/_cache/walks`. Walks are re-made on demand, but evidence went with them: run 8e01a75f's replay snapshot
+(`walks/743560dd…`), which the TD-162 offline replay read, is gone for good. **Fix (test-only):** the suite redirects
+the one seam `caseEdit` uses to find walks (`cacheNamespaceDir("walks")`) to its own temporary folder per test and
+writes its fixture walks there; it never touches `runs/_cache`. Checked: a marker file placed in the real walks
+folder survives the suite (143 walks before and after). Other tests still WRITE into `runs/_cache` (test-only
+namespaces such as `walks-test`, and LLM entries under per-test `LLM_CACHE_VERSION`s): never read by a real run,
+never destructive, left as they are.
