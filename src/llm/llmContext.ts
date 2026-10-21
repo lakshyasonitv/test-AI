@@ -32,7 +32,8 @@ import { KeyPool } from "./keyPool.js";
  * resolved provider for a role is `gemini`. When the role's provider is `azure`, the org's stored
  * key/model/budget are ignored entirely — the request is built purely from the process-wide
  * `AZURE_OPENAI_*` env, and the cache key carries the `azure` provider so an org fingerprint under
- * gemini and under azure can never collide (TD-22 / D-10).
+ * gemini and under azure can never collide (TD-22 / D-10). The `claude` provider (D-58) follows the
+ * azure rule exactly: env-only (`ANTHROPIC_*`), org config ignored, its own cache prefix.
  */
 export interface LlmConfig {
   /** Credentials for this run. Null means "use the process-wide pool built from env". */
@@ -99,7 +100,8 @@ export type LlmRole = "main" | "lite";
  */
 export function llmCacheDimension(role: LlmRole): string {
   const provider = resolvedProvider(role);
-  if (provider === "azure") return `${provider}:env`;
+  // claude, like azure, is env-only: the org config is Gemini-only (D-58).
+  if (provider === "azure" || provider === "claude") return `${provider}:env`;
   return `${provider}:${currentLlmConfig()?.keyFingerprint ?? "env"}`;
 }
 
@@ -141,6 +143,27 @@ export function resolvedReasoningEffort(role: LlmRole): string | undefined {
     return process.env.AZURE_OPENAI_REASONING_EFFORT_LITE || undefined;
   }
   return process.env.AZURE_OPENAI_REASONING_EFFORT || "low";
+}
+
+/** Default Claude model for both roles when `ANTHROPIC_MODEL` is unset (D-58). */
+export const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5";
+
+/** The Claude model id for a role: `ANTHROPIC_MODEL_LITE` for 'lite' (default = `ANTHROPIC_MODEL`),
+ *  `ANTHROPIC_MODEL` for 'main', both defaulting to `DEFAULT_CLAUDE_MODEL`. Not org-configurable:
+ *  per-org config is Gemini-only. Mirrors `resolvedDeployment`'s lite-falls-back-to-main rule. */
+export function resolvedClaudeModel(role: LlmRole): string {
+  if (role === "lite") {
+    return process.env.ANTHROPIC_MODEL_LITE || process.env.ANTHROPIC_MODEL || DEFAULT_CLAUDE_MODEL;
+  }
+  return process.env.ANTHROPIC_MODEL || DEFAULT_CLAUDE_MODEL;
+}
+
+/** `output_config.effort` for a role, or undefined to omit it and take the model's own default.
+ *  'lite' reads only `ANTHROPIC_EFFORT_LITE` and never falls back to the main variable — the same
+ *  rule as `resolvedReasoningEffort`, so a lite model that rejects effort is never sent it. */
+export function resolvedClaudeEffort(role: LlmRole): string | undefined {
+  if (role === "lite") return process.env.ANTHROPIC_EFFORT_LITE || undefined;
+  return process.env.ANTHROPIC_EFFORT || undefined;
 }
 
 /** The model a cache key must record: the one that will actually be used, not the env default. */

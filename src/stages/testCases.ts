@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { llm, cacheModelDimension, providerFor } from "../llm/client.js";
+import { llm, cacheModelDimension, providerFor, modelFor } from "../llm/client.js";
 import { parseJson, unwrapArray } from "../llm/json.js";
 import type { Plan } from "./planner.js";
 import type { Coverage } from "./planner.js";
@@ -16,7 +16,7 @@ import { restoreControlNames } from "./controlNames.js";
 import { restoreDroppedValues } from "./requestValues.js";
 import { screenMapEnabled, loadScreenMap, screensForCases } from "./screenMap.js";
 import { looksLikeCompoundLoginCase } from "./credentials.js";
-import { llmCacheDimension, resolvedDeployment, resolvedModel } from "../llm/llmContext.js";
+import { llmCacheDimension } from "../llm/llmContext.js";
 
 /**
  * The model returned zero usable test cases — either an empty array, all cases failed schema
@@ -600,7 +600,7 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
           // write, and the orchestrator ends the run as blocked/error after saving the raw
           // response for diagnosis. provider/model name who actually billed the attempt.
           const provider = providerFor("main");
-          const modelOrDeployment = provider === "azure" ? resolvedDeployment("main") : resolvedModel();
+          const modelOrDeployment = modelFor("main");
           throw new NoTestCasesError(provider, modelOrDeployment, raw, finishReason);
         }
         if (isCacheableResult(finalCases)) llmCacheSet(cacheKey, finalCases);

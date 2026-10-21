@@ -348,11 +348,12 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `orchestrator.ts` | Pipeline wiring: plan -> discovery -> test cases (-> optional gate) -> IR -> generate -> execute -> heal -> suite |
 | `db.ts` | Supabase Postgres access. `getServiceClient()` (service role, bypasses RLS by design), `DEFAULT_ORG_ID`, `isDbEnabled()`, the fire-and-forget run-row writes (`recordRunStarted` / `recordRunStatus` / `recordRunProject` / `recordRunCases`) and the shadow comparison against `listRuns()`. **`DB_ENABLED` gates only those five things** — the library, projects and organisations surface goes through the same client with no such check, so it works whenever a service-role key is set and 503s when one is not |
 
-### `src/llm/` — LLM Layer (5 files)
+### `src/llm/` — LLM Layer
 
 | File | Purpose |
 |------|---------|
 | `gemini.ts` | Google Gemini client (REST API, key-pool rotation, backoff); returns `{content, usage}` and records ambient per-stage spend via `llmBudget.ts`. Takes an optional image (`imageBase64`) or document (`fileBase64` + `fileMime`, Pro's PDF) as an `inline_data` part — neither is counted by the `LLM_MAX_PROMPT_CHARS` guard |
+| `claude.ts` | Anthropic Claude provider (D-58) via `@anthropic-ai/sdk`, chosen by `LLM_PROVIDER[_LITE]=claude`. Same `{content, usage}` contract as `azureOpenAI.ts`; SDK retries off, `callWithPool` keeps rotation/backoff/timeout; never sends `temperature`; refusal / `max_tokens` thrown without retry; image and PDF as content blocks. Model/effort resolved in `llmContext.ts` (`resolvedClaudeModel`, `resolvedClaudeEffort`); `client.ts` `modelFor()` names the model for cache keys and errors |
 | `keyPool.ts` | Round-robin API key pool with cooldown tracking; `poolFromEnv` accepts a singular `_KEY` var as a fallback when the plural `_KEYS` var isn't set |
 | `llmBudget.ts` | Per-run hard cap on LLM calls across every stage (plan, discovery, testcases, ir, failure-analysis, heal), not just IR; usage recorded to `08-llm-usage.json`, broken down per stage. See `DECISIONS.md` D-21 |
 | `backoff.ts` | Exponential backoff, per-attempt timeout, rate-limit detection + key rotation |

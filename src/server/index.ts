@@ -88,6 +88,7 @@ import {
 } from "./orgLlmConfig.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
 import { enterWithLlmConfig, resolvedProvider } from "../llm/llmContext.js";
+import { LLM_PROVIDERS } from "../llm/client.js";
 import { extendedLoggingEnabled } from "../logging.js";
 import { withRunId } from "../runContext.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
@@ -778,6 +779,11 @@ app.get("/api/health", (_req, res) => {
       // safe to leave public.
       NL_STEPS_ENABLED:  check("NL_STEPS_ENABLED"),
       GATE_CASE_EDIT_AI: check("GATE_CASE_EDIT_AI"),
+      // ADDITIVE (D-58) — the Claude provider's variables. Presence only, never a value.
+      ANTHROPIC_API_KEY:    check("ANTHROPIC_API_KEY"),
+      ANTHROPIC_API_KEYS:   check("ANTHROPIC_API_KEYS"),
+      ANTHROPIC_MODEL:      check("ANTHROPIC_MODEL"),
+      ANTHROPIC_MODEL_LITE: check("ANTHROPIC_MODEL_LITE"),
     },
     // Server-side defaults for the two per-run options a client may override. The
     // UI reads these so its Settings toggles open in the state the server is
@@ -2283,13 +2289,13 @@ export function formatInvalidBooleanFlags(bad: InvalidBooleanFlag[]): string {
 export { app };
 
 /**
- * Every env var that names an LLM provider ("gemini" or "azure").
+ * Every env var that names an LLM provider ("gemini", "azure" or "claude" — D-58).
  *
  * The same shape as `BOOLEAN_ENV_FLAGS` for the same reason: `LLM_PROVIDER=azureEE` would be
  * silently read as `gemini` (the fallback default) if a typo ever shipped, and a server running
  * gemini when the operator believes it is on Azure is expensive to discover — wrong-billion
  * tokens, wrong endpoint, wrong tenancy. Unset is the documented default (gemini); a present value
- * must be exactly "gemini" or "azure".
+ * must be exactly one of `LLM_PROVIDERS` (client.ts).
  */
 export const LLM_PROVIDER_ENV_VARS = ["LLM_PROVIDER", "LLM_PROVIDER_LITE"] as const;
 
@@ -2310,7 +2316,7 @@ export function findInvalidProviderEnv(env: NodeJS.ProcessEnv = process.env): In
     if (raw === undefined) continue;
     // No trimming, exactly like findInvalidBooleanFlags: " azure"/"azure " read as gemini at the
     // call site (resolvedProvider does no trimming either), so they must be fatal here.
-    if (raw !== "gemini" && raw !== "azure") bad.push({ name, found: raw });
+    if (!(LLM_PROVIDERS as readonly string[]).includes(raw)) bad.push({ name, found: raw });
   }
   return bad;
 }
@@ -2318,11 +2324,11 @@ export function findInvalidProviderEnv(env: NodeJS.ProcessEnv = process.env): In
 /** The fatal message for `findInvalidProviderEnv()` output — names each variable and its value. */
 export function formatInvalidProviderEnv(bad: InvalidProviderEnv[]): string {
   return [
-    `[startup] FATAL: LLM provider environment variable(s) set to a value that is neither "gemini" nor "azure".`,
-    ...bad.map((b) => `  ${b.name}=${JSON.stringify(b.found)} — expected exactly "gemini" or "azure"`),
+    `[startup] FATAL: LLM provider environment variable(s) set to a value that is not "gemini", "azure" or "claude".`,
+    ...bad.map((b) => `  ${b.name}=${JSON.stringify(b.found)} — expected exactly "gemini", "azure" or "claude"`),
     `  These variables select which provider a role ('main'/'lite') calls; any other value is read`,
     `  as gemini, so a stale typos would silently run Google's endpoints while the operator believes`,
-    `  Azure is configured. Set each to exactly "gemini" or "azure", or remove it entirely to take`,
+    `  Azure or Claude is configured. Set each to exactly "gemini", "azure" or "claude", or remove it to take`,
     `  its documented default (gemini).`,
   ].join("\n");
 }
@@ -2482,6 +2488,8 @@ if (isMain) {
       "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY",
       "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_DEPLOYMENT_LITE",
       "LLM_CACHE_VERSION",
+      // Appended (D-58): the Claude provider's variables, presence only like the rest.
+      "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEYS", "ANTHROPIC_MODEL", "ANTHROPIC_MODEL_LITE",
     ]) {
       const val = process.env[v];
       console.log(`  ${v}: ${val ? "SET" : "NOT SET"}`);

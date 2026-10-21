@@ -46,3 +46,12 @@
       the image's browsers or document the symlink workaround in the setup script.
 - [ ] `CLAUDE.md` / `AGENTS.md` are 214 lines against CLAUDE.md's own "under 200" rule
       (`docs/FINDINGS_2026-09-28.md` §6.3).
+
+## Claude provider (D-58)
+
+- [ ] Commit and push (ask first).
+- [ ] One real call with the user's own key (ask first — costs money): set `LLM_PROVIDER=claude` and
+      `ANTHROPIC_API_KEY` in `.env` on the laptop, run one small saucedemo run, check
+      `08-llm-usage.json` says `claude`. If attempts time out, raise `LLM_TIMEOUT_MS`.
+- [ ] Later, only if asked: a UI switch for the provider (needs a new route — platform rule 1).
+

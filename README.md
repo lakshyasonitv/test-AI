@@ -232,6 +232,8 @@ in `.env.example` — but that file is not a complete index of this table. `MAX_
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GEMINI_API_KEYS` | Yes | Comma-separated Gemini API keys (quota stacks across distinct projects). `GEMINI_API_KEY` (singular) is accepted as a fallback |
+| `LLM_PROVIDER` / `LLM_PROVIDER_LITE` | No | Which provider's keys the pipeline uses: `gemini` (default), `azure` (`AZURE_OPENAI_*`) or `claude` (`ANTHROPIC_*`). `_LITE` covers the cheap stages and defaults to `LLM_PROVIDER`. Any other value stops the server at startup |
+| `ANTHROPIC_API_KEY` | When a role is `claude` | Claude API key (`ANTHROPIC_API_KEYS` comma-separated also works). `ANTHROPIC_MODEL` (default `claude-opus-5-5`), `ANTHROPIC_MODEL_LITE` (default = `ANTHROPIC_MODEL`), `ANTHROPIC_EFFORT[_LITE]` (unset = model default). See `.env.example` and `DECISIONS.md` D-58 |
 | `GEMINI_MODEL` | No | Gemini model for IR generation/discovery/test-cases/failure-analysis — verify against your deployed `.env`, not this table |
 | `GEMINI_MODEL_LITE` | No | Gemini model for labeling |
 | `LLM_TIMEOUT_MS` | No | Per-attempt abort timeout for any Gemini call (default: 45000) |

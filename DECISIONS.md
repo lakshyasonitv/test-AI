@@ -1812,3 +1812,32 @@ password screen is still uncaptured — TD-158); `test.salesforce.com` is still 
 is that nothing that works today may change. *Collapsing the login into one test.step* — breaks the
 step-per-IR-step mapping the executor and failure analysis rely on. *Gating the generator on the IR marker
 alone* — a saved case would keep the fixed login after the flag was switched off.
+
+## D-58. Claude is a third provider behind the same LLM_PROVIDER switch, not a new mode
+
+**Context.** The user asked to add Anthropic Claude and "a mode to configure the keys being used in
+background, be it azure ones or claude". The pipeline already had that mode: `LLM_PROVIDER` /
+`LLM_PROVIDER_LITE` pick a provider per role, read at request time, with no fallback.
+
+**Decision.** `claude` becomes a third value of the same switch. `src/llm/claude.ts` mirrors
+`azureOpenAI.ts` (`{content, usage}`, `recordAmbient`, `callWithPool`) through the official
+`@anthropic-ai/sdk` (pinned exact). Keys come only from `ANTHROPIC_API_KEY[S]`; model from
+`ANTHROPIC_MODEL[_LITE]` (default `claude-opus-5-5`, lite falls back to main); effort from
+`ANTHROPIC_EFFORT[_LITE]`, sent only when set, lite never inheriting main. SDK retries are off so
+backoff stays in one place; SDK errors are re-thrown with `.status`/`.retryAfter` (529 → 503) so
+`backoff.ts` classifies them as it does Azure's. `temperature` is never sent (current models reject
+it), no prefill, no thinking parameter (adaptive by default). JSON is asked for in the system prompt
+and recovered by `parseJson`/`unwrapArray`; `jsonEnvelope` is not needed. Cache keys carry
+`claude:<model>` and `claude:env` (TD-22 / D-10). Org config stays Gemini-only; Pro distillation stays
+pinned to Gemini. `LLM_PROVIDERS` in `client.ts` is the one list the startup guard reads.
+`/api/health` and the EXTENDED_LOGGING startup block gain the `ANTHROPIC_*` names, presence only.
+
+**Unset means unchanged.** With `LLM_PROVIDER` unset, nothing in `claude.ts` runs and every cache
+key is byte-identical to before (platform rule 2 — the existing switch is the flag).
+
+**Rejected.** *A UI toggle* — would need a new route and per-run state; env is how the other two
+providers are chosen, and keys must stay server-side. *Raw `fetch` instead of the SDK* — the SDK is
+Anthropic's supported client and keeps request types checked by `tsc`. *Automatic fallback between
+providers* — same reason as Azure: a silent switch bills and behaves differently from what the
+operator configured.
+
