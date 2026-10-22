@@ -1,3 +1,4 @@
+import { onlyChecksLogin } from "./salesforceOrgLogin.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { IR } from "../schema/ir.js";
@@ -207,7 +208,8 @@ function renderCase(c: ReportCase, budget: { left: number }): string {
     <div class="case-head">
       <h2>${esc(c.title)}</h2>
       <span class="verdict ${vClass}">${esc(status.replace(/_/g, " "))}</span>
-    </div>
+    </div>${onlyChecksLogin(c.ir) ? `
+    <p class="note" style="margin:8px 0 0">Only checked that login works — this test made no check after logging in.</p>` : ""}
     <dl class="kv">
       ${c.whyItMatters ? `<dt>Why this matters</dt><dd>${esc(c.whyItMatters)}</dd>` : ""}
       ${c.expected ? `<dt>What should happen</dt><dd>${esc(c.expected)}</dd>` : ""}

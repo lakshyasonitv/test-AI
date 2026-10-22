@@ -70,3 +70,13 @@
       region text fail after a good login — proposed: ground text asserts against landmark names.
       Needs that run's 04-ir.json to confirm.
 
+## Salesforce post-login (D-62)
+
+- [ ] Commit and push (ask first).
+- [ ] One real run on the scratch org (ask first — costs money): expect no false "blocked"; the search case
+      compiles past "/"; the homepage case labelled "Only checked that login works".
+- [ ] TD-160: show the model the post-login page for a login-URL case (deferred, medium risk).
+- [ ] Later option: `?startURL=<path>` on the login (verified by hand to land on Accounts) to start a test on
+      its own page.
+- Decided 2026-10-22 by the user: app only — no Setup pages, no portals (`my.site.com`).
+

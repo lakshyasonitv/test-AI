@@ -100,6 +100,14 @@ export function orgRefusal(url: string): string | null {
   const kind = classifyOrg(url);
   if (kind === "scratch" || kind === "sandbox") return null;
   const host = hostOf(url);
+  // D-62: a portal / public-site address of an org is refused with a sentence that says what it is,
+  // instead of "doesn't look like" a Salesforce org — it IS one, just not the app Testbench tests.
+  const parsed = parseSalesforceHost(host);
+  if (parsed && (parsed.purpose === "portal" || parsed.purpose === "sites")) {
+    const login = `${parsed.myDomain}${parsed.partition ? "." + parsed.partition : ""}.my.salesforce.com`;
+    return `${host} is a Salesforce ${parsed.purpose === "portal" ? "Experience Cloud portal" : "public Site"} address. `
+      + `Testbench tests the Salesforce app itself — use your org's login address instead, e.g. https://${login}/`;
+  }
   // D-60: with SALESFORCE_ALLOW_ALL_ORGS on, any Salesforce host is accepted — production, Developer
   // Edition, login./test.salesforce.com, cs## hosts. Still a structural check on the host: a URL
   // that is not served by Salesforce at all is refused as before (the box was ticked by mistake).
@@ -127,9 +135,118 @@ export function salesforceAllOrgsAllowed(): boolean {
  *  server log, once per call — a test run creates and changes records in the org it tests. */
 export function assertTestOrg(url: string): void {
   const refusal = orgRefusal(url);
-  if (refusal) throw new Error(refusal);
+  if (refusal) throw new OrgRefusedError(refusal);
   const warning = orgWarning(url);
   if (warning) console.warn(`[salesforce] SALESFORCE_ALLOW_ALL_ORGS is on: ${warning.message}`);
+}
+
+/**
+ * Thrown by `assertTestOrg`. A refusal is a decision about the address the person entered, not a
+ * fault in Testbench, so it is marked structurally (`orgRefused`) for the run's error event — the
+ * screen then does not add "a problem on our side" to it (D-62).
+ */
+export class OrgRefusedError extends Error {
+  readonly orgRefused = true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Salesforce host names (D-62)
+// ---------------------------------------------------------------------------------------------
+
+/** What a Salesforce host name is for. From Salesforce's "My Domain URL Formats" /
+ *  "Partitioned Domains" tables (enhanced domains — enforced in every org since Winter '24;
+ *  redirects from the older formats ended Winter '25 / Spring '26). */
+export type SalesforcePurpose = "login" | "lightning" | "setup" | "files" | "visualforce" | "portal" | "sites";
+
+/** Longest suffix first, so `my.salesforce-setup.com` is never read as something shorter. */
+const PURPOSE_SUFFIXES: Array<[string, SalesforcePurpose]> = [
+  ["my.salesforce-setup.com", "setup"],
+  ["my.salesforce-sites.com", "sites"],
+  ["my.salesforce.com", "login"],
+  ["lightning.force.com", "lightning"],
+  ["file.force.com", "files"],
+  ["vf.force.com", "visualforce"],
+  ["my.site.com", "portal"],
+];
+
+/** The partition word Salesforce puts after the My Domain name, by org type. Production has none. */
+const PARTITIONS = new Set(["scratch", "sandbox", "develop", "patch", "demo", "trailblaze"]);
+
+export interface SalesforceHost {
+  /** The org's My Domain name, sandbox suffix included (`acme--uat`), package suffix removed. */
+  myDomain: string;
+  /** "scratch" | "sandbox" | "develop" | … , or "" for a production org. */
+  partition: string;
+  purpose: SalesforcePurpose;
+}
+
+/**
+ * Read an org-specific Salesforce host name as (My Domain name, partition, purpose), or null when it
+ * is not one (a shared Salesforce host such as `b.static.lightning.force.com`, or any other site).
+ *
+ *   ruby-data-2200-dev-ed.scratch.lightning.force.com  -> ruby-data-2200-dev-ed | scratch | lightning
+ *   acme--uat.sandbox.my.salesforce.com                -> acme--uat | sandbox | login
+ *   acme--c.vf.force.com                               -> acme | "" | visualforce
+ *
+ * Pure string work on the host — the same three parts Salesforce documents for every host.
+ */
+export function parseSalesforceHost(hostOrUrl: string): SalesforceHost | null {
+  let host = hostOrUrl.toLowerCase();
+  try { if (host.includes("/")) host = new URL(hostOrUrl).hostname.toLowerCase(); } catch { return null; }
+  for (const [suffix, purpose] of PURPOSE_SUFFIXES) {
+    if (!host.endsWith("." + suffix)) continue;
+    const labels = host.slice(0, -(suffix.length + 1)).split(".");
+    let partition = "";
+    if (labels.length === 2 && PARTITIONS.has(labels[1])) partition = labels.pop()!;
+    if (labels.length !== 1 || !labels[0]) return null;
+    let myDomain = labels[0];
+    // Visualforce hosts carry a package name after the last "--" (MyDomainName--PackageName).
+    if (purpose === "visualforce") {
+      const cut = myDomain.lastIndexOf("--");
+      if (cut <= 0) return null;
+      myDomain = myDomain.slice(0, cut);
+    }
+    return { myDomain, partition, purpose };
+  }
+  return null;
+}
+
+/** The app's own purposes: one login hands its session across all of these (seen in a real login:
+ *  my.salesforce.com -> file.force.com -> lightning.force.com). Portals and public Sites are other
+ *  applications of the same org, and are not included. */
+const APP_PURPOSES = new Set<SalesforcePurpose>(["login", "lightning", "setup", "files", "visualforce"]);
+
+/**
+ * True when both URLs are the SAME org's Salesforce app: same My Domain name and partition, each on
+ * one of the app's host names. Another org, a portal, or any non-Salesforce host is false.
+ */
+export function sameSalesforceApp(a: string, b: string): boolean {
+  const pa = parseSalesforceHost(a);
+  const pb = parseSalesforceHost(b);
+  if (!pa || !pb) return false;
+  return pa.myDomain === pb.myDomain && pa.partition === pb.partition
+    && APP_PURPOSES.has(pa.purpose) && APP_PURPOSES.has(pb.purpose);
+}
+
+/**
+ * D-62: true when a fixed-login Salesforce test checks nothing after logging in — every assertion
+ * after the leading `auth-*` steps is on one of the login form's own controls (the selectors the
+ * login used), or there is no assertion after it at all. Such a test proves only that login works.
+ *
+ * Structural only: the IR's step ids, actions and verified selectors — never a title or step text
+ * (CLAUDE.md, TD-01). Only for IRs `toIR` marked `fixedLogin: "salesforce"`; everything else is false.
+ */
+export function onlyChecksLogin(ir: { meta: { fixedLogin?: string }; steps: Array<{ id: string; action: string; target?: { css?: string } }> } | null | undefined): boolean {
+  if (!ir || ir.meta?.fixedLogin !== "salesforce") return false;
+  let i = 0;
+  const loginSelectors = new Set<string>();
+  for (; i < ir.steps.length && /^auth-\d+$/.test(ir.steps[i].id); i++) {
+    const css = ir.steps[i].target?.css;
+    if (css) loginSelectors.add(css);
+  }
+  if (i === 0) return false;
+  const checks = ir.steps.slice(i).filter((s) => s.action === "assert");
+  return checks.every((s) => !!s.target?.css && loginSelectors.has(s.target.css));
 }
 
 /** What the person running a test is told about the org: kind, host, and one sentence. */

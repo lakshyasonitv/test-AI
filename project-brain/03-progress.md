@@ -1,6 +1,6 @@
 # Progress — where we are
 
-*Last updated: 2026-10-22. Claude provider (D-58) committed + pushed (`72127dc`). Pinned `?login` login (D-59) committed + pushed (`a700c1d`). Allow-all-orgs (D-60) committed (`0da6005`); screen/report warning committed (`69dbe17`). Run insights (Phase B, D-61) built, NOT committed.*
+*Last updated: 2026-10-22. Claude provider (D-58) committed + pushed (`72127dc`). Pinned `?login` login (D-59) committed + pushed (`a700c1d`). Allow-all-orgs (D-60) committed (`0da6005`); screen/report warning committed (`69dbe17`). Run insights (D-61) committed (`67e5881`). Salesforce post-login fixes (D-62) + D-59 removal built, NOT committed.*
 
 ## Branch
 
@@ -35,7 +35,12 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
 - **Run insights** — `EXTENDED_LOGGING=true`, D-61. `src/insights.ts`: `[insight]` lines for queue, run
   start, stage ms, plan, discovery (per page + site), Pro rules, cases, per-case IR/spec/execute/analysis/
   heal, run end; saved as `runs/<id>/10-insights.json`. No secrets, no page text, no titles, no query
-  strings. **Working tree only until the user says commit.**
+  strings. Committed `67e5881`.
+- **Salesforce post-login (D-62)** — on `SALESFORCE_FIXED_LOGIN` + ticked runs: org hosts read as (My Domain
+  name, partition, purpose) per Salesforce's URL tables; same org's Lightning host is not "blocked"; a
+  post-login "go to login page" step goes to `auth.url` (also on the D-57 swap path); report labels
+  "Only checked that login works". Portal refusal says what it is; refusals no longer say "problem on our
+  side". **D-59 (`SALESFORCE_LOGIN_PARAM`) removed.** Working tree only until the user says commit.
 
 ## Verification baseline
 
@@ -47,7 +52,7 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
   `chromium_headless_shell-1148`) + `booleanEnvFlags`. Not a regression; compare on a machine with browsers.
 - 2026-10-22, same cloud container with a local link `chromium_headless_shell-1148 -> -1194` (container
   only, not in the repo) so the browser tests run: **2368 passed, 2 failed (the same two below), 23
-  skipped, 176 files** with D-59; with D-60: 2377 passed, same 2 failed, 177 files; with D-61: 2390 passed, same 2 failed.
+  skipped, 176 files** with D-59; with D-60: 2377 passed, same 2 failed, 177 files; with D-61: 2390 passed, same 2 failed; with D-62: 2412 passed, same 2 failed.
 - The 2 failures pre-date all of this: `booleanEnvFlags` (stale RESERVED list) and
   `safeClickBrowser` (needs `example.com`, blocked in the cloud container; passes in CI).
 - CI also fails `discoveryStrategy` "shadowAndFrame" on `main` (Chromium-version dependent

@@ -56,3 +56,11 @@ Branch work only; `main` is updated by merging the branch through a PR, never di
 it is merged INTO the branch (a merge commit, not a rebase) and clashing D-/TD- numbers on our side are
 renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156).
 
+## 2026-10-22 — Salesforce scope and address handling (user)
+- Testbench tests the Salesforce APP only: no Setup pages, no Experience Cloud portals.
+- Salesforce hosts are read from Salesforce's own URL-format tables (My Domain name + partition + purpose),
+  not "anything under salesforce.com/force.com" — another org must never count as the same app.
+- After login, "go to the login page" means the page discovery's login landed on (user's choice over a
+  computed Home address and over startURL).
+- `?login` (D-59) removed: unofficial, and it failed on the user's org. Don't rebuild without a Salesforce doc.
+

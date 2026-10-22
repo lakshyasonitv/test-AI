@@ -16,7 +16,7 @@ import {
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
   NEGATIVE_CATEGORIES, type Credentials, type CredentialKind,
 } from "./credentials.js";
-import { fixedLoginRun } from "./salesforceOrgLogin.js";
+import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { salesforceGuidance } from "./salesforceGuidance.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
@@ -165,6 +165,9 @@ function knownNavigationTargets(appModel: AppModel): Set<string> {
   const out = new Set<string>();
   const add = (u: string | null | undefined) => { if (u) out.add(pageKey(u)); };
   add(appModel.baseUrl);
+  // D-62: where discovery's own login landed is observed, not guessed — on a fixed-login Salesforce
+  // run it is a valid destination even when its host is not the base URL's (lightning.force.com).
+  if (fixedLoginRun() && appModel.auth?.status === "authenticated") add(appModel.auth.url);
   for (const page of appModel.pages) {
     add(page.url);
     for (const link of page.domLinks ?? []) {
@@ -451,7 +454,14 @@ export function redirectPostLoginNavigate(
   try { to = new URL(first.target.url, origin).href; } catch { return undefined; }
   if (pageKey(to) !== pageKey(auth.loginUrl)) return undefined;
   const landed = new URL(auth.url);
-  if (siteHost(landed.href) !== siteHost(origin)) return undefined;
+  if (siteHost(landed.href) !== siteHost(origin)) {
+    // D-62: Salesforce logs in on <org>.my.salesforce.com and lands on <org>.lightning.force.com —
+    // a different host of the SAME org. On a fixed-login Salesforce run that is still "the page the
+    // login lands on", so the step points there, as an absolute URL because the host differs.
+    if (!(fixedLoginRun() && sameSalesforceApp(landed.href, origin))) return undefined;
+    first.target.url = landed.href;
+    return first.id;
+  }
   first.target.url = landed.pathname + landed.search;
   return first.id;
 }
@@ -2202,7 +2212,8 @@ Example — handling duplicate selectors with nth:
     ...(currentRunTargetApp() === "salesforce" ? ["ir-values:1"] : []),
     // D-57: a fixed-login compile swaps a login case's own login for the recorded one, so it must
     // never share a cache entry with a compile that does not. Absent when off: every key unchanged.
-    ...(fixedLoginRun() ? ["sf-fixed-login:1"] : []));
+    // D-62 adds sf-post-login: IRs cached before the post-login correction must not be served again.
+    ...(fixedLoginRun() ? ["sf-fixed-login:1", "sf-post-login:1"] : []));
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -2683,6 +2694,13 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         parsed.data.steps = swapped;
         parsed.data.meta.fixedLogin = "salesforce";
         console.log(`[ir] login case: its own login steps replaced by the recorded login (D-57)`);
+        // D-62: the same "go to the login page right after logging in" correction the prefix path
+        // makes — a login case's own next step is just as likely to be a navigate back to "/".
+        const loginLength = swapped.findIndex((st) => !/^auth-\d+$/.test(st.id));
+        if (loginLength > 0) {
+          const moved = redirectPostLoginNavigate(parsed.data.steps, loginLength, currentModel.auth, origin);
+          if (moved) console.log(`[ir] step ${moved}: navigate to the login page after signing in -> the page the login lands on`);
+        }
       }
     }
 

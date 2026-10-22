@@ -733,7 +733,9 @@ export async function runPipeline(
     try { save("08-llm-usage.json", llmUsage); } catch { }
     if (extendedLoggingEnabled()) console.log(runUsageLine(runId, llmUsage));
     runEndInsights("error", llmUsage, undefined);
-    emit("error", "failed", { llmUsage }, err?.message ?? String(err));
+    // D-62: `orgRefused` (optional, additive) tells the screen the run was refused on purpose — the
+    // address is not one Testbench tests — so it does not call it "a problem on our side".
+    emit("error", "failed", { llmUsage, ...(err?.orgRefused ? { orgRefused: true } : {}) }, err?.message ?? String(err));
     throw err;
   }
 }

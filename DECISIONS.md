@@ -1843,6 +1843,13 @@ operator configured.
 
 ## D-59. With `?login` the Salesforce login page is pinned, so the test's login is a straight line
 
+> **Removed 2026-10-22 (D-62).** `?login` is not a documented Salesforce switch for a fixed login
+> page — community sources describe it only as a way past single sign-on — and with it on, login
+> failed on the user's scratch org. A real login capture showed the two-screen form posting to the
+> same `/` address, which D-57's adaptive routine already handles. The flag, the helper,
+> `withLoginParam` and their test were deleted; `generator.ts` is byte-identical to before D-59.
+> Do not rebuild this without a Salesforce document that says what `?login` guarantees.
+
 **Context.** D-57's `salesforceLogin()` copes with whatever first screen a visit gets: email-first (a
 switch-link loop), one screen (a 2.5 s grace wait for the password box) or two screens. The user found
 that opening their scratch org's login URL with `?login` appended always shows the same two-screen form,
@@ -1934,4 +1941,42 @@ are not visible from the AppModel; they would need hooks inside `hybridDiscovery
 **Rejected.** *Logging inside every stage* — would touch grounding, discovery and the executor for an
 observability change. *A new flag* — EXTENDED_LOGGING already means "more diagnostic output, nothing else".
 *Logging case titles* — AI prose shaped by the prompt, which can carry credentials.
+
+## D-62. A Salesforce org is several host names; read them as (My Domain name, partition, purpose)
+
+**Context.** After D-57 made Salesforce login work, three things still went wrong on the user's scratch
+org (run 2026-10-22T09-44-02-812Z): every test was reported "blocked"; the search case was cut short after
+three rejections ("Search not present on …my.salesforce.com/"); and the homepage case checked only that
+the Log In button was gone. One cause: a Salesforce org is not one site. The user's own capture of a manual
+login showed one login touching three of the org's hosts — `my.salesforce.com` (login, posted twice to the
+same `/`), `secur/frontdoor.jsp`, `file.force.com/secur/contentDoor`, then `lightning.force.com/one/one.app`
+via `visualforce/session` — and ending at `/lightning/page/home`. Salesforce's "Partitioned Domains for
+Scratch Orgs" and "My Domain URL Format Changes" tables (supplied by the user) give every host as
+`<MyDomainName>[--Sandbox].<partition>.<purpose suffix>`; legacy instance hosts stopped redirecting in
+Winter '25 / Spring '26. A manual check also showed `?startURL=` on the login URL lands on that page.
+
+**Decision.** All behind `SALESFORCE_FIXED_LOGIN` on a ticked run, except where noted:
+- `parseSalesforceHost` reads a host as (My Domain name, partition, purpose) from the documented suffixes
+  (login, lightning, setup, files, visualforce, portal, sites); shared hosts (`b.static.lightning.force.com`,
+  `c.salesforce.com`, `test.salesforce.com`) are not org hosts. `sameSalesforceApp` = same name + same
+  partition, both on an app purpose (portal and Sites excluded — the user tests the app only).
+- `detectBlocked`: ending on the same org's app host is not "left the application". Another org, a portal,
+  or any other site still is.
+- TD-140's `redirectPostLoginNavigate` now also moves a first post-login navigate-to-login-page when the
+  landed page is the same org on another host (absolute URL), and it runs on D-57's login-case (swap) path
+  too, which it never did. `knownNavigationTargets` includes `auth.url` (observed by discovery, not
+  guessed). IR cache key gains `sf-post-login:1`. The user chose "the page login landed on" over a
+  computed `/lightning/page/home` (may not be in the site map, so the navigate guard would refuse it) and
+  over `startURL` (fixes the run, not the compile check — kept as a later option).
+- `onlyChecksLogin(ir)`: a fixed-login IR whose every assertion after the `auth-*` steps is on the login
+  form's own selectors. The report shows "Only checked that login works…"; insights log `loginOnly`.
+  A label, not a fix — showing the model the post-login page is deferred (it changes the prompt).
+- Not gated (refusal wording only): a portal / Sites address is refused with what it is and the org's
+  login address to use; refusals throw `OrgRefusedError`, the error event carries optional
+  `orgRefused`, and the screen no longer appends "a problem on our side" to a refusal.
+- D-59 (`SALESFORCE_LOGIN_PARAM`, `?login`) removed — see its note.
+
+**Rejected.** *Any `*.salesforce.com` / `*.force.com` is the same app* — another company's org would pass.
+*A computed Home address* — not necessarily in the site map. *Setup / portal support* — the user tests the
+app only.
 

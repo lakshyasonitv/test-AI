@@ -5473,6 +5473,11 @@ is a navigate to the login page, and only when the login really landed somewhere
 then goes to that landing page. A site whose login has its own path (`/login`) is untouched, because
 `/` is not its login page. Ordinary runs (a normal-site change, approved by the owner 2026-10-16).
 
+**2026-10-22, extended (D-62):** the "landed somewhere else" check required the same host, so it never ran
+on Salesforce (login on `my.salesforce.com`, landing on `lightning.force.com`), and it was never called on
+D-57's login-case path. On a fixed-login Salesforce run it now accepts the same org's other host and runs on
+both paths.
+
 ### TD-141. A step naming an element by its test id was rejected — Medium / Accidental — **Fixed**
 
 **Found 2026-10-16, run `2026-10-16T08-34-26` (saucedemo).** Six buttons are all named "Add to cart". The
@@ -5750,3 +5755,15 @@ contains `.sandbox.` or `.scratch.`, and present the refusal as a refusal, not a
 **2026-10-22, partly addressed (D-60):** with `SALESFORCE_ALLOW_ALL_ORGS=true` the address is accepted
 (as is every Salesforce host). With the flag off it is still refused, and the refusal is still shown as
 "a problem on our side" — that half is open.
+
+**2026-10-22 (D-62):** the "problem on our side" wording is gone for refusals (structural `orgRefused` on
+the error event). `test.salesforce.com` itself is still refused with the flag off.
+
+### TD-160. A Salesforce homepage case is shown only the login page when it targets the login URL — Medium / Accidental — **Open**
+
+D-62 labels the symptom ("Only checked that login works") but does not fix it. A case whose `targetUrl` is
+the login page is compiled with the login page as its lead page, so on Salesforce the model never sees the
+Lightning page and writes a check about the login form (run 2026-10-22T09-44-02-812Z, homepage case, zero
+rejections). Proposed (deferred by the user as medium risk): show the model both pages, labelled "before
+login" and "after login", without changing which page a wrong-password case is shown.
+

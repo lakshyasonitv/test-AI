@@ -305,3 +305,14 @@ where the D-57 fixed-login block is emitted. Off: byte-identical to D-57 (`tests
 - `generateSpec`: with the flag on, step 1's label and its `salesforceLogin(page, url)` argument use
   `withLoginParam(loginUrl)`, and the helper splice picks the two-screen helper. No other emitter changed.
 
+### 2026-10-22 — `src/stages/generator.ts` — D-59 removed (D-62)
+`SALESFORCE_TWO_SCREEN_LOGIN_HELPER`, `salesforceLoginParamEnabled` and `withLoginParam` deleted, with
+the `SALESFORCE_LOGIN_PARAM` flag and `tests/salesforceLoginParam.test.ts`. `generator.ts` is now
+byte-identical to its state before D-59 (`git diff 72127dc -- src/stages/generator.ts` is empty).
+
+### 2026-10-22 — `src/stages/ir.ts`, `executor.ts`, `htmlReport.ts` — Salesforce post-login (D-62)
+All behind `SALESFORCE_FIXED_LOGIN` on a ticked run. `ir.ts`: `redirectPostLoginNavigate` accepts the same
+org on another host (absolute URL) and now also runs on the D-57 swap path; `knownNavigationTargets` adds
+`auth.url`; cache key gains `sf-post-login:1`. `executor.ts` `detectBlocked`: same org's app host is not
+"left". `htmlReport.ts`: "Only checked that login works" note via `onlyChecksLogin`. No generator change.
+

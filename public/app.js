@@ -1615,6 +1615,10 @@ function hideSuiteResults() {
 function verdictFor(data, stage, error) {
   const status = data?.status;
   if (stage === "error") {
+    // D-62: a refused address is a decision about what was entered, not our fault — say only why.
+    if (data?.orgRefused && error) {
+      return { cls: "blocked", ic: "alert-circle", head: "Couldn’t run this", detail: error };
+    }
     return { cls: "blocked", ic: "alert-circle", head: "Couldn’t run this",
              detail: error
                ? error + " This is a problem on our side, not a result about your site."

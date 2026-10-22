@@ -2,6 +2,7 @@ import { writeFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { extendedLoggingEnabled } from "./logging.js";
 import { currentRunId } from "./runContext.js";
+import { onlyChecksLogin } from "./stages/salesforceOrgLogin.js";
 import type { AppModel } from "./schema/appModel.js";
 import type { IR } from "./schema/ir.js";
 import type { SpecModel } from "./schema/spec.js";
@@ -273,6 +274,7 @@ export function irInsights(ir: IR, retries: Array<{ kind: string }> = []): Insig
     fixedLogin: ir.meta.fixedLogin ?? undefined,
     actions: top(actions),
     targets: { stable: css, roleName, text },
+    loginOnly: onlyChecksLogin(ir) || undefined,
     truncated: !!ir.meta.truncated,
     truncationKind: ir.meta.truncationKind,
     terminalAssertion: ir.meta.hasTerminalAssertion,

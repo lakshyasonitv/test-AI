@@ -139,7 +139,8 @@ describe("the gate — off means today's behaviour", () => {
 
   it("the IR cache key gains a part only when the fixed login is on", () => {
     const src = readFileSync("src/stages/ir.ts", "utf8");
-    expect(src).toContain('...(fixedLoginRun() ? ["sf-fixed-login:1"] : [])');
+    // D-62 added "sf-post-login:1" to the same gated list.
+    expect(src).toContain('...(fixedLoginRun() ? ["sf-fixed-login:1", "sf-post-login:1"] : [])');
   });
 
   it("the flag is registered, so a typo refuses to boot", async () => {
