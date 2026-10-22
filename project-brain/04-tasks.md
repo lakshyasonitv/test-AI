@@ -61,9 +61,11 @@
 - [ ] One real run with `SALESFORCE_FIXED_LOGIN=true` + `SALESFORCE_LOGIN_PARAM=true` on the scratch org
       (ask first — costs money). Restart `npm run serve` first.
 - [x] `SALESFORCE_ALLOW_ALL_ORGS` (D-60) — committed `0da6005`.
-- [x] Production warning on the run screen + HTML report (Phase A) — built, commit when the user says.
-- [ ] Phase B: `[insight]` run logs + `runs/<id>/10-insights.json` behind EXTENDED_LOGGING (plan agreed;
-      "spec model" = Pro distilled rules). Ask before starting.
+- [x] Production warning on the run screen + HTML report (Phase A) — `69dbe17`.
+- [x] Phase B: `[insight]` run logs + `10-insights.json` (D-61) — built, commit when the user says.
+- [ ] Insights not yet covered: pages discovery skipped (and why), timing inside discovery's crawl loop
+      — need hooks in hybridDiscovery.ts.
+- [ ] Turn EXTENDED_LOGGING on for one real run (ask first — costs money) and read 10-insights.json.
 - [ ] Separate, found 2026-10-22: text asserts built from hidden labels ("Global Header") and glued
       region text fail after a good login — proposed: ground text asserts against landmark names.
       Needs that run's 04-ir.json to confirm.
