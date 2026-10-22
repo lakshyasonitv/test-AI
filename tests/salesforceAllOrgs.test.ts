@@ -54,7 +54,7 @@ describe("flag on", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(() => assertTestOrg("https://acme.my.salesforce.com/")).not.toThrow();
     expect(warn).toHaveBeenCalledOnce();
-    expect(String(warn.mock.calls[0][0])).toMatch(/acme\.my\.salesforce\.com is a PRODUCTION org/);
+    expect(String(warn.mock.calls[0][0])).toMatch(/acme\.my\.salesforce\.com is a PRODUCTION Salesforce org/);
   });
 
   it("a scratch org or sandbox gets no warning", () => {
@@ -69,5 +69,56 @@ describe("flag on", () => {
     process.env.SALESFORCE_ALLOW_ALL_ORGS = "true";
     expect(classifyOrg("https://acme.my.salesforce.com/")).toBe("production");
     expect(classifyOrg("https://test.salesforce.com/")).toBe("unknown");
+  });
+});
+
+describe("orgWarning — the sentence the screen and the report show (D-60)", () => {
+  it("production and other non-test Salesforce orgs get a warning; scratch, sandbox and non-Salesforce do not", async () => {
+    const { orgWarning } = await import("../src/stages/salesforceOrgLogin.js");
+    expect(orgWarning("https://acme.my.salesforce.com/")).toEqual({
+      kind: "production", host: "acme.my.salesforce.com",
+      message: "acme.my.salesforce.com is a PRODUCTION Salesforce org. Generated tests may create or change real records there.",
+    });
+    expect(orgWarning("https://test.salesforce.com/")?.kind).toBe("other");
+    expect(orgWarning(SCRATCH)).toBeNull();
+    expect(orgWarning(SANDBOX)).toBeNull();
+    for (const u of NOT_SALESFORCE) expect(orgWarning(u)).toBeNull();
+  });
+});
+
+describe("the HTML report", () => {
+  const base = { runId: "r1", baseUrl: "https://acme.my.salesforce.com", cases: [] as any[] };
+
+  it("shows the warning box under the header when given one", async () => {
+    const { buildRunReportHtml } = await import("../src/stages/htmlReport.js");
+    const html = buildRunReportHtml({ ...base, orgWarning: "acme.my.salesforce.com is a PRODUCTION Salesforce org." });
+    expect(html).toContain('<div class="failbox"><h3>Not a test org</h3>acme.my.salesforce.com is a PRODUCTION Salesforce org.</div>');
+    expect(html.indexOf("Not a test org")).toBeGreaterThan(html.indexOf("</header>"));
+  });
+
+  it("without one, the report is exactly what it was", async () => {
+    const { buildRunReportHtml } = await import("../src/stages/htmlReport.js");
+    const html = buildRunReportHtml(base);
+    expect(html).not.toContain("Not a test org");
+    expect(html).toContain("</header>\n  <section");
+  });
+});
+
+describe("the run screen (public/app.js summarize)", () => {
+  it("prefixes the discovery line with the warning, and is unchanged without it", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync("public/app.js", "utf8");
+    const start = src.indexOf("function summarize(stage, data) {");
+    let depth = 0, end = start;
+    for (let i = src.indexOf("{", start); i < src.length; i++) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}" && --depth === 0) { end = i + 1; break; }
+    }
+    // eslint-disable-next-line no-new-func
+    const summarize = new Function(`${src.slice(start, end)}\nreturn summarize;`)();
+    const pages = [{ url: "u", concepts: ["Home"] }];
+    expect(summarize("discovery", { pages })).toBe("Discovered 1 page(s) — Concepts: Home");
+    expect(summarize("discovery", { pages, orgWarning: { message: "acme is a PRODUCTION Salesforce org." } }))
+      .toBe("⚠ acme is a PRODUCTION Salesforce org. Discovered 1 page(s) — Concepts: Home");
   });
 });

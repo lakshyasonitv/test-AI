@@ -12,6 +12,7 @@ import { LlmBudget, enterWithBudget, type LlmUsageSnapshot } from "./llm/llmBudg
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
+import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -266,6 +267,9 @@ export async function runPipeline(
       }
       : undefined;
 
+    const sfWarning = options?.targetApp === "salesforce"
+      ? resolvedUrls.map(orgWarning).find((w) => w !== null) ?? null
+      : null;
     const appModel = await step("discovery", "02-appmodel.json", async () =>
       resolvedUrls.length === 1
         ? discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery)
@@ -284,6 +288,10 @@ export async function runPipeline(
           elementCount: p.elements?.length ?? 0,
         })),
         ...(model.auth ? { auth: { status: model.auth.status, loginUrl: model.auth.loginUrl } } : {}),
+        // D-60: on a ticked Salesforce run against an org that is not a scratch org or a sandbox
+        // (only possible with SALESFORCE_ALLOW_ALL_ORGS on), the screen shows this sentence.
+        // Absent on every other run, so their event is unchanged.
+        ...(sfWarning ? { orgWarning: sfWarning } : {}),
       }),
     );
     console.log("1. Discovery completed");

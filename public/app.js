@@ -848,7 +848,10 @@ function summarize(stage, data) {
         const pagesCount = data.pages?.length ?? 1;
         const concepts = [...new Set((data.pages ?? []).flatMap((p) => p.concepts ?? []))];
         const conceptStr = concepts.length ? ` — Concepts: ${concepts.join(", ")}` : "";
-        return `Discovered ${pagesCount} page(s)${conceptStr}`;
+        // D-60: a ticked Salesforce run against a production (or other non-test) org. Absent on
+        // every other run, so this line reads exactly as before.
+        const orgNote = data.orgWarning?.message ? `⚠ ${data.orgWarning.message} ` : "";
+        return `${orgNote}Discovered ${pagesCount} page(s)${conceptStr}`;
       }
       case "testcases": {
         // Report generated AND selected, with the reason. Reporting only the generated count

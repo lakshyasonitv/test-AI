@@ -89,6 +89,7 @@ import {
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
 import { enterWithLlmConfig, resolvedProvider } from "../llm/llmContext.js";
 import { LLM_PROVIDERS } from "../llm/client.js";
+import { orgWarning } from "../stages/salesforceOrgLogin.js";
 import { extendedLoggingEnabled } from "../logging.js";
 import { withRunId } from "../runContext.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
@@ -587,6 +588,12 @@ app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => 
     // Totals sit at the top level of 08-llm-usage.json, alongside byStage — not under a `totals` key.
     llmCalls: usage?.calls,
     llmTokens: usage?.totalTokens,
+    // D-60: only on a ticked Salesforce run against a non-test org; absent everywhere else.
+    ...(() => {
+      const target = readJson("00-run-target.json")?.targetApp;
+      const w = target === "salesforce" && input?.url ? orgWarning(input.url) : null;
+      return w ? { orgWarning: w.message } : {};
+    })(),
     cases,
   }));
 });

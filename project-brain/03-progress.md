@@ -1,6 +1,6 @@
 # Progress — where we are
 
-*Last updated: 2026-10-22. Claude provider (D-58) committed + pushed (`72127dc`). Pinned `?login` login (D-59) committed + pushed (`a700c1d`). Allow-all-orgs (D-60) built, NOT committed.*
+*Last updated: 2026-10-22. Claude provider (D-58) committed + pushed (`72127dc`). Pinned `?login` login (D-59) committed + pushed (`a700c1d`). Allow-all-orgs (D-60) committed (`0da6005`); its screen/report warning (Phase A) built, NOT committed.*
 
 ## Branch
 
@@ -30,8 +30,8 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
   The generated test opens `<loginUrl>?login` and runs one straight-line two-screen login; a wrong page
   stops with the missing screen named. Discovery unchanged. Committed `a700c1d`.
 - **Every Salesforce org allowed** — `SALESFORCE_ALLOW_ALL_ORGS`, D-60. `orgRefusal` accepts any Salesforce
-  host; non-Salesforce hosts still refused; non-test orgs named in the server log (not yet in the report).
-  **Working tree only until the user says commit.**
+  host; non-Salesforce hosts still refused. Committed `0da6005`. Phase A (working tree): the warning also
+  shows on the run screen's discovery line and in the HTML report, via `orgWarning(url)`.
 
 ## Verification baseline
 

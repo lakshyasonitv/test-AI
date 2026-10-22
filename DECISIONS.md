@@ -1891,8 +1891,12 @@ behave as before.
 production org those are customers' records. The guard existed for that reason only, and a shared server
 should keep it. Suggested: on for a laptop or a demo, off on Azure.
 
-**Not done.** The warning is in the server log only, not in the HTML report or the UI. That would need
-the run record and the report to carry the org kind; left for a later change.
+**Where the warning shows (2026-10-22).** One function, `orgWarning(url)`, decides it from the URL alone,
+so nothing new is stored: the server log line, an optional `orgWarning` on the discovery `completed` event
+(the run screen prefixes its discovery line with "⚠ …"), and a `failbox` "Not a test org" under the
+HTML report's header (the report route reads `00-run-target.json` + `00-input.json`). Every other run's
+event, screen line and report are unchanged. No new CSS class (platform rule 3): the screen line is the
+existing `.summary-text`, the report box the report's own `.failbox`.
 
 **Rejected.** *Deleting the guard* — the default would then let a shared server test production by
 accident. *A per-run tickbox* — needs a new request field and UI (platform rules 1 and 3) for what one

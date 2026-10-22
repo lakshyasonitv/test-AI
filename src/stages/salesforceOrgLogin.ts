@@ -128,14 +128,33 @@ export function salesforceAllOrgsAllowed(): boolean {
 export function assertTestOrg(url: string): void {
   const refusal = orgRefusal(url);
   if (refusal) throw new Error(refusal);
+  const warning = orgWarning(url);
+  if (warning) console.warn(`[salesforce] SALESFORCE_ALLOW_ALL_ORGS is on: ${warning.message}`);
+}
+
+/** What the person running a test is told about the org: kind, host, and one sentence. */
+export interface OrgWarning {
+  kind: "production" | "other";
+  host: string;
+  message: string;
+}
+
+/**
+ * D-60: the warning for a Salesforce org that is NOT a scratch org or a sandbox, or null.
+ *
+ * Decided from the URL alone (`classifyOrg` + `isSalesforceHost`), so the server log, the discovery
+ * event the screen reads, and the HTML report all say the same thing without storing anything new.
+ * Not gated on SALESFORCE_ALLOW_ALL_ORGS: with that flag off such an org is refused before
+ * discovery, so no event or report for it ever reaches a reader of this function.
+ */
+export function orgWarning(url: string): OrgWarning | null {
   const kind = classifyOrg(url);
-  if (kind !== "scratch" && kind !== "sandbox") {
-    console.warn(
-      `[salesforce] SALESFORCE_ALLOW_ALL_ORGS is on: ${hostOf(url)} is ` +
-      `${kind === "production" ? "a PRODUCTION org" : "not a scratch org or a sandbox"} — ` +
-      `generated tests may create or change real records there.`,
-    );
-  }
+  if (kind === "scratch" || kind === "sandbox") return null;
+  const host = hostOf(url);
+  if (!isSalesforceHost(host)) return null;
+  return kind === "production"
+    ? { kind: "production", host, message: `${host} is a PRODUCTION Salesforce org. Generated tests may create or change real records there.` }
+    : { kind: "other", host, message: `${host} is not a Salesforce scratch org or sandbox. Generated tests may create or change real records there.` };
 }
 
 // ---------------------------------------------------------------------------------------------

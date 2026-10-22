@@ -60,8 +60,10 @@
 - [x] Commit and push — `a700c1d`.
 - [ ] One real run with `SALESFORCE_FIXED_LOGIN=true` + `SALESFORCE_LOGIN_PARAM=true` on the scratch org
       (ask first — costs money). Restart `npm run serve` first.
-- [x] `SALESFORCE_ALLOW_ALL_ORGS` (D-60) built 2026-10-22 — commit and push when the user says.
-- [ ] Later: carry the org kind into the run record so the production warning shows in the report/UI.
+- [x] `SALESFORCE_ALLOW_ALL_ORGS` (D-60) — committed `0da6005`.
+- [x] Production warning on the run screen + HTML report (Phase A) — built, commit when the user says.
+- [ ] Phase B: `[insight]` run logs + `runs/<id>/10-insights.json` behind EXTENDED_LOGGING (plan agreed;
+      "spec model" = Pro distilled rules). Ask before starting.
 - [ ] Separate, found 2026-10-22: text asserts built from hidden labels ("Global Header") and glued
       region text fail after a good login — proposed: ground text asserts against landmark names.
       Needs that run's 04-ir.json to confirm.
