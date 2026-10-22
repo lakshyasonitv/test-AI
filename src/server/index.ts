@@ -2232,6 +2232,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // D-57: the fixed Salesforce login for generated tests (src/stages/salesforceOrgLogin.ts). Off:
   // every compile and every spec is exactly what it was. Read only on a ticked Salesforce run.
   "SALESFORCE_FIXED_LOGIN",
+  // D-59: with SALESFORCE_FIXED_LOGIN, the test opens the login URL + ?login and runs one straight-line
+  // two-screen login. Off: the D-57 routine, unchanged.
+  "SALESFORCE_LOGIN_PARAM",
   "SCRIPT_OVERRIDE_ENABLED",
   "SELF_HEAL_DEFAULT",
   "SIGNUP_ENABLED",

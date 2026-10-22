@@ -1841,3 +1841,36 @@ Anthropic's supported client and keeps request types checked by `tsc`. *Automati
 providers* — same reason as Azure: a silent switch bills and behaves differently from what the
 operator configured.
 
+## D-59. With `?login` the Salesforce login page is pinned, so the test's login is a straight line
+
+**Context.** D-57's `salesforceLogin()` copes with whatever first screen a visit gets: email-first (a
+switch-link loop), one screen (a 2.5 s grace wait for the password box) or two screens. The user found
+that opening their scratch org's login URL with `?login` appended always shows the same two-screen form,
+and asked for the link to be fixed that way and the login script written for that one page.
+
+**Decision.** Behind `SALESFORCE_LOGIN_PARAM` (default off), and only where D-57's fixed login is
+already emitted (`SALESFORCE_FIXED_LOGIN` + a ticked Salesforce run + a marked IR):
+- `withLoginParam()` adds `login` to the recorded login URL's query at GENERATION time (`?login`, or
+  `&login` after an existing query; never twice). The spec carries that literal, so the link is visible
+  and the same on every run.
+- The spec gets `SALESFORCE_TWO_SCREEN_LOGIN_HELPER`: goto -> username visible (20 s) -> fill -> Log In ->
+  password visible (15 s) -> fill -> Log In -> password hidden (30 s) -> the D-57 verification/SSO check.
+  Each screen is expected, not detected; a missing one stops the test with a sentence naming it.
+  `salesforceWhere`/`salesforceLoginFailure` are sliced from D-57's text, so the two cannot diverge.
+- Step 1's label becomes "Log in to Salesforce (fixed login, ?login page)".
+
+**Not changed.** Discovery still opens the URL as typed and handles every shape (D-56): it already
+logged in on the user's org, and changing it would move cache keys and recorded login URLs. The user's
+URL is never rewritten anywhere else.
+
+**Off means unchanged.** With the flag off (or `SALESFORCE_FIXED_LOGIN` off) the spec is byte-identical
+to D-57's (`tests/salesforceLoginParam.test.ts`, plus D-57's own fixtures).
+
+**Known limit.** `?login` showing two screens was observed on ONE scratch org. An org where it shows
+something else (one screen, SSO) now fails at login with a named screen instead of adapting; turning
+the flag off goes back to the adaptive routine.
+
+**Rejected.** *Removing the adaptive D-57 routine* — it is still right for orgs where `?login` was never
+checked. *Rewriting the user's URL at run creation* — would change cache keys, the run record and every
+recorded page URL for a login-only concern.
+

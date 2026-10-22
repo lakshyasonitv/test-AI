@@ -294,3 +294,14 @@ Salesforce run. Off: every compile and every spec is byte-identical (pinned by
   on it) and take no screenshot. The generator also requires the flag itself, so a saved case still
   carrying the marker goes back to the step-by-step login when the flag is off. No existing helper,
   emitter or label was changed.
+
+### 2026-10-22 — `src/stages/generator.ts` — pinned `?login` Salesforce login (D-59)
+Branch `vaibhav/determined-dijkstra-0t2ec9`. Behind `SALESFORCE_LOGIN_PARAM` (default off), and only
+where the D-57 fixed-login block is emitted. Off: byte-identical to D-57 (`tests/salesforceLoginParam.test.ts`).
+
+- New `SALESFORCE_TWO_SCREEN_LOGIN_HELPER` (straight-line two-screen `salesforceLogin`; reuses D-57's
+  `salesforceWhere`/`salesforceLoginFailure` text by slicing it), `salesforceLoginParamEnabled()`, and
+  exported `withLoginParam(url)`.
+- `generateSpec`: with the flag on, step 1's label and its `salesforceLogin(page, url)` argument use
+  `withLoginParam(loginUrl)`, and the helper splice picks the two-screen helper. No other emitter changed.
+

@@ -967,6 +967,70 @@ async function salesforceLoginFailure(page, fallback) {
 `;
 
 /**
+ * D-59: the DETERMINISTIC Salesforce login, used instead of the routine above when
+ * SALESFORCE_LOGIN_PARAM is on as well as SALESFORCE_FIXED_LOGIN.
+ *
+ * WHY: the routine above has to cope with whatever first screen a visit gets (email-first,
+ * one-screen, two-screen). Opening the login URL with `?login` appended pins it: on the user's
+ * scratch org that address always shows the same two-screen form (username -> "Log In" -> password
+ * -> "Log In"). So the script is a straight line, built for exactly that page, and every place the
+ * page is not what was expected stops with a sentence naming which screen was missing — no
+ * switch-link loop, no one-screen grace guess.
+ *
+ * The URL with `?login` is computed at GENERATION time (`withLoginParam`) and written into the
+ * spec as a literal, so the link a test opens is visible in the spec and the same on every run.
+ * The failure helpers (`salesforceWhere`, `salesforceLoginFailure`) are reused unchanged, taken
+ * from the D-57 text so the two can never diverge.
+ */
+const SALESFORCE_TWO_SCREEN_LOGIN_HELPER = `
+async function salesforceLogin(page, loginUrl) {
+  // loginUrl already ends in ?login (added when this spec was generated): that address always
+  // opens the two-screen form, so each screen below is EXPECTED, not detected.
+  await page.route((url) => url.hostname === "c.salesforce.com", (route) => route.abort());
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+  const username = page.locator('#username, input[name="username"]').first();
+  const password = page.locator('#password, input[name="pw"], input[type="password"]').first();
+  const submit = page.locator('#Login, input[type="submit"], button[type="submit"]').first();
+  // Screen 1: the username box.
+  const screenOne = await username.waitFor({ state: "visible", timeout: 20000 }).then(() => true, () => false);
+  if (!screenOne) throw new Error("Salesforce login: the ?login page did not show a username box within 20s. Still at " + salesforceWhere(page) + ".");
+  await username.fill(process.env.TEST_USERNAME ?? "", { timeout: 10000 });
+  await submit.click({ timeout: 10000 });
+  // Screen 2: the password box.
+  const screenTwo = await password.waitFor({ state: "visible", timeout: 15000 }).then(() => true, () => false);
+  if (!screenTwo) throw new Error((await salesforceLoginFailure(page, "no password box appeared after the username was sent")).message);
+  await password.fill(process.env.TEST_PASSWORD ?? "", { timeout: 10000 });
+  await submit.click({ timeout: 10000 });
+  const landed = await password.waitFor({ state: "hidden", timeout: 30000 }).then(() => true, () => false);
+  if (!landed) throw new Error((await salesforceLoginFailure(page, "the login form was still showing 30s after submitting")).message);
+  const after = await salesforceLoginFailure(page, "");
+  if (after.kind === "verification" || after.kind === "sso") throw new Error(after.message);
+}
+` + SALESFORCE_LOGIN_HELPER.slice(SALESFORCE_LOGIN_HELPER.indexOf("\nfunction salesforceWhere(page)") + 1);
+
+/** D-59: `SALESFORCE_LOGIN_PARAM`, read at generation time. Only has an effect together with
+ *  SALESFORCE_FIXED_LOGIN (no fixed-login block, nothing to change). Default off. */
+function salesforceLoginParamEnabled(): boolean {
+  return process.env.SALESFORCE_LOGIN_PARAM === "true";
+}
+
+/**
+ * The login URL with `login` added to its query: `…/` -> `…/?login`, `…/?a=1` -> `…/?a=1&login`.
+ * Already present -> unchanged. Exported for its test. Not parseable -> unchanged (the test then
+ * opens exactly what discovery recorded, and the straight-line script names where it stopped).
+ */
+export function withLoginParam(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.searchParams.has("login")) return url;
+    u.search = u.search ? `${u.search}&login` : "?login";
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
  * The fixed-login block of an IR: the indices of its leading `auth-*` steps, when the first one is
  * the prefix's navigate to the login page. Empty when the IR is not marked or the block is not
  * recognisable (an edited case whose login was rearranged) — the steps are then emitted one by one.
@@ -1009,8 +1073,11 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     .map((step, i) => {
       if (login?.ids.has(i)) {
         if (i === 0) {
-          return `    await test.step(${q("Log in to Salesforce (fixed login)")}, async () => {\n` +
-            `      await salesforceLogin(page, ${q(login.loginUrl)});\n` +
+          // D-59: with SALESFORCE_LOGIN_PARAM the link is pinned (?login) and the label says so.
+          // Off, both strings are exactly D-57's.
+          const pinned = salesforceLoginParamEnabled();
+          return `    await test.step(${q(pinned ? "Log in to Salesforce (fixed login, ?login page)" : "Log in to Salesforce (fixed login)")}, async () => {\n` +
+            `      await salesforceLogin(page, ${q(pinned ? withLoginParam(login.loginUrl) : login.loginUrl)});\n` +
             `      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)});\n    });`;
         }
         return `    await test.step(${q(`${stepLabel(step, i, ir.meta.baseUrl)} (done by the Salesforce login)`)}, async () => {\n` +
@@ -1063,7 +1130,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     needsAssertChoice ? ASSERT_CHOICE_HELPER : "",
     needsAssertGone ? ASSERT_GONE_HELPER : "",
     needsAuthSettle ? AUTH_SETTLE_HELPER : "",
-    login ? SALESFORCE_LOGIN_HELPER : "",
+    login ? (salesforceLoginParamEnabled() ? SALESFORCE_TWO_SCREEN_LOGIN_HELPER : SALESFORCE_LOGIN_HELPER) : "",
   ]
     .filter(Boolean)
     .join("\n\n");

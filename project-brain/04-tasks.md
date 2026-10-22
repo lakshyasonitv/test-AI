@@ -55,3 +55,14 @@
       `08-llm-usage.json` says `claude`. If attempts time out, raise `LLM_TIMEOUT_MS`.
 - [ ] Later, only if asked: a UI switch for the provider (needs a new route — platform rule 1).
 
+## Pinned ?login Salesforce login (D-59)
+
+- [ ] Commit and push (ask first).
+- [ ] One real run with `SALESFORCE_FIXED_LOGIN=true` + `SALESFORCE_LOGIN_PARAM=true` on the scratch org
+      (ask first — costs money). Restart `npm run serve` first.
+- [ ] Planned next (user asked, not built): `SALESFORCE_ALLOW_ALL_ORGS` — skip the scratch/sandbox-only
+      guard (`classifyOrg`) when on, warn on production. Default off.
+- [ ] Separate, found 2026-10-22: text asserts built from hidden labels ("Global Header") and glued
+      region text fail after a good login — proposed: ground text asserts against landmark names.
+      Needs that run's 04-ir.json to confirm.
+

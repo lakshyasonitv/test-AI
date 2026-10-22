@@ -1,6 +1,6 @@
 # Progress — where we are
 
-*Last updated: 2026-10-21. D-57 committed and pushed (`de53f52`). Claude provider (D-58) built, NOT committed.*
+*Last updated: 2026-10-22. Claude provider (D-58) committed + pushed (`72127dc`). Pinned `?login` Salesforce login (D-59) built, NOT committed.*
 
 ## Branch
 
@@ -25,7 +25,10 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
 - **Claude as a third LLM provider** — `LLM_PROVIDER[_LITE]=claude`, D-58. New `src/llm/claude.ts`
   (official `@anthropic-ai/sdk` 0.137.0, pinned), keys `ANTHROPIC_API_KEY[S]`, model `ANTHROPIC_MODEL[_LITE]`
   (default `claude-opus-5-5`), effort `ANTHROPIC_EFFORT[_LITE]`. Unset = gemini, unchanged. **Working tree
-  only until the user says commit.** Never called for real (mocked SDK + a local fake server only).
+  Committed `72127dc`. Never called for real (mocked SDK + a local fake server only).
+- **Pinned `?login` Salesforce login** — `SALESFORCE_LOGIN_PARAM` (with `SALESFORCE_FIXED_LOGIN`), D-59.
+  The generated test opens `<loginUrl>?login` and runs one straight-line two-screen login; a wrong page
+  stops with the missing screen named. Discovery unchanged. **Working tree only until the user says commit.**
 
 ## Verification baseline
 
@@ -35,6 +38,9 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
 - 2026-10-21 in a NEW cloud container: **2067 passed, 46 failed, 271 skipped, 175 files** with D-58.
   The SAME 46 fail with no source change: 45 browser tests (this container lacks Playwright 1.49's
   `chromium_headless_shell-1148`) + `booleanEnvFlags`. Not a regression; compare on a machine with browsers.
+- 2026-10-22, same cloud container with a local link `chromium_headless_shell-1148 -> -1194` (container
+  only, not in the repo) so the browser tests run: **2368 passed, 2 failed (the same two below), 23
+  skipped, 176 files** with D-59.
 - The 2 failures pre-date all of this: `booleanEnvFlags` (stale RESERVED list) and
   `safeClickBrowser` (needs `example.com`, blocked in the cloud container; passes in CI).
 - CI also fails `discoveryStrategy` "shadowAndFrame" on `main` (Chromium-version dependent
