@@ -100,6 +100,10 @@ export function orgRefusal(url: string): string | null {
   const kind = classifyOrg(url);
   if (kind === "scratch" || kind === "sandbox") return null;
   const host = hostOf(url);
+  // D-60: with SALESFORCE_ALLOW_ALL_ORGS on, any Salesforce host is accepted — production, Developer
+  // Edition, login./test.salesforce.com, cs## hosts. Still a structural check on the host: a URL
+  // that is not served by Salesforce at all is refused as before (the box was ticked by mistake).
+  if (salesforceAllOrgsAllowed() && isSalesforceHost(host)) return null;
   const why = kind === "production"
     ? "It is a production My Domain (a *.my.salesforce.com address with no .scratch. or .sandbox. in it)."
     : "Only addresses containing .scratch. or .sandbox. under salesforce.com or force.com are accepted, "
@@ -108,11 +112,30 @@ export function orgRefusal(url: string): string | null {
   return `Testbench only runs against Salesforce scratch orgs and sandboxes. ${host} doesn't look like either. ${why}`;
 }
 
+/**
+ * `SALESFORCE_ALLOW_ALL_ORGS` (D-60) — accept every Salesforce org, not only scratch orgs and
+ * sandboxes. Default off: the guard is then exactly D-56's. Registered in `BOOLEAN_ENV_FLAGS`.
+ */
+export function salesforceAllOrgsAllowed(): boolean {
+  return process.env.SALESFORCE_ALLOW_ALL_ORGS === "true";
+}
+
 /** Throws `orgRefusal`'s sentence. Called before discovery opens any page, so a refused org is
- *  never visited at all — the run fails at its discovery stage with this message. */
+ *  never visited at all — the run fails at its discovery stage with this message.
+ *
+ *  D-60: an org let through only because SALESFORCE_ALLOW_ALL_ORGS is on is said out loud in the
+ *  server log, once per call — a test run creates and changes records in the org it tests. */
 export function assertTestOrg(url: string): void {
   const refusal = orgRefusal(url);
   if (refusal) throw new Error(refusal);
+  const kind = classifyOrg(url);
+  if (kind !== "scratch" && kind !== "sandbox") {
+    console.warn(
+      `[salesforce] SALESFORCE_ALLOW_ALL_ORGS is on: ${hostOf(url)} is ` +
+      `${kind === "production" ? "a PRODUCTION org" : "not a scratch org or a sandbox"} — ` +
+      `generated tests may create or change real records there.`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -57,11 +57,11 @@
 
 ## Pinned ?login Salesforce login (D-59)
 
-- [ ] Commit and push (ask first).
+- [x] Commit and push — `a700c1d`.
 - [ ] One real run with `SALESFORCE_FIXED_LOGIN=true` + `SALESFORCE_LOGIN_PARAM=true` on the scratch org
       (ask first — costs money). Restart `npm run serve` first.
-- [ ] Planned next (user asked, not built): `SALESFORCE_ALLOW_ALL_ORGS` — skip the scratch/sandbox-only
-      guard (`classifyOrg`) when on, warn on production. Default off.
+- [x] `SALESFORCE_ALLOW_ALL_ORGS` (D-60) built 2026-10-22 — commit and push when the user says.
+- [ ] Later: carry the org kind into the run record so the production warning shows in the report/UI.
 - [ ] Separate, found 2026-10-22: text asserts built from hidden labels ("Global Header") and glued
       region text fail after a good login — proposed: ground text asserts against landmark names.
       Needs that run's 04-ir.json to confirm.

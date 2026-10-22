@@ -1874,3 +1874,27 @@ the flag off goes back to the adaptive routine.
 checked. *Rewriting the user's URL at run creation* — would change cache keys, the run record and every
 recorded page URL for a login-only concern.
 
+## D-60. Every Salesforce org can be tested when the operator says so
+
+**Context.** D-56's guard accepts only `.scratch.` and `.sandbox.` hosts and fails closed on everything
+else — production, Developer Edition, `login.`/`test.salesforce.com` (TD-159), `cs##` hosts. The user
+asked to remove the scratch/sandbox-only condition so any org can be tested.
+
+**Decision.** Behind `SALESFORCE_ALLOW_ALL_ORGS` (default off), `orgRefusal` accepts any host
+`isSalesforceHost` recognises. It stays a structural check on the host: a URL Salesforce does not serve
+is still refused, because the "This URL is a Salesforce org" box was then ticked by mistake. When an org
+that is not a scratch org or sandbox passes, `assertTestOrg` writes one `[salesforce] … PRODUCTION org …`
+line to the server log. `classifyOrg` is unchanged, so the sandbox-username hint and every other reader
+behave as before.
+
+**Why still off by default.** Generated tests click, create, edit and sometimes delete records; on a
+production org those are customers' records. The guard existed for that reason only, and a shared server
+should keep it. Suggested: on for a laptop or a demo, off on Azure.
+
+**Not done.** The warning is in the server log only, not in the HTML report or the UI. That would need
+the run record and the report to carry the org kind; left for a later change.
+
+**Rejected.** *Deleting the guard* — the default would then let a shared server test production by
+accident. *A per-run tickbox* — needs a new request field and UI (platform rules 1 and 3) for what one
+operator setting already covers.
+

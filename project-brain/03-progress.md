@@ -1,6 +1,6 @@
 # Progress — where we are
 
-*Last updated: 2026-10-22. Claude provider (D-58) committed + pushed (`72127dc`). Pinned `?login` Salesforce login (D-59) built, NOT committed.*
+*Last updated: 2026-10-22. Claude provider (D-58) committed + pushed (`72127dc`). Pinned `?login` login (D-59) committed + pushed (`a700c1d`). Allow-all-orgs (D-60) built, NOT committed.*
 
 ## Branch
 
@@ -28,7 +28,10 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
   Committed `72127dc`. Never called for real (mocked SDK + a local fake server only).
 - **Pinned `?login` Salesforce login** — `SALESFORCE_LOGIN_PARAM` (with `SALESFORCE_FIXED_LOGIN`), D-59.
   The generated test opens `<loginUrl>?login` and runs one straight-line two-screen login; a wrong page
-  stops with the missing screen named. Discovery unchanged. **Working tree only until the user says commit.**
+  stops with the missing screen named. Discovery unchanged. Committed `a700c1d`.
+- **Every Salesforce org allowed** — `SALESFORCE_ALLOW_ALL_ORGS`, D-60. `orgRefusal` accepts any Salesforce
+  host; non-Salesforce hosts still refused; non-test orgs named in the server log (not yet in the report).
+  **Working tree only until the user says commit.**
 
 ## Verification baseline
 
@@ -40,7 +43,7 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
   `chromium_headless_shell-1148`) + `booleanEnvFlags`. Not a regression; compare on a machine with browsers.
 - 2026-10-22, same cloud container with a local link `chromium_headless_shell-1148 -> -1194` (container
   only, not in the repo) so the browser tests run: **2368 passed, 2 failed (the same two below), 23
-  skipped, 176 files** with D-59.
+  skipped, 176 files** with D-59; with D-60: 2377 passed, same 2 failed, 177 files.
 - The 2 failures pre-date all of this: `booleanEnvFlags` (stale RESERVED list) and
   `safeClickBrowser` (needs `example.com`, blocked in the cloud container; passes in CI).
 - CI also fails `discoveryStrategy` "shadowAndFrame" on `main` (Chromium-version dependent

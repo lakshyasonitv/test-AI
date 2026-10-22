@@ -5746,3 +5746,7 @@ whether to capture, or to accept a recorded-login selector (`#password`) as prov
 sandbox and scratch logins. A tester with only that address is told it is "not a Salesforce org" and the
 screen calls it "a problem on our side". Proposed: allow it, then check after login that the landed host
 contains `.sandbox.` or `.scratch.`, and present the refusal as a refusal, not an internal error.
+
+**2026-10-22, partly addressed (D-60):** with `SALESFORCE_ALLOW_ALL_ORGS=true` the address is accepted
+(as is every Salesforce host). With the flag off it is still refused, and the refusal is still shown as
+"a problem on our side" — that half is open.
