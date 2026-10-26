@@ -355,7 +355,7 @@ export async function runSuite(
         // rather than re-executed, so its blocked check reads the artifacts the main pipeline
         // already produced — without this the run verdict said "blocked" while this case's own
         // card still said "passed".
-        const primaryBlocked = detectBlocked(primaryResult.result.artifactsDir, originOf(entryUrl));
+        const primaryBlocked = detectBlocked(primaryResult.result.artifactsDir, originOf(entryUrl), appModel.auth?.relatedHosts);
         const status = primaryCaseStatus(primaryResult.ir, primaryResult.result, primaryBlocked);
 
         const resultPath = path.join(caseDir, "05-result.json");
@@ -431,7 +431,7 @@ export async function runSuite(
 
         console.log(result);
 
-        let blocked = detectBlocked(path.join(caseDir, "artifacts"), originOf(entryUrl));
+        let blocked = detectBlocked(path.join(caseDir, "artifacts"), originOf(entryUrl), appModel.auth?.relatedHosts);
         let status = computeCaseStatus(ir, result, blocked);
 
         let diagnosisPath: string | undefined;
@@ -507,7 +507,7 @@ export async function runSuite(
                 writeFileSync(specPath, spec);
                 // The healed run's own artifacts live under caseDir/healed/artifacts — check
                 // there for a block wall too, not the original (failed) attempt's directory.
-                blocked = detectBlocked(path.join(caseDir, "healed", "artifacts"), originOf(entryUrl));
+                blocked = detectBlocked(path.join(caseDir, "healed", "artifacts"), originOf(entryUrl), appModel.auth?.relatedHosts);
                 status = computeCaseStatus(ir, result, blocked);
               }
             } catch (err: any) {

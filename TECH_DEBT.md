@@ -5975,3 +5975,70 @@ writes its fixture walks there; it never touches `runs/_cache`. Checked: a marke
 folder survives the suite (143 walks before and after). Other tests still WRITE into `runs/_cache` (test-only
 namespaces such as `walks-test`, and LLM entries under per-test `LLM_CACHE_VERSION`s): never read by a real run,
 never destructive, left as they are.
+
+### TD-165. TD-84's "sign-in did not succeed" guard misfires on a two-screen (identifier-first) login — High / Accidental — **Open (bypassed on org-connection runs, D-63)**
+
+**Found 2026-10-24**, run `2026-10-24T02-55-58-550Z-29189dcc` (scratch org `ruby-data-2200-dev-ed`, local
+`shadowdom`). Discovery signed in fine (`auth outcome: authenticated`), but the primary case's IR shipped truncated
+right before the password: `s1 navigate`, `s2 fill Username`, `s3 click "Log In to Sandbox"`, `s4 wait`
+(`truncationKind: screen-uncaptured`, status `truncated_no_assertion`). Cause: `replayAndSnapshot` in
+`liveExtend.ts` throws "sign-in did not succeed during verification" when the walk typed a credential and ends on
+the same `pageKey` with that credential field still resolvable. On an identifier-first login, after username +
+"Log In" the URL is unchanged and the username field is still there (shown as a chip), so the guard fires although
+the flow is fine; the password screen is never captured and both attempts are rejected the same way. **Not fixed.**
+Runs signed in through an org connection (D-63) never reach it (no form is filled). Candidate fix, structural: do
+not treat it as a failed sign-in when a password field that was not visible before the click is visible after it.
+Compare first with the `vaibhav/determined-dijkstra-0t2ec9` branch, whose D-57 swaps a login case's own login for
+the recorded one.
+
+### TD-166. Org-connection (frontdoor) runs: what Stage 1 does not cover — Medium / Deliberate — **Open**
+
+Recorded with D-63 (2026-10-24) so none of these is rediscovered as a surprise:
+- **`trace.zip` is not scrubbed.** The executor scrubs the frontdoor URL from the console, `results.json`,
+  `final-page.txt` and error contexts, but a Playwright trace records request URLs, and the frontdoor request
+  carries `sid=<access token>` (the same family as TD-134). Scratch orgs and sandboxes only, so the exposure is a
+  short-lived token to a test org. Candidate fix: Salesforce's single-access UI bridge (a one-time frontdoor URL),
+  or redact `sid=` inside the trace after the run.
+- **Outside a run there is no connection.** Library replay, the step editor's re-ground and anything else that
+  replays a saved IR whose login is `${env:SF_FRONTDOOR_URL}` fails with "the run has none" until those paths learn
+  to take a connection.
+- **Connections live in server memory** (12 h, refresh after 1 h). A restart, or a second replica, forgets them;
+  the person connects again. Encrypted storage and a Settings list need a migration (Stage 2).
+- **One External Client App = one org today.** A Local app authorises users of its own org only; customer orgs need
+  a packaged app installed by their admin.
+- **Production orgs are refused**; the per-project opt-in does not exist yet.
+- **A server restart also strands the browser's connection id.** The id survives a page reload (sessionStorage,
+  2026-10-24), but the server has forgotten the connection, so the run request answers "unknown or has expired"
+  and the person connects again. The run screen shows the server's reason only as "HTTP 400" (the submit handler
+  does not read the body; left alone, it is shared by every run).
+- **`withoutCredentialEntry` reads case prose** (lines naming a username, password or credentials), the TD-01
+  shape, held to frontdoor runs only. The structural fix is for the planner and case writer to know, before they
+  write, that the run is already signed in.
+
+### TD-167. Discovery on Salesforce list pages modelled header buttons only — High / Accidental — **Fixed (2026-10-24)**
+
+**Found 2026-10-24**, runs `2026-10-24T07-08-34-372Z-e2fc249c` and `2026-10-24T07-58-47-085Z-3eb31efb` (DE org
+`thinkvibes-5f-dev-ed`). Every page whose URL Lightning rewrites to a list view (`Opportunity/list`, `Account/list`,
+`Lead/pipelineInspection`, `Contact/home`) was modelled with 8-13 elements, all from the generic-clickable pass (no
+css, no nameSource, no pageSection), and no list or New button. Home-type pages in the same run were fine (124-190
+walker elements). Run `06-42`, before the landmark and tier-4b walker code, had about 100 walker elements on the
+same pages. Cause of the walk failing is still NOT known: the in-page walker (current code, `salesforce: true`)
+returns 587 items on the same list page in the browser pane, and history-API rewrites do not destroy the document
+there. The headless run differs (every page carries Lightning's "Sorry to interrupt — CSS Error" dialog).
+What was wrong in our code: `walkLiveDomWithFrames` swallowed a failure of the page's own document
+(`catch { continue; }`) and returned an empty walk, and the hydration poll stops as soon as the generic pass finds
+anything, which on Lightning is always.
+Fixed so far (tests/salesforceWalkRecovery.test.ts): the page's own document failing is thrown, `elementsFor` logs
+it with the URL, and on a Salesforce run returns no elements instead of the static shell, and the poll keeps going
+while the walker has nothing, whatever the generic pass found. Ordinary runs unchanged.
+**Cause found** (run `2026-10-24T10-48-05-743Z-dad17042`, the new log line): Lightning patches
+`ShadowRoot.prototype.getElementById` to throw `Disallowed method "getElementById" on ShadowRoot.` on those pages
+(headless; the browser pane never showed it), and the walker resolved aria-labelledby and dialog names with it, so
+the whole in-page walk died. Both now use `querySelector('[id="…"]')` in a try. Test reproduces the exact error.
+
+### TD-168. Lightning's "Sorry to interrupt — CSS Error" dialog heads every headless Salesforce page's model — Low / Accidental — **Open**
+
+Every page of run `2026-10-24T07-58-47-085Z-3eb31efb` carries the dialog (8 elements: Refresh, Cancel and close …)
+and `capElements` ranks dialogs first, so it opens every micro model. It appears in headless Chromium only (not in
+the browser pane). Candidate fix: find why Lightning reports a CSS error headless (user agent, a blocked stylesheet),
+or drop this one known product dialog from the model.

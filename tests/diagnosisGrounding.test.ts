@@ -103,3 +103,18 @@ describe("diagnosisBlamesWrongStep", () => {
     expect(diagnosisBlamesWrongStep(diag({ failingStepId: null }), ir(), "s3")).toBeUndefined();
   });
 });
+
+describe("analyzeFailure names the recorded step on the deterministic path", () => {
+  // Run 2026-10-24T14-09-38-782Z-a7582b51 case-2: a CSS locator timed out, so the error text had no
+  // getByRole/getByText for findFailingStepId to read, the diagnosis said failingStepId null, and
+  // self-heal could never run. Playwright's report knew the step all along.
+  it("uses Playwright's recorded failing step when the error text names no role or text", async () => {
+    const { analyzeFailure } = await import("../src/stages/failureAnalysis.js");
+    const message = "TimeoutError: locator.fill: Timeout 10000ms exceeded.\nCall log:\n  - waiting for locator('role=dialog').locator('input[name=\"Zq_Field\"]').first()";
+    const result = resultFailingAt(2);
+    (result.raw as any).suites[0].specs[0].tests[0].results[0].errors = [{ message }];
+    const d = await analyzeFailure(ir(), { ...result, artifactsDir: "nowhere" } as ExecResult);
+    expect(d.category).toBe("timeout");
+    expect(d.failingStepId).toBe("s2");
+  });
+});

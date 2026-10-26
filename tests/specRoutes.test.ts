@@ -223,7 +223,9 @@ describe("the uploaded document is not stored anywhere under runs/ (test 15)", (
         expect(readFileSync(f).includes(marker), `document bytes found in ${f}`).toBe(false);
       }
     } finally {
-      for (const f of created) rmSync(f, { force: true });
+      // Only what intake itself may write. Anything else appeared because a live server was writing
+      // its own run at the same moment (00-input.json, events.ndjson); deleting it broke that run.
+      for (const f of created) if (f.split(path.sep).slice(0, 3).join("/") === "runs/_cache/spec") rmSync(f, { force: true });
     }
   });
 });

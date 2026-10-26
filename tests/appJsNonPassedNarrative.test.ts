@@ -58,11 +58,15 @@ type Step = { id: string; action: string; target?: Record<string, unknown>; asse
 const harness = `
   ${extractConst("NARRATIVE_LEAD_IN")}
   ${extractConst("BLOCKED_IMAGE_DESC")}
+  ${extractFunctionSource("displayValue")}
+  ${extractFunctionSource("runTokensOf")}
   ${extractFunctionSource("formatIrStep")}
+  ${extractFunctionSource("readableStep")}
   ${extractFunctionSource("buildStepNarrative")}
   ${extractFunctionSource("describeScreenshot")}
   ${extractFunctionSource("renderCaseNarrative")}
-  return { NARRATIVE_LEAD_IN, BLOCKED_IMAGE_DESC, buildStepNarrative, describeScreenshot, renderCaseNarrative };
+  return { NARRATIVE_LEAD_IN, BLOCKED_IMAGE_DESC, buildStepNarrative, describeScreenshot, renderCaseNarrative,
+    readableStep, runTokensOf };
 `;
 
 // eslint-disable-next-line no-new-func
@@ -166,6 +170,41 @@ describe("case narrative on non-passed outcomes", () => {
   it("the call site gates on the map, not on a hardcoded status list", () => {
     // Pins the wiring the unit tests above cannot see. A future edit that reverts this to
     // `status === "passed"` makes every assertion above pass while the product regresses.
-    expect(APP).toMatch(/if \(NARRATIVE_LEAD_IN\[status\] && c\) renderCaseNarrative\(narrativeEl, c, ir, status\);/);
+    expect(APP).toMatch(/if \(NARRATIVE_LEAD_IN\[status\] && c\) renderCaseNarrative\(narrativeEl, c, ir, status[,)]/);
+  });
+});
+
+describe("report steps show values a person can read, never internal placeholders", () => {
+  const steps: Step[] = [
+    { id: "a", action: "navigate", target: { url: "${env:SF_FRONTDOOR_URL}" } },
+    { id: "b", action: "fill", target: { role: "textbox", name: "Last Name" }, value: "Zq Kim {{uid}}" } as Step,
+    { id: "c", action: "fill", target: { role: "textbox", name: "Phone" }, value: "{{phone}}" } as Step,
+    { id: "d", action: "fill", target: { role: "textbox", name: "Due" }, value: "{{date:+30:en-GB}}" } as Step,
+    { id: "e", action: "fill", target: { role: "textbox", name: "Password" }, value: "${env:TEST_PASSWORD}" } as Step,
+    { id: "f", action: "assert", target: { text: "was created" }, assertion: "visible" },
+  ];
+
+  it("without the run's values: the sign-in, and what each placeholder stands for", () => {
+    const lines = steps.map((s) => api.readableStep(s, null));
+    expect(lines[0]).toBe("Sign in to the org");
+    expect(lines[1]).toBe('Type "Zq Kim (unique code)" into textbox "Last Name"');
+    expect(lines[2]).toBe('Type "(unique phone number)" into textbox "Phone"');
+    expect(lines[3]).toBe('Type "(today + 30 days)" into textbox "Due"');
+    expect(lines[4]).toBe('Type "(saved password)" into textbox "Password"');
+    expect(lines[5]).toBe('Check that "was created" appears on the page');
+    expect(lines.join("\n")).not.toMatch(/\{\{|\$\{env:/);
+  });
+
+  it("with the run's values from results.json: exactly what that run typed", () => {
+    const now = Date.UTC(2026, 9, 25, 12);
+    const results = { suites: [{ suites: [{ specs: [{ title: "Zq case", tests: [{ annotations: [
+      { type: "run-tokens", description: JSON.stringify({ uid: "nrakm3", phone: "4155557483", now }) },
+    ] }] }] }] }] };
+    const tokens = api.runTokensOf(results, "Zq case");
+    expect(tokens).toMatchObject({ uid: "nrakm3", phone: "4155557483" });
+    expect(api.runTokensOf(results, "another case")).toBeNull();
+    expect(api.readableStep(steps[1], tokens)).toBe('Type "Zq Kim nrakm3" into textbox "Last Name"');
+    expect(api.readableStep(steps[2], tokens)).toBe('Type "4155557483" into textbox "Phone"');
+    expect(api.readableStep(steps[3], tokens)).toBe('Type "24/11/2026" into textbox "Due"');
   });
 });

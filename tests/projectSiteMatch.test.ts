@@ -64,7 +64,8 @@ function makeBuilder(table: keyof Db) {
     limit: () => builder,
     insert: (p: any) => { pending = { kind: "insert", payload: p }; return builder; },
     upsert: (p: any) => { pending = { kind: "upsert", payload: p }; return builder; },
-    maybeSingle: () => { single = true; return Promise.resolve(run()); },
+    // Like PostgREST: more than one row is an error, not the first row.
+    maybeSingle: () => { single = true; const many = !pending && db[table].filter(match).length > 1; return Promise.resolve(many ? { data: null, error: { message: "JSON object requested, multiple (or no) rows returned" } } : run()); },
     single: () => { single = true; return Promise.resolve(run()); },
     then: (resolve: (v: unknown) => unknown) => resolve(run()),
   };
@@ -140,5 +141,25 @@ describe("resolveProjectForUrl — matches an existing project by site", () => {
   it("returns null for a URL it cannot key", async () => {
     expect(await resolveProjectForUrl(ORG, null)).toBeNull();
     expect(await resolveProjectForUrl(ORG, "")).toBeNull();
+  });
+
+  // 2026-10-25: the old race had left two projects with the same name; maybeSingle then failed
+  // ("multiple rows returned") and every run on that site went unfiled.
+  it("two projects with the same name: files under one of them instead of failing", async () => {
+    db.projects.push(
+      { id: "p-dup-1", organisation_id: ORG, name: "zq-dup.example.com", base_url: "https://zq-dup.example.com", created_at: "2026-08-03T00:00:00Z" },
+      { id: "p-dup-2", organisation_id: ORG, name: "zq-dup.example.com", base_url: "https://zq-dup.example.com", created_at: "2026-08-04T00:00:00Z" },
+    );
+    expect(["p-dup-1", "p-dup-2"]).toContain(await resolveProjectForUrl(ORG, "https://zq-dup.example.com"));
+  });
+
+  // Two runs started together on a new org (2026-10-25) each found nothing and each inserted.
+  it("two runs started together on a new site share one new project", async () => {
+    const [a, b] = await Promise.all([
+      resolveProjectForUrl(ORG, "https://zq-race.example.com/"),
+      resolveProjectForUrl(ORG, "https://zq-race.example.com/lightning"),
+    ]);
+    expect(a).toBe(b);
+    expect(db.projects.filter((p) => (p.base_url ?? "").includes("zq-race")).length).toBe(1);
   });
 });

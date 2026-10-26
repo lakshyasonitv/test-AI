@@ -111,10 +111,3 @@ export function isCancelled(id: string): boolean {
   return jobs.get(id)?.cancelled ?? false;
 }
 
-/** Test seam — jobs are module state, and cases must not inherit each other's. */
-export function resetJobs(): void {
-  for (const job of jobs.values()) {
-    for (const res of job.subscribers) { try { res.end(); } catch { /* ignore */ } }
-  }
-  jobs.clear();
-}

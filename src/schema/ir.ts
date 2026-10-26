@@ -24,6 +24,12 @@ export const Target = z.object({
    */
   frame: z.string().optional(),
   /**
+   * The control is a LOOKUP (a record reference): a `select` on it types the value, waits for the
+   * suggestions and picks the first match — or, with an empty value, the first suggestion. Set in
+   * code from the org model (testData.ts), never by the LLM. Additive: absent means today's select.
+   */
+  lookup: z.boolean().optional(),
+  /**
    * Provenance, not behaviour. `"replay"` marks a target that was grounded against the LIVE page
    * during a replay (`REPLAY_REGROUND`) rather than against the model discovery built — the case
    * of a control revealed by a click, which discovery never saw.

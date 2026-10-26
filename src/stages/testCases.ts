@@ -7,11 +7,13 @@ import type { AppModel } from "../schema/appModel.js";
 import { toLiteModel, pageKey } from "../schema/appModel.js";
 import {
   strategyFor, unmatchedConcepts, filterByScope, ALL_SCOPES, CATEGORY_IDS, normalizeCategory,
+  checklistFeaturesOf, requestNamesFeature,
   type ScopeFilter,
 } from "../kb/testStrategy.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { salesforceGuidance } from "./salesforceGuidance.js";
 import { currentRunTargetApp } from "../runTarget.js";
+import { orgModelForCases, objectsNamedIn } from "./salesforceOrgModel.js";
 import { restoreControlNames } from "./controlNames.js";
 import { restoreDroppedValues } from "./requestValues.js";
 import { screenMapEnabled, loadScreenMap, screensForCases } from "./screenMap.js";
@@ -263,6 +265,52 @@ export function filterNovelCases(all: TestCase[], seenTitles: string[]): TestCas
  * above now forbids this shape outright — this is the code-level backstop the project's "prompt
  * nudges are never the only guard" doctrine requires for whenever the model does it anyway.
  */
+/**
+ * Salesforce: when the request names an object of the org model ("Lead"), keep only cases whose page
+ * is that object's (/lightning/o/<Object>/ or /lightning/r/<Object>/). Run
+ * 2026-10-24T20-37-00-424Z-410671c2 added a global-search case to a Lead request though the guidance
+ * says to stay on the object. The primary case is never dropped, and nothing is dropped when that
+ * would leave no case or the request names no object.
+ */
+export function dropOffObjectCases(
+  cases: TestCase[], request: string, org: AppModel["salesforceOrg"],
+): TestCase[] {
+  if (!org?.objects.length) return cases;
+  // Case-sensitive and longest-first (objectsNamedIn): "test cases" is not the Case object, and
+  // "Broker Lead" is not also Lead.
+  const named = objectsNamedIn(request, org);
+  if (!named.length) return cases;
+  const onObject = (c: TestCase) => named.some((o) =>
+    new RegExp(`/lightning/[or]/${o.api}(/|$|\\?)`, "i").test(c.targetUrl ?? ""));
+  const kept = cases.filter((c) => c.fromPrompt || onObject(c));
+  if (kept.length === cases.length || !kept.length) return cases;
+  for (const d of cases.filter((c) => !kept.includes(c))) {
+    console.warn(`[testCases] dropping a case off the requested object (${named.map((o) => o.label).join(", ")}):`, d.title);
+  }
+  return kept;
+}
+
+/**
+ * Salesforce: a case drawn from a checklist FEATURE the request never mentions is dropped — "Valid
+ * query" / "Empty query" (search) on a "Create a new Lead" request (runs 2026-10-25T10-28-59-626Z and
+ * -656Z: they failed or truncated and tested nothing asked for). Decided by the checklist title, a
+ * fixed table value (testStrategy.ts), and the request's own words; the generic floor ("Submit with all
+ * required fields empty") belongs to no feature and always stays. The primary is never dropped, and
+ * nothing is dropped when that would leave no case.
+ * ponytail: a case the model mislabels with another feature's title is dropped too; fromPrompt guards the primary.
+ */
+export function dropUnrequestedChecklistCases(cases: TestCase[], request: string): TestCase[] {
+  const kept = cases.filter((c) => {
+    const features = checklistFeaturesOf(c.checklistTitle);
+    return c.fromPrompt || !features.length || features.some((f) => requestNamesFeature(request, f));
+  });
+  if (kept.length === cases.length || !kept.length) return cases;
+  for (const d of cases.filter((c) => !kept.includes(c))) {
+    console.warn(`[testCases] dropping a "${d.checklistTitle}" case — the request does not ask for that feature:`, d.title);
+  }
+  return kept;
+}
+
 export function dropCompoundLoginCases(cases: TestCase[]): TestCase[] {
   const kept: TestCase[] = [];
   const dropped: TestCase[] = [];
@@ -518,12 +566,18 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
   const screensBlock = currentRunTargetApp() === "salesforce" && screenMapEnabled()
     ? screensForCases(loadScreenMap(appModel.baseUrl, undefined, new Date()))
     : "";
+  // D-63: on a run signed in through an org connection, what the org says about itself (objects,
+  // required fields, picklists, list views, validation rules), read through its metadata APIs. Only
+  // when discovery attached it; "" otherwise, so the prompt and the key below are byte-identical to
+  // before (tests/testCasesNoChange.test.ts), exactly like screensBlock above.
+  const orgBlock = currentRunTargetApp() === "salesforce" ? orgModelForCases(appModel.salesforceOrg) : "";
   const cacheKey = makeCacheKey(
     JSON.stringify(p), JSON.stringify(liteModel), scope.join(","),
     (extend?.existingTitles ?? []).join("|"), (extend?.rejectedTitles ?? []).join("|"),
     opts.sourcePrompt ?? "", extend?.latestPrompt ?? "",
     system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion(),
-    ...(screensBlock ? [screensBlock] : []));
+    ...(screensBlock ? [screensBlock] : []),
+    ...(orgBlock ? [orgBlock] : []));
   // TD-127: on a Salesforce run, the control names the person wrote ("Select for EOI", "Min Budget
   // (AED)") are put back into the cases exactly, in code — the prompt rule above asks for that and
   // was not enough. Every other run returns the model's cases untouched. Idempotent, so it is
@@ -560,7 +614,7 @@ ${extend.latestPrompt}
 
   const user =
     `Plan: ${JSON.stringify(p)}
-Application model: ${JSON.stringify(liteModel)}${screensBlock}
+Application model: ${JSON.stringify(liteModel)}${screensBlock}${orgBlock}
 
 Coverage checklist floor (produce one grounded case per applicable item):
 ${strategyList}
@@ -593,7 +647,12 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
         // Case COUNT is no longer decided here — selectCases() is the single authority over the
         // merged upfront + reactive list, so this stage can't cap twice and produce 4-or-8.
         const scoped = filterByScope(stamped, scope);
-        const finalCases = dropCompoundLoginCases(scoped);
+        const onObject = currentRunTargetApp() === "salesforce"
+          ? dropUnrequestedChecklistCases(
+            dropOffObjectCases(scoped, [opts.sourcePrompt ?? "", extend?.latestPrompt ?? ""].join("\n"), appModel.salesforceOrg),
+            [opts.sourcePrompt ?? "", extend?.latestPrompt ?? ""].join("\n"))
+          : scoped;
+        const finalCases = dropCompoundLoginCases(onObject);
         if (finalCases.length === 0) {
           // An empty case list is a failed stage — the model (or the cache) returned "no
           // answers". Never let this look like a clean empty-generation outcome: no cache

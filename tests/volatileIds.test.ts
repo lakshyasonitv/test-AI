@@ -127,7 +127,10 @@ describe("Phase 4: ids that change every visit", () => {
     const first = await ordered();
     expect(first.some((c) => /open-\d+/.test(c))).toBe(false); // one sighting: pattern rule, positional
     const second = await ordered();
-    expect(second).toEqual(["#open-12", "#open-34"]); // role=button[name="Open"s] matches 2: not unique
+    // role=button[name="Open"s] matches 2: not unique. The page's own button has no landmark or dialog
+    // to scope by, so the proven id beats the positional path. The dialog's button has one, and since
+    // 2026-10-24 (tier 4b) the scoped role locator is unique — D-55 order: a unique role locator wins.
+    expect(second).toEqual(["#open-12", 'role=dialog >> role=button[name="Open"s]']);
     for (const [i, css] of second.entries()) {
       const p = await browser.newPage();
       try { await p.goto(base + "/twins"); expect(await p.locator(css).count()).toBe(1); } finally { await p.close(); }

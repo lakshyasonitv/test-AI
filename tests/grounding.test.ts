@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   groundingError, hasTerminalAssertion, normalizeIR,
   assertionContradictsCase, vacuousAssertion, urlAssertionError, missingActions,
-  clickedElementHiddenAssertion, postClickRevealIndex, crossFormBleedError,
+  clickedElementHiddenAssertion, postClickRevealIndex, crossFormBleedError, staticTextAssertion,
 } from "../src/stages/ir.js";
 import { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -572,6 +573,19 @@ describe("assertionContradictsCase", () => {
     expect(assertionContradictsCase(t, NEG)).toBeNull();
   });
 
+  // Run 2026-10-25T13-47-20-200Z-7d089986: "Complete this field." holds the success word "complete",
+  // so a required-field case asserting the form's own validation prompt was rejected as inverted.
+  it("reads validation prompts as failure, not as the success word 'complete'", () => {
+    const blank = tc({ title: "Attempt to save with required fields empty", expected: "The form stays open", category: "empty-boundary" });
+    for (const text of ["Complete this field.", "We hit a snag.", "Review the following fields", "Please enter a value"]) {
+      const t = ir([{ id: "s5", action: "assert", target: { text }, assertion: "visible" }]);
+      expect(assertionContradictsCase(t, blank), text).toBeNull();
+    }
+    // A real success word on the same case is still refused.
+    const done = ir([{ id: "s5", action: "assert", target: { text: "Case was completed" }, assertion: "visible" }]);
+    expect(assertionContradictsCase(done, blank)?.stepIds).toEqual(["s5"]);
+  });
+
   // Guards the credential-policy grounding fix specifically: once liveExtend's replay types
   // the case's own wrong password instead of the real one, groundTerminalTextAssertion can
   // finally correct the guess to the real page text — "Invalid login credentials" (the exact
@@ -683,6 +697,35 @@ describe("missingActions — the IR must carry out its case", () => {
       { id: "s3", action: "assert", target: { role: "link", name: "Log in" }, assertion: "hidden" },
     ] } as any;
     expect(missingActions(ir, loginCase)?.message).toMatch(/no "fill" step/);
+  });
+
+  // Run 2026-10-25T05-48-18-357Z-be70fc29 (a Case): the values the case "entered" were picklists, and
+  // the IR was truncated as "no fill step". Picking an option IS entering a value.
+  it("counts a select as entering a value", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/new" } },
+      { id: "s2", action: "select", target: { role: "combobox", name: "Zq Origin" }, value: "Zq Web" },
+      { id: "s3", action: "click", target: { role: "button", name: "Save" } },
+      { id: "s4", action: "assert", target: { role: "button", name: "Save" }, assertion: "hidden" },
+    ] } as any;
+    const c = tc({ title: "Create a Zq Case", steps: ["Enter the required values", "Click 'Save'"], expected: "created" });
+    expect(missingActions(ir, c)).toBeNull();
+  });
+
+  // Run 2026-10-25T06-38-05-134Z-4082c4ce case-1: "Without entering any values, click Save" was
+  // truncated for "no fill step". An empty-boundary case leaves fields empty on purpose: the
+  // category (structural), not the wording, decides that no fill is owed.
+  it("an empty-boundary case owes no fill step", () => {
+    const ir = { meta: {}, steps: [
+      { id: "s1", action: "navigate", target: { url: "/new" } },
+      { id: "s2", action: "click", target: { role: "button", name: "Save" } },
+      { id: "s3", action: "assert", target: { role: "button", name: "Save" }, assertion: "visible" },
+    ] } as any;
+    const c = tc({ title: "Save with all required fields empty", category: "empty-boundary",
+      steps: ["Open the form", "Do not fill any field; click the 'Save' button"], expected: "errors" });
+    expect(missingActions(ir, c)).toBeNull();
+    // Same IR, a case that does mean to type: still flagged.
+    expect(missingActions(ir, { ...c, category: "valid" })?.message).toMatch(/no "fill" step/);
   });
 
   it("accepts an IR that does perform the described actions", () => {
@@ -1152,5 +1195,146 @@ describe("missingActions — 'check' is a verification, not an action (TD-01)", 
       { id: "s5", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
     ] } as any;
     expect(missingActions(stopsAfterLogin, adminFlow)?.message).toMatch(/action steps but the IR only carries out/);
+  });
+});
+
+// Run 2026-10-24T14-30-05-546Z-6cbf9b51: three validation-rule cases ended on
+// `assert "* = Required Information" visible` after clicking Save — a line of the form itself,
+// true before the click too, so each case passed without checking anything. Made-up canaries.
+// Run 2026-10-25T13-47-20-200Z-7d089986: grounding's replays replace a URL's page with its AFTER
+// state, so judged on that model "We hit a snag." (a failed Save, same URL) read as shown before Save.
+it("toIR judges static text on discovery's model, not the replay-refreshed one", () => {
+  const src = readFileSync(new URL("../src/stages/ir.ts", import.meta.url), "utf8");
+  expect(src).toMatch(/staticTextAssertion\(parsed\.data, appModel, testCase\)/);
+  expect(src).not.toMatch(/staticTextAssertion\(parsed\.data, currentModel/);
+});
+
+describe("staticTextAssertion: a text the page showed before the action proves nothing", () => {
+  const base = "https://zq.example";
+  const model = {
+    baseUrl: base,
+    pages: [{ url: `${base}/new`, title: "New Zq", concepts: [], elements: [{ role: "button", name: "Save", visible: true }],
+      markdown: "New Zq\n= Zq Required Information\nSave" }], // the model drops the page's aria-hidden "*"
+  } as unknown as AppModel;
+  const ir = (text: string, withAction = true) => ({
+    meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: base },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/new" } },
+      ...(withAction ? [{ id: "s2", action: "click", target: { role: "button", name: "Save" } }] : []),
+      { id: "s3", action: "assert", target: { text }, assertion: "visible" },
+    ],
+  }) as unknown as IR;
+  const tc = (over: Partial<TestCase>) => ({ priority: "high", feature: "Zq", steps: ["s"], generatedFrom: "upfront",
+    fromPrompt: false, title: "Create a Zq", expected: "The Zq is created", category: "valid", ...over }) as TestCase;
+  const positive = tc({});
+  const namedRule = tc({ title: "Zq rule rejects a blank contact", category: "invalid-input",
+    expected: 'The error message "Zq phone or zq mail must be filled." is displayed and the Zq is not saved.' });
+  const staysOpen = tc({ title: "Zq create with required fields blank", category: "invalid-input",
+    expected: "The form stays open and the Zq is not saved." });
+  const STATIC = "* = Zq Required Information";
+  const withGuards = <T>(fn: () => T): T => {
+    const prev = process.env.HOLLOW_PASS_GUARDS_ENABLED;
+    process.env.HOLLOW_PASS_GUARDS_ENABLED = "true";
+    try { return fn(); } finally { if (prev === undefined) delete process.env.HOLLOW_PASS_GUARDS_ENABLED; else process.env.HOLLOW_PASS_GUARDS_ENABLED = prev; }
+  };
+
+  it("rejects it on a success case and on a negative case that names its message", () => withGuards(() => {
+    const hit = staticTextAssertion(ir(STATIC), model, positive);
+    expect(hit?.stepIds).toEqual(["s3"]);
+    expect(hit?.message).toMatch(/before/i);
+    expect(staticTextAssertion(ir(STATIC), model, namedRule)?.stepIds).toEqual(["s3"]);
+  }));
+
+  it("allows it on a negative case that only expects the form to stay open (it fails if the save succeeds)", () => withGuards(() => {
+    expect(staticTextAssertion(ir(STATIC), model, staysOpen)).toBeNull();
+  }));
+
+  it("leaves the outcome text alone, and an arrival check with no action", () => withGuards(() => {
+    expect(staticTextAssertion(ir("Zq phone or zq mail must be filled."), model, namedRule)).toBeNull();
+    expect(staticTextAssertion(ir(STATIC, false), model, positive)).toBeNull();
+  }));
+
+  it("Salesforce: after a Save proven by 'was created' the form is gone, so its labels are no verdict", async () => {
+    const { withTargetApp } = await import("../src/runTarget.js");
+    const formLabel = "Zq Expiry";
+    const sfModel = { ...model, pages: [{ ...model.pages[0], markdown: `New Zq
+${formLabel}
+Save` }] } as unknown as AppModel;
+    const saved = {
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: base },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/new" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Save" } },
+        { id: "s3", action: "assert", target: { text: "was created" }, assertion: "visible" },
+        { id: "s4", action: "click", target: { role: "tab", name: "Details" } },
+        { id: "s5", action: "assert", target: { text: formLabel }, assertion: "visible" },
+      ],
+    } as unknown as IR;
+    withGuards(() => withTargetApp("salesforce", () => {
+      expect(staticTextAssertion(saved, sfModel, positive)).toBeNull();
+      // No proof the Save worked (a validation case): the form is still there, the guard still holds.
+      expect(staticTextAssertion(ir(STATIC), model, positive)?.stepIds).toEqual(["s3"]);
+    }));
+    // Not a Salesforce run: unchanged.
+    withGuards(() => expect(staticTextAssertion(saved, sfModel, positive)?.stepIds).toEqual(["s5"]));
+  });
+
+  it("does nothing with HOLLOW_PASS_GUARDS_ENABLED off", () => {
+    const prev = process.env.HOLLOW_PASS_GUARDS_ENABLED;
+    delete process.env.HOLLOW_PASS_GUARDS_ENABLED;
+    try { expect(staticTextAssertion(ir(STATIC), model, positive)).toBeNull(); }
+    finally { if (prev !== undefined) process.env.HOLLOW_PASS_GUARDS_ENABLED = prev; }
+  });
+});
+
+describe("an assert on a control the flow already used reuses that step's selector (Salesforce)", async () => {
+  const { withTargetApp } = await import("../src/runTarget.js");
+  // Run 2026-10-24T18-48-47-941Z-8c342c24: after Save the error popover aria-hides the form (or a
+  // successful save leaves the page), so the post-Save screen has no Save; grounding fell back to
+  // every page and bound "Save is still visible" to the HOME page's Save (cases 2, 3), and rejected
+  // the primary's "Save is hidden" outright. Made-up canary names below.
+  const zq = {
+    baseUrl: "https://zq.example",
+    pages: [
+      { url: "https://zq.example/lightning/page/home", concepts: [], elements: [
+        { role: "button", name: "Save", css: "role=main >> role=button[name=\"Save\"s]", pageSection: "main" },
+      ] },
+      { url: "https://zq.example/lightning/o/Zq__c/new", concepts: [], elements: [
+        { role: "textbox", name: "Zq Name", css: "input[name=\"Zq_Name__c\"]", pageSection: "dialog" },
+        { role: "button", name: "Save", css: "button[name=\"SaveEdit\"]", pageSection: "dialog" },
+      ] },
+    ],
+  } as unknown as AppModel;
+  const flow = (assertion: "visible" | "hidden") => IR.parse({
+    meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/lightning/o/Zq__c/new" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq" },
+      { id: "s3", action: "click", target: { role: "button", name: "Save", css: "button[name=\"SaveEdit\"]" } },
+      { id: "s4", action: "assert", target: { role: "button", name: "Save" }, assertion },
+    ],
+  });
+
+  it("binds 'Save is still visible' to the Save the flow clicked, not another page's", () => {
+    const ir = flow("visible");
+    withTargetApp("salesforce", () => groundingError(ir, zq));
+    expect(ir.steps[3].target?.css).toBe("button[name=\"SaveEdit\"]");
+  });
+
+  it("grounds 'Save is hidden' on the clicked control even when the page after Save lacks it", () => {
+    const ir = flow("hidden");
+    const err = withTargetApp("salesforce", () => groundingError(ir, zq,
+      { reachedUrlAt: new Map([[3, "https://zq.example/lightning/r/Zq__c/a01/view"]]) } as any));
+    expect(err).toBeNull();
+    expect(ir.steps[3].target?.css).toBe("button[name=\"SaveEdit\"]");
+  });
+});
+
+describe("a dropped check that carried the request's value does not leave a 'passed' test", () => {
+  it("the drop path re-checks the request's values on what is left (source pin)", () => {
+    const src = readFileSync("src/stages/ir.ts", "utf8");
+    const drop = src.slice(src.indexOf("if (lastContradiction) {"), src.indexOf("Attempts exhausted without ever reaching"));
+    expect(drop).toMatch(/const lost = stepsMissingValues\(steps, testCase, requestValues\(sourcePrompt\)\);/);
+    expect(drop).toMatch(/const stillAsserts = steps\.some\(s => s\.action === "assert"\) && !lost\.length;/);
   });
 });

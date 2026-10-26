@@ -3,7 +3,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { chromium, type Browser } from "playwright";
 import { extractDomModelFromPage } from "../src/stages/domDiscovery.js";
-import { trackNetwork, waitForNetworkSettle } from "../src/stages/networkSettle.js";
+import { trackNetwork, waitForNetworkSettle, waitForDialogFields } from "../src/stages/networkSettle.js";
 
 // Discovery upgrade Phase 1 (NETWORK_SETTLE_ENABLED), in a REAL Chromium against a real local HTTP
 // server (D-19): a page's fields can arrive from a fetch that finishes after the DOM looked ready,
@@ -159,4 +159,39 @@ describe("Phase 1: wait until the page really finished loading", () => {
       await p.close();
     }
   }, 30_000);
+});
+
+describe("a create form is snapshotted only once its fields are in the dialog", () => {
+  // Run 2026-10-24T13-19-15-522Z-c180fec9: /lightning/o/Lead/new was modelled with the modal's frame
+  // (10 dialog elements) and none of its fields; the record form fills in a moment after the dialog,
+  // while network and control counts already look settled. Generic: any field control inside an
+  // open dialog, across open shadow roots. No field name is assumed.
+  let browser: Browser;
+  beforeAll(async () => { browser = await chromium.launch(); });
+  afterAll(async () => { await browser.close(); });
+
+  it("waits until a field control appears inside the dialog, across a shadow root", async () => {
+    const page = await browser.newPage();
+    try {
+      await page.setContent(`<div id="h"></div><script>
+        const root = document.getElementById("h").attachShadow({ mode: "open" });
+        root.innerHTML = '<div role="dialog" aria-label="New Zq"><h2>New Zq</h2><button>Cancel</button><div id="body"></div></div>';
+        setTimeout(() => { root.getElementById("body").innerHTML = '<label for="f">Zq Name</label><input id="f">'; }, 1200);
+      </script>`);
+      const t0 = Date.now();
+      expect(await waitForDialogFields(page, 5000)).toBe(true);
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(1000);
+      expect(await page.locator("input").count()).toBe(1);
+    } finally { await page.close(); }
+  });
+
+  it("gives up after its budget when no dialog field ever appears, and says so", async () => {
+    const page = await browser.newPage();
+    try {
+      await page.setContent(`<div role="dialog"><button>Close</button></div><input aria-label="outside the dialog">`);
+      const t0 = Date.now();
+      expect(await waitForDialogFields(page, 600)).toBe(false);
+      expect(Date.now() - t0).toBeLessThan(3000);
+    } finally { await page.close(); }
+  });
 });

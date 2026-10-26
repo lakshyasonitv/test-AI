@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { chromium, type Browser, type Page } from "playwright";
 import { generateSpec } from "../src/stages/generator.js";
-import { nearFieldSelector } from "../src/stages/targetResolver.js";
+import { nearFieldSelector, chooseLive } from "../src/stages/targetResolver.js";
 import type { IR } from "../src/schema/ir.js";
 import { specHelpers } from "./fixtures/specHelpers.js";
 
@@ -247,5 +247,140 @@ describe("regression — the saved IR from run 2026-09-04T10-38-19-619Z-bf20906d
 
     expect(await page.locator("#mgr").inputValue()).toBe("prashant mishra");
     expect(await page.locator("#role-native").inputValue()).toBe("Learner");
+  });
+});
+
+/**
+ * A Lightning picklist, in the shape read off the DE org's New Lead form (2026-10-24): a
+ * `button role="combobox"` with aria-controls, its listbox in the same shadow root, and each option
+ * a `role="option"` custom element whose TEXT lives in its OWN shadow root (textContent "") with a
+ * data-value attribute. Run 2026-10-24T13-19-15-522Z-c180fec9 opened this dropdown (the screenshot
+ * shows Mr., Ms., …) and choose() still said "the control had no options at all". Made-up values.
+ */
+const LIGHTNING_PICKLIST = `<html><body>
+  <div role="dialog" aria-label="New Zq" style="padding:20px">
+    <zq-combobox id="host"></zq-combobox>
+    <zq-combobox id="other"></zq-combobox>
+    <div class="slds-modal__footer"><button>Cancel</button><button>Save</button></div>
+  </div>
+  <script>
+    customElements.define("zq-item", class extends HTMLElement {
+      connectedCallback() {
+        if (this.shadowRoot) return;
+        this.attachShadow({ mode: "open" }).innerHTML =
+          '<span class="fig"></span><span class="body"><span title="' + this.dataset.value + '">' + (this.dataset.value || "--None--") + '</span></span>';
+      }
+    });
+    customElements.define("zq-combobox", class extends HTMLElement {
+      connectedCallback() {
+        const id = "dd-" + this.id;
+        const r = this.attachShadow({ mode: "open" });
+        r.innerHTML = '<label>Zq Title</label><button role="combobox" name="zq_' + this.id + '" aria-expanded="false" aria-controls="' + id + '">--None--</button>'
+          + '<div id="' + id + '" role="listbox" style="display:none"></div>';
+        const btn = r.querySelector("button"), list = r.getElementById(id);
+        btn.addEventListener("click", () => {
+          // "swallow-first": like a Lightning picklist clicked while the field before it is still
+          // committing (run 2026-10-24T13-46-36-401Z-db184799), the first click does nothing.
+          if (this.hasAttribute("swallow-first") && !this.armed) { this.armed = true; return; }
+          if (!list.children.length) for (const v of ["", "Zq One", "Zq Two"]) {
+            const it = document.createElement("zq-item"); it.setAttribute("role", "option"); it.dataset.value = v; list.appendChild(it);
+          }
+          list.style.display = "block"; btn.setAttribute("aria-expanded", "true");
+        });
+        list.addEventListener("click", (e) => {
+          const it = e.composedPath().find((n) => n.tagName === "ZQ-ITEM");
+          if (!it) return;
+          btn.textContent = it.dataset.value || "--None--"; list.style.display = "none"; btn.setAttribute("aria-expanded", "false");
+        });
+      }
+    });
+  </script>
+</body></html>`;
+
+describe("select on a Lightning picklist: options whose text is in their own shadow root", () => {
+  let browser: Browser;
+  let page: Page;
+  let helpers: { choose: Function };
+  beforeAll(async () => {
+    browser = await chromium.launch();
+    page = await browser.newPage();
+    helpers = specHelpers(SPEC, ["choose"]) as unknown as { choose: Function };
+  });
+  afterAll(async () => { await browser.close(); });
+
+  it("opens the control's own listbox and picks the option by its rendered text", async () => {
+    await page.setContent(LIGHTNING_PICKLIST);
+    await helpers.choose(page, page.locator('button[name="zq_host"]'), "Zq Two");
+    expect(await page.locator('button[name="zq_host"]').textContent()).toBe("Zq Two");
+    // The other picklist on the form was never touched.
+    expect(await page.locator('button[name="zq_other"]').textContent()).toBe("--None--");
+  });
+
+  it("matches a value that differs only in case and spacing, as a <select> would", async () => {
+    await page.setContent(LIGHTNING_PICKLIST);
+    await helpers.choose(page, page.locator('button[name="zq_host"]'), "  zq one ");
+    expect(await page.locator('button[name="zq_host"]').textContent()).toBe("Zq One");
+  });
+
+  it("says what was on offer when the value is not one of them", async () => {
+    await page.setContent(LIGHTNING_PICKLIST);
+    const err = await helpers.choose(page, page.locator('button[name="zq_host"]'), "Zq Nine").catch((e: Error) => e);
+    expect(String(err)).toMatch(/Zq One/);
+    expect(String(err)).toMatch(/Zq Two/);
+  });
+});
+
+describe("a picklist whose first click is swallowed is clicked again, in the spec and in the live replay", () => {
+  // Run 2026-10-24T13-46-36-401Z-db184799: the same Lead Status step passed in one case and failed in
+  // two; the failure screenshots show the dropdown CLOSED. The control's own popup (aria-controls)
+  // and aria-expanded say whether the click opened it.
+  let browser: Browser;
+  let page: Page;
+  let helpers: { choose: Function };
+  beforeAll(async () => {
+    browser = await chromium.launch(); page = await browser.newPage();
+    helpers = specHelpers(SPEC, ["choose"]) as unknown as { choose: Function };
+  });
+  afterAll(async () => { await browser.close(); });
+  const sticky = () => LIGHTNING_PICKLIST.replace('<zq-combobox id="host"></zq-combobox>', '<zq-combobox id="host" swallow-first></zq-combobox>');
+
+  it("spec choose()", async () => {
+    await page.setContent(sticky());
+    await helpers.choose(page, page.locator('button[name="zq_host"]'), "Zq One");
+    expect(await page.locator('button[name="zq_host"]').textContent()).toBe("Zq One");
+  });
+
+  it("live chooseLive()", async () => {
+    await page.setContent(sticky());
+    await chooseLive(page, page.locator('button[name="zq_host"]'), "Zq One");
+    expect(await page.locator('button[name="zq_host"]').textContent()).toBe("Zq One");
+  });
+
+  it("an already-open dropdown is not clicked shut", async () => {
+    await page.setContent(LIGHTNING_PICKLIST);
+    await helpers.choose(page, page.locator('button[name="zq_host"]'), "Zq Two");
+    expect(await page.locator('button[name="zq_host"]').textContent()).toBe("Zq Two");
+  });
+});
+
+describe("the live replay picks a Lightning picklist option the same way (IR grounding path)", () => {
+  // chooseLive is what the grounding replay runs; it had the same two blind spots as the spec's
+  // choose(): the modal footer as scope, and option text read from textContent ("" here).
+  let browser: Browser;
+  let page: Page;
+  beforeAll(async () => { browser = await chromium.launch(); page = await browser.newPage(); });
+  afterAll(async () => { await browser.close(); });
+
+  it("opens the control's own listbox and picks by rendered text, case-insensitively", async () => {
+    await page.setContent(LIGHTNING_PICKLIST);
+    await chooseLive(page, page.locator('button[name="zq_host"]'), "zq two");
+    expect(await page.locator('button[name="zq_host"]').textContent()).toBe("Zq Two");
+    expect(await page.locator('button[name="zq_other"]').textContent()).toBe("--None--");
+  });
+
+  it("names the options on offer when the value is absent", async () => {
+    await page.setContent(LIGHTNING_PICKLIST);
+    const err = await chooseLive(page, page.locator('button[name="zq_host"]'), "Zq Nine").catch((e: Error) => e);
+    expect(String(err)).toMatch(/Zq One/);
   });
 });

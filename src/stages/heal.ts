@@ -96,9 +96,32 @@ export function isHealable(diagnosis: Diagnosis, ir: IR): boolean {
       && UNHEALABLE_TRUNCATIONS.has(ir.meta.truncationKind)) {
     return false;
   }
-  const healable = diagnosis.category === "selector_changed" || diagnosis.category === "element_missing";
   const failIdx = diagnosis.failingStepId ? ir.steps.findIndex((s) => s.id === diagnosis.failingStepId) : -1;
-  return healable && failIdx > 0;
+  // A heal repairs HOW a step reaches its control, never what the test concludes: a failed
+  // assert is the verdict, and regenerating it is how a hollow pass gets in (Session 101).
+  return failIdx > 0 && HEALABLE_CATEGORIES.has(diagnosis.category)
+    && HEALABLE_ACTIONS.has(ir.steps[failIdx].action);
+}
+
+/**
+ * Locator-shaped failures. On Salesforce a moved control usually TIMES OUT on a CSS/attribute
+ * locator rather than reporting "resolved to 0" (run 2026-10-24T14-09-38-782Z-a7582b51 case-2), so
+ * timeout and the visibility/strictness shapes heal too — on an interaction step only.
+ */
+const HEALABLE_CATEGORIES = new Set<string>([
+  "selector_changed", "element_missing", "element_not_interactable", "element_hidden",
+  "multiple_matches", "detached", "timeout",
+]);
+const HEALABLE_ACTIONS = new Set<string>(["click", "fill", "select", "check", "press"]);
+
+/** What a test concludes: its last step's action, assertion, value and target (css aside — a heal
+ *  may re-ground the same control to a new selector). */
+function conclusion(ir: IR): string {
+  const last = ir.steps[ir.steps.length - 1];
+  if (!last) return "";
+  // Everything grounding writes is how the control is reached, not what is concluded.
+  const { css: _css, nth: _nth, testId: _testId, frame: _frame, groundedAt: _at, ...target } = (last.target ?? {}) as any;
+  return JSON.stringify([last.action, last.assertion ?? "", last.value ?? "", target]);
 }
 
 /** True when the DETERMINISTIC_HEAL env flag is set to "true". Read per-call, not at module
@@ -200,8 +223,15 @@ export async function attemptHeal(args: HealArgs): Promise<HealResult | null> {
 
   const prefix = ir.steps.slice(0, failIdx);
   const credPolicy = credentialPolicyFor(testCase, promptCarriesCredentials(sourcePrompt));
-  const freshModel = await refreshPageModel(appModel, prefix, runCreds, credPolicy);
+  const freshModel = await refreshPageModel(appModel, prefix, runCreds, credPolicy, { fresh: true });
   const { ir: healedIr } = await toIR(testCase, freshModel, sourcePrompt, entryUrl, llmBudget, runCreds);
+
+  // A heal repairs how steps reach their controls; it must still conclude the same thing. A new
+  // final assertion is a different test, and the way a hollow pass gets back in (Session 101).
+  if (conclusion(healedIr) !== conclusion(ir)) {
+    console.log(`[heal] rejected: the regenerated test ends on a different assertion (${conclusion(healedIr)} vs ${conclusion(ir)})`);
+    return null;
+  }
 
   // A heal that truncates isn't a heal: it means the failing step still can't be grounded even
   // against a fresh snapshot (genuinely gone, not just renamed), and toIR silently fell back to

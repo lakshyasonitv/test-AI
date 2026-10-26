@@ -1834,3 +1834,57 @@ never clicked anywhere. The README says the explorer must stay off against produ
 **Rejected.** Blocking every non-GET request: Salesforce Aura and many SPAs READ over POST, so pages would not render.
 Exploring every button (rejected on 2026-10-16 as TD-150's alternative): too slow and could submit forms; the allow
 list plus the budget bound it. Letting the explorer type: it could commit data.
+
+## D-63. A Salesforce org is signed into once, over OAuth, and every run's browser enters through frontdoor.jsp
+
+**Status:** Stage 1 built on `shadowdom` 2026-10-24, behind `SALESFORCE_OAUTH_ENABLED` (default off).
+
+**What.** "Connect org" opens the org's own authorise page (`<My Domain>/services/oauth2/authorize`, web-server flow,
+PKCE S256 plus the client secret, scopes `api web refresh_token`). The callback trades the code for tokens, kept in
+server memory and bound to the Testbench organisation and user that started it; the browser only ever holds an
+opaque connection id. A run that sends `options.sfConnectionId` (checked: own organisation, URL of the same org) is
+entered on a rail (`salesforceFrontdoor.ts`, like `runTarget.ts`), and then:
+- discovery signs in through `frontdoor.jsp?sid=…&retURL=/lightning/page/home` BEFORE the entry snapshot, so there
+  is no gate detection, no credential prompt and no login page in the model; it is not cached;
+- the IR's login prefix is one step, `navigate ${env:SF_FRONTDOOR_URL}`; a model-written `navigate "/"` right after
+  it goes to where frontdoor landed (the My Domain root is the login page);
+- the grounding replay resolves that reference through the rail; the executor gives the child a fresh URL in
+  `SF_FRONTDOOR_URL`; the spec holds only `process.env.SF_FRONTDOOR_URL` (portable: `sf org open --url-only`);
+- the token and every minted URL are registered as run secrets and scrubbed from events, the console and the served
+  text artifacts. Walk and IR cache keys gain a part naming the org.
+
+**Why.** An org's login is the hardest page this product meets: two screens on one URL, verification codes, MFA,
+SSO, passkeys. Run `29189dcc` (2026-10-24) truncated right before the password because of TD-165, and no password
+automation would ever handle MFA or SSO. Signing in on Salesforce's own page moves all of that to Salesforce, which
+is its job, and frontdoor is Salesforce's supported way to hand a session to a browser.
+
+**Scope (agreed 2026-10-24).** Scratch orgs and sandboxes, decided from the host and re-checked on the
+`instance_url` Salesforce returns; Developer Edition orgs (`.develop.`) added the same day at the user's request (a
+free standalone org with no customer data, where their External Client App lives). Production stays refused. The app is an External Client App: since Spring '26 new Connected Apps cannot be
+created. Tokens in memory; encrypted storage, a Settings list, metadata-driven discovery (UI API / Tooling API), API
+verification after UI steps, test-data setup/teardown and a live browser window for portals are later stages.
+
+**Discovery accuracy on Salesforce runs (added 2026-10-24, after two live runs on a Developer Edition org).**
+- *Org model.* With the connection's token (`FrontdoorSession.apiGet`, GET only) discovery reads what the org says
+  about itself: every app, the selected app's nav objects plus custom objects (`__c`) no nav shows (up to 20), each
+  object's fields, required fields, picklist values, lookups, list views and record count (SOQL `COUNT()`), and active
+  validation rules (Tooling API). Stored as `AppModel.salesforceOrg`; the case writer gets it as one compact block
+  (prompt and cache key), like the screen map's block. The live run read 7 objects and 4 real Lead rules.
+- *Landmarks.* The live walker records each element's explicit landmark (`role=main/navigation/banner/contentinfo`,
+  `<main>`, `<nav>`) as `pageSection`, through shadow roots. The IR prompt's cap ranks dialog > main > rest, so the
+  page's own controls are no longer pushed out by the repeated Lightning header and nav.
+- *Stable locators.* Aura runtime ids (`content_1010:0`, `brandBand_2`) join the generated-id rule; a role + name that
+  is not unique on the page is tried scoped to its dialog or landmark (`role=dialog >> role=button[name="Save"s]`)
+  before the positional path. Two of three cases in run `2026-10-24T07-08-34-372Z-e2fc249c` failed on positional
+  paths anchored on those ids.
+- *Ceilings, not caps.* The IR prompt shows 150 elements per page (ordinary runs 30) and the crawl takes 12 pages
+  (ordinary runs 5), at the user's request ("remove the caps for Salesforce").
+- *Honest verdicts.* A final page on another host the login was observed to pass through is not "blocked" (D-47
+  hosts passed to `detectBlocked`); a frontdoor case drops only its credential-entry lines before compiling.
+All of it applies to Salesforce runs only; ordinary runs and their cache keys are unchanged (pin tests pass).
+
+**Rejected.** Automating the password form harder (D-46/D-57 style): it cannot reach MFA, SSO or passkeys. Handing
+the person a streamed browser for every org login: needed for portals, but heavier than OAuth for orgs that have it.
+`login.salesforce.com` as the authorise host: a Local External Client App authorises users of its own org, on that
+org's My Domain. Caching discovery under the connection: the session belongs to the connection, not to `creds`, so
+the site key cannot tell connections apart, and a re-crawl is cheaper than a wrong model.

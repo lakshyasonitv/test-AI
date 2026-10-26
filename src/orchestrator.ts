@@ -12,6 +12,8 @@ import { LlmBudget, enterWithBudget, type LlmUsageSnapshot } from "./llm/llmBudg
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
+import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
+import { cleanupEnabled, cleanupRecords, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -102,6 +104,14 @@ export interface RunOptions {
    * Omitted means the standard generator — what the CLI always gets.
    */
   spec?: SpecModel;
+  /**
+   * The Salesforce org connection this run signs in with (D-63, SALESFORCE_OAUTH_ENABLED). Resolved
+   * and tenancy-checked by the route; carries no token of its own, only a `mint()` for a fresh
+   * frontdoor URL. Omitted means every browser signs in the old way (or not at all).
+   */
+  sfFrontdoor?: FrontdoorSession;
+  /** Org-connection runs: crawl again even when a saved discovery matches the org's setup. */
+  freshDiscovery?: boolean;
 }
 
 /**
@@ -184,6 +194,9 @@ export async function runPipeline(
   // The fourth use of the rail: which enterprise application, if any, this URL belongs to. Entered
   // on EVERY run — null for an ordinary one — so no run can inherit another's value (runTarget.ts).
   enterWithTargetApp(options?.targetApp ?? null);
+  // D-63: the org connection, beside the target app and for the same reason (discovery, the
+  // grounding replay and the executor need it). Entered on EVERY run, null without one.
+  enterWithFrontdoor(options?.sfFrontdoor ?? null);
   // The fifth rail, entered beside the other four and for the same reason: the id is known here
   // and needed at the very bottom of the call stack (llm/client.ts, discovery, the executor's
   // child spawn), so it travels ambiently rather than through every signature between. Unlike the
@@ -277,7 +290,7 @@ export async function runPipeline(
 
     const appModel = await step("discovery", "02-appmodel.json", async () => {
       const discovered = resolvedUrls.length === 1
-        ? await discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery)
+        ? await discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery, prompt, options?.freshDiscovery === true)
         : await discoverPagesHybrid(resolvedUrls);
       // Discovery upgrade Phase 5 (BUTTON_EXPLORER_ENABLED, default off): safe clicks that reveal
       // screens discovery cannot reach by URL. Inside the step, so 02-appmodel.json holds what it
@@ -388,7 +401,8 @@ export async function runPipeline(
     // Carrying it here is what stops the user being prompted a second time: the guard below is
     // `!runCreds`, so a credential already supplied during discovery suppresses the ask.
     let runCreds: Credentials | undefined = discoveredCreds;
-    if (askCredentials && !runCreds && !promptCarriesCredentials(prompt)) {
+    // D-63: a run signed in through an org connection never asks for a password.
+    if (askCredentials && !runCreds && !promptCarriesCredentials(prompt) && !options?.sfFrontdoor) {
       const fields = credentialFieldsNeeded(appModel, cases);
       if (fields.length) {
         emit("credentials", "started", { fields, url: resolvedUrls[0] });
@@ -600,6 +614,18 @@ export async function runPipeline(
       try { suite = JSON.parse(readFileSync(summaryPath, "utf8")); } catch { }
     }
 
+    // Phase D (SALESFORCE_CLEANUP_ENABLED, default off): delete the records this run created in
+    // the org, and only those the org confirms this user created since the run began. Never fails
+    // the run: a cleanup that cannot run says why in 10-cleanup.json.
+    const fd = currentFrontdoor();
+    const since = runStartedAt(runId);
+    if (cleanupEnabled() && fd?.apiGet && fd.apiDelete && since) {
+      const cleanup = await cleanupRecords({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, runRecords(runDir), since);
+      save("10-cleanup.json", cleanup);
+      console.log(`[cleanup] ${runId}: deleted ${cleanup.deleted.length}, left ${cleanup.skipped.length}, failed ${cleanup.failed.length}`
+        + (cleanup.reason ? ` (${cleanup.reason})` : ""));
+    }
+
     // Real LLM spend for this run, across every stage — visible on disk and in the completion
     // event so a regression (retry storm, model change) shows up immediately instead of being
     // discovered later via a drained account.
@@ -609,7 +635,8 @@ export async function runPipeline(
 
     // Did the primary case end at a wall automation can't pass? That outranks pass/fail: the
     // app isn't broken and the test didn't succeed, and the user needs to see the proof frame.
-    const blocked = detectBlocked(path.join(runDir, "artifacts"), originOf(resolvedUrls[0]));
+    // relatedHosts (D-47): a login that lands on another host of the same app has not left it.
+    const blocked = detectBlocked(path.join(runDir, "artifacts"), originOf(resolvedUrls[0]), appModel.auth?.relatedHosts);
     const blockedScreenshotUrl = blocked?.screenshot
       ? "/" + path.relative(".", blocked.screenshot).replace(/\\/g, "/")
       : undefined;

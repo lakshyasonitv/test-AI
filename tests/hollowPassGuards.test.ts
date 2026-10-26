@@ -250,7 +250,7 @@ describe("the terminal-text re-check itself is unchanged", () => {
 
 describe("heal", () => {
   it("never heals an error-assertion truncation (a passing heal would turn incomplete into passed)", () => {
-    const ir: any = { meta: { truncated: true, truncationKind: "error-assertion" }, steps: [{ id: "s1" }, { id: "s2" }, { id: "s3" }] };
+    const ir: any = { meta: { truncated: true, truncationKind: "error-assertion" }, steps: [{ id: "s1" }, { id: "s2" }, { id: "s3", action: "click" }] };
     expect(isHealable({ category: "element_missing", failingStepId: "s3" } as any, ir)).toBe(false);
     expect(isHealable({ category: "element_missing", failingStepId: "s3" } as any, { ...ir, meta: { truncated: true, truncationKind: "role-name" } })).toBe(true);
   });

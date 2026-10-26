@@ -33,7 +33,49 @@ export function rememberRunSecrets(runId: string, creds: Credentials | null | un
   timer.unref?.();
 }
 
+/**
+ * Secrets that are not a username/password pair — a Salesforce org connection's access token and
+ * the frontdoor URL that carries it (D-63). Same lifetime and same scrubbers as the credentials
+ * above; only the matching differs (an exact string, replaced wherever it appears).
+ */
+const stringsByRun = new Map<string, Set<string>>();
+/** Shorter than this is never registered: replacing a short string would rewrite ordinary text
+ *  (the TD-156 lesson). Tokens and URLs are far longer. */
+const MIN_SECRET_STRING = 16;
+const SECRET_STRING_PLACEHOLDER = "[redacted]";
+
+export function rememberRunSecretStrings(runId: string, values: Array<string | null | undefined>): void {
+  const set = stringsByRun.get(runId) ?? new Set<string>();
+  for (const v of values) if (typeof v === "string" && v.length >= MIN_SECRET_STRING) set.add(v);
+  if (!set.size) return;
+  stringsByRun.set(runId, set);
+  const timer = setTimeout(() => stringsByRun.delete(runId), MAX_HOLD_MS);
+  timer.unref?.();
+}
+
+/** `value` with every registered secret string replaced, walking arrays and plain objects. */
+function scrubStrings<T>(value: T, secrets: string[]): T {
+  if (!secrets.length) return value;
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") {
+      let s = v;
+      for (const secret of secrets) if (s.includes(secret)) s = s.split(secret).join(SECRET_STRING_PLACEHOLDER);
+      return s;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype) {
+      return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, walk(x)]));
+    }
+    return v;
+  };
+  return walk(value) as T;
+}
+
 export function forgetRunSecretsSoon(runId: string): void {
+  if (stringsByRun.has(runId)) {
+    const t = setTimeout(() => stringsByRun.delete(runId), FORGET_AFTER_END_MS);
+    t.unref?.();
+  }
   if (!byRun.has(runId)) return;
   const timer = setTimeout(() => byRun.delete(runId), FORGET_AFTER_END_MS);
   timer.unref?.();
@@ -61,7 +103,8 @@ export function cacheSafe<T>(value: T): T {
 /** `value` with this run's credentials (and the operator's TEST_USERNAME/TEST_PASSWORD, which any
  *  run may use) replaced by the placeholder. Returns `value` itself when there is nothing to scrub. */
 export function scrubRunSecrets<T>(runId: string, value: T): T {
-  let out = value;
+  // Longest first, so a URL that contains the token is replaced whole rather than leaving its tail.
+  let out = scrubStrings(value, [...(stringsByRun.get(runId) ?? [])].sort((a, b) => b.length - a.length));
   for (const creds of byRun.get(runId) ?? []) out = redactCredentials(out, creds);
   const fromEnv = credentialsFromEnv();
   return fromEnv ? redactCredentials(out, fromEnv) : out;

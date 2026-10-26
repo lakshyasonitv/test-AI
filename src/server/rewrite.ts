@@ -43,11 +43,6 @@ export function consumeRewriteAttempt(userId: string, now = Date.now()): boolean
   return recent.length <= RATE_MAX_ATTEMPTS;
 }
 
-/** Test seam — the limiter is module state, and cases must not inherit each other's counters. */
-export function resetRewriteRateLimit(): void {
-  attemptsByUser.clear();
-}
-
 export interface RewriteProposal {
   /** The proposed step sentences, in the same vocabulary the editor shows. */
   steps: string[];

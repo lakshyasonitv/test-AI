@@ -73,7 +73,11 @@ type StepText = { value?: string; target?: { name?: string; text?: string; label
  */
 export function stepsMissingValues(steps: StepText[], c: Pick<TestCase, "steps" | "expected">, values: string[]): string[] {
   const carried = values.filter((v) => missingValues(c, [v]).length === 0);
-  const hay = steps.flatMap((s) => [s.value, s.target?.name, s.target?.text, s.target?.label, s.target?.placeholder])
+  // A request names a field and its value together ("TB Region South"); the step holds them apart
+  // (name "TB Region", value "South"), so the pair is also matched as one (run
+  // 2026-10-25T15-42-33-903Z-d11ab7a2 was truncated over exactly this).
+  const hay = steps.flatMap((s) => [s.value, s.target?.name, s.target?.text, s.target?.label, s.target?.placeholder,
+    s.value && (s.target?.name ?? s.target?.label) ? `${s.target?.name ?? s.target?.label} ${s.value}` : undefined])
     .filter((x): x is string => typeof x === "string" && x.length > 0).map(loose).join("|");
   return carried.filter((v) => !hay.includes(loose(v)));
 }

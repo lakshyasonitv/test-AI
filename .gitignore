@@ -11,3 +11,9 @@ artifacts/
 
 # Local dev server output (npm run serve redirect)
 server.log
+
+# Environment dumps (az containerapp show / env exports) can hold secrets: never commit them.
+env-backup-*.json
+
+# Local state (sealed Salesforce connections when the database cannot hold them)
+.testbench/

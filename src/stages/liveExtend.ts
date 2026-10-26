@@ -6,20 +6,21 @@ import { extractDomModelFromPage } from "./domDiscovery.js";
 import {
   modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
 } from "./discovery.js";
-import { resolveLive, chooseLive } from "./targetResolver.js";
+import { resolveLive, chooseLive, lookupLive } from "./targetResolver.js";
 import {
   credentialForStep, redactCredentials, credentialFieldMap, credentialKindForStep,
   lastFillIndexByKind, type Credentials, type CredentialKind, type CredentialPolicy,
 } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, credentialFingerprint, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
-import { cutAtBoundary, pageKey } from "../text.js";
+import { cutAtBoundary, pageKey, lineKey, hasRunToken, resolveRunTokens, newRunTokenContext } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 import { mergeScreenInto } from "./screens.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForScreenSettle } from "./networkSettle.js";
 import { dropVolatileIdCss, volatileIdDetectionEnabled } from "./volatileIds.js";
 import { captureErrorMarkers, errorMarkersOf, lastInteractionIndex, pageAlertTexts, type ErrorMarker } from "./hollowPassGuards.js";
+import { currentFrontdoor, isFrontdoorRef, openFrontdoor } from "./salesforceFrontdoor.js";
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -41,6 +42,10 @@ export async function runStepLive(
   switch (step.action) {
     case "navigate": {
       const u = step.target?.url ?? "/";
+      // D-63: the login of a run signed in through a Salesforce org connection. The step carries
+      // an env reference, never the URL (it holds the access token); resolve it here, for this run.
+      // Appending it to baseUrl, as below, is the same bug TD-84 records for `${env:TEST_USERNAME}`.
+      if (isFrontdoorRef(u)) { await openFrontdoor(page); return; }
       const full = u.startsWith("http") ? u : baseUrl.replace(/\/$/, "") + u;
       await page.goto(full, { waitUntil: "domcontentloaded" });
       return;
@@ -51,7 +56,10 @@ export async function runStepLive(
       // (generator.ts's `valueCode` compiles it to `process.env.X`); the walk keying on the
       // target instead is what made it type the literal string `${env:TEST_USERNAME}` into the
       // login box of any site whose fields are named by placeholder. TECH_DEBT.md TD-84.
-      const val = (creds && isFinalCredentialAttempt ? credentialForStep(step, creds, fieldMap, policy) : undefined) ?? step.value ?? "";
+      const raw = (creds && isFinalCredentialAttempt ? credentialForStep(step, creds, fieldMap, policy) : undefined) ?? step.value ?? "";
+      // Run tokens: a fresh context per replayed fill. A replay that clicks Save creates a real record
+      // too, and must not collide with the run's own name or another replay's (duplicate rules).
+      const val = hasRunToken(raw) ? resolveRunTokens(raw, newRunTokenContext()) : raw;
       await (await resolveLive(page, step.target!, "fill")).fill(val);
       return;
     }
@@ -61,6 +69,10 @@ export async function runStepLive(
     // value nor the available ones. chooseLive shares its matching and its message with the
     // generated spec. TECH_DEBT.md TD-76/TD-79.
     case "select":
+      if (step.target!.lookup) {
+        await lookupLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "");
+        return;
+      }
       await chooseLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "");
       return;
     case "check": await (await resolveLive(page, step.target!, "check")).check(); return;
@@ -152,7 +164,22 @@ export interface ReplayOptions {
   settle?: boolean;
   /** TD-162 (HOLLOW_PASS_GUARDS_ENABLED): also read the page's own error markers (`errorMarkers`). */
   errorSignals?: boolean;
+  /**
+   * Before reading the page, wait (bounded) for this text to be visible. A server's answer to a
+   * click (a validation message, a toast) draws a moment after it; the plain capture read the page
+   * too early and the assertion was "corrected" away (run 2026-10-24T14-30-05-546Z-6cbf9b51).
+   */
+  waitForText?: string;
+  /**
+   * Walk the live page even when this prefix is cached (the result is still cached). Self-heal
+   * needs it: the walk cache never expires, so a heal served from it re-reads the very page the
+   * failing IR was built from (Session 102).
+   */
+  fresh?: boolean;
 }
+
+/** How long a `waitForText` replay waits for the text before reading the page anyway. */
+const WAIT_FOR_TEXT_MS = 8000;
 
 /**
  * Count a page's in-flight fetch/XHR requests, and wait for them to drain. Fetch/XHR only: images,
@@ -224,7 +251,10 @@ export function walkCacheKey(
     model.baseUrl, JSON.stringify(prefix), policy, credentialFingerprint(creds), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()];
   // :2 — captures now scroll through the page first; a :1 entry lacks below-the-fold content.
   if (options.settle) keyParts.push("screen-settle:2");
-  if (currentRunTargetApp() === "salesforce") keyParts.push("sf-locators:1");
+  // sf-landmarks: a Salesforce walk also records each element's landmark (pageSection) now.
+  // sf-locators:2 (2026-10-24): chain-free role and attribute locators, no body-positional paths;
+  // walks cached under :1 hold the session-dependent chains that broke runs 12-18-19 and 12-33-54.
+  if (currentRunTargetApp() === "salesforce") keyParts.push("sf-locators:2", "sf-landmarks:1");
   // Phase 1: a settled capture can hold content an unsettled one missed, and this cache never
   // expires on disk (TD-22). Appended only with the flag on, so every existing key is unchanged.
   if (networkSettleEnabled()) keyParts.push("net-settle:1");
@@ -234,6 +264,12 @@ export function walkCacheKey(
   // only when asked for, so every existing key is unchanged. :2 — Phase A also reads page-level
   // alerts that are new after the last interaction; a :1 walk lacks them.
   if (options.errorSignals) keyParts.push("error-signals:2");
+  // D-63: a walk signed in through an org connection carries `${env:SF_FRONTDOOR_URL}`, the same
+  // string for every connection; the key names the org it signed into. Absent on every other run.
+  const frontdoor = currentFrontdoor();
+  if (frontdoor) keyParts.push(`sf-frontdoor:${frontdoor.instanceHost}`);
+  // A walk that waited for a text can hold content an immediate one missed. Only when asked for.
+  if (options.waitForText) keyParts.push(`wait-text:${options.waitForText}`);
   return makeCacheKey(...keyParts);
 }
 
@@ -276,7 +312,7 @@ async function replayAndSnapshot(
   // `settle` captures something different (a fully-rendered screen, plus its tab), so it is a key
   // part — appended ONLY when set, so every existing walk keeps its exact key and cache entry.
   const cacheKey = walkCacheKey(model, prefix, creds, policy, options);
-  const cached = llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
+  const cached = options.fresh ? undefined : llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
   if (cached) {
     // Phase 4: this walk never expires, so an id proven volatile SINCE it was cached must not be
     // served back as a locator.
@@ -374,7 +410,11 @@ async function replayAndSnapshot(
       // DOM until the page is scrolled, so a capture of the top alone misses it. Real run
       // 2026-10-13T11-24-27-837Z-67382ff8: the project page's "Select for EOI" buttons were never
       // in the model and the AI dropped the step. Scroll through, settle again, back to the top.
-      if (await scrollThroughPage(page)) {
+      // Not while a menu is open: the last click opened it ("Show more actions") and the capture is
+      // ABOUT it, but scrolling closes it. Run 2026-10-26T06-15-41-870Z-92ed6e57 captured the
+      // record page without its menu, so the "Clone" item could never ground.
+      const menuOpen = await page.locator('[role="menu"]:visible').count().then((n) => n > 0).catch(() => false);
+      if (!menuOpen && await scrollThroughPage(page)) {
         if (settleOn) await settleBeforeSnapshot(page, "screen capture, after scroll");
         else {
           await network?.quiet(3000);
@@ -421,6 +461,17 @@ async function replayAndSnapshot(
       }
     }
 
+    if (options.waitForText) {
+      // The text engine pierces open shadow roots and ignores aria-hidden (Lightning's error popover).
+      const wanted = page.getByText(options.waitForText).first();
+      await wanted.waitFor({ state: "visible", timeout: WAIT_FOR_TEXT_MS }).catch(() => {});
+      // Lightning draws a record's lower Details sections only once they are scrolled to, so a field
+      // there is not in the DOM at all (run 2026-10-26T07-53-42-185Z-83b50b3b: "SLA Expiration Date",
+      // in "Additional Information", read as absent and the check was dropped). Scroll, look again.
+      if (!(await wanted.isVisible().catch(() => false)) && await scrollThroughPage(page)) {
+        await wanted.waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
+      }
+    }
     const title = await page.title();
     const pageText = await capturePageText(page);
     const pageTextRaw = await capturePageTextContent(page);
@@ -551,8 +602,9 @@ export async function refreshPageModel(
   prefix: Step[],
   creds?: Credentials,
   policy: CredentialPolicy = "full",
+  options: ReplayOptions = {},
 ): Promise<AppModel> {
-  return (await refreshPageModelAt(model, prefix, creds, policy)).model;
+  return (await refreshPageModelAt(model, prefix, creds, policy, options)).model;
 }
 
 /**
@@ -571,8 +623,9 @@ export async function refreshPageModelAt(
   prefix: Step[],
   creds?: Credentials,
   policy: CredentialPolicy = "full",
+  options: ReplayOptions = {},
 ): Promise<{ model: AppModel; reachedUrl: string }> {
-  const { reachedUrl, pageModel } = await replayAndSnapshot(model, prefix, creds, policy);
+  const { reachedUrl, pageModel } = await replayAndSnapshot(model, prefix, creds, policy, options);
   return { model: mergePageInto(model, pageModel, reachedUrl), reachedUrl };
 }
 
@@ -758,17 +811,22 @@ function diffNewMessageLines(beforeText: string, afterText: string, appModel: Ap
   }
   if (!fresh.length) return [];
 
+  const candidates = withoutModelledLines(fresh, appModel);
+  if (candidates.length > MAX_DIFF_CANDIDATES) return [];
+  return candidates;
+}
+
+/** `lines` minus any line some discovered page's markdown already holds (chrome, static form text). */
+function withoutModelledLines(lines: string[], appModel: AppModel): string[] {
   const chromeCorpus = new Set<string>();
   for (const page of appModel.pages) {
     if (!page.markdown) continue;
     for (const line of page.markdown.split("\n")) {
-      const key = norm(line.trim());
+      const key = lineKey(line);
       if (key) chromeCorpus.add(key);
     }
   }
-  const candidates = fresh.filter(l => !chromeCorpus.has(norm(l)));
-  if (candidates.length > MAX_DIFF_CANDIDATES) return [];
-  return candidates;
+  return lines.filter(l => !chromeCorpus.has(lineKey(l)));
 }
 
 /** True when the step is a terminal-style pure-text assertion: exactly the kind
@@ -834,7 +892,25 @@ export async function groundTerminalTextAssertion(
   // Judge against textContent — the same text the emitted toHaveText/toContainText will read —
   // falling back to the rendered text when a pre-`pageTextRaw` cache entry has none, so this can
   // only ever be as good as the old behaviour, never worse.
-  const judgeText = pageTextRaw || pageText;
+  let judgeText = pageTextRaw || pageText;
+
+  // Not on the page yet? Replay once more, waiting for it, before calling the guess wrong: a
+  // server's answer to the last click draws a moment later (run 2026-10-24T14-30-05-546Z-6cbf9b51
+  // "corrected" three exact validation-rule messages away). One extra replay, only on a miss.
+  if (asserted && findVerbatim(judgeText, assertedRaw) === null && !judgeText.includes(assertedRaw)) {
+    try {
+      console.log(`[liveExtend] text-assertion grounding: "${assertedRaw}" not on the page yet, replaying once more and waiting for it`);
+      const again = await replayAndSnapshot(model, prefix, creds, policy, { ...replayOptions, waitForText: assertedRaw });
+      if (again.pageText || again.pageTextRaw) {
+        pageText = again.pageText ?? "";
+        pageTextRaw = again.pageTextRaw ?? "";
+        judgeText = pageTextRaw || pageText;
+      }
+      console.log(`[liveExtend] text-assertion grounding: after waiting, the text is ${judgeText.includes(assertedRaw) ? "there" : "still absent"}`);
+    } catch (err: any) {
+      console.log("[liveExtend] text-assertion grounding: waiting replay failed, using the first read:", err?.message ?? err);
+    }
+  }
 
   // TIER 1 — the guess appears VERBATIM, at the strictness the assertion will actually be judged
   // at. `text_equals` compiles to `toHaveText`, a WHOLE-ELEMENT exact match, so a guess that is
@@ -844,11 +920,24 @@ export async function groundTerminalTextAssertion(
   // element's entire text" that body text affords. Every other eligible kind (`text_contains`,
   // `visible`, `hidden`) is substring-shaped, so plain containment is the right test for them.
   const wholeElementMatch = last.assertion === "text_equals";
+  // For a substring-shaped assertion the RENDERED text counts too: textContent does not enter shadow
+  // roots, where Lightning draws its toasts, so "was created" read as absent and was "corrected" into
+  // the whole toast line, record number included (run 2026-10-25T10-28-59-649Z-7acbedab). The
+  // candidates below are drawn from the rendered text, so a guess it contains is on the page.
   const verbatimHit = wholeElementMatch
     ? judgeText.split("\n").some((l) => l.trim() === assertedRaw)
-    : judgeText.includes(assertedRaw);
+    : judgeText.includes(assertedRaw) || pageText.includes(assertedRaw);
   if (asserted && verbatimHit) {
     return { ir, grounded: true, corrected: false };
+  }
+
+  // A flow that types a `{{uid}}` value names its record with a code the replay chose, not the code
+  // the run will use, so any line read here can carry a record name the run will never show (the
+  // Account run's correction to 'Account "Test Account - automated" was created' had one). Confirm
+  // only; never correct.
+  if (prefix.some((s) => hasRunToken(s.value))) {
+    console.log("[liveExtend] text-assertion grounding: the flow types a run-token value — not correcting, leaving the assertion as written");
+    return { ir, grounded: false, corrected: false };
   }
 
   // TIER 2 — NEAR MISS: it matches only once case/whitespace/punctuation are ignored. This is the
@@ -887,7 +976,9 @@ export async function groundTerminalTextAssertion(
   // real message-shaped line to correct it to, closest in length to the original guess
   // (the closest proxy available, without reintroducing a general string-similarity
   // matcher, for "probably the same message, differently worded").
-  let candidates = candidateMessageLines(pageText);
+  // A line the page already showed when discovery modelled it (form chrome such as
+  // "* = Required Information") is not the outcome of the click; never correct to it.
+  let candidates = withoutModelledLines(candidateMessageLines(pageText), model);
   let viaDiff = false;
 
   // The keyword scan found nothing — real confirmation copy doesn't always contain a

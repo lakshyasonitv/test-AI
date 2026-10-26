@@ -206,8 +206,12 @@ export function allRunIds(): string[] {
   const root = "runs";
   if (!existsSync(root)) return [];
 
+  // A run writes 00-input.json and its event log the moment its pipeline starts, and a queued run
+  // has no directory at all (server/index.ts), so a directory with neither never ran: a test
+  // stub's 00-run-target.json, say. Listed, it was a "(no prompt)" row taking one of the 20 slots.
   return readdirSync(root, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && d.name !== "_cache")
+    .filter((d) => d.isDirectory() && d.name !== "_cache"
+      && (existsSync(path.join(root, d.name, "events.ndjson")) || existsSync(path.join(root, d.name, "00-input.json"))))
     .map((d) => d.name)
     .sort((a, b) => b.localeCompare(a)); // runId is ISO-prefixed -> lexicographic = chronological
 }

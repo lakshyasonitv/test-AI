@@ -600,6 +600,22 @@ export async function getCaseScript(
  * schema before storing. A run's own artifacts are the source of truth here: re-deriving the IR
  * would mean a second implementation of what the case *is*.
  */
+/**
+ * The IR file a run left for a case, best first: the HEALED one when self-heal produced a passing
+ * retry (Session 102: saving the original would save the version that failed), else the per-case IR
+ * (a suite run), else the run-level one (a single-case run). The run-level file wraps the IR as
+ * { ir, updatedAppModel }; the others do not. Null when the run has none.
+ */
+export function irFileForRunCase(runId: string, caseId: string, root = "runs"): string | null {
+  const candidates = [
+    path.join(root, runId, "cases", caseId, "healed", "ir.json"),
+    path.join(root, runId, "cases", caseId, "04-ir.json"),
+    ...(caseId === "case-0" ? [path.join(root, runId, "healed", "ir.json")] : []),
+    path.join(root, runId, "04-ir.json"),
+  ];
+  return candidates.find((f) => existsSync(f)) ?? null;
+}
+
 export async function saveCaseFromRun(
   userId: string, orgId: string, role: Role,
   runId: string, caseId: string, projectId: string,
@@ -607,11 +623,7 @@ export async function saveCaseFromRun(
 ): Promise<CaseRow> {
   await assertProjectVisible(userId, orgId, role, projectId);
 
-  // Per-case IR first (a suite run), then the run-level one (a single-case run). The run-level
-  // file wraps the IR as { ir, updatedAppModel }; the per-case file does not.
-  const perCase = path.join("runs", runId, "cases", caseId, "04-ir.json");
-  const runLevel = path.join("runs", runId, "04-ir.json");
-  const file = existsSync(perCase) ? perCase : existsSync(runLevel) ? runLevel : null;
+  const file = irFileForRunCase(runId, caseId);
   if (!file) throw new AccessError(404, "that run has no saved test plan for this case");
 
   let raw: unknown;

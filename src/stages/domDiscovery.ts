@@ -398,8 +398,13 @@ async function elementsFor(strategy: ElementStrategy, page: Page, model: AppMode
   try {
     return await enumerateLiveElements(page);
   } catch (err: any) {
-    console.warn(`[domDiscovery] live-DOM walk failed, using the static parse: ${err?.message ?? err}`);
-    return cheerioElements;
+    // Salesforce: no static fallback. Lightning's static parse is a shell (header buttons, no css),
+    // and an empty list lets the hydration poll re-read and re-walk instead (run
+    // 2026-10-24T07-58-47-085Z-3eb31efb lost four list pages to one failed walk each).
+    const salesforce = currentRunTargetApp() === "salesforce";
+    console.warn(`[domDiscovery] live-DOM walk failed on ${page.url()}, `
+      + `${salesforce ? "retrying" : "using the static parse"}: ${err?.message ?? err}`);
+    return salesforce ? [] : cheerioElements;
   }
 }
 
@@ -551,7 +556,10 @@ export async function extractDomModelFromPage(
     const deadline = Date.now() + pollBudgetMs;
     // `elements` is the strategy's list, so a live walk that already sees shadow-DOM content the
     // static parse cannot does not wait out the whole budget for nothing.
-    while (elements.length === 0 && generic.length === 0 && Date.now() < deadline) {
+    // Salesforce: the generic pass always finds Lightning's cursor:pointer header first, so only the
+    // walker's own list says whether the page has rendered.
+    const walkerDecides = strategy === "live" && currentRunTargetApp() === "salesforce";
+    while (elements.length === 0 && (generic.length === 0 || walkerDecides) && Date.now() < deadline) {
       await page.waitForTimeout(pollIntervalMs);
       html = await page.content();
       crawlResult = extractCrawlResponse(html, url, 200);

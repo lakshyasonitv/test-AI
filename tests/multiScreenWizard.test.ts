@@ -105,6 +105,24 @@ const ESTATE = `<!doctype html><html><head><title>Estate</title></head><body><ma
   };
 </script></body></html>`;
 
+
+// A record page whose actions sit in an overflow menu that CLOSES when the page scrolls, as
+// Lightning's "Show more actions" does; the page is tall, so a capture scrolls (run
+// 2026-10-26T06-15-41-870Z-92ed6e57 lost "Clone" that way).
+const RECORD = `<!doctype html><html><head><title>Account</title></head><body><main>
+<h1>Zq Account</h1><button id="more" aria-haspopup="true">Show more actions</button><div id="slot"></div>
+<div style="height:2400px">Related lists</div><p id="out"></p></main>
+<script>
+  document.getElementById("more").onclick = () => {
+    const m = document.createElement("div");
+    m.setAttribute("role", "menu"); m.id = "menu";
+    m.innerHTML = '<div role="menuitem" tabindex="0" id="clone">Clone</div><div role="menuitem" tabindex="0" id="del">Delete</div>';
+    document.getElementById("slot").appendChild(m);
+    document.getElementById("clone").onclick = () => { m.remove(); document.getElementById("out").textContent = "Clone dialog opened"; };
+    window.addEventListener("scroll", () => m.remove(), { once: true });
+  };
+</script></body></html>`;
+
 let server: http.Server;
 let base = "";
 beforeAll(async () => {
@@ -118,6 +136,7 @@ beforeAll(async () => {
       setTimeout(() => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(["101", "102"])); }, UNITS_DELAY_MS);
     }
     else if (req.url?.startsWith("/estate")) res.end(ESTATE);
+    else if (req.url?.startsWith("/record")) res.end(RECORD);
     else { res.statusCode = 404; res.end("nope"); }
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -268,6 +287,26 @@ describe("multi-screen form on one URL (Salesforce run)", () => {
     expect(ir.meta.truncated ?? false).toBe(false);
     expect(ir.steps[5].target!.css).toBe("#dlg-save");
     expect(await execute(ir)).toContain("Contact was created.");
+  }, 90_000);
+
+  it("an overflow menu opened by the last click is captured open: its item grounds", async () => {
+    const model = await discover("/record");
+    const ir0 = {
+      meta: meta("Clone the record"),
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/record" } },
+        click("s2", "Show more actions"),
+        { id: "s3", action: "wait", value: "500" },
+        { id: "s4", action: "click", target: { role: "menuitem", name: "Clone" } },
+      ],
+    };
+    geminiMock.mockImplementation(answer(ir0));
+    const { ir } = await withTargetApp("salesforce",
+      () => toIR({ ...testCase("clone"), steps: ["Open the record's actions menu and choose Clone"], expected: "The clone dialog opens" }, model, unique(), base + "/record"));
+
+    expect(ir.meta.truncated ?? false).toBe(false);
+    expect(ir.steps[3].target!.css).toBe("#clone");
+    expect(await execute(ir)).toContain("Clone dialog opened");
   }, 90_000);
 
   it("an ordinary (non-Salesforce) run is unchanged: the same wizard still truncates", async () => {

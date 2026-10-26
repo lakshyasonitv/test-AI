@@ -32,10 +32,6 @@ export function isRole(value: unknown): value is Role {
   return typeof value === "string" && (ROLES as readonly string[]).includes(value);
 }
 
-export function roleRank(role: Role): number {
-  return ROLE_RANK[role];
-}
-
 export function roleAtLeast(actual: Role, required: Role): boolean {
   return ROLE_RANK[actual] >= ROLE_RANK[required];
 }
@@ -255,6 +251,9 @@ export function requireRunRole(minRole: Role) {
     try {
       const userId = userIdOf(req);
       if (!canEnforceTenancy()) {
+        // The same organisation `requireRole` would give: a handler downstream (saving a run's case
+        // into the library) passes it to the database, which rejected "undefined" as a uuid.
+        req.organisationId = (await primaryOrgFor(userId)) ?? undefined;
         req.organisationRole = "owner";
         next();
         return;

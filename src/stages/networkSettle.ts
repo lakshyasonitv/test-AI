@@ -151,6 +151,22 @@ export async function waitForScreenSettle(page: Page, budgetMs = 6000, pollMs = 
   }
 }
 
+/** A field control inside an open dialog. Playwright CSS pierces open shadow roots, combinators too. */
+const DIALOG_FIELD_SELECTOR =
+  '[role="dialog"] input:not([type="hidden"]):visible, [role="dialog"] textarea:visible, [role="dialog"] [role="combobox"]:visible';
+
+/**
+ * Wait until an open dialog holds at least one field, at most `budgetMs`; false when none appeared.
+ * For a create form opened by URL (D-63): Lightning draws the modal first and fills its record form a
+ * moment later, while the network and the control count already look settled, so the snapshot of
+ * run 2026-10-24T13-19-15-522Z-c180fec9 modelled /lightning/o/Lead/new with no fields at all.
+ * Generic: no field name is assumed. Best-effort, like the waits above.
+ */
+export async function waitForDialogFields(page: Page, budgetMs = 15_000): Promise<boolean> {
+  return page.locator(DIALOG_FIELD_SELECTOR).first()
+    .waitFor({ state: "visible", timeout: budgetMs }).then(() => true, () => false);
+}
+
 /**
  * The full Phase 1 wait before a snapshot: the network first (the data that will build the page),
  * then the DOM (the render that follows it). Logs one line, so a live run shows what it cost.
