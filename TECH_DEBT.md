@@ -5767,3 +5767,13 @@ Lightning page and writes a check about the login form (run 2026-10-22T09-44-02-
 rejections). Proposed (deferred by the user as medium risk): show the model both pages, labelled "before
 login" and "after login", without changing which page a wrong-password case is shown.
 
+
+### TD-161. Jira sign-in state and tokens live in one process — Low / Deliberate — **Open**
+
+D-63 keeps the one-time `state` and each user's Jira token in `src/jira/session.ts`'s in-process maps (the
+user chose memory only). Two consequences: (1) every server restart signs every user out of Jira; (2) with
+more than one server instance (an Azure Container App scaled past one replica), the callback can land on an
+instance that never issued the `state`, and the sign-in fails with "expired or was already used". Fine on
+one instance, which is how the app runs today. Remediation when either bites: keep the token encrypted in
+the database (Atlassian requires encryption for stored OAuth tokens) and the `state` in a shared store, or
+pin the Jira routes to one replica.

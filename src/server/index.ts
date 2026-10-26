@@ -114,6 +114,8 @@ import {
   checkSpecUpload, distillSpec, getRunSpecWarnings, specIntakeEnabled, DISTILL_FAILED_WARNING,
 } from "../stages/specIntake.js";
 import { SpecModel } from "../schema/spec.js";
+import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabled, JiraError, parseIssueKey } from "../jira/client.js";
+import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -155,7 +157,10 @@ app.use(express.static("public"));
 // /auth/signup joins them for the same reason: an account that does not exist yet cannot present
 // a token, so requiring one would make sign-up unreachable by construction. It carries its own
 // flag, rate limit and validation instead — see signup.ts.
-const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup"]);
+// /jira/callback (D-63) is where Atlassian sends the browser back after "Connect Jira": a redirect,
+// so it cannot carry our Authorization header. It is identified by its one-time `state` instead
+// (src/jira/session.ts), and answers 404 unless JIRA_ENABLED is on.
+const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup", "/jira/callback"]);
 
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API_PATHS.has(req.path)) return next();
@@ -801,6 +806,11 @@ app.get("/api/health", (_req, res) => {
       ANTHROPIC_API_KEYS:   check("ANTHROPIC_API_KEYS"),
       ANTHROPIC_MODEL:      check("ANTHROPIC_MODEL"),
       ANTHROPIC_MODEL_LITE: check("ANTHROPIC_MODEL_LITE"),
+      // ADDITIVE (D-63) — the Jira app's variables. Presence only, never a value.
+      JIRA_ENABLED:       check("JIRA_ENABLED"),
+      JIRA_CLIENT_ID:     check("JIRA_CLIENT_ID"),
+      JIRA_CLIENT_SECRET: check("JIRA_CLIENT_SECRET"),
+      JIRA_REDIRECT_URL:  check("JIRA_REDIRECT_URL"),
     },
     // Server-side defaults for the two per-run options a client may override. The
     // UI reads these so its Settings toggles open in the state the server is
@@ -828,6 +838,9 @@ app.get("/api/health", (_req, res) => {
     // `options.targetApp` accepts. The run screen renders "This URL is a Salesforce org" only when
     // this lists "salesforce"; with the flag off the body is byte-identical to before.
     ...(salesforceEnabled() ? { targetApps: [...TARGET_APPS] } : {}),
+    // ADDITIVE, appended, and present ONLY when JIRA_ENABLED=true (D-63). app.js shows the
+    // "Connect Jira" row only when this is true; with the flag off the body is unchanged.
+    ...(jiraEnabled() ? { jira: true } : {}),
     // ADDITIVE, appended, and present ONLY when SPEC_INTAKE_ENABLED=true — the same shape as
     // `targetApps` above and for the same reason: the home screen renders the Pro toggle only when
     // this is true, and with the flag off the body is byte-identical to before.
@@ -931,6 +944,109 @@ app.get("/api/auth/config", (_req, res) => {
     // token expires exactly as it always has.
     ...(process.env.AUTH_TOKEN_REFRESH === "true" ? { tokenRefresh: true } : {}),
   });
+});
+
+// --------------------------------------------------------------------------
+// Jira, Phase 1 (D-63): read one story into the prompt box. All NEW routes; every one answers 404
+// unless JIRA_ENABLED=true, so with the flag off the server is unchanged. Read-only — nothing here
+// writes to Jira. The access token lives only in memory (src/jira/session.ts) and is never sent to
+// the browser, logged, or written anywhere.
+// --------------------------------------------------------------------------
+
+const JIRA_OFF = { error: "Jira is not enabled on this server (JIRA_ENABLED is off)." };
+
+function sendJiraError(res: express.Response, err: unknown): void {
+  if (err instanceof JiraError) {
+    res.status(err.status).json({ error: err.message, ...(err.signedOut ? { signedOut: true } : {}) });
+    return;
+  }
+  console.error("[jira] unexpected error:", (err as Error)?.message ?? err);
+  res.status(500).json({ error: "Something went wrong talking to Jira." });
+}
+
+/** Is Jira set up on this server, and is this user connected? Sites only — never the token. */
+app.get("/api/jira/status", requireRole("tester"), (req, res) => {
+  if (!jiraEnabled()) return res.status(404).json(JIRA_OFF);
+  const cfg = jiraConfig();
+  const conn = getConnection(req.user!.id);
+  res.json({
+    configured: "config" in cfg,
+    ...("missing" in cfg ? { missing: cfg.missing } : {}),
+    connected: !!conn,
+    sites: conn ? conn.sites : [],
+  });
+});
+
+/** Start "Connect Jira": a fresh one-time state for this user, and the Atlassian page to open. */
+app.post("/api/jira/connect", requireRole("tester"), (req, res) => {
+  if (!jiraEnabled()) return res.status(404).json(JIRA_OFF);
+  const cfg = jiraConfig();
+  if ("missing" in cfg) {
+    return res.status(503).json({ error: `Jira isn't set up on this server yet: ${cfg.missing.join(", ")} not set.` });
+  }
+  res.json({ authorizeUrl: authorizeUrl(cfg.config, beginSignIn(req.user!.id)) });
+});
+
+/** A tiny self-contained page for the sign-in popup: no external resources, nothing cached. */
+function jiraCallbackPage(res: express.Response, status: number, message: string): void {
+  const safe = message.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+  res.status(status)
+    .set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" })
+    .type("html")
+    .send(`<!doctype html><meta charset="utf-8"><title>Testbench · Jira</title>` +
+      `<body style="font-family:system-ui,sans-serif;padding:32px;line-height:1.5">` +
+      `<p>${safe}</p><p>You can close this window.</p>` +
+      (status === 200 ? `<script>setTimeout(function () { window.close(); }, 1200);</script>` : "") +
+      `</body>`);
+}
+
+/**
+ * Atlassian redirects here with `?code&state` (or `?error&state` if the user declined). The state
+ * is redeemed first, and once: an unknown, expired or reused one stops here before any call.
+ */
+app.get("/api/jira/callback", async (req, res) => {
+  if (!jiraEnabled()) return res.status(404).type("text").send(JIRA_OFF.error);
+  const userId = finishSignIn(req.query.state);
+  if (!userId) return jiraCallbackPage(res, 400, "This Jira sign-in link has expired or was already used. Click \"Connect Jira\" again.");
+  if (typeof req.query.error === "string") return jiraCallbackPage(res, 400, "Jira access was not allowed, so nothing was connected.");
+  const code = req.query.code;
+  if (typeof code !== "string" || !code) return jiraCallbackPage(res, 400, "Jira didn't send a sign-in code. Click \"Connect Jira\" again.");
+  const cfg = jiraConfig();
+  if ("missing" in cfg) return jiraCallbackPage(res, 503, `Jira isn't set up on this server yet: ${cfg.missing.join(", ")} not set.`);
+  try {
+    const conn = await connectJira(cfg.config, code);
+    saveConnection(userId, conn);
+    jiraCallbackPage(res, 200, `Jira connected: ${conn.sites.map((s) => s.name || s.url).join(", ")}.`);
+  } catch (err) {
+    if (!(err instanceof JiraError)) console.error("[jira] callback failed:", (err as Error)?.message ?? err);
+    jiraCallbackPage(res, err instanceof JiraError ? err.status : 500,
+      err instanceof JiraError ? err.message : "Something went wrong connecting to Jira.");
+  }
+});
+
+/** Read one story as prompt text. `?site=<cloudId>` picks a site when the account has several. */
+app.get("/api/jira/issue/:issueKey", requireRole("tester"), async (req, res) => {
+  if (!jiraEnabled()) return res.status(404).json(JIRA_OFF);
+  const key = parseIssueKey(req.params.issueKey);
+  if (!key) return res.status(400).json({ error: "That isn't a Jira story key. Use the form TBS-1." });
+  const conn = getConnection(req.user!.id);
+  if (!conn) return res.status(401).json({ error: "Jira isn't connected. Click \"Connect Jira\" first.", signedOut: true });
+  const site = typeof req.query.site === "string" ? conn.sites.find((s) => s.id === req.query.site) : conn.sites[0];
+  if (!site) return res.status(400).json({ error: "That Jira site isn't one this sign-in can read." });
+  try {
+    res.json(await fetchStory(conn, site, key));
+  } catch (err) {
+    // Jira rejected the token: forget it, so the screen shows "Connect Jira" again.
+    if (err instanceof JiraError && err.signedOut) dropConnection(req.user!.id);
+    sendJiraError(res, err);
+  }
+});
+
+/** Forget this user's Jira token now (it is forgotten on restart anyway). */
+app.post("/api/jira/disconnect", requireRole("tester"), (req, res) => {
+  if (!jiraEnabled()) return res.status(404).json(JIRA_OFF);
+  dropConnection(req.user!.id);
+  res.status(204).end();
 });
 
 /**
@@ -2259,6 +2375,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // 403, and options.spec on POST /api/runs is ignored.
   "SPEC_INTAKE_ENABLED",
   "SCREEN_MAP_ENABLED",
+  // D-63: Jira Phase 1 — "Connect Jira" and read a story into the prompt box. Off: no Jira row on
+  // the home view, and every /api/jira/* route answers 404.
+  "JIRA_ENABLED",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

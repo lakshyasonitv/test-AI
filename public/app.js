@@ -5629,11 +5629,172 @@ function renderTargetAppBox() {
   targetAppBoxEl = label.querySelector("input");
 }
 
+// -----------------------------------------------------------------------------
+// Jira, Phase 1 (D-63): "Connect Jira", then type a story key and its title + description fill the
+// prompt box. The user still enters the URL and presses Run — POST /api/runs is untouched.
+//
+// Rule-keeping, as the Pro block above it:
+//   - Nothing exists unless /api/health says `jira: true` (JIRA_ENABLED). Flag off, the home view is
+//     byte-identical: no element is created, nothing is hidden with .hidden (rule 4).
+//   - No new style.css class (rule 3): .panel, .field-label, .composer-save-btn, .case-selection-link,
+//     .cd-line-input and .team-error are reused.
+//   - OUTSIDE the run form, so Enter in the key box fetches the story and never starts a run.
+//   - The Jira token never reaches the browser; the server keeps it in memory and only says
+//     whether this user is connected.
+// -----------------------------------------------------------------------------
+
+const jira = {
+  root: null,
+  connected: false,
+  sites: [],
+  siteId: "",
+  key: "",
+  busy: false,
+  notice: "",   // a problem, shown as .team-error
+  note: "",     // what just happened (HTML, built from escaped parts)
+  poll: null,
+};
+
+function renderJiraRow() {
+  if (jira.root) return;
+  const form = document.getElementById("runForm");
+  if (!form) return;
+  jira.root = document.createElement("div");
+  jira.root.className = "panel";
+  jira.root.style.cssText = "padding:var(--sp-3) var(--sp-4);margin-bottom:var(--sp-3)";
+  form.insertAdjacentElement("beforebegin", jira.root);
+  jira.root.addEventListener("click", onJiraClick);
+  jira.root.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target?.dataset?.jira === "key") { e.preventDefault(); fetchJiraStory(); }
+  });
+  jira.root.addEventListener("input", (e) => {
+    if (e.target?.dataset?.jira === "key") jira.key = e.target.value;
+  });
+  jira.root.addEventListener("change", (e) => {
+    if (e.target?.dataset?.jira === "site") jira.siteId = e.target.value;
+  });
+  refreshJiraStatus();
+}
+
+async function refreshJiraStatus() {
+  try {
+    const s = await api("/api/jira/status");
+    jira.connected = !!s.connected;
+    jira.sites = Array.isArray(s.sites) ? s.sites : [];
+    if (!jira.sites.some((x) => x.id === jira.siteId)) jira.siteId = jira.sites[0]?.id ?? "";
+    if (s.configured === false) jira.notice = `Jira isn't set up on this server yet: ${(s.missing || []).join(", ")} not set.`;
+  } catch (err) {
+    jira.notice = err.message;
+  }
+  paintJira();
+  return jira.connected;
+}
+
+function paintJira() {
+  if (!jira.root) return;
+  const btn = (name, label, cls = "composer-save-btn") =>
+    `<button type="button" class="${cls}" data-jira="${name}"${jira.busy ? " disabled" : ""}>${label}</button>`;
+  let row;
+  if (!jira.connected) {
+    row = `${btn("connect", "Connect Jira")}<span class="field-label">Start a test from a Jira story</span>`;
+  } else {
+    const names = jira.sites.map((x) => x.name || x.url).join(", ");
+    const sitePick = jira.sites.length > 1
+      ? `<select data-jira="site" class="cd-line-input" style="flex:none;width:auto">${jira.sites.map((x) =>
+          `<option value="${escapeHtml(x.id)}"${x.id === jira.siteId ? " selected" : ""}>${escapeHtml(x.name || x.url)}</option>`).join("")}</select>`
+      : "";
+    row = `<span class="field-label">Jira connected: ${escapeHtml(names)}</span>${sitePick}
+      <input type="text" data-jira="key" class="cd-line-input" style="flex:none;width:200px"
+        placeholder="Story key, e.g. TBS-1" autocomplete="off" spellcheck="false" value="${escapeHtml(jira.key)}" />
+      ${btn("fetch", jira.busy ? "Fetching…" : "Fetch story")}
+      ${btn("disconnect", "Disconnect", "case-selection-link")}`;
+  }
+  jira.root.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">${row}</div>
+    ${jira.note ? `<p class="field-label" style="margin-top:var(--sp-2)">${jira.note}</p>` : ""}
+    ${jira.notice ? `<p class="team-error" role="alert" style="margin-top:var(--sp-2)">${escapeHtml(jira.notice)}</p>` : ""}`;
+}
+
+function onJiraClick(e) {
+  const what = e.target?.closest?.("[data-jira]")?.dataset?.jira;
+  if (what === "connect") connectJira();
+  else if (what === "fetch") fetchJiraStory();
+  else if (what === "disconnect") disconnectJira();
+}
+
+async function connectJira() {
+  if (jira.busy) return;
+  jira.notice = ""; jira.note = "";
+  // Opened NOW, inside the click, so a pop-up blocker allows it; pointed at Atlassian once the
+  // server has made this sign-in's one-time code.
+  const popup = window.open("about:blank", "testbench-jira", "width=620,height=760");
+  if (!popup) {
+    jira.notice = "Your browser blocked the Jira window. Allow pop-ups for this site and click Connect Jira again.";
+    return paintJira();
+  }
+  try {
+    const { authorizeUrl } = await api("/api/jira/connect", { method: "POST" });
+    popup.location.href = authorizeUrl;
+  } catch (err) {
+    popup.close();
+    jira.notice = err.message;
+    return paintJira();
+  }
+  jira.note = "Finish in the Jira window&hellip;";
+  paintJira();
+  // The server learns of the sign-in, not this page, so ask it — every 2s, for at most the
+  // 10 minutes the one-time code lives, and stop as soon as it says connected.
+  clearInterval(jira.poll);
+  const started = Date.now();
+  jira.poll = setInterval(async () => {
+    const done = await refreshJiraStatus();
+    if (done || Date.now() - started > 10 * 60_000) {
+      clearInterval(jira.poll);
+      jira.poll = null;
+      jira.note = done ? "" : "The Jira sign-in wasn't finished. Click Connect Jira to try again.";
+      paintJira();
+    }
+  }, 2000);
+}
+
+async function fetchJiraStory() {
+  if (jira.busy) return;
+  const key = jira.key.trim();
+  jira.notice = ""; jira.note = "";
+  if (!key) { jira.notice = "Type a story key first, like TBS-1."; return paintJira(); }
+  jira.busy = true;
+  paintJira();
+  try {
+    const q = jira.sites.length > 1 && jira.siteId ? `?site=${encodeURIComponent(jira.siteId)}` : "";
+    const story = await api(`/api/jira/issue/${encodeURIComponent(key)}${q}`);
+    const promptEl = document.getElementById("prompt");
+    promptEl.value = story.promptText;
+    promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+    const link = /^https:\/\//.test(story.link || "")
+      ? ` <a href="${escapeHtml(story.link)}" target="_blank" rel="noopener noreferrer">Open in Jira</a>` : "";
+    jira.note = `Prompt filled from ${escapeHtml(story.key)}${story.truncated ? " (long story — only the first part was used)" : ""}. Check it, add the URL, then Run.${link}`;
+  } catch (err) {
+    jira.notice = err.message;
+    jira.busy = false;
+    await refreshJiraStatus(); // a rejected sign-in comes back as "Connect Jira"
+    return;
+  }
+  jira.busy = false;
+  paintJira();
+}
+
+async function disconnectJira() {
+  try { await api("/api/jira/disconnect", { method: "POST" }); } catch { /* forgotten on restart anyway */ }
+  jira.connected = false; jira.sites = []; jira.note = ""; jira.notice = "";
+  paintJira();
+}
+
 fetch("/api/health")
   .then((r) => r.json())
   .then((h) => {
     if (h && Array.isArray(h.targetApps) && h.targetApps.includes("salesforce")) renderTargetAppBox();
     if (h && h.specIntake === true) renderProToggle();
+    if (h && h.jira === true) renderJiraRow();
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);

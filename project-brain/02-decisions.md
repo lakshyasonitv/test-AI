@@ -64,3 +64,9 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156).
   computed Home address and over startURL).
 - `?login` (D-59) removed: unofficial, and it failed on the user's org. Don't rebuild without a Salesforce doc.
 
+## 2026-10-26 — Jira (user)
+- Each user connects their own Jira (OAuth), never a shared key in env; never an API token (Atlassian forbids collecting them).
+- Token kept in memory only for now — reconnect after a restart is accepted.
+- Phase 1 = read one story into the prompt box. Acceptance criteria are written in the description.
+- Every Jira fact must come from Atlassian's docs, not memory ("no assumptions, no guesses").
+

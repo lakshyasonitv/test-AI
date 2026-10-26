@@ -1,6 +1,14 @@
 # Open tasks
 
-*Last updated: 2026-10-19.*
+*Last updated: 2026-10-26.*
+
+## Jira Phase 1 (D-63)
+
+- [ ] Commit and push (ask first).
+- [ ] User's first real check: `JIRA_ENABLED=true`, restart, Connect Jira, fetch TBS-1. Free (no AI).
+- [ ] Before Azure: add `https://<host>/api/jira/callback` in the Atlassian console + `JIRA_REDIRECT_URL`;
+      enable Distribution -> Sharing so other users can connect; TD-161 if more than one replica.
+- [ ] Phase 2 (later, needs `write:jira-work` + re-consent): create bug, comment, attach, link.
 
 ## Pro document intake (D-53)
 

@@ -360,6 +360,19 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `backoff.ts` | Exponential backoff, per-attempt timeout, rate-limit detection + key rotation |
 | `json.ts` | Strip markdown fences and parse JSON from LLM output |
 
+### `src/jira/` — Jira Phase 1 (3 files, D-63, behind `JIRA_ENABLED`)
+
+| File | LLM? | Purpose |
+|---|---|---|
+| `client.ts` | No | Atlassian calls: `authorizeUrl`, `connect` (code -> token at `auth.atlassian.com/oauth/token`, then Jira sites from `accessible-resources`), `fetchStory` (`/ex/jira/{cloudId}/rest/api/3/issue/{key}?fields=summary,description` -> prompt text, capped at `JIRA_MAX_PROMPT_CHARS`), `parseIssueKey`, `JiraError` (user-facing sentence + status). Read-only scope `read:jira-work` |
+| `session.ts` | No | In-memory only: one-time sign-in `state` (32 random bytes, bound to the user, single use, 10 min) and each user's token + sites. Lost on restart by design — never on disk, in the DB or in logs |
+| `adf.ts` | No | Atlassian Document Format -> plain text (paragraphs, lists, tables, mentions; media skipped; unknown nodes walked for their text) |
+
+Routes (`src/server/index.ts`, all new, all 404 when the flag is off): `GET /api/jira/status`,
+`POST /api/jira/connect`, `GET /api/jira/callback` (public — identified by `state`, see D-63),
+`GET /api/jira/issue/:issueKey[?site=<cloudId>]`, `POST /api/jira/disconnect`. `/api/health` gains
+`jira: true` only when on. The browser (`app.js`, "Jira, Phase 1" block) only fills `#prompt`.
+
 ### `src/kb/` — Knowledge Base (3 files)
 
 | File | Purpose |

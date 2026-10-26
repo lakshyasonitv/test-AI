@@ -1980,3 +1980,46 @@ Winter '25 / Spring '26. A manual check also showed `?startURL=` on the login UR
 *A computed Home address* — not necessarily in the site map. *Setup / portal support* — the user tests the
 app only.
 
+## D-63. Jira Phase 1: read one story into the prompt box, with an in-memory OAuth sign-in
+
+**Context.** The user wants to start a test from a Jira story instead of typing the prompt, connected by
+each user in the app (not a shared key in env). Their answers: tokens in memory only; Phase 1 only (read,
+no writing to Jira); acceptance criteria live in the story's description. Every Atlassian fact used was
+read from Atlassian's own pages on 2026-10-26, not recalled: the OAuth 2.0 (3LO) apps page, the scopes
+page, the ADF structure page, the rate-limiting page, "Security requirements for cloud apps" (3LO table),
+and the REST v3 OpenAPI spec (`swagger-v3.v3.json`, 433 paths).
+
+**Decision.** Behind `JIRA_ENABLED` (default off; every `/api/jira/*` route 404s and the home view is
+unchanged when off):
+- Sign-in is OAuth 2.0 authorization code. `POST /api/jira/connect` returns the
+  `auth.atlassian.com/authorize` URL (audience `api.atlassian.com`, `prompt=consent`, scope
+  `read:jira-work` only — classic, because the spec still marks the granular scopes Beta; no
+  `offline_access`, so no refresh token exists). `GET /api/jira/callback` swaps the code at
+  `auth.atlassian.com/oauth/token` and lists sites at `accessible-resources`, keeping only those whose
+  scopes include `read:jira-work` (Atlassian: tell resource types apart by scope).
+- `state` is 32 random bytes, bound to the user who asked, single-use, 10-minute life
+  (`src/jira/session.ts`). It is what identifies the callback, because this app's own sign-in is an
+  `Authorization` header a browser redirect cannot carry — so `/jira/callback` joins `PUBLIC_API_PATHS`.
+- The access token lives only in process memory, keyed by user id; never sent to the browser, logged or
+  written. A restart, its expiry (`expires_in`, minus a minute) or a 401 from Jira means "Connect Jira"
+  again. This meets Atlassian's 3LO rule "OAuth secrets must be stored encrypted and not in logs" by not
+  storing them at all.
+- `GET /api/jira/issue/:key` reads `/rest/api/3/issue/{key}?fields=summary,description` (the default is
+  every field), turns the description's ADF into plain text (`src/jira/adf.ts`), and returns
+  `title + blank line + description`, cut to `JIRA_MAX_PROMPT_CHARS` (default 4000) with `truncated` set.
+  The key Jira returns is used (Jira follows moved issues and matches case-insensitively).
+- The browser only fills the prompt box (`public/app.js`, a `.panel` row above the run form, outside it so
+  Enter never starts a run). `POST /api/runs` is untouched; the user still adds the URL and presses Run.
+
+**Rejected.** *API tokens pasted by the user* — Atlassian's security requirements forbid apps collecting
+or storing Atlassian API tokens. *Storing the token (encrypted) in Supabase* — the user chose memory
+only for now; it is the obvious Phase 1.5 if reconnecting becomes annoying. *Asking for write scopes now*
+— least privilege; Phase 2 (create bug, comment, attach, link) will add `write:jira-work` and every user
+must consent again (Atlassian: a scope change requires re-consent). *Reading the acceptance-criteria
+custom field* — not a standard Jira field; the user keeps it in the description.
+
+**Not verified yet.** Never run against a real Atlassian site — Atlassian was faked in tests and in the
+browser check. Unknowns the docs do not settle: the real `expires_in`, per-endpoint burst limits, and
+whether one account with several Jira sites behaves as tested (a site picker is shown when it has).
+One process only — see TECH_DEBT.md TD-161.
+
