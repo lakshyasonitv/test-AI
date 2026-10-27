@@ -168,7 +168,7 @@ function renderCase(c: ReportCase, budget: { left: number }): string {
       // `?? css` for the same reason formatIrStep falls back to it: a login-prefix step has no
       // name, text or url, so this line rendered as the bare action ("fill") with nothing said
       // about what was filled.
-      ? [irStep.action, irStep.target?.name ?? irStep.target?.text ?? irStep.target?.url ?? irStep.target?.css]
+      ? [irStep.action, irStep.target?.name ?? irStep.target?.text ?? irStep.target?.url ?? irStep.target?.field ?? irStep.target?.css]
           .filter(Boolean).join(" · ")
       : "";
     const name = `step-${i + 1}.png`;

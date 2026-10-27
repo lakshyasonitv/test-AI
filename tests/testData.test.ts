@@ -453,6 +453,30 @@ describe("lookups in every case (run 2026-10-25T06-38-05-138Z-dfdd0d4f, a Contac
     expect(s3.value).toBe("");
   });
 
+  // Phase A (run 2026-10-26T07-23-21-344Z-9cd29004): a child for the parent THIS case created. The
+  // lookup was blanked to "the first suggestion" and only linked the right parent by luck.
+  it("a lookup naming the record this case created earlier (its run-token name) keeps that name", () => {
+    const parent = { ...structuredClone(org), salesforceOrg: { ...structuredClone(org.salesforceOrg!), objects: [
+      ...structuredClone(org.salesforceOrg!.objects),
+      { api: "Zq_Firm__c", label: "Zq Firm", createable: true, fields: [{ label: "Zq Firm Title", api: "Name", type: "String", required: true }] },
+    ] } } as unknown as AppModel;
+    const typed = `Zq Parent ${UNIQUE_TOKEN}`;
+    const r = { meta: {}, steps: [
+      { id: "p1", action: "navigate", target: { url: "/lightning/o/Zq_Firm__c/new" } },
+      { id: "p2", action: "fill", target: { role: "textbox", name: "Zq Firm Title" }, value: typed },
+      { id: "p3", action: "click", target: { role: "button", name: "Save" } },
+      ...flow({ action: "select", target: { role: "combobox", name: "Zq Firm Name" }, value: typed }).steps,
+    ] } as unknown as IR;
+    applyTestData(r, valid, parent, req);
+    const s3 = r.steps.find((s) => s.id === "s3")!;
+    expect(s3.target?.lookup).toBe(true);
+    expect(s3.value).toBe(typed);
+    // A run-token name the case never typed for that object is still the model's invention.
+    const invented = flow({ action: "select", target: { role: "combobox", name: "Zq Firm Name" }, value: typed });
+    applyTestData(invented, valid, parent, req);
+    expect(invented.steps.find((s) => s.id === "s3")!.value).toBe("");
+  });
+
   it("a security case picks a record too, so its save can happen (case-3); invalid-input and empty cases are left alone", () => {
     const sec = flow({ action: "fill", target: { role: "textbox", name: "Zq Firm Name" }, value: "Existing Zq Firm" });
     applyTestData(sec, { category: "security-xss" } as any, org, req);

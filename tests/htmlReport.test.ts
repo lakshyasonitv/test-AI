@@ -144,6 +144,14 @@ describe("buildRunReportHtml", () => {
     expect(html).toContain("0 passed");
   });
 
+  it("says which record field a field value check reads", () => {
+    const html = buildRunReportHtml({ runId: "r", cases: [aCase({ ir: { steps: [
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "assert", target: { field: "Zq Total" }, assertion: "text_contains", value: "5,000" },
+    ] } as any })] });
+    expect(html).toContain(`<div class="st-sub">assert · Zq Total</div>`);
+  });
+
   it("does not claim a step record it never had", () => {
     const html = buildRunReportHtml({
       runId: "r", cases: [aCase({ status: "failed", saved: { passed: false, raw: { suites: [] } } })],

@@ -6,8 +6,8 @@ import {
 } from "./targetResolver.js";
 import { isAuthTriggeringStep } from "./authSettle.js";
 import { isEnvValueRef } from "./credentials.js";
-import { FRONTDOOR_ENV, isFrontdoorRef } from "./salesforceFrontdoor.js";
-import { hasRunToken, RESOLVE_RUN_TOKENS_JS } from "../text.js";
+import { FRONTDOOR_ENV, isFrontdoorRef, recordRefIndex, recordRefObject, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
+import { hasRunToken, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
 
 const q = (s: string) => JSON.stringify(s);
 
@@ -64,6 +64,12 @@ function emitAssert(step: Step): string {
         `nothing at all (it matches any page). Refusing to emit a vacuous assertion.`
       );
     }
+  }
+
+  // A record field's VALUE (Target.field, Phase A): read inside that field's own block, never as text
+  // anywhere on the page. See SF_FIELD_HELPER.
+  if (t?.field && (step.assertion === "text_contains" || step.assertion === "text_equals")) {
+    return `  await sfFieldValue(page, ${q(t.field)}, ${valueCode(comparisonValue(step))}, ${q(step.assertion === "text_equals" ? "equals" : "contains")});`;
   }
 
   switch (step.assertion) {
@@ -265,6 +271,69 @@ test.beforeEach(({ page }) => {
   });
 });
 test.afterEach(() => { test.info().annotations.push({ type: "sf-records", description: JSON.stringify([...SF_RECORDS]) }); });`;
+
+/**
+ * Phase A: "go back to the <n>th <Object> record this test created" (recordRef). The records this
+ * browser creates are noted as it goes (the replay notes them the same way, liveExtend.ts), and the
+ * step opens that one: never another record of the object.
+ */
+const SF_OPEN_RECORD_HELPER = `let sfRecordPages = null;
+test.beforeEach(({ page }) => {
+  sfRecordPages = (${SF_RECORD_PAGES_JS})();
+  page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) sfRecordPages.visit(frame.url()); });
+});
+async function sfOpenRecord(page, base, object, n) {
+  const id = sfRecordPages && sfRecordPages.created(object, n);
+  if (!id) throw new Error("No " + object + " record this test created (number " + n + ") was reached earlier in this test, so there is none to go back to.");
+  await page.goto(base + "/lightning/r/" + object + "/" + id + "/view", { waitUntil: "domcontentloaded", timeout: 15000 });
+}`;
+
+/**
+ * Does a record field's shown text hold `expected`? `lines` is the field block's text by line; the
+ * label and the pencil's "Edit <label>" are not the value. Numbers compare as numbers, so "5000",
+ * "5,000" and "$5,000.00" agree and "100" never matches "$1,000.00". Exported for its tests.
+ */
+export const SF_FIELD_MATCH_JS = `(lines, label, expected, mode) => {
+  const num = ${SHOWN_NUMBER_JS};
+  const shown = lines.map((l) => String(l).replace(/\\s+/g, " ").trim())
+    .map((l) => l.startsWith(label + " ") ? l.slice(label.length + 1) : l)
+    .filter((l) => l && l !== label && l !== "Edit " + label);
+  const want = num(expected);
+  if (want !== null) {
+    return shown.some((l) => num(l) === want
+      || (mode !== "equals" && (l.match(/\\d[\\d.,]*/g) || []).some((x) => num(x) === want)));
+  }
+  const e = String(expected).replace(/\\s+/g, " ").trim();
+  return shown.some((l) => mode === "equals" ? l === e : l.includes(e));
+}`;
+
+/**
+ * Phase A: assert a record field's VALUE (Target.field) inside the field's own block: Lightning's
+ * record layout item, a highlights-panel item or an SLDS form element whose label is exactly `label`.
+ * A bare getByText("$5,000.00") could be another field's (the Opportunity's own Amount, say).
+ */
+const SF_FIELD_HELPER = `const sfFieldMatch = ${SF_FIELD_MATCH_JS};
+async function sfFieldValue(page, label, expected, mode) {
+  const blocks = page.locator("records-record-layout-item, records-highlights-details-item, .slds-form-element")
+    .filter({ has: page.getByText(label, { exact: true }) });
+  const deadline = Date.now() + ${ASSERT_TIMEOUT_MS};
+  let seen = [];
+  for (;;) {
+    seen = [];
+    const n = await blocks.count().catch(() => 0);
+    for (let i = 0; i < n; i++) {
+      const block = blocks.nth(i);
+      if (!(await block.isVisible().catch(() => false))) continue;
+      const lines = ((await block.innerText({ timeout: 1000 }).catch(() => "")) || "").split("\\n");
+      if (sfFieldMatch(lines, label, expected, mode)) return;
+      seen.push(lines.map((l) => l.trim()).filter(Boolean).join(" / "));
+    }
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(250);
+  }
+  throw new Error('The "' + label + '" field does not show "' + expected + '": ' + (seen.length
+    ? "it shows " + seen.map((s) => '"' + s + '"').join(", ") : 'no visible field labelled "' + label + '" is on the page') + ".");
+}`;
 
 /** Scrolls down a screen at a time until `text` shows or the page ends, so a lazily drawn section
  *  exists before it is checked (and a "hidden" check has really looked everywhere). */
@@ -868,6 +937,12 @@ function emitStep(step: Step, baseUrl: string): string {
         code += `  await page.waitForURL((u) => !u.pathname.toLowerCase().includes("frontdoor.jsp"), { timeout: 60000 }).catch(() => {});`;
         break;
       }
+      // Phase A: the record this test created, known only when the test runs (SF_OPEN_RECORD_HELPER).
+      const recordObject = recordRefObject(u);
+      if (recordObject) {
+        code += `  await sfOpenRecord(page, ${q(baseUrl.replace(/\/$/, ""))}, ${q(recordObject)}, ${recordRefIndex(u)});`;
+        break;
+      }
       const full = u.startsWith("http")
         ? u
         : baseUrl.replace(/\/$/, "") + u;
@@ -949,7 +1024,7 @@ function emitStep(step: Step, baseUrl: string): string {
 
 function stepLabel(step: Step, index: number, baseUrl: string): string {
   const t = step.target;
-  const name = t?.name ? ` '${t.name}'` : "";
+  const name = t?.name ? ` '${t.name}'` : t?.field ? ` '${t.field}'` : "";
   // A credential the user supplied is an env reference here, not the literal. Label it in
   // words: this string ends up in results.json and in the UI's step list, and "${env:...}"
   // reads like a bug to anyone looking at it.
@@ -959,6 +1034,10 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
     case "navigate": {
       const u = t?.url ?? "/";
       if (isFrontdoorRef(u)) return "Sign in through the Salesforce org connection";
+      if (recordRefObject(u)) {
+        const n = recordRefIndex(u)!;
+        return `Go back to the ${recordRefObject(u)} record this test created${n > 1 ? `, number ${n}` : ""}`;
+      }
       const full = u.startsWith("http") ? u : baseUrl.replace(/\/$/, "") + u;
       return `Navigate to ${full}`;
     }
@@ -1004,7 +1083,10 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   const body = ir.steps
     .map((step, i) => {
       const label = stepLabel(step, i, ir.meta.baseUrl);
-      const reveal = detailsAt >= 0 && i > detailsAt && step.action === "assert" && step.target?.text
+      // A field's value check scrolls its label into being too, Details tab or not (Phase A).
+      const reveal = step.action === "assert" && step.target?.field && (step.assertion === "text_contains" || step.assertion === "text_equals")
+        ? `await sfReveal(page, ${q(step.target.field)});\n`
+        : detailsAt >= 0 && i > detailsAt && step.action === "assert" && step.target?.text
         && (step.assertion === "visible" || step.assertion === "hidden")
         ? `await sfReveal(page, ${q(step.target.text)});\n` : "";
       const code = reveal + emitStep(step, ir.meta.baseUrl);
@@ -1068,6 +1150,8 @@ test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", descr
     // org confirms this user created during the run (salesforceCleanup.ts).
     body.includes(`process.env.${FRONTDOOR_ENV}`) ? SF_RECORDS_HELPER : "",
     body.includes("await sfReveal(") ? SF_REVEAL_HELPER : "",
+    body.includes("await sfOpenRecord(") ? SF_OPEN_RECORD_HELPER : "",
+    body.includes("await sfFieldValue(") ? SF_FIELD_HELPER : "",
   ]
     .filter(Boolean)
     .join("\n\n");

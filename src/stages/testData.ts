@@ -173,6 +173,18 @@ function namesARecord(value: string, f: OrgField): boolean {
   return lineKey(value).split(" ").some((w) => w && !objectWords.has(w) && !GENERIC_RECORD_WORDS.has(w));
 }
 
+/** The run-token values (record names) typed into the create forms of `objects` before step `before`. */
+function createdBefore(ir: IR, before: number, objects: string[]): Set<string> {
+  const out = new Set<string>();
+  let form: string | undefined;
+  for (const s of ir.steps.slice(0, before)) {
+    const m = s.action === "navigate" ? /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "") : null;
+    if (m) form = m[1];
+    else if (s.action === "fill" && form && objects.includes(form) && hasRunToken(s.value)) out.add(s.value!);
+  }
+  return out;
+}
+
 /** Whole-word, case-insensitive: the request names this field, or carries this value. */
 const mentions = (request: string, s: string) => {
   const k = lineKey(s);
@@ -292,14 +304,17 @@ function applyToSection(
   // Every case but those whose point is a bad or missing value: a lookup holds a RECORD, picked from
   // its suggestions. Typed text with no pick blocks the save (run 2026-10-25T06-38-05-138Z-dfdd0d4f
   // case-3), and a `select` on it is not a picklist (case-2). The record named is the request's own
-  // — the model invents names ("Existing Account", case-0) — else the first record the org offers.
+  // — the model invents names ("Existing Account", case-0) — or the one THIS case created earlier
+  // under the name it typed ("Test Account {{uid}}" for an Opportunity's Account, Phase A), else the
+  // first record the org offers.
   if (!DATA_IS_THE_TEST.has(testCase.category ?? "")) {
     for (const s of steps()) {
       const f = fieldFor(nameOf(s));
       if (!f?.lookup || (s.action !== "fill" && s.action !== "select") || s.target?.lookup) continue;
       s.action = "select";
       s.target = { ...s.target, role: "combobox", lookup: true };
-      if (!s.value || hasRunToken(s.value) || !mentions(request, s.value) || !namesARecord(s.value, f)) s.value = "";
+      const own = !!s.value && hasRunToken(s.value) && createdBefore(ir, from, f.lookup.split("/")).has(s.value);
+      if (!own && (!s.value || hasRunToken(s.value) || !mentions(request, s.value) || !namesARecord(s.value, f))) s.value = "";
       notes.push(`${s.id}: "${nameOf(s)}" is a lookup -> picks the ${s.value ? `record matching "${s.value}"` : "first record offered"}`);
     }
   }

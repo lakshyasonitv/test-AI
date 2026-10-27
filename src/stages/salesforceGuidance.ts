@@ -24,7 +24,8 @@
  * Salesforce names.
  */
 import { currentRunTargetApp } from "../runTarget.js";
-import { currentFrontdoor } from "./salesforceFrontdoor.js";
+import { currentFrontdoor, recordRef, recordRefObject } from "./salesforceFrontdoor.js";
+import { hasRunToken, lineKey, shownNumber } from "../text.js";
 import type { IR as IRSteps, Step } from "../schema/ir.js";
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 
@@ -209,49 +210,149 @@ export function assertRecordTypeForms(ir: IRSteps, org: SalesforceOrgModel | und
   return notes;
 }
 
+/**
+ * Back to a record this case created (Phase A, run 2026-10-26T07-23-21-344Z-9cd29004): after saving an
+ * Opportunity for its new Account, the flow went home and clicked a link named as it had typed the
+ * Account's name ("Test Account {{uid}}"). No page shows that link (the code is the run's), so the
+ * case was cut there. A click on a link named exactly as a run-token value the case typed into an
+ * object's create form, after that form's Save, becomes a navigate to that record (`recordRef`: the
+ * object, and which of its saved create forms it was), resolved where the step runs. Any object,
+ * parent or child, the same object for both included. Not inside a create form not yet saved (its
+ * Save would never happen), and not when the flow went looking for it since the last Save (anything
+ * but navigates, waits and asserts: the object's tab clicked, the name typed into a search; or the
+ * object's list or home page): finding it there may be what the case checks. Returns notes.
+ */
+export function returnToCreatedRecords(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  /** The run-token names each saved create form typed (by their words): the form's object, and which
+   *  of that object's saved create forms it was (all of them count, named or not, as the spec counts). */
+  const created = new Map<string, { object: string; n: number }>();
+  const saved = new Map<string, number>();
+  let form: string | null = null;
+  let typed: string[] = [];
+  let lastSave = -1;
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action === "navigate") {
+      // A create form opens; any other navigate leaves an unsaved one behind.
+      const m = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "");
+      form = m ? decodeURIComponent(m[1]) : null;
+      typed = [];
+      continue;
+    }
+    // A lookup typed with a record's name (the parent's) names that record, not this form's.
+    if (s.action === "fill" && form && hasRunToken(s.value) && s.target?.role !== "combobox" && !s.target?.lookup) typed.push(s.value!);
+    if (s.action === "click" && isSave(s)) {
+      lastSave = i;
+      if (!form) continue;
+      const n = (saved.get(form) ?? 0) + 1;
+      saved.set(form, n);
+      // The first form that typed a name owns it: a later one typing it again points at that record.
+      for (const v of typed) if (!created.has(lineKey(v))) created.set(lineKey(v), { object: form, n });
+      form = null;
+      continue;
+    }
+    if (form) continue;
+    const name = s.action === "click" && (!s.target?.role || s.target.role === "link") ? s.target?.name ?? s.target?.text : undefined;
+    const rec = name ? created.get(lineKey(name)) : undefined;
+    if (!rec) continue;
+    const object = rec.object;
+    const looked = ir.steps.slice(lastSave + 1, i).some((x) => !["navigate", "wait", "assert"].includes(x.action)
+      || (x.action === "navigate" && new RegExp(`/lightning/o/${object}/(list|home)\\b`).test(x.target?.url ?? "")));
+    if (looked) continue;
+    ir.steps[i] = { id: s.id, action: "navigate", target: { url: recordRef(object, rec.n) } };
+    notes.push(`${s.id}: clicks "${name}", the name this case typed for the ${object} it created -> opens that ${object} record directly`);
+  }
+  return notes;
+}
+
 /** Roles of an edit control: on a record's view page the same field is read-only text, never one of these. */
 const FORM_CONTROL = /^(textbox|combobox|spinbutton|checkbox|searchbox|listbox|radiogroup)$/;
+/** A value as a record page shows one: a number, read as the spec reads it ("$5,000.00", "10%"), or a
+ *  date ("11/25/2026", a date token). Words with a digit in them ("Zq Children (1)") are not. */
+const isShownValue = (text: string) => shownNumber(text) !== null || /^(?:\d{1,4}([./-])\d{1,2}\1\d{1,4}\b|\{\{date:)/.test(text.trim());
+/** The field's label (or words of it) written as its value: a check that the label shows, not a value. */
+const namesLabel = (value: string, label: string) => ` ${lineKey(label)} `.includes(` ${lineKey(value)} `);
 
 /**
- * After a Save lands on the record page ("was created"/"was saved"), a check on one of the record's
- * fields is a check of its LABEL on the page's Details tab. The writer grounds it on the create
- * form's input instead (`input[name="SLAExpirationDate__c"]`), which does not exist on the view page,
- * so a correct org failed (run 2026-10-26T07-05-26-345Z-dadbec8e: the Dynamic Forms field was there).
- * Rewrites such asserts to `{ text: <label> }` and clicks the "Details" tab first when the model's
- * record pages have one. Only while the flow stays on the view (waits, asserts, tab clicks): a click
- * on a pencil or Edit opens inputs again, and an assert there is left alone. Returns notes.
+ * On a record's view page (after a Save lands there with "was created"/"was saved", or after a record
+ * this test created is opened again), a check on one of the record's fields is a check on its LABEL
+ * on the page's Details tab. The writer grounds it on the create form's input instead
+ * (`input[name="SLAExpirationDate__c"]`), which does not exist on the view page, so a correct org
+ * failed (run 2026-10-26T07-05-26-345Z-dadbec8e: the Dynamic Forms field was there).
+ * A presence check becomes `{ text: <label> }`; a VALUE check (text_equals/text_contains with a value
+ * other than the label, or a bare number, date or picklist option checked right after its field's
+ * label) becomes `{ field: <label> }`, which the spec reads inside that field's own block. A bare
+ * `getByText("$5,000.00")` could be any field's. The
+ * "Details" tab is clicked first when the model's record pages have one. Only while the flow stays on
+ * the view (waits, asserts, tab clicks): a click on a pencil or Edit opens inputs again, and an assert
+ * there is left alone. Returns notes.
  */
 export function fieldChecksOnRecordView(ir: IRSteps, model: {
   pages: { url: string; elements: { role?: string; name?: string }[] }[];
-  salesforceOrg?: { objects: { fields: { label: string }[]; calculated?: { label: string }[] }[] };
+  salesforceOrg?: { objects: { fields: { label: string; picklist?: string[] }[]; calculated?: { label: string }[] }[] };
 }): string[] {
   const steps = ir.steps;
-  const landed = steps.findIndex((s, i) => s.action === "assert" && /\bwas (created|saved)\b/.test(s.target?.text ?? "")
-    && steps.slice(0, i).some((x) => x.action === "click" && isSave(x)));
-  if (landed < 0) return [];
   const hasDetailsTab = model.pages.some((p) => /\/lightning\/r\//.test(p.url)
     && p.elements.some((e) => e.role === "tab" && e.name === "Details"));
   // A text check naming one of the org's fields is a field check too ("Expected Revenue", run
   // 2026-10-26T07-23-19-810Z-0d14eb03: the Opportunity page opened on Activity, the field on Details).
-  const fieldLabels = new Set((model.salesforceOrg?.objects ?? [])
-    .flatMap((o) => [...o.fields, ...(o.calculated ?? [])].map((f) => f.label)));
+  const fields: { label: string; picklist?: string[] }[] = (model.salesforceOrg?.objects ?? [])
+    .flatMap((o) => [...o.fields, ...(o.calculated ?? [])]);
+  const fieldLabels = new Set(fields.map((f) => f.label));
   const notes: string[] = [];
+  let saved = false;
+  let onView = false;
   let onDetails = false;
-  for (let i = landed + 1; i < steps.length; i++) {
+  let tabs = 0;
+  /** The field whose label the previous check (waits aside) looked for. */
+  let lastLabel: string | undefined;
+  for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
-    if (s.action === "click" && s.target?.role === "tab") { onDetails ||= s.target.name === "Details"; continue; }
-    if (s.action !== "wait" && s.action !== "assert") break;
-    // Presence only: a value check (text_equals on "Phone") compares the control's value, not its label.
-    if (s.action !== "assert" || (s.assertion !== "visible" && s.assertion !== "hidden")) continue;
+    if ((s.action === "assert" && saved && /\bwas (created|saved)\b/.test(s.target?.text ?? ""))
+      || (s.action === "navigate" && recordRefObject(s.target?.url))) {
+      onView = true; onDetails = false; lastLabel = undefined;
+      continue;
+    }
+    if (s.action === "click" && isSave(s)) saved = true;
+    if (!onView) continue;
+    if (s.action === "click" && s.target?.role === "tab") { onDetails ||= s.target.name === "Details"; lastLabel = undefined; continue; }
+    if (s.action !== "wait" && s.action !== "assert") { onView = false; continue; }
+    if (s.action !== "assert") continue;
+    const after = lastLabel;
+    lastLabel = undefined;
+    const valueCheck = (s.assertion === "text_equals" || s.assertion === "text_contains") && !!s.value?.trim();
+    if (s.assertion !== "visible" && s.assertion !== "hidden" && !valueCheck) continue;
+    const text = s.target?.text ?? "";
     if (FORM_CONTROL.test(s.target?.role ?? "") && s.target?.name) {
       const label = s.target.name.replace(/^\*\s*|\s*\*$/g, "").trim();
-      steps[i] = { ...s, target: { text: label } };
-      notes.push(`the check on ${s.target.role} "${s.target.name}" runs on the record page -> checks its label "${label}"`);
-    } else if (!fieldLabels.has(s.target?.text ?? "")) continue;
+      if (valueCheck && namesLabel(s.value!, label)) continue;
+      if (valueCheck) {
+        steps[i] = { ...s, target: { field: label } };
+        notes.push(`the value check on ${s.target.role} "${s.target.name}" runs on the record page -> checks the "${label}" field shows "${s.value}"`);
+      } else {
+        steps[i] = { ...s, target: { text: label } };
+        notes.push(`the check on ${s.target.role} "${s.target.name}" runs on the record page -> checks its label "${label}"`);
+        if (s.assertion === "visible") lastLabel = label;
+      }
+    } else if (fieldLabels.has(text)) {
+      if (valueCheck && namesLabel(s.value!, text)) continue;
+      if (valueCheck) {
+        steps[i] = { ...s, target: { field: text } };
+        notes.push(`the value check on "${text}" -> checks the "${text}" field shows "${s.value}"`);
+      } else if (s.assertion === "visible") lastLabel = text;
+    } else if (after && s.assertion === "visible" && text && !s.target?.role && !/\bwas (created|saved|deleted)\b/.test(text)
+      && (isShownValue(text) || fields.some((f) => f.label === after && f.picklist?.includes(text)))) {
+      // A field's label, then a bare value: the value is that field's, read inside it.
+      steps[i] = { ...s, target: { field: after }, assertion: "text_contains", value: text };
+      notes.push(`"${text}" checked right after the "${after}" label -> checks the "${after}" field shows it`);
+      continue;
+    } else continue;
     if (hasDetailsTab && !onDetails) {
+      const n = tabs++ ? `-${tabs}` : "";
       steps.splice(i, 0,
-        { id: "sf-details", action: "click", target: { role: "tab", name: "Details" } },
-        { id: "sf-details-wait", action: "wait", value: "500" });
+        { id: `sf-details${n}`, action: "click", target: { role: "tab", name: "Details" } },
+        { id: `sf-details${n}-wait`, action: "wait", value: "500" });
       i += 2;
       onDetails = true;
       notes.push(`fields are on the record page's Details tab -> clicks it first`);

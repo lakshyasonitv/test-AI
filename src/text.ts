@@ -117,3 +117,21 @@ export function newRunTokenContext(): RunTokenContext {
   const uid = Math.random().toString(36).slice(2, 8);
   return { uid, phone: "415555" + String(Date.now()).slice(-4) };
 }
+
+/**
+ * A number as a page shows it ("$5,000.00", "5.000,00 €", "10%", "USD 1,200"), else null. As SOURCE,
+ * so the spec's field check (generator.ts SF_FIELD_MATCH_JS) and the IR pass that decides what is a
+ * field's value (salesforceGuidance.fieldChecksOnRecordView) read numbers the same way (TD-07).
+ */
+export const SHOWN_NUMBER_JS = `(s) => {
+  const t = String(s).replace(/\\b[A-Z]{3}\\b|[$\\u20ac\\u00a3\\u00a5\\u20b9%\\s\\u00a0]/g, "").replace(/[.,]+$/, "");
+  if (!/^[-+]?\\d[\\d.,]*$/.test(t)) return null;
+  const dot = t.lastIndexOf("."), comma = t.lastIndexOf(",");
+  let dec = dot > comma ? "." : comma > dot ? "," : "";
+  // One kind of separator with three digits after it ("5,000", "1.000.000") groups thousands.
+  if (dec && (dot < 0 || comma < 0) && (t.split(dec).length > 2 || t.length - t.lastIndexOf(dec) === 4)) dec = "";
+  const at = dec ? t.lastIndexOf(dec) : t.length;
+  const n = Number(t.slice(0, at).replace(/[.,]/g, "") + (dec ? "." + t.slice(at + 1) : ""));
+  return Number.isFinite(n) ? n : null;
+}`;
+export const shownNumber = new Function(`return (${SHOWN_NUMBER_JS});`)() as (s: string) => number | null;

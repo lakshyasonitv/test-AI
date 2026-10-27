@@ -45,6 +45,11 @@ const SYNTHETIC: Step[] = [
   { id: "y10", action: "fill", target: { role: "textbox", name: "Email", css: "#email" }, value: "${env:TEST_USERNAME}" },
   { id: "y11", action: "click", target: { role: "link" } },
   { id: "y12", action: "navigate", target: { url: "/cart" } },
+  // A record field's value (Target.field, salesforceGuidance.fieldChecksOnRecordView).
+  { id: "y13", action: "assert", assertion: "text_contains", target: { field: "Zq Total" }, value: "$5,000.00" },
+  { id: "y14", action: "assert", assertion: "text_equals", target: { field: "Zq Heat" }, value: "Zq Hot" },
+  // Back to a record the test created (salesforceFrontdoor.recordRef): edited like any "Go to".
+  { id: "y15", action: "navigate", target: { url: "${record:Zq_Parent__c:1}" } },
 ];
 
 const CORPUS: Step[] = [...ALL_STEPS, ...SYNTHETIC];
@@ -127,6 +132,23 @@ describe("stepText — an edited line loses its grounding, which is what forces 
   it("keeps the step's id, because a failure report names it", () => {
     const parsed = parseIrStep(`Click on button "Something else"`, grounded);
     expect(parsed.ok && parsed.step.id).toBe("s1");
+  });
+
+  it("a record field's value check reads as one, and an edited value stays a check of that field", () => {
+    const step = SYNTHETIC.find((s) => s.id === "y14")!;
+    expect(formatIrStep(step)).toBe(`Check that the "Zq Heat" field shows "Zq Hot"`);
+    const parsed = parseIrStep(`Check that the "Zq Heat" field shows "Zq Cold"`, step);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.step).toEqual({ ...step, value: "Zq Cold" });
+    expect([parsed.changed, parsed.targetChanged]).toEqual([true, false]);
+    // Another field: read by its label where the step runs, so nothing to re-ground either.
+    const other = parseIrStep(`Check that the "Zq Total" field shows "Zq Cold"`, step);
+    expect(other.ok && other.step.target).toEqual({ field: "Zq Total" });
+    expect(other.ok && other.step.assertion).toBe("text_equals");
+    // A new line of this shape checks "contains", like a new text check.
+    const fresh = parseIrStep(`Check that the "Zq Total" field shows "5,000"`);
+    expect(fresh.ok && fresh.step).toMatchObject({ action: "assert", assertion: "text_contains", target: { field: "Zq Total" }, value: "5,000" });
   });
 });
 

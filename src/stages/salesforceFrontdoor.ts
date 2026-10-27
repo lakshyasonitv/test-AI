@@ -51,6 +51,66 @@ export function isFrontdoorRef(u: unknown): boolean {
   return u === FRONTDOOR_REF;
 }
 
+/**
+ * What a navigate step carries to go back to a record this test created earlier (Phase A: run
+ * 2026-10-26T07-23-21-344Z-9cd29004 created an Opportunity for its new Account and had no way back to
+ * the Account): the <n>th <Object> record its create forms saved, so a parent and a child of ONE
+ * object (Parent Account) are told apart. The record does not exist when the IR is compiled, so,
+ * like FRONTDOOR_REF, it is resolved where the step RUNS: the spec and the grounding replay. Written
+ * in code only (salesforceGuidance.returnToCreatedRecords).
+ */
+export const recordRef = (object: string, n: number): string => `\${record:${object}:${n}}`;
+
+const RECORD_REF = /^\$\{record:([A-Za-z][A-Za-z0-9_]*):([1-9][0-9]*)\}$/;
+/** The object a record reference names, or null for any other URL. */
+export function recordRefObject(u: unknown): string | null {
+  const m = typeof u === "string" ? RECORD_REF.exec(u) : null;
+  return m ? m[1] : null;
+}
+/** Which of that object's created records a record reference means (1 = the first), or null. */
+export function recordRefIndex(u: unknown): number | null {
+  const m = typeof u === "string" ? RECORD_REF.exec(u) : null;
+  return m ? Number(m[2]) : null;
+}
+
+/**
+ * The records one browser CREATED, as SOURCE so the spec and the replay run the same characters
+ * (TD-07, like RESOLVE_RUN_TOKENS_JS). `visit` takes every main-frame URL; `created(object, n)` is the
+ * id of the <n>th <object> record a create form saved, else null. Only the record page reached right
+ * after a create form counts, never one the flow opened (a record it did not create must never be
+ * edited as its own). After a create's Save Lightning shows the new record at `/lightning/r/<Id>/view`,
+ * WITHOUT the object (the final page of every 2026-10-26 run), so such a page is the form's record
+ * unless something says otherwise: the URL names another object, its id prefix (an id's first three
+ * characters name its object) is known to be another object's, or the page was seen before the form
+ * (a Cancel goes back to it). Any other page in between means the form was left unsaved.
+ */
+export const SF_RECORD_PAGES_JS = `() => {
+  const made = {};
+  const prefixOf = {};
+  const seen = new Set();
+  let creating = null;
+  return {
+    visit: (url) => {
+      const form = /\\/lightning\\/o\\/([A-Za-z][A-Za-z0-9_]*)\\/new\\b/.exec(url);
+      if (form) { creating = form[1]; return; }
+      const m = /\\/lightning\\/r\\/(?:([A-Za-z][A-Za-z0-9_]*)\\/)?([A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)\\/view\\b/.exec(url);
+      if (!m) { creating = null; return; }
+      const p = m[2].slice(0, 3);
+      if (m[1]) prefixOf[m[1]] = p;
+      const object = m[1] || Object.keys(prefixOf).find((o) => prefixOf[o] === p) || null;
+      if (creating && !seen.has(m[2]) && (object === creating || (!object && !prefixOf[creating]))) {
+        prefixOf[creating] = p;
+        (made[creating] = made[creating] || []).push(m[2]);
+      }
+      creating = null;
+      seen.add(m[2]);
+    },
+    created: (object, n) => (made[object] || [])[n - 1] || null,
+  };
+}`;
+export interface RecordPages { visit(url: string): void; created(object: string, n: number): string | null }
+export const recordPages = new Function(`return (${SF_RECORD_PAGES_JS});`)() as () => RecordPages;
+
 const frontdoorContext = new AsyncLocalStorage<FrontdoorSession | null>();
 
 /** Make `session` this run's connection for the rest of its async chain (orchestrator, every run). */

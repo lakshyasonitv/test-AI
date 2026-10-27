@@ -1730,6 +1730,9 @@ function readableStep(step, tokens) {
   const t = step.target;
   // The org-connection sign-in (D-63): a one-time link, not an address anyone should read.
   if (step.action === "navigate" && t?.url === "${env:SF_FRONTDOOR_URL}") return "Sign in to the org";
+  // Phase A: a record this test created, opened again (recordRef in salesforceFrontdoor.ts).
+  const record = step.action === "navigate" && /^\$\x7Brecord:([A-Za-z][A-Za-z0-9_]*):([1-9][0-9]*)\x7D$/.exec(t?.url ?? "");
+  if (record) return `Go back to the ${record[1]} record this test created${Number(record[2]) > 1 ? `, number ${record[2]}` : ""}`;
   const shown = { ...step, value: step.value === undefined ? undefined : displayValue(step.value, tokens) };
   if (t) {
     shown.target = { ...t };
@@ -1788,6 +1791,8 @@ function formatIrStep(step) {
       if (assertion === "visible") return `Check that ${targetDesc} appears on the page`;
       if (assertion === "hidden") return `Check that ${targetDesc} is not shown`;
       if (assertion === "url_contains") return `Check the page address contains "${step.value || target?.url || ""}"`;
+      // A record field's value (Target.field): read inside that field on the record page, not anywhere.
+      if (target?.field && (assertion === "text_contains" || assertion === "text_equals")) return `Check that the "${target.field}" field shows "${step.value || ""}"`;
       if (assertion === "text_contains") return `Check that the text "${step.value || ""}" is displayed`;
       if (assertion === "text_equals") return `Check that the text "${step.value || ""}" is displayed`;
       if (assertion === "enabled") return `Check that ${targetDesc} is enabled`;

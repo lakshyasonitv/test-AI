@@ -20,7 +20,30 @@ import { currentRunTargetApp } from "../runTarget.js";
 import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForScreenSettle } from "./networkSettle.js";
 import { dropVolatileIdCss, volatileIdDetectionEnabled } from "./volatileIds.js";
 import { captureErrorMarkers, errorMarkersOf, lastInteractionIndex, pageAlertTexts, type ErrorMarker } from "./hollowPassGuards.js";
-import { currentFrontdoor, isFrontdoorRef, openFrontdoor } from "./salesforceFrontdoor.js";
+import {
+  currentFrontdoor, isFrontdoorRef, openFrontdoor, recordPages, recordRefIndex, recordRefObject, type RecordPages,
+} from "./salesforceFrontdoor.js";
+import type { RunTokenContext } from "../text.js";
+
+/** Per replay page (Phase A): the records its create forms saved, for a step back to one (recordRef). */
+const replayRecordPages = new WeakMap<Page, RecordPages>();
+/** Per replay page (Phase A): ONE run-token context, when a lookup picks a record the flow created
+ *  under a run-token name; the fill that typed that name must have typed the same code. */
+const replayTokens = new WeakMap<Page, RunTokenContext>();
+
+/**
+ * Get `page` ready to replay `prefix`, like the spec's own helpers: note the records it creates when a
+ * step goes back to one, and share one run-token context when a lookup names a record the flow created.
+ * Neither applies to any other prefix, which replays exactly as before.
+ */
+export function prepareReplayPage(page: Page, prefix: Step[]): void {
+  if (prefix.some((s) => s.action === "navigate" && recordRefObject(s.target?.url))) {
+    const pages = recordPages();
+    replayRecordPages.set(page, pages);
+    page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) pages.visit(frame.url()); });
+  }
+  if (prefix.some((s) => s.action === "select" && s.target?.lookup && hasRunToken(s.value))) replayTokens.set(page, newRunTokenContext());
+}
 
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
@@ -46,6 +69,15 @@ export async function runStepLive(
       // an env reference, never the URL (it holds the access token); resolve it here, for this run.
       // Appending it to baseUrl, as below, is the same bug TD-84 records for `${env:TEST_USERNAME}`.
       if (isFrontdoorRef(u)) { await openFrontdoor(page); return; }
+      // Phase A: the record this flow created, as the spec's sfOpenRecord finds it.
+      const object = recordRefObject(u);
+      if (object) {
+        const n = recordRefIndex(u)!;
+        const id = replayRecordPages.get(page)?.created(object, n);
+        if (!id) throw new Error(`no ${object} record this test created (number ${n}) was reached before step ${step.id}, so there is none to go back to`);
+        await page.goto(`${baseUrl.replace(/\/$/, "")}/lightning/r/${object}/${id}/view`, { waitUntil: "domcontentloaded" });
+        return;
+      }
       const full = u.startsWith("http") ? u : baseUrl.replace(/\/$/, "") + u;
       await page.goto(full, { waitUntil: "domcontentloaded" });
       return;
@@ -57,9 +89,10 @@ export async function runStepLive(
       // target instead is what made it type the literal string `${env:TEST_USERNAME}` into the
       // login box of any site whose fields are named by placeholder. TECH_DEBT.md TD-84.
       const raw = (creds && isFinalCredentialAttempt ? credentialForStep(step, creds, fieldMap, policy) : undefined) ?? step.value ?? "";
-      // Run tokens: a fresh context per replayed fill. A replay that clicks Save creates a real record
-      // too, and must not collide with the run's own name or another replay's (duplicate rules).
-      const val = hasRunToken(raw) ? resolveRunTokens(raw, newRunTokenContext()) : raw;
+      // Run tokens: a fresh context per replayed fill (per replay when a lookup names a record the flow
+      // created, prepareReplayPage). A replay that clicks Save creates a real record too, and must not
+      // collide with the run's own name or another replay's (duplicate rules).
+      const val = hasRunToken(raw) ? resolveRunTokens(raw, replayTokens.get(page) ?? newRunTokenContext()) : raw;
       await (await resolveLive(page, step.target!, "fill")).fill(val);
       return;
     }
@@ -70,7 +103,9 @@ export async function runStepLive(
     // generated spec. TECH_DEBT.md TD-76/TD-79.
     case "select":
       if (step.target!.lookup) {
-        await lookupLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "");
+        const ctx = replayTokens.get(page);
+        const v = step.value ?? "";
+        await lookupLive(page, await resolveLive(page, step.target!, "select"), ctx && hasRunToken(v) ? resolveRunTokens(v, ctx) : v);
         return;
       }
       await chooseLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "");
@@ -332,6 +367,7 @@ async function replayAndSnapshot(
     // on newPage() — not newContext() + context.newPage(), which would lose sessionStorage
     // (TD-41 / D-23) on exactly the authenticated flows this function exists to replay.
     const page = await browser.newPage(browserContextOptions());
+    prepareReplayPage(page, prefix);
     // Only a screen capture reads this; counting from the first request so a fetch a click starts
     // is seen even if it began before the capture's own wait does.
     // Phase 1 (NETWORK_SETTLE_ENABLED): the long-poll-aware tracker replaces the old one, and is

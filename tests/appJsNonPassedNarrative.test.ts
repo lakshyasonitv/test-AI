@@ -195,6 +195,15 @@ describe("report steps show values a person can read, never internal placeholder
     expect(lines.join("\n")).not.toMatch(/\{\{|\$\{env:/);
   });
 
+  it("a record this test created, opened again, and a record field's value read as what they are", () => {
+    expect(api.readableStep({ id: "g", action: "navigate", target: { url: "${record:Zq_Firm__c:1}" } }, null))
+      .toBe("Go back to the Zq_Firm__c record this test created");
+    expect(api.readableStep({ id: "g", action: "navigate", target: { url: "${record:Zq_Firm__c:2}" } }, null))
+      .toBe("Go back to the Zq_Firm__c record this test created, number 2");
+    expect(api.readableStep({ id: "h", action: "assert", target: { field: "Zq Due" }, assertion: "text_equals", value: "{{date:+30:en-GB}}" } as Step, null))
+      .toBe('Check that the "Zq Due" field shows "(today + 30 days)"');
+  });
+
   it("with the run's values from results.json: exactly what that run typed", () => {
     const now = Date.UTC(2026, 9, 25, 12);
     const results = { suites: [{ suites: [{ specs: [{ title: "Zq case", tests: [{ annotations: [

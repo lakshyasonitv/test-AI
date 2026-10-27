@@ -30,6 +30,13 @@ export const Target = z.object({
    */
   lookup: z.boolean().optional(),
   /**
+   * A FIELD of the record page the flow is on, by the label the page shows ("Expected Revenue"): a
+   * `text_contains`/`text_equals` assert on it compares that field's shown value, found inside the
+   * field's own block on the page, never anywhere on the page (a bare "$100.00" can be another
+   * field's). Set in code (salesforceGuidance.fieldChecksOnRecordView), never by the LLM. Additive.
+   */
+  field: z.string().optional(),
+  /**
    * Provenance, not behaviour. `"replay"` marks a target that was grounded against the LIVE page
    * during a replay (`REPLAY_REGROUND`) rather than against the model discovery built — the case
    * of a control revealed by a click, which discovery never saw.

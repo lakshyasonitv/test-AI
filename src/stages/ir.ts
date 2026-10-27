@@ -20,8 +20,11 @@ import {
   NEGATIVE_CATEGORIES, type Credentials,
 } from "./credentials.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
-import { salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView } from "./salesforceGuidance.js";
-import { FRONTDOOR_REF, currentFrontdoor, isFrontdoorRef } from "./salesforceFrontdoor.js";
+import {
+  salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
+  returnToCreatedRecords,
+} from "./salesforceGuidance.js";
+import { FRONTDOOR_REF, currentFrontdoor, isFrontdoorRef, recordRefObject } from "./salesforceFrontdoor.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 // The generator's OWN rule for when a step becomes `field(page, hint, …)` and which slot supplies
@@ -219,6 +222,10 @@ export interface PageTrail {
  * (`auth.url`). Every other URL is returned unchanged.
  */
 function navUrlOf(url: string, appModel: AppModel): string {
+  // Phase A: the record this test created (recordRef) is a record page of its object, as discovery's
+  // own record page of that object shows it; none modelled = unknown, as before.
+  const object = recordRefObject(url);
+  if (object) return appModel.pages.find((p) => p.url.includes(`/lightning/r/${object}/`))?.url ?? url;
   return isFrontdoorRef(url) && appModel.auth?.frontdoor && appModel.auth.url ? appModel.auth.url : url;
 }
 
@@ -1263,8 +1270,9 @@ export function groundingError(
       if (known?.frame && !t.frame) t.frame = known.frame;
       continue;
     }
-    // Step 0's navigate is the entry URL the pipeline itself supplied, never a guess.
-    if (index > 0 && step.action === "navigate" && t?.url && !navUrlAllowed(t.url)) {
+    // Step 0's navigate is the entry URL the pipeline itself supplied, never a guess. Nor is a record
+    // this test created (recordRef): code writes it, and it is resolved where the step runs.
+    if (index > 0 && step.action === "navigate" && t?.url && !recordRefObject(t.url) && !navUrlAllowed(t.url)) {
       return {
         index,
         kind: "navigate-url",
@@ -2310,9 +2318,11 @@ Example — handling duplicate selectors with nth:
     // TD-162: an IR cached without the guard can end on the page's own error. Only guarded cases' keys change.
     ...(refuseErrors ? ["hollow-guards:1"] : []),
     // Session 103: a Salesforce case ending on the Save button alone gains the outcome assertion.
-    ...(sfOutcome ? ["sf-outcome:3"] : []),
+    // 4: back to a record the case created, and field value checks on the record page (Phase A).
+    ...(sfOutcome ? ["sf-outcome:4"] : []),
     // Session 102: values fixed from the org model (TEST_DATA_ENABLED); an IR cached without it keeps the old values.
-    ...(testDataEnabled() ? ["test-data:1"] : []),
+    // 2: a lookup keeps the name of the record this case created (Phase A).
+    ...(testDataEnabled() ? ["test-data:2"] : []),
     // D-63: an IR compiled on a frontdoor run starts with the env-referenced login; it must never be
     // served to a password run on the same org, nor the reverse. Absent on every other run.
     ...(currentFrontdoor() ? [`sf-frontdoor:${currentFrontdoor()!.instanceHost}`] : []));
@@ -2838,6 +2848,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       const note = strengthenSaveOutcome(parsed.data);
       if (note) console.log(`[ir] ${note}`);
       for (const rt of assertRecordTypeForms(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${rt}`);
+      // Before the field checks: a record opened again is a record page too.
+      for (const r of returnToCreatedRecords(parsed.data)) console.log(`[ir] ${r}`);
       for (const f of fieldChecksOnRecordView(parsed.data, currentModel)) console.log(`[ir] ${f}`);
     }
     // Data safety, not a flag: grounding replays these steps in the real org, so a delete of a
