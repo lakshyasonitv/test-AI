@@ -1,6 +1,13 @@
 # Open tasks
 
-*Last updated: 2026-10-13.*
+*Last updated: 2026-10-28.*
+
+## Run insights on main (D-61)
+
+- [ ] Open a pull request for `vaibhav/intelligent-edison-l6061z` into `main` — only when the user asks.
+- [ ] One real run with `EXTENDED_LOGGING=true` to read a real `10-insights.json`. Costs Gemini — ask first.
+- [ ] Before any merge of `vaibhav/determined-dijkstra-0t2ec9`: renumber its clashing D-/TD- records and
+      take `main`'s `src/insights.ts` (it has the lazy builder and the `scrubRunSecrets` layer).
 
 ## Pro document intake (D-53)
 

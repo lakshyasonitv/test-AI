@@ -1,6 +1,19 @@
 # Progress — where we are
 
-*Last updated: 2026-10-13, end of the Pro document intake session.*
+*Last updated: 2026-10-28, run insights (D-61) ported to `main`. See `journal/2026-10-28.md`.*
+
+## 2026-10-28 — on `main`'s line
+
+- Branch `vaibhav/intelligent-edison-l6061z` = `main` (`1fb9dcb`) + the D-61 port: `[insight]` lines and
+  `runs/<id>/10-insights.json` behind `EXTENDED_LOGGING` (default off). No pull request yet.
+- **Gap:** this brain does not record `main`'s own work from 2026-10-18 to 2026-10-28 (discovery
+  Phases 1–5, TD-154/156, TD-162, Salesforce OAuth D-63, TD-169). Read `DECISIONS.md`/`TECH_DEBT.md`.
+- **Baseline on this branch:** `tsc` clean; `vitest` 2663 passed / 2 failed / 23 skipped, 199 files
+  (with the browser symlink workaround below, now `-1148 -> -1243`). Same 2 pre-existing failures.
+- `vaibhav/determined-dijkstra-0t2ec9` has diverged from `main`: 9 conflicting files and clashing
+  D-/TD- numbers. D-61 is the one record that now means the same thing on both.
+
+*The sections below are from 2026-10-13 and describe `vaibhav/determined-dijkstra-0t2ec9`.*
 
 ## Branch and commits
 

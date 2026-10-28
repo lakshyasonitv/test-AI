@@ -89,6 +89,7 @@ import {
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
 import { enterWithLlmConfig, resolvedProvider } from "../llm/llmContext.js";
 import { extendedLoggingEnabled } from "../logging.js";
+import { insight } from "../insights.js";
 import { withRunId } from "../runContext.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
 import {
@@ -391,7 +392,16 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
   // Resolved HERE rather than inside the pipeline because it needs the database and the caller's
   // organisation, neither of which the CLI entry point has. Both calls degrade to null/undefined
   // for an unconfigured org, which is exactly the env-driven behaviour that predates this.
+  // D-61 (EXTENDED_LOGGING only): how full the run slots were when this run was accepted, and how
+  // long it then waited for one — a run that "does nothing" is often just queued.
+  const queuedAt = Date.now();
+  insight("queue", () => ({
+    inFlight: runLimit.inFlight, queued: runLimit.queued, max: runLimit.capacity,
+    // This project's own on/off settings that are on — names only (BOOLEAN_ENV_FLAGS, below).
+    flagsOn: BOOLEAN_ENV_FLAGS.filter((f) => process.env[f] === "true"),
+  }), runId);
   runLimit.run(async () => {
+    insight("slot", () => ({ waitedMs: Date.now() - queuedAt, inFlight: runLimit.inFlight, queued: runLimit.queued }), runId);
     const orgId = req.organisationId ?? null;
     const [llmConfig, maxLlmCalls] = await Promise.all([
       llmConfigForOrg(orgId),
