@@ -1835,6 +1835,49 @@ never clicked anywhere. The README says the explorer must stay off against produ
 Exploring every button (rejected on 2026-10-16 as TD-150's alternative): too slow and could submit forms; the allow
 list plus the budget bound it. Letting the explorer type: it could commit data.
 
+## D-61. Run insights are numbers about the pipeline's own objects, logged and kept with the run
+
+**Context.** The developer asked for detailed server logs of how a run is going — elements discovered,
+app-model size, Pro spec-model size, every detail useful for judging quality and maintenance. The logs
+said little: stage start/end prints, an LLM line per call (EXTENDED_LOGGING). And Azure's log stream
+samples lines away and is not kept (the reason `llmBudget.ts` records retries into the run itself).
+
+**Decision.** `src/insights.ts`, behind the existing `EXTENDED_LOGGING` (default off — no line, no file):
+- `insight(stage, fields)` prints `[insight] run=<id> stage=<stage> key=value …` and keeps the record
+  per run (a Map keyed by run id — runs share the process); `writeInsights` saves them as
+  `runs/<id>/10-insights.json` at every run end (completed, error, no cases selected).
+- Facts are COMPUTED from objects the pipeline already holds — the AppModel, the case list, the IR, the
+  spec text, Playwright's report, `llmBudget.snapshot()` — by pure summarizer functions, at the points
+  in `orchestrator.ts` / `suiteRunner.ts` where those objects exist. Discovery, the IR compiler, the
+  generator and the executor are not modified. Stage durations come from the existing `step()` wrapper.
+- Whether a failure diagnosis came from rules or the AI is read structurally: did the LLM call count go
+  up across `analyzeFailure`. Cache hits/misses are counted in `llmCacheGet`, per namespace.
+- "Spec model" is the Pro document's distilled rules (`SpecModel`): list counts and byte size.
+- Settings on are logged from the server's own `BOOLEAN_ENV_FLAGS` (names only), not from all of
+  `process.env`, which would list unrelated variables.
+
+**What is never logged.** Credentials, page text, element names, AI-written case titles and steps (cases
+are named by `caseId`), and URL query strings (`safeUrl` keeps origin + path — a Salesforce redirect can
+carry a session id; so can a frontdoor URL, D-63). Error lines come from Playwright's report after
+`scrubServedSecrets`, and every field then passes `scrubRunSecrets` (TD-154) as a second layer. A test
+plants a password in the prompt and a session id in the URL and checks neither reaches a line or the file.
+
+**Flag off costs nothing and can break nothing.** Every call site that computes a summary passes it as a
+function, which `insight()` calls only when the flag is on; with it on, a summary that throws is caught and
+logged, never thrown into the run. Off, the only new work is the flag check itself.
+
+**Ported, not invented here.** Built first on `vaibhav/determined-dijkstra-0t2ec9` (2026-10-22), where it
+is also D-61; carried to `main` on 2026-10-28 with the same number on purpose. That branch's Salesforce
+fixed-login facts (`fixedLogin`, `loginOnly`, the `salesforceLogin` spec helper) were left out, because that
+code is not on `main`; the provider/model line uses `cacheModelDimension`, `main`'s existing resolver.
+
+**Not covered.** Pages discovery skipped and why, and per-page timing inside discovery's own crawl loop,
+are not visible from the AppModel; they would need hooks inside `hybridDiscovery.ts`.
+
+**Rejected.** *Logging inside every stage* — would touch grounding, discovery and the executor for an
+observability change. *A new flag* — EXTENDED_LOGGING already means "more diagnostic output, nothing else".
+*Logging case titles* — AI prose shaped by the prompt, which can carry credentials.
+
 ## D-63. A Salesforce org is signed into once, over OAuth, and every run's browser enters through frontdoor.jsp
 
 **Status:** Stage 1 built on `shadowdom` 2026-10-24, behind `SALESFORCE_OAUTH_ENABLED` (default off).

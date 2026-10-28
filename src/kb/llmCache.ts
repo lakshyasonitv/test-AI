@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync
 import path from "node:path";
 import crypto from "node:crypto";
 import { cacheSafe } from "../runSecrets.js";
+import { countCacheRead } from "../insights.js";
 
 /**
  * Namespaced on-disk cache.
@@ -49,6 +50,13 @@ function hash(input: string): string {
 }
 
 export function llmCacheGet<T>(key: string, ns: string = DEFAULT_NS): T | null {
+  // D-61: hit/miss per namespace for the run's insight summary. Free when EXTENDED_LOGGING is off.
+  const found = readCache<T>(key, ns);
+  countCacheRead(ns, found !== null);
+  return found;
+}
+
+function readCache<T>(key: string, ns: string): T | null {
   const memKey = `${ns}/${key}`;
   const mem = memCache.get(memKey);
   if (mem && Date.now() - mem.ts < TTL_MS) return mem.data as T;
