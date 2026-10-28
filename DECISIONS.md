@@ -2204,3 +2204,41 @@ browser check. Unknowns the docs do not settle: the real `expires_in`, per-endpo
 whether one account with several Jira sites behaves as tested (a site picker is shown when it has).
 One process only — see TECH_DEBT.md TD-178.
 
+## D-72. A project's discovery is shared by its runs for 7 days, per login, one discovery at a time
+
+**Context.** The deployed app now runs 4 runs at once (4 vCPU / 8 GiB, `MAX_CONCURRENT_RUNS=4`), for up
+to 4 people. Each run explored the site again unless an identical run had done so in the last 30
+minutes (`APPMODEL_CACHE_TTL_MS`, a GLOBAL key of URL + login), and four people starting together on
+one project ran four identical explorations, filling every slot. The user asked that a discovery done
+once be stored and shared with everyone working on that project.
+
+**Decision.** Behind `PROJECT_DISCOVERY_SHARING` (default off):
+- The run route passes `discoveryScope = { organisationId (session), projectId (the tenancy-checked
+  filing: an explicit id the caller can see, else the project inferred from the URL) }`. Discovery
+  keys the saved model as `project:<org>:<project>|<site key>` — the site key being today's URL + hashed
+  login + element strategy — and reads it for 7 days (`PROJECT_DISCOVERY_TTL_MS`).
+- **Per login** (the user's choice over one discovery per project): two accounts can see different
+  pages, and a test grounded on pages its own account cannot reach fails for a reason nobody sees.
+- **7 days + "Explore the site again"** (the user's choice over 24 hours): a home-screen box sends
+  `options.freshDiscovery` for the next run only; the crawl then replaces the saved model. The existing
+  optional field is now also accepted when the flag is on (it was org-connection runs only).
+- **One discovery at a time per key** (`readOrClaim`): a run that misses claims the key; a run arriving
+  while it crawls waits, then reads what it saved. No `await` between the last check and the claim, so
+  two waiting runs never both crawl. The claim is released in a `finally` around discovery, so a
+  throwing crawl cannot strand the next run.
+- **Not on org-connection runs**: they keep their own saved scan (`SALESFORCE_DISCOVERY_CACHE_ENABLED`).
+- The discovery event now carries the model's optional `savedScan`, and the run screen says "Used this
+  project's saved discovery from 2 h ago…" or "Saved for this project…". `app.js` already read
+  `savedScan` for the org scan, but the event never sent it, so that line never showed either; it does now.
+- No per-user run limit: the user chose to keep the 4 slots first come, first served.
+
+**Rejected.** *One discovery per project whatever the login* — wrong tests for lower-privilege users.
+*Keep the global key, longer TTL* — shares one company's logged-in model shape across companies and
+never scopes to a project. *A database table* — the saved models already live on the shared Azure File
+volume (`runs/_cache`, skipped by retention), which survives restarts.
+
+**Known limits.** The wait is in-process: correct on today's single replica, not across several (the
+credential prompt and case gate already require one). A site that changes within the 7 days is tested
+against the old picture until someone ticks "Explore the site again"; a failure caused by that looks
+like a missing element. Multi-URL runs (`discoverPagesHybrid`) are not shared.
+

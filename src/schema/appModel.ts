@@ -364,8 +364,9 @@ export const AppModel = z.object({
    */
   salesforceOrg: z.lazy(() => SalesforceOrgModel).optional(),
   /** Org-connection runs with SALESFORCE_DISCOVERY_CACHE_ENABLED: when these pages were scanned, and
-   *  whether this run reused that saved scan instead of scanning. Shown on the run page; absent elsewhere. */
-  savedScan: z.object({ at: z.string(), reused: z.boolean() }).optional(),
+   *  whether this run reused that saved scan instead of scanning. Shown on the run page; absent elsewhere.
+   *  `scope: "project"` (D-72): a project's shared discovery (PROJECT_DISCOVERY_SHARING); absent = the org scan. */
+  savedScan: z.object({ at: z.string(), reused: z.boolean(), scope: z.literal("project").optional() }).optional(),
 });
 
 export const SalesforceOrgField = z.object({

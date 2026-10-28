@@ -70,3 +70,8 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156; 2026-10-28: ou
 - Phase 1 = read one story into the prompt box. Acceptance criteria are written in the description.
 - Every Jira fact must come from Atlassian's docs, not memory ("no assumptions, no guesses").
 
+## 2026-10-28 — Capacity and shared discovery (user)
+- 4 concurrent runs on Azure (4 vCPU / 8 GiB) for up to 4 users; parallel cases inside a run parked.
+- A project's discovery is shared: per login (not across logins), kept 7 days + "Explore the site again", no per-user run limit.
+- Document upload stays on Google AI Studio Gemini (not Azure Foundry); a lite model is fine.
+

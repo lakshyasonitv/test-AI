@@ -1,6 +1,14 @@
 # Open tasks
 
-*Last updated: 2026-10-26.*
+*Last updated: 2026-10-28.*
+
+## Shared discovery per project (D-72) + the main merge
+
+- [ ] Commit D-72, then push the branch (merge commit 2142d16 + D-72) — ask first.
+- [ ] Turn on in Azure only after the branch reaches main and deploys: `PROJECT_DISCOVERY_SHARING=true`.
+- [ ] Update `app.yaml` to 4 vCPU / 8Gi / MAX_CONCURRENT_RUNS 4 (live since 2026-10-27).
+- [ ] First real check: two runs of one project, same URL + login — the second should say "Used this
+      project's saved discovery". Costs AI money for the plan/case steps — ask first.
 
 ## Jira Phase 1 (D-71)
 

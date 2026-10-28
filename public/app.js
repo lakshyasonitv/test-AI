@@ -857,6 +857,13 @@ function summarize(stage, data) {
         const orgNote = data.orgWarning?.message ? `⚠ ${data.orgWarning.message} ` : "";
         // Org-connection runs that keep scans: say plainly whether this run scanned or reused one.
         const scan = data.savedScan;
+        // D-72: a project's shared discovery (PROJECT_DISCOVERY_SHARING) — reused, or saved for the next run.
+        if (scan?.scope === "project") {
+          return scan.reused
+            ? `${orgNote}Used this project's saved discovery from ${agoText(scan.at)}, so the site was not explored again. `
+              + `${pagesCount} page${pagesCount === 1 ? "" : "s"}${conceptStr}. Tick "Explore the site again" if it has changed`
+            : `${orgNote}Discovered ${pagesCount} page${pagesCount === 1 ? "" : "s"}${conceptStr}. Saved for this project, so its next runs can skip this step`;
+        }
         if (scan?.reused) {
           return `${orgNote}Used the saved scan of this org from ${agoText(scan.at)}: nothing in the org's setup has changed, `
             + `so it was not scanned again. ${pagesCount} page${pagesCount === 1 ? "" : "s"}${conceptStr}`;
@@ -3763,13 +3770,19 @@ form.addEventListener("submit", async (e) => {
     // so the body is byte-identical. Ticked: one extra key, `targetApp` (D-50). Pro adds one more,
     // `spec`, and only when Pro is on with a confirmed document.
     // D-63: a connected org adds one more key, `sfConnectionId`, only on a ticked Salesforce run.
-    const baseOptions = targetAppBoxEl?.checked
+    const baseOptions0 = targetAppBoxEl?.checked
       ? {
         ...runOptions, targetApp: "salesforce",
         ...(sfConnection ? { sfConnectionId: sfConnection.connectionId } : {}),
         ...(sfConnection && freshDiscoveryBoxEl ? { freshDiscovery: freshDiscoveryBoxEl.checked } : {}),
       }
       : runOptions;
+    // D-72: "Explore the site again" adds one key, `freshDiscovery`, for this run only, and never on
+    // an org-connection run (its own box decides there). Unticked or flag off: baseOptions as above.
+    const baseOptions = projectFreshBoxEl?.checked && !(targetAppBoxEl?.checked && sfConnection)
+      ? { ...baseOptions0, freshDiscovery: true }
+      : baseOptions0;
+    if (projectFreshBoxEl) projectFreshBoxEl.checked = false;
     const res = await fetch("/api/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -5945,6 +5958,29 @@ window.addEventListener("message", (ev) => {
   try { sessionStorage.setItem("sfConnection", JSON.stringify(sfConnection)); } catch { /* ignore */ }
 });
 
+/**
+ * "Explore the site again" (D-72, PROJECT_DISCOVERY_SHARING). A project's discovery is saved and
+ * reused by its runs for 7 days; ticking this makes the NEXT run explore the site afresh and replace
+ * the saved one (the box unticks itself once the run is sent). Created only when /api/health says
+ * `projectDiscovery: true`; flag off, nothing here exists (rule 4). No new class (rule 3): the label
+ * reuses `.field-label` and the box `.lib-check`, as the Salesforce box does.
+ */
+let projectFreshBoxEl = null;
+function renderProjectFreshBox() {
+  if (projectFreshBoxEl) return;
+  const form = document.getElementById("runForm");
+  const foot = form?.querySelector(".composer-foot");
+  if (!form || !foot) return;
+  const label = document.createElement("label");
+  label.className = "field-label";
+  label.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer";
+  label.innerHTML = `<input type="checkbox" class="lib-check" id="projectFreshDiscovery" /> Explore the site again`
+    + ` <span style="opacity:.7">(ignore this project's saved discovery, for the next run only)</span>`;
+  const after = [...form.querySelectorAll(":scope > label.field-label")].pop() || foot;
+  after.insertAdjacentElement("afterend", label);
+  projectFreshBoxEl = label.querySelector("input");
+}
+
 // -----------------------------------------------------------------------------
 // Jira, Phase 1 (D-71): "Connect Jira", then type a story key and its title + description fill the
 // prompt box. The user still enters the URL and presses Run — POST /api/runs is untouched.
@@ -6113,6 +6149,7 @@ fetch("/api/health")
     if (h && h.sfDiscoveryCache === true) renderFreshDiscovery();
     if (h && h.specIntake === true) renderProToggle();
     if (h && h.jira === true) renderJiraRow();
+    if (h && h.projectDiscovery === true) renderProjectFreshBox();
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);

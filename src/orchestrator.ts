@@ -1,3 +1,4 @@
+import type { DiscoveryScope } from "./kb/projectDiscovery.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -116,8 +117,15 @@ export interface RunOptions {
    * frontdoor URL. Omitted means every browser signs in the old way (or not at all).
    */
   sfFrontdoor?: FrontdoorSession;
-  /** Org-connection runs: crawl again even when a saved discovery matches the org's setup. */
+  /** Crawl again even when a saved discovery matches: org-connection runs (the org's setup), and
+   *  (D-72) a project's shared discovery. */
   freshDiscovery?: boolean;
+  /**
+   * D-72 (PROJECT_DISCOVERY_SHARING): the organisation and project this run's discovery is shared
+   * with. Set only by the run route from the session and the tenancy-checked project; absent means
+   * the global per-URL cache, as before — and always for the CLI.
+   */
+  discoveryScope?: DiscoveryScope;
 }
 
 /**
@@ -354,7 +362,7 @@ export async function runPipeline(
       : null;
     const appModel = await step("discovery", "02-appmodel.json", async () => {
       const discovered = resolvedUrls.length === 1
-        ? await discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery, prompt, options?.freshDiscovery === true)
+        ? await discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery, prompt, options?.freshDiscovery === true, options?.discoveryScope)
         : await discoverPagesHybrid(resolvedUrls);
       // Discovery upgrade Phase 5 (BUTTON_EXPLORER_ENABLED, default off): safe clicks that reveal
       // screens discovery cannot reach by URL. Inside the step, so 02-appmodel.json holds what it
@@ -380,6 +388,10 @@ export async function runPipeline(
         // (only possible with SALESFORCE_ALLOW_ALL_ORGS on), the screen shows this sentence.
         // Absent on every other run, so their event is unchanged.
         ...(sfWarning ? { orgWarning: sfWarning } : {}),
+        // When this discovery was saved and whether this run reused it: the org scan
+        // (SALESFORCE_DISCOVERY_CACHE_ENABLED) and a project's shared discovery (D-72). app.js already
+        // reads it; it was never sent before. Absent on every other run.
+        ...(model.savedScan ? { savedScan: model.savedScan } : {}),
       }),
     );
     console.log("1. Discovery completed");

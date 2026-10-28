@@ -121,6 +121,7 @@ import {
 import { SpecModel } from "../schema/spec.js";
 import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabled, JiraError, parseIssueKey } from "../jira/client.js";
 import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
+import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -316,8 +317,10 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
     ? {
       ...(typeof options.gateReview === "boolean" ? { gateReview: options.gateReview } : {}),
       ...(typeof options.selfHeal === "boolean" ? { selfHeal: options.selfHeal } : {}),
-      // Org-connection runs only: true = crawl again even when a saved discovery matches the org setup.
-      ...(sfFrontdoor && typeof options.freshDiscovery === "boolean" ? { freshDiscovery: options.freshDiscovery } : {}),
+      // Org-connection runs: true = crawl again even when a saved discovery matches the org setup.
+      // D-72: also a project's shared discovery (PROJECT_DISCOVERY_SHARING); off, ignored as before.
+      ...((sfFrontdoor || projectDiscoveryEnabled()) && typeof options.freshDiscovery === "boolean"
+        ? { freshDiscovery: options.freshDiscovery } : {}),
       // Already validated above, so this forwards a known-good tag, never the raw body value.
       ...(isSupportedRunLocale(options.locale) ? { locale: options.locale } : {}),
       // Pro document intake: the confirmed spec. Client input, so parsed with Zod here and
@@ -359,7 +362,9 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
   // With no explicit id the project is inferred from the URL using the same key the backfill used,
   // so a run lands in the project its own history is already in rather than creating a duplicate.
   // Fire-and-forget: a run must start even if its filing cabinet is unreachable.
-  void (async () => {
+  // D-72: the same resolution is the scope of a shared discovery (PROJECT_DISCOVERY_SHARING), so it
+  // is kept as a promise the run awaits before discovery; filing itself stays fire-and-forget.
+  const runProjectP = (async (): Promise<string | null> => {
     try {
       const explicit = typeof projectId === "string" && projectId ? projectId : null;
       const resolved = explicit
@@ -373,8 +378,10 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
           ).then((p) => p.id).catch(() => null))
         : await resolveProjectForUrl(req.organisationId!, primaryUrl, req.user?.id ?? LOCAL_USER_ID);
       if (resolved) recordRunProject(runId, resolved);
+      return resolved ?? null;
     } catch (err) {
       console.error(`[projects] could not file run ${runId}:`, (err as Error)?.message ?? err);
+      return null;
     }
   })();
 
@@ -427,10 +434,17 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
         console.error(`[runs] could not record the target app for ${runId}:`, (err as Error)?.message ?? err);
       }
     }
+    // D-72: share this run's discovery with its project. The organisation comes from the session
+    // and the project from the tenancy-checked filing above — never from the request body as such.
+    // Not on an org-connection run: that has its own saved discovery (SALESFORCE_DISCOVERY_CACHE_ENABLED).
+    const discoveryScope = projectDiscoveryEnabled() && !sfFrontdoor && orgId
+      ? { organisationId: orgId, projectId: await runProjectP }
+      : undefined;
     return runPipeline({
       prompt, url, urls, coverage,
       options: {
         ...runOptions,
+        ...(discoveryScope ? { discoveryScope } : {}),
         ...(llmConfig ? { llmConfig } : {}),
         ...(maxLlmCalls !== null ? { maxLlmCalls } : {}),
         ...(targetApp ? { targetApp } : {}),
@@ -883,6 +897,9 @@ app.get("/api/health", (_req, res) => {
     ...(salesforceEnabled() && salesforceOAuthEnabled() ? { salesforceOAuth: true } : {}),
     // Present ONLY when the org discovery cache is on too: the run screen offers "Fresh discovery" then.
     ...(salesforceEnabled() && salesforceOAuthEnabled() && orgDiscoveryCacheEnabled() ? { sfDiscoveryCache: true } : {}),
+    // ADDITIVE, present ONLY when PROJECT_DISCOVERY_SHARING is on (D-72): the home view then offers
+    // "Explore the site again". Off: the body is unchanged.
+    ...(projectDiscoveryEnabled() ? { projectDiscovery: true } : {}),
   });
 });
 
@@ -2500,6 +2517,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // D-71: Jira Phase 1 — "Connect Jira" and read a story into the prompt box. Off: no Jira row on
   // the home view, and every /api/jira/* route answers 404.
   "JIRA_ENABLED",
+  // D-72: a project's discovery is saved for 7 days and shared by every run of that project with the
+  // same URL and login; one discovery at a time per project. Off: the global 30-minute cache as before.
+  "PROJECT_DISCOVERY_SHARING",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

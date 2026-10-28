@@ -1,6 +1,6 @@
 # Progress — where we are
 
-*Last updated: 2026-10-26. Jira Phase 1 (D-71) built, NOT committed. Earlier, 2026-10-22: Claude provider (D-66) committed + pushed (`72127dc`). Pinned `?login` login (D-67) committed + pushed (`a700c1d`). Allow-all-orgs (D-68) committed (`0da6005`); screen/report warning committed (`69dbe17`). Run insights (D-69) committed (`67e5881`). Salesforce post-login fixes (D-70) + D-67 removal built, NOT committed.*
+*Last updated: 2026-10-28. main merged into the branch (2142d16, not pushed); shared discovery per project (D-72) built, NOT committed. Earlier, 2026-10-26: Jira Phase 1 (D-71) built, NOT committed. Earlier, 2026-10-22: Claude provider (D-66) committed + pushed (`72127dc`). Pinned `?login` login (D-67) committed + pushed (`a700c1d`). Allow-all-orgs (D-68) committed (`0da6005`); screen/report warning committed (`69dbe17`). Run insights (D-69) committed (`67e5881`). Salesforce post-login fixes (D-70) + D-67 removal built, NOT committed.*
 
 ## Branch
 
@@ -46,6 +46,10 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
   a story key fills the prompt box with title + description. Token in server memory only (TD-178).
   `src/jira/`, `/api/jira/*`. Never run against a real Atlassian site. Working tree only until the user
   says commit.
+
+- **Shared discovery per project (D-72)** — `PROJECT_DISCOVERY_SHARING`. 7 days, per project + URL +
+  login, one discovery at a time per key, "Explore the site again". Working tree only.
+- **main merged in (2026-10-28, 2142d16)** — our records renumbered D-64..D-71 / TD-171..TD-178.
 
 ## Verification baseline
 

@@ -373,13 +373,14 @@ Routes (`src/server/index.ts`, all new, all 404 when the flag is off): `GET /api
 `GET /api/jira/issue/:issueKey[?site=<cloudId>]`, `POST /api/jira/disconnect`. `/api/health` gains
 `jira: true` only when on. The browser (`app.js`, "Jira, Phase 1" block) only fills `#prompt`.
 
-### `src/kb/` — Knowledge Base (3 files)
+### `src/kb/` — Knowledge Base (4 files)
 
 | File | Purpose |
 |------|---------|
 | `cache.ts` | SHA1-keyed file-based AppModel cache |
 | `llmCache.ts` | Two-tier response cache (in-memory, 30-min TTL + disk, no expiry); every stage's cache key also hashes its system prompt + model name (`DECISIONS.md` D-10). **Namespaced** (`runs/_cache/<ns>/`) so one kind of entry can be cleared alone — browser walks live under `walks` and are cleared by `POST /api/cache/walks/clear`, leaving the LLM answers that cost money (TD-85). `credentialFingerprint` hashes credential values for use as a key part |
 | `testStrategy.ts` | Static QA knowledge: coverage taxonomy, scope classification, filtering |
+| `projectDiscovery.ts` | D-72, `PROJECT_DISCOVERY_SHARING`: a project's discovery saved under organisation + project + the site key (URL + login + strategy) for 7 days, read by `discoverSiteHybrid` when the run route passes a `discoveryScope`; `readOrClaim` lets only one discovery of a key run at a time (others wait and reuse it). In-process, single replica |
 
 ### `src/server/` — Web Server (18 files)
 

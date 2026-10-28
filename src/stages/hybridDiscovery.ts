@@ -43,6 +43,7 @@ import { readSalesforceOrgModel, createFormUrls, recordPageUrls, orgSetupFingerp
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { volatileIdDetectionEnabled } from "./volatileIds.js";
+import { projectDiscoveryKey, readOrClaim, PROJECT_DISCOVERY_TTL_MS, type DiscoveryScope } from "../kb/projectDiscovery.js";
 
 // ---------------------------------------------------------------------------
 // Concept labeling — the ONE remaining Gemini call in the primary path
@@ -1255,9 +1256,52 @@ export async function discoverSiteHybrid(
   /** The person's request: on an org connection the create forms of the objects it names are opened
    *  first (Session 102). Optional; absent, the order is the org's own. */
   request = "",
-  /** Org connection: skip the saved discovery and crawl, then save the new one ("Fresh discovery"). */
+  /** Skip the saved discovery and crawl, then save the new one ("Fresh discovery"): org connections,
+   *  and (D-72) a project's shared discovery. */
   freshDiscovery = false,
+  /** D-72 (PROJECT_DISCOVERY_SHARING): share this discovery with the run's project. Absent: the
+   *  global per-URL cache, exactly as before. Set only by the run route, after its tenancy check. */
+  shared?: DiscoveryScope,
 ): Promise<AppModel> {
+  // The claim on a shared key is released however discovery ends — a hit, a crawl, or a throw —
+  // or the next run of that project would wait for it forever.
+  const claim: { release?: () => void } = {};
+  try {
+    return await discoverSiteHybridInner(url, creds, askCredentials, request, freshDiscovery, shared, claim);
+  } finally {
+    claim.release?.();
+  }
+}
+
+async function discoverSiteHybridInner(
+  url: string,
+  creds: Credentials | undefined,
+  askCredentials: (() => Promise<Credentials | null>) | undefined,
+  request: string,
+  freshDiscovery: boolean,
+  shared: DiscoveryScope | undefined,
+  claim: { release?: () => void },
+): Promise<AppModel> {
+  /**
+   * The site cache read. Unshared: the global key, as before. Shared (D-72): the project's key, up
+   * to 7 days, after any discovery of the same key already running has finished — and a miss claims
+   * the key, so the next run of this project waits for this crawl instead of repeating it.
+   */
+  const readSiteCache = async (siteKey: string): Promise<AppModel | null> => {
+    if (!shared) return cacheGet(siteKey);
+    const key = projectDiscoveryKey(shared, siteKey);
+    const r = await readOrClaim(key, () => (freshDiscovery ? null : cacheGet(key, PROJECT_DISCOVERY_TTL_MS)));
+    if ("hit" in r) {
+      console.log(`[hybrid] reusing this project's saved discovery of ${url} (${r.hit.pages.length} page(s)) — no crawl`);
+      return AppModel.parse({
+        ...r.hit,
+        savedScan: { at: r.hit.savedScan?.at ?? new Date().toISOString(), reused: true, scope: "project" },
+      });
+    }
+    claim.release = r.release;
+    if (freshDiscovery) console.log("[hybrid] fresh discovery asked for — crawling, the result replaces this project's saved one");
+    return null;
+  };
   // A ticked Salesforce run against anything but a scratch org or a sandbox stops HERE — before the
   // cache, before a browser exists — so a production org is never opened, and a model cached for it
   // is never served either. The run fails at its discovery stage with the refusal's sentence.
@@ -1275,7 +1319,7 @@ export async function discoverSiteHybrid(
   // connection and an anonymous crawl) apart — and a re-crawl is cheaper than a wrong model.
   const frontdoor = currentFrontdoor();
   if (!askCredentials && !frontdoor) {
-    const cached = cacheGet(siteCacheKey(url, creds));
+    const cached = await readSiteCache(siteCacheKey(url, creds));
     if (cached) return cached;
   }
   // Its own cache instead (SALESFORCE_DISCOVERY_CACHE_ENABLED): keyed by the org and its setup
@@ -1520,7 +1564,7 @@ export async function discoverSiteHybrid(
     // different key than it writes, and authenticated runs would never hit. Placed BEFORE the
     // login so a hit skips the real sign-in too, not just the crawl.
     if (askCredentials && !frontdoor) {
-      const cached = cacheGet(siteCacheKey(url, creds));
+      const cached = await readSiteCache(siteCacheKey(url, creds));
       if (cached) {
         console.log(`[hybrid] cache hit for ${url} — skipping login and crawl`);
         return cached;
@@ -1764,6 +1808,11 @@ export async function discoverSiteHybrid(
       }
     } else if (!worth.ok) {
       console.warn(`[hybrid] not caching ${url} — ${worth.reason}`);
+    } else if (shared) {
+      // D-72: saved for the project, with when, so the next run of it can say what it reused.
+      result.savedScan = { at: new Date().toISOString(), reused: false, scope: "project" };
+      cacheSet(projectDiscoveryKey(shared, siteCacheKey(url, creds)), result);
+      console.log(`[hybrid] saved this discovery of ${url} for the project`);
     } else {
       cacheSet(siteCacheKey(url, creds), result);
     }
