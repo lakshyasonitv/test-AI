@@ -416,12 +416,12 @@ export async function runSuite(
         const llmCalls = usageAfter && usageBefore ? usageAfter.calls - usageBefore.calls : undefined;
         const llmTokens = usageAfter && usageBefore ? usageAfter.totalTokens - usageBefore.totalTokens : undefined;
         console.log("IR generated");
-        // D-69 (EXTENDED_LOGGING only): per-case facts, keyed by caseId — never the AI-written title.
-        insight("ir", {
+        // D-61 (EXTENDED_LOGGING only): per-case facts, keyed by caseId — never the AI-written title.
+        insight("ir", () => ({
           case: caseId,
           ...irInsights(ir, (llmBudget?.snapshot().retries ?? []).filter((r) => r.caseTitle === tc.title)),
           llmCalls, tokens: llmTokens,
-        });
+        }));
         const irPath = path.join(caseDir, "04-ir.json");
         writeFileSync(irPath, JSON.stringify(ir, null, 2));
 
@@ -429,18 +429,18 @@ export async function runSuite(
         // Per-case screenshot dir, so cases in one suite don't overwrite each other.
         let spec = generateSpec(ir, path.join(caseDir, "artifacts"));
         console.log("Spec generated");
-        insight("spec", { case: caseId, ...specInsights(spec) });
+        insight("spec", () => ({ case: caseId, ...specInsights(spec) }));
         const specPath = path.join(caseDir, "generated.spec.ts");
         writeFileSync(specPath, spec);
 
         console.log("Running Playwright...");
         let result = await runSpec(spec, caseDir, credentialEnvVars(runCreds));
         console.log("Playwright finished");
-        insight("execute", {
+        insight("execute", () => ({
           case: caseId, passed: result.passed, exitCode: result.exitCode, report: !!result.raw,
           ...execInsights(result.raw, extractFailureDetail(result.raw)),
           ...artifactInsights(result.artifactsDir),
-        });
+        }));
 
         console.log(result);
 
@@ -466,11 +466,11 @@ export async function runSuite(
         if (!result.passed) {
           const callsBeforeDiagnosis = llmBudget?.snapshot().calls ?? 0;
           const diagnosis = await analyzeFailure(ir, result, appModel.auth?.loginUrl);
-          insight("failure-analysis", {
+          insight("failure-analysis", () => ({
             case: caseId, category: diagnosis?.category, failingStep: diagnosis?.failingStepId ?? undefined,
             decidedBy: (llmBudget?.snapshot().calls ?? 0) > callsBeforeDiagnosis ? "ai" : "rules",
             textVerified: !!diagnosis?.verifiedText,
-          });
+          }));
           diagnosisPath = path.join(caseDir, "06-diagnosis.json");
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
 

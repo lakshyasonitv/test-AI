@@ -2,13 +2,14 @@ import { writeFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { extendedLoggingEnabled } from "./logging.js";
 import { currentRunId } from "./runContext.js";
-import { onlyChecksLogin } from "./stages/salesforceOrgLogin.js";
+import { scrubRunSecrets } from "./runSecrets.js";
 import type { AppModel } from "./schema/appModel.js";
 import type { IR } from "./schema/ir.js";
 import type { SpecModel } from "./schema/spec.js";
+import { onlyChecksLogin } from "./stages/salesforceOrgLogin.js";
 
 /**
- * Run insight logging (D-69) — what a person developing this project needs to judge a run's
+ * Run insight logging (D-61) — what a person developing this project needs to judge a run's
  * quality and cost: how much discovery found, how big the models got, why compiles retried, where
  * the time went. Behind EXTENDED_LOGGING (default off): off, `insight()` returns before doing
  * anything, so no line is printed and no file is written.
@@ -22,7 +23,9 @@ import type { SpecModel } from "./schema/spec.js";
  * WHAT IS NEVER LOGGED. Credentials, page text, AI prose (case titles, step text) and URL query
  * strings (a Salesforce redirect can carry a session id). Callers pass numbers, enum-like labels
  * and URLs; `safeUrl` keeps origin + path only; any free string is cut at MAX_STRING. Error lines
- * come from Playwright's report AFTER executor.ts's `scrubServedSecrets` has redacted it.
+ * come from Playwright's report AFTER executor.ts's `scrubServedSecrets` has redacted it, and every
+ * field then goes through `scrubRunSecrets` (runSecrets.ts, TD-154) as well, so a credential this
+ * run was given is replaced even if a future caller passes one by mistake.
  */
 
 export type InsightValue = string | number | boolean | null | undefined
@@ -91,16 +94,31 @@ export function insightLine(runId: string | null, stage: string, fields: Insight
 /**
  * Record one insight. No-op unless EXTENDED_LOGGING is on. `runId` defaults to the ambient run
  * (runContext.ts); pass it explicitly where that rail is not entered (the server's queue).
+ *
+ * `fields` may be a function, and every call site that computes anything passes one: it is called
+ * only when the flag is on, so with EXTENDED_LOGGING off no summary is built and nothing a summary
+ * might throw on (a model-shaped object missing a field) can reach the run. With it on, a throw
+ * is still swallowed here — logging must never be the reason a run fails.
  */
-export function insight(stage: string, fields: InsightFields, runId: string | null = currentRunId()): void {
+export function insight(
+  stage: string,
+  fields: InsightFields | (() => InsightFields),
+  runId: string | null = currentRunId(),
+): void {
   if (!insightsEnabled()) return;
-  const cleaned: InsightFields = {};
-  for (const [k, v] of Object.entries(fields)) cleaned[k] = clean(v);
-  console.log(insightLine(runId, stage, cleaned));
-  if (!runId) return;
-  const list = collected.get(runId) ?? [];
-  if (list.length < MAX_RECORDS_PER_RUN) list.push({ stage, ts: Date.now(), fields: cleaned });
-  collected.set(runId, list);
+  try {
+    const raw = typeof fields === "function" ? fields() : fields;
+    let cleaned: InsightFields = {};
+    for (const [k, v] of Object.entries(raw)) cleaned[k] = clean(v);
+    if (runId) cleaned = scrubRunSecrets(runId, cleaned);
+    console.log(insightLine(runId, stage, cleaned));
+    if (!runId) return;
+    const list = collected.get(runId) ?? [];
+    if (list.length < MAX_RECORDS_PER_RUN) list.push({ stage, ts: Date.now(), fields: cleaned });
+    collected.set(runId, list);
+  } catch (err) {
+    console.error(`[insight] stage=${stage} could not be recorded:`, (err as Error)?.message ?? err);
+  }
 }
 
 /** Count one cache read for the ambient run. Called by llmCache.ts on every read; free when off. */
@@ -271,23 +289,26 @@ export function irInsights(ir: IR, retries: Array<{ kind: string }> = []): Insig
   return {
     steps: ir.steps.length,
     loginSteps: ir.steps.filter((s) => /^auth-\d+$/.test(s.id)).length,
-    fixedLogin: ir.meta.fixedLogin ?? undefined,
     actions: top(actions),
     targets: { stable: css, roleName, text },
-    loginOnly: onlyChecksLogin(ir) || undefined,
     truncated: !!ir.meta.truncated,
     truncationKind: ir.meta.truncationKind,
     terminalAssertion: ir.meta.hasTerminalAssertion,
     rejectedAttempts: retries.length,
     rejectedBy: top(kinds),
     irBytes: bytesOf(ir),
+    // Branch fields (D-65/D-70), kept when main's D-61 port was merged in: whether the IR uses the
+    // fixed Salesforce login, and whether its only checks after login are on the login form itself.
+    // Absent on every other IR (undefined values are not printed).
+    fixedLogin: ir.meta.fixedLogin ?? undefined,
+    loginOnly: onlyChecksLogin(ir) || undefined,
   };
 }
 
 /** Helper routines a generated spec can contain, by the function name the generator emits. */
 const SPEC_HELPERS = [
-  "shot", "locate", "scope", "field", "choose", "safeClick", "assertChoice", "assertGone",
-  "waitForAuthSettle", "salesforceLogin",
+  "shot", "locate", "scopeOf", "firstUnique", "field", "choose", "lookupPick", "safeClick",
+  "assertChoice", "assertGone", "waitForAuthSettle", "sfOpenRecord", "sfFieldValue",
 ];
 
 /** Generated Playwright file facts. */

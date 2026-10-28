@@ -22,7 +22,7 @@ import {
   insight, insightsEnabled, writeInsights, safeUrl, appModelInsights, pageInsights, caseInsights,
   specModelInsights, irInsights, specInsights, execInsights, artifactInsights, cacheSummary, dirBytes,
 } from "./insights.js";
-import { providerFor, modelFor } from "./llm/client.js";
+import { cacheModelDimension } from "./llm/client.js";
 import {
   credentialFieldsNeeded, promptCarriesCredentials, credentialEnvVars, redactCredentials,
   extractCredentialsFromPrompt,
@@ -218,28 +218,31 @@ export async function runPipeline(
   // because the alternative is nesting the rest of this 450-line function. See runContext.ts.
   enterWithRunId(runId);
 
-  // Model-authored text only (TD-156): a plan or case step can quote a credential the model read
-  // off the page. Nothing reads these two back to run them (only runStore's legacy history view),
-  // so scrubbing the file changes no behaviour. 04-ir.json is deliberately NOT scrubbed here: it is
-  // what runs, and its credential fills are already env references (applyCredentials).
-  const SCRUB_ON_SAVE = new Set(["01-plan.json", "03-cases.json"]);
-
-  // D-69: run insights (EXTENDED_LOGGING only — every call below is a no-op when it is off).
-  const runStartMs = Date.now();
+  // D-61: run insights (EXTENDED_LOGGING only — every call below is a no-op when it is off).
+  // Not `runStartedAt`: that name is salesforceCleanup's per-run clock, imported above.
+  const insightsStartedAt = Date.now();
   const stageMs: Record<string, number> = {};
-  if (insightsEnabled()) {
-    insight("run-start", {
+  {
+    // `<provider>:<model or deployment>`, the same string the run's cache keys use.
+    const modelOf = (role: "main" | "lite") => { try { return cacheModelDimension(role); } catch { return "-"; } };
+    insight("run-start", () => ({
       urls: resolvedUrls.map(safeUrl),
       targetApp: options?.targetApp ?? "none",
+      orgConnection: !!options?.sfFrontdoor,
       pro: !!options?.spec,
       selfHeal: selfHealEnabled,
       locale: options?.locale,
       orgLlmConfig: !!options?.llmConfig,
       maxLlmCalls: options?.maxLlmCalls,
-      providerMain: providerFor("main"), modelMain: modelFor("main"),
-      providerLite: providerFor("lite"), modelLite: modelFor("lite"),
-    });
+      modelMain: modelOf("main"), modelLite: modelOf("lite"),
+    }));
   }
+
+  // Model-authored text only (TD-156): a plan or case step can quote a credential the model read
+  // off the page. Nothing reads these two back to run them (only runStore's legacy history view),
+  // so scrubbing the file changes no behaviour. 04-ir.json is deliberately NOT scrubbed here: it is
+  // what runs, and its credential fills are already env references (applyCredentials).
+  const SCRUB_ON_SAVE = new Set(["01-plan.json", "03-cases.json"]);
 
   const save = (name: string, data: unknown) =>
     writeFileSync(path.join(runDir, name),
@@ -284,32 +287,36 @@ export async function runPipeline(
     }
   }
 
-  /** D-69: the run-end summary line and `10-insights.json`. No-op when EXTENDED_LOGGING is off. */
+  /** D-61: the run-end summary line and `10-insights.json`. No-op when EXTENDED_LOGGING is off. */
   function runEndInsights(outcome: string, usage: LlmUsageSnapshot, suiteSummary: any): void {
     if (!insightsEnabled()) return;
-    const tokensByStage: Record<string, number> = {};
-    const callsByStage: Record<string, number> = {};
-    const providers = new Set<string>();
-    for (const [name, st] of Object.entries(usage.byStage ?? {})) {
-      tokensByStage[name] = st.totalTokens;
-      callsByStage[name] = st.calls;
-      if (st.provider) providers.add(st.provider);
+    try {
+      const tokensByStage: Record<string, number> = {};
+      const callsByStage: Record<string, number> = {};
+      const providers = new Set<string>();
+      for (const [name, st] of Object.entries(usage.byStage ?? {})) {
+        tokensByStage[name] = st.totalTokens;
+        callsByStage[name] = st.calls;
+        if (st.provider) providers.add(st.provider);
+      }
+      const kinds: Record<string, number> = {};
+      for (const r of usage.retries ?? []) kinds[r.kind] = (kinds[r.kind] ?? 0) + 1;
+      insight("run-end", {
+        outcome,
+        totalMs: Date.now() - insightsStartedAt,
+        stageMs,
+        llmCalls: usage.calls, tokens: usage.totalTokens, budgetExhausted: usage.exhausted,
+        callsByStage, tokensByStage, providers: [...providers],
+        rejectedAttempts: (usage.retries ?? []).length, rejectedBy: kinds,
+        cache: cacheSummary(runId),
+        casesTotal: suiteSummary?.total, passed: suiteSummary?.passed, failed: suiteSummary?.failed,
+        blocked: suiteSummary?.blocked, truncated: suiteSummary?.truncated,
+        runFolderBytes: dirBytes(runDir),
+      });
+      writeInsights(runId, runDir);
+    } catch (err: any) {
+      console.error(`[insight] run-end summary failed for ${runId}:`, err?.message ?? err);
     }
-    const kinds: Record<string, number> = {};
-    for (const r of usage.retries ?? []) kinds[r.kind] = (kinds[r.kind] ?? 0) + 1;
-    insight("run-end", {
-      outcome,
-      totalMs: Date.now() - runStartMs,
-      stageMs,
-      llmCalls: usage.calls, tokens: usage.totalTokens, budgetExhausted: usage.exhausted,
-      callsByStage, tokensByStage, providers: [...providers],
-      rejectedAttempts: (usage.retries ?? []).length, rejectedBy: kinds,
-      cache: cacheSummary(runId),
-      casesTotal: suiteSummary?.total, passed: suiteSummary?.passed, failed: suiteSummary?.failed,
-      blocked: suiteSummary?.blocked, truncated: suiteSummary?.truncated,
-      runFolderBytes: dirBytes(runDir),
-    });
-    writeInsights(runId, runDir);
   }
 
   try {
@@ -324,10 +331,10 @@ export async function runPipeline(
     emit("input", "completed", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
 
     const thePlan = await step("plan", "01-plan.json", () => plan(prompt, resolvedUrls[0], coverage));
-    insight("plan", {
+    insight("plan", () => ({
       planSteps: thePlan.steps.length, coverage: thePlan.coverage,
       scope: thePlan.testTypeScope, llmCalls: llmBudget.snapshot().byStage.plan?.calls ?? 0,
-    });
+    }));
 
     // Discovery needs credentials BEFORE it crawls: an app behind a login is otherwise modelled
     // as its own login page and every generated case becomes a login case. The prompt is one
@@ -396,12 +403,10 @@ export async function runPipeline(
     );
     console.log("1. Discovery completed");
     if (insightsEnabled()) {
-      for (const p of pageInsights(appModel)) insight("discovery-page", p);
-      insight("discovery", {
-        ...appModelInsights(appModel),
-        orgKind: sfWarning ? sfWarning.kind : options?.targetApp === "salesforce" ? "test-org" : undefined,
-        llmCalls: llmBudget.snapshot().byStage.discovery?.calls ?? 0,
-      });
+      let pages: ReturnType<typeof pageInsights> = [];
+      try { pages = pageInsights(appModel); } catch { /* logging never breaks a run */ }
+      for (const p of pages) insight("discovery-page", p);
+      insight("discovery", () => ({ ...appModelInsights(appModel), llmCalls: llmBudget.snapshot().byStage.discovery?.calls ?? 0 }));
     }
     if (appModel.auth) {
       console.log(`[orchestrator] discovery auth outcome: ${appModel.auth.status}${appModel.auth.detail ? ` — ${appModel.auth.detail}` : ""}`);
@@ -451,8 +456,8 @@ export async function runPipeline(
       throw err;
     }
     console.log("✓ Test cases:", cases.length);
-    if (proSpec) insight("pro-spec", specModelInsights(proSpec));
-    insight("testcases", { ...caseInsights(cases), gate: gateUsed, pro: !!proSpec });
+    if (proSpec) insight("pro-spec", () => specModelInsights(proSpec));
+    insight("testcases", () => ({ ...caseInsights(cases), gate: gateUsed, pro: !!proSpec }));
 
     // The case-selection gate can legitimately end with nothing accepted (a round timed out on
     // CASE_SELECTION_WAIT_MS before anything was ever picked) — a clean, honest outcome, not a
@@ -508,11 +513,11 @@ export async function runPipeline(
     console.log("Generating IR for primary case:", primary.title);
     const { ir, updatedAppModel } = await step("ir", "04-ir.json", () => toIR(primary, appModel, prompt, resolvedUrls[0], llmBudget, runCreds));
     console.log("IR generated");
-    insight("ir", {
+    insight("ir", () => ({
       case: "primary",
       ...irInsights(ir, llmBudget.snapshot().retries.filter((r) => r.caseTitle === primary.title)),
       appModelPagesAfter: updatedAppModel.pages.length,
-    });
+    }));
 
     console.log("Generating spec...");
     // Per-step screenshots must land inside THIS run's directory. A shared relative path
@@ -520,7 +525,7 @@ export async function runPipeline(
     const stepShots = path.join(runDir, "artifacts");
     const spec = await step("generate", null, async () => generateSpec(ir, stepShots));
     console.log("Spec generated");
-    insight("spec", { case: "primary", ...specInsights(spec) });
+    insight("spec", () => ({ case: "primary", ...specInsights(spec) }));
     writeFileSync(path.join(runDir, "generated.spec.ts"), spec);
 
     let finalSpecCode = spec;
@@ -538,11 +543,11 @@ export async function runPipeline(
     // two differ: the `truncatedNoAssertion` check below and `detectBlocked` after it both exist
     // to stop a bare exit code being read as a verdict.
     console.log("Playwright finished:", playwrightOutcomeLine(result.passed, !!result.raw));
-    insight("execute", {
+    insight("execute", () => ({
       case: "primary", passed: result.passed, exitCode: result.exitCode, report: !!result.raw,
       ...execInsights(result.raw, extractFailureDetail(result.raw)),
       ...artifactInsights(result.artifactsDir),
-    });
+    }));
 
     // A truncated IR whose surviving prefix has no terminal assertion cannot report
     // "passed" — the dropped tail may have contained the only assertion, so Playwright's
@@ -559,12 +564,13 @@ export async function runPipeline(
     if (!result.passed) {
       const callsBeforeDiagnosis = llmBudget.snapshot().calls;
       diagnosis = await step("failure_analysis", "06-diagnosis.json", () => analyzeFailure(ir, result as any, appModel.auth?.loginUrl));
-      insight("failure-analysis", {
-        case: "primary", category: diagnosis?.category, failingStep: diagnosis?.failingStepId ?? undefined,
+      const diagnosed = diagnosis; // a const for the closure: `diagnosis` itself is reassigned below
+      insight("failure-analysis", () => ({
+        case: "primary", category: diagnosed?.category, failingStep: diagnosed?.failingStepId ?? undefined,
         // Structural: a diagnosis that spent no model call came from the rule-based classifier.
         decidedBy: llmBudget.snapshot().calls > callsBeforeDiagnosis ? "ai" : "rules",
-        textVerified: !!diagnosis?.verifiedText,
-      });
+        textVerified: !!diagnosed?.verifiedText,
+      }));
 
       // Capped at exactly one attempt total, no loop: attemptHeal only runs once, only on an
       // already-failed run with a matching diagnosis category. Logic lives in stages/heal.ts —
@@ -676,10 +682,10 @@ export async function runPipeline(
     // Single selection authority over the merged list — see finalizeCaseSelection's own doc
     // comment for why this branches on gateUsed.
     const scopedCases = finalizeCaseSelection(allCases, scope, thePlan.coverage, gateUsed, appModel.auth?.loginUrl);
-    insight("case-selection", {
+    insight("case-selection", () => ({
       generated: allCases.length, reactive: reactiveCount, selected: scopedCases.length,
       budget: budgetFor(thePlan.coverage), newPagesFound: newPages.length,
-    });
+    }));
     console.log(`Cases: ${allCases.length} generated -> ${scopedCases.length} selected`,
       scopedCases.map(c => `${c.category}:${c.title}`));
     save("03-cases.json", scopedCases);
@@ -787,10 +793,8 @@ export async function runPipeline(
     const llmUsage = llmBudget.snapshot();
     try { save("08-llm-usage.json", llmUsage); } catch { }
     if (extendedLoggingEnabled()) console.log(runUsageLine(runId, llmUsage));
-    runEndInsights("error", llmUsage, undefined);
-    // D-70: `orgRefused` (optional, additive) tells the screen the run was refused on purpose — the
-    // address is not one Testbench tests — so it does not call it "a problem on our side".
-    emit("error", "failed", { llmUsage, ...(err?.orgRefused ? { orgRefused: true } : {}) }, err?.message ?? String(err));
+    try { runEndInsights("error", llmUsage, undefined); } catch { /* logging never masks the run's own error */ }
+    emit("error", "failed", { llmUsage }, err?.message ?? String(err));
     throw err;
   }
 }

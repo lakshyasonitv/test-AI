@@ -18,6 +18,13 @@
       enable Distribution -> Sharing so other users can connect; TD-178 if more than one replica.
 - [ ] Phase 2 (later, needs `write:jira-work` + re-consent): create bug, comment, attach, link.
 
+## Run insights on main (D-61)
+
+- [x] Open a pull request for `vaibhav/intelligent-edison-l6061z` into `main` (merged as PR #10).
+- [ ] One real run with `EXTENDED_LOGGING=true` to read a real `10-insights.json`. Costs Gemini — ask first.
+- [x] Before any merge of `vaibhav/determined-dijkstra-0t2ec9`: renumber its clashing D-/TD- records and
+      take `main`'s `src/insights.ts` (it has the lazy builder and the `scrubRunSecrets` layer).
+
 ## Pro document intake (D-53)
 
 - [ ] **One real end-to-end check** with a real document and real Gemini. Everything so far used a

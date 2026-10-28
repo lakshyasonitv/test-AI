@@ -3,7 +3,7 @@ import { rmSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
 /**
- * D-69 — run insight logging. Pure helpers first, then the real orchestrator with plan, discovery
+ * D-61 — run insight logging. Pure helpers first, then the real orchestrator with plan, discovery
  * and the model mocked (the proOrchestrator.test.ts pattern): with EXTENDED_LOGGING on, `[insight]`
  * lines are printed and `10-insights.json` is written; with it off, neither. A planted secret in
  * the prompt and a session id in the URL's query must never reach either output.
@@ -135,6 +135,28 @@ describe("pure helpers", () => {
     expect(logLines.filter((l) => l.startsWith("[insight]"))).toEqual([]);
     expect(insights._collectedFor("r-off")).toBeUndefined();
   });
+
+  it("with EXTENDED_LOGGING off a lazy field builder is never called", () => {
+    const build = vi.fn(() => ({ a: 1 }));
+    insights.insight("x", build, "r-off");
+    expect(build).not.toHaveBeenCalled();
+  });
+
+  it("with EXTENDED_LOGGING on a throwing field builder is swallowed, never thrown into the run", () => {
+    process.env.EXTENDED_LOGGING = "true";
+    expect(() => insights.insight("x", () => { throw new Error("boom"); }, "r-throw")).not.toThrow();
+    expect(insights._collectedFor("r-throw")).toBeUndefined();
+  });
+
+  it("a credential the run was given is scrubbed from a field even if a caller passes it", async () => {
+    process.env.EXTENDED_LOGGING = "true";
+    const { rememberRunSecrets } = await import("../src/runSecrets.js");
+    rememberRunSecrets("r-secret", { username: "planted-user", password: SECRET_PASSWORD, secret: true });
+    insights.insight("x", { note: `typed ${SECRET_PASSWORD}` }, "r-secret");
+    const out = logLines.join("\n") + JSON.stringify(insights._collectedFor("r-secret"));
+    expect(out).toContain("stage=x");
+    expect(out).not.toContain(SECRET_PASSWORD);
+  });
 });
 
 describe("through the real orchestrator", () => {
@@ -162,5 +184,29 @@ describe("through the real orchestrator", () => {
     await run();
     expect(logLines.filter((l) => l.startsWith("[insight]"))).toEqual([]);
     expect(existsSync(path.join("runs", runId, "10-insights.json"))).toBe(false);
+  });
+});
+
+describe("irInsights — the branch's two Salesforce fields (kept in the 2026-10-28 merge)", () => {
+  const LOGIN = "https://acme--uat.sandbox.my.salesforce.com/";
+  const auth = [
+    { id: "auth-0", action: "navigate", target: { url: LOGIN } },
+    { id: "auth-1", action: "fill", target: { css: "#username" }, value: "${env:TEST_USERNAME}" },
+    { id: "auth-2", action: "click", target: { css: "#Login" } },
+  ];
+  const meta = { feature: "f", title: "t", priority: "low", sourcePrompt: "p", baseUrl: LOGIN };
+
+  it("a fixed-login IR whose only check is on the login form: fixedLogin + loginOnly", async () => {
+    const { irInsights } = await import("../src/insights.js");
+    const ir: any = { meta: { ...meta, fixedLogin: "salesforce" }, steps: [...auth,
+      { id: "s1", action: "assert", target: { css: "#Login" }, assertion: "hidden" }] };
+    expect(irInsights(ir)).toMatchObject({ fixedLogin: "salesforce", loginOnly: true });
+  });
+
+  it("an ordinary IR carries neither", async () => {
+    const { irInsights } = await import("../src/insights.js");
+    const f = irInsights({ meta, steps: [{ id: "s1", action: "navigate", target: { url: "https://x/" } }] } as any);
+    expect(f.fixedLogin).toBeUndefined();
+    expect(f.loginOnly).toBeUndefined();
   });
 });

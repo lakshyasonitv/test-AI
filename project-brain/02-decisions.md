@@ -17,6 +17,15 @@ proof-of-no-change fixture) was captured on unmodified code and committed FIRST,
 snapshot is on record before anything changed. **Why:** a fixture captured after the change proves
 nothing.
 
+## 2026-10-28 — D-61 ported to main with the same number; summaries made lazy
+
+The user asked for the branch's run insights on `main` "without breaking pre-existing functionality".
+**Why the same number:** it is the same feature, and D-61 was unused on `main`, so one record means one
+thing on both lines. **Why lazy:** the branch's call sites built their summaries before the flag check,
+so a malformed model object could have thrown with logging OFF. Now nothing is computed when it is off,
+and a throw when it is on is caught. **Why `scrubRunSecrets` too:** `main` has the TD-154 registry; a
+second layer costs nothing.
+
 ## 2026-10-13 — The user's choices on Pro's open questions
 
 Recorded so a later session does not re-ask them. Rationale for each is in `DECISIONS.md` D-53.

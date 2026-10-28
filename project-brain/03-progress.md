@@ -1,6 +1,21 @@
 # Progress — where we are
 
-*Last updated: 2026-10-28. main merged into the branch (2142d16, not pushed); shared discovery per project (D-72) built, NOT committed. Earlier, 2026-10-26: Jira Phase 1 (D-71) built, NOT committed. Earlier, 2026-10-22: Claude provider (D-66) committed + pushed (`72127dc`). Pinned `?login` login (D-67) committed + pushed (`a700c1d`). Allow-all-orgs (D-68) committed (`0da6005`); screen/report warning committed (`69dbe17`). Run insights (D-69) committed (`67e5881`). Salesforce post-login fixes (D-70) + D-67 removal built, NOT committed.*
+*Last updated: 2026-10-28 (second merge of main: main's D-61 insights kept, PR #11 conflict-free). main merged into the branch (2142d16, not pushed); shared discovery per project (D-72) built, NOT committed. Earlier, 2026-10-26: Jira Phase 1 (D-71) built, NOT committed. Earlier, 2026-10-22: Claude provider (D-66) committed + pushed (`72127dc`). Pinned `?login` login (D-67) committed + pushed (`a700c1d`). Allow-all-orgs (D-68) committed (`0da6005`); screen/report warning committed (`69dbe17`). Run insights (D-69) committed (`67e5881`). Salesforce post-login fixes (D-70) + D-67 removal built, NOT committed.*
+
+*Last updated: 2026-10-28, run insights (D-61) ported to `main`. See `journal/2026-10-28.md`.*
+
+## 2026-10-28 — on `main`'s line
+
+- Branch `vaibhav/intelligent-edison-l6061z` = `main` (`1fb9dcb`) + the D-61 port: `[insight]` lines and
+  `runs/<id>/10-insights.json` behind `EXTENDED_LOGGING` (default off). No pull request yet.
+- **Gap:** this brain does not record `main`'s own work from 2026-10-18 to 2026-10-28 (discovery
+  Phases 1–5, TD-154/156, TD-162, Salesforce OAuth D-63, TD-169). Read `DECISIONS.md`/`TECH_DEBT.md`.
+- **Baseline on this branch:** `tsc` clean; `vitest` 2663 passed / 2 failed / 23 skipped, 199 files
+  (with the browser symlink workaround below, now `-1148 -> -1243`). Same 2 pre-existing failures.
+- `vaibhav/determined-dijkstra-0t2ec9` has diverged from `main`: 9 conflicting files and clashing
+  D-/TD- numbers. D-61 is the one record that now means the same thing on both.
+
+*The sections below are from 2026-10-13 and describe `vaibhav/determined-dijkstra-0t2ec9`.*
 
 ## Branch
 
@@ -32,7 +47,7 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
 - **Every Salesforce org allowed** — `SALESFORCE_ALLOW_ALL_ORGS`, D-68. `orgRefusal` accepts any Salesforce
   host; non-Salesforce hosts still refused. Committed `0da6005`. Phase A (working tree): the warning also
   shows on the run screen's discovery line and in the HTML report, via `orgWarning(url)` (`69dbe17`).
-- **Run insights** — `EXTENDED_LOGGING=true`, D-69. `src/insights.ts`: `[insight]` lines for queue, run
+- **Run insights** — `EXTENDED_LOGGING=true`, D-61 (this branch called it D-69; main's port won, see D-69). `src/insights.ts`: `[insight]` lines for queue, run
   start, stage ms, plan, discovery (per page + site), Pro rules, cases, per-case IR/spec/execute/analysis/
   heal, run end; saved as `runs/<id>/10-insights.json`. No secrets, no page text, no titles, no query
   strings. Committed `67e5881`.
