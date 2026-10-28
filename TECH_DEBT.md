@@ -5482,6 +5482,11 @@ is a navigate to the login page, and only when the login really landed somewhere
 then goes to that landing page. A site whose login has its own path (`/login`) is untouched, because
 `/` is not its login page. Ordinary runs (a normal-site change, approved by the owner 2026-10-16).
 
+**2026-10-22, extended (D-70):** the "landed somewhere else" check required the same host, so it never ran
+on Salesforce (login on `my.salesforce.com`, landing on `lightning.force.com`), and it was never called on
+D-65's login-case path. On a fixed-login Salesforce run it now accepts the same org's other host and runs on
+both paths.
+
 ### TD-141. A step naming an element by its test id was rejected — Medium / Accidental — **Fixed**
 
 **Found 2026-10-16, run `2026-10-16T08-34-26` (saucedemo).** Six buttons are all named "Add to cart". The
@@ -6070,3 +6075,87 @@ greater than …`). On LF (CI, Linux) they pass; run by hand on the CRLF file wi
 is found and it neither toggles `.hidden` nor calls `showView`. Candidate fix: normalise `\r\n` to `\n` when the
 test reads the file (other tests that slice source text by multi-line markers may share this; the known
 Windows-only failures in `discoveryStrategy` / `liveDomDiscovery` were not checked for it).
+### TD-171. A generated test may meet Salesforce's email-first screen the discovery browser never saw — Medium / Unverified — **Handled when `SALESFORCE_FIXED_LOGIN` is on (D-65); open when off**
+
+Discovery now clicks "Log In with Username" when Salesforce shows its email-first screen (D-64), then
+records the login it performs on the username form. Each generated test replays those recorded steps
+in a FRESH browser with no cookies (D-24). Which first screen Salesforce shows depends on cookies, so
+a fresh browser might get the email-first screen — where the email box may also be `id="username"` —
+and the replayed `fill #username` would type a Salesforce username into an email field. Not observed;
+nobody has run a ticked run against a real org since D-64. **Check:** on the first real run, look at
+the generated test's first login screenshot. If it is the email-first screen, the fix is a
+Salesforce-only login step in the generated spec (`generator.ts`), weighed against D-24.
+
+**Update 2026-10-19 (D-65).** With `SALESFORCE_FIXED_LOGIN=true` a ticked run's spec logs in through
+`salesforceLogin()`, which clicks "Log In with Username" first — verified in Chromium against a synthetic
+email-first page whose email box is also `#username`. Off, the spec still replays the recorded clicks.
+
+### TD-172. `loginOnPage` decides one-screen vs two-screen from one instant check — Medium / Accidental — **Open (fixed for Salesforce runs only)**
+
+`loginOnPage` (`hybridDiscovery.ts`) counts password boxes once. A one-screen form whose password box
+renders a moment after the username box is treated as two-screen and submitted with an EMPTY
+password first — reproduced in real Chromium (`tests/salesforceOrgLogin.test.ts`, the 8c control).
+Salesforce runs wait up to 2.5 s for the box before `loginOnPage` runs (D-64). Every other site still
+has the race; fixing it in `loginOnPage` itself changes behaviour for every site, so it needs its own
+decision and its own run against the non-Salesforce fixtures in `tests/authCrawl.test.ts`.
+
+### TD-173. Generated tests' screenshots of login steps show the username — Low / Accidental — **Open (fixed for fixed-login Salesforce runs, D-65)**
+
+The generated spec screenshots each step, the login prefix included. The password box renders as
+dots; the USERNAME renders as readable text, and `runs/` is served over HTTP with its guard off by
+default (TD-14). Not specific to Salesforce — every authenticated run does it. Fix direction: skip the
+screenshot for `auth-*` steps (they have no diagnostic value once masked), or take the first one after
+the submit. Touches `generator.ts`.
+
+**Update 2026-10-19 (D-65).** A fixed-login spec takes no screenshot of the login screens: step 1
+screenshots where the login LANDED, and the other `auth-*` steps take none. Every other run still does it.
+
+### TD-174. The spec's fixed Salesforce login restates `salesforceOrgLogin.ts` as text — Low / Deliberate — **Open**
+
+`SALESFORCE_LOGIN_HELPER` (`generator.ts`) repeats D-64's logic — the switch link, the selectors, the 2.5 s
+grace, the failure reasons — because a spec shares nothing with the pipeline (D-06). Nothing pins the two
+equal, so a fix to one can miss the other: the same drift TD-07 records for `targetResolver.ts`. Its own
+behaviour is pinned in Chromium (`tests/salesforceFixedLoginSpec.test.ts`). Remediation: a test that runs
+both against the same synthetic pages and asserts the same outcome per page.
+
+### TD-175. A negative login case on a two-screen login is still truncated before its password — Medium / Accidental — **Open**
+
+A wrong-password or empty-field case must keep the model's own steps (D-65 never swaps them). On a
+two-screen login (Salesforce) its password step is on a screen at the same URL that nothing captured, and
+grounding cuts the case there — the exact defect of run 2026-10-16T12-47-28, now only for negative cases.
+That run's note read `screen-uncaptured`, yet no capture landed before the truncation; why is not known.
+Next step: replay that run's `04-ir.json` and `02-appmodel.json` with D-52's capture logged, then decide
+whether to capture, or to accept a recorded-login selector (`#password`) as proven for any login case.
+
+### TD-176. `test.salesforce.com` is refused by the production guard — Low / Accidental — **Open**
+
+`classifyOrg` fails closed (D-64), so the generic sandbox login host is refused although it accepts only
+sandbox and scratch logins. A tester with only that address is told it is "not a Salesforce org" and the
+screen calls it "a problem on our side". Proposed: allow it, then check after login that the landed host
+contains `.sandbox.` or `.scratch.`, and present the refusal as a refusal, not an internal error.
+
+**2026-10-22, partly addressed (D-68):** with `SALESFORCE_ALLOW_ALL_ORGS=true` the address is accepted
+(as is every Salesforce host). With the flag off it is still refused, and the refusal is still shown as
+"a problem on our side" — that half is open.
+
+**2026-10-22 (D-70):** the "problem on our side" wording is gone for refusals (structural `orgRefused` on
+the error event). `test.salesforce.com` itself is still refused with the flag off.
+
+### TD-177. A Salesforce homepage case is shown only the login page when it targets the login URL — Medium / Accidental — **Open**
+
+D-70 labels the symptom ("Only checked that login works") but does not fix it. A case whose `targetUrl` is
+the login page is compiled with the login page as its lead page, so on Salesforce the model never sees the
+Lightning page and writes a check about the login form (run 2026-10-22T09-44-02-812Z, homepage case, zero
+rejections). Proposed (deferred by the user as medium risk): show the model both pages, labelled "before
+login" and "after login", without changing which page a wrong-password case is shown.
+
+
+### TD-178. Jira sign-in state and tokens live in one process — Low / Deliberate — **Open**
+
+D-71 keeps the one-time `state` and each user's Jira token in `src/jira/session.ts`'s in-process maps (the
+user chose memory only). Two consequences: (1) every server restart signs every user out of Jira; (2) with
+more than one server instance (an Azure Container App scaled past one replica), the callback can land on an
+instance that never issued the `state`, and the sign-in fails with "expired or was already used". Fine on
+one instance, which is how the app runs today. Remediation when either bites: keep the token encrypted in
+the database (Atlassian requires encryption for stored OAuth tokens) and the `state` in a shared store, or
+pin the Jira routes to one replica.

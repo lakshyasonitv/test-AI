@@ -88,6 +88,8 @@ import {
 } from "./orgLlmConfig.js";
 import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepText.js";
 import { enterWithLlmConfig, resolvedProvider } from "../llm/llmContext.js";
+import { LLM_PROVIDERS } from "../llm/client.js";
+import { orgWarning } from "../stages/salesforceOrgLogin.js";
 import { extendedLoggingEnabled } from "../logging.js";
 import { insight } from "../insights.js";
 import { withRunId } from "../runContext.js";
@@ -117,6 +119,9 @@ import {
   checkSpecUpload, distillSpec, getRunSpecWarnings, specIntakeEnabled, DISTILL_FAILED_WARNING,
 } from "../stages/specIntake.js";
 import { SpecModel } from "../schema/spec.js";
+import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabled, JiraError, parseIssueKey } from "../jira/client.js";
+import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
+import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -158,11 +163,14 @@ app.use(express.static("public"));
 // /auth/signup joins them for the same reason: an account that does not exist yet cannot present
 // a token, so requiring one would make sign-up unreachable by construction. It carries its own
 // flag, rate limit and validation instead — see signup.ts.
+// /jira/callback (D-71) is where Atlassian sends the browser back after "Connect Jira": a redirect,
+// so it cannot carry our Authorization header. It is identified by its one-time `state` instead
+// (src/jira/session.ts), and answers 404 unless JIRA_ENABLED is on.
 // /salesforce/callback (D-63) is where Salesforce sends the person's browser back after they sign
 // in to their org: a top-level redirect from salesforce.com, which cannot carry a Testbench token.
 // What protects it is the one-time, 10-minute `state` bound to the organisation that started it;
 // it answers 403 unless SALESFORCE_OAUTH_ENABLED is on.
-const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup", "/salesforce/callback"]);
+const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup", "/salesforce/callback", "/jira/callback"]);
 
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API_PATHS.has(req.path)) return next();
@@ -309,8 +317,10 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
     ? {
       ...(typeof options.gateReview === "boolean" ? { gateReview: options.gateReview } : {}),
       ...(typeof options.selfHeal === "boolean" ? { selfHeal: options.selfHeal } : {}),
-      // Org-connection runs only: true = crawl again even when a saved discovery matches the org setup.
-      ...(sfFrontdoor && typeof options.freshDiscovery === "boolean" ? { freshDiscovery: options.freshDiscovery } : {}),
+      // Org-connection runs: true = crawl again even when a saved discovery matches the org setup.
+      // D-72: also a project's shared discovery (PROJECT_DISCOVERY_SHARING); off, ignored as before.
+      ...((sfFrontdoor || projectDiscoveryEnabled()) && typeof options.freshDiscovery === "boolean"
+        ? { freshDiscovery: options.freshDiscovery } : {}),
       // Already validated above, so this forwards a known-good tag, never the raw body value.
       ...(isSupportedRunLocale(options.locale) ? { locale: options.locale } : {}),
       // Pro document intake: the confirmed spec. Client input, so parsed with Zod here and
@@ -352,7 +362,9 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
   // With no explicit id the project is inferred from the URL using the same key the backfill used,
   // so a run lands in the project its own history is already in rather than creating a duplicate.
   // Fire-and-forget: a run must start even if its filing cabinet is unreachable.
-  void (async () => {
+  // D-72: the same resolution is the scope of a shared discovery (PROJECT_DISCOVERY_SHARING), so it
+  // is kept as a promise the run awaits before discovery; filing itself stays fire-and-forget.
+  const runProjectP = (async (): Promise<string | null> => {
     try {
       const explicit = typeof projectId === "string" && projectId ? projectId : null;
       const resolved = explicit
@@ -366,8 +378,10 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
           ).then((p) => p.id).catch(() => null))
         : await resolveProjectForUrl(req.organisationId!, primaryUrl, req.user?.id ?? LOCAL_USER_ID);
       if (resolved) recordRunProject(runId, resolved);
+      return resolved ?? null;
     } catch (err) {
       console.error(`[projects] could not file run ${runId}:`, (err as Error)?.message ?? err);
+      return null;
     }
   })();
 
@@ -420,10 +434,17 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
         console.error(`[runs] could not record the target app for ${runId}:`, (err as Error)?.message ?? err);
       }
     }
+    // D-72: share this run's discovery with its project. The organisation comes from the session
+    // and the project from the tenancy-checked filing above — never from the request body as such.
+    // Not on an org-connection run: that has its own saved discovery (SALESFORCE_DISCOVERY_CACHE_ENABLED).
+    const discoveryScope = projectDiscoveryEnabled() && !sfFrontdoor && orgId
+      ? { organisationId: orgId, projectId: await runProjectP }
+      : undefined;
     return runPipeline({
       prompt, url, urls, coverage,
       options: {
         ...runOptions,
+        ...(discoveryScope ? { discoveryScope } : {}),
         ...(llmConfig ? { llmConfig } : {}),
         ...(maxLlmCalls !== null ? { maxLlmCalls } : {}),
         ...(targetApp ? { targetApp } : {}),
@@ -629,6 +650,12 @@ app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => 
     // Totals sit at the top level of 08-llm-usage.json, alongside byStage — not under a `totals` key.
     llmCalls: usage?.calls,
     llmTokens: usage?.totalTokens,
+    // D-68: only on a ticked Salesforce run against a non-test org; absent everywhere else.
+    ...(() => {
+      const target = readJson("00-run-target.json")?.targetApp;
+      const w = target === "salesforce" && input?.url ? orgWarning(input.url) : null;
+      return w ? { orgWarning: w.message } : {};
+    })(),
     cases,
   }));
 });
@@ -821,6 +848,16 @@ app.get("/api/health", (_req, res) => {
       // safe to leave public.
       NL_STEPS_ENABLED:  check("NL_STEPS_ENABLED"),
       GATE_CASE_EDIT_AI: check("GATE_CASE_EDIT_AI"),
+      // ADDITIVE (D-66) — the Claude provider's variables. Presence only, never a value.
+      ANTHROPIC_API_KEY:    check("ANTHROPIC_API_KEY"),
+      ANTHROPIC_API_KEYS:   check("ANTHROPIC_API_KEYS"),
+      ANTHROPIC_MODEL:      check("ANTHROPIC_MODEL"),
+      ANTHROPIC_MODEL_LITE: check("ANTHROPIC_MODEL_LITE"),
+      // ADDITIVE (D-71) — the Jira app's variables. Presence only, never a value.
+      JIRA_ENABLED:       check("JIRA_ENABLED"),
+      JIRA_CLIENT_ID:     check("JIRA_CLIENT_ID"),
+      JIRA_CLIENT_SECRET: check("JIRA_CLIENT_SECRET"),
+      JIRA_REDIRECT_URL:  check("JIRA_REDIRECT_URL"),
     },
     // Server-side defaults for the two per-run options a client may override. The
     // UI reads these so its Settings toggles open in the state the server is
@@ -848,6 +885,9 @@ app.get("/api/health", (_req, res) => {
     // `options.targetApp` accepts. The run screen renders "This URL is a Salesforce org" only when
     // this lists "salesforce"; with the flag off the body is byte-identical to before.
     ...(salesforceEnabled() ? { targetApps: [...TARGET_APPS] } : {}),
+    // ADDITIVE, appended, and present ONLY when JIRA_ENABLED=true (D-71). app.js shows the
+    // "Connect Jira" row only when this is true; with the flag off the body is unchanged.
+    ...(jiraEnabled() ? { jira: true } : {}),
     // ADDITIVE, appended, and present ONLY when SPEC_INTAKE_ENABLED=true — the same shape as
     // `targetApps` above and for the same reason: the home screen renders the Pro toggle only when
     // this is true, and with the flag off the body is byte-identical to before.
@@ -857,6 +897,9 @@ app.get("/api/health", (_req, res) => {
     ...(salesforceEnabled() && salesforceOAuthEnabled() ? { salesforceOAuth: true } : {}),
     // Present ONLY when the org discovery cache is on too: the run screen offers "Fresh discovery" then.
     ...(salesforceEnabled() && salesforceOAuthEnabled() && orgDiscoveryCacheEnabled() ? { sfDiscoveryCache: true } : {}),
+    // ADDITIVE, present ONLY when PROJECT_DISCOVERY_SHARING is on (D-72): the home view then offers
+    // "Explore the site again". Off: the body is unchanged.
+    ...(projectDiscoveryEnabled() ? { projectDiscovery: true } : {}),
   });
 });
 
@@ -1015,6 +1058,109 @@ app.get("/api/auth/config", (_req, res) => {
     // token expires exactly as it always has.
     ...(process.env.AUTH_TOKEN_REFRESH === "true" ? { tokenRefresh: true } : {}),
   });
+});
+
+// --------------------------------------------------------------------------
+// Jira, Phase 1 (D-71): read one story into the prompt box. All NEW routes; every one answers 404
+// unless JIRA_ENABLED=true, so with the flag off the server is unchanged. Read-only — nothing here
+// writes to Jira. The access token lives only in memory (src/jira/session.ts) and is never sent to
+// the browser, logged, or written anywhere.
+// --------------------------------------------------------------------------
+
+const JIRA_OFF = { error: "Jira is not enabled on this server (JIRA_ENABLED is off)." };
+
+function sendJiraError(res: express.Response, err: unknown): void {
+  if (err instanceof JiraError) {
+    res.status(err.status).json({ error: err.message, ...(err.signedOut ? { signedOut: true } : {}) });
+    return;
+  }
+  console.error("[jira] unexpected error:", (err as Error)?.message ?? err);
+  res.status(500).json({ error: "Something went wrong talking to Jira." });
+}
+
+/** Is Jira set up on this server, and is this user connected? Sites only — never the token. */
+app.get("/api/jira/status", requireRole("tester"), (req, res) => {
+  if (!jiraEnabled()) return res.status(404).json(JIRA_OFF);
+  const cfg = jiraConfig();
+  const conn = getConnection(req.user!.id);
+  res.json({
+    configured: "config" in cfg,
+    ...("missing" in cfg ? { missing: cfg.missing } : {}),
+    connected: !!conn,
+    sites: conn ? conn.sites : [],
+  });
+});
+
+/** Start "Connect Jira": a fresh one-time state for this user, and the Atlassian page to open. */
+app.post("/api/jira/connect", requireRole("tester"), (req, res) => {
+  if (!jiraEnabled()) return res.status(404).json(JIRA_OFF);
+  const cfg = jiraConfig();
+  if ("missing" in cfg) {
+    return res.status(503).json({ error: `Jira isn't set up on this server yet: ${cfg.missing.join(", ")} not set.` });
+  }
+  res.json({ authorizeUrl: authorizeUrl(cfg.config, beginSignIn(req.user!.id)) });
+});
+
+/** A tiny self-contained page for the sign-in popup: no external resources, nothing cached. */
+function jiraCallbackPage(res: express.Response, status: number, message: string): void {
+  const safe = message.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+  res.status(status)
+    .set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" })
+    .type("html")
+    .send(`<!doctype html><meta charset="utf-8"><title>Testbench · Jira</title>` +
+      `<body style="font-family:system-ui,sans-serif;padding:32px;line-height:1.5">` +
+      `<p>${safe}</p><p>You can close this window.</p>` +
+      (status === 200 ? `<script>setTimeout(function () { window.close(); }, 1200);</script>` : "") +
+      `</body>`);
+}
+
+/**
+ * Atlassian redirects here with `?code&state` (or `?error&state` if the user declined). The state
+ * is redeemed first, and once: an unknown, expired or reused one stops here before any call.
+ */
+app.get("/api/jira/callback", async (req, res) => {
+  if (!jiraEnabled()) return res.status(404).type("text").send(JIRA_OFF.error);
+  const userId = finishSignIn(req.query.state);
+  if (!userId) return jiraCallbackPage(res, 400, "This Jira sign-in link has expired or was already used. Click \"Connect Jira\" again.");
+  if (typeof req.query.error === "string") return jiraCallbackPage(res, 400, "Jira access was not allowed, so nothing was connected.");
+  const code = req.query.code;
+  if (typeof code !== "string" || !code) return jiraCallbackPage(res, 400, "Jira didn't send a sign-in code. Click \"Connect Jira\" again.");
+  const cfg = jiraConfig();
+  if ("missing" in cfg) return jiraCallbackPage(res, 503, `Jira isn't set up on this server yet: ${cfg.missing.join(", ")} not set.`);
+  try {
+    const conn = await connectJira(cfg.config, code);
+    saveConnection(userId, conn);
+    jiraCallbackPage(res, 200, `Jira connected: ${conn.sites.map((s) => s.name || s.url).join(", ")}.`);
+  } catch (err) {
+    if (!(err instanceof JiraError)) console.error("[jira] callback failed:", (err as Error)?.message ?? err);
+    jiraCallbackPage(res, err instanceof JiraError ? err.status : 500,
+      err instanceof JiraError ? err.message : "Something went wrong connecting to Jira.");
+  }
+});
+
+/** Read one story as prompt text. `?site=<cloudId>` picks a site when the account has several. */
+app.get("/api/jira/issue/:issueKey", requireRole("tester"), async (req, res) => {
+  if (!jiraEnabled()) return res.status(404).json(JIRA_OFF);
+  const key = parseIssueKey(req.params.issueKey);
+  if (!key) return res.status(400).json({ error: "That isn't a Jira story key. Use the form TBS-1." });
+  const conn = getConnection(req.user!.id);
+  if (!conn) return res.status(401).json({ error: "Jira isn't connected. Click \"Connect Jira\" first.", signedOut: true });
+  const site = typeof req.query.site === "string" ? conn.sites.find((s) => s.id === req.query.site) : conn.sites[0];
+  if (!site) return res.status(400).json({ error: "That Jira site isn't one this sign-in can read." });
+  try {
+    res.json(await fetchStory(conn, site, key));
+  } catch (err) {
+    // Jira rejected the token: forget it, so the screen shows "Connect Jira" again.
+    if (err instanceof JiraError && err.signedOut) dropConnection(req.user!.id);
+    sendJiraError(res, err);
+  }
+});
+
+/** Forget this user's Jira token now (it is forgotten on restart anyway). */
+app.post("/api/jira/disconnect", requireRole("tester"), (req, res) => {
+  if (!jiraEnabled()) return res.status(404).json(JIRA_OFF);
+  dropConnection(req.user!.id);
+  res.status(204).end();
 });
 
 /**
@@ -2343,6 +2489,12 @@ export const BOOLEAN_ENV_FLAGS = [
   // RESERVED: registered before its reader lands (same reason as DISCOVERY_LIVE_DOM above). Names
   // the Salesforce-specific discovery support; nothing reads it yet.
   "SALESFORCE_ENABLED",
+  // D-65: the fixed Salesforce login for generated tests (src/stages/salesforceOrgLogin.ts). Off:
+  // every compile and every spec is exactly what it was. Read only on a ticked Salesforce run.
+  "SALESFORCE_FIXED_LOGIN",
+  // D-68: accept every Salesforce org (production included) instead of only scratch orgs and
+  // sandboxes. Off: the D-64 guard, unchanged.
+  "SALESFORCE_ALLOW_ALL_ORGS",
   "SCRIPT_OVERRIDE_ENABLED",
   "SELF_HEAL_DEFAULT",
   "SIGNUP_ENABLED",
@@ -2362,6 +2514,12 @@ export const BOOLEAN_ENV_FLAGS = [
   "SALESFORCE_CLEANUP_ENABLED",
   // src/stages/hybridDiscovery.ts: reuse an org-connection discovery while the org's setup is unchanged.
   "SALESFORCE_DISCOVERY_CACHE_ENABLED",
+  // D-71: Jira Phase 1 — "Connect Jira" and read a story into the prompt box. Off: no Jira row on
+  // the home view, and every /api/jira/* route answers 404.
+  "JIRA_ENABLED",
+  // D-72: a project's discovery is saved for 7 days and shared by every run of that project with the
+  // same URL and login; one discovery at a time per project. Off: the global 30-minute cache as before.
+  "PROJECT_DISCOVERY_SHARING",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */
@@ -2412,13 +2570,13 @@ export function formatInvalidBooleanFlags(bad: InvalidBooleanFlag[]): string {
 export { app };
 
 /**
- * Every env var that names an LLM provider ("gemini" or "azure").
+ * Every env var that names an LLM provider ("gemini", "azure" or "claude" — D-66).
  *
  * The same shape as `BOOLEAN_ENV_FLAGS` for the same reason: `LLM_PROVIDER=azureEE` would be
  * silently read as `gemini` (the fallback default) if a typo ever shipped, and a server running
  * gemini when the operator believes it is on Azure is expensive to discover — wrong-billion
  * tokens, wrong endpoint, wrong tenancy. Unset is the documented default (gemini); a present value
- * must be exactly "gemini" or "azure".
+ * must be exactly one of `LLM_PROVIDERS` (client.ts).
  */
 export const LLM_PROVIDER_ENV_VARS = ["LLM_PROVIDER", "LLM_PROVIDER_LITE"] as const;
 
@@ -2439,7 +2597,7 @@ export function findInvalidProviderEnv(env: NodeJS.ProcessEnv = process.env): In
     if (raw === undefined) continue;
     // No trimming, exactly like findInvalidBooleanFlags: " azure"/"azure " read as gemini at the
     // call site (resolvedProvider does no trimming either), so they must be fatal here.
-    if (raw !== "gemini" && raw !== "azure") bad.push({ name, found: raw });
+    if (!(LLM_PROVIDERS as readonly string[]).includes(raw)) bad.push({ name, found: raw });
   }
   return bad;
 }
@@ -2447,11 +2605,11 @@ export function findInvalidProviderEnv(env: NodeJS.ProcessEnv = process.env): In
 /** The fatal message for `findInvalidProviderEnv()` output — names each variable and its value. */
 export function formatInvalidProviderEnv(bad: InvalidProviderEnv[]): string {
   return [
-    `[startup] FATAL: LLM provider environment variable(s) set to a value that is neither "gemini" nor "azure".`,
-    ...bad.map((b) => `  ${b.name}=${JSON.stringify(b.found)} — expected exactly "gemini" or "azure"`),
+    `[startup] FATAL: LLM provider environment variable(s) set to a value that is not "gemini", "azure" or "claude".`,
+    ...bad.map((b) => `  ${b.name}=${JSON.stringify(b.found)} — expected exactly "gemini", "azure" or "claude"`),
     `  These variables select which provider a role ('main'/'lite') calls; any other value is read`,
     `  as gemini, so a stale typos would silently run Google's endpoints while the operator believes`,
-    `  Azure is configured. Set each to exactly "gemini" or "azure", or remove it entirely to take`,
+    `  Azure or Claude is configured. Set each to exactly "gemini", "azure" or "claude", or remove it to take`,
     `  its documented default (gemini).`,
   ].join("\n");
 }
@@ -2611,6 +2769,8 @@ if (isMain) {
       "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY",
       "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_DEPLOYMENT_LITE",
       "LLM_CACHE_VERSION",
+      // Appended (D-66): the Claude provider's variables, presence only like the rest.
+      "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEYS", "ANTHROPIC_MODEL", "ANTHROPIC_MODEL_LITE",
     ]) {
       const val = process.env[v];
       console.log(`  ${v}: ${val ? "SET" : "NOT SET"}`);

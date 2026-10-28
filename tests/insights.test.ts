@@ -186,3 +186,27 @@ describe("through the real orchestrator", () => {
     expect(existsSync(path.join("runs", runId, "10-insights.json"))).toBe(false);
   });
 });
+
+describe("irInsights — the branch's two Salesforce fields (kept in the 2026-10-28 merge)", () => {
+  const LOGIN = "https://acme--uat.sandbox.my.salesforce.com/";
+  const auth = [
+    { id: "auth-0", action: "navigate", target: { url: LOGIN } },
+    { id: "auth-1", action: "fill", target: { css: "#username" }, value: "${env:TEST_USERNAME}" },
+    { id: "auth-2", action: "click", target: { css: "#Login" } },
+  ];
+  const meta = { feature: "f", title: "t", priority: "low", sourcePrompt: "p", baseUrl: LOGIN };
+
+  it("a fixed-login IR whose only check is on the login form: fixedLogin + loginOnly", async () => {
+    const { irInsights } = await import("../src/insights.js");
+    const ir: any = { meta: { ...meta, fixedLogin: "salesforce" }, steps: [...auth,
+      { id: "s1", action: "assert", target: { css: "#Login" }, assertion: "hidden" }] };
+    expect(irInsights(ir)).toMatchObject({ fixedLogin: "salesforce", loginOnly: true });
+  });
+
+  it("an ordinary IR carries neither", async () => {
+    const { irInsights } = await import("../src/insights.js");
+    const f = irInsights({ meta, steps: [{ id: "s1", action: "navigate", target: { url: "https://x/" } }] } as any);
+    expect(f.fixedLogin).toBeUndefined();
+    expect(f.loginOnly).toBeUndefined();
+  });
+});

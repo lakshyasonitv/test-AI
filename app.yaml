@@ -94,6 +94,8 @@ properties:
         value: '2'
       - name: SPEC_INTAKE_ENABLED
         value: 'false'
+      - name: SALESFORCE_ENABLED
+        value: 'false'
       image: ghcr.io/lakshyasonitv/testbench:81755985c4e95f34cb5eca726ba244fa5868bb18
       imageType: ContainerImage
       name: testbench

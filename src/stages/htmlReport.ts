@@ -1,3 +1,4 @@
+import { onlyChecksLogin } from "./salesforceOrgLogin.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { IR } from "../schema/ir.js";
@@ -62,6 +63,9 @@ export interface RunReportInput {
   startedAt?: number;
   llmCalls?: number;
   llmTokens?: number;
+  /** D-68: a sentence shown in a warning box under the header (a production Salesforce org).
+   *  Absent: the report is byte-identical to before. */
+  orgWarning?: string;
   cases: ReportCase[];
 }
 
@@ -204,7 +208,8 @@ function renderCase(c: ReportCase, budget: { left: number }): string {
     <div class="case-head">
       <h2>${esc(c.title)}</h2>
       <span class="verdict ${vClass}">${esc(status.replace(/_/g, " "))}</span>
-    </div>
+    </div>${onlyChecksLogin(c.ir) ? `
+    <p class="note" style="margin:8px 0 0">Only checked that login works — this test made no check after logging in.</p>` : ""}
     <dl class="kv">
       ${c.whyItMatters ? `<dt>Why this matters</dt><dd>${esc(c.whyItMatters)}</dd>` : ""}
       ${c.expected ? `<dt>What should happen</dt><dd>${esc(c.expected)}</dd>` : ""}
@@ -246,7 +251,8 @@ export function buildRunReportHtml(input: RunReportInput): string {
       ${input.llmCalls ? `<li><b>${input.llmCalls}</b> AI calls</li>` : ""}
       ${input.llmTokens ? `<li><b>${Math.round(input.llmTokens / 1000)}k</b> tokens</li>` : ""}
     </ul>
-  </header>
+  </header>${input.orgWarning ? `
+  <div class="failbox"><h3>Not a test org</h3>${esc(input.orgWarning)}</div>` : ""}
   ${casesHtml || `<section class="case"><p class="note">This run recorded no cases.</p></section>`}
   <footer>Generated from this run's own artifacts — no AI call. Screenshots are embedded, so this
   file works offline and can be sent as-is.</footer>

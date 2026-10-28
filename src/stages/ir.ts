@@ -17,8 +17,9 @@ import { applyTestData, testDataEnabled } from "./testData.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
-  NEGATIVE_CATEGORIES, type Credentials,
+  NEGATIVE_CATEGORIES, type Credentials, type CredentialKind,
 } from "./credentials.js";
+import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import {
   salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
@@ -171,6 +172,9 @@ function knownNavigationTargets(appModel: AppModel): Set<string> {
   const out = new Set<string>();
   const add = (u: string | null | undefined) => { if (u) out.add(pageKey(u)); };
   add(appModel.baseUrl);
+  // D-70: where discovery's own login landed is observed, not guessed — on a fixed-login Salesforce
+  // run it is a valid destination even when its host is not the base URL's (lightning.force.com).
+  if (fixedLoginRun() && appModel.auth?.status === "authenticated") add(appModel.auth.url);
   for (const page of appModel.pages) {
     add(page.url);
     for (const link of page.domLinks ?? []) {
@@ -488,7 +492,14 @@ export function redirectPostLoginNavigate(
   try { to = new URL(first.target.url, origin).href; } catch { return undefined; }
   if (pageKey(to) !== pageKey(auth.loginUrl)) return undefined;
   const landed = new URL(auth.url);
-  if (siteHost(landed.href) !== siteHost(origin)) return undefined;
+  if (siteHost(landed.href) !== siteHost(origin)) {
+    // D-70: Salesforce logs in on <org>.my.salesforce.com and lands on <org>.lightning.force.com —
+    // a different host of the SAME org. On a fixed-login Salesforce run that is still "the page the
+    // login lands on", so the step points there, as an absolute URL because the host differs.
+    if (!(fixedLoginRun() && sameSalesforceApp(landed.href, origin))) return undefined;
+    first.target.url = landed.href;
+    return first.id;
+  }
   first.target.url = landed.pathname + landed.search;
   return first.id;
 }
@@ -683,6 +694,43 @@ export function irAlreadyLogsIn(ir: IR, auth: AuthOutcome | undefined, model: Ap
     s.action === "fill"
     && ((pwCss && s.target?.css?.toLowerCase() === pwCss)
       || credentialKindForTarget(s.target, fieldMap) === "password"));
+}
+
+/**
+ * A login case that signs in with the REAL credentials gets the RECORDED login instead of the one
+ * the model wrote (D-65, stage 1). Returns the new step list, or null to leave the IR untouched.
+ *
+ * Why: a case whose own page is the login page never receives the prefix (`needsLoginPrefix`), so
+ * the model writes the login itself. On a two-screen login (Salesforce) its password step lands on
+ * a screen nothing captured, and grounding truncated the case right before the password — run
+ * 2026-10-16T12-47-28, whose `auth.loginSteps` held the full five-step login all along.
+ *
+ * Decided by structure only: the run recorded a login, the case's credential policy is "full"
+ * (decided by `credentialPolicyFor`, so a wrong-password or empty-field case is never touched), and
+ * the IR fills a credential field — by the recorded selector or by the credential field map. The
+ * model's login is everything up to and including the first click/press after its LAST credential
+ * fill; it is replaced by `buildLoginPrefix`, and the steps after it are kept as written. No click
+ * or press after the fill means the shape is unrecognised, and the IR is left alone.
+ *
+ * The caller decides WHEN (a ticked Salesforce run with SALESFORCE_FIXED_LOGIN on, and no prefix
+ * already added); this function only decides WHAT.
+ */
+export function swapInRecordedLogin(
+  steps: Step[], auth: AuthOutcome | undefined, fieldMap: Map<string, CredentialKind>,
+): Step[] | null {
+  if (auth?.status !== "authenticated" || !auth.loginUrl || !auth.loginSteps?.length) return null;
+  const recorded = new Set(auth.loginSteps.filter((s) => s.credential).map((s) => s.css.toLowerCase()));
+  const isCredentialFill = (s: Step) => s.action === "fill"
+    && ((!!s.target?.css && recorded.has(s.target.css.toLowerCase()))
+      || credentialKindForTarget(s.target, fieldMap) !== undefined);
+  let lastFill = -1;
+  steps.forEach((s, i) => { if (isCredentialFill(s)) lastFill = i; });
+  if (lastFill < 0) return null;
+  const submit = steps.findIndex((s, i) => i > lastFill && (s.action === "click" || s.action === "press"));
+  if (submit < 0) return null;
+  const prefix = buildLoginPrefix(auth);
+  if (!prefix.length) return null;
+  return [...prefix, ...steps.slice(submit + 1)];
 }
 
 /**
@@ -2325,7 +2373,11 @@ Example — handling duplicate selectors with nth:
     ...(testDataEnabled() ? ["test-data:2"] : []),
     // D-63: an IR compiled on a frontdoor run starts with the env-referenced login; it must never be
     // served to a password run on the same org, nor the reverse. Absent on every other run.
-    ...(currentFrontdoor() ? [`sf-frontdoor:${currentFrontdoor()!.instanceHost}`] : []));
+    ...(currentFrontdoor() ? [`sf-frontdoor:${currentFrontdoor()!.instanceHost}`] : []),
+    // D-65: a fixed-login compile swaps a login case's own login for the recorded one, so it must
+    // never share a cache entry with a compile that does not. Absent when off: every key unchanged.
+    // D-70 adds sf-post-login: IRs cached before the post-login correction must not be served again.
+    ...(fixedLoginRun() ? ["sf-fixed-login:1", "sf-post-login:1"] : []));
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
 
@@ -2834,6 +2886,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
 
     parsed.data.meta.baseUrl = origin;
+    // D-65: only this function decides whether the spec runs the fixed Salesforce login.
+    delete parsed.data.meta.fixedLogin;
 
     // Before grounding: the grounding replays type these values too (Session 102). The model's own
     // steps are kept aside first: the fill policy removes optional fields ON PURPOSE, and coverage
@@ -2871,9 +2925,26 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       const prefix = buildLoginPrefix(currentModel.auth);
       if (prefix.length) {
         parsed.data.steps = [...prefix, ...parsed.data.steps];
+        if (fixedLoginRun()) parsed.data.meta.fixedLogin = "salesforce";
         console.log(`[ir] prepended ${prefix.length} login step(s) — the test signs in before its own steps`);
         const moved = redirectPostLoginNavigate(parsed.data.steps, prefix.length, currentModel.auth, origin);
         if (moved) console.log(`[ir] step ${moved}: navigate to the login page after signing in -> the page the login lands on`);
+      }
+    } else if (fixedLoginRun() && credPolicy === "full") {
+      // D-65 stage 1: no prefix was added because the case logs in itself. With the real
+      // credentials, its login becomes the recorded one, which already handles a two-screen login.
+      const swapped = swapInRecordedLogin(parsed.data.steps, currentModel.auth, credentialFieldMap(currentModel));
+      if (swapped) {
+        parsed.data.steps = swapped;
+        parsed.data.meta.fixedLogin = "salesforce";
+        console.log(`[ir] login case: its own login steps replaced by the recorded login (D-65)`);
+        // D-70: the same "go to the login page right after logging in" correction the prefix path
+        // makes — a login case's own next step is just as likely to be a navigate back to "/".
+        const loginLength = swapped.findIndex((st) => !/^auth-\d+$/.test(st.id));
+        if (loginLength > 0) {
+          const moved = redirectPostLoginNavigate(parsed.data.steps, loginLength, currentModel.auth, origin);
+          if (moved) console.log(`[ir] step ${moved}: navigate to the login page after signing in -> the page the login lands on`);
+        }
       }
     }
 

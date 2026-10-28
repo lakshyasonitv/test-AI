@@ -272,3 +272,47 @@ to it in the phase report.
 
 If a phase's real-site check fails, stop, write the failure (run id, `04-ir.json` truncation
 note, screenshots) into the phase report, and do not start the next phase.
+
+---
+
+## Other streams' edits to shared files (log here to avoid merge surprises)
+
+### 2026-10-19 — `src/stages/generator.ts`, `src/stages/ir.ts`, `src/schema/ir.ts` — fixed Salesforce login (D-65)
+
+Branch `vaibhav/determined-dijkstra-0t2ec9`. Behind `SALESFORCE_FIXED_LOGIN` (default off) AND a ticked
+Salesforce run. Off: every compile and every spec is byte-identical (pinned by
+`tests/fixtures/salesforceFixedLogin/flag-off-specs.json`, captured from the generator before the change).
+
+- `src/schema/ir.ts`: one optional field, `IR.meta.fixedLogin: "salesforce"`. Set only by `toIR`; a
+  model-written value is stripped.
+- `src/stages/ir.ts`: `swapInRecordedLogin` (a login case that signs in with the real credentials gets the
+  recorded login instead of the model's); `toIR` sets `meta.fixedLogin` when the IR starts with the login
+  prefix; the IR cache key gains `"sf-fixed-login:1"` only when on.
+- `src/stages/generator.ts`: new `SALESFORCE_LOGIN_HELPER` and `fixedLoginBlock`. In `generateSpec`, a marked
+  IR's leading `auth-*` steps become one `salesforceLogin(page, loginUrl)` call in step 1; the other `auth-*`
+  steps stay as empty `test.step`s (one test.step per IR step is still true — executor/failureAnalysis rely
+  on it) and take no screenshot. The generator also requires the flag itself, so a saved case still
+  carrying the marker goes back to the step-by-step login when the flag is off. No existing helper,
+  emitter or label was changed.
+
+### 2026-10-22 — `src/stages/generator.ts` — pinned `?login` Salesforce login (D-67)
+Branch `vaibhav/determined-dijkstra-0t2ec9`. Behind `SALESFORCE_LOGIN_PARAM` (default off), and only
+where the D-65 fixed-login block is emitted. Off: byte-identical to D-65 (`tests/salesforceLoginParam.test.ts`).
+
+- New `SALESFORCE_TWO_SCREEN_LOGIN_HELPER` (straight-line two-screen `salesforceLogin`; reuses D-65's
+  `salesforceWhere`/`salesforceLoginFailure` text by slicing it), `salesforceLoginParamEnabled()`, and
+  exported `withLoginParam(url)`.
+- `generateSpec`: with the flag on, step 1's label and its `salesforceLogin(page, url)` argument use
+  `withLoginParam(loginUrl)`, and the helper splice picks the two-screen helper. No other emitter changed.
+
+### 2026-10-22 — `src/stages/generator.ts` — D-67 removed (D-70)
+`SALESFORCE_TWO_SCREEN_LOGIN_HELPER`, `salesforceLoginParamEnabled` and `withLoginParam` deleted, with
+the `SALESFORCE_LOGIN_PARAM` flag and `tests/salesforceLoginParam.test.ts`. `generator.ts` is now
+byte-identical to its state before D-67 (`git diff 72127dc -- src/stages/generator.ts` is empty).
+
+### 2026-10-22 — `src/stages/ir.ts`, `executor.ts`, `htmlReport.ts` — Salesforce post-login (D-70)
+All behind `SALESFORCE_FIXED_LOGIN` on a ticked run. `ir.ts`: `redirectPostLoginNavigate` accepts the same
+org on another host (absolute URL) and now also runs on the D-65 swap path; `knownNavigationTargets` adds
+`auth.url`; cache key gains `sf-post-login:1`. `executor.ts` `detectBlocked`: same org's app host is not
+"left". `htmlReport.ts`: "Only checked that login works" note via `onlyChecksLogin`. No generator change.
+

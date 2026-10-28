@@ -38,6 +38,7 @@ import {
 } from "../stages/hybridDiscovery.js";
 import { waitForAuthSettle } from "../stages/authSettle.js";
 import { redactCredentials, type Credentials } from "../stages/credentials.js";
+import { codeEntryField } from "../stages/salesforceOrgLogin.js";
 
 export type LoginFailureReason =
   | "bad-credentials" | "verification-required" | "mfa-required"
@@ -155,50 +156,9 @@ export async function checkSalesforceLogin(opts: {
   }
 }
 
-/**
- * A verification-code screen: exactly one visible, enabled text-entry input, no password box, no
- * username box, and that input is CODE-SHAPED by its attributes — `autocomplete="one-time-code"`,
- * a numeric `inputmode`, `type` tel/number, or a `maxlength` of 4–10. Structure only.
- *
- * Returns indexes, not selectors: the result is used once, right here, and never recorded or
- * replayed, so a positional handle is enough and needs none of loginOnPage's selector ladder.
- */
-async function codeEntryField(page: Page): Promise<{ inputIndex: number; submitIndex: number } | null> {
-  // Nothing named inside this callback — TD-40 (see the file header).
-  return await page.evaluate(() => {
-    const inputs = Array.from(document.querySelectorAll("input"));
-    let idx = -1;
-    let entries = 0;
-    for (let i = 0; i < inputs.length; i++) {
-      const el = inputs[i];
-      const type = (el.getAttribute("type") || "text").toLowerCase();
-      if (["text", "email", "tel", "number", "search", "url", "password"].indexOf(type) < 0) continue;
-      if (el.disabled) continue;
-      const r = el.getBoundingClientRect();
-      if (!(r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden")) continue;
-      entries++;
-      idx = i;
-    }
-    if (entries !== 1) return null;
-    const el = inputs[idx];
-    const type = (el.getAttribute("type") || "text").toLowerCase();
-    if (type === "password" || type === "email") return null;
-    const autocomplete = (el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
-    if (autocomplete.indexOf("username") >= 0) return null;
-    const inputmode = (el.getAttribute("inputmode") || "").toLowerCase();
-    const maxlength = Number(el.getAttribute("maxlength") || "0");
-    const codeShaped = autocomplete.indexOf("one-time-code") >= 0
-      || inputmode === "numeric" || inputmode === "decimal"
-      || type === "tel" || type === "number"
-      || (maxlength >= 4 && maxlength <= 10);
-    if (!codeShaped) return null;
-
-    const scope: ParentNode = el.closest("form") ?? document;
-    const submit = scope.querySelector('button[type="submit"], input[type="submit"]');
-    const allSubmits = Array.from(document.querySelectorAll('button[type="submit"], input[type="submit"]'));
-    return { inputIndex: idx, submitIndex: submit ? allSubmits.indexOf(submit) : -1 };
-  });
-}
+// `codeEntryField` (the verification-code screen detector) now lives in
+// src/stages/salesforceOrgLogin.ts, unchanged, because discovery uses it too and importing this
+// server module from a stage would be an import cycle (this module imports hybridDiscovery).
 
 /**
  * RFC 6238 time-based one-time password: HMAC-SHA1 over the 30-second step counter, dynamic

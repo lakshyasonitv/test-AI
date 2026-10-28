@@ -6,6 +6,7 @@ import { scrubRunSecrets } from "./runSecrets.js";
 import type { AppModel } from "./schema/appModel.js";
 import type { IR } from "./schema/ir.js";
 import type { SpecModel } from "./schema/spec.js";
+import { onlyChecksLogin } from "./stages/salesforceOrgLogin.js";
 
 /**
  * Run insight logging (D-61) — what a person developing this project needs to judge a run's
@@ -296,6 +297,11 @@ export function irInsights(ir: IR, retries: Array<{ kind: string }> = []): Insig
     rejectedAttempts: retries.length,
     rejectedBy: top(kinds),
     irBytes: bytesOf(ir),
+    // Branch fields (D-65/D-70), kept when main's D-61 port was merged in: whether the IR uses the
+    // fixed Salesforce login, and whether its only checks after login are on the login form itself.
+    // Absent on every other IR (undefined values are not printed).
+    fixedLogin: ir.meta.fixedLogin ?? undefined,
+    loginOnly: onlyChecksLogin(ir) || undefined,
   };
 }
 

@@ -34,12 +34,16 @@ import { resolveLive } from "./targetResolver.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { cutAtBoundary, siteHost } from "../text.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
+import {
+  salesforceRun, assertTestOrg, blockLoginAds, reachUsernameForm, waitForOneScreenPassword, describeLoginFailure,
+} from "./salesforceOrgLogin.js";
 import { networkSettleEnabled, trackNetwork, waitForDialogFields } from "./networkSettle.js";
 import { currentFrontdoor, openFrontdoor } from "./salesforceFrontdoor.js";
 import { readSalesforceOrgModel, createFormUrls, recordPageUrls, orgSetupFingerprint, objectsNamedIn } from "./salesforceOrgModel.js";
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { volatileIdDetectionEnabled } from "./volatileIds.js";
+import { projectDiscoveryKey, readOrClaim, PROJECT_DISCOVERY_TTL_MS, type DiscoveryScope } from "../kb/projectDiscovery.js";
 
 // ---------------------------------------------------------------------------
 // Concept labeling — the ONE remaining Gemini call in the primary path
@@ -342,6 +346,12 @@ async function discoverUsingVision(url: string): Promise<AppModel> {
  * Discover multiple pages. Uses DOM discovery for each, with vision fallback.
  */
 export async function discoverPagesHybrid(urls: string[]): Promise<AppModel> {
+  // A ticked Salesforce run is refused before any page is opened unless EVERY URL is a scratch org
+  // or a sandbox (salesforceOrgLogin.ts). Unticked runs never reach this line's body.
+  // An org-connection run (D-63) is checked by the connection's own guard (salesforceOAuth.ts, which
+  // accepts Developer Edition orgs and, with SALESFORCE_PRODUCTION_ORGS_ENABLED, production), so this
+  // password-run guard steps aside for it.
+  if (salesforceRun() && !currentFrontdoor()) for (const u of urls) assertTestOrg(u);
   const seen = new Set<string>();
   // `urls[0]` verbatim was wrong twice over: it keeps the entered SCHEME (so a redirected site
   // leaves every page disagreeing with the base — TD-82) and it keeps the PATH, so a base of
@@ -1246,9 +1256,58 @@ export async function discoverSiteHybrid(
   /** The person's request: on an org connection the create forms of the objects it names are opened
    *  first (Session 102). Optional; absent, the order is the org's own. */
   request = "",
-  /** Org connection: skip the saved discovery and crawl, then save the new one ("Fresh discovery"). */
+  /** Skip the saved discovery and crawl, then save the new one ("Fresh discovery"): org connections,
+   *  and (D-72) a project's shared discovery. */
   freshDiscovery = false,
+  /** D-72 (PROJECT_DISCOVERY_SHARING): share this discovery with the run's project. Absent: the
+   *  global per-URL cache, exactly as before. Set only by the run route, after its tenancy check. */
+  shared?: DiscoveryScope,
 ): Promise<AppModel> {
+  // The claim on a shared key is released however discovery ends — a hit, a crawl, or a throw —
+  // or the next run of that project would wait for it forever.
+  const claim: { release?: () => void } = {};
+  try {
+    return await discoverSiteHybridInner(url, creds, askCredentials, request, freshDiscovery, shared, claim);
+  } finally {
+    claim.release?.();
+  }
+}
+
+async function discoverSiteHybridInner(
+  url: string,
+  creds: Credentials | undefined,
+  askCredentials: (() => Promise<Credentials | null>) | undefined,
+  request: string,
+  freshDiscovery: boolean,
+  shared: DiscoveryScope | undefined,
+  claim: { release?: () => void },
+): Promise<AppModel> {
+  /**
+   * The site cache read. Unshared: the global key, as before. Shared (D-72): the project's key, up
+   * to 7 days, after any discovery of the same key already running has finished — and a miss claims
+   * the key, so the next run of this project waits for this crawl instead of repeating it.
+   */
+  const readSiteCache = async (siteKey: string): Promise<AppModel | null> => {
+    if (!shared) return cacheGet(siteKey);
+    const key = projectDiscoveryKey(shared, siteKey);
+    const r = await readOrClaim(key, () => (freshDiscovery ? null : cacheGet(key, PROJECT_DISCOVERY_TTL_MS)));
+    if ("hit" in r) {
+      console.log(`[hybrid] reusing this project's saved discovery of ${url} (${r.hit.pages.length} page(s)) — no crawl`);
+      return AppModel.parse({
+        ...r.hit,
+        savedScan: { at: r.hit.savedScan?.at ?? new Date().toISOString(), reused: true, scope: "project" },
+      });
+    }
+    claim.release = r.release;
+    if (freshDiscovery) console.log("[hybrid] fresh discovery asked for — crawling, the result replaces this project's saved one");
+    return null;
+  };
+  // A ticked Salesforce run against anything but a scratch org or a sandbox stops HERE — before the
+  // cache, before a browser exists — so a production org is never opened, and a model cached for it
+  // is never served either. The run fails at its discovery stage with the refusal's sentence.
+  // Not on an org-connection run (D-63): its own guard already decided which orgs it may connect.
+  if (salesforceRun() && !currentFrontdoor()) assertTestOrg(url);
+
   // The cache lookup CANNOT happen here when askCredentials is in play: the key includes the
   // credential identity and we don't know it yet. Reading with a stale key and writing with the
   // real one means the read and write keys differ on every authenticated run, so nothing ever
@@ -1260,7 +1319,7 @@ export async function discoverSiteHybrid(
   // connection and an anonymous crawl) apart — and a re-crawl is cheaper than a wrong model.
   const frontdoor = currentFrontdoor();
   if (!askCredentials && !frontdoor) {
-    const cached = cacheGet(siteCacheKey(url, creds));
+    const cached = await readSiteCache(siteCacheKey(url, creds));
     if (cached) return cached;
   }
   // Its own cache instead (SALESFORCE_DISCOVERY_CACHE_ENABLED): keyed by the org and its setup
@@ -1332,6 +1391,9 @@ export async function discoverSiteHybrid(
     state.context ??= await state.browser.newContext(browserContextOptions());
     if (!state.page) {
       state.page = await state.context.newPage();
+      // Salesforce runs only: abort the login page's ad requests on this one page, which every hop
+      // of the crawl reuses — so the block covers the whole crawl and no other run.
+      if (salesforceRun()) await blockLoginAds(state.page);
       // Phase 1: attach before the first goto, so the entry page's early requests are counted.
       if (networkSettleEnabled()) trackNetwork(state.page);
     }
@@ -1462,6 +1524,14 @@ export async function discoverSiteHybrid(
     if (!frontdoor) try {
       await authPage.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await authPage.waitForTimeout(800);
+      if (salesforceRun()) {
+        // Salesforce's first screen varies by visit (email-first, username-first, one or two
+        // screens). Bring the USERNAME form up, then let a one-screen form finish drawing its
+        // password box, so hasLoginGate and loginOnPage below see the settled form. A throw lands
+        // in the catch below as a gate-detection error that names where it stopped.
+        await reachUsernameForm(authPage);
+        await waitForOneScreenPassword(authPage);
+      }
       if (await hasLoginGate(authPage)) {
         gateUrl = authPage.url();
       } else {
@@ -1494,7 +1564,7 @@ export async function discoverSiteHybrid(
     // different key than it writes, and authenticated runs would never hit. Placed BEFORE the
     // login so a hit skips the real sign-in too, not just the crawl.
     if (askCredentials && !frontdoor) {
-      const cached = cacheGet(siteCacheKey(url, creds));
+      const cached = await readSiteCache(siteCacheKey(url, creds));
       if (cached) {
         console.log(`[hybrid] cache hit for ${url} — skipping login and crawl`);
         return cached;
@@ -1580,18 +1650,24 @@ export async function discoverSiteHybrid(
               + `contain only the login page, and will not be cached`);
           }
         } else {
+          // Salesforce runs: name the actual reason (wrong password, verification code, SSO, forced
+          // password change) from the page's structure where the login stopped; null keeps the
+          // generic sentence below.
+          const sfReason = salesforceRun() ? await describeLoginFailure(authPage, url).catch(() => null) : null;
           auth = {
             status: "login-failed", url: reached,
             // States only what verifySession established: a password field was STILL visible on
             // the landed page after the poll. The old wording ("Check the values are correct for
             // this site") asserted a cause the probe cannot see — a second password step, a
             // change-password page or an inline error all look identical to this check.
-            detail: `Credentials were submitted at ${gateUrl}, but ${reached} still showed a password field after the post-login check, so no session was established. That is evidence the login did not take; it is not proof the values are wrong.`,
+            detail: sfReason ?? `Credentials were submitted at ${gateUrl}, but ${reached} still showed a password field after the post-login check, so no session was established. That is evidence the login did not take; it is not proof the values are wrong.`,
           };
           console.warn(`[hybrid] login FAILED — ${reached} still shows a password field. Crawling anonymously.`);
         }
       } catch (err: any) {
-        auth = { status: "login-failed", url: gateUrl, detail: `Login attempt threw: ${err?.message ?? err}` };
+        // Salesforce runs: the page where it stopped usually says more than the exception does.
+        const sfReason = salesforceRun() ? await describeLoginFailure(authPage, url).catch(() => null) : null;
+        auth = { status: "login-failed", url: gateUrl, detail: sfReason ?? `Login attempt threw: ${err?.message ?? err}` };
         console.warn(`[hybrid] login attempt failed: ${err?.message ?? err} — crawling anonymously`);
       }
     }
@@ -1732,6 +1808,11 @@ export async function discoverSiteHybrid(
       }
     } else if (!worth.ok) {
       console.warn(`[hybrid] not caching ${url} — ${worth.reason}`);
+    } else if (shared) {
+      // D-72: saved for the project, with when, so the next run of it can say what it reused.
+      result.savedScan = { at: new Date().toISOString(), reused: false, scope: "project" };
+      cacheSet(projectDiscoveryKey(shared, siteCacheKey(url, creds)), result);
+      console.log(`[hybrid] saved this discovery of ${url} for the project`);
     } else {
       cacheSet(siteCacheKey(url, creds), result);
     }

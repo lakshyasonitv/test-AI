@@ -852,14 +852,24 @@ function summarize(stage, data) {
         const shown = concepts.slice(0, 6).join(", ");
         const more = concepts.length > 6 ? ` and ${concepts.length - 6} more` : "";
         const conceptStr = concepts.length ? ` — ${shown}${more}` : "";
+        // D-68: a ticked Salesforce run against a production (or other non-test) org. Absent on
+        // every other run, so this line reads exactly as before.
+        const orgNote = data.orgWarning?.message ? `⚠ ${data.orgWarning.message} ` : "";
         // Org-connection runs that keep scans: say plainly whether this run scanned or reused one.
         const scan = data.savedScan;
+        // D-72: a project's shared discovery (PROJECT_DISCOVERY_SHARING) — reused, or saved for the next run.
+        if (scan?.scope === "project") {
+          return scan.reused
+            ? `${orgNote}Used this project's saved discovery from ${agoText(scan.at)}, so the site was not explored again. `
+              + `${pagesCount} page${pagesCount === 1 ? "" : "s"}${conceptStr}. Tick "Explore the site again" if it has changed`
+            : `${orgNote}Discovered ${pagesCount} page${pagesCount === 1 ? "" : "s"}${conceptStr}. Saved for this project, so its next runs can skip this step`;
+        }
         if (scan?.reused) {
-          return `Used the saved scan of this org from ${agoText(scan.at)}: nothing in the org's setup has changed, `
+          return `${orgNote}Used the saved scan of this org from ${agoText(scan.at)}: nothing in the org's setup has changed, `
             + `so it was not scanned again. ${pagesCount} page${pagesCount === 1 ? "" : "s"}${conceptStr}`;
         }
         const savedNote = scan ? ". Saved, so the next run on this org can skip the scan" : "";
-        return `Discovered ${pagesCount} page${pagesCount === 1 ? "" : "s"}${conceptStr}${savedNote}`;
+        return `${orgNote}Discovered ${pagesCount} page${pagesCount === 1 ? "" : "s"}${conceptStr}${savedNote}`;
       }
       case "testcases": {
         // Report generated AND selected, with the reason. Reporting only the generated count
@@ -1631,6 +1641,10 @@ function hideSuiteResults() {
 function verdictFor(data, stage, error) {
   const status = data?.status;
   if (stage === "error") {
+    // D-70: a refused address is a decision about what was entered, not our fault — say only why.
+    if (data?.orgRefused && error) {
+      return { cls: "blocked", ic: "alert-circle", head: "Couldn’t run this", detail: error };
+    }
     return { cls: "blocked", ic: "alert-circle", head: "Couldn’t run this",
              detail: error
                ? error + " This is a problem on our side, not a result about your site."
@@ -3756,13 +3770,19 @@ form.addEventListener("submit", async (e) => {
     // so the body is byte-identical. Ticked: one extra key, `targetApp` (D-50). Pro adds one more,
     // `spec`, and only when Pro is on with a confirmed document.
     // D-63: a connected org adds one more key, `sfConnectionId`, only on a ticked Salesforce run.
-    const baseOptions = targetAppBoxEl?.checked
+    const baseOptions0 = targetAppBoxEl?.checked
       ? {
         ...runOptions, targetApp: "salesforce",
         ...(sfConnection ? { sfConnectionId: sfConnection.connectionId } : {}),
         ...(sfConnection && freshDiscoveryBoxEl ? { freshDiscovery: freshDiscoveryBoxEl.checked } : {}),
       }
       : runOptions;
+    // D-72: "Explore the site again" adds one key, `freshDiscovery`, for this run only, and never on
+    // an org-connection run (its own box decides there). Unticked or flag off: baseOptions as above.
+    const baseOptions = projectFreshBoxEl?.checked && !(targetAppBoxEl?.checked && sfConnection)
+      ? { ...baseOptions0, freshDiscovery: true }
+      : baseOptions0;
+    if (projectFreshBoxEl) projectFreshBoxEl.checked = false;
     const res = await fetch("/api/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -5938,6 +5958,189 @@ window.addEventListener("message", (ev) => {
   try { sessionStorage.setItem("sfConnection", JSON.stringify(sfConnection)); } catch { /* ignore */ }
 });
 
+/**
+ * "Explore the site again" (D-72, PROJECT_DISCOVERY_SHARING). A project's discovery is saved and
+ * reused by its runs for 7 days; ticking this makes the NEXT run explore the site afresh and replace
+ * the saved one (the box unticks itself once the run is sent). Created only when /api/health says
+ * `projectDiscovery: true`; flag off, nothing here exists (rule 4). No new class (rule 3): the label
+ * reuses `.field-label` and the box `.lib-check`, as the Salesforce box does.
+ */
+let projectFreshBoxEl = null;
+function renderProjectFreshBox() {
+  if (projectFreshBoxEl) return;
+  const form = document.getElementById("runForm");
+  const foot = form?.querySelector(".composer-foot");
+  if (!form || !foot) return;
+  const label = document.createElement("label");
+  label.className = "field-label";
+  label.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer";
+  label.innerHTML = `<input type="checkbox" class="lib-check" id="projectFreshDiscovery" /> Explore the site again`
+    + ` <span style="opacity:.7">(ignore this project's saved discovery, for the next run only)</span>`;
+  const after = [...form.querySelectorAll(":scope > label.field-label")].pop() || foot;
+  after.insertAdjacentElement("afterend", label);
+  projectFreshBoxEl = label.querySelector("input");
+}
+
+// -----------------------------------------------------------------------------
+// Jira, Phase 1 (D-71): "Connect Jira", then type a story key and its title + description fill the
+// prompt box. The user still enters the URL and presses Run — POST /api/runs is untouched.
+//
+// Rule-keeping, as the Pro block above it:
+//   - Nothing exists unless /api/health says `jira: true` (JIRA_ENABLED). Flag off, the home view is
+//     byte-identical: no element is created, nothing is hidden with .hidden (rule 4).
+//   - No new style.css class (rule 3): .panel, .field-label, .composer-save-btn, .case-selection-link,
+//     .cd-line-input and .team-error are reused.
+//   - OUTSIDE the run form, so Enter in the key box fetches the story and never starts a run.
+//   - The Jira token never reaches the browser; the server keeps it in memory and only says
+//     whether this user is connected.
+// -----------------------------------------------------------------------------
+
+const jira = {
+  root: null,
+  connected: false,
+  sites: [],
+  siteId: "",
+  key: "",
+  busy: false,
+  notice: "",   // a problem, shown as .team-error
+  note: "",     // what just happened (HTML, built from escaped parts)
+  poll: null,
+};
+
+function renderJiraRow() {
+  if (jira.root) return;
+  const form = document.getElementById("runForm");
+  if (!form) return;
+  jira.root = document.createElement("div");
+  jira.root.className = "panel";
+  jira.root.style.cssText = "padding:var(--sp-3) var(--sp-4);margin-bottom:var(--sp-3)";
+  form.insertAdjacentElement("beforebegin", jira.root);
+  jira.root.addEventListener("click", onJiraClick);
+  jira.root.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target?.dataset?.jira === "key") { e.preventDefault(); fetchJiraStory(); }
+  });
+  jira.root.addEventListener("input", (e) => {
+    if (e.target?.dataset?.jira === "key") jira.key = e.target.value;
+  });
+  jira.root.addEventListener("change", (e) => {
+    if (e.target?.dataset?.jira === "site") jira.siteId = e.target.value;
+  });
+  refreshJiraStatus();
+}
+
+async function refreshJiraStatus() {
+  try {
+    const s = await api("/api/jira/status");
+    jira.connected = !!s.connected;
+    jira.sites = Array.isArray(s.sites) ? s.sites : [];
+    if (!jira.sites.some((x) => x.id === jira.siteId)) jira.siteId = jira.sites[0]?.id ?? "";
+    if (s.configured === false) jira.notice = `Jira isn't set up on this server yet: ${(s.missing || []).join(", ")} not set.`;
+  } catch (err) {
+    jira.notice = err.message;
+  }
+  paintJira();
+  return jira.connected;
+}
+
+function paintJira() {
+  if (!jira.root) return;
+  const btn = (name, label, cls = "composer-save-btn") =>
+    `<button type="button" class="${cls}" data-jira="${name}"${jira.busy ? " disabled" : ""}>${label}</button>`;
+  let row;
+  if (!jira.connected) {
+    row = `${btn("connect", "Connect Jira")}<span class="field-label">Start a test from a Jira story</span>`;
+  } else {
+    const names = jira.sites.map((x) => x.name || x.url).join(", ");
+    const sitePick = jira.sites.length > 1
+      ? `<select data-jira="site" class="cd-line-input" style="flex:none;width:auto">${jira.sites.map((x) =>
+          `<option value="${escapeHtml(x.id)}"${x.id === jira.siteId ? " selected" : ""}>${escapeHtml(x.name || x.url)}</option>`).join("")}</select>`
+      : "";
+    row = `<span class="field-label">Jira connected: ${escapeHtml(names)}</span>${sitePick}
+      <input type="text" data-jira="key" class="cd-line-input" style="flex:none;width:200px"
+        placeholder="Story key, e.g. TBS-1" autocomplete="off" spellcheck="false" value="${escapeHtml(jira.key)}" />
+      ${btn("fetch", jira.busy ? "Fetching…" : "Fetch story")}
+      ${btn("disconnect", "Disconnect", "case-selection-link")}`;
+  }
+  jira.root.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">${row}</div>
+    ${jira.note ? `<p class="field-label" style="margin-top:var(--sp-2)">${jira.note}</p>` : ""}
+    ${jira.notice ? `<p class="team-error" role="alert" style="margin-top:var(--sp-2)">${escapeHtml(jira.notice)}</p>` : ""}`;
+}
+
+function onJiraClick(e) {
+  const what = e.target?.closest?.("[data-jira]")?.dataset?.jira;
+  if (what === "connect") connectJira();
+  else if (what === "fetch") fetchJiraStory();
+  else if (what === "disconnect") disconnectJira();
+}
+
+async function connectJira() {
+  if (jira.busy) return;
+  jira.notice = ""; jira.note = "";
+  // Opened NOW, inside the click, so a pop-up blocker allows it; pointed at Atlassian once the
+  // server has made this sign-in's one-time code.
+  const popup = window.open("about:blank", "testbench-jira", "width=620,height=760");
+  if (!popup) {
+    jira.notice = "Your browser blocked the Jira window. Allow pop-ups for this site and click Connect Jira again.";
+    return paintJira();
+  }
+  try {
+    const { authorizeUrl } = await api("/api/jira/connect", { method: "POST" });
+    popup.location.href = authorizeUrl;
+  } catch (err) {
+    popup.close();
+    jira.notice = err.message;
+    return paintJira();
+  }
+  jira.note = "Finish in the Jira window&hellip;";
+  paintJira();
+  // The server learns of the sign-in, not this page, so ask it — every 2s, for at most the
+  // 10 minutes the one-time code lives, and stop as soon as it says connected.
+  clearInterval(jira.poll);
+  const started = Date.now();
+  jira.poll = setInterval(async () => {
+    const done = await refreshJiraStatus();
+    if (done || Date.now() - started > 10 * 60_000) {
+      clearInterval(jira.poll);
+      jira.poll = null;
+      jira.note = done ? "" : "The Jira sign-in wasn't finished. Click Connect Jira to try again.";
+      paintJira();
+    }
+  }, 2000);
+}
+
+async function fetchJiraStory() {
+  if (jira.busy) return;
+  const key = jira.key.trim();
+  jira.notice = ""; jira.note = "";
+  if (!key) { jira.notice = "Type a story key first, like TBS-1."; return paintJira(); }
+  jira.busy = true;
+  paintJira();
+  try {
+    const q = jira.sites.length > 1 && jira.siteId ? `?site=${encodeURIComponent(jira.siteId)}` : "";
+    const story = await api(`/api/jira/issue/${encodeURIComponent(key)}${q}`);
+    const promptEl = document.getElementById("prompt");
+    promptEl.value = story.promptText;
+    promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+    const link = /^https:\/\//.test(story.link || "")
+      ? ` <a href="${escapeHtml(story.link)}" target="_blank" rel="noopener noreferrer">Open in Jira</a>` : "";
+    jira.note = `Prompt filled from ${escapeHtml(story.key)}${story.truncated ? " (long story — only the first part was used)" : ""}. Check it, add the URL, then Run.${link}`;
+  } catch (err) {
+    jira.notice = err.message;
+    jira.busy = false;
+    await refreshJiraStatus(); // a rejected sign-in comes back as "Connect Jira"
+    return;
+  }
+  jira.busy = false;
+  paintJira();
+}
+
+async function disconnectJira() {
+  try { await api("/api/jira/disconnect", { method: "POST" }); } catch { /* forgotten on restart anyway */ }
+  jira.connected = false; jira.sites = []; jira.note = ""; jira.notice = "";
+  paintJira();
+}
+
 fetch("/api/health")
   .then((r) => r.json())
   .then((h) => {
@@ -5945,6 +6148,8 @@ fetch("/api/health")
     if (h && h.salesforceOAuth === true) renderSalesforceConnect();
     if (h && h.sfDiscoveryCache === true) renderFreshDiscovery();
     if (h && h.specIntake === true) renderProToggle();
+    if (h && h.jira === true) renderJiraRow();
+    if (h && h.projectDiscovery === true) renderProjectFreshBox();
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);

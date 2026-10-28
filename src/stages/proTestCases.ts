@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { llm, cacheModelDimension, providerFor } from "../llm/client.js";
+import { llm, cacheModelDimension, providerFor, modelFor } from "../llm/client.js";
 import { parseJson, unwrapArray } from "../llm/json.js";
 import type { Plan } from "./planner.js";
 import type { AppModel } from "../schema/appModel.js";
@@ -10,7 +10,7 @@ import {
 } from "../kb/testStrategy.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { salesforceGuidance } from "./salesforceGuidance.js";
-import { llmCacheDimension, resolvedDeployment, resolvedModel } from "../llm/llmContext.js";
+import { llmCacheDimension } from "../llm/llmContext.js";
 // The shared PIECES are imported, not copied: the TestCase schema, the compound-login filter and
 // the typed "no usable cases" error. Importing does not edit testCases.ts, keeps the two
 // correctness filters from drifting between the two generators, and keeps the orchestrator's
@@ -314,7 +314,7 @@ ${focusBlock}Return JSON array: [ { "title","priority","feature","steps":string[
           // write, and the orchestrator ends the run as blocked/error after saving the raw
           // response for diagnosis. provider/model name who actually billed the attempt.
           const provider = providerFor("main");
-          const modelOrDeployment = provider === "azure" ? resolvedDeployment("main") : resolvedModel();
+          const modelOrDeployment = modelFor("main");
           throw new NoTestCasesError(provider, modelOrDeployment, raw, finishReason);
         }
         if (isCacheableResult(finalCases)) llmCacheSet(cacheKey, finalCases);

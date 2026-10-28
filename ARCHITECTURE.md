@@ -310,8 +310,9 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `discovery.ts` | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
 | `liveExtend.ts` | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding. Its `select` step calls `chooseLive` rather than a bare `selectOption`, sharing option matching and waiting with the generated spec (TD-79). Credential fills resolve their kind from the step's `${env:...}` VALUE, the same way the compiled spec does (TD-84), and a walk that ends on the page it typed a credential into throws instead of snapshotting the login form. `refreshPageModelAt` additionally returns the landed URL, for TD-86's scoped grounding |
 | `testCases.ts` | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist, login-case cap. **Not edited by Pro** — `tests/testCasesNoChange.test.ts` pins its prompt and cache key byte-for-byte |
+| `salesforceOrgLogin.ts` | No | Salesforce org login hardening (D-64), active only when the Salesforce box is ticked (`salesforceRun()`). `assertTestOrg`: refuses anything but a scratch org or a sandbox before a browser launches (with `SALESFORCE_ALLOW_ALL_ORGS` on, D-68: any Salesforce host, non-test orgs named in the server log). D-70: `parseSalesforceHost` / `sameSalesforceApp` (an org's hosts as My Domain name + partition + purpose, from Salesforce's URL-format tables), `onlyChecksLogin(ir)`, `OrgRefusedError`. `blockLoginAds`: aborts `c.salesforce.com` on discovery's shared page. `reachUsernameForm`: clicks "Log In with Username" on the email-first screen (checked before the username box). `waitForOneScreenPassword`: 2.5 s grace before `loginOnPage`'s instant check (TD-172). `describeLoginFailure`: wrong credentials / verification code / password change / SSO, from page structure. Also owns `codeEntryField`, which `server/salesforceLogin.ts` imports. Does NOT log in — `loginOnPage` still does, and still records the steps the generated spec replays. Also `fixedLoginRun()` — the one gate for D-65 (`SALESFORCE_FIXED_LOGIN` on AND a ticked run), read by `ir.ts` |
 | `specIntake.ts` | Gemini (pinned) + lite | Pro document intake behind `SPEC_INTAKE_ENABLED`. `checkSpecUpload`: byte limits, magic-byte sniffing, extension-vs-contents (a disagreement is rejected), per-format structure, DOCX text via mammoth — PDFs are never parsed. `distillSpec`: ONE Gemini call (pinned to Gemini even under `LLM_PROVIDER=azure`, since only it reads a PDF inline), cached in the `spec` namespace on the document's SHA-256 + model + instruction text. Never writes the document anywhere. `compareSpecToApp`/`runSpecComparison`: the per-run spec-vs-AppModel comparison on the LITE role via `llm()` (follows `LLM_PROVIDER`); every warning must name a real rule number or discovered page URL or it is dropped; never throws, never fails a run; warnings held in memory only. A Pro run skips reactive (new-page) case generation, which has never seen the spec |
-| `generator.ts` | No | IR -> Playwright spec (pure code) |
+| `generator.ts` | No | IR -> Playwright spec (pure code). With `SALESFORCE_FIXED_LOGIN` on and `ir.meta.fixedLogin` set (D-65), the leading `auth-*` steps run as one `salesforceLogin(page, loginUrl)` in step 1 (the others stay as empty `test.step`s, no login screenshots) |
 | `hybridDiscovery.ts` | Gemini (text) | Discovery orchestrator: DOM first, auth-aware login + session verification, same-origin + click-probed site crawl, vision fallback; also owns `isAllowedEntryUrl`/`isPrivateOrLoopbackHost`, the entry-URL scheme + private-host allow-list |
 | `credentials.ts` | No | Per-case/per-leg substitution policy + prompt credential extraction — no demo-site registry; `redactCredentials` skips DOM-keyword-colliding values. `restoreCredentialRefs` guards the editor save path: a credential typed as a literal step value goes back behind `${env:...}` before anything is written, classified by the step's own history / the DOM's `inputType` / a password-only name check (TD-67). `credentialKindForStep`/`credentialForStep` resolve VALUE-first (env reference), falling back to the target only when the value is not one — used by the live walk so it agrees with the compiled spec (TD-84) |
 | `domDiscovery.ts` | No | Drives Playwright for page HTML; `extractDomModelFromPage` snapshots an open page, detects generic clickables, re-checks real visibility. Holds the `DISCOVERY_LIVE_DOM` strategy switch (`elementStrategy`, the only read of the flag) and the strategy-aware cache key (`domCacheKey`) |
@@ -348,23 +349,38 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `orchestrator.ts` | Pipeline wiring: plan -> discovery -> test cases (-> optional gate) -> IR -> generate -> execute -> heal -> suite |
 | `db.ts` | Supabase Postgres access. `getServiceClient()` (service role, bypasses RLS by design), `DEFAULT_ORG_ID`, `isDbEnabled()`, the fire-and-forget run-row writes (`recordRunStarted` / `recordRunStatus` / `recordRunProject` / `recordRunCases`) and the shadow comparison against `listRuns()`. **`DB_ENABLED` gates only those five things** — the library, projects and organisations surface goes through the same client with no such check, so it works whenever a service-role key is set and 503s when one is not |
 
-### `src/llm/` — LLM Layer (5 files)
+### `src/llm/` — LLM Layer
 
 | File | Purpose |
 |------|---------|
 | `gemini.ts` | Google Gemini client (REST API, key-pool rotation, backoff); returns `{content, usage}` and records ambient per-stage spend via `llmBudget.ts`. Takes an optional image (`imageBase64`) or document (`fileBase64` + `fileMime`, Pro's PDF) as an `inline_data` part — neither is counted by the `LLM_MAX_PROMPT_CHARS` guard |
+| `claude.ts` | Anthropic Claude provider (D-66) via `@anthropic-ai/sdk`, chosen by `LLM_PROVIDER[_LITE]=claude`. Same `{content, usage}` contract as `azureOpenAI.ts`; SDK retries off, `callWithPool` keeps rotation/backoff/timeout; never sends `temperature`; refusal / `max_tokens` thrown without retry; image and PDF as content blocks. Model/effort resolved in `llmContext.ts` (`resolvedClaudeModel`, `resolvedClaudeEffort`); `client.ts` `modelFor()` names the model for cache keys and errors |
 | `keyPool.ts` | Round-robin API key pool with cooldown tracking; `poolFromEnv` accepts a singular `_KEY` var as a fallback when the plural `_KEYS` var isn't set |
 | `llmBudget.ts` | Per-run hard cap on LLM calls across every stage (plan, discovery, testcases, ir, failure-analysis, heal), not just IR; usage recorded to `08-llm-usage.json`, broken down per stage. See `DECISIONS.md` D-21 |
 | `backoff.ts` | Exponential backoff, per-attempt timeout, rate-limit detection + key rotation |
 | `json.ts` | Strip markdown fences and parse JSON from LLM output |
 
-### `src/kb/` — Knowledge Base (3 files)
+### `src/jira/` — Jira Phase 1 (3 files, D-71, behind `JIRA_ENABLED`)
+
+| File | LLM? | Purpose |
+|---|---|---|
+| `client.ts` | No | Atlassian calls: `authorizeUrl`, `connect` (code -> token at `auth.atlassian.com/oauth/token`, then Jira sites from `accessible-resources`), `fetchStory` (`/ex/jira/{cloudId}/rest/api/3/issue/{key}?fields=summary,description` -> prompt text, capped at `JIRA_MAX_PROMPT_CHARS`), `parseIssueKey`, `JiraError` (user-facing sentence + status). Read-only scope `read:jira-work` |
+| `session.ts` | No | In-memory only: one-time sign-in `state` (32 random bytes, bound to the user, single use, 10 min) and each user's token + sites. Lost on restart by design — never on disk, in the DB or in logs |
+| `adf.ts` | No | Atlassian Document Format -> plain text (paragraphs, lists, tables, mentions; media skipped; unknown nodes walked for their text) |
+
+Routes (`src/server/index.ts`, all new, all 404 when the flag is off): `GET /api/jira/status`,
+`POST /api/jira/connect`, `GET /api/jira/callback` (public — identified by `state`, see D-71),
+`GET /api/jira/issue/:issueKey[?site=<cloudId>]`, `POST /api/jira/disconnect`. `/api/health` gains
+`jira: true` only when on. The browser (`app.js`, "Jira, Phase 1" block) only fills `#prompt`.
+
+### `src/kb/` — Knowledge Base (4 files)
 
 | File | Purpose |
 |------|---------|
 | `cache.ts` | SHA1-keyed file-based AppModel cache |
 | `llmCache.ts` | Two-tier response cache (in-memory, 30-min TTL + disk, no expiry); every stage's cache key also hashes its system prompt + model name (`DECISIONS.md` D-10). **Namespaced** (`runs/_cache/<ns>/`) so one kind of entry can be cleared alone — browser walks live under `walks` and are cleared by `POST /api/cache/walks/clear`, leaving the LLM answers that cost money (TD-85). `credentialFingerprint` hashes credential values for use as a key part |
 | `testStrategy.ts` | Static QA knowledge: coverage taxonomy, scope classification, filtering |
+| `projectDiscovery.ts` | D-72, `PROJECT_DISCOVERY_SHARING`: a project's discovery saved under organisation + project + the site key (URL + login + strategy) for 7 days, read by `discoverSiteHybrid` when the run route passes a `discoveryScope`; `readOrClaim` lets only one discovery of a key run at a time (others wait and reuse it). In-process, single replica |
 
 ### `src/server/` — Web Server (18 files)
 

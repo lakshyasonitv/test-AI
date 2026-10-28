@@ -1,3 +1,4 @@
+import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -640,7 +641,11 @@ export function detectBlocked(
   if (VERIFICATION_GATE.test(text)) {
     reason = "the flow reached a verification step that needs a code sent to a real inbox or phone, " +
       "which an automated test can't read";
-  } else if (appOrigin && finalUrl && !isSameSite(finalUrl, appOrigin, relatedHosts)) {
+  } else if (appOrigin && finalUrl && !isSameSite(finalUrl, appOrigin, relatedHosts)
+    // D-70: Salesforce shows its app on a different host from its login (my.salesforce.com ->
+    // lightning.force.com). On a fixed-login Salesforce run, the same org's own app host is not
+    // "leaving the application"; another org or any other site still is.
+    && !(fixedLoginRun() && sameSalesforceApp(finalUrl, appOrigin))) {
     try {
       reason = `the flow left the application for ${new URL(finalUrl).host}, an external sign-in ` +
         `provider the test can't complete`;

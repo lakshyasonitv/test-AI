@@ -1,8 +1,9 @@
 import { gemini, type GeminiOpts, type GeminiResult } from "./gemini.js";
 import { azureOpenAI } from "./azureOpenAI.js";
+import { claude } from "./claude.js";
 import {
-  resolvedDeployment, resolvedModel, resolvedModelLite, resolvedProvider,
-  resolvedReasoningEffort, type LlmRole,
+  resolvedClaudeEffort, resolvedClaudeModel, resolvedDeployment, resolvedModel, resolvedModelLite,
+  resolvedProvider, resolvedReasoningEffort, type LlmRole,
 } from "./llmContext.js";
 import { currentRunId } from "../runContext.js";
 import { extendedLoggingEnabled } from "../logging.js";
@@ -14,7 +15,7 @@ import { extendedLoggingEnabled } from "../logging.js";
  * the nine call sites across seven files that used to import `gemini()` now import `llm` and say
  * `role: 'main' | 'lite'` instead of naming a model. The role resolves to a provider via
  * `LLM_PROVIDER`/`LLM_PROVIDER_LITE` (both defaulting to "gemini"), and then to gemini() (existing,
- * unchanged) or azureOpenAI() (a mirror with the same contract).
+ * unchanged), azureOpenAI() or claude() (mirrors with the same contract; claude is D-66).
  *
  * NO FALLBACK BETWEEN PROVIDERS: a role is bound to one provider for the whole request, and a
  * failure is reported as the failing provider's own error. Unset LLM_PROVIDER means every path is
@@ -57,14 +58,27 @@ export type LlmResult = GeminiResult & {
   refusal?: string | null;
 };
 
-/** The provider a role resolves to, narrowed to the two this build can serve. Throws on garbage —
+/** Every provider this build can serve. The startup guard in server/index.ts reads this list. */
+export const LLM_PROVIDERS = ["gemini", "azure", "claude"] as const;
+export type LlmProvider = (typeof LLM_PROVIDERS)[number];
+
+/** The provider a role resolves to, narrowed to the ones this build can serve. Throws on garbage —
  *  the startup guard in server/index.ts should have rejected it before a request ever ran. */
-export function providerFor(role: LlmRole): "gemini" | "azure" {
+export function providerFor(role: LlmRole): LlmProvider {
   const raw = resolvedProvider(role);
-  if (raw === "gemini" || raw === "azure") return raw;
+  if ((LLM_PROVIDERS as readonly string[]).includes(raw)) return raw as LlmProvider;
   throw new Error(
-    `LLM_PROVIDER${role === "lite" ? "_LITE" : ""} must be "gemini" or "azure" — found ${JSON.stringify(raw)}`,
+    `LLM_PROVIDER${role === "lite" ? "_LITE" : ""} must be "gemini", "azure" or "claude" — found ${JSON.stringify(raw)}`,
   );
+}
+
+/** The model id / deployment name that a role will actually call — what a cache key, a log line
+ *  and a NoTestCasesError must all name. One function so they can never disagree. */
+export function modelFor(role: LlmRole): string {
+  const provider = providerFor(role);
+  if (provider === "azure") return resolvedDeployment(role);
+  if (provider === "claude") return resolvedClaudeModel(role);
+  return role === "lite" ? resolvedModelLite() : resolvedModel();
 }
 
 /**
@@ -74,11 +88,7 @@ export function providerFor(role: LlmRole): "gemini" | "azure" {
  * gemini this is `gemini:<same model as before>` — a one-time cache miss, recorded in DECISIONS.md.
  */
 export function cacheModelDimension(role: LlmRole): string {
-  const provider = providerFor(role);
-  const modelOrDeployment = provider === "azure"
-    ? resolvedDeployment(role)
-    : role === "lite" ? resolvedModelLite() : resolvedModel();
-  return `${provider}:${modelOrDeployment}`;
+  return `${providerFor(role)}:${modelFor(role)}`;
 }
 
 /**
@@ -121,6 +131,16 @@ function logLlmCall(
 
 export async function llm(prompt: string, opts: LlmOpts): Promise<LlmResult> {
   const { role, ...rest } = opts;
+  if (providerFor(role) === "claude") {
+    // temperature and jsonEnvelope are deliberately NOT forwarded: current Claude models reject
+    // sampling parameters, and Claude can return a bare JSON array (see claude.ts).
+    const { temperature: _t, jsonEnvelope: _j, ...claudeRest } = rest;
+    const result = await claude(prompt, {
+      ...claudeRest, model: resolvedClaudeModel(role), effort: resolvedClaudeEffort(role),
+    });
+    logLlmCall(role, result.usage);
+    return result;
+  }
   if (providerFor(role) === "azure") {
     // temperature (from a shared call site, e.g. ir.ts:1592) is deliberately NOT forwarded to the
     // azure body — azureOpenAI never sends it. reasoning effort is resolved per role here: 'main'

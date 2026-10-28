@@ -1,3 +1,4 @@
+import type { DiscoveryScope } from "./kb/projectDiscovery.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -12,6 +13,7 @@ import { LlmBudget, enterWithBudget, type LlmUsageSnapshot } from "./llm/llmBudg
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
+import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
 import { cleanupEnabled, cleanupRecords, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
 import { enterWithRunId } from "./runContext.js";
@@ -115,8 +117,15 @@ export interface RunOptions {
    * frontdoor URL. Omitted means every browser signs in the old way (or not at all).
    */
   sfFrontdoor?: FrontdoorSession;
-  /** Org-connection runs: crawl again even when a saved discovery matches the org's setup. */
+  /** Crawl again even when a saved discovery matches: org-connection runs (the org's setup), and
+   *  (D-72) a project's shared discovery. */
   freshDiscovery?: boolean;
+  /**
+   * D-72 (PROJECT_DISCOVERY_SHARING): the organisation and project this run's discovery is shared
+   * with. Set only by the run route from the session and the tenancy-checked project; absent means
+   * the global per-URL cache, as before — and always for the CLI.
+   */
+  discoveryScope?: DiscoveryScope;
 }
 
 /**
@@ -234,6 +243,7 @@ export async function runPipeline(
   // so scrubbing the file changes no behaviour. 04-ir.json is deliberately NOT scrubbed here: it is
   // what runs, and its credential fills are already env references (applyCredentials).
   const SCRUB_ON_SAVE = new Set(["01-plan.json", "03-cases.json"]);
+
   const save = (name: string, data: unknown) =>
     writeFileSync(path.join(runDir, name),
       JSON.stringify(SCRUB_ON_SAVE.has(name) ? scrubRunSecrets(runId, data) : data, null, 2));
@@ -354,9 +364,12 @@ export async function runPipeline(
       }
       : undefined;
 
+    const sfWarning = options?.targetApp === "salesforce"
+      ? resolvedUrls.map(orgWarning).find((w) => w !== null) ?? null
+      : null;
     const appModel = await step("discovery", "02-appmodel.json", async () => {
       const discovered = resolvedUrls.length === 1
-        ? await discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery, prompt, options?.freshDiscovery === true)
+        ? await discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery, prompt, options?.freshDiscovery === true, options?.discoveryScope)
         : await discoverPagesHybrid(resolvedUrls);
       // Discovery upgrade Phase 5 (BUTTON_EXPLORER_ENABLED, default off): safe clicks that reveal
       // screens discovery cannot reach by URL. Inside the step, so 02-appmodel.json holds what it
@@ -378,6 +391,14 @@ export async function runPipeline(
           elementCount: p.elements?.length ?? 0,
         })),
         ...(model.auth ? { auth: { status: model.auth.status, loginUrl: model.auth.loginUrl } } : {}),
+        // D-68: on a ticked Salesforce run against an org that is not a scratch org or a sandbox
+        // (only possible with SALESFORCE_ALLOW_ALL_ORGS on), the screen shows this sentence.
+        // Absent on every other run, so their event is unchanged.
+        ...(sfWarning ? { orgWarning: sfWarning } : {}),
+        // When this discovery was saved and whether this run reused it: the org scan
+        // (SALESFORCE_DISCOVERY_CACHE_ENABLED) and a project's shared discovery (D-72). app.js already
+        // reads it; it was never sent before. Absent on every other run.
+        ...(model.savedScan ? { savedScan: model.savedScan } : {}),
       }),
     );
     console.log("1. Discovery completed");
