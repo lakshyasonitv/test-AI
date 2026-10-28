@@ -996,7 +996,12 @@ function emitStep(step: Step, baseUrl: string): string {
       break;
 
     case "press":
-      code += `  await ${locator(step.target!)}.press(${q(step.value ?? "Enter")}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
+      // A press with no target ("press Enter" right after a fill) goes to whatever has focus, as a
+      // person's key press does. locator() needs a target: it threw "reading 'frame'" here and the
+      // whole run died at the generate stage (run 2026-10-28T05-23-15-586Z-2e6fd7ae).
+      code += step.target
+        ? `  await ${locator(step.target)}.press(${q(step.value ?? "Enter")}, { timeout: ${ASSERT_TIMEOUT_MS} });`
+        : `  await page.keyboard.press(${q(step.value ?? "Enter")});`;
       break;
 
     case "wait":
@@ -1045,7 +1050,7 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
     case "fill": return `Fill${name} with${val}`;
     case "select": return `Select${val} in${name}`;
     case "check": return `Check${name}`;
-    case "press": return `Press${val || " Enter"} in${name}`;
+    case "press": return name ? `Press${val || " Enter"} in${name}` : `Press${val || " Enter"}`;
     case "wait": return `Wait ${step.value ?? 1000}ms`;
     case "assert": {
       const assertion = step.assertion ?? "visible";

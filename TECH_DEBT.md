@@ -6042,3 +6042,31 @@ Every page of run `2026-10-24T07-58-47-085Z-3eb31efb` carries the dialog (8 elem
 and `capElements` ranks dialogs first, so it opens every micro model. It appears in headless Chromium only (not in
 the browser pane). Candidate fix: find why Lightning reports a CSS error headless (user agent, a blocked stylesheet),
 or drop this one known product dialog from the model.
+
+---
+
+### TD-169. A `press` step with no target killed the run at the generate stage — High / Accidental — **Fixed (2026-10-28)**
+
+**Found 2026-10-28**, run `2026-10-28T05-23-15-586Z-2e6fd7ae` (Salesforce "create an account", org connection):
+the model wrote `press Enter` with no target right after a fill. That is legal IR (`stepText.ts` renders it as
+"Press the Enter key") and grounding passed it, but `generator.ts` emitted `locator(step.target!).press(...)` and
+`liveExtend.ts`'s `runStepLive` did `resolveLive(page, step.target!)`; both read `.frame` off `undefined`, so the
+text-assertion replay logged "replay failed" and the generate stage failed the whole run with
+"Cannot read properties of undefined (reading 'frame')". **Fix:** with no target both press the key on whatever
+has focus (`page.keyboard.press`), as a person does; the step label drops its dangling "in". Checked in real
+Chromium (`tests/targetlessPress.test.ts`: the emitted spec through the real executor, and the live replay); all
+three cases fail without the fix; the run's saved `04-ir.json` now generates. Not changed: grounding still accepts
+a targetless `press` (it is valid), and on Salesforce's create dialog Enter may not save the record, so a case that
+needs Save should click it.
+
+---
+
+### TD-170. `tests/appJsProIntake.test.ts` fails on a Windows checkout — Low / Accidental — **Open**
+
+**Found 2026-10-28.** The test cuts the Pro block out of `public/app.js` with an end marker containing a bare
+`"\n"` (`"/**\n * Clear the cached browser walks"`). With git's `core.autocrlf=true` (the Windows default) the
+working copy has CRLF, the marker is never found, and both cases fail before checking anything (`expected -1 to be
+greater than …`). On LF (CI, Linux) they pass; run by hand on the CRLF file with line endings normalised, the block
+is found and it neither toggles `.hidden` nor calls `showView`. Candidate fix: normalise `\r\n` to `\n` when the
+test reads the file (other tests that slice source text by multi-line markers may share this; the known
+Windows-only failures in `discoveryStrategy` / `liveDomDiscovery` were not checked for it).

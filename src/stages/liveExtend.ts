@@ -111,7 +111,11 @@ export async function runStepLive(
       await chooseLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "");
       return;
     case "check": await (await resolveLive(page, step.target!, "check")).check(); return;
-    case "press": await (await resolveLive(page, step.target!)).press(step.value ?? "Enter"); return;
+    // No target: the key goes to whatever has focus, exactly as generator.ts emits it.
+    case "press":
+      if (!step.target) { await page.keyboard.press(step.value ?? "Enter"); return; }
+      await (await resolveLive(page, step.target)).press(step.value ?? "Enter");
+      return;
     case "wait": await page.waitForTimeout(Number(step.value ?? 1000)); return;
     case "assert": return; // state check only — skip during replay
   }
