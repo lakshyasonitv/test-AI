@@ -2571,11 +2571,11 @@ function setGateSteps(index, steps) {
 }
 
 /** Ticked state is a draft too, so it survives a repaint after a structural change and a refresh
- *  mid-round. Falls back to the rule the panel has always used: the primary case starts ticked. */
+ *  mid-round. Nothing starts ticked except a case the reviewer wrote: they choose every case. */
 function gateIsChecked(entry) {
   const stored = gateDrafts.checked[entry.index];
   if (typeof stored === "boolean") return stored;
-  return entry.isAdded || !!entry.c.fromPrompt;
+  return !!entry.isAdded;
 }
 
 function setGateChecked(index, value) {
