@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 
 /**
- * D-63 — the Jira row in public/app.js keeps the platform's UI rules (CLAUDE.md rules 3 and 4),
+ * D-71 — the Jira row in public/app.js keeps the platform's UI rules (CLAUDE.md rules 3 and 4),
  * the same guard appJsProIntake.test.ts keeps for the Pro block. The row itself was checked in a
  * real browser when it was written; this keeps the rules for the next edit.
  */
@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 const APP = readFileSync("public/app.js", "utf8");
 const CSS = readFileSync("public/style.css", "utf8");
 
-const START = "// Jira, Phase 1 (D-63)";
+const START = "// Jira, Phase 1 (D-71)";
 const END = 'fetch("/api/health")';
 const s = APP.indexOf(START);
 const e = APP.indexOf(END, s);

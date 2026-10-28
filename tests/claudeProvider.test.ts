@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * D-58: the Claude provider. The Anthropic SDK is mocked — no network call, no key, no cost.
+ * D-66: the Claude provider. The Anthropic SDK is mocked — no network call, no key, no cost.
  * Proves: the mode switch (LLM_PROVIDER=claude) routes to claude(), unset still means gemini,
  * the cache key names the provider and model, the request body never carries temperature or a
  * literal key, and refusal / truncation / rate-limit map to the shapes backoff.ts already handles.

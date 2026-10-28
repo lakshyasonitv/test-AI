@@ -4,7 +4,7 @@ import type { PageModel } from "../schema/appModel.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, credentialFingerprint, llmCacheVersion } from "../kb/llmCache.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 import { siteHost } from "../text.js";
-import { fingerprintOf, sameScreen } from "./screens.js";
+import { fingerprintOf, matchingScreenIndex } from "./screens.js";
 import { redactCredentials, type Credentials } from "./credentials.js";
 import { currentRunId } from "../runContext.js";
 
@@ -92,7 +92,7 @@ export function mergeIntoMap(
     storedEdges = storedEdges.map((e) => ({ ...e, from: e.from === from ? to : e.from, to: e.to === from ? to : e.to }));
   };
   for (const s of screens) {
-    const idx = stored.findIndex((o) => sameScreen(asFp(o), asFp(s)));
+    const idx = matchingScreenIndex(stored, asFp, asFp(s)); // Phase 3: best match when the flag is on
     if (idx < 0) { stored.push({ ...s }); continue; }
     const old = stored[idx];
     rekey(old.key, s.key);

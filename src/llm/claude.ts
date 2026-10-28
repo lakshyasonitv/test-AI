@@ -9,7 +9,7 @@ import { recordAmbient } from "./llmBudget.js";
  * The mirror of `azureOpenAI.ts`'s contract on purpose — `{content, usage}` return, spend recorded
  * via `recordAmbient`, the same `stage` label — so `client.ts` can pick it per role and every
  * caller downstream is untouched. Selected only by `LLM_PROVIDER=claude` / `LLM_PROVIDER_LITE=claude`;
- * with both unset nothing in this file ever runs (DECISIONS.md D-58).
+ * with both unset nothing in this file ever runs (DECISIONS.md D-66).
  *
  * Contrasts worth knowing:
  *  - Retries stay in ONE place. The SDK client is built with `maxRetries: 0` and `callWithPool`

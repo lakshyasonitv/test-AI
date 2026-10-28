@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { chromium, type Browser, type Page } from "@playwright/test";
 
 /**
- * D-57 stage 2 — the fixed Salesforce login, EXECUTED in real Chromium.
+ * D-65 stage 2 — the fixed Salesforce login, EXECUTED in real Chromium.
  *
  * Extracted from a REAL generated spec (DECISIONS.md D-19: a check that only reads the emitted
  * string verified nothing the one time it mattered). Every Salesforce host below is answered by
@@ -251,10 +251,13 @@ describe("the generated spec's shape", () => {
   });
 });
 
-describe("flag off: every spec is byte-identical to the code before D-57", () => {
-  it("six saved IRs (two real runs, both login shapes) generate exactly the pre-D-57 spec", async () => {
+describe("flag off: every spec is byte-identical to the code before D-65", () => {
+  it("six saved IRs (two real runs, both login shapes) generate exactly the pre-D-65 spec", async () => {
     // Captured by running the generator from the commit BEFORE this change on the same IRs
-    // (tests/fixtures/salesforceFixedLogin/flag-off-specs.json). An IR without meta.fixedLogin —
+    // (tests/fixtures/salesforceFixedLogin/flag-off-specs.json). Re-captured 2026-10-28 from
+    // origin/main's generator (1fb9dcb), which has no D-65 code, when main was merged in: main's own
+    // generator changes moved the bytes, and "flag off = main's spec exactly" is the invariant.
+    // An IR without meta.fixedLogin —
     // every IR when SALESFORCE_FIXED_LOGIN is off — must not change by a single byte.
     const { readFileSync } = await import("node:fs");
     const { generateSpec } = await import("../src/stages/generator.js");

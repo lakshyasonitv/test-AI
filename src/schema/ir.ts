@@ -24,6 +24,19 @@ export const Target = z.object({
    */
   frame: z.string().optional(),
   /**
+   * The control is a LOOKUP (a record reference): a `select` on it types the value, waits for the
+   * suggestions and picks the first match — or, with an empty value, the first suggestion. Set in
+   * code from the org model (testData.ts), never by the LLM. Additive: absent means today's select.
+   */
+  lookup: z.boolean().optional(),
+  /**
+   * A FIELD of the record page the flow is on, by the label the page shows ("Expected Revenue"): a
+   * `text_contains`/`text_equals` assert on it compares that field's shown value, found inside the
+   * field's own block on the page, never anywhere on the page (a bare "$100.00" can be another
+   * field's). Set in code (salesforceGuidance.fieldChecksOnRecordView), never by the LLM. Additive.
+   */
+  field: z.string().optional(),
+  /**
    * Provenance, not behaviour. `"replay"` marks a target that was grounded against the LIVE page
    * during a replay (`REPLAY_REGROUND`) rather than against the model discovery built — the case
    * of a control revealed by a click, which discovery never saw.
@@ -111,7 +124,7 @@ export const IR = z.object({
      */
     truncationKind: z.string().optional(),
     /**
-     * D-57: set by `toIR` (never by the model — it strips any it is given) on a ticked Salesforce
+     * D-65: set by `toIR` (never by the model — it strips any it is given) on a ticked Salesforce
      * run with SALESFORCE_FIXED_LOGIN on, when the IR starts with the recorded login (`auth-*`).
      * `generateSpec` then runs that login block as ONE fixed Salesforce login routine. Absent
      * everywhere else, so every other IR and every other spec is unchanged.

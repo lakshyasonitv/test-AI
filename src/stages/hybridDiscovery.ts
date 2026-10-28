@@ -19,7 +19,7 @@ import { chromiumLaunchOptions, browserContextOptions } from "../browserLaunch.j
 import { llm, cacheModelDimension } from "../llm/client.js";
 import { parseJson } from "../llm/json.js";
 import { AppModel, AuthOutcome, type AuthStep, Element, PageModel } from "../schema/appModel.js";
-import { cacheGet, cacheSet } from "../kb/cache.js";
+import { cacheGet, cacheSet, noteOrgDiscoverySaved, savedOrgDiscoveries, type OrgDiscoverySave } from "../kb/cache.js";
 import { discoverUsingCrawler, extractDomModelFromPage, needsVisionFallback, elementStrategy } from "./domDiscovery.js";
 import {
   modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
@@ -37,6 +37,12 @@ import { llmCacheDimension } from "../llm/llmContext.js";
 import {
   salesforceRun, assertTestOrg, blockLoginAds, reachUsernameForm, waitForOneScreenPassword, describeLoginFailure,
 } from "./salesforceOrgLogin.js";
+import { networkSettleEnabled, trackNetwork, waitForDialogFields } from "./networkSettle.js";
+import { currentFrontdoor, openFrontdoor } from "./salesforceFrontdoor.js";
+import { readSalesforceOrgModel, createFormUrls, recordPageUrls, orgSetupFingerprint, objectsNamedIn } from "./salesforceOrgModel.js";
+import type { SalesforceOrgModel } from "../schema/appModel.js";
+import { currentRunTargetApp } from "../runTarget.js";
+import { volatileIdDetectionEnabled } from "./volatileIds.js";
 
 // ---------------------------------------------------------------------------
 // Concept labeling — the ONE remaining Gemini call in the primary path
@@ -341,7 +347,10 @@ async function discoverUsingVision(url: string): Promise<AppModel> {
 export async function discoverPagesHybrid(urls: string[]): Promise<AppModel> {
   // A ticked Salesforce run is refused before any page is opened unless EVERY URL is a scratch org
   // or a sandbox (salesforceOrgLogin.ts). Unticked runs never reach this line's body.
-  if (salesforceRun()) for (const u of urls) assertTestOrg(u);
+  // An org-connection run (D-63) is checked by the connection's own guard (salesforceOAuth.ts, which
+  // accepts Developer Edition orgs and, with SALESFORCE_PRODUCTION_ORGS_ENABLED, production), so this
+  // password-run guard steps aside for it.
+  if (salesforceRun() && !currentFrontdoor()) for (const u of urls) assertTestOrg(u);
   const seen = new Set<string>();
   // `urls[0]` verbatim was wrong twice over: it keeps the entered SCHEME (so a redirected site
   // leaves every page disagreeing with the base — TD-82) and it keeps the PATH, so a base of
@@ -377,6 +386,8 @@ export async function discoverPagesHybrid(urls: string[]): Promise<AppModel> {
  * call, and selection budgets the final case count anyway.
  */
 export const MAX_DISCOVERY_PAGES = Number(process.env.MAX_DISCOVERY_PAGES ?? 5);
+/** The page budget of a Salesforce run's crawl (ordinary runs: MAX_DISCOVERY_PAGES). */
+const SALESFORCE_DISCOVERY_PAGES = 12; // ponytail: a constant; make it an env knob if a real org needs tuning
 
 /**
  * The origin an AppModel should carry, given where the browser actually LANDED.
@@ -596,6 +607,27 @@ const LOGOUT_PATH = /(^|\/)(logout|log-out|signout|sign-out|logoff|log-off)(\/|$
  * real input dimension serves a wrong answer for as long as it lives. Hashed rather than
  * interpolated so no credential value is ever part of a key string.
  */
+/** Off unless SALESFORCE_DISCOVERY_CACHE_ENABLED is "true": every org-connection run crawls afresh. */
+export const orgDiscoveryCacheEnabled = () => process.env.SALESFORCE_DISCOVERY_CACHE_ENABLED === "true";
+
+// ponytail: 24 h ceiling. The setup fingerprint proves the org did not change; this only bounds
+// what it cannot see (a Salesforce release reshaping Lightning). Lower it if that bites.
+const ORG_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** The run screen's "saved discovery" line: what is saved for this org and still within the ceiling. */
+export const savedDiscoveriesFor = (instanceHost: string): OrgDiscoverySave[] =>
+  orgDiscoveryCacheEnabled() ? savedOrgDiscoveries(instanceHost, ORG_CACHE_TTL_MS) : [];
+
+/**
+ * The key of an org-connection discovery: the org, the entry URL, the org's setup fingerprint
+ * (orgSetupFingerprint), and what the request steers. A request naming other objects opens other
+ * create forms and record pages (createFormUrls, recordPageUrls), so it is a different crawl.
+ */
+export function orgCacheKey(instanceHost: string, url: string, fingerprint: string, org: SalesforceOrgModel, request: string): string {
+  const named = objectsNamedIn(request, org).map((o) => o.api).join(",");
+  return `sf-org:${instanceHost}|${url}|${fingerprint}|${named}|${createFormUrls("", org, request).join(",")}${strategySuffix()}`;
+}
+
 export const siteCacheKey = (url: string, creds?: Credentials) => {
   if (!creds) return `site:${url}${strategySuffix()}`;
   const id = crypto.createHash("sha1")
@@ -610,7 +642,11 @@ export const siteCacheKey = (url: string, creds?: Credentials) => {
  * URL (up to APPMODEL_CACHE_TTL_MS) and the checkbox appeared to do nothing — TD-22, D-10 again.
  * Empty for the static strategy, so every pre-existing key is unchanged.
  */
-const strategySuffix = () => (elementStrategy() === "live" ? "#live" : "");
+const strategySuffix = () => (elementStrategy() === "live" ? "#live" : "")
+  + (networkSettleEnabled() ? "#settled" : "") // Phase 1: a settled crawl is a different model (TD-22)
+  + (volatileIdDetectionEnabled() ? "#vid" : "") // Phase 4: so is one walked with id evidence
+  // A Salesforce walk now records each element's landmark (pageSection); an older cached model lacks it.
+  + (currentRunTargetApp() === "salesforce" ? `#sf-landmarks#p${SALESFORCE_DISCOVERY_PAGES}` : "");
 /** The bare-URL key `discoverHybrid` uses, with the same strategy dimension. */
 const hybridKey = (url: string) => `${url}${strategySuffix()}`;
 
@@ -1216,20 +1252,56 @@ export async function discoverSiteHybrid(
   /** Pre-bound by the orchestrator over runId/url — discovery has neither. Returns null when
    *  the user skips or the prompt times out, which is a `no-credentials` outcome, not an error. */
   askCredentials?: () => Promise<Credentials | null>,
+  /** The person's request: on an org connection the create forms of the objects it names are opened
+   *  first (Session 102). Optional; absent, the order is the org's own. */
+  request = "",
+  /** Org connection: skip the saved discovery and crawl, then save the new one ("Fresh discovery"). */
+  freshDiscovery = false,
 ): Promise<AppModel> {
   // A ticked Salesforce run against anything but a scratch org or a sandbox stops HERE — before the
   // cache, before a browser exists — so a production org is never opened, and a model cached for it
   // is never served either. The run fails at its discovery stage with the refusal's sentence.
-  if (salesforceRun()) assertTestOrg(url);
+  // Not on an org-connection run (D-63): its own guard already decided which orgs it may connect.
+  if (salesforceRun() && !currentFrontdoor()) assertTestOrg(url);
 
   // The cache lookup CANNOT happen here when askCredentials is in play: the key includes the
   // credential identity and we don't know it yet. Reading with a stale key and writing with the
   // real one means the read and write keys differ on every authenticated run, so nothing ever
   // hits and each run re-pays the whole crawl plus its Gemini labelling. The lookup moves below
   // the gate check, once the credentials are actually resolved.
-  if (!askCredentials) {
+  //
+  // D-63: a run signed in through a Salesforce org connection never reads or writes this cache. Its
+  // session belongs to the connection, not to `creds`, so the key cannot tell two connections (or a
+  // connection and an anonymous crawl) apart — and a re-crawl is cheaper than a wrong model.
+  const frontdoor = currentFrontdoor();
+  if (!askCredentials && !frontdoor) {
     const cached = cacheGet(siteCacheKey(url, creds));
     if (cached) return cached;
+  }
+  // Its own cache instead (SALESFORCE_DISCOVERY_CACHE_ENABLED): keyed by the org and its setup
+  // fingerprint, read through the API in seconds, so an unchanged org skips the whole crawl. The
+  // org model handed back is always the fresh one (record counts move with every run).
+  let earlyOrgModel: SalesforceOrgModel | null = null;
+  let orgKey: string | null = null;
+  if (frontdoor?.apiGet && orgDiscoveryCacheEnabled()) {
+    earlyOrgModel = await readSalesforceOrgModel(frontdoor).catch(() => null);
+    const fingerprint = earlyOrgModel && await orgSetupFingerprint(earlyOrgModel, frontdoor.apiGet).catch(() => null);
+    if (earlyOrgModel && fingerprint) {
+      orgKey = orgCacheKey(frontdoor.instanceHost, url, fingerprint, earlyOrgModel, request);
+      const cached = freshDiscovery ? null : cacheGet(orgKey, ORG_CACHE_TTL_MS);
+      if (cached) {
+        console.log(`[hybrid] org setup unchanged for ${frontdoor.instanceHost} — reusing the saved discovery (${cached.pages.length} page(s)), no crawl`);
+        return AppModel.parse({
+          ...cached, salesforceOrg: earlyOrgModel,
+          savedScan: { at: cached.savedScan?.at ?? new Date().toISOString(), reused: true },
+        });
+      }
+      console.log(freshDiscovery
+        ? "[hybrid] fresh discovery asked for — crawling, the result replaces any saved one"
+        : "[hybrid] no saved discovery for this org setup and request — crawling");
+    } else {
+      console.log("[hybrid] org setup could not be fingerprinted — crawling, nothing will be saved");
+    }
   }
 
   const urlCheck = isAllowedEntryUrl(url);
@@ -1239,7 +1311,9 @@ export async function discoverSiteHybrid(
 
   console.log(`[hybrid] discovering site ${url}`);
   const entryOrigin = new URL(url).origin;
-  const maxPages = Math.max(1, MAX_DISCOVERY_PAGES);
+  // A Lightning app's pages are many and each is mostly the same chrome, so 5 pages saw little of an
+  // org. Salesforce runs crawl further (user, 2026-10-24: discovery must be the best).
+  const maxPages = Math.max(1, currentRunTargetApp() === "salesforce" ? SALESFORCE_DISCOVERY_PAGES : MAX_DISCOVERY_PAGES);
   const visited = new Set<string>([normUrl(url)]);
   // Object property (not a bare variable) so TS doesn't narrow it to `never` after the
   // closure below reassigns it — the finally block still needs to read it.
@@ -1276,6 +1350,8 @@ export async function discoverSiteHybrid(
       // Salesforce runs only: abort the login page's ad requests on this one page, which every hop
       // of the crawl reuses — so the block covers the whole crawl and no other run.
       if (salesforceRun()) await blockLoginAds(state.page);
+      // Phase 1: attach before the first goto, so the entry page's early requests are counted.
+      if (networkSettleEnabled()) trackNetwork(state.page);
     }
     return state.page;
   };
@@ -1297,6 +1373,9 @@ export async function discoverSiteHybrid(
    * provenance is the honest signal. A URL found in an `href` that 404s is a broken link. A URL
    * found by CLICKING cannot be, because the click worked.
    */
+  /** Create forms queued from the org model (D-63); filled below, read by `snapshot` at call time. */
+  const createFormTargets = new Set<string>();
+
   const snapshot = async (
     targetUrl: string, clientRouted = false,
   ): Promise<{ appModel: AppModel; finalUrl: string } | null> => {
@@ -1309,6 +1388,10 @@ export async function discoverSiteHybrid(
       // we do not pay for DOM extraction to find that out.
       if (status >= 400 && !clientRouted) return null;
       await page.waitForTimeout(800);
+      // A create form's fields arrive after its dialog (run 2026-10-24T13-19-15-522Z-c180fec9).
+      if (createFormTargets.has(targetUrl) && !(await waitForDialogFields(page))) {
+        console.log(`[hybrid] ${targetUrl}: no form field appeared in a dialog — modelling what is there`);
+      }
       const finalUrl = page.url();
       const appModel = await extractDomModelFromPage(page, finalUrl);
       const rendered = appModel?.pages?.[0]?.elements.length ?? 0;
@@ -1344,7 +1427,14 @@ export async function discoverSiteHybrid(
   };
 
   try {
-    const entrySnapshot = await snapshot(url);
+    // D-63: sign in through the org connection FIRST, before the entry snapshot and before any
+    // gate detection, so there is no login form to model, no credential prompt and no password.
+    // The entry snapshot is then the page the org opens on (Lightning Home).
+    const frontdoorLanding = frontdoor ? await openFrontdoor(await sharedPage(), frontdoor) : null;
+    if (frontdoor) {
+      console.log(`[hybrid] signed in through the org connection for ${frontdoor.instanceHost}, landed on ${frontdoorLanding}`);
+    }
+    const entrySnapshot = await snapshot(frontdoorLanding ?? url);
     if (!entrySnapshot) {
       // DOM failed even at the entry page — the old single-page vision fallback. Nothing
       // to crawl from a page we couldn't read, so return that result unchanged.
@@ -1373,6 +1463,8 @@ export async function discoverSiteHybrid(
     /** Set only when a login succeeded and the crawl re-rooted off the gate — the gate page is
      *  still put back into the model so login steps stay groundable. */
     let loginPageModel: PageModel | null = null;
+    /** D-63: the org's own metadata, on a frontdoor run only. */
+    let orgModel: SalesforceOrgModel | null = null;
 
     const authPage = await sharedPage();
 
@@ -1384,7 +1476,8 @@ export async function discoverSiteHybrid(
     // identically — a broken probe read as a site with no login. The message is carried into the
     // AuthOutcome so the distinction survives to the run log and to 02-appmodel.json.
     let gateDetectionError: string | null = null;
-    try {
+    // D-63: a frontdoor run is already signed in; looking for a login gate would navigate away.
+    if (!frontdoor) try {
       await authPage.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await authPage.waitForTimeout(800);
       if (salesforceRun()) {
@@ -1426,7 +1519,7 @@ export async function discoverSiteHybrid(
     // is stable; checking at the top of the function (where it used to be) would read under a
     // different key than it writes, and authenticated runs would never hit. Placed BEFORE the
     // login so a hit skips the real sign-in too, not just the crawl.
-    if (askCredentials) {
+    if (askCredentials && !frontdoor) {
       const cached = cacheGet(siteCacheKey(url, creds));
       if (cached) {
         console.log(`[hybrid] cache hit for ${url} — skipping login and crawl`);
@@ -1435,7 +1528,28 @@ export async function discoverSiteHybrid(
     }
 
     // Phase 4 — log in, then prove it.
-    if (!gateUrl) {
+    if (frontdoor && frontdoorLanding) {
+      // Proved by openFrontdoor (it throws when Salesforce shows its login form instead). No
+      // loginUrl and no loginSteps: there is no form, and the prefix is one env navigate (ir.ts).
+      // The hosts passed through are recorded exactly as a password login records them (D-47), so
+      // the crawl may follow the org from its My Domain into Lightning.
+      const hops = loginHops(url, frontdoorLanding);
+      auth = {
+        status: "authenticated", frontdoor: true, url: frontdoorLanding,
+        ...(hops ? { relatedHosts: hops } : {}),
+      };
+      authenticated = true;
+      entryUrlForCrawl = entrySnapshot.finalUrl;
+      // What the org says about itself (objects, fields, required, picklists, list views, validation
+      // rules), read through its metadata APIs with the same connection. Best effort, read-only.
+      orgModel = earlyOrgModel ?? await readSalesforceOrgModel(frontdoor).catch(() => null);
+      console.log(orgModel
+        ? `[hybrid] org model: ${orgModel.objects.length} object(s) from the app${orgModel.app ? ` "${orgModel.app}"` : ""}, `
+          + `${orgModel.objects.reduce((n, o) => n + (o.validationRules?.length ?? 0), 0)} validation rule(s), `
+          + `${orgModel.objects.reduce((n, o) => n + (o.validationRules?.filter((r) => r.condition).length ?? 0), 0)} with a condition`
+          + (orgModel.validationRulesRead ? "" : " (Tooling API refused)")
+        : "[hybrid] org model: could not be read through the connection");
+    } else if (!gateUrl) {
       // Three ways to reach `!gateUrl` — no form on the entry page, none one hop away, or the
       // probe above THREW — and the first two alone are a confirmed "no login". Saying
       // "no-gate" flat when the probe crashed is the over-claim this exists to stop: a broken
@@ -1575,7 +1689,23 @@ export async function discoverSiteHybrid(
     };
 
     const queue = await targetsFor(entry);
-    while (queue.length > 0 && pages.length < maxPages) {
+    // D-63: the create form of every createable object, by its Lightning URL, ahead of the crawl and
+    // on top of its page budget. A link crawl never opens one (it is a button's dialog), and every
+    // "create a record" case needs its fields (run 2026-10-24T11-34-49-878Z-a7697ccd).
+    const createForms = frontdoor && frontdoorLanding && orgModel
+      ? createFormUrls(new URL(frontdoorLanding).origin, orgModel, request) : [];
+    for (const u of createForms) { visited.add(normUrl(u)); createFormTargets.add(u); }
+    // Session 102: a record page of each object the request names (an edit or "verify the saved
+    // record" flow lands there), from a real record id. On top of the budget, like the create forms.
+    const recordPages = frontdoor?.apiGet && frontdoorLanding && orgModel && request
+      ? await recordPageUrls(new URL(frontdoorLanding).origin, orgModel, request, frontdoor.apiGet).catch(() => [])
+      : [];
+    for (const u of recordPages) visited.add(normUrl(u));
+    queue.unshift(...createForms, ...recordPages);
+    const pageBudget = maxPages + createForms.length + recordPages.length;
+    if (createForms.length) console.log(`[hybrid] ${createForms.length} create form(s) queued from the org model`);
+    if (recordPages.length) console.log(`[hybrid] ${recordPages.length} record page(s) queued for the objects the request names`);
+    while (queue.length > 0 && pages.length < pageBudget) {
       const target = queue.shift()!;
       const snap = await snapshot(target, clickDiscovered.has(target));
       if (!snap) continue;
@@ -1594,7 +1724,7 @@ export async function discoverSiteHybrid(
       const page = { ...labeled, url: rawPage.url || snap.finalUrl };
       pages.push(page);
 
-      if (pages.length < maxPages) {
+      if (pages.length < pageBudget) {
         queue.push(...await targetsFor(page));
       }
     }
@@ -1606,8 +1736,14 @@ export async function discoverSiteHybrid(
     // Where the browser LANDED, not what was typed — the entry navigation may have redirected
     // (http -> https, apex -> www, a locale prefix). Every relative path, every page comparison
     // and the generated spec's own page.goto all resolve against this. TD-82.
+    // D-63: a frontdoor run's base is where the sign-in LANDED (the org's Lightning host), because
+    // every page it models lives there. My Domain as base made a case's "/lightning/o/Lead/..."
+    // resolve to My Domain, which grounding refused as a guess (run 2026-10-24T11-07-55-409Z-10d29a7c).
     const result = redactCredentials(
-      AppModel.parse(withLandedBase({ baseUrl: entryOrigin, pages, auth }, entrySnapshot.finalUrl, url)),
+      AppModel.parse(withLandedBase(
+        { baseUrl: entryOrigin, pages, auth, ...(orgModel ? { salesforceOrg: orgModel } : {}) },
+        frontdoor ? (auth?.url ?? url) : entrySnapshot.finalUrl, url,
+      )),
       creds,
     );
     // Never cache a failed login. A failure is usually transient — wrong value typed, the site
@@ -1617,7 +1753,16 @@ export async function discoverSiteHybrid(
     // fixing the login logged `cache hit — skipping login and crawl` and reported the OLD
     // failure. Successes stay cached; only the failure path pays for a retry.
     const worth = discoveryIsWorthCaching(result);
-    if (!worth.ok) {
+    if (frontdoor) {
+      if (orgKey && worth.ok) {
+        result.savedScan = { at: new Date().toISOString(), reused: false };
+        cacheSet(orgKey, result);
+        noteOrgDiscoverySaved(frontdoor.instanceHost, objectsNamedIn(request, orgModel ?? undefined).map((o) => o.api));
+        console.log(`[hybrid] saved this discovery for the org setup of ${frontdoor.instanceHost}`);
+      } else {
+        console.log(`[hybrid] not caching ${url} — signed in through an org connection (D-63)`);
+      }
+    } else if (!worth.ok) {
       console.warn(`[hybrid] not caching ${url} — ${worth.reason}`);
     } else {
       cacheSet(siteCacheKey(url, creds), result);

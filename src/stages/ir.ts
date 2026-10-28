@@ -5,12 +5,15 @@ import { isRateLimitError } from "../llm/backoff.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
-import { cutAtBoundary, siteHost, pageKey } from "../text.js";
-import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion } from "./liveExtend.js";
+import { cutAtBoundary, siteHost, pageKey, lineKey } from "../text.js";
+import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion, finalScreenErrors } from "./liveExtend.js";
 import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
+import { networkSettleEnabled } from "./networkSettle.js";
 import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, edgeForCapture, routeToControl, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { requestValues, stepsMissingValues } from "./requestValues.js";
+import { hollowPassGuardsEnabled, isPositiveCase, describeMarkers } from "./hollowPassGuards.js";
+import { applyTestData, testDataEnabled } from "./testData.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
@@ -18,7 +21,11 @@ import {
 } from "./credentials.js";
 import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
-import { salesforceGuidance } from "./salesforceGuidance.js";
+import {
+  salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
+  returnToCreatedRecords,
+} from "./salesforceGuidance.js";
+import { FRONTDOOR_REF, currentFrontdoor, isFrontdoorRef, recordRefObject } from "./salesforceFrontdoor.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 // The generator's OWN rule for when a step becomes `field(page, hint, …)` and which slot supplies
@@ -165,7 +172,7 @@ function knownNavigationTargets(appModel: AppModel): Set<string> {
   const out = new Set<string>();
   const add = (u: string | null | undefined) => { if (u) out.add(pageKey(u)); };
   add(appModel.baseUrl);
-  // D-62: where discovery's own login landed is observed, not guessed — on a fixed-login Salesforce
+  // D-70: where discovery's own login landed is observed, not guessed — on a fixed-login Salesforce
   // run it is a valid destination even when its host is not the base URL's (lightning.force.com).
   if (fixedLoginRun() && appModel.auth?.status === "authenticated") add(appModel.auth.url);
   for (const page of appModel.pages) {
@@ -213,6 +220,19 @@ export interface PageTrail {
  * step after "Sign In" was grounded against /login, so the dashboard's own sidebar button was
  * "not present in the application model" while sitting in the model.
  */
+/**
+ * Where a navigate step goes, for the page trail. D-63: the frontdoor login carries an env reference
+ * (`${env:SF_FRONTDOOR_URL}`), not a URL; it lands where discovery's own frontdoor sign-in landed
+ * (`auth.url`). Every other URL is returned unchanged.
+ */
+function navUrlOf(url: string, appModel: AppModel): string {
+  // Phase A: the record this test created (recordRef) is a record page of its object, as discovery's
+  // own record page of that object shows it; none modelled = unknown, as before.
+  const object = recordRefObject(url);
+  if (object) return appModel.pages.find((p) => p.url.includes(`/lightning/r/${object}/`))?.url ?? url;
+  return isFrontdoorRef(url) && appModel.auth?.frontdoor && appModel.auth.url ? appModel.auth.url : url;
+}
+
 export function trackPages(ir: IR, appModel: AppModel): PageTrail {
   const pageAt: (PageModel | null)[] = [];
   const lastLinkHrefAt: (string | null)[] = [];
@@ -234,7 +254,7 @@ export function trackPages(ir: IR, appModel: AppModel): PageTrail {
     lastLinkHref = null; // only survives to the very next step; re-set below if this one earns it
 
     if (step.action === "navigate" && t?.url) {
-      const resolved = resolveHref(appModel.baseUrl, t.url);
+      const resolved = resolveHref(appModel.baseUrl, navUrlOf(t.url, appModel));
       if (resolved) { currentPage = findPageByUrl(appModel, resolved); stale = false; }
     } else if (step.action === "click" || step.action === "press") {
       const link = currentPage && t?.role && norm(t.role) === "link" && t?.name
@@ -289,7 +309,7 @@ export function legUrls(ir: IR, appModel: AppModel, entryUrl: string): (string |
     // pages only and stays null otherwise).
     const s = ir.steps[i];
     if (s.action === "navigate" && s.target?.url) {
-      const resolved = resolveHref(appModel.baseUrl, s.target.url);
+      const resolved = resolveHref(appModel.baseUrl, navUrlOf(s.target.url, appModel));
       if (resolved) leg = resolved;
     }
   }
@@ -323,7 +343,7 @@ const TEXT_ENTRY_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
 // Controls worth naming to the model when describing a captured screen: what a step can act on.
 // spinbutton/searchbox included — "Min Budget (AED)" is an <input type=number>, and leaving it out
 // meant no rejection ever told the model the field's real name (TD-122).
-const SCREEN_CONTROL_ROLES = new Set([
+export const SCREEN_CONTROL_ROLES = new Set([
   "button", "link", "checkbox", "radio", "tab", "menuitem", "combobox", "textbox", "searchbox", "spinbutton",
 ]);
 /**
@@ -377,6 +397,13 @@ const hasWholeWords = (hay: string, needle: string): boolean => {
  * the model, whose `forms[]` is empty on a form-less SPA login (the original defect).
  */
 export function buildLoginPrefix(auth: AuthOutcome | undefined): Step[] {
+  // D-63: signed in through a Salesforce org connection. The whole login is one navigate to an env
+  // reference the replay (liveExtend.ts) and the executed spec (generator.ts + executor.ts) resolve
+  // to a fresh frontdoor URL at the last moment. No form, no password, no second screen — so none
+  // of the two-screen machinery below (and none of TD-84's guard) is ever reached.
+  if (auth?.status === "authenticated" && auth.frontdoor) {
+    return [{ id: "auth-0", action: "navigate", target: { url: FRONTDOOR_REF } }];
+  }
   if (auth?.status !== "authenticated" || !auth.loginUrl || !auth.loginSteps?.length) return [];
   const steps: Step[] = [
     { id: "auth-0", action: "navigate", target: { url: auth.loginUrl } },
@@ -448,6 +475,17 @@ export function redirectPostLoginNavigate(
   steps: Step[], prefixLength: number, auth: AuthOutcome | undefined, origin: string,
 ): string | undefined {
   const first = steps[prefixLength];
+  // D-63: a frontdoor run has no loginUrl, but the same mistake applies: "open the app" written as
+  // navigate "/" opens the org's My Domain root — its login page. Only the root is moved, to where
+  // the frontdoor sign-in landed (absolute: Lightning is another host of the same org).
+  if (auth?.frontdoor) {
+    if (!first || first.action !== "navigate" || !first.target?.url || !auth.url) return undefined;
+    let to: URL;
+    try { to = new URL(first.target.url, origin); } catch { return undefined; }
+    if (to.host !== new URL(origin).host || (to.pathname !== "/" && to.pathname !== "")) return undefined;
+    first.target.url = auth.url;
+    return first.id;
+  }
   if (!first || first.action !== "navigate" || !first.target?.url || !auth?.url || !auth.loginUrl) return undefined;
   if (pageKey(auth.url) === pageKey(auth.loginUrl)) return undefined;
   let to: string;
@@ -455,7 +493,7 @@ export function redirectPostLoginNavigate(
   if (pageKey(to) !== pageKey(auth.loginUrl)) return undefined;
   const landed = new URL(auth.url);
   if (siteHost(landed.href) !== siteHost(origin)) {
-    // D-62: Salesforce logs in on <org>.my.salesforce.com and lands on <org>.lightning.force.com —
+    // D-70: Salesforce logs in on <org>.my.salesforce.com and lands on <org>.lightning.force.com —
     // a different host of the SAME org. On a fixed-login Salesforce run that is still "the page the
     // login lands on", so the step points there, as an absolute URL because the host differs.
     if (!(fixedLoginRun() && sameSalesforceApp(landed.href, origin))) return undefined;
@@ -636,6 +674,8 @@ export function unfilledFormFields(ir: IR, appModel: AppModel, index: number): {
  * login cases — not a regex over the case title (CLAUDE.md's TD-01 rule).
  */
 export function needsLoginPrefix(testCase: TestCase, auth: AuthOutcome | undefined): boolean {
+  // D-63: a frontdoor run has no login page for a case to target, so every case signs in first.
+  if (auth?.status === "authenticated" && auth.frontdoor) return true;
   if (auth?.status !== "authenticated" || !auth.loginUrl) return false;
   // No targetUrl means no reason to think it is a login case — and defaulting to "sign in" is
   // the safer error, since a spurious login costs a few seconds while a missing one fails.
@@ -645,6 +685,9 @@ export function needsLoginPrefix(testCase: TestCase, auth: AuthOutcome | undefin
 /** True if the IR already signs in on its own, so the prefix would log in twice. The login page
  *  is back in the AppModel, so the model can and does write these steps itself for login cases. */
 export function irAlreadyLogsIn(ir: IR, auth: AuthOutcome | undefined, model: AppModel): boolean {
+  // D-63: on a frontdoor run a password fill the model wrote cannot sign in (there is no login form
+  // in the model to ground it against); the frontdoor prefix is always the login.
+  if (auth?.frontdoor) return false;
   const pwCss = auth?.loginSteps?.find((s) => s.credential === "password")?.css?.toLowerCase();
   const fieldMap = credentialFieldMap(model);
   return ir.steps.some((s) =>
@@ -655,7 +698,7 @@ export function irAlreadyLogsIn(ir: IR, auth: AuthOutcome | undefined, model: Ap
 
 /**
  * A login case that signs in with the REAL credentials gets the RECORDED login instead of the one
- * the model wrote (D-57, stage 1). Returns the new step list, or null to leave the IR untouched.
+ * the model wrote (D-65, stage 1). Returns the new step list, or null to leave the IR untouched.
  *
  * Why: a case whose own page is the login page never receives the prefix (`needsLoginPrefix`), so
  * the model writes the login itself. On a two-screen login (Salesforce) its password step lands on
@@ -1226,6 +1269,22 @@ export function groundingError(
         };
       }
     }
+    // Salesforce: an assert on a control the flow already acted on ("Save is still visible", "Save
+    // is hidden") is about THAT control, so it takes the selector the earlier step grounded to.
+    // After Save the error popover aria-hides the form, or a successful save leaves the page, so the
+    // post-Save screen has no Save: grounding fell back to every page and bound the assert to the
+    // Home page's Save, or rejected "hidden" outright (run 2026-10-24T18-48-47-941Z-8c342c24).
+    if (step.action === "assert" && t?.role && t.name && currentRunTargetApp() === "salesforce") {
+      const used = ir.steps.slice(0, index).reverse().find((s) => s.action !== "assert" && s.target?.css
+        && norm(s.target.role ?? "") === norm(t.role!) && norm(s.target.name ?? "") === norm(t.name!));
+      if (used) {
+        t.css = used.target!.css;
+        if (used.target!.frame) t.frame = used.target!.frame; else delete t.frame;
+        if (used.target!.nth !== undefined) t.nth = used.target!.nth; else delete t.nth;
+        delete t.testId;
+        continue;
+      }
+    }
     // A verified selector from a DIFFERENT screen of this URL resolves to nothing (or to a hidden
     // twin) at run time. Not grounded: fall through to the name match on this screen, which either
     // finds this screen's own control or reports the step as missing from it.
@@ -1259,8 +1318,9 @@ export function groundingError(
       if (known?.frame && !t.frame) t.frame = known.frame;
       continue;
     }
-    // Step 0's navigate is the entry URL the pipeline itself supplied, never a guess.
-    if (index > 0 && step.action === "navigate" && t?.url && !navUrlAllowed(t.url)) {
+    // Step 0's navigate is the entry URL the pipeline itself supplied, never a guess. Nor is a record
+    // this test created (recordRef): code writes it, and it is resolved where the step runs.
+    if (index > 0 && step.action === "navigate" && t?.url && !recordRefObject(t.url) && !navUrlAllowed(t.url)) {
       return {
         index,
         kind: "navigate-url",
@@ -1438,8 +1498,11 @@ export function groundingError(
       const box = bestNameMatch(elements, name, sn, (r) => TEXT_ENTRY_ROLES.has(r), preferVisible, preferEnabled);
       if (box) {
         matched = nthTwin(elements, box, t.nth);
-        step.action = "fill";
-        console.log(`[ir] step ${step.id}: select on a textbox -> fill (the page's field is a text box)`);
+        // A lookup IS a text box that offers suggestions: the select stays a select (Target.lookup).
+        if (!t.lookup) {
+          step.action = "fill";
+          console.log(`[ir] step ${step.id}: select on a textbox -> fill (the page's field is a text box)`);
+        }
       }
     }
     // TD-125, part B: the "dropdown" is a group of buttons ("Purpose": "Self Use" / "Investment"),
@@ -1540,7 +1603,9 @@ export function groundingError(
 // text of exactly the assertion that matters most is the one thing nothing validates.
 const NEGATIVE_CASE = /\b(invalid|empty|blank|incorrect|wrong|malformed|missing|unable|cannot|fail(s|ed|ure)?|reject(s|ed)?|denied|unauthori[sz]ed|injection|xss|without)\b/i;
 // Checked FIRST — "invalid" contains "valid", so failure vocabulary must win the tie.
-const FAILURE_SIGNAL = /\b(invalid|error|incorrect|wrong|fail(s|ed|ure)?|denied|required|unable|cannot|unauthori[sz]ed|not\s+(match|found|allowed|valid))\b/i;
+// The validation prompts too: "Complete this field." holds "complete", a SUCCESS word below, and
+// was rejected as a success assertion on a required-field case (run 2026-10-25T13-47-20-200Z-7d089986).
+const FAILURE_SIGNAL = /\b(invalid|error|incorrect|wrong|fail(s|ed|ure)?|denied|required|unable|cannot|unauthori[sz]ed|not\s+(match|found|allowed|valid)|complete\s+this\s+field|hit\s+a\s+snag|review\s+the\s+(following|errors)|please\s+(enter|fill|complete|correct|select))\b/i;
 // `\bvalid\b` cannot match inside "invalid" — there is no word boundary between the "n"
 // and the "v" — so this is safe even though FAILURE_SIGNAL is checked first anyway.
 const SUCCESS_SIGNAL = /\b(success(ful|fully)?|succeeded|valid|welcome|logged\s*in|signed\s*in|dashboard|congratulations|thank\s*you|confirmed|complete[ds]?)\b/i;
@@ -1607,6 +1672,56 @@ export function assertionContradictsCase(
       `and fails against a correctly-working site. Remove those assertions. Assert instead the ` +
       `error/validation message the app actually shows on failure, that the URL still contains ` +
       `the original page path, or that an element from the starting page is still visible.`,
+  };
+}
+
+/**
+ * Reject a terminal text assertion the page already showed BEFORE the action it is meant to prove:
+ * a line of the page the flow was on at its last interaction, in the discovery model. It is true
+ * whether or not the action worked. Run 2026-10-24T14-30-05-546Z-6cbf9b51 passed three
+ * validation-rule cases on `assert "* = Required Information" visible`, the create form's own
+ * legend. A flow with no interaction (an arrival check) is left alone.
+ *
+ * Behind HOLLOW_PASS_GUARDS_ENABLED (TD-162's flag), and case-aware: static text never proves a
+ * SUCCESS case, nor a negative case that names the message it expects; a negative case that only
+ * expects the form to stay open may assert the form is still there (it fails if the save succeeds).
+ */
+export function staticTextAssertion(ir: IR, appModel: AppModel, testCase: TestCase): { stepIds: string[]; message: string } | null {
+  if (!hollowPassGuardsEnabled()) return null;
+  const isNegative =
+    (testCase.category ? NEGATIVE_CATEGORIES.has(testCase.category) : false) ||
+    NEGATIVE_CASE.test(testCase.title) || NEGATIVE_CASE.test(testCase.expected);
+  const namesItsMessage = /"[^"]{6,}"|“[^”]{6,}”|'[^']{6,}'/.test(testCase.expected ?? "");
+  if (isNegative && !namesItsMessage) return null;
+  const last = ir.steps[ir.steps.length - 1];
+  if (!last || !isPureTextAssertion(last) || last.assertion !== "visible") return null;
+  let lastAct = -1;
+  for (let i = ir.steps.length - 2; i >= 0 && lastAct < 0; i--) {
+    if (ACTION_STEPS.has(ir.steps[i].action)) lastAct = i;
+  }
+  if (lastAct < 0) return null;
+  // A Salesforce Save that the flow proves succeeded ("was created"/"was saved" asserted after it)
+  // has left the create form for the record's page without a navigate, so the leg's URL still names
+  // the form, whose field labels then read as "already shown" (run 2026-10-26T07-53-42-185Z-83b50b3b
+  // dropped its "SLA Expiration Date" check that way). The page before the action is not known: no
+  // verdict. A Save NOT followed by that proof (a validation case) keeps the form, and the guard.
+  if (currentRunTargetApp() === "salesforce") {
+    const saved = ir.steps.findIndex((s, i) => i < lastAct && s.action === "click" && /^save$/i.test(s.target?.name ?? ""));
+    if (saved >= 0 && ir.steps.slice(saved + 1, lastAct).some((s) => s.action === "assert" && /\bwas (created|saved)\b/.test(s.target?.text ?? ""))) {
+      return null;
+    }
+  }
+  const leg = legUrls(ir, appModel, appModel.baseUrl)[lastAct];
+  const page = leg ? findPageByUrl(appModel, leg) : null;
+  const key = lineKey(last.target!.text!);
+  if (!page?.markdown || !key || !page.markdown.split("\n").some((l) => lineKey(l) === key)) return null;
+  return {
+    stepIds: [last.id],
+    message:
+      `Step ${last.id} asserts "${last.target!.text}", which the page already shows BEFORE step ` +
+      `${ir.steps[lastAct].id} (it is part of that page), so it passes whether or not the action worked. ` +
+      `Assert what only the action produces: the confirmation or error message it causes (for a ` +
+      `validation case, the exact message the case expects), or a control that appears or disappears.`,
   };
 }
 
@@ -1815,6 +1930,34 @@ const CASE_ACTION_LINE = /\b(fill|enter|type|input|provide|supply|click|press|ta
 const CHECK_ACTION_LINE = /\bcheck(?:s|ed|ing)?\b[^.]*\bcheck ?box(?:es)?\b/i;
 const IR_ACTION_KINDS = new Set(["click", "press", "fill", "select", "check"]);
 
+/**
+ * D-63: a case compiled on a run signed in through a Salesforce org connection, without the lines
+ * that type a username, a password or credentials.
+ *
+ * Why. The plan and the case are written before discovery, so a Salesforce request routinely
+ * comes back with "Enter the username and continue. Enter the password and sign in." On a
+ * frontdoor run there is no login form anywhere in the model, so the IR cannot perform those
+ * lines: the model writes a Username fill that can never ground (run
+ * `2026-10-24T06-42-12-486Z-0994a20c`, rejected twice), and missingActions then marks the correct
+ * IR — frontdoor, Home, assert — incomplete for lacking a fill. The sign-in those lines describe is
+ * exactly what the frontdoor prefix already does.
+ *
+ * This READS CASE PROSE, the shape CLAUDE.md warns about (TD-01), so it is held narrow: only on
+ * frontdoor runs, only lines that name a username, a password or credentials outside quotes, and
+ * only steps (never the title or the expected result). A line like "Log in as an admin and open
+ * Leads" names none of them and is kept.
+ */
+const CREDENTIAL_ENTRY_LINE = /\b(user ?names?|passwords?|credentials?)\b/i;
+export function withoutCredentialEntry(testCase: TestCase): TestCase {
+  const steps = testCase.steps ?? [];
+  const unquoted = (s: string) => s.replace(/"[^"]*"/g, " ").replace(/'[^']*'/g, " ");
+  const kept = steps.filter((s) => !CREDENTIAL_ENTRY_LINE.test(unquoted(s)));
+  return kept.length === steps.length ? testCase : { ...testCase, steps: kept };
+}
+
+/** Elements per page the IR prompt shows on a Salesforce run (ordinary runs: 30). */
+const SALESFORCE_MICRO_ELEMENTS = 150; // ponytail: a constant; make it an env knob if a real org needs tuning
+
 export function missingActions(ir: IR, testCase: TestCase): { message: string } | null {
   const steps = testCase.steps ?? [];
   // Quoted spans are the case's DATA, not its instructions: a page heading, a value to type, a
@@ -1826,7 +1969,11 @@ export function missingActions(ir: IR, testCase: TestCase): { message: string } 
   const has = (...actions: string[]) => ir.steps.some(s => actions.includes(s.action));
   const missing: string[] = [];
 
-  if (/\b(fill|enter|type|input|provide|supply)\b|credential/.test(text) && !has("fill")) {
+  if (/\b(fill|enter|type|input|provide|supply)\b|credential/.test(text) && !has("fill", "select")
+    // An empty-boundary case leaves fields empty ON PURPOSE ("Without entering any values, click Save",
+    // run 2026-10-25T06-38-05-134Z-4082c4ce): its category, not its wording, says no fill is owed.
+    && testCase.category !== "empty-boundary") {
+    // A select (an option, a lookup's record) enters a value too (run 2026-10-25T05-48-18-357Z-be70fc29).
     missing.push(`the case describes entering values, but the IR has no "fill" step`);
   }
   if (/\b(submit|click|press|tap|sign in|log ?in|continue)\b/.test(text) && !has("click", "press")) {
@@ -2051,6 +2198,8 @@ export async function toIR(
    *  map. Undefined falls back to credentialsFor(entryUrl), i.e. today's behaviour. */
   runCreds?: Credentials
 ): Promise<IRResult> {
+  // D-63: signed in through an org connection, there is no form to type credentials into.
+  if (appModel.auth?.frontdoor) testCase = withoutCredentialEntry(testCase);
   // Compute these ourselves rather than trust the model: baseUrl must be the origin
   // (generator.ts appends relative step paths to it), and entryPath is where the
   // actual page under test lives — telling the model both up front heads off the
@@ -2205,14 +2354,29 @@ Example — handling duplicate selectors with nth:
     ? [JSON.stringify([storedScreens.map((s) => [s.key, s.controls]), storedMap!.edges.map((e) => [e.from, e.action, e.to])])]
     : [];
   if (storedScreens.length) console.log(`[ir] screen map: ${storedScreens.length} screens, ${storedMap!.edges.length} edges stored for ${storedMap!.site}`);
+  // TD-162 (HOLLOW_PASS_GUARDS_ENABLED): a positive case may not end on a screen where the page shows
+  // its own error. Negative cases keep today's behaviour: there the error is the point.
+  const refuseErrors = hollowPassGuardsEnabled() && isPositiveCase(testCase);
+  const sfOutcome = hollowPassGuardsEnabled() && currentRunTargetApp() === "salesforce";
   const cacheKey = makeCacheKey(
     JSON.stringify(testCase), sourcePrompt, JSON.stringify(appModel), credKey,
     entryUrl, system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion(), ...mapSignature,
     // TD-139: an IR cached before the request-values check could replay one that drops the values.
-    ...(currentRunTargetApp() === "salesforce" ? ["ir-values:1"] : []),
-    // D-57: a fixed-login compile swaps a login case's own login for the recorded one, so it must
+    ...(currentRunTargetApp() === "salesforce" ? ["ir-values:1", `sf-micro:${SALESFORCE_MICRO_ELEMENTS}`] : []),
+    // TD-162: an IR cached without the guard can end on the page's own error. Only guarded cases' keys change.
+    ...(refuseErrors ? ["hollow-guards:1"] : []),
+    // Session 103: a Salesforce case ending on the Save button alone gains the outcome assertion.
+    // 4: back to a record the case created, and field value checks on the record page (Phase A).
+    ...(sfOutcome ? ["sf-outcome:4"] : []),
+    // Session 102: values fixed from the org model (TEST_DATA_ENABLED); an IR cached without it keeps the old values.
+    // 2: a lookup keeps the name of the record this case created (Phase A).
+    ...(testDataEnabled() ? ["test-data:2"] : []),
+    // D-63: an IR compiled on a frontdoor run starts with the env-referenced login; it must never be
+    // served to a password run on the same org, nor the reverse. Absent on every other run.
+    ...(currentFrontdoor() ? [`sf-frontdoor:${currentFrontdoor()!.instanceHost}`] : []),
+    // D-65: a fixed-login compile swaps a login case's own login for the recorded one, so it must
     // never share a cache entry with a compile that does not. Absent when off: every key unchanged.
-    // D-62 adds sf-post-login: IRs cached before the post-login correction must not be served again.
+    // D-70 adds sf-post-login: IRs cached before the post-login correction must not be served again.
     ...(fixedLoginRun() ? ["sf-fixed-login:1", "sf-post-login:1"] : []));
   const cached = llmCacheGet<IR>(cacheKey);
   if (cached) return { ir: cached, updatedAppModel: appModel };
@@ -2362,10 +2526,15 @@ Example — handling duplicate selectors with nth:
     // then has to re-resolve. Passing entryUrl let it disagree with the ordering above and drop
     // to pages[0] whenever the entry was a bare origin — the second of the two fallbacks. The
     // page that leads `pages` is the page that should survive; say so explicitly.
+    // Salesforce runs see far more of the page: a Lightning page is mostly repeated chrome, and 30
+    // elements left the model blind to the page's own controls (user, 2026-10-24: "remove the caps
+    // for Salesforce, discovery must be the best"). Still a ceiling, so one huge page cannot blow
+    // the prompt; ordinary runs keep 30.
+    const microCap = currentRunTargetApp() === "salesforce" ? SALESFORCE_MICRO_ELEMENTS : undefined;
     const modelJsonFor = (pages: PageModel[]) =>
       JSON.stringify(toMicroModel(
         { ...model, pages: withFilteredElements(pages) },
-        { currentPageUrl: pages[0]?.url ?? entryUrl }
+        { currentPageUrl: pages[0]?.url ?? entryUrl, ...(microCap ? { maxElements: microCap } : {}) }
       ));
 
     // Retries previously re-sent a byte-identical prompt and predictably got a
@@ -2450,8 +2619,13 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   const finalize = (ir: IR): IR => {
     ir.meta.baseUrl = origin;
     ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
-    if (creds) {
-      applyCredentials(ir.steps, creds, credPolicy, legUrls(ir, currentModel, entryUrl),
+    // TD-156 follow-up: a "none"-policy case (most negative cases) has no `creds`, so the literal ->
+    // ${env:} pre-pass inside applyCredentials never ran, and a password the model read off a login
+    // page reached 04-ir.json and the spec (run 2026-10-20T04-19-54-377Z-240a1566). With the RUN's
+    // credentials and the case's own policy, applyCredentials does only that pre-pass for "none".
+    const finalCreds = creds ?? runCreds;
+    if (finalCreds) {
+      applyCredentials(ir.steps, finalCreds, credPolicy, legUrls(ir, currentModel, entryUrl),
         credentialFieldMap(currentModel));
     }
     if (!ir.meta.truncated) {
@@ -2504,6 +2678,48 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       hasTerminalAssertion: hasTerminalAssertion(bp.steps),
     },
   });
+
+  /**
+   * TD-162: the flow WITHOUT the assertions that watched the error screen — every trailing assert, and
+   * the waits between them, back to the last action. So hasTerminalAssertion is false and the case
+   * reports truncated_no_assertion; a kept assertion would make it "truncated", which counts as passed.
+   */
+  const withoutErrorAsserts = (steps: Step[]): Step[] => {
+    let end = steps.length;
+    while (end > 0 && (steps[end - 1].action === "assert" || steps[end - 1].action === "wait")) end--;
+    return steps.slice(0, end);
+  };
+  /** TD-162: why this IR may not ship for a positive case — the screen it ends on shows the page's own
+   *  error — or undefined. One replay, shared with the terminal-text re-check below. The marker that
+   *  triggered it is logged and carried in the reason (and so in the truncation note and
+   *  08-llm-usage.json), so false incompletes can be counted on real runs. */
+  const errorScreenRefusal = async (ir: IR): Promise<string | undefined> => {
+    if (!refuseErrors) return undefined;
+    const markers = await finalScreenErrors(ir, currentModel, creds, credPolicy);
+    if (!markers.length) return undefined;
+    const shown = describeMarkers(markers);
+    console.log(`[ir] error-assertion: the final screen shows the page's own error marker(s): ${shown} — a positive case cannot end there`);
+    return `Replaying the steps before the final assertion ends on a screen where the page itself marks an ERROR ` +
+      `(error marker: ${shown}): the flow did NOT succeed there, so no assertion on that screen can prove this ` +
+      `case. Find the step that caused the error (for example a value the field rejects, or a required field ` +
+      `left empty) and fix it, or carry the flow on to its real end, then assert what the page shows there.`;
+  };
+  /**
+   * TD-162: every exit that ships an IR able to pass checks its final screen first; one showing the
+   * page's own error ships without its trailing assertions, truncated: incomplete. "Able to pass" is
+   * anything but a truncation with no assertion at its end: an untruncated IR passes on any assertion,
+   * even one in the middle of the flow. The main path checks before it accepts; this covers the side
+   * exits (best effort, truncation, the contradiction strip), whose IRs never reached that check.
+   */
+  const guardExit = async (ir: IR): Promise<IR> => {
+    if (!refuseErrors || ir.meta.truncationKind === "error-assertion"
+      || (ir.meta.truncated && !hasTerminalAssertion(ir.steps))) return ir;
+    const why = await errorScreenRefusal(ir);
+    if (!why) return ir;
+    const steps = withoutErrorAsserts(ir.steps);
+    return { ...ir, steps, meta: { ...ir.meta, truncated: true, truncationNote: why, truncationKind: "error-assertion",
+      hasTerminalAssertion: hasTerminalAssertion(steps) } };
+  };
   // Set when the screen-capture budget runs out, so a truncation note says so instead of the
   // misleading "that screen has not been captured yet" (TD-128).
   let captureBudgetSpent = false;
@@ -2670,8 +2886,36 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
 
     parsed.data.meta.baseUrl = origin;
-    // D-57: only this function decides whether the spec runs the fixed Salesforce login.
+    // D-65: only this function decides whether the spec runs the fixed Salesforce login.
     delete parsed.data.meta.fixedLogin;
+
+    // Before grounding: the grounding replays type these values too (Session 102). The model's own
+    // steps are kept aside first: the fill policy removes optional fields ON PURPOSE, and coverage
+    // (missingActions) judges whether the MODEL carried out the case, not what the policy removed.
+    let authoredSteps: IR["steps"] | undefined;
+    if (testDataEnabled()) {
+      authoredSteps = parsed.data.steps.map((st) => ({ ...st }));
+      for (const note of applyTestData(parsed.data, testCase, currentModel, sourcePrompt)) console.log(`[ir] test data: ${note}`);
+    }
+    // Also before grounding, so the added outcome is the terminal assertion the live replay checks.
+    if (sfOutcome) {
+      const note = strengthenSaveOutcome(parsed.data);
+      if (note) console.log(`[ir] ${note}`);
+      for (const rt of assertRecordTypeForms(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${rt}`);
+      // Before the field checks: a record opened again is a record page too.
+      for (const r of returnToCreatedRecords(parsed.data)) console.log(`[ir] ${r}`);
+      for (const f of fieldChecksOnRecordView(parsed.data, currentModel)) console.log(`[ir] ${f}`);
+    }
+    // Data safety, not a flag: grounding replays these steps in the real org, so a delete of a
+    // record this case did not create is refused here, before any replay can carry it out.
+    if (currentRunTargetApp() === "salesforce") {
+      const unsafe = deleteOutsideOwnRecord(parsed.data);
+      if (unsafe) {
+        console.log("[ir] delete refused:", unsafe);
+        reject("unsafe-delete", unsafe);
+        continue;
+      }
+    }
 
     // Sign in BEFORE grounding. The spec runs in a fresh browser with no session, and so does
     // liveExtend's grounding replay — without this the flow bounces to the login page and every
@@ -2687,14 +2931,14 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         if (moved) console.log(`[ir] step ${moved}: navigate to the login page after signing in -> the page the login lands on`);
       }
     } else if (fixedLoginRun() && credPolicy === "full") {
-      // D-57 stage 1: no prefix was added because the case logs in itself. With the real
+      // D-65 stage 1: no prefix was added because the case logs in itself. With the real
       // credentials, its login becomes the recorded one, which already handles a two-screen login.
       const swapped = swapInRecordedLogin(parsed.data.steps, currentModel.auth, credentialFieldMap(currentModel));
       if (swapped) {
         parsed.data.steps = swapped;
         parsed.data.meta.fixedLogin = "salesforce";
-        console.log(`[ir] login case: its own login steps replaced by the recorded login (D-57)`);
-        // D-62: the same "go to the login page right after logging in" correction the prefix path
+        console.log(`[ir] login case: its own login steps replaced by the recorded login (D-65)`);
+        // D-70: the same "go to the login page right after logging in" correction the prefix path
         // makes — a login case's own next step is just as likely to be a navigate back to "/".
         const loginLength = swapped.findIndex((st) => !/^auth-\d+$/.test(st.id));
         if (loginLength > 0) {
@@ -2928,7 +3172,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         continue;
       }
 
-      const incomplete = missingActions(parsed.data, testCase);
+      const incomplete = missingActions(authoredSteps ? { ...parsed.data, steps: authoredSteps } : parsed.data, testCase);
       if (incomplete) {
         console.log("[ir] IR does not carry out the case:", incomplete.message);
         reject("missing-actions", incomplete.message);
@@ -3003,10 +3247,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         // vision merge for dialogs built without semantic HTML) engages on exactly this shape.
         const prefix = parsed.data.steps.slice(0, revealIndex);
         const pageBefore = trackPages(parsed.data, currentModel).pageAt[revealIndex];
-        const beforeKeys = new Set(
-          (pageBefore?.elements ?? currentModel.pages.flatMap(p => p.elements))
-            .map(e => `${norm(e.role)}|${norm(e.name)}`)
-        );
+        // Captured BEFORE the refresh below replaces currentModel (the TD-158 check needs them too).
+        const beforeEls = pageBefore?.elements ?? currentModel.pages.flatMap(p => p.elements);
+        const beforeKeys = new Set(beforeEls.map(e => `${norm(e.role)}|${norm(e.name)}`));
         try {
           console.log(`[ir] post-click reveal check: re-snapshotting after step ${parsed.data.steps[revealIndex - 1]?.id}`);
           const refreshed = await refreshPageModel(currentModel, prefix, creds, credPolicy);
@@ -3018,10 +3261,31 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           // modal is now modelled for every later step.
           currentModel = refreshed;
 
-          const revealed = refreshed.pages
-            .flatMap(p => p.elements)
-            .filter(e => !beforeKeys.has(`${norm(e.role)}|${norm(e.name)}`));
-          const fillable = revealed.filter(e => FIELD_ROLE_GROUP.has(norm(e.role)));
+          const afterEls = refreshed.pages.flatMap(p => p.elements);
+          let revealed = afterEls.filter(e => !beforeKeys.has(`${norm(e.role)}|${norm(e.name)}`));
+          // TD-158 (with NETWORK_SETTLE_ENABLED, the Phase 1 follow-up). New NAMES alone miss a form
+          // whose fields discovery already holds, hidden, because its modal was closed: the click
+          // reveals nothing new by name, and a fill bound to an unrelated HIDDEN field (Demoblaze:
+          // the Sign-up "Username:" instead of the order form's field) was accepted. Settled
+          // discovery makes that shape common. So, by css (structure, never text): a field HIDDEN
+          // before the click and VISIBLE after it is revealed too, and a target still hidden after the
+          // click is wrong. A target the click itself made visible is exactly right: nothing to redirect.
+          let targetStillHidden = false;
+          if (networkSettleEnabled()) {
+            const cssOf = (e: Element) => e.css?.toLowerCase();
+            const targetCss = revealStep.target?.css?.toLowerCase();
+            const hiddenBefore = new Set(beforeEls.filter(e => e.visible === false && e.css).map(e => cssOf(e)!));
+            const nowVisible = afterEls.filter(e => e.visible !== false && e.css && hiddenBefore.has(cssOf(e)!));
+            if (targetCss && nowVisible.some(e => cssOf(e) === targetCss)) {
+              revealed = [];
+            } else {
+              for (const e of nowVisible) if (!revealed.includes(e)) revealed.push(e);
+              if (targetCss) revealed = revealed.filter(e => cssOf(e) !== targetCss);
+              targetStillHidden = !!targetCss && afterEls.find(e => cssOf(e) === targetCss)?.visible === false;
+            }
+          }
+          const fillable = revealed.filter(e => FIELD_ROLE_GROUP.has(norm(e.role))
+            && (!networkSettleEnabled() || e.visible !== false));
           // Nothing fillable appeared — either no modal opened, or its fields share a name with
           // something already modelled (in which case the diff hides them and there is nothing
           // to redirect to). Either way a correction would name nothing useful, so accept.
@@ -3037,8 +3301,10 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
             const names = fillable.map(e => `${e.role} "${e.name}"`).join(", ");
             const message =
               `Step ${revealStep.id} targets ${revealStep.target?.role ?? "an element"} ` +
-              `"${revealStep.target?.name ?? revealStep.target?.text ?? ""}", which already existed on the ` +
-              `page BEFORE the preceding click. Clicking ` +
+              `"${revealStep.target?.name ?? revealStep.target?.text ?? ""}", which ` +
+              (targetStillHidden
+                ? `is still hidden on the page after the preceding click (it belongs to another, closed form). Clicking `
+                : `already existed on the page BEFORE the preceding click. Clicking `) +
               `"${parsed.data.steps[revealIndex - 1]?.target?.name ?? "that control"}" revealed a form that ` +
               `was not in the application model until now, so that target is almost certainly the wrong ` +
               `control (a page header, sidebar or list item that happens to share the name). Use one of the ` +
@@ -3058,6 +3324,22 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         }
       }
 
+      // TD-162 (HOLLOW_PASS_GUARDS_ENABLED): a positive case may not end on a screen showing the page's
+      // own error, whatever its final assertion says (run 8e01a75f passed on exactly that). A rejection
+      // like any other: back to the model with the reason, and if every attempt ends here, the flow
+      // ships without those assertions, truncated — incomplete, never passed.
+      const errorScreen = await errorScreenRefusal(parsed.data);
+      if (errorScreen) {
+        reject("error-assertion", errorScreen);
+        const steps = withoutErrorAsserts(parsed.data.steps);
+        if (steps.length > (bestPartial?.steps.length ?? 0)) {
+          bestPartial = { ir: parsed.data, steps, note: errorScreen, kind: "error-assertion" };
+        }
+        // An earlier attempt's contradiction must not ship instead: its stripped IR can look complete.
+        lastContradiction = undefined;
+        continue;
+      }
+
       // A pure-text terminal assertion (the one kind groundingError can't check — no
       // role/name to match against the discovered model) is otherwise just an unvalidated
       // LLM guess. Replay the prefix, read the real page, and correct the guess when it's
@@ -3065,7 +3347,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // banner on a failing case" shape assertionContradictsCase below catches. Best-effort:
       // on replay failure this returns the IR unchanged and the existing guards still apply.
       if (isPureTextAssertion(parsed.data.steps[parsed.data.steps.length - 1])) {
-        const { ir: reground } = await groundTerminalTextAssertion(parsed.data, currentModel, creds, credPolicy);
+        // Guarded, the replay is the walk errorScreenRefusal just took (same prefix, same options).
+        const { ir: reground } = await groundTerminalTextAssertion(parsed.data, currentModel, creds, credPolicy,
+          refuseErrors ? { errorSignals: true } : {});
         // Only take the correction if it doesn't turn a negative case into a success
         // assertion. groundTerminalTextAssertion picks the message-shaped page line closest
         // in length to the guess — on a negative case whose replay actually succeeded, that
@@ -3077,6 +3361,18 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         if (screenMode && replacesQuotedSuccessText(guessed, regrounded, sourcePrompt)) {
           console.log(`[ir] kept the request's own success text "${guessed}" rather than "${regrounded}" — the replay did not reach it, so the test should fail, not pass on another message`);
         } else if (!assertionContradictsCase(reground, testCase)) parsed.data = reground;
+      }
+
+      // After the regrounding above, which can itself land on such a line.
+      // Judged on DISCOVERY's model, not currentModel: grounding's replays replace a URL's page with
+      // what it showed after the action, so a form whose Save failed in place ("We hit a snag.",
+      // same URL) read as showing that error before Save (run 2026-10-25T13-47-20-200Z-7d089986).
+      const staticHit = staticTextAssertion(parsed.data, appModel, testCase);
+      if (staticHit) {
+        console.log("[ir] assertion on text the page showed before the action rejected:", staticHit.message);
+        reject("static-assertion", staticHit.message);
+        lastContradiction = { ir: parsed.data, ...staticHit };
+        continue;
       }
 
       const contradiction = assertionContradictsCase(parsed.data, testCase);
@@ -3109,7 +3405,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     // user's eight steps. Every other rejection kind still truncates as before.
     if (ungrounded.kind === "text-target" && attempt === attemptCap - 1) {
       console.log("[ir] shipping unverified text targets (best-effort):", ungrounded.message);
-      return { ir: finalize(parsed.data), updatedAppModel: currentModel };
+      return { ir: finalize(await guardExit(parsed.data)), updatedAppModel: currentModel };
     }
 
     const prefix = trackBestPartial(ungrounded);
@@ -3151,7 +3447,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // The longest grounded prefix is the test worth running, whichever attempt produced it.
       if (bestPartial && bestPartial.steps.length > prefix.length) {
         console.log(`[ir] shipping the best attempt's ${bestPartial.steps.length} grounded steps, not this attempt's ${prefix.length}`);
-        return { ir: finalize(fromBestPartial(bestPartial)), updatedAppModel: currentModel };
+        return { ir: finalize(await guardExit(fromBestPartial(bestPartial))), updatedAppModel: currentModel };
       }
       const truncated: IR = { ...parsed.data, steps: prefix };
       truncated.meta = {
@@ -3163,7 +3459,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
         ...(ungrounded.kind ? { truncationKind: ungrounded.kind } : {}),
         hasTerminalAssertion: hasTerminalAssertion(prefix),
       };
-      return { ir: finalize(truncated), updatedAppModel: currentModel };
+      return { ir: finalize(await guardExit(truncated)), updatedAppModel: currentModel };
     }
   }
 
@@ -3179,7 +3475,11 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     const drop = new Set(lastContradiction.stepIds);
     const steps = lastContradiction.ir.steps.filter(s => !drop.has(s.id));
     if (steps.length) {
-      const stillAsserts = steps.some(s => s.action === "assert");
+      // A surviving assert counts only if what the request asked to check survived with it: run
+      // 2026-10-26T07-53-42-185Z-83b50b3b dropped its "SLA" check, kept "was created", and PASSED.
+      const lost = stepsMissingValues(steps, testCase, requestValues(sourcePrompt));
+      if (lost.length) console.warn(`[ir] the dropped check carried what the request asked to verify: ${lost.join(", ")}`);
+      const stillAsserts = steps.some(s => s.action === "assert") && !lost.length;
       console.warn(
         `[ir] all attempts asserted a success signal on a negative case — dropped step(s) ` +
         `${lastContradiction.stepIds.join(", ")}${stillAsserts ? "" : "; nothing left to verify"}`
@@ -3193,14 +3493,16 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
           // don't understate it. Only flag partial when nothing is left to verify.
           ...(stillAsserts ? {} : {
             truncated: true,
-            truncationNote:
-              `Could not produce a correct success criterion for this negative test case. ` +
-              lastContradiction.message,
+            truncationNote: lost.length
+              ? `The check the request asked for (${lost.join(", ")}) could not be verified on the page and was dropped. ` +
+                lastContradiction.message
+              : `Could not produce a correct success criterion for this negative test case. ` +
+                lastContradiction.message,
           }),
           hasTerminalAssertion: hasTerminalAssertion(steps),
         },
       };
-      return { ir: finalize(stripped), updatedAppModel: currentModel };
+      return { ir: finalize(await guardExit(stripped)), updatedAppModel: currentModel };
     }
   }
   // Attempts exhausted without ever reaching the in-loop truncation path (every attempt ended
@@ -3212,7 +3514,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       `[ir] attempts exhausted while still extending — shipping the grounded prefix ` +
       `(${bestPartial.steps.length} of ${bestPartial.ir.steps.length} steps)`
     );
-    return { ir: finalize(fromBestPartial(bestPartial)), updatedAppModel: currentModel };
+    return { ir: finalize(await guardExit(fromBestPartial(bestPartial))), updatedAppModel: currentModel };
   }
 
   throw new Error(`IR failed schema validation after retry: ${lastErr}`);

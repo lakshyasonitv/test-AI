@@ -1,17 +1,20 @@
 import type { Page } from "playwright";
+import { currentFrontdoor } from "./salesforceFrontdoor.js";
 import { currentRunTargetApp } from "../runTarget.js";
 
 /**
- * `SALESFORCE_FIXED_LOGIN` (D-57) — the fixed Salesforce login for GENERATED TESTS. Default off.
+ * `SALESFORCE_FIXED_LOGIN` (D-65) — the fixed Salesforce login for GENERATED TESTS. Default off.
  * Registered in `BOOLEAN_ENV_FLAGS`. Off, every compile and every spec is exactly what it was.
  */
 export function salesforceFixedLoginEnabled(): boolean {
   return process.env.SALESFORCE_FIXED_LOGIN === "true";
 }
 
-/** A ticked Salesforce run with the fixed login switched on. The one gate every D-57 path reads. */
+/** A ticked Salesforce run with the fixed login switched on. The one gate every D-65 path reads. */
 export function fixedLoginRun(): boolean {
-  return salesforceFixedLoginEnabled() && currentRunTargetApp() === "salesforce";
+  // Not on an org-connection run (D-63): it signs in through frontdoor.jsp with no password form, so
+  // there is no recorded password login to fix — its own `auth-*` prefix must stay as it is.
+  return salesforceFixedLoginEnabled() && currentRunTargetApp() === "salesforce" && !currentFrontdoor();
 }
 
 /**
@@ -100,7 +103,7 @@ export function orgRefusal(url: string): string | null {
   const kind = classifyOrg(url);
   if (kind === "scratch" || kind === "sandbox") return null;
   const host = hostOf(url);
-  // D-62: a portal / public-site address of an org is refused with a sentence that says what it is,
+  // D-70: a portal / public-site address of an org is refused with a sentence that says what it is,
   // instead of "doesn't look like" a Salesforce org — it IS one, just not the app Testbench tests.
   const parsed = parseSalesforceHost(host);
   if (parsed && (parsed.purpose === "portal" || parsed.purpose === "sites")) {
@@ -108,7 +111,7 @@ export function orgRefusal(url: string): string | null {
     return `${host} is a Salesforce ${parsed.purpose === "portal" ? "Experience Cloud portal" : "public Site"} address. `
       + `Testbench tests the Salesforce app itself — use your org's login address instead, e.g. https://${login}/`;
   }
-  // D-60: with SALESFORCE_ALLOW_ALL_ORGS on, any Salesforce host is accepted — production, Developer
+  // D-68: with SALESFORCE_ALLOW_ALL_ORGS on, any Salesforce host is accepted — production, Developer
   // Edition, login./test.salesforce.com, cs## hosts. Still a structural check on the host: a URL
   // that is not served by Salesforce at all is refused as before (the box was ticked by mistake).
   if (salesforceAllOrgsAllowed() && isSalesforceHost(host)) return null;
@@ -121,8 +124,8 @@ export function orgRefusal(url: string): string | null {
 }
 
 /**
- * `SALESFORCE_ALLOW_ALL_ORGS` (D-60) — accept every Salesforce org, not only scratch orgs and
- * sandboxes. Default off: the guard is then exactly D-56's. Registered in `BOOLEAN_ENV_FLAGS`.
+ * `SALESFORCE_ALLOW_ALL_ORGS` (D-68) — accept every Salesforce org, not only scratch orgs and
+ * sandboxes. Default off: the guard is then exactly D-64's. Registered in `BOOLEAN_ENV_FLAGS`.
  */
 export function salesforceAllOrgsAllowed(): boolean {
   return process.env.SALESFORCE_ALLOW_ALL_ORGS === "true";
@@ -131,7 +134,7 @@ export function salesforceAllOrgsAllowed(): boolean {
 /** Throws `orgRefusal`'s sentence. Called before discovery opens any page, so a refused org is
  *  never visited at all — the run fails at its discovery stage with this message.
  *
- *  D-60: an org let through only because SALESFORCE_ALLOW_ALL_ORGS is on is said out loud in the
+ *  D-68: an org let through only because SALESFORCE_ALLOW_ALL_ORGS is on is said out loud in the
  *  server log, once per call — a test run creates and changes records in the org it tests. */
 export function assertTestOrg(url: string): void {
   const refusal = orgRefusal(url);
@@ -143,14 +146,14 @@ export function assertTestOrg(url: string): void {
 /**
  * Thrown by `assertTestOrg`. A refusal is a decision about the address the person entered, not a
  * fault in Testbench, so it is marked structurally (`orgRefused`) for the run's error event — the
- * screen then does not add "a problem on our side" to it (D-62).
+ * screen then does not add "a problem on our side" to it (D-70).
  */
 export class OrgRefusedError extends Error {
   readonly orgRefused = true;
 }
 
 // ---------------------------------------------------------------------------------------------
-// Salesforce host names (D-62)
+// Salesforce host names (D-70)
 // ---------------------------------------------------------------------------------------------
 
 /** What a Salesforce host name is for. From Salesforce's "My Domain URL Formats" /
@@ -229,7 +232,7 @@ export function sameSalesforceApp(a: string, b: string): boolean {
 }
 
 /**
- * D-62: true when a fixed-login Salesforce test checks nothing after logging in — every assertion
+ * D-70: true when a fixed-login Salesforce test checks nothing after logging in — every assertion
  * after the leading `auth-*` steps is on one of the login form's own controls (the selectors the
  * login used), or there is no assertion after it at all. Such a test proves only that login works.
  *
@@ -257,7 +260,7 @@ export interface OrgWarning {
 }
 
 /**
- * D-60: the warning for a Salesforce org that is NOT a scratch org or a sandbox, or null.
+ * D-68: the warning for a Salesforce org that is NOT a scratch org or a sandbox, or null.
  *
  * Decided from the URL alone (`classifyOrg` + `isSalesforceHost`), so the server log, the discovery
  * event the screen reads, and the HTML report all say the same thing without storing anything new.

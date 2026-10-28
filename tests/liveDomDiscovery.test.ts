@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { enumerateLiveElements, walkLiveDom } from "../src/stages/liveDomDiscovery.js";
 import { extractDomModelFromPage } from "../src/stages/domDiscovery.js";
 import type { Element } from "../src/schema/appModel.js";
+import { withTargetApp } from "../src/runTarget.js";
 
 /**
  * Phase 2 of the live-DOM discovery stream: the light-DOM element walker.
@@ -567,5 +568,71 @@ describe("raw walk", () => {
     await page.setContent(`<input>`);
     const [raw] = await walkLiveDom(page);
     expect(raw).toMatchObject({ role: "textbox", name: "", nameSource: "" });
+  });
+});
+
+describe("accessible names skip aria-hidden text, as the accname algorithm and Playwright do", () => {
+  // Lightning's required marker is <abbr aria-hidden="true">*</abbr> inside the label (proved on the
+  // DE org's New Lead form, 2026-10-24): the walker named the field "*Company", so its own
+  // role=textbox[name="*Company"s] candidate could never match what Playwright computes ("Company").
+  it("a required marker in a label and an icon's hidden text in a button are not part of the name", async () => {
+    await page.setContent(`<label for="input-236"><abbr aria-hidden="true" title="required">*</abbr>Company</label><input id="input-236">
+      <button><span aria-hidden="true">utility:save</span>Save</button>`);
+    const els = await enumerateLiveElements(page);
+    expect(els.find((e) => e.role === "textbox")?.name).toBe("Company");
+    expect(els.find((e) => e.role === "button")?.name).toBe("Save");
+    expect(await page.getByRole("textbox", { name: "Company", exact: true }).count()).toBe(1);
+    // On a Salesforce run (where Lightning's generated id is no selector) the role + exact-name
+    // candidate is what gets verified and chosen.
+    const sf = await withTargetApp("salesforce", () => enumerateLiveElements(page));
+    expect(sf.find((e) => e.role === "textbox")?.css).toBe('role=textbox[name="Company"s]');
+  });
+});
+
+describe("Salesforce: a role locator needs no shadow-host chain, so it comes before one", () => {
+  // Run 2026-10-24T12-18-19-822Z-0b822629: "Company" on the New Lead form was chosen as
+  // `body > div:nth-of-type(4) > … > one-record-action-flexipage >> … >> input[name="Company"]`, a
+  // positional host chain that broke in the next browser (Lightning orders body's panels per
+  // session). The chain-free `role=dialog >> role=textbox[name="Company"s]` was a candidate too,
+  // but after the chain-prefixed ones. Playwright's role engine pierces open shadow roots.
+  it("inside a shadow root, the dialog-scoped and plain role candidates come before chain-prefixed ones", async () => {
+    await page.setContent(`<div id="h"></div><script>
+      document.getElementById("h").attachShadow({ mode: "open" }).innerHTML =
+        '<div role="dialog" aria-label="New Lead"><label for="input-9">Company</label><input id="input-9" name="Company"><button name="SaveEdit">Save</button></div>';
+    </script>`);
+    const els = await withTargetApp("salesforce", () => enumerateLiveElements(page));
+    // A field's API name / a button's action name comes first (stable across sessions AND aria
+    // states, see the aria-hidden test below); the chain-free role locator is next.
+    expect(els.find((e) => e.role === "textbox")?.css).toBe('input[name="Company"]');
+    expect(els.find((e) => e.role === "button")?.css).toBe('button[name="SaveEdit"]');
+    // An ordinary run keeps the host chain (nothing Salesforce-specific runs).
+    const plain = await enumerateLiveElements(page);
+    expect(plain.find((e) => e.role === "textbox")?.css).toMatch(/^#h >> /);
+  });
+});
+
+describe("Salesforce: a form Lightning hides from the accessibility tree keeps a stable locator", () => {
+  // Proved on the DE org (2026-10-24): after Save with an error, the "We hit a snag." popover opens
+  // and Lightning sets aria-hidden on the New Lead form. Role locators no longer see it, so the
+  // capture fell back to `body > div:nth-of-type(4) > … >> input[name="Company"]`, a body-positional
+  // host chain that differs per session (run 2026-10-24T12-33-54-871Z-d09ba86d: every later case
+  // failed at its first fill). Playwright's CSS engine pierces open shadow roots and ignores aria.
+  it("uses the chain-free attribute selector, and never a body-positional chain", async () => {
+    await page.setContent(`<div id="h"></div><section><div class="x"></div></section><script>
+      document.getElementById("h").attachShadow({ mode: "open" }).innerHTML =
+        '<div role="dialog" aria-label="New Lead"><div aria-hidden="true"><label for="input-9">Company</label>'
+        + '<input id="input-9" name="Company"><button name="SaveEdit">Save</button></div></div>';
+      document.querySelector(".x").attachShadow({ mode: "open" }).innerHTML = '<div aria-hidden="true"><button>Go</button></div>';
+    </script>`);
+    const els = await withTargetApp("salesforce", () => enumerateLiveElements(page));
+    expect(els.find((e) => e.role === "textbox")?.css).toBe('input[name="Company"]');
+    expect(els.find((e) => e.name === "Save")?.css).toBe('button[name="SaveEdit"]');
+    const go = els.find((e) => e.name === "Go");
+    expect(go).toBeDefined();
+    expect(go?.css ?? "").not.toMatch(/^body/);
+    // An ordinary run is unchanged: the chain-prefixed candidates as before.
+    const plain = await enumerateLiveElements(page);
+    expect(plain.find((e) => e.role === "textbox")?.css).toBe('#h >> #input-9');
+    expect(plain.find((e) => e.name === "Go")?.css).toMatch(/^body/);
   });
 });

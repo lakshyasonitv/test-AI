@@ -3,7 +3,7 @@ import { rmSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
 /**
- * D-61 — run insight logging. Pure helpers first, then the real orchestrator with plan, discovery
+ * D-69 — run insight logging. Pure helpers first, then the real orchestrator with plan, discovery
  * and the model mocked (the proOrchestrator.test.ts pattern): with EXTENDED_LOGGING on, `[insight]`
  * lines are printed and `10-insights.json` is written; with it off, neither. A planted secret in
  * the prompt and a session id in the URL's query must never reach either output.

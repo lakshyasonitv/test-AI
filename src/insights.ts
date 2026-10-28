@@ -8,7 +8,7 @@ import type { IR } from "./schema/ir.js";
 import type { SpecModel } from "./schema/spec.js";
 
 /**
- * Run insight logging (D-61) — what a person developing this project needs to judge a run's
+ * Run insight logging (D-69) — what a person developing this project needs to judge a run's
  * quality and cost: how much discovery found, how big the models got, why compiles retried, where
  * the time went. Behind EXTENDED_LOGGING (default off): off, `insight()` returns before doing
  * anything, so no line is printed and no file is written.

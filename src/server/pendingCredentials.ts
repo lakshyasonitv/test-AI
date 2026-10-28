@@ -1,5 +1,6 @@
 import type { Credentials } from "../stages/credentials.js";
 import type { CredentialRequest } from "../orchestrator.js";
+import { rememberRunSecrets } from "../runSecrets.js";
 
 /**
  * The waiting half of the credential prompt. A paused run parks a promise here; the POST
@@ -50,6 +51,8 @@ export function settle(runId: string, creds: Credentials | null): boolean {
   if (!waiter) return false;
   waiters.delete(runId);
   clearTimeout(waiter.timer);
+  // Before the run sees them, so even its very next event is scrubbed (TD-154).
+  rememberRunSecrets(runId, creds);
   waiter.resolve(creds);
   return true;
 }

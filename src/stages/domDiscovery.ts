@@ -18,6 +18,8 @@ import { extractCrawlResponse, type CrawlResponse } from "./domExtract.js";
 import { stableSelector } from "./discovery.js";
 import { enumerateLiveElements } from "./liveDomDiscovery.js";
 import { currentRunTargetApp } from "../runTarget.js";
+import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork } from "./networkSettle.js";
+import { volatileIdDetectionEnabled } from "./volatileIds.js";
 
 const REQUEST_TIMEOUT = 30_000;
 
@@ -396,8 +398,13 @@ async function elementsFor(strategy: ElementStrategy, page: Page, model: AppMode
   try {
     return await enumerateLiveElements(page);
   } catch (err: any) {
-    console.warn(`[domDiscovery] live-DOM walk failed, using the static parse: ${err?.message ?? err}`);
-    return cheerioElements;
+    // Salesforce: no static fallback. Lightning's static parse is a shell (header buttons, no css),
+    // and an empty list lets the hydration poll re-read and re-walk instead (run
+    // 2026-10-24T07-58-47-085Z-3eb31efb lost four list pages to one failed walk each).
+    const salesforce = currentRunTargetApp() === "salesforce";
+    console.warn(`[domDiscovery] live-DOM walk failed on ${page.url()}, `
+      + `${salesforce ? "retrying" : "using the static parse"}: ${err?.message ?? err}`);
+    return salesforce ? [] : cheerioElements;
   }
 }
 
@@ -516,8 +523,14 @@ async function recheckVisibility(page: Page, elements: Element[]): Promise<void>
  * would start a fresh, session-less browser, which hits the login redirect for an
  * authenticated URL and models the LOGIN page instead — and caches that wrong snapshot.)
  */
-export async function extractDomModelFromPage(page: Page, url: string): Promise<AppModel | null> {
+export async function extractDomModelFromPage(
+  page: Page, url: string, opts: { alreadySettled?: boolean } = {},
+): Promise<AppModel | null> {
   try {
+    // Phase 1 (NETWORK_SETTLE_ENABLED): every discovery snapshot passes through here (the single-
+    // page path, each hybrid crawl hop, the post-login page, live-extend replays), so this is the
+    // one place to wait for the page's late data. A caller that has just settled says so.
+    if (networkSettleEnabled() && !opts.alreadySettled) await settleBeforeSnapshot(page, `snapshot ${url}`);
     const strategy = elementStrategy();
     let html = await page.content();
     let crawlResult = extractCrawlResponse(html, url, 200);
@@ -543,7 +556,10 @@ export async function extractDomModelFromPage(page: Page, url: string): Promise<
     const deadline = Date.now() + pollBudgetMs;
     // `elements` is the strategy's list, so a live walk that already sees shadow-DOM content the
     // static parse cannot does not wait out the whole budget for nothing.
-    while (elements.length === 0 && generic.length === 0 && Date.now() < deadline) {
+    // Salesforce: the generic pass always finds Lightning's cursor:pointer header first, so only the
+    // walker's own list says whether the page has rendered.
+    const walkerDecides = strategy === "live" && currentRunTargetApp() === "salesforce";
+    while (elements.length === 0 && (generic.length === 0 || walkerDecides) && Date.now() < deadline) {
       await page.waitForTimeout(pollIntervalMs);
       html = await page.content();
       crawlResult = extractCrawlResponse(html, url, 200);
@@ -602,7 +618,11 @@ export async function extractDomModelFromPage(page: Page, url: string): Promise<
  * Flag off keeps the original `dom:${url}`, so existing cache entries stay valid.
  */
 export function domCacheKey(url: string): string {
-  return elementStrategy() === "live" ? `dom-live:${url}` : `dom:${url}`;
+  const base = elementStrategy() === "live" ? `dom-live:${url}` : `dom:${url}`;
+  // Phase 1: a settled snapshot is a different model; flag off keeps the key exactly as before.
+  const settled = networkSettleEnabled() ? `settled:${base}` : base;
+  // Phase 4: ids chosen with cross-walk evidence are a different model; flag off: unchanged.
+  return volatileIdDetectionEnabled() ? `vid:${settled}` : settled;
 }
 
 /**
@@ -629,6 +649,7 @@ export async function discoverUsingCrawler(url: string): Promise<AppModel | null
     // here rather than by promoting this to newContext() + context.newPage(): a second page on a
     // context does not carry sessionStorage (TD-41 / D-23), and this path needs no extra page.
     const page = await browser.newPage(browserContextOptions());
+    if (networkSettleEnabled()) trackNetwork(page); // before goto, so it sees every request (Phase 1)
     const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: REQUEST_TIMEOUT });
 
     const statusCode = response?.status() ?? 0;

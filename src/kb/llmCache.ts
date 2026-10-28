@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync
 import path from "node:path";
 import { countCacheRead } from "../insights.js";
 import crypto from "node:crypto";
+import { cacheSafe } from "../runSecrets.js";
 
 /**
  * Namespaced on-disk cache.
@@ -49,7 +50,7 @@ function hash(input: string): string {
 }
 
 export function llmCacheGet<T>(key: string, ns: string = DEFAULT_NS): T | null {
-  // D-61: hit/miss per namespace for the run's insight summary. Free when EXTENDED_LOGGING is off.
+  // D-69: hit/miss per namespace for the run's insight summary. Free when EXTENDED_LOGGING is off.
   const found = readCache<T>(key, ns);
   countCacheRead(ns, found !== null);
   return found;
@@ -86,6 +87,8 @@ export function llmCacheSet<T>(key: string, data: T, ns: string = DEFAULT_NS): v
     if (Object.keys(obj).length === 0) return;
   }
 
+  // TD-156: the run's credential values never reach memory or disk, whatever the caller passed.
+  data = cacheSafe(data);
   const memKey = `${ns}/${key}`;
   memCache.set(memKey, { data, ts: Date.now() });
   if (memCache.size > MAX_MEM_ENTRIES) {
@@ -122,7 +125,10 @@ export function llmCacheClear(ns: string): number {
 }
 
 export function makeCacheKey(...parts: string[]): string {
-  return hash(parts.join("|||"));
+  // TD-156: a key's input is redacted the same way, so a hash is never computed over a credential
+  // value (a low-entropy password could be recovered from it). Credential IDENTITY stays a key
+  // dimension through credentialFingerprint, which callers pass as its own (already hashed) part.
+  return hash(cacheSafe(parts.join("|||")));
 }
 
 /**

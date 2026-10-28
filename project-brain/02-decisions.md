@@ -45,7 +45,7 @@ not exist.
 
 The user, before plan B: "remember current working must not be affected of any feature". Every new
 capability ships behind a flag that is off by default, AND carries a proof that flag-off output is
-unchanged (a fixture captured from the code BEFORE the change, compared byte for byte — D-57's
+unchanged (a fixture captured from the code BEFORE the change, compared byte for byte — D-65's
 `tests/fixtures/salesforceFixedLogin/flag-off-specs.json` is the pattern). The full suite's pass count
 and its two known failures must not move. **Why:** the user ships to a client; a regression in an
 untouched path costs more than the new feature is worth.
@@ -54,7 +54,7 @@ untouched path costs more than the new feature is worth.
 
 Branch work only; `main` is updated by merging the branch through a PR, never directly. When `main` moves,
 it is merged INTO the branch (a merge commit, not a rebase) and clashing D-/TD- numbers on our side are
-renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156).
+renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156; 2026-10-28: our D-56..D-63 -> D-64..D-71, TD-154..TD-161 -> TD-171..TD-178).
 
 ## 2026-10-22 — Salesforce scope and address handling (user)
 - Testbench tests the Salesforce APP only: no Setup pages, no Experience Cloud portals.
@@ -62,7 +62,7 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156).
   not "anything under salesforce.com/force.com" — another org must never count as the same app.
 - After login, "go to the login page" means the page discovery's login landed on (user's choice over a
   computed Home address and over startURL).
-- `?login` (D-59) removed: unofficial, and it failed on the user's org. Don't rebuild without a Salesforce doc.
+- `?login` (D-67) removed: unofficial, and it failed on the user's org. Don't rebuild without a Salesforce doc.
 
 ## 2026-10-26 — Jira (user)
 - Each user connects their own Jira (OAuth), never a shared key in env; never an API token (Atlassian forbids collecting them).

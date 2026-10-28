@@ -543,6 +543,64 @@ export function redactCredentials<T>(value: T, creds?: Credentials): T {
 }
 
 /**
+ * `value` with the credential VALUES replaced by the `${env:...}` references the generated spec
+ * uses (TD-156), for anything that is cached. Unlike `redactCredentials`' placeholder, a reference
+ * keeps meaning: a cached answer that said "type the password" still does when it is served again,
+ * to the run whose own credentials fill the reference. Same eligibility rule as `redactCredentials`
+ * (secret credentials only; values of 4+ characters that are not DOM keywords); longer values first,
+ * so a password containing the username is not half-replaced.
+ *
+ * Matching is per STRING VALUE, never a substring of the serialised whole, so a short or common
+ * credential cannot rewrite ordinary text that happens to contain it (password "test" must not turn
+ * "Run the test suite" into "Run the ${env:...} suite"):
+ * - a string that IS the value (a fill value, a field) is replaced, at any eligible length;
+ * - inside longer text, a value of LONG_CREDENTIAL+ characters is replaced only as a whole token
+ *   (not inside "zqcanarypwpan"); a shorter one only where it is QUOTED ('test', "test", `test`),
+ *   which is how a model writes a typed value ("Type 'test' into the Password field").
+ */
+const LONG_CREDENTIAL = 8;
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export function credentialsAsEnvRefs<T>(value: T, creds?: Credentials): T {
+  if (!creds?.secret) return value;
+  const pairs = ([["password", creds.password], ["username", creds.username]] as const)
+    .filter(([, s]) => s && s.length >= 4 && !DOM_KEYWORDS.has(s.toLowerCase()))
+    .sort((a, b) => b[1].length - a[1].length);
+  if (!pairs.length) return value;
+  const rules = pairs.map(([kind, secret]) => {
+    const ref = ENV_VALUE_PREFIX + ENV_VAR[kind] + ENV_VALUE_SUFFIX;
+    const e = escapeRegExp(secret);
+    const inText = secret.length >= LONG_CREDENTIAL
+      ? { re: new RegExp(`(?<![A-Za-z0-9_])${e}(?![A-Za-z0-9_])`, "g"), to: ref }
+      : { re: new RegExp(`(['"\`])${e}\\1`, "g"), to: `$1${ref}$1` };
+    return { secret, ref, inText };
+  });
+  let changed = false;
+  const fix = (s: string): string => {
+    let out = s;
+    for (const r of rules) {
+      if (out === r.secret) { changed = true; return r.ref; }
+      if (!out.includes(r.secret)) continue;
+      const next = out.replace(r.inText.re, r.inText.to);
+      if (next !== out) { changed = true; out = next; }
+    }
+    return out;
+  };
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") return fix(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === "object") {
+      const o: Record<string, unknown> = {};
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) o[k] = walk(x);
+      return o;
+    }
+    return v;
+  };
+  const out = walk(value);
+  return changed ? out as T : value;
+}
+
+/**
  * Taxonomy categories (from kb/testStrategy.ts) whose whole point is that the action must
  * FAIL. Substituting working credentials into these would defeat the case; asserting a
  * success message in these is the inverted-assertion bug. Shared by both checks.
@@ -725,6 +783,20 @@ export function applyCredentials(
   legUrlAt?: (string | null | undefined)[],
   fieldMap?: Map<string, CredentialKind>,
 ): void {
+  // A fill whose value IS the user's real credential becomes the env reference whatever the
+  // case's policy (TECH_DEBT.md TD-156). The same value is typed at run time (the executor puts it
+  // in the child's env), so no test changes; only the literal stops reaching 04-ir.json and the
+  // generated spec. It runs before every rule below because a negative case ("locked-out user" +
+  // the real password, read off a login page that prints it) is exactly where the model types the
+  // real value and those rules, by design, leave the case's own values alone.
+  if (creds.secret) {
+    for (const step of steps) {
+      if (step.action !== "fill" || typeof step.value !== "string") continue;
+      const literal: CredentialKind | undefined = step.value === creds.password ? "password"
+        : step.value === creds.username ? "username" : undefined;
+      if (literal) step.value = ENV_VALUE_PREFIX + ENV_VAR[literal] + ENV_VALUE_SUFFIX;
+    }
+  }
   if (policy === "none") return;
   const lastOfKind = lastFillIndexByKind(steps, fieldMap, legUrlAt);
   for (let i = 0; i < steps.length; i++) {

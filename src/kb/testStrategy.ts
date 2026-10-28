@@ -132,6 +132,19 @@ export function strategyFor(concepts: string[]): Category[] {
   return out;
 }
 
+/** The checklist features a case's checklist title comes from ("Valid query" -> ["search"]); [] for
+ *  the generic floor and for a title that is not on the checklist. */
+export function checklistFeaturesOf(title: string | undefined): string[] {
+  if (!title) return [];
+  return Object.keys(STRATEGY).filter((k) => STRATEGY[k].some((c) => c.title === title));
+}
+
+/** True when a request's own words name this checklist feature ("search", "find" for search). */
+export function requestNamesFeature(request: string, feature: string): boolean {
+  const words = ` ${norm(request).replace(/[^\p{L}\p{N}]+/gu, " ")} `;
+  return Object.entries(ALIASES).some(([alias, key]) => key === feature && words.includes(` ${alias} `));
+}
+
 /** Concepts with no entry in the table (e.g. "Attendance", "Kanban Board") — this table
  *  only covers ~6 common web-app feature types, so most real applications will have some.
  *  testCases.ts uses this to tell the LLM exactly which concepts it must reason about from

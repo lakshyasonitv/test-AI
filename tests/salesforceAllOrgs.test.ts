@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { orgRefusal, assertTestOrg, classifyOrg } from "../src/stages/salesforceOrgLogin.js";
 
 /**
- * D-60 — SALESFORCE_ALLOW_ALL_ORGS. Off: the D-56 guard exactly (scratch + sandbox only). On: every
+ * D-68 — SALESFORCE_ALLOW_ALL_ORGS. Off: the D-64 guard exactly (scratch + sandbox only). On: every
  * Salesforce host is accepted and a non-scratch/non-sandbox org is named in the server log; a host
  * Salesforce does not serve is still refused. Pure: no browser, no network.
  */
@@ -13,7 +13,7 @@ const OTHER_SALESFORCE = [
   "https://acme.my.salesforce.com/",                  // production My Domain
   "https://acme-dev-ed.develop.my.salesforce.com/",   // Developer Edition
   "https://login.salesforce.com/",
-  "https://test.salesforce.com/",                     // TD-159
+  "https://test.salesforce.com/",                     // TD-176
   "https://cs42.salesforce.com/",
   "https://acme.lightning.force.com/one/one.app",
 ];
@@ -24,7 +24,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("flag off — the D-56 guard, unchanged", () => {
+describe("flag off — the D-64 guard, unchanged", () => {
   it("scratch and sandbox pass; every other Salesforce org and every non-Salesforce host is refused", () => {
     expect(orgRefusal(SCRATCH)).toBeNull();
     expect(orgRefusal(SANDBOX)).toBeNull();
@@ -72,7 +72,7 @@ describe("flag on", () => {
   });
 });
 
-describe("orgWarning — the sentence the screen and the report show (D-60)", () => {
+describe("orgWarning — the sentence the screen and the report show (D-68)", () => {
   it("production and other non-test Salesforce orgs get a warning; scratch, sandbox and non-Salesforce do not", async () => {
     const { orgWarning } = await import("../src/stages/salesforceOrgLogin.js");
     expect(orgWarning("https://acme.my.salesforce.com/")).toEqual({
@@ -117,8 +117,8 @@ describe("the run screen (public/app.js summarize)", () => {
     // eslint-disable-next-line no-new-func
     const summarize = new Function(`${src.slice(start, end)}\nreturn summarize;`)();
     const pages = [{ url: "u", concepts: ["Home"] }];
-    expect(summarize("discovery", { pages })).toBe("Discovered 1 page(s) — Concepts: Home");
+    expect(summarize("discovery", { pages })).toBe("Discovered 1 page — Home");
     expect(summarize("discovery", { pages, orgWarning: { message: "acme is a PRODUCTION Salesforce org." } }))
-      .toBe("⚠ acme is a PRODUCTION Salesforce org. Discovered 1 page(s) — Concepts: Home");
+      .toBe("⚠ acme is a PRODUCTION Salesforce org. Discovered 1 page — Home");
   });
 });

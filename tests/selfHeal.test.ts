@@ -67,10 +67,35 @@ describe("isHealable", () => {
   });
 
   it("does not heal a category a re-snapshot cannot address", () => {
-    expect(isHealable(diag({ category: "timeout" }), irWith())).toBe(false);
-    // Both failures in run 2026-09-06T15-42-48-000Z-61e01731 were exactly this: category
-    // "timeout" with a null failingStepId, which is why no heal ran there at all.
+    expect(isHealable(diag({ category: "assertion_failed" }), irWith())).toBe(false);
+    expect(isHealable(diag({ category: "network" }), irWith())).toBe(false);
+    expect(isHealable(diag({ category: "navigation_error" }), irWith())).toBe(false);
+    // Both failures in run 2026-09-06T15-42-48-000Z-61e01731 were "timeout" with a null
+    // failingStepId: with no step there is nothing to replay to, so still no heal.
     expect(isHealable(diag({ category: "timeout", failingStepId: null }), irWith())).toBe(false);
+  });
+
+  // Session 102: on Salesforce a moved control times out on a CSS/attribute locator
+  // ("locator.fill: Timeout 10000ms exceeded", run 2026-10-24T14-09-38-782Z-a7582b51 case-2), never
+  // "resolved to 0" — so locator failures of every shape heal when an INTERACTION step failed.
+  it("heals every locator-shaped failure on an interaction step", () => {
+    for (const category of ["timeout", "element_not_interactable", "element_hidden", "multiple_matches", "detached"] as const) {
+      expect(isHealable(diag({ category }), irWith()), category).toBe(true);
+    }
+  });
+
+  it("never heals a failed ASSERT step, whatever the category: the assertion is the verdict", () => {
+    const withAssert = IR.parse({
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://e.com" },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Save" } },
+        { id: "s3", action: "assert", target: { text: "was created" }, assertion: "visible" },
+      ],
+    });
+    for (const category of ["element_missing", "selector_changed", "timeout", "element_hidden"] as const) {
+      expect(isHealable(diag({ category, failingStepId: "s3" }), withAssert), category).toBe(false);
+    }
   });
 
   it("does not heal when the failing step is the entry navigate (or unknown)", () => {

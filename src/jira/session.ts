@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 /**
- * Jira connections, in process memory only (D-63).
+ * Jira connections, in process memory only (D-71).
  *
  * Two maps, both lost on restart by design:
  *   - pending sign-ins: the one-time `state` value sent to Atlassian -> which user asked, and when.

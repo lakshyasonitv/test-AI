@@ -108,8 +108,13 @@ import {
 import { deleteRunRow, fetchRunsFromDb, isDbEnabled, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
-import { isAllowedEntryUrl } from "../stages/hybridDiscovery.js";
-import { isTargetApp, salesforceEnabled, TARGET_APPS, type TargetApp } from "../runTarget.js";
+import { isAllowedEntryUrl, orgDiscoveryCacheEnabled, savedDiscoveriesFor } from "../stages/hybridDiscovery.js";
+import { isTargetApp, salesforceEnabled, TARGET_APPS, withTargetApp, type TargetApp } from "../runTarget.js";
+import {
+  salesforceOAuthEnabled, startAuthorization, completeAuthorization, connectionFor, connectionMatchesUrl,
+  frontdoorSessionFor, appOrigin, replaySessionFor, restoreConnection,
+} from "./salesforceOAuth.js";
+import { withFrontdoor } from "../stages/salesforceFrontdoor.js";
 import {
   checkSpecUpload, distillSpec, getRunSpecWarnings, specIntakeEnabled, DISTILL_FAILED_WARNING,
 } from "../stages/specIntake.js";
@@ -157,10 +162,14 @@ app.use(express.static("public"));
 // /auth/signup joins them for the same reason: an account that does not exist yet cannot present
 // a token, so requiring one would make sign-up unreachable by construction. It carries its own
 // flag, rate limit and validation instead — see signup.ts.
-// /jira/callback (D-63) is where Atlassian sends the browser back after "Connect Jira": a redirect,
+// /jira/callback (D-71) is where Atlassian sends the browser back after "Connect Jira": a redirect,
 // so it cannot carry our Authorization header. It is identified by its one-time `state` instead
 // (src/jira/session.ts), and answers 404 unless JIRA_ENABLED is on.
-const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup", "/jira/callback"]);
+// /salesforce/callback (D-63) is where Salesforce sends the person's browser back after they sign
+// in to their org: a top-level redirect from salesforce.com, which cannot carry a Testbench token.
+// What protects it is the one-time, 10-minute `state` bound to the organisation that started it;
+// it answers 403 unless SALESFORCE_OAUTH_ENABLED is on.
+const PUBLIC_API_PATHS = new Set(["/health", "/auth/config", "/auth/signup", "/salesforce/callback", "/jira/callback"]);
 
 app.use("/api", (req, res, next) => {
   if (PUBLIC_API_PATHS.has(req.path)) return next();
@@ -233,7 +242,7 @@ app.param("caseId", (_req, res, next, caseId) => {
 //
 // `tester` — starting a run spends real money (Gemini calls) and drives a browser against
 // someone's site, which is exactly the line a read-only `viewer` should not be able to cross.
-app.post("/api/runs", requireRole("tester"), (req, res) => {
+app.post("/api/runs", requireRole("tester"), async (req, res) => {
   const { prompt, url, urls, coverage, options, projectId } = req.body ?? {};
   if (!prompt || (!url && !urls?.length)) return res.status(400).json({ error: "prompt and url (or urls) are required" });
 
@@ -280,12 +289,35 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
   }
   const targetApp: TargetApp | null = targetAppOn && isTargetApp(rawTargetApp) ? rawTargetApp : null;
 
+  // D-63: `options.sfConnectionId`, the Salesforce org connection to sign in with. Ignored unless
+  // SALESFORCE_OAUTH_ENABLED is on AND the run is a Salesforce run, so every other request is
+  // answered exactly as before. When it is used, it is checked, never trusted: the connection must
+  // belong to the caller's organisation, and the run's URL must be a host of that same org.
+  const rawConnectionId = options && typeof options === "object" ? options.sfConnectionId : undefined;
+  let sfFrontdoor: ReturnType<typeof frontdoorSessionFor> | undefined;
+  if (salesforceOAuthEnabled() && targetApp === "salesforce" && rawConnectionId !== undefined && rawConnectionId !== null) {
+    // From memory, or restored from storage after a restart (Session 102, TD-166).
+    const conn = await restoreConnection(rawConnectionId, req.organisationId ?? null);
+    if (!conn) {
+      // `code` lets the page drop its stored connection: connections live in memory, so a restart
+      // forgets them while the browser still shows "Connected" (TD-166).
+      return res.status(400).json({ code: "sf-connection-expired", error: "That Salesforce org connection is unknown or has expired. Connect the org again." });
+    }
+    const runUrls = (urls && Array.isArray(urls) && urls.length ? urls : [url]) as string[];
+    if (!runUrls.every((u) => connectionMatchesUrl(conn, u))) {
+      return res.status(400).json({ error: "The run's URL is not an address of the connected org. Connect the org this URL belongs to." });
+    }
+    sfFrontdoor = frontdoorSessionFor(conn);
+  }
+
   // Only the known keys are forwarded — the body is untrusted input, and
   // spreading it straight into runPipeline would let a caller set anything.
   const runOptions = options && typeof options === "object"
     ? {
       ...(typeof options.gateReview === "boolean" ? { gateReview: options.gateReview } : {}),
       ...(typeof options.selfHeal === "boolean" ? { selfHeal: options.selfHeal } : {}),
+      // Org-connection runs only: true = crawl again even when a saved discovery matches the org setup.
+      ...(sfFrontdoor && typeof options.freshDiscovery === "boolean" ? { freshDiscovery: options.freshDiscovery } : {}),
       // Already validated above, so this forwards a known-good tag, never the raw body value.
       ...(isSupportedRunLocale(options.locale) ? { locale: options.locale } : {}),
       // Pro document intake: the confirmed spec. Client input, so parsed with Zod here and
@@ -367,7 +399,7 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
   // Resolved HERE rather than inside the pipeline because it needs the database and the caller's
   // organisation, neither of which the CLI entry point has. Both calls degrade to null/undefined
   // for an unconfigured org, which is exactly the env-driven behaviour that predates this.
-  // D-61 (EXTENDED_LOGGING only): how full the run slots were when this run was accepted, and how
+  // D-69 (EXTENDED_LOGGING only): how full the run slots were when this run was accepted, and how
   // long it then waited for one — a run that "does nothing" is often just queued.
   const queuedAt = Date.now();
   insight("queue", {
@@ -402,6 +434,7 @@ app.post("/api/runs", requireRole("tester"), (req, res) => {
         ...(llmConfig ? { llmConfig } : {}),
         ...(maxLlmCalls !== null ? { maxLlmCalls } : {}),
         ...(targetApp ? { targetApp } : {}),
+        ...(sfFrontdoor ? { sfFrontdoor } : {}),
       },
     }, onEvent, runId, askCredentials);
   })
@@ -603,7 +636,7 @@ app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => 
     // Totals sit at the top level of 08-llm-usage.json, alongside byStage — not under a `totals` key.
     llmCalls: usage?.calls,
     llmTokens: usage?.totalTokens,
-    // D-60: only on a ticked Salesforce run against a non-test org; absent everywhere else.
+    // D-68: only on a ticked Salesforce run against a non-test org; absent everywhere else.
     ...(() => {
       const target = readJson("00-run-target.json")?.targetApp;
       const w = target === "salesforce" && input?.url ? orgWarning(input.url) : null;
@@ -801,12 +834,12 @@ app.get("/api/health", (_req, res) => {
       // safe to leave public.
       NL_STEPS_ENABLED:  check("NL_STEPS_ENABLED"),
       GATE_CASE_EDIT_AI: check("GATE_CASE_EDIT_AI"),
-      // ADDITIVE (D-58) — the Claude provider's variables. Presence only, never a value.
+      // ADDITIVE (D-66) — the Claude provider's variables. Presence only, never a value.
       ANTHROPIC_API_KEY:    check("ANTHROPIC_API_KEY"),
       ANTHROPIC_API_KEYS:   check("ANTHROPIC_API_KEYS"),
       ANTHROPIC_MODEL:      check("ANTHROPIC_MODEL"),
       ANTHROPIC_MODEL_LITE: check("ANTHROPIC_MODEL_LITE"),
-      // ADDITIVE (D-63) — the Jira app's variables. Presence only, never a value.
+      // ADDITIVE (D-71) — the Jira app's variables. Presence only, never a value.
       JIRA_ENABLED:       check("JIRA_ENABLED"),
       JIRA_CLIENT_ID:     check("JIRA_CLIENT_ID"),
       JIRA_CLIENT_SECRET: check("JIRA_CLIENT_SECRET"),
@@ -838,14 +871,78 @@ app.get("/api/health", (_req, res) => {
     // `options.targetApp` accepts. The run screen renders "This URL is a Salesforce org" only when
     // this lists "salesforce"; with the flag off the body is byte-identical to before.
     ...(salesforceEnabled() ? { targetApps: [...TARGET_APPS] } : {}),
-    // ADDITIVE, appended, and present ONLY when JIRA_ENABLED=true (D-63). app.js shows the
+    // ADDITIVE, appended, and present ONLY when JIRA_ENABLED=true (D-71). app.js shows the
     // "Connect Jira" row only when this is true; with the flag off the body is unchanged.
     ...(jiraEnabled() ? { jira: true } : {}),
     // ADDITIVE, appended, and present ONLY when SPEC_INTAKE_ENABLED=true — the same shape as
     // `targetApps` above and for the same reason: the home screen renders the Pro toggle only when
     // this is true, and with the flag off the body is byte-identical to before.
     ...(specIntakeEnabled() ? { specIntake: true } : {}),
+    // ADDITIVE, appended, and present ONLY when both SALESFORCE_ENABLED and SALESFORCE_OAUTH_ENABLED
+    // are on (D-63): the run screen offers "Connect org" only then.
+    ...(salesforceEnabled() && salesforceOAuthEnabled() ? { salesforceOAuth: true } : {}),
+    // Present ONLY when the org discovery cache is on too: the run screen offers "Fresh discovery" then.
+    ...(salesforceEnabled() && salesforceOAuthEnabled() && orgDiscoveryCacheEnabled() ? { sfDiscoveryCache: true } : {}),
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Salesforce org connections over OAuth (D-63, SALESFORCE_OAUTH_ENABLED, default off).
+//
+// POST start (a tester) -> the org's own authorise URL, opened by the UI in a popup. The person
+// signs in on Salesforce's page (MFA / SSO / passkeys are Salesforce's), Salesforce redirects the
+// popup to GET callback, which trades the code for tokens (kept in memory, never sent to the
+// browser) and posts only the opaque connection id back to the Testbench window that opened it.
+const salesforceOAuthOff = (res: express.Response) =>
+  res.status(403).json({ error: "Salesforce org connections are turned off on this server." });
+
+app.post("/api/salesforce/oauth/start", requireRole("tester"), (req, res) => {
+  if (!salesforceEnabled() || !salesforceOAuthEnabled()) return salesforceOAuthOff(res);
+  const orgUrl = req.body?.url;
+  if (typeof orgUrl !== "string" || !orgUrl.trim()) {
+    return res.status(400).json({ error: "Send the org's address as `url`." });
+  }
+  const started = startAuthorization({ orgUrl, orgId: req.organisationId ?? null, userId: req.user?.id ?? null });
+  if ("error" in started) return res.status(400).json(started);
+  res.json(started);
+});
+
+/** The saved discoveries of a connected org (SALESFORCE_DISCOVERY_CACHE_ENABLED), for the run screen. */
+app.get("/api/salesforce/discovery-cache", requireRole("tester"), async (req, res) => {
+  if (!salesforceEnabled() || !salesforceOAuthEnabled()) return salesforceOAuthOff(res);
+  const conn = await restoreConnection(req.query.connectionId, req.organisationId ?? null);
+  if (!conn) return res.status(404).json({ code: "sf-connection-expired", error: "That Salesforce org connection is unknown or has expired." });
+  res.json({ enabled: orgDiscoveryCacheEnabled(), saved: savedDiscoveriesFor(new URL(conn.instanceUrl).hostname) });
+});
+
+/** The page the OAuth popup ends on: hands the result to the window that opened it, then closes. */
+function salesforceCallbackPage(payload: Record<string, unknown>, targetOrigin: string | null): string {
+  // `<` escaped so nothing in an error message can close the script element.
+  const data = JSON.stringify(payload).replace(/</g, "\\u003c");
+  const target = JSON.stringify(targetOrigin ?? "");
+  const words = payload.error ? "Salesforce was not connected. You can close this window." : "Salesforce org connected. You can close this window.";
+  return `<!doctype html><meta charset="utf-8"><title>Testbench</title>`
+    + `<p style="font-family:sans-serif">${words}</p>`
+    + `<script>(function(){var p=${data};var t=${target};`
+    + `if(window.opener&&t){window.opener.postMessage(p,t);}setTimeout(function(){window.close();},400);})();</script>`;
+}
+
+app.get("/api/salesforce/callback", async (req, res) => {
+  if (!salesforceEnabled() || !salesforceOAuthEnabled()) return salesforceOAuthOff(res);
+  const q = req.query as Record<string, unknown>;
+  let payload: Record<string, unknown>;
+  try {
+    if (typeof q.error === "string") {
+      throw new Error(`Salesforce did not authorise the connection: ${String(q.error_description ?? q.error).slice(0, 200)}`);
+    }
+    const done = await completeAuthorization(String(q.code ?? ""), String(q.state ?? ""));
+    payload = { type: "sf-oauth", connectionId: done.connectionId, host: done.host, kind: done.kind };
+    console.log(`[salesforce] org connected: ${done.host} (${done.kind})`);
+  } catch (err) {
+    payload = { type: "sf-oauth", error: (err as Error)?.message ?? String(err) };
+    console.warn(`[salesforce] org connection failed: ${payload.error}`);
+  }
+  res.set("Cache-Control", "no-store").type("html").send(salesforceCallbackPage(payload, appOrigin()));
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -947,7 +1044,7 @@ app.get("/api/auth/config", (_req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// Jira, Phase 1 (D-63): read one story into the prompt box. All NEW routes; every one answers 404
+// Jira, Phase 1 (D-71): read one story into the prompt box. All NEW routes; every one answers 404
 // unless JIRA_ENABLED=true, so with the flag off the server is unchanged. Read-only — nothing here
 // writes to Jira. The access token lives only in memory (src/jira/session.ts) and is never sent to
 // the browser, logged, or written anywhere.
@@ -2180,7 +2277,7 @@ app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async 
  * consequence.
  */
 app.post("/api/replay", requireRole("tester"), async (req, res) => {
-  const { suiteId, caseIds, label } = req.body ?? {};
+  const { suiteId, caseIds, label, sfConnectionId } = req.body ?? {};
   if (typeof suiteId !== "string" && !Array.isArray(caseIds)) {
     return res.status(400).json({ error: "send a suiteId, caseIds, or both" });
   }
@@ -2204,6 +2301,14 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
     //
     // Order matters for cost: a replay with no login has nothing to misdirect, so it is allowed
     // across as many sites as it likes and never pays for the origin scan.
+    // Session 102 (TD-166): cases saved from an org-connection run sign in through the connection,
+    // so the replay needs one — checked here, before anything starts, like a fresh run's.
+    if (salesforceOAuthEnabled() && sfConnectionId) await restoreConnection(sfConnectionId, req.organisationId ?? null);
+    const sfReplay = salesforceOAuthEnabled()
+      ? replaySessionFor(cases, sfConnectionId, req.organisationId ?? null)
+      : { session: null };
+    if ("error" in sfReplay) return res.status(400).json({ code: sfReplay.code, error: sfReplay.error });
+
     const credentialFields = credentialKindsNeeded(cases.flatMap((c) => c.ir.steps));
     if (credentialFields.length > 0) {
       // Origins, not raw baseUrls: two cases on the same host with different paths are the same
@@ -2303,7 +2408,12 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
       // object of its own; the ambient config covers everything downstream of this point.
       const replayConfig = await llmConfigForOrg(req.organisationId ?? null);
       if (replayConfig) enterWithLlmConfig(replayConfig);
-      return runReplay({ runId, cases, label: runLabel, creds }, onEvent);
+      // The same rails a fresh run enters (orchestrator.ts), in the SCOPED form a request handler
+      // must use: the run id, so the minted frontdoor URL is registered as this run's secret and
+      // scrubbed; the target app and the session, so the executor mints the sign-in for
+      // `${env:SF_FRONTDOOR_URL}`. Null on an ordinary replay.
+      return withRunId(runId, () => withTargetApp(sfReplay.session ? "salesforce" : null, () =>
+        withFrontdoor(sfReplay.session, () => runReplay({ runId, cases, label: runLabel, creds }, onEvent))));
     })
       .then((outcome) => {
         // Surface each case's latest verdict on the library row, so the Suite screen can show a
@@ -2362,11 +2472,11 @@ export const BOOLEAN_ENV_FLAGS = [
   // RESERVED: registered before its reader lands (same reason as DISCOVERY_LIVE_DOM above). Names
   // the Salesforce-specific discovery support; nothing reads it yet.
   "SALESFORCE_ENABLED",
-  // D-57: the fixed Salesforce login for generated tests (src/stages/salesforceOrgLogin.ts). Off:
+  // D-65: the fixed Salesforce login for generated tests (src/stages/salesforceOrgLogin.ts). Off:
   // every compile and every spec is exactly what it was. Read only on a ticked Salesforce run.
   "SALESFORCE_FIXED_LOGIN",
-  // D-60: accept every Salesforce org (production included) instead of only scratch orgs and
-  // sandboxes. Off: the D-56 guard, unchanged.
+  // D-68: accept every Salesforce org (production included) instead of only scratch orgs and
+  // sandboxes. Off: the D-64 guard, unchanged.
   "SALESFORCE_ALLOW_ALL_ORGS",
   "SCRIPT_OVERRIDE_ENABLED",
   "SELF_HEAL_DEFAULT",
@@ -2375,7 +2485,19 @@ export const BOOLEAN_ENV_FLAGS = [
   // 403, and options.spec on POST /api/runs is ignored.
   "SPEC_INTAKE_ENABLED",
   "SCREEN_MAP_ENABLED",
-  // D-63: Jira Phase 1 — "Connect Jira" and read a story into the prompt box. Off: no Jira row on
+  "NETWORK_SETTLE_ENABLED",
+  "SCREEN_BEST_MATCH_ENABLED",
+  "VOLATILE_ID_DETECTION_ENABLED",
+  "BUTTON_EXPLORER_ENABLED",
+  "HOLLOW_PASS_GUARDS_ENABLED",
+  "SALESFORCE_OAUTH_ENABLED",
+  "TEST_DATA_ENABLED",
+  "SALESFORCE_PRODUCTION_ORGS_ENABLED",
+  // Phase D (src/stages/salesforceCleanup.ts): delete what a run created in the org. Off: nothing deleted.
+  "SALESFORCE_CLEANUP_ENABLED",
+  // src/stages/hybridDiscovery.ts: reuse an org-connection discovery while the org's setup is unchanged.
+  "SALESFORCE_DISCOVERY_CACHE_ENABLED",
+  // D-71: Jira Phase 1 — "Connect Jira" and read a story into the prompt box. Off: no Jira row on
   // the home view, and every /api/jira/* route answers 404.
   "JIRA_ENABLED",
 ] as const;
@@ -2428,7 +2550,7 @@ export function formatInvalidBooleanFlags(bad: InvalidBooleanFlag[]): string {
 export { app };
 
 /**
- * Every env var that names an LLM provider ("gemini", "azure" or "claude" — D-58).
+ * Every env var that names an LLM provider ("gemini", "azure" or "claude" — D-66).
  *
  * The same shape as `BOOLEAN_ENV_FLAGS` for the same reason: `LLM_PROVIDER=azureEE` would be
  * silently read as `gemini` (the fallback default) if a typo ever shipped, and a server running
@@ -2627,7 +2749,7 @@ if (isMain) {
       "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY",
       "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_DEPLOYMENT_LITE",
       "LLM_CACHE_VERSION",
-      // Appended (D-58): the Claude provider's variables, presence only like the rest.
+      // Appended (D-66): the Claude provider's variables, presence only like the rest.
       "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEYS", "ANTHROPIC_MODEL", "ANTHROPIC_MODEL_LITE",
     ]) {
       const val = process.env[v];

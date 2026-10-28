@@ -847,11 +847,22 @@ function summarize(stage, data) {
       case "discovery": {
         const pagesCount = data.pages?.length ?? 1;
         const concepts = [...new Set((data.pages ?? []).flatMap((p) => p.concepts ?? []))];
-        const conceptStr = concepts.length ? ` — Concepts: ${concepts.join(", ")}` : "";
-        // D-60: a ticked Salesforce run against a production (or other non-test) org. Absent on
+        // The first few areas, not all of them: a Salesforce org lists forty, and a wall of names
+        // under one card hides the card below it. The full list is in Technical details.
+        const shown = concepts.slice(0, 6).join(", ");
+        const more = concepts.length > 6 ? ` and ${concepts.length - 6} more` : "";
+        const conceptStr = concepts.length ? ` — ${shown}${more}` : "";
+        // D-68: a ticked Salesforce run against a production (or other non-test) org. Absent on
         // every other run, so this line reads exactly as before.
         const orgNote = data.orgWarning?.message ? `⚠ ${data.orgWarning.message} ` : "";
-        return `${orgNote}Discovered ${pagesCount} page(s)${conceptStr}`;
+        // Org-connection runs that keep scans: say plainly whether this run scanned or reused one.
+        const scan = data.savedScan;
+        if (scan?.reused) {
+          return `${orgNote}Used the saved scan of this org from ${agoText(scan.at)}: nothing in the org's setup has changed, `
+            + `so it was not scanned again. ${pagesCount} page${pagesCount === 1 ? "" : "s"}${conceptStr}`;
+        }
+        const savedNote = scan ? ". Saved, so the next run on this org can skip the scan" : "";
+        return `${orgNote}Discovered ${pagesCount} page${pagesCount === 1 ? "" : "s"}${conceptStr}${savedNote}`;
       }
       case "testcases": {
         // Report generated AND selected, with the reason. Reporting only the generated count
@@ -944,7 +955,7 @@ function setPhaseFromStage(stage, status, data) {
       }
       const summary = interrupted
         ? "Skipped — the run aborted before reaching this step"
-        : "Pipeline finished — nothing left to evaluate";
+        : "Nothing failed, so there was nothing to explain";
       applyPhaseUI(p.key, interrupted ? "failed" : "completed", summary);
     });
     return;
@@ -1263,14 +1274,17 @@ async function loadCaseDetails(card) {
   const caseDir = `/runs/${runId}/cases/${caseId}`;
 
   try {
-    const [irRes, specRes, diagnosis] = await Promise.all([
-      fetch(`${caseDir}/04-ir.json`).then(r => r.ok ? r.json() : null).catch(() => null),
+    const getJson = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    const [irRes, specRes, diagnosis, results] = await Promise.all([
+      getJson(`${caseDir}/04-ir.json`),
       fetch(`${caseDir}/generated.spec.ts`).then(r => r.ok ? r.text() : "Not found"),
       // diagnosisPath is only ever written when the case actually failed — don't ask for a
       // file that was never produced for a passed/blocked case.
       status === "failed"
         ? fetch(`${caseDir}/06-diagnosis.json`).then(r => r.ok ? r.json() : null).catch(() => null)
         : Promise.resolve(null),
+      // The first case's results.json sits at the run's root; runTokensOf matches it by title.
+      getJson(`${caseDir}/results.json`).then((r) => r ?? getJson(`/runs/${runId}/results.json`)),
     ]);
     // Run-level 04-ir.json wraps { ir, updatedAt }; the per-case copy is the raw IR itself.
     // Handle both shapes rather than assume one — same defensive pattern as
@@ -1288,7 +1302,7 @@ async function loadCaseDetails(card) {
     // no statement of what ran or what they were looking at. `failed` is excluded because it has
     // its own, richer block below (the failing step, the error, the diagnosis); giving it both
     // would say the same thing twice in two voices.
-    if (NARRATIVE_LEAD_IN[status] && c) renderCaseNarrative(narrativeEl, c, ir, status);
+    if (NARRATIVE_LEAD_IN[status] && c) renderCaseNarrative(narrativeEl, c, ir, status, runTokensOf(results, ir?.meta?.title));
     if (status === "failed") renderCaseDiagnosisBlock(diagEl, diagnosis);
   } catch {
     // Details stay as "Loading..." — non-critical
@@ -1309,6 +1323,11 @@ function renderSuiteResults(suite, runId) {
   suiteResultsEl.classList.remove("hidden");
   suiteResultsEl.dataset.runId = runId;
   suiteSummaryHeaderEl.innerHTML = renderSuiteSummaryHeader(suite);
+  // The page header's tally, beside where and when (set from the run's input event).
+  const healed = suite.cases.filter((c) => c.healed).length;
+  runMetaEl.textContent = [runMetaEl.dataset.base,
+    `${suite.passed ?? 0} of ${suite.total ?? suite.cases.length} passed`, healed ? `${healed} healed` : ""]
+    .filter(Boolean).join(" · ");
   setupScreenshotToggle(suite, runId);
   suiteCaseListEl.innerHTML = suite.cases.map((c, i) => renderCaseCard(c, runId, i)).join("");
   setupCaseCardListeners();
@@ -1615,7 +1634,7 @@ function hideSuiteResults() {
 function verdictFor(data, stage, error) {
   const status = data?.status;
   if (stage === "error") {
-    // D-62: a refused address is a decision about what was entered, not our fault — say only why.
+    // D-70: a refused address is a decision about what was entered, not our fault — say only why.
     if (data?.orgRefused && error) {
       return { cls: "blocked", ic: "alert-circle", head: "Couldn’t run this", detail: error };
     }
@@ -1662,6 +1681,81 @@ function paintVerdict(v) {
     `${v.detail ? `<span class="verdict-detail">${escapeHtml(v.detail)}</span>` : ""}</span>`;
 }
 
+/**
+ * A step value as a person reads it. The IR carries placeholders the spec fills in when it runs
+ * ({{uid}}, {{phone}}, {{date:+30:en-US}}, src/text.ts) and references to saved secrets
+ * (${env:NAME}). With `tokens` (the run's own context, from results.json — runTokensOf) a
+ * placeholder shows the value that run typed; without, what it stands for. DISPLAY ONLY: the case
+ * editor round-trips through src/stages/stepText.ts and never sees this, so no token is lost.
+ * The date arithmetic mirrors text.ts's resolver; a drift here mislabels a report, never a test.
+ */
+function displayValue(value, tokens) {
+  if (typeof value !== "string") return value ?? "";
+  // Braces written as \x7B / \x7D: tests lift this function out of the file by counting braces.
+  return value
+    .replace(/\$\x7Benv:([A-Za-z0-9_]+)\x7D/g, (_m, name) =>
+      /PASSWORD|SECRET/i.test(name) ? "(saved password)"
+        : /USER|EMAIL|LOGIN/i.test(name) ? "(saved username)"
+        : `(saved ${name.toLowerCase().replace(/_/g, " ")})`)
+    .replace(/\x7B\x7B(uid|phone|date:([+-]?\d+):([^\x7D]+))\x7D\x7D/g, (_m, kind, days, locale) => {
+      if (kind === "uid") return tokens?.uid ?? "(unique code)";
+      if (kind === "phone") return tokens?.phone ?? "(unique phone number)";
+      const n = Number(days);
+      if (!tokens?.now) return n ? `(today ${n > 0 ? "+" : "-"} ${Math.abs(n)} days)` : "(today)";
+      const d = new Date(tokens.now + n * 86400000);
+      try {
+        return new Intl.DateTimeFormat(String(locale).replace("_", "-"), { year: "numeric", month: "numeric", day: "numeric" }).format(d);
+      } catch { return d.toLocaleDateString(); }
+    });
+}
+
+/** The spec's run context — its "run-tokens" annotation (generator.ts) — from a Playwright
+ *  results.json, for the test titled `title`. The title must match when given: the run's root
+ *  results.json is the FIRST case's, and another case's card falls back to it. */
+function runTokensOf(results, title) {
+  const tests = [];
+  const visit = (s) => {
+    for (const sp of s?.specs ?? []) for (const t of sp.tests ?? []) tests.push({ title: sp.title, t });
+    for (const c of s?.suites ?? []) visit(c);
+  };
+  for (const s of results?.suites ?? []) visit(s);
+  for (const { t } of tests.filter((x) => !title || x.title === title)) {
+    const all = [...(t.annotations ?? []), ...(t.results ?? []).flatMap((r) => r.annotations ?? [])];
+    const a = all.find((x) => x?.type === "run-tokens");
+    if (a) { try { return JSON.parse(a.description); } catch { return null; } }
+  }
+  return null;
+}
+
+/**
+ * formatIrStep for the REPORT: the same sentence with every value made readable (displayValue),
+ * plus three phrasings a person reads better. formatIrStep itself stays the exact twin of the
+ * server's stepText.ts, which the case editor round-trips through (tests/stepText.test.ts).
+ */
+function readableStep(step, tokens) {
+  if (!step || typeof step !== "object") return formatIrStep(step);
+  const t = step.target;
+  // The org-connection sign-in (D-63): a one-time link, not an address anyone should read.
+  if (step.action === "navigate" && t?.url === "${env:SF_FRONTDOOR_URL}") return "Sign in to the org";
+  // Phase A: a record this test created, opened again (recordRef in salesforceFrontdoor.ts).
+  const record = step.action === "navigate" && /^\$\x7Brecord:([A-Za-z][A-Za-z0-9_]*):([1-9][0-9]*)\x7D$/.exec(t?.url ?? "");
+  if (record) return `Go back to the ${record[1]} record this test created${Number(record[2]) > 1 ? `, number ${record[2]}` : ""}`;
+  const shown = { ...step, value: step.value === undefined ? undefined : displayValue(step.value, tokens) };
+  if (t) {
+    shown.target = { ...t };
+    for (const k of ["name", "text", "url"]) if (t[k]) shown.target[k] = displayValue(t[k], tokens);
+  }
+  // A lookup pick with no value takes the first record the org offers (testData.ts).
+  if (step.action === "select" && t?.lookup && !step.value) {
+    return `Pick the first suggested record in ${formatIrStep({ action: "click", target: shown.target }).replace(/^Click on /, "")}`;
+  }
+  // A message check reads as one ('Check that "was created" appears'), not as `text "…"`.
+  if (step.action === "assert" && (step.assertion ?? "visible") === "visible" && t?.text && !t.name && !t.role) {
+    return `Check that "${shown.target.text}" appears on the page`;
+  }
+  return formatIrStep(shown);
+}
+
 function formatIrStep(step) {
   if (!step || typeof step !== "object") return String(step);
   const action = step.action;
@@ -1704,6 +1798,8 @@ function formatIrStep(step) {
       if (assertion === "visible") return `Check that ${targetDesc} appears on the page`;
       if (assertion === "hidden") return `Check that ${targetDesc} is not shown`;
       if (assertion === "url_contains") return `Check the page address contains "${step.value || target?.url || ""}"`;
+      // A record field's value (Target.field): read inside that field on the record page, not anywhere.
+      if (target?.field && (assertion === "text_contains" || assertion === "text_equals")) return `Check that the "${target.field}" field shows "${step.value || ""}"`;
       if (assertion === "text_contains") return `Check that the text "${step.value || ""}" is displayed`;
       if (assertion === "text_equals") return `Check that the text "${step.value || ""}" is displayed`;
       if (assertion === "enabled") return `Check that ${targetDesc} is enabled`;
@@ -1738,7 +1834,7 @@ const CATEGORY_REASON = {
 function describeScreenshot(steps) {
   if (!steps || !steps.length) return "The page as it looked when the test finished.";
   const last = steps[steps.length - 1];
-  if (last.action !== "assert") return `The page right after the last step: ${formatIrStep(last).toLowerCase()}.`;
+  if (last.action !== "assert") return `The page right after the last step: ${readableStep(last).toLowerCase()}.`;
   const target = last.target;
   const targetDesc = target?.name ? `"${target.name}"` : target?.text ? `"${target.text}"` : "the expected element";
   const assertion = last.assertion || "visible";
@@ -1769,7 +1865,7 @@ const NARRATIVE_LEAD_IN = {
   blocked: "Here's what the test was doing when it was stopped",
 };
 
-function buildStepNarrative(steps, status) {
+function buildStepNarrative(steps, status, tokens) {
   if (!steps || !steps.length) return "";
   // formatIrStep returns imperative fragments ("Go to X", "Click on Y") — gluing them after a
   // subject like "The test ___" needs verb conjugation ("go" -> "goes") this function doesn't
@@ -1777,7 +1873,7 @@ function buildStepNarrative(steps, status) {
   // A colon-introduced list sidesteps conjugation entirely: each fragment stays grammatical on
   // its own, the way steps in an instruction list normally read.
   const parts = steps.map((s) => {
-    const d = formatIrStep(s);
+    const d = readableStep(s, tokens);
     return d.charAt(0).toLowerCase() + d.slice(1);
   });
   const sentence = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")}, then ${parts[parts.length - 1]}`;
@@ -1793,9 +1889,9 @@ function buildStepNarrative(steps, status) {
 const BLOCKED_IMAGE_DESC =
   "The wall the test ran into — this is as far as it got, not the end of the test.";
 
-function renderCaseNarrative(container, c, ir, status = "passed") {
+function renderCaseNarrative(container, c, ir, status = "passed", tokens = null) {
   const steps = ir?.steps;
-  const whatHappened = steps?.length ? buildStepNarrative(steps, status) : (c.whyItMatters || c.intent || "");
+  const whatHappened = steps?.length ? buildStepNarrative(steps, status, tokens) : (c.whyItMatters || c.intent || "");
   if (!whatHappened) { container.classList.add("hidden"); return; }
   const whatImage = !c.screenshotUrl ? ""
     : status === "blocked" ? BLOCKED_IMAGE_DESC
@@ -1983,6 +2079,10 @@ function renderEnterpriseDiagnostic(data, stage, error) {
     } else if (kind === "incomplete-coverage") {
       description = "It couldn't carry out every step your request described, so it ran the part it could verify.";
       fixPrompt = "Try describing fewer steps in one go, or split the request into separate tests.";
+    } else if (kind === "error-assertion") {
+      // TD-162 (HOLLOW_PASS_GUARDS_ENABLED): the replayed flow ended on the form's own error message.
+      description = "The form showed its own error message, so the flow never reached a success screen.";
+      fixPrompt = "Check the values in your request — for example a real-looking email address or phone number — so the form accepts them, and describe every step up to the final confirmation.";
     } else {
       // role-name, and anything unrecognised.
       description = "It couldn't find a button, link, or field it needed on the page.";
@@ -2033,6 +2133,27 @@ function renderEnterpriseDiagnostic(data, stage, error) {
   diagnosisEl.classList.remove("hidden");
 }
 
+/** The "what ran" list: placeholders at once, then the run's own typed values once its
+ *  results.json says them (only when a step carries a placeholder, and only if the person is
+ *  still on the same run). */
+function paintTestSteps(test, ir) {
+  const paint = (tokens) => {
+    const lines = ir?.steps?.length ? ir.steps.map((s) => readableStep(s, tokens)) : (test?.steps ?? []);
+    testStepsEl.innerHTML = lines.map((s) => `<li>${escapeHtml(s)}</li>`).join("");
+  };
+  paint(null);
+  const runId = currentRunId;
+  const hasToken = ir?.steps?.some((s) => /\{\{/.test(`${s.value ?? ""}${s.target?.text ?? ""}${s.target?.name ?? ""}`));
+  if (!runId || !hasToken) return;
+  fetch(`/runs/${encodeURIComponent(runId)}/results.json`)
+    .then((r) => (r.ok ? r.json() : null))
+    .then((res) => {
+      const tokens = runTokensOf(res, ir.meta?.title);
+      if (tokens && currentRunId === runId) paint(tokens);
+    })
+    .catch(() => {});
+}
+
 function renderSingleTestResult(data, stage, error) {
   finalResult.classList.remove("hidden");
   const passed = data?.passed;
@@ -2044,10 +2165,7 @@ function renderSingleTestResult(data, stage, error) {
   const ir = data?.ir;
   if (test || ir) {
     testTitleEl.textContent = test?.title || ir?.meta?.title || "";
-    const stepsToRender = ir?.steps?.length
-      ? ir.steps.map(formatIrStep)
-      : (test?.steps ?? []);
-    testStepsEl.innerHTML = stepsToRender.map((s) => `<li>${escapeHtml(s)}</li>`).join("");
+    paintTestSteps(test, ir);
     testExpectedEl.textContent = test?.expected ? `Expected: ${test.expected}` : "";
     testSummaryEl.classList.remove("hidden");
   } else {
@@ -2337,6 +2455,8 @@ credSkipEl.addEventListener("click", () => submitCredentials({ skip: true }));
 // The run this panel belongs to. Guards against a stale panel the way credRunId guards the
 // credential prompt: the poller replays events, and a decision must never post to an old run.
 let caseRunId = null;
+/** Bumped per case round shown, so a late answer for an older round never draws over a newer one. */
+let caseRoundSeq = 0;
 
 // The batch currently on screen and how many cases were already accepted before this round.
 let currentBatch = [];
@@ -2458,11 +2578,11 @@ function setGateSteps(index, steps) {
 }
 
 /** Ticked state is a draft too, so it survives a repaint after a structural change and a refresh
- *  mid-round. Falls back to the rule the panel has always used: the primary case starts ticked. */
+ *  mid-round. Nothing starts ticked except a case the reviewer wrote: they choose every case. */
 function gateIsChecked(entry) {
   const stored = gateDrafts.checked[entry.index];
   if (typeof stored === "boolean") return stored;
-  return entry.isAdded || !!entry.c.fromPrompt;
+  return !!entry.isAdded;
 }
 
 function setGateChecked(index, value) {
@@ -3205,6 +3325,13 @@ function applyEvent(event, runId) {
   // because the poller replays the whole stream through this function.
   if (event.stage === "input" && typeof event.data?.prompt === "string") {
     currentRunPrompt = event.data.prompt;
+    // The page header: what was asked, where, and when — at the top, not only in the results card.
+    let host = "";
+    try { host = new URL(event.data.url).hostname; } catch { /* no URL: leave it out */ }
+    const when = event.ts ? new Date(event.ts).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "";
+    runTitleEl.textContent = event.data.prompt;
+    runMetaEl.dataset.base = [host, when].filter(Boolean).join(" · ");
+    runMetaEl.textContent = runMetaEl.dataset.base;
   }
 
   if (event.stage === "credentials") {
@@ -3223,16 +3350,22 @@ function applyEvent(event, runId) {
     // has no way of its own to know whether this server will answer an ask-for-a-change, and
     // drawing a button that always 404s is worse than not drawing one.
     const opts = { ai: event.data.gateRewrite === true };
+    // Drawn when the count arrives, which can be AFTER the round closed: opening a finished run
+    // replays its whole stream at once, so "finalized" and "done" hid the panel before this answer
+    // came back and redrew a "Round 1 — Action needed" on a run that had already run. Only the
+    // newest round, and only while it is still open (hideCaseSelectionPanel clears caseRunId).
+    const round = ++caseRoundSeq;
+    const stillOpen = () => caseRunId === runId && round === caseRoundSeq;
     fetch(`/api/runs/${runId}/accepted-cases`)
       .then((res) => res.json())
-      .then(({ count, remainingCapacity }) => renderCaseSelectionPanel(
+      .then(({ count, remainingCapacity }) => stillOpen() && renderCaseSelectionPanel(
         batch, attempt, count,
         // The server's real MAX_ACCUMULATED_CASES, not this file's copy of the default: the cap is
         // env-configurable, so a hardcoded 5 states the wrong limit the moment anyone raises it.
         // Derived from the numbers the route already returns rather than a new field.
         { ...opts, poolCap: typeof remainingCapacity === "number" ? count + remainingCapacity : undefined },
       ))
-      .catch(() => renderCaseSelectionPanel(batch, attempt, 0, opts));
+      .catch(() => stillOpen() && renderCaseSelectionPanel(batch, attempt, 0, opts));
     return false;
   }
 
@@ -3284,10 +3417,7 @@ function applyEvent(event, runId) {
     const ir = event.data?.ir;
     if (test || ir) {
       testTitleEl.textContent = test?.title || ir?.meta?.title || "";
-      const stepsToRender = ir?.steps?.length
-        ? ir.steps.map(formatIrStep)
-        : (test?.steps ?? []);
-      testStepsEl.innerHTML = stepsToRender.map((s) => `<li>${escapeHtml(s)}</li>`).join("");
+      paintTestSteps(test, ir);
       testExpectedEl.textContent = test?.expected ? `Expected: ${test.expected}` : "";
       testSummaryEl.classList.remove("hidden");
     } else {
@@ -3632,14 +3762,30 @@ form.addEventListener("submit", async (e) => {
     // Unticked (or flag off, so no box at all): exactly `runOptions`, the same object as always,
     // so the body is byte-identical. Ticked: one extra key, `targetApp` (D-50). Pro adds one more,
     // `spec`, and only when Pro is on with a confirmed document.
-    const baseOptions = targetAppBoxEl?.checked ? { ...runOptions, targetApp: "salesforce" } : runOptions;
+    // D-63: a connected org adds one more key, `sfConnectionId`, only on a ticked Salesforce run.
+    const baseOptions = targetAppBoxEl?.checked
+      ? {
+        ...runOptions, targetApp: "salesforce",
+        ...(sfConnection ? { sfConnectionId: sfConnection.connectionId } : {}),
+        ...(sfConnection && freshDiscoveryBoxEl ? { freshDiscovery: freshDiscoveryBoxEl.checked } : {}),
+      }
+      : runOptions;
     const res = await fetch("/api/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prompt, url, coverage,
         options: proOptions ? { ...baseOptions, ...proOptions } : baseOptions }),
     });
-    if (!res.ok) throw new Error(`Server responded with HTTP ${res.status}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      // TD-166: the server forgot the org connection (it restarted), so stop showing "Connected".
+      if (body?.code === "sf-connection-expired" && sfConnectStatusEl) {
+        sfConnection = null;
+        try { sessionStorage.removeItem("sfConnection"); } catch { /* ignore */ }
+        sfConnectStatusEl.textContent = "Not connected: the server no longer has this org's connection. Click Connect org.";
+      }
+      throw new Error(body?.error || `Server responded with HTTP ${res.status}`);
+    }
     const { runId } = await res.json();
     if (!runId) throw new Error("Server didn't return a run id");
     // The run screen's warnings panel starts with everything intake already said.
@@ -3817,7 +3963,11 @@ async function api(path, init) {
   const res = await fetch(path, init);
   if (res.status === 204) return null;
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || `That didn't work (${res.status}).`);
+  if (!res.ok) {
+    const err = new Error(body.error || `That didn't work (${res.status}).`);
+    err.code = body.code;   // a machine-readable reason, when the server gives one
+    throw err;
+  }
   return body;
 }
 
@@ -3829,14 +3979,23 @@ async function api(path, init) {
  */
 async function startReplay(selection, label) {
   try {
+    // A case saved from an org-connection run replays through the connection this page holds
+    // (Session 102, TD-166); the server ignores the id when no case needs it.
+    const sfConnectionId = sfConnection?.connectionId;
     const { runId } = await api("/api/replay", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...selection, label }),
+      body: JSON.stringify({ ...selection, label, ...(sfConnectionId ? { sfConnectionId } : {}) }),
     });
     toast("Replaying — this costs nothing, the steps are already saved.");
     navigate("#/run/" + runId);
   } catch (err) {
+    // TD-166: the server no longer holds the org connection this page remembers.
+    if (err.code === "sf-connection-expired" && sfConnectStatusEl) {
+      sfConnection = null;
+      try { sessionStorage.removeItem("sfConnection"); } catch { /* ignore */ }
+      sfConnectStatusEl.textContent = "Not connected: the server no longer has this org's connection. Click Connect org.";
+    }
     toast(err.message);
   }
 }
@@ -5403,6 +5562,9 @@ function showView(name) {
   });
   closeSidebarDrawer();
   window.scrollTo(0, 0);
+  // The saved-discovery line goes stale while a run saves one; re-read it on the way home. Deferred:
+  // the first showView runs during init, before that function's `let`s are initialised.
+  if (name === "home") setTimeout(refreshSavedDiscovery, 0);
   // `currentView` is an input to refreshNewRunState()'s `fresh` test and this is the only function
   // that changes it (platform rule 4 — showView is the sole owner of which view is visible). One
   // call here therefore covers all nine views and every navigation path into them: hashchange, the
@@ -5429,6 +5591,7 @@ function resetRunUI() {
   diagnosisEl.textContent = "";
   runTitleEl.textContent = "";
   runMetaEl.textContent = "";
+  runMetaEl.dataset.base = "";
   currentRunFinished = false;
   refreshRunSaveSlot();
 }
@@ -5629,8 +5792,161 @@ function renderTargetAppBox() {
   targetAppBoxEl = label.querySelector("input");
 }
 
+/**
+ * "Connect org" (D-63) — sign in to a Salesforce org through Salesforce's own page, once, so the run
+ * never types a password. Rendered only when /api/health says `salesforceOAuth: true` (both
+ * SALESFORCE_ENABLED and SALESFORCE_OAUTH_ENABLED on); flag off, nothing here exists. No new class
+ * (rule 3): the button reuses `.dl-btn .dl-btn-inline`, the status line is plain text.
+ *
+ * The popup ends on /api/salesforce/callback, which posts `{ type: "sf-oauth", connectionId, host,
+ * kind }` (or `{ error }`) to THIS origin only. The browser never holds a token — only the opaque id,
+ * which rides along as `options.sfConnectionId` on a ticked Salesforce run.
+ */
+let sfConnection = null;
+let sfConnectStatusEl = null;
+function renderSalesforceConnect() {
+  if (sfConnectStatusEl || !targetAppBoxEl) return;
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;align-items:center;gap:10px;margin-top:6px;margin-left:26px;flex-wrap:wrap";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "dl-btn dl-btn-inline";
+  btn.textContent = "Connect org";
+  btn.title = "Sign in to this Salesforce org on Salesforce's own page, so runs never type a password";
+  const status = document.createElement("span");
+  status.style.cssText = "font-size:12px;opacity:.8";
+  status.textContent = "Not connected: the run will ask for a username and password.";
+  row.append(btn, status);
+  targetAppBoxEl.closest("label").insertAdjacentElement("afterend", row);
+  sfConnectStatusEl = status;
+  btn.addEventListener("click", connectSalesforceOrg);
+  // A reload must not forget the connection: the id (opaque, never a token) lives for this tab. If the
+  // server has since restarted and forgotten it, the run request says so.
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("sfConnection") || "null");
+    if (saved && saved.connectionId) showSalesforceConnected(saved);
+  } catch { /* storage unavailable: connect again */ }
+}
+
+function showSalesforceConnected(c) {
+  sfConnection = { connectionId: c.connectionId, host: c.host, kind: c.kind };
+  sfConnectStatusEl.textContent = `Connected: ${c.host} (${c.kind}). Runs on this org sign in without a password.`;
+  if (targetAppBoxEl && !targetAppBoxEl.checked) targetAppBoxEl.checked = true;
+  refreshSavedDiscovery();
+}
+
+/**
+ * "Fresh discovery" (SALESFORCE_DISCOVERY_CACHE_ENABLED): ticked = crawl the org again; unticked =
+ * reuse a saved discovery when the org's setup is unchanged. Ticked the first time; the person's
+ * last choice is remembered in this browser. Below it, what is saved for the connected org.
+ * Rendered only when /api/health says `sfDiscoveryCache: true`.
+ */
+let freshDiscoveryBoxEl = null;
+let sfCacheStatusEl = null;
+function renderFreshDiscovery() {
+  if (freshDiscoveryBoxEl || !sfConnectStatusEl) return;
+  const label = document.createElement("label");
+  label.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:6px;margin-left:26px;cursor:pointer;font-size:13px";
+  label.innerHTML = `<input type="checkbox" class="lib-check" id="sfFreshDiscovery" /> Scan the org again`
+    + `<span style="opacity:.7">(about 8 minutes. Untick to reuse the last scan and start in seconds)</span>`;
+  const status = document.createElement("div");
+  status.style.cssText = "font-size:12px;opacity:.8;margin-left:52px;margin-top:2px";
+  sfConnectStatusEl.parentElement.insertAdjacentElement("afterend", label);
+  label.insertAdjacentElement("afterend", status);
+  freshDiscoveryBoxEl = label.querySelector("input");
+  sfCacheStatusEl = status;
+  let saved = null;
+  try { saved = localStorage.getItem("sfFreshDiscovery"); } catch { /* storage unavailable: ticked */ }
+  freshDiscoveryBoxEl.checked = saved !== "false";
+  freshDiscoveryBoxEl.addEventListener("change", () => {
+    try { localStorage.setItem("sfFreshDiscovery", String(freshDiscoveryBoxEl.checked)); } catch { /* ignore */ }
+    paintSavedDiscovery();
+  });
+  refreshSavedDiscovery();
+}
+
+const agoText = (iso) => {
+  const min = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  return min < 1 ? "just now" : min < 60 ? `${min} min ago` : `${Math.round(min / 60)} h ago`;
+};
+
+/** The last answer of /api/salesforce/discovery-cache: null = not read (no connection, or it failed). */
+let sfSavedScans = null;
+
+async function refreshSavedDiscovery() {
+  if (!sfCacheStatusEl) return;
+  sfSavedScans = null;
+  if (sfConnection) {
+    try {
+      const r = await fetch(`/api/salesforce/discovery-cache?connectionId=${encodeURIComponent(sfConnection.connectionId)}`);
+      const d = r.ok ? await r.json() : null;
+      if (d) sfSavedScans = Array.isArray(d.saved) ? d.saved : [];
+    } catch { /* leave it unread */ }
+  }
+  paintSavedDiscovery();
+}
+
+/** One plain sentence under the box: is there a saved scan, and will THIS run use it? */
+function paintSavedDiscovery() {
+  if (!sfCacheStatusEl) return;
+  if (sfSavedScans === null) { sfCacheStatusEl.textContent = ""; return; }
+  if (!sfSavedScans.length) {
+    sfCacheStatusEl.textContent = "No saved scan for this org yet. The first run scans it and saves the result.";
+    return;
+  }
+  const list = sfSavedScans
+    .map((s) => `${s.objects.length ? s.objects.join(" + ") : "general"} (${agoText(s.savedAt)})`).join(", ");
+  sfCacheStatusEl.textContent = freshDiscoveryBoxEl?.checked
+    ? `✓ Saved scan available: ${list}. Not used now, because "Scan the org again" is ticked.`
+    : `✓ Saved scan available: ${list}. It is used when your request is about the same objects `
+      + "and nothing in the org's setup (fields, rules, layouts, pages) has changed. Otherwise the run scans again.";
+}
+
+async function connectSalesforceOrg() {
+  const url = stripScheme(urlEl.value).trim() ? absoluteUrl() : "";
+  if (!url) { sfConnectStatusEl.textContent = "Type the org's URL first."; return; }
+  // Opened synchronously, inside the click, so a popup blocker lets it through; pointed at
+  // Salesforce once the server has built the authorise URL.
+  const popup = window.open("about:blank", "sfConnect", "width=520,height=720");
+  sfConnectStatusEl.textContent = "Opening Salesforce sign-in…";
+  try {
+    const res = await fetch("/api/salesforce/oauth/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.authorizeUrl) throw new Error(body.error || `Server responded with HTTP ${res.status}`);
+    const win = popup && !popup.closed ? popup : window.open(body.authorizeUrl, "sfConnect", "width=520,height=720");
+    if (!win) {
+      sfConnectStatusEl.textContent = "The sign-in window was blocked. Allow pop-ups for this site, then click Connect org again.";
+      return;
+    }
+    if (win === popup) popup.location.href = body.authorizeUrl;
+    sfConnectStatusEl.textContent = "Sign in to the org in the window that opened…";
+  } catch (err) {
+    if (popup && !popup.closed) popup.close();
+    sfConnectStatusEl.textContent = err.message;
+  }
+}
+
+window.addEventListener("message", (ev) => {
+  // Only the callback page served by THIS server may set the connection.
+  if (ev.origin !== window.location.origin) return;
+  const d = ev.data;
+  if (!d || d.type !== "sf-oauth" || !sfConnectStatusEl) return;
+  if (d.error) {
+    sfConnection = null;
+    try { sessionStorage.removeItem("sfConnection"); } catch { /* ignore */ }
+    sfConnectStatusEl.textContent = d.error;
+    return;
+  }
+  showSalesforceConnected(d);
+  try { sessionStorage.setItem("sfConnection", JSON.stringify(sfConnection)); } catch { /* ignore */ }
+});
+
 // -----------------------------------------------------------------------------
-// Jira, Phase 1 (D-63): "Connect Jira", then type a story key and its title + description fill the
+// Jira, Phase 1 (D-71): "Connect Jira", then type a story key and its title + description fill the
 // prompt box. The user still enters the URL and presses Run — POST /api/runs is untouched.
 //
 // Rule-keeping, as the Pro block above it:
@@ -5793,6 +6109,8 @@ fetch("/api/health")
   .then((r) => r.json())
   .then((h) => {
     if (h && Array.isArray(h.targetApps) && h.targetApps.includes("salesforce")) renderTargetAppBox();
+    if (h && h.salesforceOAuth === true) renderSalesforceConnect();
+    if (h && h.sfDiscoveryCache === true) renderFreshDiscovery();
     if (h && h.specIntake === true) renderProToggle();
     if (h && h.jira === true) renderJiraRow();
     if (!h || !h.defaults) return;
@@ -6468,6 +6786,22 @@ function topLevelSuiteFormHtml(projects) {
     ${newSuiteError ? `<div class="suite-new-err">${escapeHtml(newSuiteError)}</div>` : ""}`;
 }
 
+/**
+ * A project's sidebar label. Projects filed from a run are named by their URL, and a Salesforce
+ * org's host ("innovation-inspiration-2209-dev-ed.scratch.my.salesforce-setup.com") is cut off long
+ * before the part that tells two orgs apart. The org's own name plus its kind instead; any other
+ * name only loses "www." and a trailing slash. The full name stays in the row's tooltip.
+ */
+function shortProjectName(name) {
+  const n = String(name ?? "").trim().replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/+$/, "");
+  const sf = /^([a-z0-9-]+?)(?:-dev-ed)?\.(?:(scratch|sandbox|develop|trailblaze)\.)?(my\.salesforce(?:-setup)?\.com|lightning\.force\.com|my\.site\.com)$/i.exec(n);
+  if (!sf) return n || String(name ?? "");
+  // An Experience Cloud site (my.site.com) is not the org's own app: say so, or it reads as the org.
+  if (/^my\.site\.com$/i.test(sf[3])) return `${sf[1]} (site)`;
+  const kind = { scratch: "scratch org", sandbox: "sandbox", develop: "dev org", trailblaze: "playground" }[(sf[2] ?? "").toLowerCase()];
+  return kind ? `${sf[1]} (${kind})` : sf[1];
+}
+
 function renderProjectsTree(runs) {
   if (!sidebarTreeEl) return;
 
@@ -6571,7 +6905,7 @@ function renderProjectsTree(runs) {
     const projectRow = projectFormId === p.id ? projectFormHtml() : `
       <div class="tree-row tree-project" data-toggle-key="${escapeHtml(p.id)}">
         <span class="tree-chevron">${icon(open ? "chevron-down" : "chevron-right", { size: 9 })}</span>
-        <span class="tree-label" title="${escapeHtml(rowTitle)}">${escapeHtml(p.name)}</span>
+        <span class="tree-label" title="${escapeHtml(rowTitle)}">${escapeHtml(shortProjectName(p.name))}</span>
         ${canManage ? `<button type="button" class="dl-btn-inline tree-project-edit" data-project-edit="${escapeHtml(p.id)}" title="Rename or set a base URL">Edit</button>` : ""}
         ${canManage ? `<button type="button" class="dl-btn-inline tree-project-del" data-project-delete="${escapeHtml(p.id)}" title="Delete this project">Delete</button>` : ""}
         <span class="tree-count">${caseCount}</span>

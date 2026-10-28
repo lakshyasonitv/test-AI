@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 
 /**
- * D-57 stage 1 — a login case that signs in with the REAL credentials replays the RECORDED login.
+ * D-65 stage 1 — a login case that signs in with the REAL credentials replays the RECORDED login.
  *
  * The data is the user's real run 2026-10-16T12-47-28 (a Salesforce scratch org with a two-screen
  * login): `auth.loginSteps` exactly as discovery recorded them, and the case's own login exactly as
@@ -139,7 +139,7 @@ describe("the gate — off means today's behaviour", () => {
 
   it("the IR cache key gains a part only when the fixed login is on", () => {
     const src = readFileSync("src/stages/ir.ts", "utf8");
-    // D-62 added "sf-post-login:1" to the same gated list.
+    // D-70 added "sf-post-login:1" to the same gated list.
     expect(src).toContain('...(fixedLoginRun() ? ["sf-fixed-login:1", "sf-post-login:1"] : [])');
   });
 

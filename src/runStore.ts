@@ -3,6 +3,7 @@ import path from "node:path";
 import type { StageEvent } from "./orchestrator.js";
 import { findScreenshot } from "./stages/executor.js";
 import { shadowCompareRuns } from "./db.js";
+import { forgetRunSecretsSoon, scrubRunSecrets } from "./runSecrets.js";
 
 /**
  * Durable per-run event log — the one seam that separates "demo" from "product".
@@ -39,7 +40,9 @@ export const store: RunStore = {
   append(event) {
     const f = fileFor(event.runId);
     mkdirSync(path.dirname(f), { recursive: true });
-    appendFileSync(f, JSON.stringify(event) + "\n", "utf8");
+    // Every writer of events comes through here, so this is where no credential may pass (TD-154).
+    appendFileSync(f, JSON.stringify(scrubRunSecrets(event.runId, event)) + "\n", "utf8");
+    if (event.stage === "done" || event.stage === "error") forgetRunSecretsSoon(event.runId);
   },
   read(runId) {
     let events: StageEvent[] = [];
@@ -153,7 +156,9 @@ export const store: RunStore = {
       }
     }
 
-    return events;
+    // The reconstructed legacy events above come from stage files, not from append(), so they are
+    // scrubbed here too; for an events.ndjson written by append() this is a no-op.
+    return scrubRunSecrets(runId, events);
   },
 };
 
@@ -201,8 +206,12 @@ export function allRunIds(): string[] {
   const root = "runs";
   if (!existsSync(root)) return [];
 
+  // A run writes 00-input.json and its event log the moment its pipeline starts, and a queued run
+  // has no directory at all (server/index.ts), so a directory with neither never ran: a test
+  // stub's 00-run-target.json, say. Listed, it was a "(no prompt)" row taking one of the 20 slots.
   return readdirSync(root, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && d.name !== "_cache")
+    .filter((d) => d.isDirectory() && d.name !== "_cache"
+      && (existsSync(path.join(root, d.name, "events.ndjson")) || existsSync(path.join(root, d.name, "00-input.json"))))
     .map((d) => d.name)
     .sort((a, b) => b.localeCompare(a)); // runId is ISO-prefixed -> lexicographic = chronological
 }

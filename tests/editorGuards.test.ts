@@ -1,10 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+// TD-164: the walk snapshots this suite reads and writes live in its OWN temporary folder. It used to
+// clear the real `walks` namespace (runs/_cache/walks) before every test, so `npx vitest run` deleted
+// every saved walk on the machine — evidence included (run 8e01a75f's replay). `caseEdit` finds the
+// folder through `cacheNamespaceDir`, the one seam redirected here; nothing under runs/_cache is touched.
+const { walkDir } = vi.hoisted(() => ({ walkDir: { path: "" } }));
+vi.mock("../src/kb/llmCache.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/kb/llmCache.js")>();
+  return { ...real, cacheNamespaceDir: (ns: string) => (ns === "walks" && walkDir.path ? walkDir.path : real.cacheNamespaceDir(ns)) };
+});
+
 import { caseElementContext } from "../src/stages/caseEdit.js";
-import { llmCacheSet, llmCacheClear } from "../src/kb/llmCache.js";
-import { WALK_CACHE_NS, mergePageInto } from "../src/stages/liveExtend.js";
+import { mergePageInto } from "../src/stages/liveExtend.js";
 import { hasTerminalAssertion } from "../src/stages/ir.js";
 import { IR } from "../src/schema/ir.js";
 import { AppModel } from "../src/schema/appModel.js";
@@ -49,10 +59,18 @@ describe("TD-91 — the rewrite can see the site", () => {
   // written into `runs/` are visible to whatever else is listing it — which is exactly how this
   // suite first made an unrelated /api/runs test return 500.
   let runsDir: string;
-  const NS = WALK_CACHE_NS;
+  /** A walk snapshot, written where `caseEdit` will look for it: this suite's own folder (TD-164). */
+  const writeWalk = (key: string, walk: unknown) => writeFileSync(path.join(walkDir.path, `${key}.json`), JSON.stringify(walk));
 
-  beforeEach(() => { runsDir = mkdtempSync(path.join(tmpdir(), "runs-")); llmCacheClear(NS); });
-  afterEach(() => { llmCacheClear(NS); rmSync(runsDir, { recursive: true, force: true }); });
+  beforeEach(() => {
+    runsDir = mkdtempSync(path.join(tmpdir(), "runs-"));
+    walkDir.path = mkdtempSync(path.join(tmpdir(), "walks-"));
+  });
+  afterEach(() => {
+    rmSync(runsDir, { recursive: true, force: true });
+    rmSync(walkDir.path, { recursive: true, force: true });
+    walkDir.path = "";
+  });
 
   const writeRunModel = (runId: string, model: unknown) => {
     const dir = path.join(runsDir, runId);
@@ -100,22 +118,22 @@ describe("TD-91 — the rewrite can see the site", () => {
     // The common case: the source run folder has aged off disk, which is exactly when the model
     // most needs help. Walk entries are keyed by an opaque hash, so they are enumerated and
     // filtered by SITE.
-    llmCacheSet("some-opaque-key", {
+    writeWalk("some-opaque-key", {
       reachedUrl: "https://learnvibes.vercel.app/dashboard",
       pageModel: { url: "https://learnvibes.vercel.app/dashboard", title: "d", concepts: [], elements: [{ role: "button", name: "Admin" }] },
       pageText: "",
-    }, NS);
+    });
     const ctx = caseElementContext(irOf(LOGIN_STEPS), null, runsDir);
     expect(ctx.source).toBe("walks");
     expect(ctx.lines).toContain('button "Admin"');
   });
 
   it("ignores a cached walk for a DIFFERENT site", () => {
-    llmCacheSet("other-site", {
+    writeWalk("other-site", {
       reachedUrl: "https://something-else.example/dash",
       pageModel: { url: "https://something-else.example/dash", title: "d", concepts: [], elements: [{ role: "button", name: "Nope" }] },
       pageText: "",
-    }, NS);
+    });
     const ctx = caseElementContext(irOf(LOGIN_STEPS), null, runsDir);
     expect(ctx.source).toBe("none");
     expect(ctx.lines).toEqual([]);

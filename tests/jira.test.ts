@@ -7,7 +7,7 @@ import { authorizeUrl, parseIssueKey, fetchStory, JIRA_SCOPES } from "../src/jir
 import { beginSignIn, finishSignIn, getConnection, saveConnection, _resetJiraSessions, STATE_TTL_MS } from "../src/jira/session.js";
 
 /**
- * D-63 — Jira Phase 1: "Connect Jira" (OAuth 2.0 3LO) and read one story into the prompt box.
+ * D-71 — Jira Phase 1: "Connect Jira" (OAuth 2.0 3LO) and read one story into the prompt box.
  * Atlassian is faked by stubbing global fetch: no network, no cost. URLs and shapes asserted here
  * are the ones from Atlassian's OAuth 3LO page and the REST v3 OpenAPI spec.
  */

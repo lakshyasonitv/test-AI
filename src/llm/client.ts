@@ -15,7 +15,7 @@ import { extendedLoggingEnabled } from "../logging.js";
  * the nine call sites across seven files that used to import `gemini()` now import `llm` and say
  * `role: 'main' | 'lite'` instead of naming a model. The role resolves to a provider via
  * `LLM_PROVIDER`/`LLM_PROVIDER_LITE` (both defaulting to "gemini"), and then to gemini() (existing,
- * unchanged), azureOpenAI() or claude() (mirrors with the same contract; claude is D-58).
+ * unchanged), azureOpenAI() or claude() (mirrors with the same contract; claude is D-66).
  *
  * NO FALLBACK BETWEEN PROVIDERS: a role is bound to one provider for the whole request, and a
  * failure is reported as the failing provider's own error. Unset LLM_PROVIDER means every path is

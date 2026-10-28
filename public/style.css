@@ -461,6 +461,9 @@ h1, h2, h3, h4 { letter-spacing: -0.015em; margin: 0; }
   font-family: var(--font-mono); font-size: .69rem;
   color: var(--faint); margin-bottom: 7px;
 }
+/* The run page header: the request as its title, then where, when and the tally (#runMeta). */
+.run-title { font-family: var(--font-display); font-weight: 400; font-size: 1.5rem; line-height: 1.25; margin: 0 0 6px; overflow-wrap: anywhere; }
+.run-title:empty { display: none; }
 
 /* ---------------------------------------------------------------------------
    Toast — the app had no general notification channel. showNotice() looks like

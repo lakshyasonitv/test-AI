@@ -246,3 +246,98 @@ describe("generateSpec — screenshots", () => {
     expect(generateSpec(threeSteps, "a")).not.toContain("networkidle");
   });
 });
+
+describe("{{uid}}: a create flow's names are unique on every run", () => {
+  // Run 2026-10-24T14-53-11-800Z-86059d19: the valid Lead case was blocked by the org's duplicate rule
+  // ("Similar Records Exist") because earlier runs had created the same name. Made-up values.
+  const spec = generateSpec({
+    meta: { feature: "Zq", title: "Create a Zq", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/new" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name", css: "#n" }, value: "Zq Smith {{uid}}" },
+    ],
+  } as unknown as IR);
+
+  it("declares one run context and resolves the token with it, so no literal {{uid}} is typed", () => {
+    const decl = spec.match(/const RUN_CTX = [^;]+;\nconst resolveRunTokens = [\s\S]+?\}\);/)?.[0];
+    expect(decl).toBeTruthy();
+    const fillArg = spec.match(/\.fill\((.+?), \{ timeout/)?.[1];
+    expect(fillArg).toBeTruthy();
+    const typed = new Function(`${decl} return ${fillArg};`)() as string;
+    expect(typed).toMatch(/^Zq Smith [a-z0-9]{4,}$/);
+    expect(typed).not.toContain("{{uid}}");
+    // The report reads the values back from results.json (app.js runTokensOf).
+    expect(spec).toContain('annotations.push({ type: "run-tokens", description: JSON.stringify(RUN_CTX) })');
+  });
+
+  it("resolves phone and date tokens at run time too, in the token's locale", () => {
+    const s = generateSpec({
+      meta: { feature: "Zq", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [
+        { id: "s1", action: "fill", target: { role: "textbox", name: "Zq Phone", css: "#p" }, value: "{{phone}}" },
+        { id: "s2", action: "fill", target: { role: "textbox", name: "Zq Due", css: "#d" }, value: "{{date:+30:en-GB}}" },
+      ],
+    } as unknown as IR);
+    const decl = s.match(/const RUN_CTX = [^;]+;\nconst resolveRunTokens = [\s\S]+?\}\);/)?.[0];
+    const args = [...s.matchAll(/\.fill\((.+?), \{ timeout/g)].map((m) => m[1]);
+    const [phone, due] = args.map((a) => new Function(`${decl} return ${a};`)() as string);
+    expect(phone).toMatch(/^[0-9]{10}$/);
+    expect(due).toMatch(/^[0-9]{2}\/[0-9]{2}\/[0-9]{4}$/);   // en-GB: day first
+  });
+
+  it("a spec without the token is unchanged", () => {
+    const plain = generateSpec({
+      meta: { feature: "Zq", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [{ id: "s1", action: "fill", target: { role: "textbox", name: "Zq Name", css: "#n" }, value: "Zq Smith" }],
+    } as unknown as IR);
+    expect(plain).not.toContain("RUN_CTX");
+  });
+
+  // Run 2026-10-25T06-38-05-178Z-ebdc2303 case-3 asserted getByText('VisibleLast {{uid}}'): the literal
+  // token never appears on a page. An assertion names the SAME record the fills created, so it is
+  // resolved with the same run context.
+  it("resolves run tokens in an assertion's text and value with the fills' context", () => {
+    const s = generateSpec({
+      meta: { feature: "Zq", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [
+        { id: "s1", action: "fill", target: { role: "textbox", name: "Zq Name", css: "#n" }, value: "Zq Kim {{uid}}" },
+        { id: "s2", action: "assert", target: { text: "Zq Kim {{uid}}" }, assertion: "visible" },
+        { id: "s3", action: "assert", target: { role: "heading", name: "Zq Title", css: "h1" }, assertion: "text_contains", value: "Zq Kim {{uid}}" },
+      ],
+    } as unknown as IR);
+    expect(s).toContain('getByText(resolveRunTokens("Zq Kim {{uid}}", RUN_CTX))');
+    expect(s).toContain('toContainText(resolveRunTokens("Zq Kim {{uid}}", RUN_CTX)');
+    expect(s.match(/const RUN_CTX = /g)).toHaveLength(1);
+  });
+
+  it("a lookup select emits lookupPick with its helper, never choose", () => {
+    const s = generateSpec({
+      meta: { feature: "Zq", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [{ id: "s1", action: "select", target: { role: "combobox", name: "Zq Firm Name", css: "#f", lookup: true }, value: "" }],
+    } as unknown as IR);
+    expect(s).toContain("await lookupPick(page,");
+    expect(s).toContain("async function lookupPick(");
+    expect(s).not.toContain("await choose(");
+  });
+});
+
+describe("a text check after a record's Details tab scrolls its lazy sections in first", () => {
+  const meta = { feature: "Zq", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" };
+  const spec = generateSpec({ meta, steps: [
+    { id: "s1", action: "click", target: { role: "button", name: "Save", css: "#save" } },
+    { id: "s2", action: "assert", target: { text: "was created" }, assertion: "visible" },
+    { id: "s3", action: "click", target: { role: "tab", name: "Details" } },
+    { id: "s4", action: "assert", target: { text: "Zq Expiry" }, assertion: "visible" },
+  ] } as unknown as IR);
+
+  it("reveals only after the Details click, never before the toast check", () => {
+    expect(spec).toContain('await sfReveal(page, "Zq Expiry");');
+    expect(spec).not.toContain('sfReveal(page, "was created")');
+    expect(spec).toContain("async function sfReveal(page, text)");
+  });
+
+  it("adds nothing to a spec with no Details tab", () => {
+    const plain = generateSpec({ meta, steps: [{ id: "s1", action: "assert", target: { text: "Zq" }, assertion: "visible" }] } as unknown as IR);
+    expect(plain).not.toContain("sfReveal");
+  });
+});

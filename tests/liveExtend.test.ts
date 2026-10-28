@@ -428,3 +428,112 @@ describe("findVerbatim", () => {
     expect(findVerbatim("some page text", "")).toBeNull();
   });
 });
+
+// Run 2026-10-24T14-30-05-546Z-6cbf9b51: three Lead validation-rule cases asserted the org's exact
+// rule message (from the org model). The grounding replay read the page right after Save, before
+// the server's validation answer had drawn, did not find it, and "corrected" each assertion to
+// "* = Required Information" — static form text present before Save too, so all three passed
+// without checking anything. Made-up canary texts below.
+describe("groundTerminalTextAssertion — an answer that draws late, and text that was always there", () => {
+  const message = "Zq phone or zq mail must be filled.";
+  const fixture = (host: string, staticLine: string) => {
+    const baseUrl = `https://${host}.example`;
+    const ir = {
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/new" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Save" } },
+        { id: "s3", action: "assert", target: { text: message }, assertion: "visible" },
+      ],
+    } as unknown as IR;
+    // The model's markdown drops the real page's aria-hidden "*" (run 2026-10-24T14-53-11-800Z-86059d19:
+    // "= Required Information" in the model, "* = Required Information" on the page).
+    const page = { url: `${baseUrl}/new`, title: "New Zq", concepts: [], elements: [], markdown: `New Zq\n${staticLine.replace(/^\* /, "")}\nSave` };
+    const model = { baseUrl, pages: [page] } as unknown as AppModel;
+    const base = [baseUrl, JSON.stringify(ir.steps.slice(0, -1)), "full", credentialFingerprint(), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()];
+    const seed = (result: Record<string, unknown>, waitForText?: string) =>
+      llmCacheSet(makeCacheKey(...base, ...(waitForText ? [`wait-text:${waitForText}`] : [])),
+        { reachedUrl: page.url, pageModel: page, ...result }, WALK_CACHE_NS);
+    return { ir, model, seed };
+  };
+
+  it("replays once more, waiting for the asserted text, before correcting it", async () => {
+    const { ir, model, seed } = fixture("late-answer", "* = Zq Required Information");
+    seed({ pageText: "New Zq\n* = Zq Required Information\nSave" });
+    seed({ pageText: `New Zq\n* = Zq Required Information\nWe hit a zq.\n${message}\nSave`, pageTextRaw: `New Zq * = Zq Required Information We hit a zq. ${message} Save` }, message);
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res).toMatchObject({ grounded: true, corrected: false });
+    expect(res.ir.steps.at(-1)!.target!.text).toBe(message);
+  });
+
+  it("never corrects to a line the page already showed when it was discovered", async () => {
+    const { ir, model, seed } = fixture("static-line", "* = Zq Required Information");
+    seed({ pageText: "New Zq\n* = Zq Required Information\nSave" });
+    seed({ pageText: "New Zq\n* = Zq Required Information\nSave" }, message);
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(false);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe(message);
+  });
+});
+
+describe("{{uid}} in the grounding replay and its text correction", () => {
+  it("the replay types a fresh code, never the literal token", async () => {
+    // resolveLive is mocked in this file (fillSpy records what is typed).
+    fillSpy.mockClear();
+    const fill = { id: "s1", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq Smith {{uid}}" } as Step;
+    await runStepLive({} as any, fill, "https://zq.example");
+    await runStepLive({} as any, fill, "https://zq.example");
+    const [first, second] = fillSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(first).toMatch(/^Zq Smith [a-z0-9]{4,}$/);
+    expect(second).toMatch(/^Zq Smith [a-z0-9]{4,}$/);
+    expect(first).not.toBe(second); // two replays never type the same record name
+  });
+
+  it("an IR that types a {{uid}} value is never 'corrected' (the replay's record name differs from the run's)", async () => {
+    const baseUrl = "https://uid-guard.example";
+    const ir = {
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/new" } },
+        { id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq Smith {{uid}}" },
+        { id: "s3", action: "click", target: { role: "button", name: "Save" } },
+        { id: "s4", action: "assert", target: { text: "was created" }, assertion: "visible" },
+      ],
+    } as unknown as IR;
+    const page = { url: `${baseUrl}/new`, title: "New Zq", concepts: [], elements: [] };
+    const model = { baseUrl, pages: [page] } as unknown as AppModel;
+    const base = [baseUrl, JSON.stringify(ir.steps.slice(0, -1)), "full", credentialFingerprint(), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()];
+    const text = 'Success notification. Zq "Zq Smith r9x2k" saved successfully.';
+    llmCacheSet(makeCacheKey(...base), { reachedUrl: page.url, pageModel: page, pageText: text }, WALK_CACHE_NS);
+    llmCacheSet(makeCacheKey(...base, "wait-text:was created"), { reachedUrl: page.url, pageModel: page, pageText: text }, WALK_CACHE_NS);
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(false);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("was created");
+  });
+
+  // Run 2026-10-25T10-28-59-649Z-7acbedab: "was created" was corrected to the WHOLE toast line, record
+  // number included ('Case "00001029" was created. Press Control + F6…'), which no later run shows. The
+  // toast sits in a shadow root, so textContent (pageTextRaw) lacked it while the rendered text had it.
+  // A guess contained in the rendered page is confirmed, never "corrected" into a longer line.
+  it("confirms a guess the rendered page contains, even when textContent does not", async () => {
+    const baseUrl = "https://shadow-toast.example";
+    const ir = {
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/new" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Save" } },
+        { id: "s3", action: "assert", target: { text: "was created" }, assertion: "visible" },
+      ],
+    } as unknown as IR;
+    const page = { url: `${baseUrl}/new`, title: "New Zq", concepts: [], elements: [] };
+    const model = { baseUrl, pages: [page] } as unknown as AppModel;
+    const base = [baseUrl, JSON.stringify(ir.steps.slice(0, -1)), "full", credentialFingerprint(), llmCacheDimension("main"), localeCacheDimension(), llmCacheVersion()];
+    const rendered = 'Success notification.Zq "00001029" was created. Press Control + F6 to move on.';
+    const snap = { reachedUrl: page.url, pageModel: page, pageText: rendered, pageTextRaw: "New Zq Save Cancel" };
+    llmCacheSet(makeCacheKey(...base), snap, WALK_CACHE_NS);
+    llmCacheSet(makeCacheKey(...base, "wait-text:was created"), snap, WALK_CACHE_NS);
+    const res = await groundTerminalTextAssertion(ir, model);
+    expect(res.corrected).toBe(false);
+    expect(res.ir.steps.at(-1)!.target!.text).toBe("was created");
+  });
+});

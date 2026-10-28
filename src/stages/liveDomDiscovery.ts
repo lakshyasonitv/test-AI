@@ -48,6 +48,7 @@ import type { Frame, JSHandle, Page } from "playwright";
 import type { Element } from "../schema/appModel.js";
 import { deriveElementName } from "./discovery.js";
 import { currentRunTargetApp } from "../runTarget.js";
+import { applyIdEvidence, volatileIdDetectionEnabled } from "./volatileIds.js";
 
 /** One element as the in-page walk reports it, before Node-side naming fallbacks. */
 export interface LiveRawElement {
@@ -79,6 +80,9 @@ export interface LiveRawElement {
   /** Name of the open dialog/modal the element sits in (walking out through shadow hosts), or null
    *  when it is not inside one. "" means inside a dialog that has no accessible name. */
   dialogName: string | null;
+  /** The explicit landmark the element sits in — "main" | "nav" | "header" | "footer" | "other" —
+   *  or "" (not inside one, or not a Salesforce run). Optional so older walk results still parse. */
+  landmark?: string;
 }
 
 /** What the in-page walk hands back: the facts, the nodes they describe, and whether any
@@ -140,7 +144,7 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
         tag: string; role: string; name: string; nameSource: string; proximity: string;
         visible: boolean; enabled: boolean; css: string; candidates: string[]; inShadow: boolean;
         dataTest: string; dataTestid: string; dataQa: string; id: string; classes: string[];
-        href: string; genericPath: string; frame: string; dialogName: string | null;
+        href: string; genericPath: string; frame: string; dialogName: string | null; landmark: string;
       }> = [];
       const nodes: HTMLElement[] = [];
       const frameEls: Array<{ candidates: string[] }> = [];
@@ -203,7 +207,8 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             if (!value) continue;
             // Salesforce: a generated id (`email-145`, `combobox-button-12-34`) is a different id
             // next session; it is not a selector, whatever its uniqueness today.
-            if (salesforce && prefix === "#" && (/-\d+$/.test(value) || /^\w+-\d+-\d+$/.test(value))) continue;
+            // Aura runtime ids too: `content_1010:0`, `brandBand_2` (run 2026-10-24T07-08-34-372Z-e2fc249c).
+            if (salesforce && prefix === "#" && (/-\d+$/.test(value) || /^\w+-\d+-\d+$/.test(value) || /\d+:\d+/.test(value) || /_\d+$/.test(value))) continue;
             // Inside a double-quoted CSS string only backslash, the quote and newlines need
             // escaping. A plain id stays `#id`; an id that would need identifier escapes takes the
             // quoted `[id="…"]` form instead, because Playwright 1.49's own selector parser throws
@@ -228,7 +233,7 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             let anchored = false;
             while (node && node !== document.documentElement) {
               const nt = node.tagName.toLowerCase();
-              if (node !== el && node.id && !(salesforce && (/-\d+$/.test(node.id) || /^\w+-\d+-\d+$/.test(node.id)))) {
+              if (node !== el && node.id && !(salesforce && (/-\d+$/.test(node.id) || /^\w+-\d+-\d+$/.test(node.id) || /\d+:\d+/.test(node.id) || /_\d+$/.test(node.id)))) {
                 // Same plain-or-quoted rule as the id candidate above.
                 const anchor = CSS.escape(node.id) === node.id
                   ? "#" + node.id
@@ -332,7 +337,10 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             let acc = "";
             for (let k = 0; k < ids.length; k++) {
               // IDREFs resolve within the element's own tree — the shadow root, not the document.
-              const ref = scope.getElementById(ids[k]);
+              // querySelector, not getElementById: Lightning throws `Disallowed method
+              // "getElementById" on ShadowRoot`, which failed every list page's walk (TD-167).
+              let ref: HTMLElement | null = null;
+              try { ref = scope.querySelector<HTMLElement>("[id=\"" + ids[k].replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"]"); } catch { ref = null; }
               if (ref) acc += " " + (ref.textContent || "");
             }
             name = acc.replace(/\s+/g, " ").trim();
@@ -347,7 +355,13 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             if (labels && labels.length) {
               let acc = "";
               for (let k = 0; k < labels.length; k++) {
-                let t = labels[k].textContent || "";
+                // Text under aria-hidden is not part of the name (accname; Playwright agrees):
+                // Lightning's required marker is <abbr aria-hidden="true">*</abbr> inside the label,
+                // and "*Company" matched nothing (DE org, 2026-10-24). A detached clone, pruned.
+                const lc = labels[k].cloneNode(true) as HTMLElement;
+                const lh = lc.querySelectorAll('[aria-hidden="true"]');
+                for (let q = 0; q < lh.length; q++) lh[q].remove();
+                let t = lc.textContent || "";
                 // A control nested inside its <label> contributes its own text (a <select>'s
                 // options, most often) — that is not part of the label.
                 if (labels[k].contains(el)) t = t.replace(el.textContent || "", " ");
@@ -362,7 +376,11 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             if (name) nameSource = "alt";
           }
           if (!name && !isField) {
-            name = (el.textContent || "").replace(/\s+/g, " ").trim();
+            // Same aria-hidden rule as the label above (an icon's text inside a button).
+            const cc = el.cloneNode(true) as HTMLElement;
+            const ch = cc.querySelectorAll('[aria-hidden="true"]');
+            for (let q = 0; q < ch.length; q++) ch[q].remove();
+            name = (cc.textContent || "").replace(/\s+/g, " ").trim();
             if (name) nameSource = "content";
             if (!name) {
               const img = el.querySelector("img[alt]");
@@ -416,14 +434,18 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
               extra.push(tag + ":below(:text(\"" + lt + "\"))");
               extra.push(tag + ":right-of(:text(\"" + lt + "\"))");
             }
-            if (extra.length) {
+            if (extra.length && inShadow) {
+              // Inside a shadow root every other candidate rides on the host CHAIN, which is a
+              // positional path in disguise (`body > div:nth-of-type(4) > …`), and Lightning orders
+              // body's panels per session: run 2026-10-24T12-18-19-822Z-0b822629 lost "Company" to it.
+              // The role engine pierces open shadow roots, so these go FIRST and carry no chain.
+              for (let k = extra.length - 1; k >= 0; k--) candidates.unshift(extra[k]);
+            } else if (extra.length) {
               // Before the positional path, which is the last candidate when it verified natively
               // (tracked by positionalPushed).
               const lastIsPositional = positionalPushed && candidates.length > 0;
               const at = lastIsPositional ? candidates.length - 1 : candidates.length;
-              for (let k = extra.length - 1; k >= 0; k--) {
-                candidates.splice(at, 0, inShadow ? chain + " >> " + extra[k] : extra[k]);
-              }
+              for (let k = extra.length - 1; k >= 0; k--) candidates.splice(at, 0, extra[k]);
             }
           }
 
@@ -451,7 +473,9 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
                 const ids = by.split(/\s+/);
                 let acc = "";
                 for (let q = 0; q < ids.length; q++) {
-                  const t = ref.getElementById ? ref.getElementById(ids[q]) : null;
+                  // querySelector for the same reason as aria-labelledby above (TD-167).
+                  let t: HTMLElement | null = null;
+                  try { t = ref.querySelector<HTMLElement>("[id=\"" + ids[q].replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"]"); } catch { t = null; }
                   if (t) acc += " " + (t.textContent || "");
                 }
                 dn = acc.replace(/\s+/g, " ").trim();
@@ -461,6 +485,77 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             }
             const root = anc.getRootNode() as ShadowRoot;
             anc = root && (root as ShadowRoot).host ? ((root as ShadowRoot).host as HTMLElement) : null;
+          }
+
+          // ---- landmark (Salesforce runs only): main / nav / banner / contentinfo ---------------
+          // Lightning repeats the same global header and nav bar on every page, ahead of the page's
+          // own content in document order, so a capped prompt (toMicroModel, 30 elements) was filled
+          // with chrome and never reached the page (run 2026-10-24T06-42-12-486Z-0994a20c). Only
+          // EXPLICIT landmarks count: a bare <header>/<footer> tag is ambiguous (Lightning page
+          // headers can be <header> inside the main content). Same walk as the dialog one above,
+          // out through shadow hosts. Plain loops only — TD-40.
+          let landmark = "";
+          if (salesforce) {
+            let lu: HTMLElement | null = el;
+            while (lu && !landmark) {
+              const lm = lu.closest('main, [role="main"], nav, [role="navigation"], [role="banner"], [role="contentinfo"]') as HTMLElement | null;
+              if (lm) {
+                const lr = (lm.getAttribute("role") || "").toLowerCase();
+                const lt = lm.tagName.toLowerCase();
+                landmark = lr === "main" || (!lr && lt === "main") ? "main"
+                  : lr === "navigation" || (!lr && lt === "nav") ? "nav"
+                    : lr === "banner" ? "header"
+                      : lr === "contentinfo" ? "footer" : "";
+                if (!landmark) landmark = "other";
+                break;
+              }
+              const lroot = lu.getRootNode() as ShadowRoot;
+              lu = lroot && (lroot as ShadowRoot).host ? ((lroot as ShadowRoot).host as HTMLElement) : null;
+            }
+          }
+
+          // ---- Salesforce tier 4b: role + exact name, scoped to its open dialog or landmark ------
+          // A name that is not unique on the page (the nav's "Home", a modal's "Save" beside the page's
+          // own) fell through to the positional path, which rides on Lightning's runtime ids and broke
+          // on the next load (run 2026-10-24T07-08-34-372Z-e2fc249c, two cases). Inside its dialog or
+          // landmark the same role + name is usually unique and stable. Ahead of the positional path;
+          // verifyWithPlaywright keeps it only if it is unique AND is this very node.
+          if (salesforce && name && name.length <= 200) {
+            const scope = dialogName !== null ? "role=dialog"
+              : landmark === "main" ? "role=main"
+                : landmark === "nav" ? "role=navigation"
+                  : landmark === "header" ? "role=banner" : "";
+            if (scope) {
+              const scoped = scope + " >> role=" + role + "[name=\"" + name.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"s]";
+              if (inShadow) {
+                candidates.unshift(scoped); // ahead of the plain role candidate: same reason as above
+              } else {
+                const lastIsPositional = positionalPushed && candidates.length > 0;
+                candidates.splice(lastIsPositional ? candidates.length - 1 : candidates.length, 0, scoped);
+              }
+            }
+          }
+
+          // Salesforce, inside a shadow root: the attribute candidates (a field's API name, a button's
+          // action name: input[name="Company"], button[name="SaveEdit"]) go FIRST and WITHOUT the host
+          // chain. Playwright's CSS engine pierces open shadow roots and, unlike the role engine,
+          // ignores aria-hidden, which Lightning sets on a form while its "We hit a snag." popover is
+          // open (proved on the DE org, 2026-10-24): a role locator stops matching right after Save.
+          // Never the positional one. Placed after tiers 4/4b above so it lands ahead of them.
+          if (salesforce && inShadow) {
+            const attrCount = positionalPushed ? scoped.length - 1 : scoped.length;
+            for (let k = attrCount - 1; k >= 0; k--) candidates.unshift(scoped[k]);
+          }
+
+          // Salesforce: a shadow-host CHAIN positioned from <body> is never a selector. Lightning orders
+          // body's panels per session, so it resolved to nothing in the next browser (runs 12-18-19 and
+          // 12-33-54, 2026-10-24). A plain light-DOM positional path stays: it is how identical twins
+          // (three "Select for EOI" rows) are told apart (tests/groundingEnabled.test.ts). Hosts'
+          // chains above were taken before this, so shadow content is still walked.
+          if (salesforce) {
+            for (let k = candidates.length - 1; k >= 0; k--) {
+              if (/^body(\s|$)/.test(candidates[k]) && candidates[k].indexOf(" >> ") !== -1) candidates.splice(k, 1);
+            }
           }
 
           const tags: string[] = [];
@@ -483,6 +578,7 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
             genericPath: tags.join(">"),
             frame: "",
             dialogName,
+            landmark,
           });
           nodes.push(el);
         }
@@ -500,6 +596,15 @@ async function walkOneDocument(page: Page | Frame): Promise<{ items: LiveRawElem
   try {
     const { items, hasShadow, frameEls } = await handle.evaluate(
       (w) => ({ items: w.items, hasShadow: w.hasShadow, frameEls: w.frameEls }));
+    // Phase 4: drop ids proven volatile across walks, restore ids proven stable (TD-133), before
+    // the same verification every candidate gets. Node side only: the in-page walk is unchanged.
+    if (volatileIdDetectionEnabled()) {
+      const r = applyIdEvidence(page.url(), items, salesforce);
+      if (r.volatileDropped || r.stableKept || r.firstSightings) {
+        console.log(`[volatile-ids] ${page.url()}: ${r.volatileDropped} volatile id(s) dropped, `
+          + `${r.stableKept} stable id(s) kept, ${r.firstSightings} first sighting(s), ${r.ambiguous} ambiguous`);
+      }
+    }
     // Salesforce: always — tiers 4 and 5 are only ever confirmed by Playwright.
     if (hasShadow || salesforce) await verifyWithPlaywright(page, handle as JSHandle<WalkResult>, items);
     return { items, handle: handle as JSHandle<WalkResult>, frameEls };
@@ -542,7 +647,11 @@ export async function walkLiveDomWithFrames(page: Page): Promise<LiveRawElement[
   while (queue.length) {
     const { frame, path } = queue.shift()!;
     let walked: Awaited<ReturnType<typeof walkOneDocument>>;
-    try { walked = await walkOneDocument(frame); } catch { continue; } // detached mid-walk
+    // A child frame detached mid-walk is skipped. The page's own document failing is not a skip:
+    // swallowing it left the model with only the generic-clickable pass (9 header buttons on every
+    // Lightning list page, run 2026-10-24T07-58-47-085Z-3eb31efb), so it goes to elementsFor, which
+    // logs it and falls back to the static parse.
+    try { walked = await walkOneDocument(frame); } catch (err) { if (frame === top) throw err; continue; }
     try {
       for (const item of walked.items) { item.frame = path; all.push(item); }
       for (const child of frame.childFrames()) {
@@ -642,6 +751,8 @@ export function toElements(raw: LiveRawElement[]): Element[] {
         pageSection: "dialog", containerRole: "dialog",
         ...(r.dialogName ? { containerName: r.dialogName } : {}),
       } : {}),
+      // Salesforce runs only (the walk leaves `landmark` empty otherwise), and never over a dialog.
+      ...(r.dialogName === null && r.landmark && r.landmark !== "other" ? { pageSection: r.landmark } : {}),
       order: order++,
       ...(r.inShadow ? { inShadow: true } : {}),
       ...(r.frame ? { frame: r.frame } : {}),

@@ -1,11 +1,12 @@
 import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { redactCredentials, type Credentials } from "./credentials.js";
 import { siteHost } from "../text.js";
 import { browserContextOptions } from "../browserLaunch.js";
 import { currentRunId } from "../runContext.js";
+import { FRONTDOOR_ENV, currentFrontdoor, withoutFrontdoorSecret } from "./salesforceFrontdoor.js";
 
 /**
  * `RUN_LOCALE` / `RUN_TIMEZONE` for the Playwright child, or nothing when pinning is off.
@@ -228,20 +229,52 @@ function secretCreds(secretEnv: Record<string, string>): Credentials | undefined
  */
 export function scrubServedSecrets(raw: any, artifactsDir: string, resultsJson: string, errorContextFiles: string[], secretEnv: Record<string, string>): any {
   const creds = secretCreds(secretEnv);
-  if (!creds) return raw;
+  // D-63: the frontdoor URL carries a Salesforce access token, and a failed page.goto prints the
+  // URL it was navigating to into the error that results.json and the error context embed.
+  const frontdoorUrl = secretEnv[FRONTDOOR_ENV];
+  if (!creds && !frontdoorUrl) return raw;
+  const scrubText = (s: string): string => {
+    const t = creds ? redactCredentials(s, creds) : s;
+    return frontdoorUrl ? withoutFrontdoorSecret(t, frontdoorUrl) : t;
+  };
   let out = raw;
   try {
     if (raw) {
-      out = redactCredentials(raw, creds);
+      out = creds ? redactCredentials(raw, creds) : raw;
+      if (frontdoorUrl) out = JSON.parse(withoutFrontdoorSecret(JSON.stringify(out), frontdoorUrl));
       writeFileSync(resultsJson, JSON.stringify(out, null, 2), "utf8");
     }
   } catch { /* keep the unscrubbed raw */ }
   for (const f of [path.join(artifactsDir, "final-page.txt"), ...errorContextFiles]) {
     try {
-      if (existsSync(f)) writeFileSync(f, redactCredentials(readFileSync(f, "utf8"), creds), "utf8");
+      if (existsSync(f)) writeFileSync(f, scrubText(readFileSync(f, "utf8")), "utf8");
     } catch { /* best effort */ }
   }
+  // D-63: a retained trace (a failing case, `retain-on-failure`) records every request URL, so it
+  // holds the frontdoor URL and its access token, and it is served under /runs like everything
+  // here. A zip cannot be scrubbed in place, so on a frontdoor run it is removed. Screenshots and
+  // video are kept. Seen 2026-10-24: the token was in the trace files of run 0994a20c.
+  if (frontdoorUrl) {
+    const removed = removeTraceZips(artifactsDir);
+    if (removed) console.log(executorRunTag() + `[executor] removed ${removed} trace file(s): they hold the org connection's sign-in URL (D-63)`);
+  }
   return out;
+}
+
+/** Delete every `trace.zip` under `dir`. Returns how many were removed. Best effort. */
+function removeTraceZips(dir: string): number {
+  let n = 0;
+  const walk = (d: string) => {
+    let entries: import("node:fs").Dirent[] = [];
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name === "trace.zip") { try { rmSync(p, { force: true }); n++; } catch { /* best effort */ } }
+    }
+  };
+  walk(dir);
+  return n;
 }
 
 export async function runSpec(
@@ -270,6 +303,14 @@ export async function runSpec(
   // wall-clock cost of every failing run and can mask a real defect as "flaky". So: retry
   // infrastructure failures (Playwright itself failed to run), report test failures once.
   let lastError: any;
+
+  // D-63: a spec that signs in through a Salesforce org connection reads SF_FRONTDOOR_URL. Minted
+  // here, as late as possible, for this run's connection; passed to the child only, like the
+  // credentials, and scrubbed from the console and the served artifacts by the same paths.
+  const frontdoor = currentFrontdoor();
+  if (frontdoor && specCode.includes(`process.env.${FRONTDOOR_ENV}`)) {
+    secretEnv = { ...secretEnv, [FRONTDOOR_ENV]: await frontdoor.mint() };
+  }
 
   for (let attempt = 1; attempt <= CONFIG.RETRIES; attempt++) {
     try {
@@ -435,13 +476,19 @@ async function executePlaywright(
     // rather than per chunk; undefined when the run carries no secret, so the common path is
     // unchanged.
     const logCreds = secretCreds(secretEnv);
+    // D-63: and the frontdoor URL (an access token), which a failed goto prints in full.
+    const logFrontdoor = secretEnv[FRONTDOOR_ENV];
+    const forLog = (s: string) => {
+      const t = redactCredentials(s, logCreds);
+      return logFrontdoor ? withoutFrontdoorSecret(t, logFrontdoor) : t;
+    };
     p.stdout.on("data", (d) => {
       const s = d.toString();
       out += s;
-      console.log(executorRunTag() + "[PW STDOUT]", redactCredentials(s, logCreds));
+      console.log(executorRunTag() + "[PW STDOUT]", forLog(s));
     });
     p.stderr.on("data", (d) => {
-      console.log(executorRunTag() + "[PW STDERR]", redactCredentials(d.toString(), logCreds));
+      console.log(executorRunTag() + "[PW STDERR]", forLog(d.toString()));
     });
 
     // Safety timeout: kill Playwright if it outlives its own per-test budget plus finalization
@@ -575,7 +622,14 @@ export function isSameSite(a: string, b: string, relatedHosts?: readonly string[
  * generated spec writes in its afterEach hook (url on the first line, visible text after).
  * Returns null when nothing blocked it, which is the normal case.
  */
-export function detectBlocked(artifactsDir: string, appOrigin?: string): BlockedInfo | null {
+export function detectBlocked(
+  artifactsDir: string, appOrigin?: string,
+  /** The hosts discovery's sign-in was observed to pass through (`AuthOutcome.relatedHosts`, D-47).
+   *  Without them a Salesforce org landing on its own Lightning host read as "left the application
+   *  for an external sign-in provider" (run 2026-10-24T06-42-12-486Z-0994a20c: a passing case
+   *  reported blocked). Absent: exactly the old host-equality rule. */
+  relatedHosts?: readonly string[],
+): BlockedInfo | null {
   const f = path.join(artifactsDir, "final-page.txt");
   if (!existsSync(f)) return null;
   let body = "";
@@ -587,8 +641,8 @@ export function detectBlocked(artifactsDir: string, appOrigin?: string): Blocked
   if (VERIFICATION_GATE.test(text)) {
     reason = "the flow reached a verification step that needs a code sent to a real inbox or phone, " +
       "which an automated test can't read";
-  } else if (appOrigin && finalUrl && !isSameSite(finalUrl, appOrigin)
-    // D-62: Salesforce shows its app on a different host from its login (my.salesforce.com ->
+  } else if (appOrigin && finalUrl && !isSameSite(finalUrl, appOrigin, relatedHosts)
+    // D-70: Salesforce shows its app on a different host from its login (my.salesforce.com ->
     // lightning.force.com). On a fixed-login Salesforce run, the same org's own app host is not
     // "leaving the application"; another org or any other site still is.
     && !(fixedLoginRun() && sameSalesforceApp(finalUrl, appOrigin))) {

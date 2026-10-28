@@ -136,8 +136,10 @@ describe("the live walker is selected by the checkbox", () => {
     const sf = withTargetApp("salesforce", () => [domCacheKey("https://x.test/"), siteCacheKey("https://x.test/"),
       siteCacheKey("https://x.test/", { username: "u", password: "p" } as any)]);
     expect(sf[0]).toBe("dom-live:https://x.test/");
-    expect(sf[1]).toBe("site:https://x.test/#live");
-    expect(sf[2]).toBe(`${ordinary[2]}#live`);
+    // #sf-landmarks#p12 (2026-10-24): a Salesforce walk records landmarks and crawls 12 pages, so its
+    // cached model differs; ordinary keys above are unchanged.
+    expect(sf[1]).toBe("site:https://x.test/#live#sf-landmarks#p12");
+    expect(sf[2]).toBe(`${ordinary[2]}#live#sf-landmarks#p12`);
     for (let i = 0; i < 3; i++) expect(sf[i]).not.toBe(ordinary[i]);
   });
 });

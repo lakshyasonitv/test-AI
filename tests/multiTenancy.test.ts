@@ -258,10 +258,15 @@ afterAll(() => {
     if (ORIGINAL_ENV[k] === undefined) delete process.env[k];
     else process.env[k] = ORIGINAL_ENV[k]!;
   }
-  for (const r of [RUN_A, RUN_B]) {
+  // The real run the filing test starts lands in the real runs/ folder: it showed in the app's
+  // Recent runs as a "p" row on https://b-one.example.com.
+  for (const r of [RUN_A, RUN_B, ...startedRuns]) {
     if (existsSync(path.join("runs", r))) rmSync(path.join("runs", r), { recursive: true, force: true });
   }
 });
+
+/** Runs a test started through POST /api/runs, removed with the fixtures. */
+const startedRuns: string[] = [];
 
 // --------------------------------------------------------------------------
 // The three route tables. Together they must account for every mounted /api/* route.
@@ -365,6 +370,9 @@ const EXEMPT: Record<string, string> = {
   "GET /api/health": "public by necessity — reports only whether env vars are set, never a value",
   "GET /api/auth/config": "public by necessity — the UI must learn where to authenticate before it holds a token",
   "POST /api/auth/signup": "public by necessity — an account that does not exist cannot present a token",
+  "POST /api/salesforce/oauth/start": "names no existing resource; starts a sign-in bound to the caller's own organisation and user (req.organisationId), which only that organisation's runs may later use (D-63)",
+  "GET /api/salesforce/discovery-cache": "looks the connection up through restoreConnection(id, req.organisationId), which answers 404 for another organisation's connection; returns only object names and save times of that org's saved scans",
+  "GET /api/salesforce/callback":"public by necessity — Salesforce redirects the person's browser here, which cannot carry a token; bound by a one-time 10-minute state to the organisation that started it, 403 unless SALESFORCE_OAUTH_ENABLED (D-63)",
   "GET /api/auth/me": "scoped to req.user by construction; returns the caller's own identity only",
   "POST /api/auth/bootstrap": "scoped to req.user; gives the caller an organisation, never reads another's",
   "POST /api/organisations": "creates a NEW organisation for the caller — it is the one route that acts outside every organisation",
@@ -375,11 +383,11 @@ const EXEMPT: Record<string, string> = {
   "POST /api/suites": "creates a suite; the projectId in the body IS cross-org tested, in the body-id table below",
   "POST /api/cache/walks/clear": "org-admin gated but clears a GLOBAL cache — a real cross-tenant side effect, audit finding F-2, out of scope here and deliberately recorded rather than hidden",
   "GET /api/script-override/warning": "a fixed statement of policy — names no case, reads no row, identical for every caller; deliberately not mounted under /api/cases/:caseId so it cannot look tenant-scoped while behaving otherwise",
-  "GET /api/jira/status": "D-63: Jira connection is keyed by req.user.id in memory; names no stored resource, reads no row",
-  "POST /api/jira/connect": "D-63: the one-time state is bound to req.user.id; reads no row",
-  "GET /api/jira/callback": "D-63: public by necessity (a redirect from Atlassian carries no token); identified only by a single-use state bound to the user who asked",
-  "GET /api/jira/issue/:issueKey": "D-63: reads Jira with the caller's OWN token (req.user.id); nothing stored here, no row",
-  "POST /api/jira/disconnect": "D-63: drops the caller's own in-memory token only",
+  "GET /api/jira/status": "D-71: Jira connection is keyed by req.user.id in memory; names no stored resource, reads no row",
+  "POST /api/jira/connect": "D-71: the one-time state is bound to req.user.id; reads no row",
+  "GET /api/jira/callback": "D-71: public by necessity (a redirect from Atlassian carries no token); identified only by a single-use state bound to the user who asked",
+  "GET /api/jira/issue/:issueKey": "D-71: reads Jira with the caller's OWN token (req.user.id); nothing stored here, no row",
+  "POST /api/jira/disconnect": "D-71: drops the caller's own in-memory token only",
   "GET /api/cases/:caseId/steps/jobs/:jobId/events": "editing sessions are scoped by userId, not org — getJob 404s for anyone else",
   "GET /api/cases/:caseId/steps/jobs/:jobId/state": "as above",
   "POST /api/cases/:caseId/steps/jobs/:jobId/cancel": "as above",
@@ -473,6 +481,7 @@ describe("two organisations — an id in a request BODY is never authority", () 
     // The run itself is allowed — org B may start runs. The FILING must be refused, so the run
     // must not end up attached to org A's project.
     expect(res.status).toBe(202);
+    startedRuns.push(res.body.runId);
     await new Promise((r) => setTimeout(r, 60));
     expect(db.runs.find((r) => r.id === res.body.runId)?.project_id).not.toBe(PROJ_A1);
   });

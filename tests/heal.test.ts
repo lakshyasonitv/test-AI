@@ -103,6 +103,31 @@ describe("attemptHeal", () => {
     expect(readFileSync(path.join(outDir, "healed", "generated.spec.ts"), "utf8")).toBe("// generated spec");
   });
 
+  // Session 102: the walk cache never expires, so a heal served from it re-reads the same page the
+  // failing IR was built from and regenerates the same failure.
+  it("asks for a FRESH walk, never the cached one the failing IR was built from", async () => {
+    toIRMock.mockResolvedValue({ ir: baseIr });
+    runSpecMock.mockResolvedValue({ passed: true, exitCode: 0, artifactsDir: "a", resultsJsonPath: "r", raw: {} });
+    await attemptHeal(args());
+    const call = refreshPageModelMock.mock.calls.at(-1)! as any[];
+    expect(call[4]).toEqual({ fresh: true });
+  });
+
+  // A heal repairs how a step reaches its control. The regenerated IR must still conclude the same
+  // thing: a new final assertion is a different test, and how a hollow pass gets in.
+  it("rejects a regenerated IR whose final assertion differs from the original's", async () => {
+    const changed = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "button", name: "Go" } },
+      { id: "s3", action: "assert", target: { text: "Zq static line" }, assertion: "visible" },
+    ]);
+    toIRMock.mockResolvedValue({ ir: changed });
+    runSpecMock.mockResolvedValue({ passed: true, exitCode: 0, artifactsDir: "a", resultsJsonPath: "r", raw: {} });
+    runSpecMock.mockClear();
+    expect(await attemptHeal(args())).toBeNull();
+    expect(runSpecMock).not.toHaveBeenCalled();
+  });
+
   it("passes the failing-step prefix to refreshPageModel, not the whole IR", async () => {
     toIRMock.mockResolvedValue({ ir: baseIr });
     runSpecMock.mockResolvedValue({ passed: true, exitCode: 0, artifactsDir: "a", resultsJsonPath: "r", raw: {} });

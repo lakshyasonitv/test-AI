@@ -272,7 +272,7 @@ export async function analyzeFailure(
   const bounced = endedOnLoginPage(result, loginUrl);
   if (bounced) {
     return {
-      failingStepId: findFailingStepId(ir, errorText),
+      failingStepId: recordedFailingStepId(ir, result) ?? findFailingStepId(ir, errorText),
       category: "navigation_error",
       explanation:
         `The test was not signed in — it finished on the login page (${bounced}). Every step after ` +
@@ -292,7 +292,7 @@ export async function analyzeFailure(
   const deterministic = classify(errorText);
   if (deterministic) {
     return {
-      failingStepId: findFailingStepId(ir, errorText),
+      failingStepId: recordedFailingStepId(ir, result) ?? findFailingStepId(ir, errorText),
       category: deterministic.category,
       explanation: deterministic.explanation,
       suggestedFix: deterministic.suggestedFix,

@@ -1,5 +1,5 @@
 /**
- * Atlassian Document Format (ADF) -> plain text, for reading a Jira story into the prompt box (D-63).
+ * Atlassian Document Format (ADF) -> plain text, for reading a Jira story into the prompt box (D-71).
  *
  * REST API v3 returns `description` as an ADF tree, never as a string. Atlassian's structure page
  * says a document has a single sequential path: walking the nodes in order and joining their text

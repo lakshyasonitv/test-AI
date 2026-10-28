@@ -5,7 +5,7 @@ import path from "node:path";
 import { readFileSync } from "node:fs";
 
 /**
- * D-62 — Salesforce host names read as (My Domain name, partition, purpose), from Salesforce's own
+ * D-70 — Salesforce host names read as (My Domain name, partition, purpose), from Salesforce's own
  * "Partitioned Domains for Scratch Orgs" / "My Domain URL Format Changes" tables, and the user's real
  * login chain (2026-10-22 capture): my.salesforce.com -> file.force.com -> lightning.force.com.
  */
@@ -101,7 +101,7 @@ describe("detectBlocked on a Salesforce run", () => {
   });
 });
 
-describe("portal addresses and the refusal (D-62)", () => {
+describe("portal addresses and the refusal (D-70)", () => {
   it("a portal address is refused with a sentence saying what it is and what to use", () => {
     const why = orgRefusal(`https://${ORG}.scratch.my.site.com/`);
     expect(why).toContain("Experience Cloud portal");

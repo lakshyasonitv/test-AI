@@ -1,11 +1,13 @@
 import type { IR, Step } from "../schema/ir.js";
 import {
   resolveCode as locator, frameRootCode,
-  DOM_ORDER_FIELD_JS, FIELD_SELECTOR, DIALOG_SELECTOR,
+  DOM_ORDER_FIELD_JS, FIELD_SELECTOR, VISIBLE_DIALOG_SELECTOR,
   SELECTABLE_JS, OPTION_PROBE_JS, MATCH_OPTION_INDEX_JS, OPTION_ERROR_JS, SELECT_TIMEOUT_MS,
 } from "./targetResolver.js";
 import { isAuthTriggeringStep } from "./authSettle.js";
 import { isEnvValueRef } from "./credentials.js";
+import { FRONTDOOR_ENV, isFrontdoorRef, recordRefIndex, recordRefObject, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
+import { hasRunToken, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
 
 const q = (s: string) => JSON.stringify(s);
 
@@ -29,7 +31,11 @@ const ASSERT_TIMEOUT_MS = Number(process.env.ASSERTION_TIMEOUT_MS) || 10_000;
  *  The env var name comes from a fixed two-item allowlist, never from LLM or user text. */
 const valueCode = (value: string | undefined): string => {
   const envVar = isEnvValueRef(value);
-  return envVar ? `process.env.${envVar} ?? ""` : q(value ?? "");
+  if (envVar) return `process.env.${envVar} ?? ""`;
+  // Run tokens ({{uid}}, {{phone}}, {{date:+N:locale}}) are resolved when the spec RUNS, from one
+  // RUN_CTX per run (declared in the header when used), never when the IR was compiled.
+  if (hasRunToken(value)) return `resolveRunTokens(${q(value ?? "")}, RUN_CTX)`;
+  return q(value ?? "");
 };
 const escapeRe = (s: string) =>
   s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -58,6 +64,12 @@ function emitAssert(step: Step): string {
         `nothing at all (it matches any page). Refusing to emit a vacuous assertion.`
       );
     }
+  }
+
+  // A record field's VALUE (Target.field, Phase A): read inside that field's own block, never as text
+  // anywhere on the page. See SF_FIELD_HELPER.
+  if (t?.field && (step.assertion === "text_contains" || step.assertion === "text_equals")) {
+    return `  await sfFieldValue(page, ${q(t.field)}, ${valueCode(comparisonValue(step))}, ${q(step.assertion === "text_equals" ? "equals" : "contains")});`;
   }
 
   switch (step.assertion) {
@@ -128,13 +140,13 @@ function emitAssert(step: Step): string {
     // this.
     case "text_equals":
       return t.role === "combobox"
-        ? `  await assertChoice(${locator(t)}, ${q(comparisonValue(step))}, "equals");`
-        : `  await expect(${locator(t)}).toHaveText(${q(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
+        ? `  await assertChoice(${locator(t)}, ${valueCode(comparisonValue(step))}, "equals");`
+        : `  await expect(${locator(t)}).toHaveText(${valueCode(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "text_contains":
       return t.role === "combobox"
-        ? `  await assertChoice(${locator(t)}, ${q(comparisonValue(step))}, "contains");`
-        : `  await expect(${locator(t)}).toContainText(${q(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
+        ? `  await assertChoice(${locator(t)}, ${valueCode(comparisonValue(step))}, "contains");`
+        : `  await expect(${locator(t)}).toContainText(${valueCode(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
     case "url_contains":
       return `  await expect(page).toHaveURL(new RegExp(${q(
@@ -245,6 +257,96 @@ async function assertGone(loc, namedAs) {
   }
 }
 `;
+
+// -----------------------------------------------------------------------------
+// Record pages reached (Phase D cleanup, org-connection specs only)
+// -----------------------------------------------------------------------------
+
+const SF_RECORDS_HELPER = `const SF_RECORDS = new Set();
+test.beforeEach(({ page }) => {
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame()) return;
+    const m = /\\/lightning\\/r\\/([A-Za-z][A-Za-z0-9_]*)\\/([A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)\\/view/.exec(frame.url());
+    if (m) SF_RECORDS.add(m[1] + "/" + m[2]);
+  });
+});
+test.afterEach(() => { test.info().annotations.push({ type: "sf-records", description: JSON.stringify([...SF_RECORDS]) }); });`;
+
+/**
+ * Phase A: "go back to the <n>th <Object> record this test created" (recordRef). The records this
+ * browser creates are noted as it goes (the replay notes them the same way, liveExtend.ts), and the
+ * step opens that one: never another record of the object.
+ */
+const SF_OPEN_RECORD_HELPER = `let sfRecordPages = null;
+test.beforeEach(({ page }) => {
+  sfRecordPages = (${SF_RECORD_PAGES_JS})();
+  page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) sfRecordPages.visit(frame.url()); });
+});
+async function sfOpenRecord(page, base, object, n) {
+  const id = sfRecordPages && sfRecordPages.created(object, n);
+  if (!id) throw new Error("No " + object + " record this test created (number " + n + ") was reached earlier in this test, so there is none to go back to.");
+  await page.goto(base + "/lightning/r/" + object + "/" + id + "/view", { waitUntil: "domcontentloaded", timeout: 15000 });
+}`;
+
+/**
+ * Does a record field's shown text hold `expected`? `lines` is the field block's text by line; the
+ * label and the pencil's "Edit <label>" are not the value. Numbers compare as numbers, so "5000",
+ * "5,000" and "$5,000.00" agree and "100" never matches "$1,000.00". Exported for its tests.
+ */
+export const SF_FIELD_MATCH_JS = `(lines, label, expected, mode) => {
+  const num = ${SHOWN_NUMBER_JS};
+  const shown = lines.map((l) => String(l).replace(/\\s+/g, " ").trim())
+    .map((l) => l.startsWith(label + " ") ? l.slice(label.length + 1) : l)
+    .filter((l) => l && l !== label && l !== "Edit " + label);
+  const want = num(expected);
+  if (want !== null) {
+    return shown.some((l) => num(l) === want
+      || (mode !== "equals" && (l.match(/\\d[\\d.,]*/g) || []).some((x) => num(x) === want)));
+  }
+  const e = String(expected).replace(/\\s+/g, " ").trim();
+  return shown.some((l) => mode === "equals" ? l === e : l.includes(e));
+}`;
+
+/**
+ * Phase A: assert a record field's VALUE (Target.field) inside the field's own block: Lightning's
+ * record layout item, a highlights-panel item or an SLDS form element whose label is exactly `label`.
+ * A bare getByText("$5,000.00") could be another field's (the Opportunity's own Amount, say).
+ */
+const SF_FIELD_HELPER = `const sfFieldMatch = ${SF_FIELD_MATCH_JS};
+async function sfFieldValue(page, label, expected, mode) {
+  const blocks = page.locator("records-record-layout-item, records-highlights-details-item, .slds-form-element")
+    .filter({ has: page.getByText(label, { exact: true }) });
+  const deadline = Date.now() + ${ASSERT_TIMEOUT_MS};
+  let seen = [];
+  for (;;) {
+    seen = [];
+    const n = await blocks.count().catch(() => 0);
+    for (let i = 0; i < n; i++) {
+      const block = blocks.nth(i);
+      if (!(await block.isVisible().catch(() => false))) continue;
+      const lines = ((await block.innerText({ timeout: 1000 }).catch(() => "")) || "").split("\\n");
+      if (sfFieldMatch(lines, label, expected, mode)) return;
+      seen.push(lines.map((l) => l.trim()).filter(Boolean).join(" / "));
+    }
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(250);
+  }
+  throw new Error('The "' + label + '" field does not show "' + expected + '": ' + (seen.length
+    ? "it shows " + seen.map((s) => '"' + s + '"').join(", ") : 'no visible field labelled "' + label + '" is on the page') + ".");
+}`;
+
+/** Scrolls down a screen at a time until `text` shows or the page ends, so a lazily drawn section
+ *  exists before it is checked (and a "hidden" check has really looked everywhere). */
+const SF_REVEAL_HELPER = `async function sfReveal(page, text) {
+  const wanted = page.getByText(text).first();
+  for (let i = 0; i < 15; i++) {
+    if (await wanted.isVisible().catch(() => false)) return;
+    const atBottom = await page.evaluate(() => window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2).catch(() => true);
+    if (atBottom) return;
+    await page.evaluate(() => window.scrollBy(0, window.innerHeight)).catch(() => {});
+    await page.waitForTimeout(300);
+  }
+}`;
 
 // -----------------------------------------------------------------------------
 // Auth settle helper
@@ -440,7 +542,7 @@ const SCOPE_HELPER = `
 // against the document while a dialog is open can act on something the user cannot even see.
 // Returns a Locator either way, so callers use one uniform API. TECH_DEBT.md TD-72.
 async function scopeOf(page) {
-  const dialogs = page.locator(${JSON.stringify(DIALOG_SELECTOR)} + ':visible');
+  const dialogs = page.locator(${JSON.stringify(VISIBLE_DIALOG_SELECTOR)});
   try {
     if (await dialogs.count() > 0) return dialogs.last();
   } catch (e) {}
@@ -548,6 +650,48 @@ async function field(page, hint, action) {
 // The evaluate callback is a bare arrow with nothing named inside it, deliberately: esbuild
 // rewrites named/const-assigned inner functions to call a __name helper that does not exist in
 // the browser (CLAUDE.md sharp edges, TD-40).
+/**
+ * A LOOKUP field (a record reference) on a Lightning form: typing filters a list of records; one must
+ * be PICKED, or the save fails with "Review the following fields" (run 2026-10-24T21-26-12-355Z-15cbc64f).
+ * With a value: the first suggestion containing it. Without: the first record the org offers (the
+ * input lists recent records on focus). "New <Object>" and "Show all results" rows are never picked.
+ * Mirrored by lookupLive in targetResolver.ts for the grounding replay.
+ */
+const LOOKUP_HELPER = `
+const lookupOptionError = ${OPTION_ERROR_JS};
+async function lookupPick(page, target, value, root) {
+  const inDoc = root || page;
+  await target.click({ timeout: ${SELECT_TIMEOUT_MS} });
+  if (value) await target.fill(value, { timeout: ${SELECT_TIMEOUT_MS} });
+  const ownId = ((await target.getAttribute('aria-controls').catch(() => null))
+    || (await target.getAttribute('aria-owns').catch(() => null)) || '').trim();
+  const own = /^[\\w:.-]+$/.test(ownId) ? inDoc.locator('[id="' + ownId + '"]').first() : null;
+  const isRecord = (t) => !/^(new\\b|show (all|more)|search )/i.test(t);
+  const deadline = Date.now() + ${SELECT_TIMEOUT_MS};
+  let where = null, texts = [];
+  for (;;) {
+    const open = own && await own.isVisible().catch(() => false) ? own : null;
+    const popup = inDoc.locator('[role="listbox"]:visible').first();
+    where = open || ((await popup.count().catch(() => 0)) > 0 ? popup : null);
+    if (where) {
+      const opts = where.getByRole('option');
+      texts = (await opts.evaluateAll(els => els.map(el => (el.textContent || '').trim()
+        || (el.shadowRoot ? el.shadowRoot.textContent || '' : ''))).catch(() => []))
+        .map(t => t.replace(/\\s+/g, ' ').trim());
+      if (texts.some(isRecord)) break;
+    }
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(150);
+  }
+  const want = (value || '').toLowerCase();
+  let idx = -1;
+  if (want) idx = texts.findIndex(t => isRecord(t) && t.toLowerCase().includes(want));
+  if (idx < 0 && !want) idx = texts.findIndex(isRecord);
+  if (idx < 0 || !where) throw new Error(lookupOptionError(value || '(first suggestion)', texts.filter(isRecord)));
+  await where.getByRole('option').nth(idx).click({ timeout: ${SELECT_TIMEOUT_MS} });
+}
+`;
+
 const CHOOSE_HELPER = `
 // Authored once in targetResolver.ts and interpolated here as SOURCE, so the live path and this
 // spec run the same characters (TECH_DEBT.md TD-07). Interpolated BARE: a function handed to
@@ -614,6 +758,23 @@ async function choose(page, target, value, root) {
   }
   // Custom dropdown: open it, then pick the option by its accessible name.
   await target.click({ timeout: ${SELECT_TIMEOUT_MS} });
+  // The control's OWN popup first, named by its aria-controls / aria-owns (ARIA's link from a
+  // combobox to its listbox). Run 2026-10-24T13-19-15-522Z-c180fec9: a Lightning picklist opened
+  // with all its options showing, but scopeOf() below picked the modal's footer (the last
+  // [class*="modal"] element), which holds no listbox, and the step failed as "no options at all".
+  const ownId = ((await target.getAttribute('aria-controls').catch(() => null))
+    || (await target.getAttribute('aria-owns').catch(() => null)) || '').trim();
+  const own = /^[\\w:.-]+$/.test(ownId) ? inDoc.locator('[id="' + ownId + '"]').first() : null;
+  // A click that did not open it (Lightning swallows one while the field before it commits: run
+  // 2026-10-24T13-46-36-401Z-db184799, dropdown closed in the screenshot) is repeated once. Only
+  // when the control says it is NOT open, so an open dropdown is never clicked shut.
+  if (own || (await target.getAttribute('aria-expanded').catch(() => null)) !== null) {
+    const isOpen = async () => (own && await own.isVisible().catch(() => false))
+      || (await target.getAttribute('aria-expanded').catch(() => null)) === 'true';
+    const openBy = Date.now() + 1500;
+    while (!(await isOpen()) && Date.now() < openBy) await page.waitForTimeout(100);
+    if (!(await isOpen())) await target.click({ timeout: ${SELECT_TIMEOUT_MS} });
+  }
   // Scoped like every other lookup: a listbox behind the modal must not win.
   const optScope = await scopeOf(inDoc);
   // Wait for the popup's items, which are as likely to be fetched as a <select>'s — but wait on
@@ -630,7 +791,8 @@ async function choose(page, target, value, root) {
   let scope = optScope;
   for (;;) {
     const popup = optScope.locator('[role="listbox"]:visible, [role="menu"]:visible');
-    const open = (await popup.count()) > 0 ? popup.first() : null;
+    const open = (own && await own.isVisible().catch(() => false)) ? own
+      : (await popup.count()) > 0 ? popup.first() : null;
     scope = open ?? optScope;
     // Ready means "this dropdown has rendered its choices", and role="option" is only one way a
     // dropdown says so — plenty render plain <div>/<li> items, which the text fallback below
@@ -651,10 +813,10 @@ async function choose(page, target, value, root) {
   const allOpts = scope.getByRole('option');
   const optCount = await allOpts.count();
   if (optCount > 0) {
-    const texts = [];
-    for (let i = 0; i < optCount; i++) {
-      texts.push(((await allOpts.nth(i).textContent().catch(() => '')) || '').replace(/\\s+/g, ' ').trim());
-    }
+    // Shadow text too, for the same reason as the error message below (Lightning options).
+    const texts = (await allOpts.evaluateAll(els => els.map(el => (el.textContent || '').trim()
+      || (el.shadowRoot ? el.shadowRoot.textContent || '' : ''))).catch(() => []))
+      .map(t => t.replace(/\\s+/g, ' ').trim());
     const pick = matchOptionIndex(texts, value);
     if (pick >= 0) {
       await allOpts.nth(pick).click({ timeout: ${SELECT_TIMEOUT_MS} });
@@ -670,8 +832,11 @@ async function choose(page, target, value, root) {
   // Nothing matched. Report what the open popup was actually offering rather than letting
   // Playwright time out on a locator that resolves to nothing — same reason as the native
   // branch: the error is the only thing the person sees on the case card. TD-79.
+  // A Lightning option's text lives in its OWN shadow root, so its textContent (and innerText) is
+  // "" and the error claimed an open list was empty. Read the shadow text when the light text is empty.
   const offered = await scope.locator('[role="option"], li, [role="menuitem"]')
-    .allTextContents().catch(() => []);
+    .evaluateAll(els => els.map(el => (el.textContent || '').trim() || (el.shadowRoot ? el.shadowRoot.textContent || '' : '')))
+    .catch(() => []);
   throw new Error(optionErrorMessage(value, offered.map(t => (t || '').replace(/\\s+/g, ' ').trim())
     .filter(t => t.length > 0)));
 }
@@ -763,6 +928,21 @@ function emitStep(step: Step, baseUrl: string): string {
   switch (step.action) {
     case "navigate": {
       const u = step.target?.url ?? "/";
+      if (isFrontdoorRef(u)) {
+        // D-63: sign in through a Salesforce org connection. The URL carries an access token, so the
+        // spec holds only the env name; executor.ts gives the child a fresh one. Outside Testbench
+        // (CI), `sf org open --url-only` prints a URL of the same kind.
+        code += `  if (!process.env.${FRONTDOOR_ENV}) throw new Error("${FRONTDOOR_ENV} is not set: this test signs in through a Salesforce org connection. Set it to a signed-in frontdoor URL (for example from: sf org open --url-only).");\n`;
+        code += `  await page.goto(process.env.${FRONTDOOR_ENV}, { waitUntil: "domcontentloaded", timeout: 60000 });\n`;
+        code += `  await page.waitForURL((u) => !u.pathname.toLowerCase().includes("frontdoor.jsp"), { timeout: 60000 }).catch(() => {});`;
+        break;
+      }
+      // Phase A: the record this test created, known only when the test runs (SF_OPEN_RECORD_HELPER).
+      const recordObject = recordRefObject(u);
+      if (recordObject) {
+        code += `  await sfOpenRecord(page, ${q(baseUrl.replace(/\/$/, ""))}, ${q(recordObject)}, ${recordRefIndex(u)});`;
+        break;
+      }
       const full = u.startsWith("http")
         ? u
         : baseUrl.replace(/\/$/, "") + u;
@@ -797,6 +977,12 @@ function emitStep(step: Step, baseUrl: string): string {
       break;
 
     case "select":
+      // A lookup (Target.lookup, set from the org model): type, wait for the suggestions, pick the
+      // match — or the first suggestion with an empty value. See LOOKUP_HELPER.
+      if (step.target!.lookup) {
+        code += `  await lookupPick(page, ${locator(step.target!, "select")}, ${valueCode(step.value)}${step.target!.frame ? `, ${frameRootCode(step.target!)}` : ""});`;
+        break;
+      }
       // choose() decides selectOption-vs-click-the-option at run time, from the element's real
       // tag. See CHOOSE_HELPER. Emitting selectOption() here is what TD-70 was.
       // A target in an iframe passes its frame root as choose()'s 4th argument, for the two
@@ -810,7 +996,12 @@ function emitStep(step: Step, baseUrl: string): string {
       break;
 
     case "press":
-      code += `  await ${locator(step.target!)}.press(${q(step.value ?? "Enter")}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
+      // A press with no target ("press Enter" right after a fill) goes to whatever has focus, as a
+      // person's key press does. locator() needs a target: it threw "reading 'frame'" here and the
+      // whole run died at the generate stage (run 2026-10-28T05-23-15-586Z-2e6fd7ae).
+      code += step.target
+        ? `  await ${locator(step.target)}.press(${q(step.value ?? "Enter")}, { timeout: ${ASSERT_TIMEOUT_MS} });`
+        : `  await page.keyboard.press(${q(step.value ?? "Enter")});`;
       break;
 
     case "wait":
@@ -838,7 +1029,7 @@ function emitStep(step: Step, baseUrl: string): string {
 
 function stepLabel(step: Step, index: number, baseUrl: string): string {
   const t = step.target;
-  const name = t?.name ? ` '${t.name}'` : "";
+  const name = t?.name ? ` '${t.name}'` : t?.field ? ` '${t.field}'` : "";
   // A credential the user supplied is an env reference here, not the literal. Label it in
   // words: this string ends up in results.json and in the UI's step list, and "${env:...}"
   // reads like a bug to anyone looking at it.
@@ -847,6 +1038,11 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
   switch (step.action) {
     case "navigate": {
       const u = t?.url ?? "/";
+      if (isFrontdoorRef(u)) return "Sign in through the Salesforce org connection";
+      if (recordRefObject(u)) {
+        const n = recordRefIndex(u)!;
+        return `Go back to the ${recordRefObject(u)} record this test created${n > 1 ? `, number ${n}` : ""}`;
+      }
       const full = u.startsWith("http") ? u : baseUrl.replace(/\/$/, "") + u;
       return `Navigate to ${full}`;
     }
@@ -854,7 +1050,7 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
     case "fill": return `Fill${name} with${val}`;
     case "select": return `Select${val} in${name}`;
     case "check": return `Check${name}`;
-    case "press": return `Press${val || " Enter"} in${name}`;
+    case "press": return name ? `Press${val || " Enter"} in${name}` : `Press${val || " Enter"}`;
     case "wait": return `Wait ${step.value ?? 1000}ms`;
     case "assert": {
       const assertion = step.assertion ?? "visible";
@@ -870,7 +1066,7 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
 }
 
 // -----------------------------------------------------------------------------
-// The fixed Salesforce login (D-57) — emitted only when ir.meta.fixedLogin === "salesforce"
+// The fixed Salesforce login (D-65) — emitted only when ir.meta.fixedLogin === "salesforce"
 // -----------------------------------------------------------------------------
 
 /**
@@ -878,13 +1074,13 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
  *
  * WHY: the recorded steps are a list of clicks taken on the page DISCOVERY saw. A test runs in a
  * fresh browser that can be shown a different first screen (the email-first "Log In with Username"
- * screen, TD-154), ad requests that slow the page, or a one-screen form whose password box draws
- * late. Discovery already handles all of these (D-56, `salesforceOrgLogin.ts`); this is the same
+ * screen, TD-171), ad requests that slow the page, or a one-screen form whose password box draws
+ * late. Discovery already handles all of these (D-64, `salesforceOrgLogin.ts`); this is the same
  * logic, restated as plain Playwright code because the spec is a standalone file that shares
  * nothing with the pipeline (D-06). It is NOT an import, and nothing pins the two equal — the same
  * accepted drift risk as TD-07. `tests/salesforceFixedLoginSpec.test.ts` runs THIS text in Chromium.
  *
- * The decisions are structural, as in D-56: which inputs are visible and which host the page is on.
+ * The decisions are structural, as in D-64: which inputs are visible and which host the page is on.
  * No `page.evaluate` (TD-40), so nothing here is affected by esbuild's `__name` wrapping. The
  * credentials are read from process.env at run time, exactly as the replayed steps read them.
  */
@@ -937,7 +1133,7 @@ function salesforceWhere(page) {
 
 async function salesforceLoginFailure(page, fallback) {
   // Which screen the login stopped on, decided from which inputs are visible and which host the
-  // page is on — never from Salesforce's wording (D-56). Returns { kind, message }.
+  // page is on — never from Salesforce's wording (D-64). Returns { kind, message }.
   let host = "";
   try { host = new URL(page.url()).hostname.toLowerCase(); } catch {}
   const salesforceHost = ["salesforce.com", "force.com", "salesforce-setup.com", "visualforce.com"]
@@ -1000,11 +1196,14 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   // escaping inside a JS string literal.
   const shotDir = screenshotDir.replace(/\\/g, "/").replace(/\/+$/, "");
 
-  // D-57: on a fixed-login IR the leading auth-* steps become ONE login routine. Still one
+  // D-65: on a fixed-login IR the leading auth-* steps become ONE login routine. Still one
   // test.step() per IR step (executor.ts and failureAnalysis.ts map steps by position): the first
   // runs the whole login and screenshots where it landed; the rest record that it is done and take
-  // no screenshot, so no login frame (with the username readable) is written (TD-156).
+  // no screenshot, so no login frame (with the username readable) is written (TD-173).
   const login = fixedLoginBlock(ir);
+  // A text check after a click on a record's "Details" tab first scrolls its lower sections into
+  // being: Lightning draws them only when scrolled to (run 2026-10-26T07-53-42-185Z-83b50b3b).
+  const detailsAt = ir.steps.findIndex((s) => s.action === "click" && s.target?.role === "tab" && s.target.name === "Details");
   const body = ir.steps
     .map((step, i) => {
       if (login?.ids.has(i)) {
@@ -1017,7 +1216,13 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
           `      // Performed inside salesforceLogin() in the first step.\n    });`;
       }
       const label = stepLabel(step, i, ir.meta.baseUrl);
-      const code = emitStep(step, ir.meta.baseUrl);
+      // A field's value check scrolls its label into being too, Details tab or not (Phase A).
+      const reveal = step.action === "assert" && step.target?.field && (step.assertion === "text_contains" || step.assertion === "text_equals")
+        ? `await sfReveal(page, ${q(step.target.field)});\n`
+        : detailsAt >= 0 && i > detailsAt && step.action === "assert" && step.target?.text
+        && (step.assertion === "visible" || step.assertion === "hidden")
+        ? `await sfReveal(page, ${q(step.target.text)});\n` : "";
+      const code = reveal + emitStep(step, ir.meta.baseUrl);
       const indented = code.split("\n").map((l) => "    " + l).join("\n");
       return `    await test.step(${q(label)}, async () => {\n${indented}\n      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)});\n    });`;
     })
@@ -1044,6 +1249,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   const needsAssertGone = body.includes("await assertGone(");
   const needsField = body.includes("await field(");
   const needsChoose = body.includes("await choose(");
+  const needsLookup = body.includes("await lookupPick(");
   const needsScope = needsField || needsChoose || needsSafeClick;
 
   const needsAuthSettle = body.includes(
@@ -1059,11 +1265,27 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     needsScope ? SCOPE_HELPER : "",
     needsField ? FIELD_HELPER : "",
     needsChoose ? CHOOSE_HELPER : "",
+    needsLookup ? LOOKUP_HELPER : "",
     needsSafeClick ? SAFE_CLICK_HELPER : "",
     needsAssertChoice ? ASSERT_CHOICE_HELPER : "",
     needsAssertGone ? ASSERT_GONE_HELPER : "",
     needsAuthSettle ? AUTH_SETTLE_HELPER : "",
     login ? SALESFORCE_LOGIN_HELPER : "",
+    // One context per run of this spec, for every run-token value (see valueCode): the same resolver
+    // source the grounding replay uses (text.ts, TD-07). The context rides in results.json as the
+    // "run-tokens" annotation, so the report can show the values this run actually typed.
+    body.includes("resolveRunTokens(")
+      ? `const RUN_CTX = { uid: Date.now().toString(36).slice(-6), phone: "415555" + String(Date.now()).slice(-4), now: Date.now() };
+const resolveRunTokens = ${RESOLVE_RUN_TOKENS_JS};
+test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", description: JSON.stringify(RUN_CTX) }); });`
+      : "",
+    // Phase D: an org-connection spec notes every record page its browser reached, the page a
+    // create's Save opens, as the "sf-records" annotation; the run's cleanup deletes only those the
+    // org confirms this user created during the run (salesforceCleanup.ts).
+    body.includes(`process.env.${FRONTDOOR_ENV}`) ? SF_RECORDS_HELPER : "",
+    body.includes("await sfReveal(") ? SF_REVEAL_HELPER : "",
+    body.includes("await sfOpenRecord(") ? SF_OPEN_RECORD_HELPER : "",
+    body.includes("await sfFieldValue(") ? SF_FIELD_HELPER : "",
   ]
     .filter(Boolean)
     .join("\n\n");

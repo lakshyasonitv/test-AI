@@ -13,6 +13,8 @@ import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
+import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
+import { cleanupEnabled, cleanupRecords, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -31,6 +33,8 @@ import { analyzeFailure } from "./stages/failureAnalysis.js";
 import { attemptHeal, isHealable, selfHealDefault } from "./stages/heal.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
+import { rememberRunSecrets, scrubRunSecrets } from "./runSecrets.js";
+import { buttonExplorerEnabled, exploreButtons } from "./stages/buttonExplorer.js";
 import { ALL_SCOPES } from "./kb/testStrategy.js";
 import type { IR, Step } from "./schema/ir.js";
 
@@ -106,6 +110,14 @@ export interface RunOptions {
    * Omitted means the standard generator — what the CLI always gets.
    */
   spec?: SpecModel;
+  /**
+   * The Salesforce org connection this run signs in with (D-63, SALESFORCE_OAUTH_ENABLED). Resolved
+   * and tenancy-checked by the route; carries no token of its own, only a `mint()` for a fresh
+   * frontdoor URL. Omitted means every browser signs in the old way (or not at all).
+   */
+  sfFrontdoor?: FrontdoorSession;
+  /** Org-connection runs: crawl again even when a saved discovery matches the org's setup. */
+  freshDiscovery?: boolean;
 }
 
 /**
@@ -188,6 +200,9 @@ export async function runPipeline(
   // The fourth use of the rail: which enterprise application, if any, this URL belongs to. Entered
   // on EVERY run — null for an ordinary one — so no run can inherit another's value (runTarget.ts).
   enterWithTargetApp(options?.targetApp ?? null);
+  // D-63: the org connection, beside the target app and for the same reason (discovery, the
+  // grounding replay and the executor need it). Entered on EVERY run, null without one.
+  enterWithFrontdoor(options?.sfFrontdoor ?? null);
   // The fifth rail, entered beside the other four and for the same reason: the id is known here
   // and needed at the very bottom of the call stack (llm/client.ts, discovery, the executor's
   // child spawn), so it travels ambiently rather than through every signature between. Unlike the
@@ -195,8 +210,14 @@ export async function runPipeline(
   // because the alternative is nesting the rest of this 450-line function. See runContext.ts.
   enterWithRunId(runId);
 
-  // D-61: run insights (EXTENDED_LOGGING only — every call below is a no-op when it is off).
-  const runStartedAt = Date.now();
+  // Model-authored text only (TD-156): a plan or case step can quote a credential the model read
+  // off the page. Nothing reads these two back to run them (only runStore's legacy history view),
+  // so scrubbing the file changes no behaviour. 04-ir.json is deliberately NOT scrubbed here: it is
+  // what runs, and its credential fills are already env references (applyCredentials).
+  const SCRUB_ON_SAVE = new Set(["01-plan.json", "03-cases.json"]);
+
+  // D-69: run insights (EXTENDED_LOGGING only — every call below is a no-op when it is off).
+  const runStartMs = Date.now();
   const stageMs: Record<string, number> = {};
   if (insightsEnabled()) {
     insight("run-start", {
@@ -213,7 +234,8 @@ export async function runPipeline(
   }
 
   const save = (name: string, data: unknown) =>
-    writeFileSync(path.join(runDir, name), JSON.stringify(data, null, 2));
+    writeFileSync(path.join(runDir, name),
+      JSON.stringify(SCRUB_ON_SAVE.has(name) ? scrubRunSecrets(runId, data) : data, null, 2));
 
   const emit = (stage: StageName, status: StageEvent["status"], data?: unknown, error?: string) => {
     const event: StageEvent = { runId, stage, status, data, error, ts: Date.now() };
@@ -254,7 +276,7 @@ export async function runPipeline(
     }
   }
 
-  /** D-61: the run-end summary line and `10-insights.json`. No-op when EXTENDED_LOGGING is off. */
+  /** D-69: the run-end summary line and `10-insights.json`. No-op when EXTENDED_LOGGING is off. */
   function runEndInsights(outcome: string, usage: LlmUsageSnapshot, suiteSummary: any): void {
     if (!insightsEnabled()) return;
     const tokensByStage: Record<string, number> = {};
@@ -269,7 +291,7 @@ export async function runPipeline(
     for (const r of usage.retries ?? []) kinds[r.kind] = (kinds[r.kind] ?? 0) + 1;
     insight("run-end", {
       outcome,
-      totalMs: Date.now() - runStartedAt,
+      totalMs: Date.now() - runStartMs,
       stageMs,
       llmCalls: usage.calls, tokens: usage.totalTokens, budgetExhausted: usage.exhausted,
       callsByStage, tokensByStage, providers: [...providers],
@@ -288,6 +310,7 @@ export async function runPipeline(
     // plaintext passwords on a public path. The redacted copy goes to disk and to the event; the
     // original stays in memory for the stages that need it.
     const promptCreds = extractCredentialsFromPrompt(prompt);
+    rememberRunSecrets(runId, promptCreds); // so no later event or saved case can carry them (TD-154)
     const safePrompt = redactCredentials(prompt, promptCreds);
     save("00-input.json", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
     emit("input", "completed", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
@@ -329,10 +352,16 @@ export async function runPipeline(
     const sfWarning = options?.targetApp === "salesforce"
       ? resolvedUrls.map(orgWarning).find((w) => w !== null) ?? null
       : null;
-    const appModel = await step("discovery", "02-appmodel.json", async () =>
-      resolvedUrls.length === 1
-        ? discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery)
-        : discoverPagesHybrid(resolvedUrls),
+    const appModel = await step("discovery", "02-appmodel.json", async () => {
+      const discovered = resolvedUrls.length === 1
+        ? await discoverSiteHybrid(resolvedUrls[0], promptCreds, askForDiscovery, prompt, options?.freshDiscovery === true)
+        : await discoverPagesHybrid(resolvedUrls);
+      // Discovery upgrade Phase 5 (BUTTON_EXPLORER_ENABLED, default off): safe clicks that reveal
+      // screens discovery cannot reach by URL. Inside the step, so 02-appmodel.json holds what it
+      // found; it never throws, so a failed exploration leaves discovery's model as it was.
+      if (!buttonExplorerEnabled()) return discovered;
+      return (await exploreButtons(discovered, { runDir, creds: discoveredCreds })).model;
+    },
       // The full model still goes to 02-appmodel.json; only the EVENT is narrowed. `data.pages`
       // stays an array of objects carrying `url` and `concepts`, which is everything app.js reads
       // from this event (`Discovered N page(s) — Concepts: …`) and exactly the shape preview.js's
@@ -347,7 +376,7 @@ export async function runPipeline(
           elementCount: p.elements?.length ?? 0,
         })),
         ...(model.auth ? { auth: { status: model.auth.status, loginUrl: model.auth.loginUrl } } : {}),
-        // D-60: on a ticked Salesforce run against an org that is not a scratch org or a sandbox
+        // D-68: on a ticked Salesforce run against an org that is not a scratch org or a sandbox
         // (only possible with SALESFORCE_ALLOW_ALL_ORGS on), the screen shows this sentence.
         // Absent on every other run, so their event is unchanged.
         ...(sfWarning ? { orgWarning: sfWarning } : {}),
@@ -451,7 +480,8 @@ export async function runPipeline(
     // Carrying it here is what stops the user being prompted a second time: the guard below is
     // `!runCreds`, so a credential already supplied during discovery suppresses the ask.
     let runCreds: Credentials | undefined = discoveredCreds;
-    if (askCredentials && !runCreds && !promptCarriesCredentials(prompt)) {
+    // D-63: a run signed in through an org connection never asks for a password.
+    if (askCredentials && !runCreds && !promptCarriesCredentials(prompt) && !options?.sfFrontdoor) {
       const fields = credentialFieldsNeeded(appModel, cases);
       if (fields.length) {
         emit("credentials", "started", { fields, url: resolvedUrls[0] });
@@ -686,6 +716,18 @@ export async function runPipeline(
       try { suite = JSON.parse(readFileSync(summaryPath, "utf8")); } catch { }
     }
 
+    // Phase D (SALESFORCE_CLEANUP_ENABLED, default off): delete the records this run created in
+    // the org, and only those the org confirms this user created since the run began. Never fails
+    // the run: a cleanup that cannot run says why in 10-cleanup.json.
+    const fd = currentFrontdoor();
+    const since = runStartedAt(runId);
+    if (cleanupEnabled() && fd?.apiGet && fd.apiDelete && since) {
+      const cleanup = await cleanupRecords({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, runRecords(runDir), since);
+      save("10-cleanup.json", cleanup);
+      console.log(`[cleanup] ${runId}: deleted ${cleanup.deleted.length}, left ${cleanup.skipped.length}, failed ${cleanup.failed.length}`
+        + (cleanup.reason ? ` (${cleanup.reason})` : ""));
+    }
+
     // Real LLM spend for this run, across every stage — visible on disk and in the completion
     // event so a regression (retry storm, model change) shows up immediately instead of being
     // discovered later via a drained account.
@@ -696,7 +738,8 @@ export async function runPipeline(
 
     // Did the primary case end at a wall automation can't pass? That outranks pass/fail: the
     // app isn't broken and the test didn't succeed, and the user needs to see the proof frame.
-    const blocked = detectBlocked(path.join(runDir, "artifacts"), originOf(resolvedUrls[0]));
+    // relatedHosts (D-47): a login that lands on another host of the same app has not left it.
+    const blocked = detectBlocked(path.join(runDir, "artifacts"), originOf(resolvedUrls[0]), appModel.auth?.relatedHosts);
     const blockedScreenshotUrl = blocked?.screenshot
       ? "/" + path.relative(".", blocked.screenshot).replace(/\\/g, "/")
       : undefined;
@@ -733,7 +776,7 @@ export async function runPipeline(
     try { save("08-llm-usage.json", llmUsage); } catch { }
     if (extendedLoggingEnabled()) console.log(runUsageLine(runId, llmUsage));
     runEndInsights("error", llmUsage, undefined);
-    // D-62: `orgRefused` (optional, additive) tells the screen the run was refused on purpose — the
+    // D-70: `orgRefused` (optional, additive) tells the screen the run was refused on purpose — the
     // address is not one Testbench tests — so it does not call it "a problem on our side".
     emit("error", "failed", { llmUsage, ...(err?.orgRefused ? { orgRefused: true } : {}) }, err?.message ?? String(err));
     throw err;

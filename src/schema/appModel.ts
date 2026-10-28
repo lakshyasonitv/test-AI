@@ -321,6 +321,13 @@ export const AuthOutcome = z.object({
    * is byte-identical to before this field existed.
    */
   relatedHosts: z.array(z.string()).optional(),
+  /**
+   * True when the session came from a Salesforce org connection (D-63, SALESFORCE_OAUTH_ENABLED):
+   * the browser was signed in through `frontdoor.jsp`, no form was filled, and there is no
+   * `loginUrl` or `loginSteps`. The login prefix is then one env-referenced navigate. ABSENT on
+   * every other run, so their AppModel and every key built from it are unchanged.
+   */
+  frontdoor: z.boolean().optional(),
 });
 export type AuthOutcome = z.infer<typeof AuthOutcome>;
 
@@ -349,7 +356,77 @@ export const AppModel = z.object({
   enteredUrl: z.string().optional(),
   pages: z.array(PageModel),
   auth: AuthOutcome.optional(),
+  /**
+   * What a Salesforce org says about itself, read through its own metadata APIs on a run signed in
+   * through an org connection (D-63): the app's objects, their fields, required fields, picklist
+   * values, list views and active validation rules. Authoritative where the DOM crawl only guesses.
+   * ABSENT on every other run, so their model and every key built from it are unchanged.
+   */
+  salesforceOrg: z.lazy(() => SalesforceOrgModel).optional(),
+  /** Org-connection runs with SALESFORCE_DISCOVERY_CACHE_ENABLED: when these pages were scanned, and
+   *  whether this run reused that saved scan instead of scanning. Shown on the run page; absent elsewhere. */
+  savedScan: z.object({ at: z.string(), reused: z.boolean() }).optional(),
 });
+
+export const SalesforceOrgField = z.object({
+  label: z.string(),
+  api: z.string(),
+  type: z.string(),
+  required: z.boolean().optional(),
+  picklist: z.array(z.string()).optional(),
+  lookup: z.string().optional(),
+  /** A dependent picklist: the API name of the picklist (or checkbox) that controls it. */
+  controlledBy: z.string().optional(),
+  /** Per dependent value, the controlling values (labels) under which it is offered. */
+  validFor: z.record(z.array(z.string())).optional(),
+});
+export const SalesforceOrgObject = z.object({
+  api: z.string(),
+  label: z.string(),
+  labelPlural: z.string().optional(),
+  fields: z.array(SalesforceOrgField),
+  listViews: z.array(z.string()).optional(),
+  /** How many records the object holds (SOQL COUNT()), when it could be read. */
+  records: z.number().optional(),
+  /** True when the org says a user can create records: its create form lives at /lightning/o/<api>/new. */
+  createable: z.boolean().optional(),
+  /** The record types the user can create, when there are two or more. /lightning/o/<api>/new opens
+   *  the DEFAULT one's form with no chooser; another opens at /lightning/o/<api>/new?recordTypeId=<id>. */
+  recordTypes: z.array(z.object({ name: z.string(), id: z.string(), default: z.boolean().optional() })).optional(),
+  /** Fields the org computes (formula, roll-up summary): read-only, on the record page only. A case
+   *  checks them after a save; it can never type into one. */
+  calculated: z.array(z.object({ label: z.string(), api: z.string(), type: z.string() })).optional(),
+  validationRules: z.array(z.object({
+    name: z.string(),
+    field: z.string().optional(),
+    message: z.string(),
+    /** The rule's error condition formula: when the rule fires. Absent when it could not be read. */
+    condition: z.string().optional(),
+  })).optional(),
+});
+export const SalesforceOrgModel = z.object({
+  app: z.string().optional(),
+  /** Every app the user can open, by label. */
+  apps: z.array(z.string()).optional(),
+  objects: z.array(SalesforceOrgObject),
+  /** False when the Tooling API refused (no "View Setup"), so "no rules" is not read as a fact. */
+  validationRulesRead: z.boolean(),
+  /** The connected user's locale ("en_US"): Lightning parses typed dates in it. Absent when unread. */
+  userLocale: z.string().optional(),
+  /** Active flows (Phase B): what runs, on what, when, and what it visibly does. Absent when unread. */
+  flows: z.array(z.object({
+    label: z.string(),
+    api: z.string(),
+    /** "record-triggered", "screen", "autolaunched", "scheduled", or the org's own ProcessType. */
+    type: z.string(),
+    /** Record-triggered: the object's label, and when ("create", "update", "create or update", "delete"). */
+    object: z.string().optional(),
+    when: z.string().optional(),
+    /** Plain lines: "sets Rating = Hot", "creates a Task", "only when Customer Priority = High". */
+    effects: z.array(z.string()).optional(),
+  })).optional(),
+});
+export type SalesforceOrgModel = z.infer<typeof SalesforceOrgModel>;
 export type AppModel = z.infer<typeof AppModel>;
 
 /** Roles worth keeping when a page has more named elements than the lite-model budget allows.
@@ -439,6 +516,19 @@ function liteCaps() {
 function capElements(elements: Element[], max: number): Element[] {
   if (elements.length <= max) return elements;
   const isNamed = (e: Element) => !!e.name?.trim() && INTERACTIVE_ROLES.has(e.role?.toLowerCase() ?? "");
+  // Landmark-aware order, ONLY when the walk recorded landmarks (a Salesforce live walk; nothing else
+  // sets pageSection "main"), so every other model is capped exactly as before. Lightning repeats its
+  // global header and nav bar ahead of the page's own content in document order, and a plain
+  // "named first, in DOM order" cap spent all 30 slots on that chrome (run
+  // 2026-10-24T06-42-12-486Z-0994a20c). Order: an open dialog's controls, the page's main content,
+  // the rest — each in document order (a stable sort).
+  if (elements.some((e) => e.pageSection === "main")) {
+    const rank = (e: Element) => e.pageSection === "dialog" ? 0 : e.pageSection === "main" ? 1 : 2;
+    const byRank = (list: Element[]) => list.map((e, i) => ({ e, i })).sort((a, b) => rank(a.e) - rank(b.e) || a.i - b.i).map((x) => x.e);
+    const namedRanked = byRank(elements.filter(isNamed));
+    if (namedRanked.length >= max) return namedRanked.slice(0, max);
+    return [...namedRanked, ...byRank(elements.filter((e) => !isNamed(e))).slice(0, max - namedRanked.length)];
+  }
   const named = elements.filter(isNamed);
   if (named.length >= max) return named.slice(0, max);
   return [...named, ...elements.filter((e) => !isNamed(e)).slice(0, max - named.length)];
@@ -488,8 +578,11 @@ export function promptFormFields<T extends { fields?: unknown[] }>(form: T, cap:
 
 export function toLiteModel(model: AppModel): AppModel {
   const caps = liteCaps();
+  // The org model (D-63) reaches the case prompt as its own compact block, never inside this JSON.
+  // Absent on every other run, so for them this is exactly `...model` as before.
+  const { salesforceOrg: _org, savedScan: _scan, ...rest } = model;
   return {
-    ...model,
+    ...rest,
     pages: model.pages.map(p => ({
       url: p.url,
       title: p.title,
@@ -557,7 +650,8 @@ export { pageKey } from "../text.js";
 
 export function toMicroModel(
   model: AppModel,
-  opts: { currentPageUrl?: string } = {}
+  /** `maxElements`: the per-page element ceiling, 30 unless a caller raises it (Salesforce runs). */
+  opts: { currentPageUrl?: string; maxElements?: number } = {}
 ): AppModel {
   const targetPage = opts.currentPageUrl
     ? model.pages.find(p => pageKey(p.url) === pageKey(opts.currentPageUrl!)) ?? model.pages[0]
@@ -566,7 +660,7 @@ export function toMicroModel(
 
   const compressed = compressRepetitiveSiblings(targetPage.elements);
   const preCap = compressed.length;
-  const capped = capElements(compressed, 30);
+  const capped = capElements(compressed, opts.maxElements ?? 30);
   // compressRepetitiveSiblings already leaves a `count` marker when it collapses true
   // duplicates — capElements has no equivalent signal, so a page with >30 distinct, real
   // elements silently loses everything past the 30th with nothing telling the LLM (or anyone

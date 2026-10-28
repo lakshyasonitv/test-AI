@@ -32,7 +32,7 @@ import { KeyPool } from "./keyPool.js";
  * resolved provider for a role is `gemini`. When the role's provider is `azure`, the org's stored
  * key/model/budget are ignored entirely — the request is built purely from the process-wide
  * `AZURE_OPENAI_*` env, and the cache key carries the `azure` provider so an org fingerprint under
- * gemini and under azure can never collide (TD-22 / D-10). The `claude` provider (D-58) follows the
+ * gemini and under azure can never collide (TD-22 / D-10). The `claude` provider (D-66) follows the
  * azure rule exactly: env-only (`ANTHROPIC_*`), org config ignored, its own cache prefix.
  */
 export interface LlmConfig {
@@ -100,7 +100,7 @@ export type LlmRole = "main" | "lite";
  */
 export function llmCacheDimension(role: LlmRole): string {
   const provider = resolvedProvider(role);
-  // claude, like azure, is env-only: the org config is Gemini-only (D-58).
+  // claude, like azure, is env-only: the org config is Gemini-only (D-66).
   if (provider === "azure" || provider === "claude") return `${provider}:env`;
   return `${provider}:${currentLlmConfig()?.keyFingerprint ?? "env"}`;
 }
@@ -145,7 +145,7 @@ export function resolvedReasoningEffort(role: LlmRole): string | undefined {
   return process.env.AZURE_OPENAI_REASONING_EFFORT || "low";
 }
 
-/** Default Claude model for both roles when `ANTHROPIC_MODEL` is unset (D-58). */
+/** Default Claude model for both roles when `ANTHROPIC_MODEL` is unset (D-66). */
 export const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5";
 
 /** The Claude model id for a role: `ANTHROPIC_MODEL_LITE` for 'lite' (default = `ANTHROPIC_MODEL`),

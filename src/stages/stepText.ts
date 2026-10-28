@@ -115,6 +115,8 @@ export function formatIrStep(step: Step | null | undefined): string {
       if (assertion === "visible") return `Check that ${targetDesc} appears on the page`;
       if (assertion === "hidden") return `Check that ${targetDesc} is not shown`;
       if (assertion === "url_contains") return `Check the page address contains "${step.value || target?.url || ""}"`;
+      // A record field's value (Target.field): read inside that field on the record page, not anywhere.
+      if (target?.field && (assertion === "text_contains" || assertion === "text_equals")) return `Check that the "${target.field}" field shows "${step.value || ""}"`;
       if (assertion === "text_contains") return `Check that the text "${step.value || ""}" is displayed`;
       if (assertion === "text_equals") return `Check that the text "${step.value || ""}" is displayed`;
       if (assertion === "enabled") return `Check that ${targetDesc} is enabled`;
@@ -253,6 +255,15 @@ export function parseIrStep(text: string, base?: Step, idHint?: string): ParseRe
     const assertion = base?.assertion === "text_equals" ? "text_equals" : "text_contains";
     const changed = !base || (base.value ?? "") !== value || (base.assertion !== "text_contains" && base.assertion !== "text_equals");
     return { ok: true, step: { ...(base ?? { id, action: "assert" }), id, action: "assert", assertion, value, target: keep(base?.target, undefined) }, changed, targetChanged: false };
+  }
+  if ((m = /^Check that the\s+"([\s\S]*)"\s+field shows\s+"([\s\S]*)"$/i.exec(raw))) {
+    const [, field, value] = m;
+    // As the text check above: contains or equals is the base's. The field is found by its label
+    // where the step runs, never grounded, so another label needs no re-check either.
+    const assertion = base?.assertion === "text_equals" ? "text_equals" : "text_contains";
+    const same = base?.target?.field === field;
+    const changed = !base || !same || (base.value ?? "") !== value || base.action !== "assert" || (base.assertion !== "text_contains" && base.assertion !== "text_equals");
+    return { ok: true, step: { ...(base ?? { id, action: "assert" }), id, action: "assert", assertion, value, target: same ? base!.target : { field } }, changed, targetChanged: false };
   }
   const ASSERT_FORMS: [RegExp, Step["assertion"]][] = [
     [/^Check that\s+([\s\S]+?)\s+appears on the page$/i, "visible"],

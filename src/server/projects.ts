@@ -432,7 +432,24 @@ async function addCreatorToProject(
  * Only on CREATE, never on lookup: adding someone to a project that already exists would silently
  * widen access, and "who may see this project" is an admin's decision everywhere else.
  */
-export async function resolveProjectForUrl(
+/**
+ * One lookup per organisation and site at a time. Two runs started together (Case and Lead,
+ * 2026-10-25) both found no project and both inserted, splitting one org into two sidebar entries:
+ * the unique index that turns the second insert into a re-read (below) is not on every database.
+ * Chained, not shared: each caller still gets its own addCreatorToProject.
+ * ponytail: one server process only; several instances need the index.
+ */
+const resolving = new Map<string, Promise<unknown>>();
+export function resolveProjectForUrl(orgId: string, url: string | null, userId?: string): Promise<string | null> {
+  const k = `${orgId}\n${siteHost(url ?? "") ?? normaliseUrlKey(url)}`;
+  const next = (resolving.get(k) ?? Promise.resolve()).catch(() => undefined)
+    .then(() => resolveProjectForUrlOnce(orgId, url, userId));
+  resolving.set(k, next);
+  void next.finally(() => { if (resolving.get(k) === next) resolving.delete(k); }).catch(() => undefined);
+  return next;
+}
+
+async function resolveProjectForUrlOnce(
   orgId: string, url: string | null, userId?: string,
 ): Promise<string | null> {
   const key = normaliseUrlKey(url);
@@ -442,17 +459,21 @@ export async function resolveProjectForUrl(
   if (!client) return null;
 
   try {
-    const { data, error } = await client
+    // Oldest first, never maybeSingle: two same-named projects already split by the old race made
+    // maybeSingle fail ("multiple rows returned"), and every run on that site went unfiled.
+    const { data: named, error } = await client
       .from("projects")
       .select("id")
       .eq("organisation_id", orgId)
       .eq("name", key)
-      .maybeSingle();
+      .order("created_at", { ascending: true })
+      .limit(1);
     if (error) {
       console.error("[projects] project lookup failed:", error.message);
       return null;
     }
-    if (data) return (data as { id: string }).id;
+    const data = (named as { id: string }[] | null)?.[0];
+    if (data) return data.id;
 
     // SECOND: a project already pointing at this SITE, matched on base_url's host.
     //

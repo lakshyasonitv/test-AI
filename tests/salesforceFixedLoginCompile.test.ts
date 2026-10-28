@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 
 /**
- * D-57 stage 1, through the real compiler (`toIR`) with the model mocked: the user's real
+ * D-65 stage 1, through the real compiler (`toIR`) with the model mocked: the user's real
  * Salesforce login case, compiled four ways. Only a ticked run with SALESFORCE_FIXED_LOGIN=true
  * changes; the other three compile exactly the steps the model wrote.
  */

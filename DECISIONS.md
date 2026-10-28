@@ -1716,7 +1716,179 @@ without it the old ladder's selectors would be served back. Ordinary keys are un
 "Select for EOI" per unit) falls back to the positional path. That path is still verified, but it is
 less durable than a meaningful id would have been.
 
-## D-56. Salesforce org login hardening reuses the existing login and only prepares and explains it
+
+## D-56. "Page finished loading" = no counted request in flight for 500 ms, long-lived requests ignored, capped at 5 s
+
+**Decision.** Behind `NETWORK_SETTLE_ENABLED` (default off, discovery upgrade Phase 1). Before every discovery
+snapshot (`extractDomModelFromPage`, the seam the single-page path, every hybrid crawl hop, the post-login page and
+the live-extend replay all pass through) and every screen capture, `src/stages/networkSettle.ts`:
+1. counts in-flight **fetch/XHR** requests on the page (`page.on("request" / "requestfinished" / "requestfailed")`,
+   attached before the page's first `goto` wherever the page is created);
+2. **ignores long-lived ones**: by shape (CometD / streaming / long-poll / SSE / socket URLs, or a Bayeux body with
+   `"connectionType":"long-polling"`) and by age (open longer than 3 s);
+3. waits until none of the rest have been in flight for **500 ms**, at most **5 s**, and then runs the existing
+   `waitForScreenSettle` (no spinner, stable control count). At the cap it proceeds; nothing here fails a run.
+
+**Why.** Salesforce (and any SPA) fetches a page's data after the DOM looks ready, so a snapshot at the call sites'
+fixed 800 ms models half a page. Copado's open-source QWeb engine targets Lightning with the same idea: its own
+pending-request counter that skips the CometD long-poll (docs/research/.../salesforce_specialists.md §2).
+
+**Rejected.**
+- `waitForLoadState("networkidle")`: Salesforce holds a CometD long-poll open, so the network never goes idle and
+  every wait runs to its timeout. Playwright marks it DISCOURAGED, and this codebase already strips it from
+  generated specs (`generator.ts`) and avoids it in replays (`liveExtend.ts`).
+- Ignoring long-lived requests by URL pattern only: an org's own streaming endpoint has no fixed name, so age is
+  the general backstop.
+- A spinner/selector-specific "ready" signal per site: it ties the wait to one site's markup (the general-purpose
+  rule for Salesforce work).
+- Changing the generated spec's waits: the generated spec already auto-waits per action (Playwright actionability),
+  and `generator.ts` stays pure code (D-06). This phase is about what DISCOVERY sees.
+
+**Cache.** With the flag on, the walk key gains `net-settle:1`, the single-page key gains `settled:` and the hybrid
+crawl key (`siteCacheKey`, `hybridDiscovery.ts`, approved by the owner) gains `#settled`. Flag off: every key is unchanged.
+The crawl's shared page attaches the tracker at creation, so the entry page's early requests are counted too.
+
+**Also gated on this flag: a grounding change (TD-158).** Settled discovery holds a closed modal's fields (hidden), so the
+post-click reveal check's name diff stopped seeing them appear, and a fill bound to an unrelated hidden field was accepted
+(Demoblaze, 5 of 5 runs). With the flag on, the check also compares visibility by css. Turning the flag on "just to wait
+longer" therefore also changes grounding.
+
+## D-57. One visible-dialog selector, with `:visible` on every alternative, for the replay resolver and the generated spec
+
+**Decision.** `VISIBLE_DIALOG_SELECTOR` (`targetResolver.ts`) is `DIALOG_SELECTOR` with `:visible` appended to EACH
+comma alternative. `resolveScope` (live replays, captures, deterministic heal) and the generated spec's `scopeOf`
+both use this one string (TD-135, discovery upgrade Phase 2, no flag).
+
+**Why.** Two different bugs had the same effect, a hidden modal-like element becoming the scope:
+`.filter({ visible: true })` does not exist on the pinned Playwright 1.49 (a no-op, the D-19 trap), and
+`DIALOG_SELECTOR + ':visible'` filters only the last alternative of a comma list. One shared string keeps the
+replay and the spec from disagreeing again.
+
+**Rejected.** `.and(page.locator(":visible"))`: it requires both sides in the same frame and would break the
+frame-aware locators (`Target.frame`). Separate strings per caller: that is how the two drifted.
+
+## D-58. A recaptured screen replaces the stored screen it matches BEST, not the first that passes the loose rule
+
+**Decision.** Behind `SCREEN_BEST_MATCH_ENABLED` (discovery upgrade Phase 3). `matchingScreenIndex` (`screens.ts`)
+decides which stored screen a capture replaces, for the run's model (`mergeScreenInto`) AND the stored screen map
+(`mergeIntoMap`): among every candidate `sameScreen` accepts, the highest `labelOverlap`; ties go to the exact
+key, then the exact title, then the earliest. Flag off: the first match, as before.
+
+**Why.** Two steps of one same-URL wizard share a title and most labels, so a half-rendered recapture of step 2
+passes the 70% rule against step 1 as well. With "first match wins", step 1 was overwritten and step 2 kept a
+stale twin. Seen live in Phase 2's Salesforce run: project-page, unit-selected and form screens replaced one
+another, and the IR could not find "Full Name" where it put it.
+
+**Rejected.** Tightening `SAME_SCREEN_OVERLAP`: it would split one screen's genuine recaptures (a field added
+since) into duplicates. Keying on the exact fingerprint only: the same, worse. One chooser for both callers, so the
+model and the stored map cannot disagree about which screen a capture is.
+
+## D-59. An element id is judged by evidence across walks, not by its shape
+
+**Decision.** Behind `VOLATILE_ID_DETECTION_ENABLED` (Phase 4). The same element (role + accessible name on the same
+screen: page key + dialog name) seen on two walks with a DIFFERENT id has that id marked volatile: it is never
+offered as a locator again. The SAME id twice is trusted even if it looks generated (TD-133), **but only as a
+fallback**: it goes in after every role / label candidate (D-55) and just before the positional path, so
+Playwright's first-unique pick uses it only when no role or label locator is unique. (Revised 2026-10-19: putting
+it FIRST raised generated-id locators on the Salesforce site from 0 to 12, and Lightning numbers ids by render
+order, so a different render can still shift them.) One sighting keeps today's rule. Applied in Node between the in-page walk and the Playwright verification (`liveDomDiscovery.ts`), so
+the TD-40 walker is unchanged and every candidate it keeps is still verified. Cached models (walks, app models)
+lose an id css once the id is proven volatile (`dropVolatileIdCss`), and the walk / single-page / crawl keys gain a
+part with the flag on.
+
+**What is stored** (namespace `volatileids`, keyed per site, org, credential fingerprint, locale and cache version,
+TD-22): role, name, screen, stable yes/no/unknown, seen count and a **12-hex SHA-1 of the last id**. The plan said
+"role, name, screen key and stable yes/no". The hash is the one addition, because "is this the same id as last
+time?" cannot be answered without remembering something about the last id. The id itself, css, values and
+credentials are never stored. Elements that share role + name on one screen (one "Select" per unit) record nothing:
+they cannot be told apart across walks.
+
+**Rejected.** A better regex: no pattern separates `input-145` from `unit-102`. Storing the id: the screen map's
+names-only rule. Changing the in-page walker: TD-40's risk for no gain, since Node can edit the candidate list.
+
+## D-60. The exploration clicks are decided by a deterministic policy, with a network guard, never by the model
+
+**Decision.** Behind `BUTTON_EXPLORER_ENABLED` (Phase 5; `EXPLORER_MAX_CLICKS` 15, `EXPLORER_BUDGET_MS` 120 s). After
+discovery (inside the orchestrator's discovery step), the explorer:
+- clicks only allowed controls: deny always wins (destructive or committing names, a submit button inside a form,
+  an off-site link, any control inside a Salesforce Screen Flow, and "Next"/"Finish" on a Salesforce Lightning
+  app); then structure (`role=tab`, `aria-haspopup`, `aria-expanded`); then a short list of
+  navigational names;
+- aborts any non-GET navigation while exploring, and never types;
+- after each click: settles, records, restores (Escape, the dialog's Close, Back, reload) and checks the original
+  screen is back, abandoning a page it cannot restore;
+- adds new same-origin pages to the app model; on a Salesforce run with the screen map on, records screens + edges
+  in the map as hints (D-54);
+- writes every click and every skip, with the reason, to `runs/<id>/explorer.json`.
+
+**Why.** Research (WebGuard) shows frontier models miss most high-risk actions, so the model is never asked. A name
+list is page text (TD-01), so it is only one layer: the structural submit check and the network guard stand on their
+own. In the Chromium test, without the guard the server received 2 posts from an ALLOWED control's script.
+
+**Salesforce orgs (added 2026-10-19).** On an internal org a Screen Flow's "Next" can COMMIT records between screens,
+over the same Aura/LWC POSTs as its reads, so no network rule can tell them apart. So, structurally: a control whose
+ancestors (walked up through shadow-root hosts) include `lightning-flow` or `flowruntime-*` is never clicked on any
+site, and on a Lightning-app URL (`*.lightning.force.com`, `*.my.salesforce.com`, `/lightning/`) "Next"/"Finish" are
+never clicked anywhere. The README says the explorer must stay off against production orgs.
+
+**Rejected.** Blocking every non-GET request: Salesforce Aura and many SPAs READ over POST, so pages would not render.
+Exploring every button (rejected on 2026-10-16 as TD-150's alternative): too slow and could submit forms; the allow
+list plus the budget bound it. Letting the explorer type: it could commit data.
+
+## D-63. A Salesforce org is signed into once, over OAuth, and every run's browser enters through frontdoor.jsp
+
+**Status:** Stage 1 built on `shadowdom` 2026-10-24, behind `SALESFORCE_OAUTH_ENABLED` (default off).
+
+**What.** "Connect org" opens the org's own authorise page (`<My Domain>/services/oauth2/authorize`, web-server flow,
+PKCE S256 plus the client secret, scopes `api web refresh_token`). The callback trades the code for tokens, kept in
+server memory and bound to the Testbench organisation and user that started it; the browser only ever holds an
+opaque connection id. A run that sends `options.sfConnectionId` (checked: own organisation, URL of the same org) is
+entered on a rail (`salesforceFrontdoor.ts`, like `runTarget.ts`), and then:
+- discovery signs in through `frontdoor.jsp?sid=…&retURL=/lightning/page/home` BEFORE the entry snapshot, so there
+  is no gate detection, no credential prompt and no login page in the model; it is not cached;
+- the IR's login prefix is one step, `navigate ${env:SF_FRONTDOOR_URL}`; a model-written `navigate "/"` right after
+  it goes to where frontdoor landed (the My Domain root is the login page);
+- the grounding replay resolves that reference through the rail; the executor gives the child a fresh URL in
+  `SF_FRONTDOOR_URL`; the spec holds only `process.env.SF_FRONTDOOR_URL` (portable: `sf org open --url-only`);
+- the token and every minted URL are registered as run secrets and scrubbed from events, the console and the served
+  text artifacts. Walk and IR cache keys gain a part naming the org.
+
+**Why.** An org's login is the hardest page this product meets: two screens on one URL, verification codes, MFA,
+SSO, passkeys. Run `29189dcc` (2026-10-24) truncated right before the password because of TD-165, and no password
+automation would ever handle MFA or SSO. Signing in on Salesforce's own page moves all of that to Salesforce, which
+is its job, and frontdoor is Salesforce's supported way to hand a session to a browser.
+
+**Scope (agreed 2026-10-24).** Scratch orgs and sandboxes, decided from the host and re-checked on the
+`instance_url` Salesforce returns; Developer Edition orgs (`.develop.`) added the same day at the user's request (a
+free standalone org with no customer data, where their External Client App lives). Production stays refused. The app is an External Client App: since Spring '26 new Connected Apps cannot be
+created. Tokens in memory; encrypted storage, a Settings list, metadata-driven discovery (UI API / Tooling API), API
+verification after UI steps, test-data setup/teardown and a live browser window for portals are later stages.
+
+**Discovery accuracy on Salesforce runs (added 2026-10-24, after two live runs on a Developer Edition org).**
+- *Org model.* With the connection's token (`FrontdoorSession.apiGet`, GET only) discovery reads what the org says
+  about itself: every app, the selected app's nav objects plus custom objects (`__c`) no nav shows (up to 20), each
+  object's fields, required fields, picklist values, lookups, list views and record count (SOQL `COUNT()`), and active
+  validation rules (Tooling API). Stored as `AppModel.salesforceOrg`; the case writer gets it as one compact block
+  (prompt and cache key), like the screen map's block. The live run read 7 objects and 4 real Lead rules.
+- *Landmarks.* The live walker records each element's explicit landmark (`role=main/navigation/banner/contentinfo`,
+  `<main>`, `<nav>`) as `pageSection`, through shadow roots. The IR prompt's cap ranks dialog > main > rest, so the
+  page's own controls are no longer pushed out by the repeated Lightning header and nav.
+- *Stable locators.* Aura runtime ids (`content_1010:0`, `brandBand_2`) join the generated-id rule; a role + name that
+  is not unique on the page is tried scoped to its dialog or landmark (`role=dialog >> role=button[name="Save"s]`)
+  before the positional path. Two of three cases in run `2026-10-24T07-08-34-372Z-e2fc249c` failed on positional
+  paths anchored on those ids.
+- *Ceilings, not caps.* The IR prompt shows 150 elements per page (ordinary runs 30) and the crawl takes 12 pages
+  (ordinary runs 5), at the user's request ("remove the caps for Salesforce").
+- *Honest verdicts.* A final page on another host the login was observed to pass through is not "blocked" (D-47
+  hosts passed to `detectBlocked`); a frontdoor case drops only its credential-entry lines before compiling.
+All of it applies to Salesforce runs only; ordinary runs and their cache keys are unchanged (pin tests pass).
+
+**Rejected.** Automating the password form harder (D-46/D-57 style): it cannot reach MFA, SSO or passkeys. Handing
+the person a streamed browser for every org login: needed for portals, but heavier than OAuth for orgs that have it.
+`login.salesforce.com` as the authorise host: a Local External Client App authorises users of its own org, on that
+org's My Domain. Caching discovery under the connection: the session belongs to the connection, not to `creds`, so
+the site key cannot tell connections apart, and a re-crawl is cheaper than a wrong model.
+## D-64. Salesforce org login hardening reuses the existing login and only prepares and explains it
 
 **Decision.** On a run with "This URL is a Salesforce org" ticked (`currentRunTargetApp() ===
 "salesforce"`, D-50), discovery now (1) refuses any URL that is not a scratch org or a sandbox
@@ -1736,13 +1908,13 @@ steps the generated spec replays so each test logs itself in (D-24). Copying a l
 `generator.ts` instead was considered and rejected for now: it contradicts D-24 (one login, injected
 into the IR once, not duplicated into the generator) and would touch files another stream is
 editing (`docs/handoff/HANDOFF_SCREEN_MAP_AND_LOCATORS.md`). The cases it would cover (a fresh browser
-shown the email-first screen) are unverified; TD-154 records the check to make on the first real-org run.
+shown the email-first screen) are unverified; TD-171 records the check to make on the first real-org run.
 
 **Why the slow-form wait is Salesforce-only.** `loginOnPage` decides one-screen vs two-screen with
 one instant count of password boxes. A real-Chromium test (`tests/salesforceOrgLogin.test.ts`, 8c
 control) shows a one-screen form that draws its password box late is submitted with an EMPTY
 password first. Waiting before `loginOnPage` runs fixes it for Salesforce without changing
-`loginOnPage`, which every other site still uses — the fix for all sites is TD-155.
+`loginOnPage`, which every other site still uses — the fix for all sites is TD-172.
 
 **The guard fails closed.** Production (`*.my.salesforce.com` without `.scratch.`/`.sandbox.`) and
 anything unrecognised are refused — including Developer Edition, `login.salesforce.com`,
@@ -1761,15 +1933,20 @@ label match is the "Log In with Username" control, which is how a control to CLI
 `*.edgesuite.net` (Akamai's shared CDN). Logging in once and reusing the session across test cases
 (D-23: a saved session is a live token, and it would be written under `runs/`).
 
-## D-57. A Salesforce test logs in with one fixed routine, and a login case reuses the recorded login
+
+**Merge note (2026-10-28).** On main's org-connection runs (D-63, frontdoor.jsp) this guard steps aside:
+the connection has its own guard (`salesforceOAuth.ts`: Developer Edition accepted, production behind
+`SALESFORCE_PRODUCTION_ORGS_ENABLED`). Password runs are guarded exactly as before.
+
+## D-65. A Salesforce test logs in with one fixed routine, and a login case reuses the recorded login
 
 **Context.** On the first real scratch-org run (2026-10-16T12-47-28) discovery logged in fine —
 `auth.loginSteps` held the whole two-screen login, `waitFor #password` included — but the case "Log in
 with valid credentials" never typed the password. A case whose own page is the login page gets no login
 prefix (`needsLoginPrefix`), so the model wrote the login itself; its password step is on a second screen
 at the same URL, which nothing had captured, so grounding truncated the case right after "click Log In to
-Sandbox". Separately, D-56 handled the email-first screen, ad requests and a late password box in
-DISCOVERY only; a generated test replays recorded clicks and handles none of them (TD-154).
+Sandbox". Separately, D-64 handled the email-first screen, ad requests and a late password box in
+DISCOVERY only; a generated test replays recorded clicks and handles none of them (TD-171).
 
 **Decision.** Behind `SALESFORCE_FIXED_LOGIN` (default off), on a ticked Salesforce run only
 (`fixedLoginRun()` in `salesforceOrgLogin.ts`):
@@ -1782,17 +1959,17 @@ DISCOVERY only; a generated test replays recorded clicks and handles none of the
    that starts with the login prefix `meta.fixedLogin = "salesforce"` (a model-written marker is
    stripped). `generateSpec` then runs that block as `salesforceLogin(page, loginUrl)` in step 1: ad block,
    email-first switch checked first, 2.5 s one-screen grace, two-screen wait, a post-submit check that the
-   page is not a verification screen or another company's sign-in, and D-56's failure reasons decided from
+   page is not a verification screen or another company's sign-in, and D-64's failure reasons decided from
    visible inputs and the host. The other `auth-*` steps stay as empty `test.step`s — one test.step per IR
-   step is what `executor.ts` and `failureAnalysis.ts` count on — and take no screenshot (TD-156).
+   step is what `executor.ts` and `failureAnalysis.ts` count on — and take no screenshot (TD-173).
 3. The IR cache key gains `"sf-fixed-login:1"` only when on; the generator also requires the flag, so a
    library case saved while it was on goes back to the step-by-step login when it is switched off.
 
 **Departure from D-24, stated.** D-24 defines the login once, in the IR, and keeps the generator out of
 it. The IR still carries the recorded login (grounding and liveExtend's replay still use it); only the
-spec's way of performing it changes, for Salesforce, behind a flag. The routine RESTATES D-56's logic as
+spec's way of performing it changes, for Salesforce, behind a flag. The routine RESTATES D-64's logic as
 spec text, because a spec shares nothing with the pipeline (D-06) — the same accepted drift risk as TD-07,
-recorded as TD-157.
+recorded as TD-174.
 
 **Off means off.** `tests/fixtures/salesforceFixedLogin/flag-off-specs.json` holds specs generated by the
 code BEFORE this change for six IRs (two real runs, both login shapes); the current generator must
@@ -1806,14 +1983,18 @@ visible, and a verification screen read as a successful login. Mutation-checked.
 real org.
 
 **Not fixed here.** Negative login cases on a two-screen login (they need the model's own steps, and the
-password screen is still uncaptured — TD-158); `test.salesforce.com` is still refused (TD-159).
+password screen is still uncaptured — TD-175); `test.salesforce.com` is still refused (TD-176).
 
 **Rejected.** *A for every site* — it would change ordinary runs' compiles; the user's rule for this work
 is that nothing that works today may change. *Collapsing the login into one test.step* — breaks the
 step-per-IR-step mapping the executor and failure analysis rely on. *Gating the generator on the IR marker
 alone* — a saved case would keep the fixed login after the flag was switched off.
 
-## D-58. Claude is a third provider behind the same LLM_PROVIDER switch, not a new mode
+
+**Merge note (2026-10-28).** `fixedLoginRun()` is false on an org-connection run (D-63): it signs in
+through frontdoor.jsp with no password form, so its own `auth-*` prefix must not be replaced.
+
+## D-66. Claude is a third provider behind the same LLM_PROVIDER switch, not a new mode
 
 **Context.** The user asked to add Anthropic Claude and "a mode to configure the keys being used in
 background, be it azure ones or claude". The pipeline already had that mode: `LLM_PROVIDER` /
@@ -1841,50 +2022,50 @@ Anthropic's supported client and keeps request types checked by `tsc`. *Automati
 providers* — same reason as Azure: a silent switch bills and behaves differently from what the
 operator configured.
 
-## D-59. With `?login` the Salesforce login page is pinned, so the test's login is a straight line
+## D-67. With `?login` the Salesforce login page is pinned, so the test's login is a straight line
 
-> **Removed 2026-10-22 (D-62).** `?login` is not a documented Salesforce switch for a fixed login
+> **Removed 2026-10-22 (D-70).** `?login` is not a documented Salesforce switch for a fixed login
 > page — community sources describe it only as a way past single sign-on — and with it on, login
 > failed on the user's scratch org. A real login capture showed the two-screen form posting to the
-> same `/` address, which D-57's adaptive routine already handles. The flag, the helper,
-> `withLoginParam` and their test were deleted; `generator.ts` is byte-identical to before D-59.
+> same `/` address, which D-65's adaptive routine already handles. The flag, the helper,
+> `withLoginParam` and their test were deleted; `generator.ts` is byte-identical to before D-67.
 > Do not rebuild this without a Salesforce document that says what `?login` guarantees.
 
-**Context.** D-57's `salesforceLogin()` copes with whatever first screen a visit gets: email-first (a
+**Context.** D-65's `salesforceLogin()` copes with whatever first screen a visit gets: email-first (a
 switch-link loop), one screen (a 2.5 s grace wait for the password box) or two screens. The user found
 that opening their scratch org's login URL with `?login` appended always shows the same two-screen form,
 and asked for the link to be fixed that way and the login script written for that one page.
 
-**Decision.** Behind `SALESFORCE_LOGIN_PARAM` (default off), and only where D-57's fixed login is
+**Decision.** Behind `SALESFORCE_LOGIN_PARAM` (default off), and only where D-65's fixed login is
 already emitted (`SALESFORCE_FIXED_LOGIN` + a ticked Salesforce run + a marked IR):
 - `withLoginParam()` adds `login` to the recorded login URL's query at GENERATION time (`?login`, or
   `&login` after an existing query; never twice). The spec carries that literal, so the link is visible
   and the same on every run.
 - The spec gets `SALESFORCE_TWO_SCREEN_LOGIN_HELPER`: goto -> username visible (20 s) -> fill -> Log In ->
-  password visible (15 s) -> fill -> Log In -> password hidden (30 s) -> the D-57 verification/SSO check.
+  password visible (15 s) -> fill -> Log In -> password hidden (30 s) -> the D-65 verification/SSO check.
   Each screen is expected, not detected; a missing one stops the test with a sentence naming it.
-  `salesforceWhere`/`salesforceLoginFailure` are sliced from D-57's text, so the two cannot diverge.
+  `salesforceWhere`/`salesforceLoginFailure` are sliced from D-65's text, so the two cannot diverge.
 - Step 1's label becomes "Log in to Salesforce (fixed login, ?login page)".
 
-**Not changed.** Discovery still opens the URL as typed and handles every shape (D-56): it already
+**Not changed.** Discovery still opens the URL as typed and handles every shape (D-64): it already
 logged in on the user's org, and changing it would move cache keys and recorded login URLs. The user's
 URL is never rewritten anywhere else.
 
 **Off means unchanged.** With the flag off (or `SALESFORCE_FIXED_LOGIN` off) the spec is byte-identical
-to D-57's (`tests/salesforceLoginParam.test.ts`, plus D-57's own fixtures).
+to D-65's (`tests/salesforceLoginParam.test.ts`, plus D-65's own fixtures).
 
 **Known limit.** `?login` showing two screens was observed on ONE scratch org. An org where it shows
 something else (one screen, SSO) now fails at login with a named screen instead of adapting; turning
 the flag off goes back to the adaptive routine.
 
-**Rejected.** *Removing the adaptive D-57 routine* — it is still right for orgs where `?login` was never
+**Rejected.** *Removing the adaptive D-65 routine* — it is still right for orgs where `?login` was never
 checked. *Rewriting the user's URL at run creation* — would change cache keys, the run record and every
 recorded page URL for a login-only concern.
 
-## D-60. Every Salesforce org can be tested when the operator says so
+## D-68. Every Salesforce org can be tested when the operator says so
 
-**Context.** D-56's guard accepts only `.scratch.` and `.sandbox.` hosts and fails closed on everything
-else — production, Developer Edition, `login.`/`test.salesforce.com` (TD-159), `cs##` hosts. The user
+**Context.** D-64's guard accepts only `.scratch.` and `.sandbox.` hosts and fails closed on everything
+else — production, Developer Edition, `login.`/`test.salesforce.com` (TD-176), `cs##` hosts. The user
 asked to remove the scratch/sandbox-only condition so any org can be tested.
 
 **Decision.** Behind `SALESFORCE_ALLOW_ALL_ORGS` (default off), `orgRefusal` accepts any host
@@ -1909,7 +2090,7 @@ existing `.summary-text`, the report box the report's own `.failbox`.
 accident. *A per-run tickbox* — needs a new request field and UI (platform rules 1 and 3) for what one
 operator setting already covers.
 
-## D-61. Run insights are numbers about the pipeline's own objects, logged and kept with the run
+## D-69. Run insights are numbers about the pipeline's own objects, logged and kept with the run
 
 **Context.** The developer asked for detailed server logs of how a run is going — elements discovered,
 app-model size, Pro spec-model size, every detail useful for judging quality and maintenance. The logs
@@ -1942,9 +2123,9 @@ are not visible from the AppModel; they would need hooks inside `hybridDiscovery
 observability change. *A new flag* — EXTENDED_LOGGING already means "more diagnostic output, nothing else".
 *Logging case titles* — AI prose shaped by the prompt, which can carry credentials.
 
-## D-62. A Salesforce org is several host names; read them as (My Domain name, partition, purpose)
+## D-70. A Salesforce org is several host names; read them as (My Domain name, partition, purpose)
 
-**Context.** After D-57 made Salesforce login work, three things still went wrong on the user's scratch
+**Context.** After D-65 made Salesforce login work, three things still went wrong on the user's scratch
 org (run 2026-10-22T09-44-02-812Z): every test was reported "blocked"; the search case was cut short after
 three rejections ("Search not present on …my.salesforce.com/"); and the homepage case checked only that
 the Log In button was gone. One cause: a Salesforce org is not one site. The user's own capture of a manual
@@ -1963,7 +2144,7 @@ Winter '25 / Spring '26. A manual check also showed `?startURL=` on the login UR
 - `detectBlocked`: ending on the same org's app host is not "left the application". Another org, a portal,
   or any other site still is.
 - TD-140's `redirectPostLoginNavigate` now also moves a first post-login navigate-to-login-page when the
-  landed page is the same org on another host (absolute URL), and it runs on D-57's login-case (swap) path
+  landed page is the same org on another host (absolute URL), and it runs on D-65's login-case (swap) path
   too, which it never did. `knownNavigationTargets` includes `auth.url` (observed by discovery, not
   guessed). IR cache key gains `sf-post-login:1`. The user chose "the page login landed on" over a
   computed `/lightning/page/home` (may not be in the site map, so the navigate guard would refuse it) and
@@ -1974,13 +2155,13 @@ Winter '25 / Spring '26. A manual check also showed `?startURL=` on the login UR
 - Not gated (refusal wording only): a portal / Sites address is refused with what it is and the org's
   login address to use; refusals throw `OrgRefusedError`, the error event carries optional
   `orgRefused`, and the screen no longer appends "a problem on our side" to a refusal.
-- D-59 (`SALESFORCE_LOGIN_PARAM`, `?login`) removed — see its note.
+- D-67 (`SALESFORCE_LOGIN_PARAM`, `?login`) removed — see its note.
 
 **Rejected.** *Any `*.salesforce.com` / `*.force.com` is the same app* — another company's org would pass.
 *A computed Home address* — not necessarily in the site map. *Setup / portal support* — the user tests the
 app only.
 
-## D-63. Jira Phase 1: read one story into the prompt box, with an in-memory OAuth sign-in
+## D-71. Jira Phase 1: read one story into the prompt box, with an in-memory OAuth sign-in
 
 **Context.** The user wants to start a test from a Jira story instead of typing the prompt, connected by
 each user in the app (not a shared key in env). Their answers: tokens in memory only; Phase 1 only (read,
@@ -2021,5 +2202,5 @@ custom field* — not a standard Jira field; the user keeps it in the descriptio
 **Not verified yet.** Never run against a real Atlassian site — Atlassian was faked in tests and in the
 browser check. Unknowns the docs do not settle: the real `expires_in`, per-endpoint burst limits, and
 whether one account with several Jira sites behaves as tested (a site picker is shown when it has).
-One process only — see TECH_DEBT.md TD-161.
+One process only — see TECH_DEBT.md TD-178.
 

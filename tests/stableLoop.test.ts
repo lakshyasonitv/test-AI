@@ -56,6 +56,24 @@ describe("TD-139 stepsMissingValues", () => {
   });
 });
 
+// Run 2026-10-25T15-42-33-903Z-d11ab7a2: the request wrote a field with its value ("TB Region South");
+// the step holds them apart (name "TB Region", value "South") and the case was truncated as missing them.
+describe("a request value written as field + value is carried by that field's step", () => {
+  const request = "Create an Account in Zq Region South with Zq Territory South West";
+  const theCase = { steps: ["Select 'Zq Region South' and 'Zq Territory South West'"], expected: "" };
+  it("finds the pair in one select step", () => {
+    const steps = [
+      { target: { name: "Zq Region" }, value: "South" },
+      { target: { name: "Zq Territory" }, value: "South West" },
+    ];
+    expect(stepsMissingValues(steps, theCase, requestValues(request))).toEqual([]);
+  });
+  it("still reports a value no step carries", () => {
+    const steps = [{ target: { name: "Zq Region" }, value: "South" }];
+    expect(stepsMissingValues(steps, theCase, requestValues(request))).toEqual(["Zq Territory South West"]);
+  });
+});
+
 describe("TD-140 redirectPostLoginNavigate", () => {
   const auth = {
     status: "authenticated", url: "https://www.saucedemo.com/inventory.html", loginUrl: "https://www.saucedemo.com/",

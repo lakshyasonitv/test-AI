@@ -2,11 +2,11 @@ import { adfToText } from "./adf.js";
 import type { JiraConnection, JiraSite } from "./session.js";
 
 /**
- * Jira Cloud calls for Phase 1 (D-63): sign in with OAuth 2.0 (3LO), find the user's site, read
+ * Jira Cloud calls for Phase 1 (D-71): sign in with OAuth 2.0 (3LO), find the user's site, read
  * one story. Read-only — the only scope requested is `read:jira-work`.
  *
  * Every URL, body and status below is from Atlassian's own documentation (OAuth 2.0 3LO apps page
- * and the REST v3 OpenAPI spec, fetched 2026-10-26) — see DECISIONS.md D-63 for the list. Nothing
+ * and the REST v3 OpenAPI spec, fetched 2026-10-26) — see DECISIONS.md D-71 for the list. Nothing
  * here logs, returns or throws the access token or the client secret.
  */
 

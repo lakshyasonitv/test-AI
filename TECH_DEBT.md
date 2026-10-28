@@ -5289,7 +5289,7 @@ fails honestly. The check reads the person's request, not model prose.
 success guess for an error line there. That is the same class of bug, and a structural fix (prefer lines
 that appear only after the final action, and never an element marked invalid or as an alert) wants its
 own change. Tests: `tests/quotedSuccessText.test.ts`, which reproduces the run in real Chromium. Both
-mutations were caught.
+mutations were caught. **The open part is tracked as TD-162** (2026-10-19: an unquoted request, the email error).
 
 ### TD-132. A valid case was treated as NEGATIVE because its expected text contained "blank" — High / Accidental — **Fixed (Salesforce runs)**
 
@@ -5337,7 +5337,7 @@ served file for the canary. If confirmed, either scrub the trace's action parame
 traces until they are scrubbed. `executor.ts` and `playwright.config.ts` belong to Gunwant's stream;
 the fix needs his sign-off.
 
-### TD-135. `resolveScope` picks a HIDDEN modal-like element as the dialog scope — High / Accidental — **Open (confirmed in Chromium)**
+### TD-135. `resolveScope` picks a HIDDEN modal-like element as the dialog scope — High / Accidental — **Fixed (2026-10-19, discovery upgrade Phase 2)**
 
 `resolveScope` (`src/stages/targetResolver.ts` ~487) filters dialog candidates with
 `page.locator(DIALOG_SELECTOR).filter({ visible: true } as any)`. On the pinned Playwright 1.49
@@ -5351,6 +5351,15 @@ container whenever a page carries any hidden element matching `[class*="modal" i
 `[class*="dialog" i]`, which Lightning and most component libraries render permanently. The generated
 spec's own `scopeOf` uses `':visible'` correctly, so specs and replays can disagree. Fix: use the same
 `':visible'` suffix as `scopeOf`, with a Chromium test that fails today.
+
+**Fixed 2026-10-19 (discovery upgrade Phase 2, no flag).** The generated spec's `scopeOf` was NOT correct either: it appended
+`':visible'` to the whole comma-separated `DIALOG_SELECTOR`, so only the last alternative (`[class*="modal" i]`) was
+filtered, and a hidden `[role="dialog"]` (Demoblaze keeps three, Lightning keeps them too) still matched. Both now use
+`VISIBLE_DIALOG_SELECTOR` (`targetResolver.ts`): `:visible` on every alternative, one string for both.
+`tests/hiddenDialogScope.test.ts` (real Chromium): with a hidden `.modal-backdrop` and a hidden `role=dialog`, each holding
+an "Email", the scope is `<body>` and a fill lands in the visible field, in the live resolver AND in the spec's own
+`scopeOf`/`field()`. 4 of 5 FAILED before the fix (scope = hidden DIV; the fills timed out), and an open dialog is still
+the scope. No other `filter({ visible` in `src/` (comments only). Found alongside: TD-160.
 
 ### TD-136. The case writer DROPPED the request's values from the primary case — High / Accidental — **Fixed (Salesforce runs)**
 
@@ -5473,9 +5482,9 @@ is a navigate to the login page, and only when the login really landed somewhere
 then goes to that landing page. A site whose login has its own path (`/login`) is untouched, because
 `/` is not its login page. Ordinary runs (a normal-site change, approved by the owner 2026-10-16).
 
-**2026-10-22, extended (D-62):** the "landed somewhere else" check required the same host, so it never ran
+**2026-10-22, extended (D-70):** the "landed somewhere else" check required the same host, so it never ran
 on Salesforce (login on `my.salesforce.com`, landing on `lightning.force.com`), and it was never called on
-D-57's login-case path. On a fixed-login Salesforce run it now accepts the same org's other host and runs on
+D-65's login-case path. On a fixed-login Salesforce run it now accepts the same org's other host and runs on
 both paths.
 
 ### TD-141. A step naming an element by its test id was rejected — Medium / Accidental — **Fixed**
@@ -5693,31 +5702,404 @@ up to MAX_IR_ATTEMPTS (4). Same outcome (truncated), up to 2 more model calls in
 attribute (saucedemo "login-button", no css). A step can bind to it, and the login click then fails at run
 time (traced run `sauce-trace-0`, before and after this fix).
 
-### TD-154. A generated test may meet Salesforce's email-first screen the discovery browser never saw — Medium / Unverified — **Handled when `SALESFORCE_FIXED_LOGIN` is on (D-57); open when off**
+### TD-154. The run's credentials reached `events.ndjson` and `/api/runs/:id/state` through the event payloads — High / Accidental — **Fixed**
 
-Discovery now clicks "Log In with Username" when Salesforce shows its email-first screen (D-56), then
+**Found 2026-10-18** in the SauceDemo baseline run `2026-10-18T17-22-54-631Z-7e5d7867`, by grepping the run folder
+for the real password the run had been given.
+- `events.ndjson` line 8, the `testcases`/`completed` event, carries EVERY candidate case the model wrote (14 here,
+  4 kept). Two of them ("Submit login with empty username", "Login with malformed email-like username") had the step
+  "Type the text '<password>' into the 'Password' field." SauceDemo prints "Password for all users: …" on its
+  login page, so the model read the value off the page. The general risk is any credential visible on the page or
+  written into the request.
+- The file is served through `/runs/:runId/*`, `/api/runs/:id/state` and the SSE replay, all open while `AUTH_ENABLED`
+  is off (TD-14). No event payload was scrubbed anywhere; only the `input` event's prompt was.
+- Every other file in that run (108) and the server log had 0 hits.
+
+**Fix:** a per-run credential registry in process memory (`src/runSecrets.ts`). Every event is passed through
+`redactCredentials` with that run's credentials at the shared writer, so no event can carry them, now or later:
+- `runStore.append` (`events.ndjson`, for all five writers: orchestrator, suite runner, replay, gate, replay route)
+- `runStore.read` (`/state` and the SSE replay)
+- `runRegistry.record` (the live SSE push, which receives the raw object the writer appended)
+
+Credentials are registered where they arrive: `pendingCredentials.settle` (anything typed into the in-run prompt,
+for runs, replays and re-ground jobs) and the orchestrator for credentials written into the request.
+`TEST_USERNAME`/`TEST_PASSWORD` from the environment are always scrubbed too. Only the value changes, to the usual
+`[redacted]`; no event or route shape changes. An entry is dropped 60 s after the run's terminal event and after
+2 hours at the latest. `scrubServedSecrets` and `redactCredentials` are unchanged.
+
+**Evidence:** `tests/eventCredentialScrub.test.ts` drives the real orchestrator with only the model stages stubbed,
+on a page that prints the password, and checks `events.ndjson`, `getEvents` (what `/state` returns) and a live SSE
+subscriber. Before the fix, both credential tests FAILED (the canary was in `events.ndjson`); after, they pass. A run
+with no credentials is written byte-for-byte as before. The leaked line in the run above was rewritten to
+`[redacted]`.
+
+**Not fixed here:** traces (TD-134). The same value in kept cases and IR is TD-156.
+
+### TD-155. A retained `trace.zip` can be truncated and unreadable — Low / Accidental — **Open**
+
+**Found 2026-10-18** while checking TD-134 on run `2026-10-18T17-22-54-631Z-7e5d7867`, case-2 (a failed case, so its
+trace was kept). The 190 KB `trace.zip` has no end-of-central-directory record: `unzip` and `tar` both refuse it.
+Walking its local headers decodes only 3 resource entries (a source file, a screenshot and one 200 KB resource), with
+no `trace.trace` or `trace.network`. The trace viewer therefore cannot open it, and the actions it should record are
+missing. Likely cause, unverified: the trace is copied or served before Playwright finishes writing it, or the
+worker is stopped mid-write. It also means TD-134 could not be tested on this run. `playwright.config.ts` and
+`executor.ts` are Gunwant's.
+
+### TD-156. A kept case that types the real credential literally keeps it in `03-cases.json`, `04-ir.json` and the spec — High / Accidental — **Fixed (2026-10-19: IR, spec, cases file, and every cache)**
+
+**Found 2026-10-18** by the TD-154 clean-up grep over all of `runs/`. Seven older SauceDemo runs from 10-16..10-18 (22 files) hold
+the real password in a kept case: in `03-cases.json` / `accepted-cases.json` ("Type 'locked_out_user' into the
+'Username' field. Type '<password>' into the 'Password' field.") and in `cases/<n>/04-ir.json` (`"value": "<password>"`)
+and the generated spec (`.fill("<password>")`). Two mechanisms:
+- `03-cases.json` / `accepted-cases.json` are saved as the model wrote them. Nothing scrubs case step text (the clean
+  kept cases in the TD-154 run were clean only because the model phrased them without the value).
+- `applyCredentials` (`credentials.ts`) skips, on purpose, the password of a negative-category or identifier-only
+  case, and every fill that is not the last of its kind. A model fill whose literal value EQUALS the real
+  credential therefore stays literal. Rewriting exactly that case to the `${env:...}` reference would keep the test
+  identical (same value typed) without the literal on disk.
+
+The LLM disk cache (`runs/_cache/llm`, not served: `_cache` fails the `runId` check) also holds model answers that
+contain the value. It is disk, not HTTP, but CLAUDE.md rule 5 says credentials never touch disk.
+
+**Fix (2026-10-18, with TD-154):**
+- `applyCredentials` first turns any fill whose value IS the real (secret) credential into the `${env:...}`
+  reference, under every policy. The same value is typed (the executor passes `credentialEnvVars(runCreds)` to
+  every suite case), so no test changes. A deliberately wrong value stays literal. `ir.ts` needed no change: it
+  calls `applyCredentials` whenever the run has credentials. `tests/literalCredentialFill.test.ts`: 2 of 4 FAIL
+  without the change.
+- The orchestrator scrubs `01-plan.json` and `03-cases.json` (model text, read back only by runStore's legacy
+  history view) with the run's credentials on save. `04-ir.json` is deliberately not scrubbed on save: it is what
+  runs.
+- Clean-up: all 41 files (21 in 7 old runs, 1 in `runs/_cache/llm`, 19 in `cache-backups`) had the value replaced
+  with `[redacted]` in place (68 occurrences, all JSON still valid). Those old cases' IR/spec now type
+  `[redacted]` if replayed.
+
+**Still open:** the LLM disk cache stores each model answer as returned, so a new run whose model writes the
+literal puts it back in `runs/_cache/llm` (disk, not served). The cache does not know the run, so scrubbing it needs
+the credentials passed through `llmCacheSet` or a scrub keyed on the env pair. `accepted-cases.json` (the gate's
+`caseAccumulator`, off-limits Pro/gate area) is not scrubbed.
+
+### TD-157. A model-written `nth` past the real duplicates ships to the spec and can only time out — Medium / Accidental — **Open**
+
+**Found 2026-10-19**, Phase 1 flag-ON Salesforce run `2026-10-18T19-08-24-792Z-25b2c21b`. The primary failed with
+`locator.fill: Timeout 10000ms` on `…role=textbox[name="Phone Number"s]').nth(1)`. The captured screen holds ONE
+textbox named "Phone Number" (plus a combobox of the same name), and the model set `"nth": 1`, most likely counting
+the combobox as a duplicate. `nthTwin` / `rebaseNth` in `ir.ts` (~920-936) deliberately leave an out-of-range `nth`
+untouched ("leave it failing loudly"), so grounding accepts a step that cannot match anything at run time. The
+flag-OFF run of the same request did not set `nth` and passed that step with the same locator. A structural fix:
+treat `nth >= twins.length` (same role + name) as a grounding rejection with feedback, so the model retries.
+`ir.ts` is Garvit's.
+
+### TD-158. A fill can be grounded on a HIDDEN element when the visible field's accessible name is odd — Medium / Accidental — **Partly fixed (post-click reveal path, with NETWORK_SETTLE_ENABLED)**
+
+**Found 2026-10-19**, Phase 1 flag-ON Demoblaze run `2026-10-18T19-26-51-088Z-af777456` (also seen 2026-10-18 on
+the Azure path, Session 76). The order form's Name input gets the live-DOM name "Total: Name:" (or
+"Total: 360 Name:"; the label text runs into the cart total). The model wrote "Username:", which exactly matches
+the HIDDEN Sign-up modal's `#sign-username`, and grounding accepted it. The run then waited 10 s for a field that
+never becomes visible. Grounding should not accept a `fill`/`click` target that discovery measured as hidden while
+the step's page is open, at least not without a visible alternative. Proposed earlier as "prefer a visible partial
+match"; not built. `ir.ts` is Garvit's.
+
+### TD-159. A replay can snapshot the cart before its own "Add to cart" request finished — Low / Accidental — **Open**
+
+**Found 2026-10-19** while ruling Phase 1 in or out for TD-158. Replaying the same 6 Demoblaze steps (Phones →
+product → Add to cart → Cart → Place Order) locally through `refreshPageModel`, 3x with `NETWORK_SETTLE_ENABLED`
+off and 3x on, gave an EMPTY cart (order field "Total: Name:") 1 of 3 times off and 2 of 3 on. So the race exists
+with the flag off too, and it is not caused by Phase 1. `runStepLive` moves on right after a click, so a click that
+fires a request (add to cart) can be followed by a navigation that aborts it. Phase 1 settles only before the
+snapshot, not between replay steps. A possible extension: settle after a replayed click that started a request.
+
+### TD-160. `firstUnique`'s visible narrowing (`c.locator(":visible")`) is a no-op — Low / Accidental — **Open (latent)**
+
+**Found 2026-10-19** in the Phase 2 grep (TD-135's family). In both `targetResolver.ts` and the generated spec's
+`firstUnique`, `c.locator(":visible")` searches the candidate's DESCENDANTS, not the candidate. Verified in Chromium:
+two `getByLabel("Email")` matches, one hidden → `c.locator(":visible").count()` = 0, while
+`c.and(page.locator(":visible")).count()` = 1. Today a later rung still picks the visible twin
+(`tests/hiddenDialogScope.test.ts` pins that, in both the resolver and the spec), so there is no observed failure and
+no code change was made. If it is ever fixed: check `nth(i).isVisible()` per match (works inside frames), not
+`.and(page.locator(":visible"))`, which needs both sides in the same frame.
+
+### TD-161. A truncated best attempt can ship a vacuous assertion, and the generator then errors the whole run — Medium / Accidental — **Open**
+
+**Found 2026-10-19**, Phase 3 SauceDemo run `2026-10-19T08-17-38-536Z-29782e27`. The IR stopped after 2 attempts and
+logged "shipping the best attempt's 9 grounded steps". The shipped (truncated) prefix still held a `text_equals`
+step with no value. `generator.ts` correctly refuses to emit a vacuous assertion ("Step s8: "text_equals" has no
+comparison value…"), but that refusal is thrown at the `generate` stage, so the RUN ends in `error` instead of a
+truncated case. The vacuous-assertion check in grounding runs on the full attempt, not on the best-attempt prefix
+that is shipped. A structural fix: drop (or reject) a vacuous assertion from the shipped prefix in `ir.ts`, so the
+run degrades to `truncated_no_assertion` like any other truncation.
+
+**TD-158 update 2026-10-19 (root cause found while measuring Phase 1-3).** In 5 of 5 Demoblaze runs the outcome followed the
+replayed cart: with a populated cart (total in the label: "Total: 360 Name:") the post-click reveal check saw a NEW
+name, rejected "Username:", and the retry chose the order field; with an empty cart ("Total: Name:", the SAME name
+discovery already held, hidden) nothing looked new by name, and the hidden Sign-up field was accepted. The check
+compared NAMES only. With settled discovery (Phase 1) attempt 1 grounds directly, so this one check is all that
+stands between the model and the hidden field. **Fix (with `NETWORK_SETTLE_ENABLED`, in `ir.ts`'s post-click reveal
+check):** by css, a field HIDDEN before the click and VISIBLE after it counts as revealed; a target that is STILL
+hidden after the click is rejected, naming the fields the click revealed; a target the click itself made visible is
+accepted. The "before" elements are captured before the refresh replaces `currentModel` (an early version read the
+after-state by mistake). `tests/irRevealVisibility.test.ts`: flag off reproduces the bug (the hidden
+`#sign-username` ships); flag on rejects it and retries to `#name`, and accepts a correct `#name` in one attempt.
+Still open: a hidden target in any step that is NOT the first fill after a click (the reveal check runs once per
+compile).
+
+**TD-156 closed 2026-10-19 (the cache half).** `llmCacheSet` (every namespace: llm, walks, screenmap, volatileids,
+requestvalues), `makeCacheKey` (the key's INPUT, before hashing) and the app-model `cacheSet` now pass through
+`cacheSafe` (`runSecrets.ts`): the current run's credentials (and `TEST_USERNAME`/`TEST_PASSWORD`) become
+`${env:TEST_PASSWORD}` / `${env:TEST_USERNAME}`, the references the generated spec already resolves. A reference, not
+`[redacted]`, so a cached answer that said "type the password" still does, for the run serving it.
+`tests/llmCacheCredentials.test.ts`: 3 of 4 FAILED before (the body on disk, the key input and the discovery cache all
+carried the canary). Clean-up grep over the whole `testbench/` tree: two old backup entries (a walk snapshot of
+SauceDemo's login page and one model answer) were rewritten the same way; 0 hits now, apart from `.env` itself.
+
+**TD-156 edge case fixed (`c4b00ae`).** The cache redaction replaced the credential as a SUBSTRING of the
+serialised whole, so a short or common password (`test`) rewrote ordinary text ("Run the test suite") and a long one
+rewrote longer words (`zqcanarypwpan`). It now matches per string value:
+- a value that IS the credential is replaced;
+- inside text, a value of 8+ characters only as a whole token, and a shorter one only where quoted (`'test'`).
+
+Unchanged: the 4-character minimum and the DOM-keyword skip, so a username such as `admin` is never treated as a
+secret (safe for text, but such a username can remain in a cache). `redactCredentials` (the event scrub, a
+`[redacted]` placeholder for display) still matches substrings; over-redacting a display copy is the safe direction.
+
+**TD-156 follow-up (2026-10-20): negative cases skipped the literal pass.** Run `2026-10-20T04-19-54-377Z-240a1566`
+(SauceDemo) wrote the `.env` password into 6 files: `04-ir.json` and both spec copies of case-1 (`security-injection`)
+and case-3 (`invalid-input`). The model read it off the login page, which prints it. Those categories get credential
+policy `none`, so toIR compiled them with `creds` undefined and `finalize` never called `applyCredentials`, whose first
+pass is the literal → `${env:...}` rewrite. Fixed in `ir.ts` (`finalize`): the RUN's credentials go in with the
+case's own policy; for `none`, `applyCredentials` stops right after that pass, so a deliberately wrong or empty value
+is untouched. At run time the reference resolves because every case's process gets the run's credentials
+(`suiteRunner.ts:429`, `runSpec(spec, caseDir, credentialEnvVars(runCreds))`). `tests/negativeCaseCredentials.test.ts`:
+the real password and username become references (IR and spec); wrong/empty values are kept; the generated spec of a
+none-policy case passes in a REAL Playwright run with the run's credentials in its env and fails without them.
+3 of 4 fail with the fix removed. The 6 files were redacted (`[redacted]`).
+
+**Public demo credential in history, accepted (2026-10-20).** A full byte scan of the machine's checkout found
+SauceDemo's demo password — which is also the `.env` SAUCE_PASSWORD — inside example words in a comment
+(`credentials.ts`), a test fixture (`tests/llmCacheCredentials.test.ts`), this file and a phase report, all written
+in `c4b00ae` / `7ac3cb6`, and in older history (2026-07/08, the original demo-account map). The current files now use
+a made-up canary. History is NOT rewritten: those commits are on `origin/shadowdom`, so a rewrite would need a
+force-push to a shared branch, and the value is a public demo password printed on the site's own login page.
+**Rule from now on: test fixtures and docs use made-up canaries only, never a real or demo credential.**
+
+### TD-162. A valid case can PASS by asserting the site's own error, or by stopping before the flow finishes — Critical / Accidental — **Open**
+
+**Found 2026-10-19**, Salesforce run `2026-10-19T13-44-20-358Z-8e01a75f` (3/3 "passed"). The request: fill the enquiry
+form "with full name, email and phone country code, submit it and verify the confirmation". The primary case typed
+the literal words `full name` and `email`, clicked Next on step 1 of a 3-step form, and asserted the site's own
+"Please enter a valid email address." visible. `step-18.png`: the modal still on STEP 1 OF 3, nothing submitted, no
+confirmation. Read-only forensics (5 investigators, each checked by a refuter); the chain, in pipeline order:
+
+1. **The case writer wrote the field names as values** (verified: the cached batch is byte-equal to `03-cases.json`;
+   no code rewrites step text). `testCases.ts` says to use the request's values verbatim and never invent an address,
+   and nothing covers a request that names fields WITHOUT values. Ten earlier runs of the same request varied:
+   placeholders, an invented "Test User", "the provided full name". It also called step 1's Next "submit".
+2. **The IR copied them** (it may not change what the case says, `ir.ts` "BUT ONLY THE CASE"). The Email Address field
+   is `inputType: "email"` in the model; nothing checks a fill value against its field.
+3. **The terminal assertion became the error: TD-131's still-open part.** `groundTerminalTextAssertion`'s replay ended
+   on step 1 showing the error; tier 3 takes any `MESSAGE_LIKE` line ("please" included), closest in length to the
+   guess, so any guess of 64 chars or fewer became the error (almost certain, not provable: the raw model answer and
+   the server log were not saved). `replacesQuotedSuccessText` needs quoted text (none here);
+   `assertionContradictsCase` checks only NEGATIVE cases, and its `SUCCESS_SIGNAL` even matches this sentence via
+   "valid". The replay HAD the error as `{role: "alert"}` in its page model; the regrounder reads page text only.
+4. **The verdict is Playwright's exit code** (`executor.ts`, `passed: exitCode === 0`); nothing compares the outcome
+   with the case's `expected`.
+
+**Stopping early is the same defect.** With a valid email the IR still ends at STEP 2 OF 3 (no steps for screens 2 and 3)
+and passes on the sidebar line "Fully refundable … confirmed booking …" (the "SF hollow pass" in the discovery-upgrade
+reports, never filed until now). The confirmation is reachable: run `2026-10-18T13-52-48-541Z-eb251145` named every
+screen's values and reached "Thank You. Your interest has been registered."
+
+Not caused by the discovery upgrade: none of its flags was on in that process, and the code involved predates `adf2097`.
+
+**Planned fix, behind `HOLLOW_PASS_GUARDS_ENABLED` (default off), structural checks only (TD-01):**
+- the regrounder never takes an alert / `aria-invalid` message as a valid case's final text (closes TD-131's open part);
+- a valid case's fill value is checked against the field (type=email, number/tel, never the field's own name);
+- a valid case that completes a form must not end on a screen still holding that form's fields or forward button;
+- a case-writer rule for "fields named, no values" (a preference; the value check is the constraint behind it).
+
+**Cache clean-up (2026-10-19):** the two entries that would replay this (the cached cases
+`runs/_cache/llm/7525e72685f6e0ef6bac5a9ddba2303546d206ff.json` and the cached compiled case-0 IR
+`runs/_cache/llm/3ad0d7e1d6e34d6c57d26edd07261a4498acc784.json`) were MOVED to
+`testbench/cache-backups/20261019-td162-hollow-pass/`, not deleted.
+
+**Fix 1 (2026-10-19, behind `HOLLOW_PASS_GUARDS_ENABLED`): a positive case may not end on the page's own error.**
+- Positive = category `valid` or `state-change` (`hollowPassGuards.ts`); negative and `functional-other` cases
+  are unchanged.
+- Before toIR accepts a positive case's IR, `finalScreenErrors` (`liveExtend.ts`) replays the steps before its
+  final assertion and reads the screen's error markers (`captureErrorTexts`): the message an `aria-invalid` field
+  points at, and a shown `role="alert"` / `aria-live="assertive"` region inside a form (a page-level alert is not
+  an error: Next.js's route announcer is one), plus the walker's form alerts as a backup. Any marker means the flow
+  did not succeed, WHATEVER the final assertion says: back to the model with the reason (`error-assertion`); when
+  the attempts run out, the flow ships without its trailing assertions, truncated (truncated_no_assertion). Every
+  side exit of toIR (best effort, truncation, the contradiction strip) is checked the same way (`guardExit`), and
+  `heal.ts` never heals an `error-assertion` truncation.
+- A first version, which only stopped the re-check from TAKING the error line, still passed run 8e01a75f: with
+  any guess other than the error itself, the re-check moved to the sidebar's "Fully refundable … confirmed
+  booking …" line. An adversarial review also found three exits where "incomplete" could still pass. All are
+  covered by tests now.
+- Offline replay of 8e01a75f from its own artifacts (the saved walk, the run's IR; no browser, no model): flag off
+  reproduces the pass; flag on, with the run's IR and with a "Thank you" guess, 4 attempts are refused and 16 of 18
+  steps ship, truncated, with no assertion.
+- Tests: `tests/hollowPassGuards.test.ts`, `tests/hollowPassIr.test.ts` (real Chromium); 17/17 mutations caught.
+- **Limits (it reads ARIA, nothing else):** an error shown only visually (no alert role, no `aria-invalid`, as
+  GOV.UK's summary outside the form) is not seen, so that case behaves as before; a SUCCESS message rendered as
+  `role="alert"` inside a form (Bootstrap's `alert-success`, MUI's `<Alert>`) is read as an error, so that case
+  goes incomplete, never passed. A co-signal (an invalid field in the same form) would remove the second, at the
+  cost of missing a custom form that marks nothing invalid, like 8e01a75f's. A flow that stops early on a screen
+  WITHOUT an error (8e01a75f with a valid email stops at STEP 2 OF 3) is Fix 3's, not this one's.
+
+**Phase A (2026-10-20): page-level error toasts.** A Salesforce save error is a toast OUTSIDE the form, which the form-only
+rule above did not see. `replayAndSnapshot` (error-signals replays only) now records the page-level `role="alert"` /
+`aria-live="assertive"` regions on screen just before the replay's last interaction (fill, click, select, check, press;
+a navigate is not one), and `captureErrorMarkers` adds a `page-alert` marker for one that is shown, bigger than 1x1,
+not `role="status"`, and was NOT in that set. So a banner already showing, a 1px screen-reader route announcer (Next.js)
+and a success `role="status"` toast never count; a toast that was in the page hidden (display:none or faded out) and
+Save showed it does. The walk key part is now `error-signals:2`. Tests: `tests/hollowPassToasts.test.ts` (8, real
+Chromium); 7/7 mutations caught. Live (flag on, empty LLM cache): no page-level toast appeared on the three sites, so
+the rule did not fire; the Salesforce main case still "passed" on STEP 2 OF 3 (a hollow pass: no error on that screen,
+Phase D's job).
+
+### TD-163. A deterministic heal can turn a truncated_no_assertion case into a passed run — Medium / Accidental — **Open**
+
+**Found 2026-10-19** by the TD-162 review. `orchestrator.ts` computes `truncatedNoAssertion` from the ORIGINAL IR
+and skips its "cannot report passed" override when the case was `healed`. A deterministic heal keeps the IR's
+truncation meta (`heal.ts`, `healedIr = {...ir, steps}`), so a truncated IR with no terminal assertion that fails,
+heals, and then passes is reported as a passed run although it still verifies nothing. `isHealable` excludes only
+`navigate-url` and (TD-162) `error-assertion` truncations. A structural fix: apply the override to the HEALED IR's
+meta, not skip it. `orchestrator.ts` needs its owner's sign-off.
+
+### TD-164. Running the test suite deleted every saved walk on the machine — Medium / Accidental — **Fixed (2026-10-20)**
+
+**Found 2026-10-20.** `tests/editorGuards.test.ts` (TD-91's "the rewrite can see the site") called
+`llmCacheClear(WALK_CACHE_NS)` before and after every test, so `npx vitest run` in a real checkout emptied the
+REAL `runs/_cache/walks`. Walks are re-made on demand, but evidence went with them: run 8e01a75f's replay snapshot
+(`walks/743560dd…`), which the TD-162 offline replay read, is gone for good. **Fix (test-only):** the suite redirects
+the one seam `caseEdit` uses to find walks (`cacheNamespaceDir("walks")`) to its own temporary folder per test and
+writes its fixture walks there; it never touches `runs/_cache`. Checked: a marker file placed in the real walks
+folder survives the suite (143 walks before and after). Other tests still WRITE into `runs/_cache` (test-only
+namespaces such as `walks-test`, and LLM entries under per-test `LLM_CACHE_VERSION`s): never read by a real run,
+never destructive, left as they are.
+
+### TD-165. TD-84's "sign-in did not succeed" guard misfires on a two-screen (identifier-first) login — High / Accidental — **Open (bypassed on org-connection runs, D-63)**
+
+**Found 2026-10-24**, run `2026-10-24T02-55-58-550Z-29189dcc` (scratch org `ruby-data-2200-dev-ed`, local
+`shadowdom`). Discovery signed in fine (`auth outcome: authenticated`), but the primary case's IR shipped truncated
+right before the password: `s1 navigate`, `s2 fill Username`, `s3 click "Log In to Sandbox"`, `s4 wait`
+(`truncationKind: screen-uncaptured`, status `truncated_no_assertion`). Cause: `replayAndSnapshot` in
+`liveExtend.ts` throws "sign-in did not succeed during verification" when the walk typed a credential and ends on
+the same `pageKey` with that credential field still resolvable. On an identifier-first login, after username +
+"Log In" the URL is unchanged and the username field is still there (shown as a chip), so the guard fires although
+the flow is fine; the password screen is never captured and both attempts are rejected the same way. **Not fixed.**
+Runs signed in through an org connection (D-63) never reach it (no form is filled). Candidate fix, structural: do
+not treat it as a failed sign-in when a password field that was not visible before the click is visible after it.
+Compare first with the `vaibhav/determined-dijkstra-0t2ec9` branch, whose D-57 swaps a login case's own login for
+the recorded one.
+
+### TD-166. Org-connection (frontdoor) runs: what Stage 1 does not cover — Medium / Deliberate — **Open**
+
+Recorded with D-63 (2026-10-24) so none of these is rediscovered as a surprise:
+- **`trace.zip` is not scrubbed.** The executor scrubs the frontdoor URL from the console, `results.json`,
+  `final-page.txt` and error contexts, but a Playwright trace records request URLs, and the frontdoor request
+  carries `sid=<access token>` (the same family as TD-134). Scratch orgs and sandboxes only, so the exposure is a
+  short-lived token to a test org. Candidate fix: Salesforce's single-access UI bridge (a one-time frontdoor URL),
+  or redact `sid=` inside the trace after the run.
+- **Outside a run there is no connection.** Library replay, the step editor's re-ground and anything else that
+  replays a saved IR whose login is `${env:SF_FRONTDOOR_URL}` fails with "the run has none" until those paths learn
+  to take a connection.
+- **Connections live in server memory** (12 h, refresh after 1 h). A restart, or a second replica, forgets them;
+  the person connects again. Encrypted storage and a Settings list need a migration (Stage 2).
+- **One External Client App = one org today.** A Local app authorises users of its own org only; customer orgs need
+  a packaged app installed by their admin.
+- **Production orgs are refused**; the per-project opt-in does not exist yet.
+- **A server restart also strands the browser's connection id.** The id survives a page reload (sessionStorage,
+  2026-10-24), but the server has forgotten the connection, so the run request answers "unknown or has expired"
+  and the person connects again. The run screen shows the server's reason only as "HTTP 400" (the submit handler
+  does not read the body; left alone, it is shared by every run).
+- **`withoutCredentialEntry` reads case prose** (lines naming a username, password or credentials), the TD-01
+  shape, held to frontdoor runs only. The structural fix is for the planner and case writer to know, before they
+  write, that the run is already signed in.
+
+### TD-167. Discovery on Salesforce list pages modelled header buttons only — High / Accidental — **Fixed (2026-10-24)**
+
+**Found 2026-10-24**, runs `2026-10-24T07-08-34-372Z-e2fc249c` and `2026-10-24T07-58-47-085Z-3eb31efb` (DE org
+`thinkvibes-5f-dev-ed`). Every page whose URL Lightning rewrites to a list view (`Opportunity/list`, `Account/list`,
+`Lead/pipelineInspection`, `Contact/home`) was modelled with 8-13 elements, all from the generic-clickable pass (no
+css, no nameSource, no pageSection), and no list or New button. Home-type pages in the same run were fine (124-190
+walker elements). Run `06-42`, before the landmark and tier-4b walker code, had about 100 walker elements on the
+same pages. Cause of the walk failing is still NOT known: the in-page walker (current code, `salesforce: true`)
+returns 587 items on the same list page in the browser pane, and history-API rewrites do not destroy the document
+there. The headless run differs (every page carries Lightning's "Sorry to interrupt — CSS Error" dialog).
+What was wrong in our code: `walkLiveDomWithFrames` swallowed a failure of the page's own document
+(`catch { continue; }`) and returned an empty walk, and the hydration poll stops as soon as the generic pass finds
+anything, which on Lightning is always.
+Fixed so far (tests/salesforceWalkRecovery.test.ts): the page's own document failing is thrown, `elementsFor` logs
+it with the URL, and on a Salesforce run returns no elements instead of the static shell, and the poll keeps going
+while the walker has nothing, whatever the generic pass found. Ordinary runs unchanged.
+**Cause found** (run `2026-10-24T10-48-05-743Z-dad17042`, the new log line): Lightning patches
+`ShadowRoot.prototype.getElementById` to throw `Disallowed method "getElementById" on ShadowRoot.` on those pages
+(headless; the browser pane never showed it), and the walker resolved aria-labelledby and dialog names with it, so
+the whole in-page walk died. Both now use `querySelector('[id="…"]')` in a try. Test reproduces the exact error.
+
+### TD-168. Lightning's "Sorry to interrupt — CSS Error" dialog heads every headless Salesforce page's model — Low / Accidental — **Open**
+
+Every page of run `2026-10-24T07-58-47-085Z-3eb31efb` carries the dialog (8 elements: Refresh, Cancel and close …)
+and `capElements` ranks dialogs first, so it opens every micro model. It appears in headless Chromium only (not in
+the browser pane). Candidate fix: find why Lightning reports a CSS error headless (user agent, a blocked stylesheet),
+or drop this one known product dialog from the model.
+
+---
+
+### TD-169. A `press` step with no target killed the run at the generate stage — High / Accidental — **Fixed (2026-10-28)**
+
+**Found 2026-10-28**, run `2026-10-28T05-23-15-586Z-2e6fd7ae` (Salesforce "create an account", org connection):
+the model wrote `press Enter` with no target right after a fill. That is legal IR (`stepText.ts` renders it as
+"Press the Enter key") and grounding passed it, but `generator.ts` emitted `locator(step.target!).press(...)` and
+`liveExtend.ts`'s `runStepLive` did `resolveLive(page, step.target!)`; both read `.frame` off `undefined`, so the
+text-assertion replay logged "replay failed" and the generate stage failed the whole run with
+"Cannot read properties of undefined (reading 'frame')". **Fix:** with no target both press the key on whatever
+has focus (`page.keyboard.press`), as a person does; the step label drops its dangling "in". Checked in real
+Chromium (`tests/targetlessPress.test.ts`: the emitted spec through the real executor, and the live replay); all
+three cases fail without the fix; the run's saved `04-ir.json` now generates. Not changed: grounding still accepts
+a targetless `press` (it is valid), and on Salesforce's create dialog Enter may not save the record, so a case that
+needs Save should click it.
+
+---
+
+### TD-170. `tests/appJsProIntake.test.ts` fails on a Windows checkout — Low / Accidental — **Open**
+
+**Found 2026-10-28.** The test cuts the Pro block out of `public/app.js` with an end marker containing a bare
+`"\n"` (`"/**\n * Clear the cached browser walks"`). With git's `core.autocrlf=true` (the Windows default) the
+working copy has CRLF, the marker is never found, and both cases fail before checking anything (`expected -1 to be
+greater than …`). On LF (CI, Linux) they pass; run by hand on the CRLF file with line endings normalised, the block
+is found and it neither toggles `.hidden` nor calls `showView`. Candidate fix: normalise `\r\n` to `\n` when the
+test reads the file (other tests that slice source text by multi-line markers may share this; the known
+Windows-only failures in `discoveryStrategy` / `liveDomDiscovery` were not checked for it).
+### TD-171. A generated test may meet Salesforce's email-first screen the discovery browser never saw — Medium / Unverified — **Handled when `SALESFORCE_FIXED_LOGIN` is on (D-65); open when off**
+
+Discovery now clicks "Log In with Username" when Salesforce shows its email-first screen (D-64), then
 records the login it performs on the username form. Each generated test replays those recorded steps
 in a FRESH browser with no cookies (D-24). Which first screen Salesforce shows depends on cookies, so
 a fresh browser might get the email-first screen — where the email box may also be `id="username"` —
 and the replayed `fill #username` would type a Salesforce username into an email field. Not observed;
-nobody has run a ticked run against a real org since D-56. **Check:** on the first real run, look at
+nobody has run a ticked run against a real org since D-64. **Check:** on the first real run, look at
 the generated test's first login screenshot. If it is the email-first screen, the fix is a
 Salesforce-only login step in the generated spec (`generator.ts`), weighed against D-24.
 
-**Update 2026-10-19 (D-57).** With `SALESFORCE_FIXED_LOGIN=true` a ticked run's spec logs in through
+**Update 2026-10-19 (D-65).** With `SALESFORCE_FIXED_LOGIN=true` a ticked run's spec logs in through
 `salesforceLogin()`, which clicks "Log In with Username" first — verified in Chromium against a synthetic
 email-first page whose email box is also `#username`. Off, the spec still replays the recorded clicks.
 
-### TD-155. `loginOnPage` decides one-screen vs two-screen from one instant check — Medium / Accidental — **Open (fixed for Salesforce runs only)**
+### TD-172. `loginOnPage` decides one-screen vs two-screen from one instant check — Medium / Accidental — **Open (fixed for Salesforce runs only)**
 
 `loginOnPage` (`hybridDiscovery.ts`) counts password boxes once. A one-screen form whose password box
 renders a moment after the username box is treated as two-screen and submitted with an EMPTY
 password first — reproduced in real Chromium (`tests/salesforceOrgLogin.test.ts`, the 8c control).
-Salesforce runs wait up to 2.5 s for the box before `loginOnPage` runs (D-56). Every other site still
+Salesforce runs wait up to 2.5 s for the box before `loginOnPage` runs (D-64). Every other site still
 has the race; fixing it in `loginOnPage` itself changes behaviour for every site, so it needs its own
 decision and its own run against the non-Salesforce fixtures in `tests/authCrawl.test.ts`.
 
-### TD-156. Generated tests' screenshots of login steps show the username — Low / Accidental — **Open (fixed for fixed-login Salesforce runs, D-57)**
+### TD-173. Generated tests' screenshots of login steps show the username — Low / Accidental — **Open (fixed for fixed-login Salesforce runs, D-65)**
 
 The generated spec screenshots each step, the login prefix included. The password box renders as
 dots; the USERNAME renders as readable text, and `runs/` is served over HTTP with its guard off by
@@ -5725,52 +6107,52 @@ default (TD-14). Not specific to Salesforce — every authenticated run does it.
 screenshot for `auth-*` steps (they have no diagnostic value once masked), or take the first one after
 the submit. Touches `generator.ts`.
 
-**Update 2026-10-19 (D-57).** A fixed-login spec takes no screenshot of the login screens: step 1
+**Update 2026-10-19 (D-65).** A fixed-login spec takes no screenshot of the login screens: step 1
 screenshots where the login LANDED, and the other `auth-*` steps take none. Every other run still does it.
 
-### TD-157. The spec's fixed Salesforce login restates `salesforceOrgLogin.ts` as text — Low / Deliberate — **Open**
+### TD-174. The spec's fixed Salesforce login restates `salesforceOrgLogin.ts` as text — Low / Deliberate — **Open**
 
-`SALESFORCE_LOGIN_HELPER` (`generator.ts`) repeats D-56's logic — the switch link, the selectors, the 2.5 s
+`SALESFORCE_LOGIN_HELPER` (`generator.ts`) repeats D-64's logic — the switch link, the selectors, the 2.5 s
 grace, the failure reasons — because a spec shares nothing with the pipeline (D-06). Nothing pins the two
 equal, so a fix to one can miss the other: the same drift TD-07 records for `targetResolver.ts`. Its own
 behaviour is pinned in Chromium (`tests/salesforceFixedLoginSpec.test.ts`). Remediation: a test that runs
 both against the same synthetic pages and asserts the same outcome per page.
 
-### TD-158. A negative login case on a two-screen login is still truncated before its password — Medium / Accidental — **Open**
+### TD-175. A negative login case on a two-screen login is still truncated before its password — Medium / Accidental — **Open**
 
-A wrong-password or empty-field case must keep the model's own steps (D-57 never swaps them). On a
+A wrong-password or empty-field case must keep the model's own steps (D-65 never swaps them). On a
 two-screen login (Salesforce) its password step is on a screen at the same URL that nothing captured, and
 grounding cuts the case there — the exact defect of run 2026-10-16T12-47-28, now only for negative cases.
 That run's note read `screen-uncaptured`, yet no capture landed before the truncation; why is not known.
 Next step: replay that run's `04-ir.json` and `02-appmodel.json` with D-52's capture logged, then decide
 whether to capture, or to accept a recorded-login selector (`#password`) as proven for any login case.
 
-### TD-159. `test.salesforce.com` is refused by the production guard — Low / Accidental — **Open**
+### TD-176. `test.salesforce.com` is refused by the production guard — Low / Accidental — **Open**
 
-`classifyOrg` fails closed (D-56), so the generic sandbox login host is refused although it accepts only
+`classifyOrg` fails closed (D-64), so the generic sandbox login host is refused although it accepts only
 sandbox and scratch logins. A tester with only that address is told it is "not a Salesforce org" and the
 screen calls it "a problem on our side". Proposed: allow it, then check after login that the landed host
 contains `.sandbox.` or `.scratch.`, and present the refusal as a refusal, not an internal error.
 
-**2026-10-22, partly addressed (D-60):** with `SALESFORCE_ALLOW_ALL_ORGS=true` the address is accepted
+**2026-10-22, partly addressed (D-68):** with `SALESFORCE_ALLOW_ALL_ORGS=true` the address is accepted
 (as is every Salesforce host). With the flag off it is still refused, and the refusal is still shown as
 "a problem on our side" — that half is open.
 
-**2026-10-22 (D-62):** the "problem on our side" wording is gone for refusals (structural `orgRefused` on
+**2026-10-22 (D-70):** the "problem on our side" wording is gone for refusals (structural `orgRefused` on
 the error event). `test.salesforce.com` itself is still refused with the flag off.
 
-### TD-160. A Salesforce homepage case is shown only the login page when it targets the login URL — Medium / Accidental — **Open**
+### TD-177. A Salesforce homepage case is shown only the login page when it targets the login URL — Medium / Accidental — **Open**
 
-D-62 labels the symptom ("Only checked that login works") but does not fix it. A case whose `targetUrl` is
+D-70 labels the symptom ("Only checked that login works") but does not fix it. A case whose `targetUrl` is
 the login page is compiled with the login page as its lead page, so on Salesforce the model never sees the
 Lightning page and writes a check about the login form (run 2026-10-22T09-44-02-812Z, homepage case, zero
 rejections). Proposed (deferred by the user as medium risk): show the model both pages, labelled "before
 login" and "after login", without changing which page a wrong-password case is shown.
 
 
-### TD-161. Jira sign-in state and tokens live in one process — Low / Deliberate — **Open**
+### TD-178. Jira sign-in state and tokens live in one process — Low / Deliberate — **Open**
 
-D-63 keeps the one-time `state` and each user's Jira token in `src/jira/session.ts`'s in-process maps (the
+D-71 keeps the one-time `state` and each user's Jira token in `src/jira/session.ts`'s in-process maps (the
 user chose memory only). Two consequences: (1) every server restart signs every user out of Jira; (2) with
 more than one server instance (an Azure Container App scaled past one replica), the callback can land on an
 instance that never issued the `state`, and the sign-in fails with "expired or was already used". Fine on
