@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { applyTestData, testDataEnabled, valueFor } from "../src/stages/testData.js";
+import { applyTestData, asksForEveryField, testDataEnabled, valueFor } from "../src/stages/testData.js";
 import { UNIQUE_TOKEN } from "../src/text.js";
 import type { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -51,6 +51,30 @@ const ir = (steps: any[]): IR => ({
 
 const valid = { category: "valid" } as any;
 const value = (r: IR, id: string) => r.steps.find((s) => s.id === id)!.value;
+
+describe("asksForEveryField: the person's own words ask for the whole form", () => {
+  it.each([
+    "can you fill the account with each and every field",
+    "can you create a account filling each and every component of that",
+    "create a new account with all the fields filled",
+    "create an account with full details",
+    "can you create a camapaign with all the fields field",
+    "fill everything on the Opportunity form",
+    "Fill ALL fields of the case",
+    "create a contact with every feild",
+    "can you create a account filling each and every componet of that",   // the real request, typo and all
+    "fill all the filds",
+  ])("yes: %s", (request) => expect(asksForEveryField(request)).toBe(true));
+
+  it.each([
+    "create an account",
+    "fill all required fields",
+    "create an opportunity with all the mandatory fields",
+    "fill one opportunity with full of the fields which are required",
+    "all fields are required",
+    "check every link on the page",
+  ])("no: %s", (request) => expect(asksForEveryField(request)).toBe(false));
+});
 
 describe("testDataEnabled", () => {
   const ORIGINAL = process.env.TEST_DATA_ENABLED;
@@ -389,6 +413,42 @@ describe("fill policy: required + rule-read fields only, other fields only when 
     const named = { meta: {}, steps: steps() } as unknown as IR;
     applyTestData(named, valid, policyOrg, "Create a Zq Lead with a Zq Fax number");
     expect(named.steps.some((s) => s.id === "s20")).toBe(true);
+  });
+
+  // Run 2026-10-28T05-42-18-894Z-a951424e ("filling each and every component") filled 33 fields with
+  // the pass off; with it on, the same kind of request kept only the required ones, because it names
+  // no field. The whole form is what was asked for, so every field the case fills is kept.
+  it("an 'each and every field' request keeps every field the case fills, and still fixes the values", () => {
+    const { r } = run("Create a Zq Lead filling each and every field");
+    expect(names(r)).toEqual(["Zq Surname", "Zq Given", "Zq Mail", "Zq Cell", "Zq Job", "Zq Firm Name", "Zq Due"]);
+    expect(value(r, "s2")).toBe(`Rao ${UNIQUE_TOKEN}`);          // required name: unique per run
+    expect(value(r, "s3")).toBe("Asha");                          // optional, kept as typed
+    expect(value(r, "s4")).toBe(`asha+${UNIQUE_TOKEN}@example.com`);
+    expect(value(r, "s5")).toBe("4155550100");                    // a rule reads it: never changed
+    expect(value(r, "s6")).toBe("Analyst");
+    const firm = r.steps.find((s) => s.id === "s7")!;             // a lookup is still a real pick
+    expect([firm.action, firm.target?.lookup]).toEqual(["select", true]);
+  });
+
+  it("an optional date kept by 'all the fields' is written in the org user's format, so Save accepts it", () => {
+    const org = structuredClone(policyOrg) as AppModel;
+    org.salesforceOrg!.objects[0].fields.push({ label: "Zq Expiry", api: "Zq_Expiry__c", type: "Date" } as any);
+    const r = { meta: {}, steps: [...flow().slice(0, 7),
+      { id: "s21", action: "fill", target: { role: "textbox", name: "Zq Expiry" }, value: "2026-12-31" }, ...flow().slice(7)] } as unknown as IR;
+    applyTestData(r, valid, org, "create a new Zq Lead with all the fields filled");
+    expect(value(r, "s21")).toBe("{{date:+30:en-GB}}");
+  });
+
+  it("an 'every field' request also keeps a form field the org model does not list", () => {
+    const r = { meta: {}, steps: [...flow().slice(0, 7),
+      { id: "s20", action: "fill", target: { role: "textbox", name: "Zq Fax" }, value: "4155550199" }, ...flow().slice(7)] } as unknown as IR;
+    applyTestData(r, valid, policyOrg, "Create a Zq Lead with full details");
+    expect(r.steps.some((s) => s.id === "s20")).toBe(true);
+  });
+
+  it("'all required fields' still means the required ones only", () => {
+    const { r } = run("Create a Zq Lead with all required fields");
+    expect(names(r)).toEqual(["Zq Surname", "Zq Cell", "Zq Due"]);
   });
 
   it("an email that already has a plus part still gets the run code", () => {

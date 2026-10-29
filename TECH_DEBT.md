@@ -6159,3 +6159,22 @@ instance that never issued the `state`, and the sign-in fails with "expired or w
 one instance, which is how the app runs today. Remediation when either bites: keep the token encrypted in
 the database (Atlassian requires encryption for stored OAuth tokens) and the `state` in a shared store, or
 pin the Jira routes to one replica.
+
+---
+
+### TD-179. An "each and every field" request filled only the required fields under TEST_DATA_ENABLED — High / Accidental — **Fixed (2026-10-29)**
+
+**Found 2026-10-29**, on the deployed app and locally: "fill the account with each and every field" produced cases
+that filled the required fields only. The test-data pass's fill policy (`testData.ts`, "fill another field only
+when the REQUEST names it") keeps an optional field only when the request names it, and such a request names none.
+Run `2026-10-28T05-42-18-894Z-a951424e` ("filling each and every componet", pass off) filled 33 fields; replayed
+through the pass, 32 were dropped. **Fix:** `asksForEveryField(request)` reads the person's own words (never model
+text, like `mentions`): "each and every / every / all / full / complete / whole" followed within three words by a
+field-like noun matched by stem, typos included ("feild", "filds", "componet"), or "fill everything". A phrase that
+narrows itself to the required ones ("all required fields", "fields which are required") does not count. Then
+every field the case fills is kept, and the value fixes still apply to all of them: the replay keeps all 33 and
+rewrites the optional SLA Expiration Date to the org-locale date token, the value whose ISO format made that run's
+Save fail. IR cache key part bumped to `test-data:3` (TD-22). Tests: `tests/testData.test.ts` (phrase table, keep /
+fix / unlisted-field / "all required fields" cases; three fail with the rule disabled). Not changed: optional
+fields the case never touches are not ADDED, and `snapPicklist` still maps a value to the one option containing it
+("Technology" -> "Biotechnology" in that replay), which saves but may not be the option meant.

@@ -191,6 +191,26 @@ const mentions = (request: string, s: string) => {
   return !!k && ` ${lineKey(request)} `.includes(` ${k} `);
 };
 
+/**
+ * True when the person's request asks for the whole form ("each and every field", "all the fields",
+ * "full details", "fill everything") rather than a create that only has to save. Read from their own
+ * words, never the model's, like `mentions`. A phrase that narrows itself to the required ones ("all
+ * required fields", "full of the fields which are required") does not count. Before this, such a
+ * request named no field, so the fill policy dropped every optional one: 33 fields filled with the pass
+ * off (run 2026-10-28T05-42-18-894Z-a951424e), 1 with it on. That request was typed "each and every
+ * componet", so the nouns are matched by stem, typos included ("feild", "filds", "componet").
+ */
+export function asksForEveryField(request: string): boolean {
+  const text = ` ${request.toLowerCase().replace(/\s+/g, " ")} `;
+  if (/\bfill(?:ing|ed)?(?: in| out| up)? everything\b/.test(text)) return true;
+  const whole = /\b(?:each and every|every|all|full|complete|whole)\b(?: \S+){0,3}? (?:f\w{0,2}ld\w{0,2}|compo\w*|detai\w*|input\w*|column\w*|attribut\w*)\b/g;
+  for (const m of text.matchAll(whole)) {
+    const around = text.slice(m.index!, m.index! + m[0].length + 30);
+    if (!/\b(?:required|mandatory)\b/.test(around)) return true;
+  }
+  return false;
+}
+
 // ---- the pass -----------------------------------------------------------------------------------
 
 /**
@@ -331,7 +351,9 @@ function applyToSection(
   const asserted = ir.steps.filter((s) => s.action === "assert")
     .map((s) => `${s.target?.text ?? ""}\n${s.value ?? ""}`).join("\n");
   const quoted = (v: string | undefined) => !!v?.trim() && asserted.includes(v.trim());
-  const wanted = (f: OrgField, s: Step) => !!f.required || ruleMentions(o, f) || mentions(request, f.label)
+  // "Each and every field": every field the case fills is wanted; values are still fixed below.
+  const everyField = asksForEveryField(request);
+  const wanted = (f: OrgField, s: Step) => everyField || !!f.required || ruleMentions(o, f) || mentions(request, f.label)
     || formNamesOf(f).some((nm) => mentions(request, nm)) || mentions(request, nameOf(s))
     || (!!s.value && !hasRunToken(s.value) && mentions(request, s.value)) || quoted(s.value);
 
@@ -346,7 +368,7 @@ function applyToSection(
     // one: the model keeps the required fields first and only the first 40 (run
     // 2026-10-25T05-01-36-627Z-b0d6a138 kept an unrequested Phone that way).
     const keep = f ? wanted(f, s)
-      : mentions(request, nameOf(s)) || (!!s.value && !hasRunToken(s.value) && mentions(request, s.value)) || quoted(s.value);
+      : everyField || mentions(request, nameOf(s)) || (!!s.value && !hasRunToken(s.value) && mentions(request, s.value)) || quoted(s.value);
     if (keep) continue;
     notes.push(`${s.id}: dropped "${nameOf(s)}" — optional, no rule reads it and the request does not name it`);
     ir.steps.splice(i, 1);
