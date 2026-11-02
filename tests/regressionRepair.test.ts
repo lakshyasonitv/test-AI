@@ -169,8 +169,40 @@ describe("in real Chromium", () => {
       expect(r.status).toBe("failed");
       expect(r.repair).toMatchObject({ state: "proposed", caseId: "lib-1", fromVersion: 3, stepId: "s2", rung: "exact-match" });
       expect((out.summary.cases[0] as any).repair.state).toBe("proposed");
+      // Step 4 reads the proposal FILE to approve: it must name the case and version too (found in
+      // the browser, where the file lacked them and Approve could not save).
+      const onDisk = JSON.parse(readFileSync(path.join("runs", runId, "cases", "case-0", "repair", "proposal.json"), "utf8"));
+      expect(onDisk).toMatchObject({ state: "proposed", caseId: "lib-1", fromVersion: 3 });
     } finally {
       rmSync(path.join("runs", runId), { recursive: true, force: true });
     }
+  }, 300_000);
+
+  it("(h) step 4: a step a person edited by hand (pinned) is never repaired automatically", async () => {
+    version = "v2";
+    process.env.REGRESSION_REPAIR_ENABLED = "true";
+    const runId = `0000-regression-repair-pinned-${process.pid}-${Date.now()}`;
+    try {
+      const ir = IR.parse({ ...saved(), meta: { ...saved().meta, pinnedSteps: ["s2"] } });
+      const out = await runReplay({ runId, cases: [{ id: "lib-pin", version: 1, title: "t", ir }], label: "zq" });
+      expect(out.results[0].repair).toMatchObject({ state: "no-repair", stepId: "s2" });
+      expect(out.results[0].repair!.reason).toMatch(/edited step s2 by hand/);
+    } finally { rmSync(path.join("runs", runId), { recursive: true, force: true }); }
+  }, 300_000);
+
+  it("(i) step 4: a repair a person rejected is not proposed again; a different one still can be", async () => {
+    version = "v2";
+    const { recordRejection } = await import("../src/stages/regressionRepair.js");
+    const caseId = `zq-rejected-${process.pid}-${Date.now()}`;
+    const file = path.join("runs", "_cache", "repair-decisions", `${caseId}.json`);
+    try {
+      recordRejection(caseId, "s2", { role: "textbox", name: "Zq Name" }, "zq-user");
+      const p = await attemptRepair({ ir: saved(), stepIndex: 1, caseDir: caseDir(), session: null, caseId });
+      expect(p.state).toBe("no-repair");
+      expect(p.reason).toMatch(/rejected this repair before/);
+      recordRejection(caseId, "s2", { role: "textbox", name: "Other" });   // a different signature
+      const other = await attemptRepair({ ir: saved(), stepIndex: 1, caseDir: caseDir(), session: null, caseId: caseId + "-x" });
+      expect(other.state).toBe("proposed");
+    } finally { rmSync(file, { force: true }); rmSync(file.replace(".json", "-x.json"), { force: true }); }
   }, 300_000);
 });

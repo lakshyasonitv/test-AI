@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium, type Page } from "playwright";
 import type { IR, Step, Target } from "../schema/ir.js";
@@ -7,7 +7,8 @@ import { diffTargets, type TargetDiff } from "./deterministicHeal.js";
 import { formatIrStep } from "./stepText.js";
 import { runStepLive, prepareReplayPage } from "./liveExtend.js";
 import { generateSpec } from "./generator.js";
-import { runSpec, extractFailureDetail, type FailureDetail } from "./executor.js";
+import { runSpec, extractFailureDetail, findScreenshot, type FailureDetail } from "./executor.js";
+import { cacheNamespaceDir } from "../kb/llmCache.js";
 import { credentialEnvVars, type Credentials } from "./credentials.js";
 import { chromiumLaunchOptions, browserContextOptions } from "../browserLaunch.js";
 import { currentFrontdoor, type FrontdoorSession } from "./salesforceFrontdoor.js";
@@ -116,7 +117,7 @@ export function withNewLocator(step: Step, found: { role: string; name: string }
 export interface RepairProposal {
   /** "proposed": verified and waiting for a person (step 4). "needs-person": a repair was found but
    *  must not be applied alone. Otherwise no repair, with the reason. */
-  state: "proposed" | "needs-person" | "no-repair";
+  state: "proposed" | "needs-person" | "no-repair" | "approved" | "rejected";
   reason: string;
   kind: FailureKind;
   stepId?: string;
@@ -125,11 +126,15 @@ export interface RepairProposal {
   before?: Target;
   after?: Target;
   changes?: TargetDiff[];
-  verification?: { passed: boolean; artifacts?: string; error?: string };
+  verification?: { passed: boolean; artifacts?: string; screenshot?: string; error?: string };
   readBack?: { checked: number; matched: number; mismatches: string[]; skipped: string[]; record?: string };
   /** The library case and version the proposal applies to (step 4 needs both). */
   caseId?: string;
   fromVersion?: number;
+  /** Step 4: who decided, when, and the version an approval saved. */
+  decidedBy?: string;
+  decidedAt?: string;
+  newVersion?: number;
 }
 
 // ---- live repair --------------------------------------------------------------------------------
@@ -174,6 +179,11 @@ export interface RepairInput {
   caseDir: string;
   /** For tests: the org connection to read labels and records with. Default: the run's own rail. */
   session?: FrontdoorSession | null;
+  /** The library case: a repair a person rejected for it is never proposed again (step 4), and the
+   *  case an approval saves to. */
+  caseId?: string;
+  /** The saved version that ran: an approval is refused if the case moved on since (step 4). */
+  fromVersion?: number;
 }
 
 /**
@@ -184,8 +194,11 @@ export async function attemptRepair(input: RepairInput): Promise<RepairProposal>
   const { ir, stepIndex } = input;
   const step = ir.steps[stepIndex];
   const session = input.session === undefined ? currentFrontdoor() : input.session;
-  const base: Pick<RepairProposal, "kind" | "stepId" | "stepText" | "before"> = {
+  // The library case and version go into EVERY proposal written to disk: approving reads them there.
+  const base: Pick<RepairProposal, "kind" | "stepId" | "stepText" | "before" | "caseId" | "fromVersion"> = {
     kind: "element-changed", stepId: step?.id, stepText: step ? formatIrStep(step) : undefined, before: step?.target,
+    ...(input.caseId ? { caseId: input.caseId } : {}),
+    ...(typeof input.fromVersion === "number" ? { fromVersion: input.fromVersion } : {}),
   };
   const none = (reason: string): RepairProposal => ({ state: "no-repair", reason, ...base });
   if (!step?.target || !ELEMENT_ACTIONS.has(step.action)) return none("Only a click, fill, select or press is ever repaired.");
@@ -238,6 +251,10 @@ export async function attemptRepair(input: RepairInput): Promise<RepairProposal>
   }
 
   const after = withNewLocator(step, found);
+  // Step 4: a person already rejected exactly this repair for this case: never proposed again.
+  if (input.caseId && isRejected(input.caseId, step.id, after.target)) {
+    return none(`A person rejected this repair before (${found.role} "${found.name}" for step ${step.id}); it is not proposed again.`);
+  }
   const repaired: IR = { ...ir, steps: ir.steps.map((s, i) => (i === stepIndex ? after : s)) };
   const proposalBase = {
     ...base, rung: found.rung, after: after.target,
@@ -263,7 +280,13 @@ export async function attemptRepair(input: RepairInput): Promise<RepairProposal>
     const res = await runSpec(generateSpec(repaired, artifacts), dir, credentialEnvVars(input.creds));
     results = res.raw;
     const detail = res.passed ? {} : extractFailureDetail(res.raw);
-    verification = { passed: res.passed, artifacts: "/" + path.relative(".", artifacts).replace(/\\/g, "/"), ...(detail.error ? { error: detail.error } : {}) };
+    const shot = res.passed ? findScreenshot(artifacts) : null;
+    verification = {
+      passed: res.passed, artifacts: "/" + path.relative(".", artifacts).replace(/\\/g, "/"),
+      // The screenshot of the passing re-run, shown with the proposal (step 4).
+      ...(shot ? { screenshot: "/" + path.relative(".", shot).replace(/\\/g, "/") } : {}),
+      ...(detail.error ? { error: detail.error } : {}),
+    };
   } catch (err: any) {
     verification = { passed: false, error: String(err?.message ?? err).split("\n")[0] };
   }
@@ -366,4 +389,67 @@ export function failureDetailOf(caseDir: string): FailureDetail {
     const saved = JSON.parse(readFileSync(path.join(caseDir, "05-result.json"), "utf8"));
     return extractFailureDetail(saved?.raw ?? saved);
   } catch { return {}; }
+}
+
+// ---- step 4: decisions ----------------------------------------------------------------------------
+
+/**
+ * Rejected repairs, per library case, so the same repair is never proposed again. A small JSON file
+ * per case under the cache root (namespace "repair-decisions"): the design's "proposals on disk first".
+ * The key is the step and the locator it would have become, so a DIFFERENT repair of the same step can
+ * still be proposed after the page changes again.
+ */
+const DECISIONS_NS = "repair-decisions";
+const decisionsFile = (caseId: string) => path.join(cacheNamespaceDir(DECISIONS_NS), `${caseId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
+const signature = (stepId: string, t: Target | undefined) => `${stepId}|${t?.role ?? ""}|${t?.name ?? ""}`;
+
+interface Rejection { signature: string; stepId: string; by?: string; at: string }
+
+function readRejections(caseId: string): Rejection[] {
+  try { return JSON.parse(readFileSync(decisionsFile(caseId), "utf8")).rejected ?? []; } catch { return []; }
+}
+
+export function isRejected(caseId: string, stepId: string, after: Target | undefined): boolean {
+  const sig = signature(stepId, after);
+  return readRejections(caseId).some((r) => r.signature === sig);
+}
+
+export function recordRejection(caseId: string, stepId: string, after: Target | undefined, by?: string, at = new Date()): void {
+  const list = readRejections(caseId);
+  const sig = signature(stepId, after);
+  if (list.some((r) => r.signature === sig)) return;
+  list.push({ signature: sig, stepId, ...(by ? { by } : {}), at: at.toISOString() });
+  mkdirSync(path.dirname(decisionsFile(caseId)), { recursive: true });
+  writeFileSync(decisionsFile(caseId), JSON.stringify({ caseId, rejected: list }, null, 2));
+}
+
+/** A run case's proposal and the IR it verified, or null when the run has none. */
+export function loadProposal(runDir: string, runCaseId: string): { proposal: RepairProposal; ir: IR | null } | null {
+  const dir = path.join(runDir, "cases", runCaseId, "repair");
+  if (!existsSync(path.join(dir, "proposal.json"))) return null;
+  try {
+    const proposal = JSON.parse(readFileSync(path.join(dir, "proposal.json"), "utf8")) as RepairProposal;
+    const ir = existsSync(path.join(dir, "ir.json")) ? JSON.parse(readFileSync(path.join(dir, "ir.json"), "utf8")) as IR : null;
+    return { proposal, ir };
+  } catch { return null; }
+}
+
+/** Record a decision on the run's own files: the proposal, and the suite summary the run page reads. */
+export function recordDecision(runDir: string, runCaseId: string, update: Partial<RepairProposal>): RepairProposal | null {
+  const file = path.join(runDir, "cases", runCaseId, "repair", "proposal.json");
+  let p: RepairProposal;
+  try { p = { ...JSON.parse(readFileSync(file, "utf8")), ...update }; } catch { return null; }
+  writeFileSync(file, JSON.stringify(p, null, 2));
+  const summaryFile = path.join(runDir, "07-suite-summary.json");
+  try {
+    const s = JSON.parse(readFileSync(summaryFile, "utf8"));
+    const c = (s.cases ?? []).find((x: { caseId?: string }) => x.caseId === runCaseId);
+    if (c?.repair) { c.repair = { ...c.repair, ...update }; writeFileSync(summaryFile, JSON.stringify(s, null, 2)); }
+  } catch { /* the summary is a convenience copy; the proposal is the record */ }
+  return p;
+}
+
+/** The repaired IR to save on approval: the verified one, with the case's pins kept. */
+export function irToApprove(verified: IR, current: IR): IR {
+  return { ...verified, meta: { ...verified.meta, ...(current.meta.pinnedSteps ? { pinnedSteps: current.meta.pinnedSteps } : {}) } };
 }

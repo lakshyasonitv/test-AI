@@ -113,3 +113,32 @@ describe("the run page shows a repair proposal, never as a pass (D-73 step 3)", 
     expect(CODE).toContain("Nothing is saved until it is approved.");
   });
 });
+
+describe("approve or reject a repair on the run page (D-73 step 4)", () => {
+  const H_START = `document.addEventListener("click", async (ev) => {\n  const btn = ev.target && ev.target.closest ? ev.target.closest("[data-repair-act]") : null;`;
+  const hs = APP.indexOf(H_START);
+  const he = APP.indexOf("function renderCaseErrorBlock(", hs);
+  const HANDLER = APP.slice(hs, he);
+
+  it("the handler is found", () => {
+    expect(hs).toBeGreaterThan(0);
+    expect(he).toBeGreaterThan(hs);
+  });
+  it("posts to the run's own case, approve or reject only, and redraws just the notice", () => {
+    expect(HANDLER).toContain("/api/runs/${encodeURIComponent(currentRunId)}/cases/${encodeURIComponent(caseId)}/repair/${act}");
+    expect(HANDLER).toContain("notice.outerHTML = renderRepairNotice(body.repair);");
+    expect(HANDLER).not.toMatch(/classList\.(add|remove|toggle)\(\s*["']hidden/);
+    expect(HANDLER).not.toMatch(/showView\(/);
+  });
+  it("a failed decision re-enables the buttons and says why", () => {
+    expect(HANDLER).toMatch(/catch \(err\) \{\s*\n\s*buttons\.forEach\(\(b\) => \{ b\.disabled = false; \}\);\s*\n\s*toast\(err\.message\);/);
+  });
+  it("only a verified proposal offers Approve; a needs-person one offers Reject only", () => {
+    expect(APP).toContain(`\${r.state === "proposed" ? \`<button type="button" class="dl-btn-inline" data-repair-act="approve">Approve</button>\` : ""}`);
+    expect(APP).toContain(`<button type="button" class="dl-btn-inline" data-repair-act="reject">Reject</button>`);
+  });
+  it("decided proposals read as decided, with no buttons", () => {
+    expect(APP).toContain("<b>Repair approved.</b>");
+    expect(APP).toContain("<b>Repair rejected.</b>");
+  });
+});

@@ -360,8 +360,17 @@ async function proposeRepairs(
       };
       continue;
     }
+    // Step 4: a step a person edited by hand is never repaired automatically.
+    if (x.v.stepId && x.c.ir.meta.pinnedSteps?.includes(x.v.stepId)) {
+      x.r.repair = {
+        state: "no-repair", kind: x.v.kind, stepId: x.v.stepId, ...libraryRef,
+        reason: `A person edited step ${x.v.stepId} by hand, so it is never repaired automatically. Edit it again if the page changed.`,
+      };
+      continue;
+    }
     emit("suite", "started", { caseId: x.r.caseId, title: x.r.title, repair: "looking" });
-    const proposal = await attemptRepair({ ir: x.c.ir, stepIndex: x.v.stepIndex!, creds, caseDir: path.join(runDir, "cases", x.r.caseId) });
+    const proposal = await attemptRepair({ ir: x.c.ir, stepIndex: x.v.stepIndex!, creds, caseDir: path.join(runDir, "cases", x.r.caseId), caseId: x.c.id,
+      ...(typeof x.c.version === "number" ? { fromVersion: x.c.version } : {}) });
     x.r.repair = { ...proposal, ...libraryRef };
     emit("suite", "completed", { caseId: x.r.caseId, title: x.r.title, status: x.r.status, repair: x.r.repair.state });
   }

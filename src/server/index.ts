@@ -117,6 +117,7 @@ import {
 import { withFrontdoor, isFrontdoorRef } from "../stages/salesforceFrontdoor.js";
 import { HealedNeedsReviewError } from "../stages/regressionMemory.js";
 import { checkSuite, regressionChangeCheckEnabled } from "../stages/regressionChangeCheck.js";
+import { regressionRepairEnabled, loadProposal, recordDecision, recordRejection, irToApprove } from "../stages/regressionRepair.js";
 import { readOrgForCheck } from "../stages/salesforceOrgModel.js";
 import {
   checkSpecUpload, distillSpec, getRunSpecWarnings, specIntakeEnabled, DISTILL_FAILED_WARNING,
@@ -1844,13 +1845,20 @@ async function prepareEdit(req: express.Request, res: express.Response) {
 
   // Structurally valid before it is ever checked against a live site — a malformed plan should
   // fail in milliseconds, not after a browser walk.
+  // D-73 step 4 (REGRESSION_REPAIR_ENABLED): a step a person edits here is pinned, so a repair never
+  // changes it automatically afterwards. Pins already on the case are kept. Off: no field is added.
+  const pinned = regressionRepairEnabled()
+    ? [...new Set([...(found.ir.meta.pinnedSteps ?? []),
+      ...parsed.result.changedIndexes.map((i) => safe.steps[i]?.id).filter((id): id is string => !!id)])]
+    : null;
+  const pins = pinned && pinned.length ? { pinnedSteps: pinned } : {};
   const validated = parseIr(
-    { ...found.ir, steps: safe.steps, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts } },
+    { ...found.ir, steps: safe.steps, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts, ...pins } },
     "the edited test plan",
   );
   // Same IR with the typed literals still in place. NEVER written, never serialised to a client.
   const liveIr = parseIr(
-    { ...found.ir, steps: safe.live, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts } },
+    { ...found.ir, steps: safe.live, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts, ...pins } },
     "the edited test plan",
   );
   return { ctx, found, parsed: parsed.result, validated, liveIr, credentialNote: safe.note, typedCreds: safe.creds };
@@ -2346,6 +2354,75 @@ app.post("/api/suites/:suiteId/change-check", requireRole("tester"), async (req,
       now = await readOrgForCheck(session, objects);
     }
     res.json(checkSuite(cases.map((c) => ({ id: c.id, title: c.title, ir: c.ir })), now, host));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * D-73 step 4: a person decides on a repair proposal a replay made (REGRESSION_REPAIR_ENABLED; 404 off).
+ *
+ * APPROVE saves the IR the repair VERIFIED (the whole test passed with it) as the next version of the
+ * SAME library case — never a new case — with the version the replay ran as `expectedVersion`, so a
+ * case that moved on since answers 409 with the newer state instead of being overwritten. REJECT
+ * records the decision so exactly this repair is never proposed again for that case. Both record the
+ * outcome on the run's own files, so the run page shows it after a reload. `tester`, on both the run
+ * (requireRunRole) and the case (getCase checks its project), like saving a case.
+ */
+function repairDecisionPreamble(req: express.Request, res: express.Response) {
+  if (!regressionRepairEnabled()) {
+    res.status(404).json({ error: "repairs are not available — this server has REGRESSION_REPAIR_ENABLED off" });
+    return null;
+  }
+  if (!RUN_CASE_ID.test(req.params.caseId)) { res.status(400).json({ error: "invalid caseId" }); return null; }
+  const runDir = path.join("runs", req.params.runId);
+  const loaded = loadProposal(runDir, req.params.caseId);
+  if (!loaded) { res.status(404).json({ error: "this case has no repair proposal" }); return null; }
+  return { runDir, ...loaded };
+}
+
+app.post("/api/runs/:runId/cases/:caseId/repair/approve", requireRunRole("tester"), async (req, res) => {
+  const pre = repairDecisionPreamble(req, res);
+  if (!pre) return;
+  const { runDir, proposal, ir } = pre;
+  if (proposal.state !== "proposed") {
+    return res.status(409).json({
+      error: proposal.state === "approved" ? `This repair was already approved (saved as version ${proposal.newVersion}).`
+        : `This repair is "${proposal.state}" and cannot be approved.`,
+      repair: proposal,
+    });
+  }
+  if (!ir || !proposal.caseId) return res.status(409).json({ error: "This proposal does not carry the test it would save.", repair: proposal });
+  try {
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    const role = await assertOrgAccess(userId, req.organisationId!, "tester");
+    const current = await getCase(userId, req.organisationId!, role, proposal.caseId);
+    const describe = (t: any) => (t?.role && t?.name ? `${t.role} "${t.name}"` : t?.css ?? "an element");
+    const updated = await updateCase(userId, req.organisationId!, role, proposal.caseId, {
+      ir: irToApprove(ir, current.ir),
+      changeNote: `Repair approved: step ${proposal.stepId} now finds ${describe(proposal.after)} (was ${describe(proposal.before)}); verified in run ${req.params.runId}.`,
+      ...(typeof proposal.fromVersion === "number" ? { expectedVersion: proposal.fromVersion } : {}),
+    });
+    const repair = recordDecision(runDir, req.params.caseId, {
+      state: "approved", decidedBy: userId, decidedAt: new Date().toISOString(), newVersion: updated.currentVersion,
+    });
+    res.json({ repair, case: updated });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.post("/api/runs/:runId/cases/:caseId/repair/reject", requireRunRole("tester"), async (req, res) => {
+  const pre = repairDecisionPreamble(req, res);
+  if (!pre) return;
+  const { runDir, proposal } = pre;
+  if (proposal.state !== "proposed" && proposal.state !== "needs-person") {
+    return res.status(409).json({ error: `This repair is "${proposal.state}" and cannot be rejected.`, repair: proposal });
+  }
+  if (!proposal.caseId || !proposal.stepId) return res.status(409).json({ error: "This proposal does not say which case it is for.", repair: proposal });
+  try {
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    const role = await assertOrgAccess(userId, req.organisationId!, "tester");
+    await getCase(userId, req.organisationId!, role, proposal.caseId);   // access to the case, not only the run
+    recordRejection(proposal.caseId, proposal.stepId, proposal.after, userId);
+    const repair = recordDecision(runDir, req.params.caseId, { state: "rejected", decidedBy: userId, decidedAt: new Date().toISOString() });
+    res.json({ repair });
   } catch (err) { sendAccessError(res, err); }
 });
 

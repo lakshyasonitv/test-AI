@@ -183,6 +183,12 @@ export const IR = z.object({
     fixedLogin: z.literal("salesforce").optional(),
     /** D-73: written when a case is saved with REGRESSION_MEMORY_ENABLED on. See `Remembered`. */
     remembered: Remembered.optional(),
+    /**
+     * D-73 step 4: ids of steps a person edited by hand in the step editor (REGRESSION_REPAIR_ENABLED).
+     * A pinned step is never repaired automatically: a person chose it. Written in code by the edit
+     * route, never by the model (toIR drops one). Absent on every other IR.
+     */
+    pinnedSteps: z.array(z.string()).optional(),
   }),
   steps: z.array(Step).min(1),
 });

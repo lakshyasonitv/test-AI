@@ -1955,17 +1955,51 @@ function describeTarget(t) {
 }
 function renderRepairNotice(r) {
   const step = r.stepId ? `Step ${escapeHtml(r.stepId)}${r.stepText ? ` (${escapeHtml(r.stepText)})` : ""}` : "This case";
+  // Step 4: a decision already made reads as such, with no buttons.
+  if (r.state === "approved") {
+    return `<p class="case-notice notice" data-repair-notice><b>Repair approved.</b> ${step} now finds ${escapeHtml(describeTarget(r.after))}. Saved as version ${escapeHtml(String(r.newVersion ?? "?"))} of the case.</p>`;
+  }
+  if (r.state === "rejected") {
+    return `<p class="case-notice notice" data-repair-notice><b>Repair rejected.</b> ${step}: it will not be proposed again. The saved case is unchanged.</p>`;
+  }
   if (r.state === "proposed" || r.state === "needs-person") {
     const head = r.state === "proposed" ? "Healed, needs review" : "Needs a person";
     const proof = r.verification && r.verification.passed ? " The whole test passed again with this change." : "";
     const back = r.readBack && r.readBack.checked ? ` The saved record read back with ${r.readBack.matched} of ${r.readBack.checked} typed values.` : "";
-    return `<p class="case-notice notice"><b>${head}.</b> ${step}: ${escapeHtml(describeTarget(r.before))} → ${escapeHtml(describeTarget(r.after))}.
+    return `<p class="case-notice notice" data-repair-notice><b>${head}.</b> ${step}: ${escapeHtml(describeTarget(r.before))} → ${escapeHtml(describeTarget(r.after))}.
       ${escapeHtml(r.reason)}${proof && !r.reason.includes("passed again") ? escapeHtml(proof) : ""}${back && !r.reason.includes("read back") ? escapeHtml(back) : ""}
-      Nothing is saved until it is approved.</p>`;
+      Nothing is saved until it is approved.
+      ${r.verification && r.verification.screenshot ? `<a href="${escapeHtml(r.verification.screenshot)}" target="_blank" rel="noopener">Screenshot of the passing re-run</a>` : ""}
+      <span data-repair-actions>
+        ${r.state === "proposed" ? `<button type="button" class="dl-btn-inline" data-repair-act="approve">Approve</button>` : ""}
+        <button type="button" class="dl-btn-inline" data-repair-act="reject">Reject</button>
+      </span></p>`;
   }
   if (r.kind === "result-changed") return `<p class="case-notice error"><b>Possible bug.</b> ${escapeHtml(r.reason)}</p>`;
   return `<p class="case-notice notice"><b>No repair.</b> ${escapeHtml(r.reason)}</p>`;
 }
+
+document.addEventListener("click", async (ev) => {
+  const btn = ev.target && ev.target.closest ? ev.target.closest("[data-repair-act]") : null;
+  if (!btn) return;
+  const card = btn.closest(".case-card");
+  const notice = btn.closest("[data-repair-notice]");
+  const caseId = card && card.dataset.caseId;
+  if (!caseId || !currentRunId || !notice) return;
+  const act = btn.dataset.repairAct;
+  const buttons = notice.querySelectorAll("[data-repair-act]");
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    const body = await api(`/api/runs/${encodeURIComponent(currentRunId)}/cases/${encodeURIComponent(caseId)}/repair/${act}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    notice.outerHTML = renderRepairNotice(body.repair);
+    toast(act === "approve" ? `Approved: saved as version ${body.repair.newVersion} of the case.` : "Rejected: this repair will not be proposed again.");
+  } catch (err) {
+    buttons.forEach((b) => { b.disabled = false; });
+    toast(err.message);
+  }
+});
 
 function renderCaseErrorBlock(c, screenshotUrl) {
   if (c.status !== "failed" && c.status !== "blocked") return "";

@@ -241,6 +241,7 @@ beforeEach(() => {
   process.env.AUTH_ENABLED = "true";
   process.env.DB_ENABLED = "true";
   process.env.REGRESSION_CHANGE_CHECK_ENABLED = "true";
+  process.env.REGRESSION_REPAIR_ENABLED = "true";
   process.env.SUPABASE_URL = "https://fake.supabase.co";
   process.env.SUPABASE_PUBLISHABLE_KEY = "fake-publishable";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "fake-service-role";
@@ -255,7 +256,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  for (const k of ["AUTH_ENABLED", "DB_ENABLED", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SERVICE_ROLE_KEY", "REGRESSION_CHANGE_CHECK_ENABLED"]) {
+  for (const k of ["AUTH_ENABLED", "DB_ENABLED", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SERVICE_ROLE_KEY", "REGRESSION_CHANGE_CHECK_ENABLED", "REGRESSION_REPAIR_ENABLED"]) {
     if (ORIGINAL_ENV[k] === undefined) delete process.env[k];
     else process.env[k] = ORIGINAL_ENV[k]!;
   }
@@ -310,6 +311,9 @@ const RESOURCE_ROUTES: { name: string; method: Method; path: string; body?: unkn
   { name: "reorder org A's suite", method: "patch", path: `/api/suites/${SUITE_A}/order`, body: { caseIds: [CASE_A] }, mounted: "PATCH /api/suites/:suiteId/order" },
   // D-73 step 2: reads org A's saved cases (and would read their org). The flag is ON in this file
   // (below), so the 404 comes from the suite not being visible, not from the route being off.
+  // D-73 step 4: deciding on a repair of org A's run. The flag is ON in this file, so the 404 is isolation.
+  { name: "approve a repair on org A's run", method: "post", path: `/api/runs/${RUN_A}/cases/case-0/repair/approve`, body: {}, mounted: "POST /api/runs/:runId/cases/:caseId/repair/approve" },
+  { name: "reject a repair on org A's run", method: "post", path: `/api/runs/${RUN_A}/cases/case-0/repair/reject`, body: {}, mounted: "POST /api/runs/:runId/cases/:caseId/repair/reject" },
   { name: "change-check org A's suite", method: "post", path: `/api/suites/${SUITE_A}/change-check`, body: {}, mounted: "POST /api/suites/:suiteId/change-check" },
 
   { name: "read org A's case", method: "get", path: `/api/cases/${CASE_A}`, mounted: "GET /api/cases/:caseId" },
@@ -763,5 +767,92 @@ describe("a missing org connection is asked for, naming the org (D-73)", () => {
     const res = await request(app).post(`/api/suites/${SUITE_A}/change-check`).set(as(OWNER_A)).send({});
     expect(res.status).toBe(200);
     expect(res.body.cases[0].verdict).toBe("not-salesforce");
+  });
+});
+
+// D-73 step 4: a person decides on a repair a replay proposed.
+describe("approve or reject a repair proposal (D-73 step 4)", () => {
+  const SAVED_IR = {
+    meta: { feature: "f", title: "Save a Zq name", priority: "high", sourcePrompt: "p", baseUrl: "https://a-one.example.com" },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/form" } },
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name", css: "input[name=\"old\"]" }, value: "Northwind" },
+      { id: "s3", action: "assert", target: { text: "Saved Northwind" }, assertion: "visible" },
+    ],
+  };
+  const VERIFIED_IR = { ...SAVED_IR, steps: SAVED_IR.steps.map((s) => (s.id === "s2" ? { ...s, target: { role: "textbox", name: "Zq Name" } } : s)) };
+  const repairDir = () => path.join("runs", RUN_A, "cases", "case-0", "repair");
+  const propose = (over: Record<string, unknown> = {}) => {
+    mkdirSync(repairDir(), { recursive: true });
+    writeFileSync(path.join(repairDir(), "ir.json"), JSON.stringify(VERIFIED_IR));
+    writeFileSync(path.join(repairDir(), "proposal.json"), JSON.stringify({
+      state: "proposed", kind: "element-changed", reason: "zq", stepId: "s2", rung: "exact-match",
+      before: SAVED_IR.steps[1].target, after: { role: "textbox", name: "Zq Name" },
+      caseId: CASE_A, fromVersion: 1, verification: { passed: true }, ...over,
+    }));
+  };
+  const decisions = path.join("runs", "_cache", "repair-decisions", `${CASE_A}.json`);
+  beforeEach(() => {
+    for (const row of [...db.test_cases, ...db.test_case_versions]) if (row.id === CASE_A || row.test_case_id === CASE_A) row.ir = SAVED_IR;
+  });
+  afterEach(() => { rmSync(decisions, { force: true }); });
+
+  it("approve saves the verified test as the NEXT VERSION of the same case, and records it on the run", async () => {
+    propose();
+    const res = await request(app).post(`/api/runs/${RUN_A}/cases/case-0/repair/approve`).set(as(OWNER_A)).send({});
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.repair).toMatchObject({ state: "approved", newVersion: 2, decidedBy: OWNER_A });
+    const row = db.test_cases.find((c: any) => c.id === CASE_A);
+    expect(row.current_version).toBe(2);
+    expect(row.ir.steps[1].target).toEqual({ role: "textbox", name: "Zq Name" });
+    expect(db.test_cases.filter((c: any) => c.title === "A login")).toHaveLength(1);   // no duplicate case
+    const v2 = db.test_case_versions.find((v: any) => v.test_case_id === CASE_A && v.version === 2);
+    expect(v2.change_note).toMatch(/Repair approved: step s2/);
+    // Approving again is refused.
+    const again = await request(app).post(`/api/runs/${RUN_A}/cases/case-0/repair/approve`).set(as(OWNER_A)).send({});
+    expect(again.status).toBe(409);
+    expect(again.body.error).toMatch(/already approved \(saved as version 2\)/);
+  });
+
+  it("a case that moved on since the run answers 409 with the newer state, never overwritten", async () => {
+    propose();
+    db.test_cases.find((c: any) => c.id === CASE_A).current_version = 2;
+    const res = await request(app).post(`/api/runs/${RUN_A}/cases/case-0/repair/approve`).set(as(OWNER_A)).send({});
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ expectedVersion: 1, currentVersion: 2 });
+  });
+
+  it("a viewer of org A cannot approve", async () => {
+    propose();
+    const res = await request(app).post(`/api/runs/${RUN_A}/cases/case-0/repair/approve`).set(as(VIEWER_A)).send({});
+    expect(res.status).toBe(403);
+  });
+
+  it("reject records the decision (never proposed again) and leaves the case unchanged", async () => {
+    propose();
+    const res = await request(app).post(`/api/runs/${RUN_A}/cases/case-0/repair/reject`).set(as(OWNER_A)).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.repair.state).toBe("rejected");
+    expect(db.test_cases.find((c: any) => c.id === CASE_A).current_version).toBe(1);
+    const { isRejected } = await import("../src/stages/regressionRepair.js");
+    expect(isRejected(CASE_A, "s2", { role: "textbox", name: "Zq Name" })).toBe(true);
+    expect(isRejected(CASE_A, "s2", { role: "textbox", name: "Something else" })).toBe(false);
+  });
+
+  it("a run case with no proposal is a 404; flag off is a 404", async () => {
+    rmSync(repairDir(), { recursive: true, force: true });
+    expect((await request(app).post(`/api/runs/${RUN_A}/cases/case-0/repair/approve`).set(as(OWNER_A)).send({})).status).toBe(404);
+    propose();
+    delete process.env.REGRESSION_REPAIR_ENABLED;
+    expect((await request(app).post(`/api/runs/${RUN_A}/cases/case-0/repair/approve`).set(as(OWNER_A)).send({})).status).toBe(404);
+  });
+
+  it("editing a step by hand pins it (never repaired automatically again)", async () => {
+    const { formatIrStep } = await import("../src/stages/stepText.js");
+    const lines = SAVED_IR.steps.map((s: any) => formatIrStep(s));
+    lines[1] = lines[1].replace("Northwind", "Southwind");   // a value edit: instant save, no browser
+    const res = await request(app).post(`/api/cases/${CASE_A}/steps`).set(as(OWNER_A)).send({ steps: lines });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(db.test_cases.find((c: any) => c.id === CASE_A).ir.meta.pinnedSteps).toEqual(["s2"]);
   });
 });

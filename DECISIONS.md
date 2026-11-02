@@ -2363,3 +2363,29 @@ refused; a slow page refused; a later hidden check escalated; a repair that stil
 proposed; a Salesforce rename repaired through the field binding; the replay attaches the proposal.
 Five rules each fail a test when removed. Not built: approving (step 4), pinned hand-edited steps, and
 explaining a mass failure by a single org change from step 2.
+
+**Step 4, approve (built 2026-11-02).** Same flag, `REGRESSION_REPAIR_ENABLED` (off: both routes 404).
+Two NEW routes, `POST /api/runs/:runId/cases/:caseId/repair/approve` and `.../repair/reject`, tester
+role on the run. Approve takes only a proposal in state "proposed" and saves the IR the re-run verified
+as the NEXT VERSION of the same library case through the ordinary `updateCase` path, with
+`expectedVersion` = the version the replay ran (`fromVersion` on the proposal): a case edited since
+the run answers 409 with the newer version, never overwritten, and approving twice is a 409. The
+version note reads "Repair approved: step <id> ..."; the proposal and the run's summary record who
+decided, when, and the new version. Reject takes "proposed" or "needs-person", leaves the case
+untouched, and is remembered per case as step id + the new element's role and name
+(`runs/_cache/repair-decisions/<caseId>.json`): `attemptRepair` never proposes that exact repair again,
+but a different element for the same step can still be proposed. A step a person edits by hand in the
+step editor is PINNED (`IR.meta.pinnedSteps`, written by `prepareEdit` only while the flag is on, kept
+by an approval, stripped from model output in `toIR`): a pinned step is never repaired automatically,
+the replay reports it as "edited by hand" instead. The run page shows Approve (proposed only) and
+Reject buttons and a link to the passing re-run's screenshot; the buttons replace the notice in place.
+Rejected: approving without a version check (a stale run could silently undo a person's later edit),
+and approving a "needs-person" proposal (it was never verified). Proven: route tests in
+`tests/multiTenancy.test.ts` (approve makes v2 of the same case, stale 409, approve twice 409, viewer
+403, reject remembered, no proposal or flag off 404, an edit pins its step, org B gets 404 on org A's
+run); `tests/regressionRepair.test.ts` (a pinned step and a rejected repair are not proposed; the
+proposal on disk names the case and version); the UI in `tests/appJsChangeCheck.test.ts`. Tried in the
+browser on a demo replay run: the buttons show, and the first click exposed a real bug (the proposal
+did not carry its case id, so approve refused) now fixed and covered by test (f). A real approve
+against the hosted case library was not tried. Rejections live under `runs/`, so where `runs/` is not
+kept (TD-181) a rejected repair can be proposed again after a restart.

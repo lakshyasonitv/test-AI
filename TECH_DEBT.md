@@ -6196,3 +6196,13 @@ by hand). Some test writes the run-target file for a real-looking run id and nev
 skips such stubs in the run list, but they accumulate, and a parallel `apiContract` run once failed while
 they were being written (passes alone). Candidate fix: find the test (likely one that calls the
 run-target writer under a generated run id) and point it at a temporary folder, as TD-164 did for walks.
+
+### TD-181. A rejected repair is remembered under `runs/`, which a container may not keep — Low / Deliberate — **Open**
+
+**Found 2026-11-02** (D-73 step 4). A person's Reject on a repair proposal is stored in
+`runs/_cache/repair-decisions/<caseId>.json`, and `attemptRepair` reads it to avoid proposing the same
+repair again. On a host where `runs/` is not on persistent storage (the Azure container restarts with
+an empty `runs/`), the record is lost and the same repair is proposed again on the next replay. Nothing
+is saved wrongly: a proposal still needs a person's Approve. Pinned steps (`IR.meta.pinnedSteps`) are
+not affected, they live in the case itself. Candidate fix: store the decision with the library case
+(a column or a row next to `test_case_versions`) when the library is on, keeping the file for local use.
