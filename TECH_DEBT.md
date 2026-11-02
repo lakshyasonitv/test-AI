@@ -6178,3 +6178,10 @@ Save fail. IR cache key part bumped to `test-data:3` (TD-22). Tests: `tests/test
 fix / unlisted-field / "all required fields" cases; three fail with the rule disabled). Not changed: optional
 fields the case never touches are not ADDED, and `snapPicklist` still maps a value to the one option containing it
 ("Technology" -> "Biotechnology" in that replay), which saves but may not be the option meant.
+
+**Follow-up (2026-11-02).** Two real requests still slipped through: "fill all the **filed** which are there" (run
+`2026-10-29T04-50-18-125Z-a0fe4a84`: the case planned 25 Account fields, 24 were dropped) and "can you fill the
+account with each and every" (the noun left unsaid, live run `2026-10-29T04-02-12-018Z-8fc37033`). "Field" is now
+recognised by its letters (filed, fileds, fild, feild, flied; never "filled"), and a request ending in "each and
+every" counts. Replayed on the 33-field Account case, all three phrasings keep 33 of 33; "create an account" keeps 1.
+Cache key part `test-data:4`.

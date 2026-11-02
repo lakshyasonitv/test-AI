@@ -64,6 +64,11 @@ describe("asksForEveryField: the person's own words ask for the whole form", () 
     "create a contact with every feild",
     "can you create a account filling each and every componet of that",   // the real request, typo and all
     "fill all the filds",
+    "can you create aan account and fill all the filed which are there",  // run 2026-10-29T04-50-18-125Z-a0fe4a84
+    "create account with all fileds",
+    "fill every flied",
+    "can you fill the account with each and every",                       // live run 2026-10-29T04-02-12-018Z-8fc37033
+    "create a contact and fill each and every of it",
   ])("yes: %s", (request) => expect(asksForEveryField(request)).toBe(true));
 
   it.each([
@@ -73,6 +78,9 @@ describe("asksForEveryField: the person's own words ask for the whole form", () 
     "fill one opportunity with full of the fields which are required",
     "all fields are required",
     "check every link on the page",
+    "make sure all filled values show on the record",
+    "fill all the required filds",
+    "check each and every link on the home page",
   ])("no: %s", (request) => expect(asksForEveryField(request)).toBe(false));
 });
 

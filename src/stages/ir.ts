@@ -2371,7 +2371,8 @@ Example — handling duplicate selectors with nth:
     // Session 102: values fixed from the org model (TEST_DATA_ENABLED); an IR cached without it keeps the old values.
     // 2: a lookup keeps the name of the record this case created (Phase A).
     // 3: an "each and every field" request keeps every field the case fills (asksForEveryField).
-    ...(testDataEnabled() ? ["test-data:3"] : []),
+    // 4: that check also reads "filed"/"flied" and a trailing "each and every" (TD-179).
+    ...(testDataEnabled() ? ["test-data:4"] : []),
     // D-63: an IR compiled on a frontdoor run starts with the env-referenced login; it must never be
     // served to a password run on the same org, nor the reverse. Absent on every other run.
     ...(currentFrontdoor() ? [`sf-frontdoor:${currentFrontdoor()!.instanceHost}`] : []),

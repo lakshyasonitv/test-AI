@@ -197,18 +197,35 @@ const mentions = (request: string, s: string) => {
  * words, never the model's, like `mentions`. A phrase that narrows itself to the required ones ("all
  * required fields", "full of the fields which are required") does not count. Before this, such a
  * request named no field, so the fill policy dropped every optional one: 33 fields filled with the pass
- * off (run 2026-10-28T05-42-18-894Z-a951424e), 1 with it on. That request was typed "each and every
- * componet", so the nouns are matched by stem, typos included ("feild", "filds", "componet").
+ * off (run 2026-10-28T05-42-18-894Z-a951424e), 1 with it on. People type these words fast ("each and
+ * every componet", "fill all the filed which are there", run 2026-10-29T04-50-18-125Z-a0fe4a84, where 24
+ * of 25 planned fields were dropped), so the nouns are matched by stem and "field" by its letters.
  */
 export function asksForEveryField(request: string): boolean {
-  const text = ` ${request.toLowerCase().replace(/\s+/g, " ")} `;
+  const text = request.toLowerCase().replace(/\s+/g, " ").trim();
   if (/\bfill(?:ing|ed)?(?: in| out| up)? everything\b/.test(text)) return true;
-  const whole = /\b(?:each and every|every|all|full|complete|whole)\b(?: \S+){0,3}? (?:f\w{0,2}ld\w{0,2}|compo\w*|detai\w*|input\w*|column\w*|attribut\w*)\b/g;
-  for (const m of text.matchAll(whole)) {
-    const around = text.slice(m.index!, m.index! + m[0].length + 30);
-    if (!/\b(?:required|mandatory)\b/.test(around)) return true;
+  // "fill the account with each and every" (a live request, 2026-10-29): the noun left unsaid.
+  if (/\beach and every(?: (?:of|in|on|for|the|that|this|it|one|thing|bit|part))*[.!?]?$/.test(text)) return true;
+  const words = text.split(" ").map((w) => w.replace(/[^a-z]/g, ""));
+  for (let i = 0; i < words.length; i++) {
+    if (!/^(?:every|all|full|complete|whole)$/.test(words[i])) continue;
+    // The noun within the next four words ("all the fields", "every field on the form").
+    const j = words.slice(i + 1, i + 5).findIndex(isFieldWord);
+    if (j < 0) continue;
+    // Not when it narrows itself: "all required fields", "fields which are required".
+    const span = words.slice(i, i + j + 7).join(" ");
+    if (!/\b(?:required|mandatory)\b/.test(span)) return true;
   }
   return false;
+}
+
+/** A word meaning the form's fields, as people type it: field(s), filed, fild, feild, flied, plus
+ *  component / detail / input / column / attribute by stem. Never "filled" (the verb). */
+function isFieldWord(word: string): boolean {
+  const w = word.replace(/s$/, "");
+  if (/^(?:compo|detai|input|column|attribut)/.test(w)) return true;
+  if (w === "filled" || w.length < 4 || w.length > 6 || w[0] !== "f" || !w.endsWith("d")) return false;
+  return w.includes("i") && w.includes("l");
 }
 
 // ---- the pass -----------------------------------------------------------------------------------
