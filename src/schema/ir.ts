@@ -110,6 +110,18 @@ export const Remembered = z.object({
     objects: z.array(z.record(z.unknown())),
     flows: z.array(z.record(z.unknown())).optional(),
   }).optional(),
+  /** Step 1B: what each element a step acted on looked like during the PASSING run, by step id,
+   *  read by the generated spec just before the step acted. `matches` over 1 is a guess. `sfField` is
+   *  the Salesforce field ("Account.Name") from Lightning's own binding: it survives label renames. */
+  elements: z.record(z.object({
+    path: z.string(),
+    matches: z.number(),
+    tag: z.string().optional(),
+    role: z.string().optional(),
+    type: z.string().optional(),
+    name: z.string().optional(),
+    sfField: z.string().nullable().optional(),
+  })).optional(),
   /** Values that cannot be replayed as saved: an org record id, a fixed calendar date. */
   oneTimeValues: z.array(z.object({
     stepId: z.string(),

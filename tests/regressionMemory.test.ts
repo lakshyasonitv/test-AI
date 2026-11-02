@@ -112,6 +112,12 @@ describe("rememberForSave", () => {
   const irFile = write("r2/cases/case-0/04-ir.json", {});
   write("r2/03-cases.json", cases);
   write("r2/02-appmodel.json", appModel);
+  write("r2/07-suite-summary.json", { cases: [{ caseId: "case-0", status: "passed" }] });
+  write("r2/cases/case-0/artifacts/elements.json", {
+    s2: { path: "/lightning/o/Zq_Deal__c/new", matches: 1, tag: "input", role: "", type: "text", name: "Zq Name", sfField: "Zq_Deal__c.Name" },
+    s3: { path: "/lightning/o/Zq_Deal__c/new", matches: 2, tag: "button", role: "", type: "", name: "Save", sfField: null },
+    gone: { path: "/x", matches: 1 },
+  });
   const now = new Date("2026-11-02T10:00:00Z");
 
   it("remembers the meaning, the org snapshot and when, and still parses as an IR", () => {
@@ -122,7 +128,12 @@ describe("rememberForSave", () => {
     expect(m.meaning).toEqual({ title: "Create a Zq Deal", steps: cases[0].steps, expected: "The deal is created.", intent: "Create a deal", category: "valid" });
     expect(m.org?.objects.map((o: any) => o.api)).toEqual(["Zq_Deal__c"]);
     expect(m.oneTimeValues).toBeUndefined();
-    expect(warnings).toEqual([]);
+    // Step 1B: the details the passing run recorded, for this IR's steps only (not "gone").
+    expect(m.elements).toEqual({
+      s2: { path: "/lightning/o/Zq_Deal__c/new", matches: 1, tag: "input", role: "", type: "text", name: "Zq Name", sfField: "Zq_Deal__c.Name" },
+      s3: { path: "/lightning/o/Zq_Deal__c/new", matches: 2, tag: "button", role: "", type: "", name: "Save" },
+    });
+    expect(warnings).toEqual(["Step s3 matched more than one element when the case passed: the test used the first, which may not stay the right one."]);
     expect(IR.parse(saved).meta.remembered).toEqual(m);    // survives the schema the library parses with
     expect(saved.steps).toEqual(ir().steps);                // the steps themselves are untouched
   });
@@ -141,7 +152,21 @@ describe("rememberForSave", () => {
       { id: "s1", action: "fill", target: { role: "textbox", name: "Zq Close" }, value: "12/31/2026" },
     ]), irFile, now });
     expect(warnings[0]).toMatch(/saved without it/);
-    expect(warnings[1]).toMatch(/fixed date 12\/31\/2026/);
+    expect(warnings.some((w) => /fixed date 12\/31\/2026/.test(w))).toBe(true);
+  });
+
+  it("keeps no element details from a run where the case did not pass, and says so", () => {
+    write("r3/07-suite-summary.json", { cases: [{ caseId: "case-0", status: "failed" }] });
+    write("r3/cases/case-0/artifacts/elements.json", { s2: { path: "/x", matches: 1 } });
+    const { ir: saved, warnings } = rememberForSave({ runsRoot: root, runId: "r3", caseId: "case-0", ir: ir(), irFile, now });
+    expect(saved.meta.remembered?.elements).toBeUndefined();
+    expect(warnings.some((w) => /did not pass/.test(w))).toBe(true);
+  });
+
+  it("a healed case never keeps the failing run's element details, even when accepted", () => {
+    const healed = write("r2/cases/case-0/healed/ir.json", {});
+    const { ir: saved } = rememberForSave({ runsRoot: root, runId: "r2", caseId: "case-0", ir: ir(), irFile: healed, acceptHealed: true, now });
+    expect(saved.meta.remembered?.elements).toBeUndefined();
   });
 
   it("a healed case is refused until a person accepts it", () => {

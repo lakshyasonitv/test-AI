@@ -2264,7 +2264,7 @@ like a missing element. Multi-URL runs (`discoverPagesHybrid`) are not shared.
 
 ## D-73. Regression testing follows the "Regression testing in Testbench" design: remember, check, repair safely, approve
 
-**Status:** Step 1 ("Remember", part A) built on `refactored-code` 2026-11-02, behind
+**Status:** Step 1 ("Remember", parts A and B) built on `refactored-code` 2026-11-02, behind
 `REGRESSION_MEMORY_ENABLED` (default off).
 
 **What.** The team's design (26 Oct, @Vaibhav) is followed in its order: (1) a saved case remembers
@@ -2292,3 +2292,16 @@ part of the IR, which `test_cases.ir` and every version already store, so no mig
 match count) and the Salesforce field binding (`data-target-selection-name`) need the generated spec
 to record them, so they come with their own real-browser tests. The Salesforce release is not in the
 org model yet; step 2 reads it.
+
+**Part B (built 2026-11-02).** With the flag on, the generated spec calls `remember()` before each
+click/fill/select/check/press: the step's locator WITHOUT `.first()` (so `matches` is the real
+count), the element's tag, role, type and identifying name (never its value), the page's path (never
+its query), and the Salesforce field from `data-target-selection-name="sfdc:RecordField.<Object>.<Field>"`.
+The field is found by walking up through `assignedSlot`, parents and shadow-root hosts, because a real
+Lightning Account form slots the input's component into the wrapper's shadow root (confirmed in this
+project's captured forms: 130 such bindings on one Account form). Written to `artifacts/elements.json`
+by step id. Saving keeps it only when the case PASSED in that run, and never for a healed case (its
+details came from the failing run); `matches > 1` is returned as a warning. Best effort: two 2 s waits
+at most, and a failure to remember never fails the step. Flag off: no call and no helper in the spec.
+Proven in real Chromium (`tests/regressionElements.test.ts`): removing the `assignedSlot` hop turns the
+recorded field from `Account.Name` into `null` and fails the test.

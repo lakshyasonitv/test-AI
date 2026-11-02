@@ -406,6 +406,67 @@ async function waitForAuthSettle(page) {
  * (3 samples: one extra versus before, to prove the picture was ever drawn), versus a blind
  * 2-3s delay that would be paid on every step of every case regardless.
  */
+/**
+ * Regression step 1B (D-73, REGRESSION_MEMORY_ENABLED): what each element a step acts on looked like,
+ * read just BEFORE the step acts (a click can take the element away) and written to
+ * `<artifacts>/elements.json`, keyed by step id so a retry overwrites rather than duplicates. Saving a
+ * case from a PASSING run keeps it (regressionMemory.ts), so a later repair knows what to look for.
+ *
+ * - `matches`: how many elements the step's locator matched. More than one is a guess waiting to go wrong.
+ * - `sfField`: the Salesforce field the element belongs to, from the `data-target-selection-name=
+ *   "sfdc:RecordField.<Object>.<Field>"` Lightning puts around every record field. It keeps its API
+ *   name when the label is renamed. Found by walking up through slots and shadow-root hosts, because
+ *   that is how Lightning nests a field's input inside its wrapper (seen on a real Account form).
+ * - Never the element's VALUE: only what identifies it. The page's path only, never its query.
+ *
+ * Best effort throughout: remembering must never fail or slow a step beyond its 2 s waits. The
+ * in-page callback has no inner functions (TD-40).
+ */
+const REMEMBER_HELPER = `
+const REMEMBERED = {};
+async function remember(page, loc, stepId, file) {
+  try {
+    await loc.first().waitFor({ state: "attached", timeout: 2000 }).catch(() => {});
+    const matches = await loc.count();
+    const info = matches ? await loc.first().evaluate((el) => {
+      let sfField = null;
+      let n = el;
+      for (let k = 0; n && k < 60 && !sfField; k++) {
+        const v = n.getAttribute ? n.getAttribute("data-target-selection-name") : null;
+        if (v && v.indexOf("sfdc:RecordField.") === 0) sfField = v.slice(17);
+        const root = n.getRootNode ? n.getRootNode() : null;
+        n = n.assignedSlot || n.parentElement || (root && root !== document && root.host) || null;
+      }
+      const named = el.getAttribute("aria-label") || (el.labels && el.labels[0] ? el.labels[0].innerText : "")
+        || el.getAttribute("placeholder") || el.getAttribute("title") || el.innerText || "";
+      return {
+        tag: el.tagName.toLowerCase(),
+        role: el.getAttribute("role") || "",
+        type: el.getAttribute("type") || "",
+        name: String(named).replace(/\\s+/g, " ").trim().slice(0, 80),
+        sfField,
+      };
+    }, undefined, { timeout: 2000 }) : null;
+    REMEMBERED[stepId] = { path: new URL(page.url()).pathname, matches, ...(info || {}) };
+    writeFileSync(file, JSON.stringify(REMEMBERED, null, 2));
+  } catch { /* best effort: remembering never fails a step */ }
+}`;
+
+/** The locator `remember` counts for a step: every element its target can match, NOT `.first()`, so
+ *  `matches` is the real number. Null for a target with nothing stable to count. */
+export function rememberLocatorCode(step: Step): string | null {
+  const t = step.target;
+  if (!t || !["click", "fill", "select", "check", "press"].includes(step.action)) return null;
+  const root = frameRootCode(t);
+  if (t.css) return `${root}.locator(${q(t.css)})`;
+  if (t.testId) return `${root}.getByTestId(${q(t.testId)})`;
+  if (t.role && t.name) return `${root}.getByRole(${q(t.role)}, { name: ${q(t.name)}, exact: true })`;
+  if (t.label) return `${root}.getByLabel(${q(t.label)}, { exact: true })`;
+  if (t.placeholder) return `${root}.getByPlaceholder(${q(t.placeholder)}, { exact: true })`;
+  if (t.text) return `${root}.getByText(${q(t.text)}, { exact: true })`;
+  return null;
+}
+
 const SHOT_HELPER = `
 async function shot(page, path) {
   const step = Number(process.env.SCREENSHOT_SETTLE_MS ?? 150);
@@ -1201,6 +1262,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   // runs the whole login and screenshots where it landed; the rest record that it is done and take
   // no screenshot, so no login frame (with the username readable) is written (TD-173).
   const login = fixedLoginBlock(ir);
+  const rememberSteps = process.env.REGRESSION_MEMORY_ENABLED === "true";
   // A text check after a click on a record's "Details" tab first scrolls its lower sections into
   // being: Lightning draws them only when scrolled to (run 2026-10-26T07-53-42-185Z-83b50b3b).
   const detailsAt = ir.steps.findIndex((s) => s.action === "click" && s.target?.role === "tab" && s.target.name === "Details");
@@ -1222,7 +1284,10 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
         : detailsAt >= 0 && i > detailsAt && step.action === "assert" && step.target?.text
         && (step.assertion === "visible" || step.assertion === "hidden")
         ? `await sfReveal(page, ${q(step.target.text)});\n` : "";
-      const code = reveal + emitStep(step, ir.meta.baseUrl);
+      // D-73 step 1B: read the element before the step acts. Off: nothing emitted, spec unchanged.
+      const memLoc = rememberSteps ? rememberLocatorCode(step) : null;
+      const memo = memLoc ? `await remember(page, ${memLoc}, ${q(step.id)}, ${q(`${shotDir}/elements.json`)});\n` : "";
+      const code = reveal + memo + emitStep(step, ir.meta.baseUrl);
       const indented = code.split("\n").map((l) => "    " + l).join("\n");
       return `    await test.step(${q(label)}, async () => {\n${indented}\n      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)});\n    });`;
     })
@@ -1261,6 +1326,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     // only ever be true — and if the splice order ever shifted it could compute false and emit
     // a spec that calls an undefined function. Always-on cannot fail that way.
     SHOT_HELPER,
+    body.includes("await remember(") ? REMEMBER_HELPER : "",
     needsLocate ? LOCATE_HELPER : "",
     needsScope ? SCOPE_HELPER : "",
     needsField ? FIELD_HELPER : "",

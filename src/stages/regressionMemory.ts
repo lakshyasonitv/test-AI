@@ -105,6 +105,49 @@ export class HealedNeedsReviewError extends Error {
   }
 }
 
+/** How a case ended in its run, from the run's suite summary; null when the run has none. */
+export function caseStatusInRun(runDir: string, caseId: string): string | null {
+  try {
+    const s = JSON.parse(readFileSync(path.join(runDir, "07-suite-summary.json"), "utf8"));
+    const c = (s?.cases ?? []).find((x: { caseId?: string }) => x?.caseId === caseId);
+    return typeof c?.status === "string" ? c.status : null;
+  } catch { return null; }
+}
+
+/**
+ * The element details the generated spec recorded (step 1B), for the steps this IR still has. Only
+ * from a PASSING run: a failing run's details describe the page that broke the test, which is not
+ * what a later repair should look for. The case's own artifacts first; the run-level artifacts for
+ * the primary case of a single-case run.
+ */
+export function passedElements(runDir: string, caseId: string, ir: IR): {
+  elements?: NonNullable<Remembered["elements"]>; why?: "not-passed" | "not-recorded";
+} {
+  if (caseStatusInRun(runDir, caseId) !== "passed") return { why: "not-passed" };
+  const candidates = [
+    path.join(runDir, "cases", caseId, "artifacts", "elements.json"),
+    ...(caseId === "case-0" ? [path.join(runDir, "artifacts", "elements.json")] : []),
+  ];
+  const file = candidates.find((f) => existsSync(f));
+  if (!file) return { why: "not-recorded" };
+  let raw: Record<string, any>;
+  try { raw = JSON.parse(readFileSync(file, "utf8")); } catch { return { why: "not-recorded" }; }
+  const ids = new Set(ir.steps.map((s) => s.id));
+  const elements: NonNullable<Remembered["elements"]> = {};
+  for (const [id, e] of Object.entries(raw ?? {})) {
+    if (!ids.has(id) || !e || typeof e.path !== "string" || typeof e.matches !== "number") continue;
+    elements[id] = {
+      path: e.path, matches: e.matches,
+      ...(typeof e.tag === "string" ? { tag: e.tag } : {}),
+      ...(typeof e.role === "string" ? { role: e.role } : {}),
+      ...(typeof e.type === "string" ? { type: e.type } : {}),
+      ...(typeof e.name === "string" ? { name: e.name } : {}),
+      ...(typeof e.sfField === "string" ? { sfField: e.sfField } : {}),
+    };
+  }
+  return Object.keys(elements).length ? { elements } : { why: "not-recorded" };
+}
+
 /**
  * What a case remembers when it is saved. `irFile` is the file the save read (a healed IR lives
  * under `healed/`). Throws HealedNeedsReviewError for a healed case unless `acceptHealed`.
@@ -130,16 +173,22 @@ export function rememberForSave(opts: {
   try { appModel = JSON.parse(readFileSync(path.join(runDir, "02-appmodel.json"), "utf8")); } catch { /* none */ }
   const org = orgSnapshot(appModel, touchedObjects(opts.ir), opts.ir.meta.baseUrl);
   const once = oneTimeValues(opts.ir);
+  // A healed case's recorded details came from the run that FAILED; never keep those.
+  const seen = healed ? { why: "not-passed" as const } : passedElements(runDir, opts.caseId, opts.ir);
+  const several = Object.entries(seen.elements ?? {}).filter(([, e]) => e.matches > 1).map(([id]) => id);
 
   const remembered: Remembered = {
     savedFrom: opts.runId,
     at: (opts.now ?? new Date()).toISOString(),
     ...(meaning ? { meaning } : {}),
     ...(org ? { org } : {}),
+    ...(seen.elements ? { elements: seen.elements } : {}),
     ...(once.length ? { oneTimeValues: once } : {}),
   };
   const warnings = [
     ...(meaning ? [] : ["The plain-English case this was compiled from was not found in the run, so it was saved without it."]),
+    ...(seen.why === "not-passed" ? ["What each element looked like was not kept: the case did not pass in this run, so a later repair has less to go on."] : []),
+    ...(several.length ? [`Step${several.length === 1 ? "" : "s"} ${several.join(", ")} matched more than one element when the case passed: the test used the first, which may not stay the right one.`] : []),
     ...oneTimeWarnings(once),
   ];
   return { ir: { ...opts.ir, meta: { ...opts.ir.meta, remembered } }, warnings };
