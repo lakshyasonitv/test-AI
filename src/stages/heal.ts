@@ -5,10 +5,10 @@ import { generateSpec } from "./generator.js";
 import { runSpec, type ExecResult } from "./executor.js";
 import { refreshPageModel } from "./liveExtend.js";
 import { credentialPolicyFor, promptCarriesCredentials, credentialEnvVars, type Credentials } from "./credentials.js";
-import { healStepTarget, type DeterministicHealResult } from "./deterministicHeal.js";
+import { healStepTarget } from "./deterministicHeal.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
-import type { IR, Step } from "../schema/ir.js";
+import type { IR } from "../schema/ir.js";
 import type { Diagnosis } from "./failureAnalysis.js";
 import type { LlmBudget } from "../llm/llmBudget.js";
 
@@ -142,7 +142,7 @@ export function isDeterministicHealEnabled(): boolean {
  * found, signaling the caller to fall back to the LLM-based path.
  */
 export async function attemptDeterministicHeal(args: HealArgs): Promise<HealResult | null> {
-  const { testCase, ir, appModel, diagnosis, runCreds, outDir } = args;
+  const { ir, appModel, diagnosis, runCreds, outDir } = args;
 
   if (!isHealable(diagnosis, ir)) return null;
   const failIdx = ir.steps.findIndex((s) => s.id === diagnosis.failingStepId);

@@ -1,5 +1,5 @@
 import { getServiceClient } from "../db.js";
-import { AccessError, assertOrgAccess, type Role } from "./authz.js";
+import { AccessError, assertOrgAccess } from "./authz.js";
 import { KeyPool } from "../llm/keyPool.js";
 import { GEMINI_MODELS } from "../llm/gemini.js";
 import type { LlmConfig } from "../llm/llmContext.js";

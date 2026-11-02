@@ -8,7 +8,7 @@ import type { SpecModel } from "./schema/spec.js";
 import { generateCases, generatorFor } from "./stages/caseGeneration.js";
 import { runSpecComparison } from "./stages/specIntake.js";
 import { generateCasesForNewPages, finalizeCaseSelection, budgetFor, NoTestCasesError, type TestCase } from "./stages/testCases.js";
-import { toIR, type IRResult } from "./stages/ir.js";
+import { toIR } from "./stages/ir.js";
 import { LlmBudget, enterWithBudget, type LlmUsageSnapshot } from "./llm/llmBudget.js";
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import { enterWithRunLocale } from "./browserLaunch.js";
@@ -37,7 +37,6 @@ import { store } from "./runStore.js";
 import { rememberRunSecrets, scrubRunSecrets } from "./runSecrets.js";
 import { buttonExplorerEnabled, exploreButtons } from "./stages/buttonExplorer.js";
 import { ALL_SCOPES } from "./kb/testStrategy.js";
-import type { IR, Step } from "./schema/ir.js";
 
 export type StageName =
   | "input" | "plan" | "discovery" | "testcases" | "credentials" | "ir"

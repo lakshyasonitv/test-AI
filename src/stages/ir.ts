@@ -4,7 +4,7 @@ import { parseJson } from "../llm/json.js";
 import { isRateLimitError } from "../llm/backoff.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
+import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary, siteHost, pageKey, lineKey } from "../text.js";
 import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion, finalScreenErrors } from "./liveExtend.js";
 import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
@@ -2857,7 +2857,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // mistyped model id) will never succeed by re-sending the same request — burning the
       // rest of MAX_ATTEMPTS on it just wastes budget, and worse, previously reported "IR
       // failed schema validation after retry" for what was actually an API-key/model problem
-      // (problems.md Cross-cutting #1 — a user reading that message has no way to tell "your
+      // (docs/archive/problems.md Cross-cutting #1 — a user reading that message has no way to tell "your
       // site is broken" apart from "your credentials are wrong"). Fail fast, and mark the
       // thrown error structurally (`.isInfrastructureError`), not just in its message text, so
       // a caller can route it differently without string-matching — this is exactly the class

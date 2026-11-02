@@ -24,12 +24,8 @@ import { discoverUsingCrawler, extractDomModelFromPage, needsVisionFallback, ele
 import {
   modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
 } from "./discovery.js";
-import {
-  credentialFieldMap, credentialKindForTarget, redactCredentials,
-  type Credentials, type CredentialKind,
-} from "./credentials.js";
-import { AUTH_VERB, waitForAuthSettle } from "./authSettle.js";
-import { runStepLive } from "./liveExtend.js";
+import { redactCredentials, type Credentials } from "./credentials.js";
+import { waitForAuthSettle } from "./authSettle.js";
 import { resolveLive } from "./targetResolver.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { cutAtBoundary, siteHost } from "../text.js";
@@ -178,7 +174,6 @@ ${screenshotBase64 ? "\nA screenshot is attached for visual disambiguation (icon
 
 Return JSON: { "concepts": string[], "labeledElements": { "index": number, "concept": string }[] }`;
 
-  let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const { content: raw } = await llm(user, {
       systemInstruction: system,
@@ -194,9 +189,8 @@ Return JSON: { "concepts": string[], "labeledElements": { "index": number, "conc
         if (isCacheableResult(parsed)) llmCacheSet(cacheKey, parsed);
         return parsed;
       }
-      lastErr = "Invalid shape";
-    } catch (err: any) {
-      lastErr = err?.message ?? String(err);
+    } catch {
+      // Unparseable answer: try again, then fall back to no labels below.
     }
   }
 
@@ -680,10 +674,6 @@ export function isAllowedEntryUrl(urlStr: string): { ok: boolean; reason?: strin
     return { ok: false, reason: `Invalid URL "${urlStr}": ${err?.message ?? err}` };
   }
 }
-
-/** Roles a credential can actually be typed into. Mirrors credentials.ts's own FILLABLE_ROLE:
- *  without it, a BUTTON named "Login" matches the identifier pattern and looks like a field. */
-const FILLABLE_ROLE = /textbox|searchbox|combobox/i;
 
 /** Ends the session if clicked — the button-shaped counterpart to LOGOUT_PATH. */
 const SIGN_OUT_VERB = /^(sign\s*out|log\s*out|logout|signout|log\s*off)$/;

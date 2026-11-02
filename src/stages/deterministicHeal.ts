@@ -1,5 +1,5 @@
 import type { AppModel, Element, PageModel } from "../schema/appModel.js";
-import type { IR, Step, Target } from "../schema/ir.js";
+import type { Step, Target } from "../schema/ir.js";
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 
@@ -220,39 +220,4 @@ export function healStepTarget(
     confidence,
     changeDescription,
   };
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Suite-level: heal multiple failing steps across a suite
-// ──────────────────────────────────────────────────────────────────────────────
-
-export interface SuiteDeterministicHealResult {
-  healedSteps: Array<{
-    stepId: string;
-    result: DeterministicHealResult;
-  }>;
-  unhealableStepIds: string[];
-}
-
-/**
- * Attempt deterministic healing for multiple failing steps in a suite run.
- * Each step is healed independently against the same AppModel.
- */
-export function healSuiteSteps(
-  steps: Step[],
-  appModel: AppModel,
-): SuiteDeterministicHealResult {
-  const healedSteps: SuiteDeterministicHealResult["healedSteps"] = [];
-  const unhealableStepIds: string[] = [];
-
-  for (const step of steps) {
-    const result = healStepTarget(step, appModel);
-    if (result) {
-      healedSteps.push({ stepId: step.id, result });
-    } else {
-      unhealableStepIds.push(step.id);
-    }
-  }
-
-  return { healedSteps, unhealableStepIds };
 }

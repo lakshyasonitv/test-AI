@@ -671,7 +671,7 @@ const PASSWORD_AT_FAULT = /\b(?:invalid|incorrect|wrong|bad)\s+(?:password|crede
  * reports a verdict; not substituting merely leaves the model's invented value in place.
  */
 export function credentialPolicyFor(
-  testCase: TestCase, promptHasCredentials: boolean,
+  testCase: TestCase, _promptHasCredentials: boolean,
 ): CredentialPolicy {
   // Tested per FIELD, not joined into one string (TECH_DEBT.md D3). A joined string let a
   // trigger word in one field and a fault word in a different, unrelated field bridge together
@@ -709,11 +709,6 @@ export function credentialPolicyFor(
   // fixes it.
   if (testCase.fromPrompt) return "full";
   return category === "valid" ? "full" : "none";
-}
-
-/** Does this case receive any substitution at all? Thin wrapper over the policy. */
-export function wantsRealCredentials(testCase: TestCase, promptHasCredentials: boolean): boolean {
-  return credentialPolicyFor(testCase, promptHasCredentials) !== "none";
 }
 
 const REGISTRATION_URL = /register|signup|sign-up|create-account|join/i;

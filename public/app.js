@@ -3896,12 +3896,12 @@ const runMetaEl = document.getElementById("runMeta");
  *
  *  - truncated / truncated_no_assertion / incomplete all become "unconfirmed".
  *    They are three names for one situation: the test ran and proved nothing.
- *    Reporting any of them as a pass is what problems.md calls out under
+ *    Reporting any of them as a pass is what docs/archive/problems.md calls out under
  *    "a truncated test can report green".
  *
  *  - error becomes "blocked", NOT "failed". An invalid API key or a dead model
  *    id is not the site under test misbehaving, and reporting it as a failure is
- *    the single most expensive defect in problems.md ("you were told your
+ *    the single most expensive defect in docs/archive/problems.md ("you were told your
  *    website has failing tests when the truth was that your API key was
  *    invalid"). --blocked carries its own hue precisely so "we couldn't run"
  *    can never be read as "your site is broken".

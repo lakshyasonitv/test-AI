@@ -198,7 +198,13 @@ export function perTestTimeoutMs(specCode: string): number {
  * any case long enough to pass it.
  */
 export function killTimeoutMs(specCode: string): number {
-  return perTestTimeoutMs(specCode) + KILL_SLACK_MS;
+  return killAfter(perTestTimeoutMs(specCode));
+}
+
+/** The backstop for a given per-test budget — the ONE formula, used by the run below and by
+ *  `killTimeoutMs`, so the tested value and the timer that actually fires cannot drift apart. */
+function killAfter(perTestMs: number): number {
+  return perTestMs + KILL_SLACK_MS;
 }
 
 /**
@@ -493,7 +499,7 @@ async function executePlaywright(
 
     // Safety timeout: kill Playwright if it outlives its own per-test budget plus finalization
     // slack. Derived per spec rather than fixed, so it stays above the budget as that scales.
-    const killMs = perTestMs + KILL_SLACK_MS;
+    const killMs = killAfter(perTestMs);
     const timeout = setTimeout(() => {
       console.error(executorRunTag() + `[executor] TIMEOUT ${killMs / 1000}s — killing Playwright (pid=${p.pid})`);
       p.kill("SIGKILL");

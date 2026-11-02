@@ -462,7 +462,6 @@ export async function runSuite(
         // case threw even earlier, at `healAttempted` in the heal path, for the same net effect.
         // The primary case was never affected — it runs through orchestrator.ts, not this loop.
         let deterministicHeal = false;
-        let healAttempted = 0;
         if (!result.passed) {
           const callsBeforeDiagnosis = llmBudget?.snapshot().calls ?? 0;
           const diagnosis = await analyzeFailure(ir, result, appModel.auth?.loginUrl);
@@ -480,7 +479,6 @@ export async function runSuite(
           // the original, or a healed-and-passing case would still get reported truncated/failed.
           if (selfHeal && healsUsed < MAX_SUITE_HEALS && isHealable(diagnosis, ir)) {
             healsUsed++;
-            healAttempted = 1;   // per-case: heal is one-shot, so this case is on its retry 1
             // Say that it is happening, BEFORE it happens.
             //
             // A heal re-runs the whole case in a real browser, so the user watches the tests run
