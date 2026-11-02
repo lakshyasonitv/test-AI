@@ -4015,7 +4015,95 @@ async function startReplay(selection, label) {
 
 // ---------------------------------------------------------------- Suite view
 
+/**
+ * D-73 step 2: "Check for changes" on a suite (REGRESSION_CHANGE_CHECK_ENABLED). Before running the
+ * suite, the server compares the Salesforce org now with what each saved case remembered and says
+ * which cases a change will break. Nothing runs, nothing is written. Rendered only when /api/health
+ * says `regressionChangeCheck: true`; off, this button and its report do not exist.
+ * No new class (rule 3): the report reuses .panel, .hrow, .hrow-main, .hrow-label, .hrow-meta and the
+ * .case-badge/.badge-* pills; it is a plain element filled in place, never shown or hidden through
+ * .hidden (rule 4).
+ */
+let regressionChangeCheckOn = false;
+let lastSuiteViewId = null;
+
+const CHANGE_VERDICTS = {
+  "affected": { label: "Affected", cls: "badge-failed" },
+  "likely-to-fail": { label: "Likely to fail", cls: "badge-truncated" },
+  "unknown": { label: "Unknown", cls: "badge-blocked" },
+  "changed": { label: "Changed", cls: "case-badge-healed" },
+  "unchanged": { label: "Unchanged", cls: "badge-passed" },
+  "no-snapshot": { label: "No snapshot", cls: "badge-pending" },
+  "not-salesforce": { label: "Not Salesforce", cls: "badge-pending" },
+};
+
+/** The org connection this tab holds: the home view's, or the one this tab saved earlier. */
+function currentSfConnectionId() {
+  if (sfConnection && sfConnection.connectionId) return sfConnection.connectionId;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("sfConnection") || "null");
+    return saved && saved.connectionId ? saved.connectionId : null;
+  } catch { return null; }
+}
+
+function renderChangeReport(el, report) {
+  const order = ["affected", "likely-to-fail", "unknown", "changed", "unchanged", "no-snapshot", "not-salesforce"];
+  const cases = [...(report.cases || [])].sort((a, b) => order.indexOf(a.verdict) - order.indexOf(b.verdict));
+  const count = (v) => cases.filter((c) => c.verdict === v).length;
+  const summary = order.filter((v) => count(v)).map((v) => `${count(v)} ${CHANGE_VERDICTS[v].label.toLowerCase()}`).join(" · ");
+  const org = report.org
+    ? `Org ${escapeHtml(report.org.host)}${report.org.release ? ` · Salesforce ${escapeHtml(report.org.release.label)}` : ""}`
+    : "No Salesforce org was read";
+  el.innerHTML = `
+    <div class="panel">
+      <div class="hrow"><div class="hrow-main">
+        <div class="hrow-label">Change check: ${escapeHtml(summary || "no cases")}</div>
+        <div class="hrow-meta">${org} · checked ${escapeHtml(new Date(report.checkedAt).toLocaleString())} · nothing was run</div>
+        ${report.releaseNote ? `<div class="hrow-meta">${escapeHtml(report.releaseNote)}</div>` : ""}
+      </div></div>
+      ${cases.map((c) => {
+        const v = CHANGE_VERDICTS[c.verdict] || CHANGE_VERDICTS.unknown;
+        const lines = (c.findings || []).map((f) => `<div class="hrow-meta">${escapeHtml(f.message)}</div>`).join("")
+          || (c.note ? `<div class="hrow-meta">${escapeHtml(c.note)}</div>` : "");
+        return `<div class="hrow lib-row">
+          <span class="case-badge ${v.cls}">${escapeHtml(v.label)}</span>
+          <div class="hrow-main"><div class="hrow-label">${escapeHtml(c.title)}</div>${lines}</div>
+        </div>`;
+      }).join("")}
+    </div>`;
+}
+
+async function runChangeCheck(suiteId, btn, feedback) {
+  let el = document.getElementById("suiteChangeReport");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "suiteChangeReport";
+    document.getElementById("suiteFeedback").insertAdjacentElement("afterend", el);
+  }
+  const before = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  el.innerHTML = "";
+  try {
+    const connectionId = currentSfConnectionId();
+    const report = await api(`/api/suites/${encodeURIComponent(suiteId)}/change-check`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(connectionId ? { sfConnectionId: connectionId } : {}),
+    });
+    renderChangeReport(el, report);
+  } catch (err) {
+    const msg = String(err && err.message || err);
+    feedback(/connect/i.test(msg) && !/turned off/i.test(msg)
+      ? `${msg} Use Connect org on the home screen in this tab, then check again.`
+      : msg, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = before;
+  }
+}
+
 async function renderSuiteView(suiteId) {
+  lastSuiteViewId = suiteId;
   const body = document.getElementById("suiteViewBody");
   body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
 
@@ -4051,6 +4139,7 @@ async function renderSuiteView(suiteId) {
       ${canDelete ? `<button type="button" class="dl-btn-inline" data-act="delete-suite">Delete suite</button>` : ""}
       <span class="lib-toolbar-gap"></span>
       ${canAuthor ? `
+        ${regressionChangeCheckOn && cases.length ? `<button type="button" class="dl-btn-inline" data-act="change-check" title="Compare the Salesforce org now with what each case remembered. Nothing runs.">Check for changes</button>` : ""}
         <button type="button" class="dl-btn-inline" data-act="run-selected" disabled>▸ Run 0 selected</button>
         <button type="button" class="run-btn lib-run-all" data-act="run-all"${cases.length === 0 ? " disabled" : ""}>▸ Run all</button>` : ""}
     </div>
@@ -4230,6 +4319,7 @@ async function renderSuiteView(suiteId) {
       const row = btn.closest(".lib-row");
       const caseId = row?.dataset.caseId;
       try {
+        if (act === "change-check") return runChangeCheck(suiteId, btn, feedback);
         if (act === "run-all") {
           // Belt-and-braces for the empty-suite case: the button renders disabled, but a rerender
           // race between render and the click could still reach here, and running zero cases is
@@ -6150,6 +6240,12 @@ fetch("/api/health")
     if (h && h.specIntake === true) renderProToggle();
     if (h && h.jira === true) renderJiraRow();
     if (h && h.projectDiscovery === true) renderProjectFreshBox();
+    // D-73 step 2. Health can land after a suite was already drawn; redraw that suite once so its
+    // toolbar gains the button.
+    if (h && h.regressionChangeCheck === true) {
+      regressionChangeCheckOn = true;
+      if (lastSuiteViewId && document.getElementById("suiteRows")) renderSuiteView(lastSuiteViewId);
+    }
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);

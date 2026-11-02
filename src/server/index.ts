@@ -903,6 +903,9 @@ app.get("/api/health", (_req, res) => {
     // ADDITIVE, present ONLY when PROJECT_DISCOVERY_SHARING is on (D-72): the home view then offers
     // "Explore the site again". Off: the body is unchanged.
     ...(projectDiscoveryEnabled() ? { projectDiscovery: true } : {}),
+    // ADDITIVE, present ONLY when REGRESSION_CHANGE_CHECK_ENABLED is on (D-73 step 2): the Suite
+    // screen then offers "Check for changes". Off: the body is unchanged.
+    ...(regressionChangeCheckEnabled() ? { regressionChangeCheck: true } : {}),
   });
 });
 

@@ -2320,3 +2320,11 @@ unknown > changed > unchanged; a case with no snapshot is "no-snapshot", an ordi
 to) and recorded in the org model only with REGRESSION_MEMORY_ENABLED on, because it is part of the
 saved-scan fingerprint. Read-only throughout: no browser, no model, nothing written. Not built yet: a
 button on the Suite screen (the route is ready for it), and comparing page layouts.
+
+**Step 2 button (2026-11-02).** The Suite screen shows **Check for changes** when `/api/health` says
+`regressionChangeCheck: true` (additive) and the suite has cases. It sends the tab's Connect org id
+(the home view's, or the one this tab saved) and fills a report in place under the toolbar: a summary
+line (counts per verdict, the org and its release, "nothing was run"), the release note, then one row
+per case, worst first, each with its findings. Existing classes only (`.panel`, `.hrow*`,
+`.case-badge`/`.badge-*`); no `.hidden`, no `showView` (`tests/appJsChangeCheck.test.ts`). Tried on a
+real saved Salesforce suite: three cases saved before step 1 report "No snapshot", nothing ran.
