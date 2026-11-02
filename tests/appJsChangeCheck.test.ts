@@ -44,3 +44,43 @@ describe("the Suite screen's Check for changes (D-73 step 2)", () => {
     expect(CODE).toMatch(/JSON\.stringify\(connectionId \? \{ sfConnectionId: connectionId \} : \{\}\)/);
   });
 });
+
+describe("connect the org the cases need, then retry (D-73)", () => {
+  const P_START = "let orgPrompt = null;";
+  const P_END = "/** The org connection this tab holds";
+  const ps = APP.indexOf(P_START);
+  const pe = APP.indexOf(P_END, ps);
+  const PROMPT = APP.slice(ps, pe);
+  const PROMPT_CODE = PROMPT.split("\n").map((l) => { const i = l.indexOf("//"); return i < 0 ? l : l.slice(0, i); }).join("\n");
+
+  it("the prompt block is found", () => {
+    expect(ps).toBeGreaterThan(0);
+    expect(pe).toBeGreaterThan(ps);
+    expect(PROMPT).toContain("function askToConnectOrg(err, retry)");
+  });
+
+  it("only acts on an org-connection refusal that names the org, and only on the Suite screen", () => {
+    expect(PROMPT_CODE).toMatch(/if \(!err \|\| !err\.orgUrl \|\| !\/\^sf-connection-\/\.test\(err\.code \|\| ""\) \|\| !host\) return false;/);
+    expect(PROMPT_CODE).toContain(`document.getElementById("suiteFeedback")`);
+  });
+
+  it("never toggles .hidden, never calls showView, and uses only existing classes (rules 3, 4)", () => {
+    expect(PROMPT_CODE).not.toMatch(/classList\.(add|remove|toggle)\(\s*["']hidden/);
+    expect(PROMPT_CODE).not.toMatch(/showView\(/);
+    for (const cls of ["team-error", "dl-btn-inline"]) expect(CSS.includes(`.${cls}`), `.${cls} is defined in style.css`).toBe(true);
+  });
+
+  it("api() carries the server's orgUrl, and both the replay and the check ask before giving up", () => {
+    expect(APP).toContain("if (body.orgUrl) err.orgUrl = body.orgUrl;");
+    expect(APP).toContain("if (askToConnectOrg(err, () => startReplay(selection, label))) return;");
+    expect(APP).toContain("if (askToConnectOrg(err, () => runChangeCheck(suiteId, btn, feedback))) return;");
+  });
+
+  it("a successful sign-in retries what was clicked exactly once (the prompt is cleared first)", () => {
+    expect(APP).toMatch(/const retry = orgPrompt\.retry;[\s\S]{0,120}orgPrompt = null;\s*\n\s*retry\(\);/);
+  });
+
+  it("signs into the org the SERVER named, never one typed or guessed", () => {
+    expect(PROMPT_CODE).toContain("openOrgSignIn(err.orgUrl, setStatus);");
+  });
+});

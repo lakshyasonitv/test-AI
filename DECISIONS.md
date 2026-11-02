@@ -2328,3 +2328,15 @@ line (counts per verdict, the org and its release, "nothing was run"), the relea
 per case, worst first, each with its findings. Existing classes only (`.panel`, `.hrow*`,
 `.case-badge`/`.badge-*`); no `.hidden`, no `showView` (`tests/appJsChangeCheck.test.ts`). Tried on a
 real saved Salesforce suite: three cases saved before step 1 report "No snapshot", nothing ran.
+
+**Connect the org the cases need, then retry (2026-11-02).** A replay or change check refused for a
+missing, expired or wrong-org connection now answers with `orgUrl` (additive): the address of the org
+the cases sign in to. On the Suite screen the page shows that org and a **Connect org** button, opens
+Salesforce's own sign-in for THAT org (the same popup as the home view, `openOrgSignIn`), and when the
+popup reports success it retries what was clicked, once; a wrong org is refused again and asks again.
+Elsewhere (a case's own page) the old toast stays. The change check now verifies the connection for
+every case that signs in through the org (`signsInThroughOrg`: a navigate to `${env:SF_FRONTDOOR_URL}`),
+not only for cases with a snapshot. Password-login and ordinary cases are unchanged: the replay's own
+login prompt already asks again. Tried in the browser on the real "Lead create and required fields"
+suite: both Check for changes and Run all show the prompt for `ruby-data-2200-dev-ed`, nothing runs;
+a simulated success retried exactly once.

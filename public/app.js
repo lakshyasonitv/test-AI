@@ -3979,6 +3979,7 @@ async function api(path, init) {
   if (!res.ok) {
     const err = new Error(body.error || `That didn't work (${res.status}).`);
     err.code = body.code;   // a machine-readable reason, when the server gives one
+    if (body.orgUrl) err.orgUrl = body.orgUrl;   // D-73: the Salesforce org a refused replay/check needs
     throw err;
   }
   return body;
@@ -4003,6 +4004,7 @@ async function startReplay(selection, label) {
     toast("Replaying — this costs nothing, the steps are already saved.");
     navigate("#/run/" + runId);
   } catch (err) {
+    if (askToConnectOrg(err, () => startReplay(selection, label))) return;
     // TD-166: the server no longer holds the org connection this page remembers.
     if (err.code === "sf-connection-expired" && sfConnectStatusEl) {
       sfConnection = null;
@@ -4036,6 +4038,38 @@ const CHANGE_VERDICTS = {
   "no-snapshot": { label: "No snapshot", cls: "badge-pending" },
   "not-salesforce": { label: "Not Salesforce", cls: "badge-pending" },
 };
+
+/**
+ * D-73: when a replay or a check is refused because the Salesforce org connection is missing, expired
+ * or for another org, ask for it right here instead of only refusing: say which org the cases need
+ * (the server names it, `orgUrl`), offer Connect org for THAT org, and retry what was clicked once the
+ * popup reports success. Only on the Suite screen (it needs #suiteFeedback); elsewhere the old toast.
+ * Existing classes only; filled in place (rules 3 and 4). Returns true when it took over.
+ */
+let orgPrompt = null;
+function askToConnectOrg(err, retry) {
+  const host = document.getElementById("suiteFeedback");
+  if (!err || !err.orgUrl || !/^sf-connection-/.test(err.code || "") || !host) return false;
+  if (err.code === "sf-connection-expired") {
+    sfConnection = null;
+    try { sessionStorage.removeItem("sfConnection"); } catch { /* ignore */ }
+  }
+  let orgHost = err.orgUrl;
+  try { orgHost = new URL(err.orgUrl).hostname; } catch { /* keep as given */ }
+  const why = err.code === "sf-connection-wrong-org"
+    ? "This tab is connected to a different org."
+    : err.code === "sf-connection-expired" ? "This tab's connection to it has expired." : "This tab is not connected to it.";
+  host.innerHTML = `<p class="team-error">These cases sign in to <b>${escapeHtml(orgHost)}</b>. ${escapeHtml(why)}
+    <button type="button" class="dl-btn-inline" data-org-connect>Connect org</button>
+    <span data-org-status></span></p>`;
+  const status = host.querySelector("[data-org-status]");
+  const setStatus = (msg) => { status.textContent = " " + msg; };
+  host.querySelector("[data-org-connect]").addEventListener("click", () => {
+    orgPrompt = { retry, setStatus };
+    openOrgSignIn(err.orgUrl, setStatus);
+  });
+  return true;
+}
 
 /** The org connection this tab holds: the home view's, or the one this tab saved earlier. */
 function currentSfConnectionId() {
@@ -4092,6 +4126,7 @@ async function runChangeCheck(suiteId, btn, feedback) {
     });
     renderChangeReport(el, report);
   } catch (err) {
+    if (askToConnectOrg(err, () => runChangeCheck(suiteId, btn, feedback))) return;
     const msg = String(err && err.message || err);
     feedback(/connect/i.test(msg) && !/turned off/i.test(msg)
       ? `${msg} Use Connect org on the home screen in this tab, then check again.`
@@ -5933,7 +5968,7 @@ function renderSalesforceConnect() {
 
 function showSalesforceConnected(c) {
   sfConnection = { connectionId: c.connectionId, host: c.host, kind: c.kind };
-  sfConnectStatusEl.textContent = `Connected: ${c.host} (${c.kind}). Runs on this org sign in without a password.`;
+  if (sfConnectStatusEl) sfConnectStatusEl.textContent = `Connected: ${c.host} (${c.kind}). Runs on this org sign in without a password.`;
   if (targetAppBoxEl && !targetAppBoxEl.checked) targetAppBoxEl.checked = true;
   refreshSavedDiscovery();
 }
@@ -6008,10 +6043,17 @@ function paintSavedDiscovery() {
 async function connectSalesforceOrg() {
   const url = stripScheme(urlEl.value).trim() ? absoluteUrl() : "";
   if (!url) { sfConnectStatusEl.textContent = "Type the org's URL first."; return; }
+  return openOrgSignIn(url, (msg) => { sfConnectStatusEl.textContent = msg; });
+}
+
+/** The org sign-in popup for `url`, reporting progress through `setStatus`. Shared by the home
+ *  view's Connect org and the Suite screen's "connect this org, then retry" (D-73). The result comes
+ *  back as a postMessage, handled below. */
+async function openOrgSignIn(url, setStatus) {
   // Opened synchronously, inside the click, so a popup blocker lets it through; pointed at
   // Salesforce once the server has built the authorise URL.
   const popup = window.open("about:blank", "sfConnect", "width=520,height=720");
-  sfConnectStatusEl.textContent = "Opening Salesforce sign-in…";
+  setStatus("Opening Salesforce sign-in…");
   try {
     const res = await fetch("/api/salesforce/oauth/start", {
       method: "POST",
@@ -6022,14 +6064,14 @@ async function connectSalesforceOrg() {
     if (!res.ok || !body.authorizeUrl) throw new Error(body.error || `Server responded with HTTP ${res.status}`);
     const win = popup && !popup.closed ? popup : window.open(body.authorizeUrl, "sfConnect", "width=520,height=720");
     if (!win) {
-      sfConnectStatusEl.textContent = "The sign-in window was blocked. Allow pop-ups for this site, then click Connect org again.";
+      setStatus("The sign-in window was blocked. Allow pop-ups for this site, then click Connect org again.");
       return;
     }
     if (win === popup) popup.location.href = body.authorizeUrl;
-    sfConnectStatusEl.textContent = "Sign in to the org in the window that opened…";
+    setStatus("Sign in to the org in the window that opened…");
   } catch (err) {
     if (popup && !popup.closed) popup.close();
-    sfConnectStatusEl.textContent = err.message;
+    setStatus(err.message);
   }
 }
 
@@ -6037,15 +6079,24 @@ window.addEventListener("message", (ev) => {
   // Only the callback page served by THIS server may set the connection.
   if (ev.origin !== window.location.origin) return;
   const d = ev.data;
-  if (!d || d.type !== "sf-oauth" || !sfConnectStatusEl) return;
+  if (!d || d.type !== "sf-oauth" || (!sfConnectStatusEl && !orgPrompt)) return;
   if (d.error) {
     sfConnection = null;
     try { sessionStorage.removeItem("sfConnection"); } catch { /* ignore */ }
-    sfConnectStatusEl.textContent = d.error;
+    if (sfConnectStatusEl) sfConnectStatusEl.textContent = d.error;
+    if (orgPrompt) orgPrompt.setStatus(d.error);
     return;
   }
   showSalesforceConnected(d);
   try { sessionStorage.setItem("sfConnection", JSON.stringify(sfConnection)); } catch { /* ignore */ }
+  // D-73: the Suite screen asked for this org to retry a run or a check. Retry it once; a wrong org
+  // is refused by the server again and asks again.
+  if (orgPrompt) {
+    const retry = orgPrompt.retry;
+    orgPrompt.setStatus(`Connected to ${d.host}. Retrying…`);
+    orgPrompt = null;
+    retry();
+  }
 });
 
 /**

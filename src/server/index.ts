@@ -114,7 +114,7 @@ import {
   salesforceOAuthEnabled, startAuthorization, completeAuthorization, connectionFor, connectionMatchesUrl,
   frontdoorSessionFor, appOrigin, replaySessionFor, restoreConnection,
 } from "./salesforceOAuth.js";
-import { withFrontdoor } from "../stages/salesforceFrontdoor.js";
+import { withFrontdoor, isFrontdoorRef } from "../stages/salesforceFrontdoor.js";
 import { HealedNeedsReviewError } from "../stages/regressionMemory.js";
 import { checkSuite, regressionChangeCheckEnabled } from "../stages/regressionChangeCheck.js";
 import { readOrgForCheck } from "../stages/salesforceOrgModel.js";
@@ -1225,6 +1225,12 @@ app.post("/api/auth/signup", async (req, res) => {
 // --------------------------------------------------------------------------
 
 /** Translate an AccessError into its status; anything else is a 500 we shouldn't leak details of. */
+/** A saved case that signs in through a Salesforce org connection: one of its steps opens the
+ *  `${env:SF_FRONTDOOR_URL}` sign-in (D-63). Structural, never read from text. */
+function signsInThroughOrg(ir: { steps: ReadonlyArray<{ action: string; target?: { url?: string } }> }): boolean {
+  return ir.steps.some((s) => s.action === "navigate" && isFrontdoorRef(s.target?.url));
+}
+
 function sendAccessError(res: express.Response, err: unknown): void {
   // A stale edit is not an access failure — it carries the winning state so the loser of the race
   // can see what they would have overwritten, which is the entire point of refusing.
@@ -2311,23 +2317,30 @@ app.post("/api/suites/:suiteId/change-check", requireRole("tester"), async (req,
     const orgId = req.organisationId ?? null;
     const cases = await loadCasesForReplay(userId, req.organisationId!, req.organisationRole!, { suiteId: req.params.suiteId });
     const withOrg = cases.filter((c) => c.ir.meta.remembered?.org);
+    // The connection is checked for every case that NEEDS the org: one that remembers it, and one that
+    // signs in through it (saved from a Connect org run). The refusal names the org (`orgUrl`,
+    // additive) so the page can ask the person to connect THAT org and retry.
+    const needOrg = cases.filter((c) => c.ir.meta.remembered?.org || signsInThroughOrg(c.ir));
+    const orgUrl = needOrg[0]?.ir.meta.baseUrl;
     let now: Awaited<ReturnType<typeof readOrgForCheck>> | null = null;
     let host: string | null = null;
-    if (withOrg.length) {
+    if (needOrg.length) {
       if (!salesforceEnabled() || !salesforceOAuthEnabled()) {
         return res.status(400).json({ code: "sf-connection-required", error: "The change check reads the org through Connect org, which is turned off on this server." });
       }
       const { sfConnectionId } = req.body ?? {};
       const conn = typeof sfConnectionId === "string" && sfConnectionId ? await restoreConnection(sfConnectionId, orgId) : null;
       if (!conn) {
-        return res.status(400).json({ code: sfConnectionId ? "sf-connection-expired" : "sf-connection-required", error: "Connect the Salesforce org these cases belong to, then check again." });
+        return res.status(400).json({ code: sfConnectionId ? "sf-connection-expired" : "sf-connection-required", error: "Connect the Salesforce org these cases belong to, then check again.", ...(orgUrl ? { orgUrl } : {}) });
       }
-      const off = withOrg.find((c) => !connectionMatchesUrl(conn, c.ir.meta.baseUrl));
+      const off = needOrg.find((c) => !connectionMatchesUrl(conn, c.ir.meta.baseUrl));
       if (off) {
-        return res.status(400).json({ code: "sf-connection-wrong-org", error: `"${off.ir.meta.baseUrl}" is not an address of the connected org. Connect the org these cases belong to.` });
+        return res.status(400).json({ code: "sf-connection-wrong-org", error: `"${off.ir.meta.baseUrl}" is not an address of the connected org. Connect the org these cases belong to.`, orgUrl: off.ir.meta.baseUrl });
       }
       const session = frontdoorSessionFor(conn);
       host = session.instanceHost;
+      // Connection verified; with no snapshot to compare there is nothing to read.
+      if (!withOrg.length) return res.json(checkSuite(cases.map((c) => ({ id: c.id, title: c.title, ir: c.ir })), null, host));
       const objects = [...new Set(withOrg.flatMap((c) => (c.ir.meta.remembered!.org!.objects as { api?: unknown }[])
         .map((o) => String(o.api ?? "")).filter(Boolean)))];
       now = await readOrgForCheck(session, objects);
@@ -2379,7 +2392,12 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
     const sfReplay = salesforceOAuthEnabled()
       ? replaySessionFor(cases, sfConnectionId, req.organisationId ?? null)
       : { session: null };
-    if ("error" in sfReplay) return res.status(400).json({ code: sfReplay.code, error: sfReplay.error });
+    // `orgUrl` (additive): which org the cases sign in to, so the page can ask the person to connect
+    // THAT org and retry, instead of only refusing.
+    if ("error" in sfReplay) {
+      const orgUrl = cases.find((c) => signsInThroughOrg(c.ir))?.ir.meta.baseUrl;
+      return res.status(400).json({ code: sfReplay.code, error: sfReplay.error, ...(orgUrl ? { orgUrl } : {}) });
+    }
 
     const credentialFields = credentialKindsNeeded(cases.flatMap((c) => c.ir.steps));
     if (credentialFields.length > 0) {

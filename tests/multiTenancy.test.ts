@@ -255,7 +255,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  for (const k of ["AUTH_ENABLED", "DB_ENABLED", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SERVICE_ROLE_KEY"]) {
+  for (const k of ["AUTH_ENABLED", "DB_ENABLED", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SERVICE_ROLE_KEY", "REGRESSION_CHANGE_CHECK_ENABLED"]) {
     if (ORIGINAL_ENV[k] === undefined) delete process.env[k];
     else process.env[k] = ORIGINAL_ENV[k]!;
   }
@@ -711,5 +711,57 @@ describe("the isolation tables account for every mounted /api route", () => {
       ...Object.keys(EXEMPT),
     ].filter((m) => !mounted.has(m));
     expect(stale, `these table entries name routes that no longer exist: ${stale.join(", ")}`).toEqual([]);
+  });
+});
+
+// D-73: a refused replay or change check names the org the cases need (`orgUrl`), so the page can ask
+// the person to connect THAT org and retry. The check verifies the connection for a case that signs in
+// through the org even when no case remembers an org snapshot yet.
+describe("a missing org connection is asked for, naming the org (D-73)", () => {
+  const ORG = "https://zq-dev.scratch.lightning.force.com";
+  const SF_IR = {
+    meta: { feature: "f", title: "Create a Zq Deal", priority: "high", sourcePrompt: "p", baseUrl: ORG },
+    steps: [
+      { id: "auth-0", action: "navigate", target: { url: "${env:SF_FRONTDOOR_URL}" } },
+      { id: "s1", action: "navigate", target: { url: "/lightning/o/Zq_Deal__c/new" } },
+    ],
+  };
+  const flags = ["SALESFORCE_ENABLED", "SALESFORCE_OAUTH_ENABLED", "SALESFORCE_OAUTH_CLIENT_ID", "SALESFORCE_OAUTH_CLIENT_SECRET"];
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of flags) saved[k] = process.env[k];
+    process.env.SALESFORCE_ENABLED = "true";
+    process.env.SALESFORCE_OAUTH_ENABLED = "true";
+    process.env.SALESFORCE_OAUTH_CLIENT_ID = "zq-client";
+    process.env.SALESFORCE_OAUTH_CLIENT_SECRET = "zq-secret";
+    for (const row of [...db.test_cases, ...db.test_case_versions]) if (row.id === CASE_A || row.test_case_id === CASE_A) row.ir = SF_IR;
+  });
+  afterEach(() => { for (const k of flags) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]!; } });
+
+  it("change check: no connection -> 400 sf-connection-required with the org, though no case has a snapshot", async () => {
+    const res = await request(app).post(`/api/suites/${SUITE_A}/change-check`).set(as(OWNER_A)).send({});
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: "sf-connection-required", orgUrl: ORG });
+  });
+
+  it("change check: an unknown connection id -> sf-connection-expired with the org", async () => {
+    const res = await request(app).post(`/api/suites/${SUITE_A}/change-check`).set(as(OWNER_A)).send({ sfConnectionId: "zq-not-a-connection" });
+    expect(res.body).toMatchObject({ code: "sf-connection-expired", orgUrl: ORG });
+  });
+
+  it("replay: no connection -> 400 sf-connection-required with the org, and nothing starts", async () => {
+    const res = await request(app).post("/api/replay").set(as(OWNER_A)).send({ suiteId: SUITE_A });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: "sf-connection-required", orgUrl: ORG });
+    expect(res.body.runId).toBeUndefined();
+  });
+
+  it("an ordinary case needs no connection: the check answers with a report", async () => {
+    for (const row of [...db.test_cases, ...db.test_case_versions]) if (row.id === CASE_A || row.test_case_id === CASE_A) {
+      row.ir = { ...SF_IR, meta: { ...SF_IR.meta, baseUrl: "https://a.example.com" }, steps: [{ id: "s1", action: "navigate", target: { url: "/" } }] };
+    }
+    const res = await request(app).post(`/api/suites/${SUITE_A}/change-check`).set(as(OWNER_A)).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.cases[0].verdict).toBe("not-salesforce");
   });
 });
