@@ -6184,3 +6184,30 @@ Save fail. IR cache key part bumped to `test-data:3` (TD-22). Tests: `tests/test
 fix / unlisted-field / "all required fields" cases; three fail with the rule disabled). Not changed: optional
 fields the case never touches are not ADDED, and `snapPicklist` still maps a value to the one option containing it
 ("Technology" -> "Biotechnology" in that replay), which saves but may not be the option meant.
+
+### TD-180. A Pro (document upload) run on Salesforce wrote its cases without the org scan or the screen map — High / Accidental — **Fixed (2026-11-02)**
+
+**Found 2026-11-02** by reading the code while checking whether the uploaded document reaches case
+generation (it does). `proTestCases.ts` began as a copy of `toTestCases` (D-53). Later the standard
+generator gained two Salesforce blocks beside the application model: the screen map (TD-137, with
+`SCREEN_MAP_ENABLED`) and the org model read through the org connection (D-63: objects, required fields,
+picklists, record types, validation rules). The copy never got them. `toLiteModel` strips
+`salesforceOrg` because the generator is expected to add it back as its own block, so on a Pro
+Salesforce run the org scan reached no prompt at all: the model saw the document and the crawled pages
+and had to guess field names, required fields and picklist values. Nothing caught it: the key-parity test
+in `tests/proTestCases.test.ts` only ran a non-Salesforce case, where both blocks are empty.
+
+**Fix:** `proTestCases.ts` builds both blocks with the same calls as `testCases.ts`
+(`screensForCases(loadScreenMap(...))`, `orgModelForCases(appModel.salesforceOrg)`), puts them at the same
+place in the prompt (`Application model: ...${screensBlock}${orgBlock}`) and in the cache key at the same
+position, before the spec (TD-22). Non-Salesforce runs: both are "", prompt and key unchanged. Tests
+(`tests/proTestCases.test.ts`, "Pro on a Salesforce run ..."): the prompt carries both blocks, byte-for-byte
+the standard generator's; key parity with the standard key on a Salesforce run (13 + spec); a different org
+scan changes the key; a non-Salesforce Pro run is unchanged. Three of the four fail with the fix reverted.
+
+**Not changed (deliberately):** the standard generator's Salesforce post-processing is still absent from Pro:
+`restoreControlNames`, `restoreDroppedValues`, `dropOffObjectCases`, `dropUnrequestedChecklistCases`. All four
+decide from the TYPED request only; on a Pro run most of what is asked comes from the document, so they could
+drop good document-driven cases (e.g. a case on an object only the document names). Adding them needs the
+spec's `entities` folded into the request they read — a separate change. The copy itself remains (D-53): a
+future block added to one generator can drift again; the Salesforce parity test now covers these two.

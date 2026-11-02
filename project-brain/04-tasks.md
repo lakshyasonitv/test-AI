@@ -1,6 +1,14 @@
 # Open tasks
 
-*Last updated: 2026-10-28.*
+*Last updated: 2026-11-02.*
+
+## Pro on Salesforce (TD-180, branch `pro/salesforce-org-context`)
+
+- [ ] Open a PR when the user asks (base: `cleanup/production-ready` or main after that merges).
+- [ ] One real Pro run on the org to confirm (costs one Azure case-generation call) — ask first.
+- [ ] Next, if wanted: Pro post-filters with spec.entities; backoff skips a 401/403 key; Azure
+      distillation path; Pro rule-coverage check.
+- [ ] Azure: replace the invalid second key in the `gemini-keys` secret (user, config only).
 
 
 ## Repo clean-up (2026-11-02, branch `cleanup/production-ready`)

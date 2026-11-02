@@ -1,5 +1,9 @@
 # Progress — where we are
 
+*Last updated: 2026-11-02 (later). Branch `pro/salesforce-org-context` (from `cleanup/production-ready`):
+Pro on Salesforce now sends the org scan + screen map to case generation (TD-180). Committed and pushed;
+no PR. Baseline: vitest 2822 passed / 3 failed (browser tests, pre-existing), 211 files. See journal.*
+
 *Last updated: 2026-11-02. Repo clean-up on branch `cleanup/production-ready` (from main `8bcc3e4`):
 unused code removed, docs restructured (`docs/README.md` index, `docs/archive/`, `docs/guides/`),
 README rewritten, settings documented, booleanEnvFlags failure fixed. NOT committed yet — see

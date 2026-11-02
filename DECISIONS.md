@@ -1589,6 +1589,12 @@ an out-of-scope item, and filtering on the case's wording would be the regex-ove
 check CLAUDE.md warns against (TD-01). A structural check needs a structural link first — for
 example cases citing the rule they prove — which is Pro's own logic to add later.
 
+**Salesforce blocks (2026-11-02, TD-180).** The copy had missed the two Salesforce blocks the standard
+generator gained after Pro was written (screen map, org model). Pro now builds them with the same calls
+and keys on them at the same position; `tests/proTestCases.test.ts` pins that parity on a Salesforce run.
+The standard path's Salesforce post-filters are still not applied to Pro, on purpose — they read only the
+typed request, and Pro's request is mostly the document (see TD-180).
+
 **Rejected.** An optional field on `toTestCases` (one edit, but every future Pro change would reopen
 the standard path's file). A JSON upload carrying base64 (the global `express.json()` has a 100 KB
 limit; the route uses `express.raw` on itself only). Trusting the browser's MIME type (browsers
