@@ -2600,6 +2600,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // D-73: regression testing step 2, "Check this suite for changes" (POST /api/suites/:id/change-check).
   // Read-only Salesforce API calls through Connect org. Off: the route answers 404.
   "REGRESSION_CHANGE_CHECK_ENABLED",
+  // D-73: regression testing step 3, the safe repair of a replayed case whose click/fill/select/press
+  // lost its element. No model calls; a proposal waits for a person. Off: replays are as before.
+  "REGRESSION_REPAIR_ENABLED",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

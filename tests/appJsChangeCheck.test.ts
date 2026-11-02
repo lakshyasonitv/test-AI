@@ -84,3 +84,32 @@ describe("connect the org the cases need, then retry (D-73)", () => {
     expect(PROMPT_CODE).toContain("openOrgSignIn(err.orgUrl, setStatus);");
   });
 });
+
+describe("the run page shows a repair proposal, never as a pass (D-73 step 3)", () => {
+  const R_START = "function describeTarget(t) {";
+  const R_END = "function renderCaseErrorBlock(";
+  const rs = APP.indexOf(R_START);
+  const re = APP.indexOf(R_END, rs);
+  const BLOCK = APP.slice(rs, re);
+  const CODE = BLOCK.split("\n").map((l) => { const i = l.indexOf("//"); return i < 0 ? l : l.slice(0, i); }).join("\n");
+
+  it("the block is found", () => {
+    expect(rs).toBeGreaterThan(0);
+    expect(re).toBeGreaterThan(rs);
+    expect(BLOCK).toContain("function renderRepairNotice(r)");
+  });
+  it("never toggles .hidden or calls showView, and uses existing classes only", () => {
+    expect(CODE).not.toMatch(/classList\.(add|remove|toggle)\(\s*["']hidden/);
+    expect(CODE).not.toMatch(/showView\(/);
+    for (const cls of ["case-notice", "notice", "error"]) expect(CSS.includes(`.${cls}`), `.${cls}`).toBe(true);
+  });
+  it("a failed check reads as a possible bug, never as something to repair", () => {
+    expect(CODE).toContain(`if (r.kind === "result-changed") return`);
+    expect(CODE).toContain("Possible bug.");
+  });
+  it("the badge says 'needs review' and the case keeps its own status (not green)", () => {
+    expect(APP).toContain(`c.repair && c.repair.state === "proposed" ? \`<span class="case-badge case-badge-healed"`);
+    expect(APP).toContain("Healed, needs review</span>");
+    expect(CODE).toContain("Nothing is saved until it is approved.");
+  });
+});

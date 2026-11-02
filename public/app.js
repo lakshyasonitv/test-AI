@@ -1157,12 +1157,15 @@ function renderCaseCard(c, runId, index) {
           ${expected && expected !== whyItMatters ? `<p class="case-expected"><span>What should happen:</span> ${escapeHtml(expected)}</p>` : ""}
         </span>
         <span class="case-badge ${statusBadge}">${escapeHtml(STATUS_LABEL[c.status] ?? c.status)}</span>
+        ${c.repair && c.repair.state === "proposed" ? `<span class="case-badge case-badge-healed" title="A repair was found and the whole test passed with it, but nobody has approved it yet. Not counted as passed.">Healed, needs review</span>` : ""}
+        ${c.repair && c.repair.state === "needs-person" ? `<span class="case-badge badge-truncated" title="A repair was found but cannot be applied on its own.">Needs a person</span>` : ""}
         ${c.healed && c.status === "passed" ? `<span class="case-badge case-badge-healed" title="This failed on the first attempt; the system automatically found a fix and re-ran it, and it passed.${c.deterministicHeal ? " This fix was found deterministically, without a model call." : ""}">${icon("refresh", { size: 11 })} Fixed automatically${c.deterministicHeal ? ` ${icon("zap", { size: 10 })}` : ""}</span>` : ""}
         ${c.deterministicHeal ? `<span class="case-badge case-badge-deterministic" title="The fix was found by matching the element's structure in the crawled page model — no model call, essentially free.">${icon("zap", { size: 10 })} Healed deterministically</span>` : ""}
         <span class="case-expand-icon">${icon("chevron-down", { size: 14 })}</span>
       </div>
       <div class="case-card-body">
         ${c.blockedBy ? `<p class="blocked-note">Couldn't finish: ${escapeHtml(c.blockedBy)}. The screenshot below is where it stopped.</p>` : ""}
+        ${c.repair ? renderRepairNotice(c.repair) : ""}
         ${renderCaseErrorBlock(c, screenshotUrl)}
         <div class="case-narrative hidden"></div>
         <div class="case-diagnosis-block hidden"></div>
@@ -1937,6 +1940,31 @@ function setSuiteRetryNote(item, text) {
     item.appendChild(note);
   }
   note.textContent = text;
+}
+
+/**
+ * D-73 step 3: what the safe repair found for a failed replayed case (REGRESSION_REPAIR_ENABLED; absent
+ * otherwise). A proposal shows the one step it changes, before and after, and why; approving it is
+ * step 4. A failed CHECK reads as a possible bug, never as something to repair. Existing classes only
+ * (.case-notice.notice / .case-notice.error); filled in place, no .hidden (rules 3 and 4).
+ */
+function describeTarget(t) {
+  if (!t) return "nothing";
+  const what = t.role && t.name ? `${t.role} "${t.name}"` : t.name ? `"${t.name}"` : t.text ? `text "${t.text}"` : "an element";
+  return t.css ? `${what} at ${t.css}` : what;
+}
+function renderRepairNotice(r) {
+  const step = r.stepId ? `Step ${escapeHtml(r.stepId)}${r.stepText ? ` (${escapeHtml(r.stepText)})` : ""}` : "This case";
+  if (r.state === "proposed" || r.state === "needs-person") {
+    const head = r.state === "proposed" ? "Healed, needs review" : "Needs a person";
+    const proof = r.verification && r.verification.passed ? " The whole test passed again with this change." : "";
+    const back = r.readBack && r.readBack.checked ? ` The saved record read back with ${r.readBack.matched} of ${r.readBack.checked} typed values.` : "";
+    return `<p class="case-notice notice"><b>${head}.</b> ${step}: ${escapeHtml(describeTarget(r.before))} → ${escapeHtml(describeTarget(r.after))}.
+      ${escapeHtml(r.reason)}${proof && !r.reason.includes("passed again") ? escapeHtml(proof) : ""}${back && !r.reason.includes("read back") ? escapeHtml(back) : ""}
+      Nothing is saved until it is approved.</p>`;
+  }
+  if (r.kind === "result-changed") return `<p class="case-notice error"><b>Possible bug.</b> ${escapeHtml(r.reason)}</p>`;
+  return `<p class="case-notice notice"><b>No repair.</b> ${escapeHtml(r.reason)}</p>`;
 }
 
 function renderCaseErrorBlock(c, screenshotUrl) {

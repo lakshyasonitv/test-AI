@@ -12,6 +12,7 @@ import type { AppModel } from "../schema/appModel.js";
 import type { OnEvent, StageEvent } from "../orchestrator.js";
 import { store } from "../runStore.js";
 import type { ExecResult } from "./executor.js";
+import type { RepairProposal } from "./regressionRepair.js";
 import type { IR } from "../schema/ir.js";
 import { insight, irInsights, specInsights, execInsights, artifactInsights } from "../insights.js";
 
@@ -127,6 +128,9 @@ export interface CaseRunResult {
    *  from an expensive one without inspecting the heal artifact directory. Absent when the
    *  case didn't heal, or when the heal went through the LLM path. */
   deterministicHeal?: boolean;
+  /** D-73 step 3 (REGRESSION_REPAIR_ENABLED): what the safe repair found for a failed replayed case.
+   *  "proposed" waits for a person (step 4); the case still counts as failed. Absent otherwise. */
+  repair?: RepairProposal;
 }
 
 export interface SuiteSummary {
@@ -289,6 +293,8 @@ export function buildSuiteSummary(results: CaseRunResult[], runDir: string): Sui
         // and the shape is unchanged (rule 1, additive-optional) — which is what the sibling test
         // "a PASSING case carries none of it — the fields stay absent, not empty" pins.
         ...failure,
+        // D-73: additive, only when a repair was looked for (REGRESSION_REPAIR_ENABLED).
+        ...(r.repair ? { repair: r.repair } : {}),
       };
     }),
   };

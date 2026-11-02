@@ -965,7 +965,7 @@ export async function recordCaseOutcome(caseId: string, status: string): Promise
 export async function loadCasesForReplay(
   userId: string, orgId: string, role: Role,
   sel: { suiteId?: string; caseIds?: string[] },
-): Promise<{ id: string; title: string; ir: IR; projectId: string; scriptOverride?: string }[]> {
+): Promise<{ id: string; title: string; ir: IR; projectId: string; scriptOverride?: string; version?: number }[]> {
   const client = requireClient();
 
   let ids: string[];
@@ -988,11 +988,11 @@ export async function loadCasesForReplay(
   if (ids.length === 0) throw new AccessError(400, "no cases selected to run");
 
   const { data, error } = await client
-    .from("test_cases").select("id, project_id, title, ir, script_override, script_overridden").in("id", ids);
+    .from("test_cases").select("id, project_id, title, ir, script_override, script_overridden, current_version").in("id", ids);
   if (error) throw new AccessError(500, `could not load cases: ${error.message}`);
   const rows = (data ?? []) as {
     id: string; project_id: string; title: string; ir: unknown;
-    script_override?: string | null; script_overridden?: boolean;
+    script_override?: string | null; script_overridden?: boolean; current_version?: number;
   }[];
   if (rows.length === 0) throw new AccessError(404, "none of those cases exist");
 
@@ -1011,6 +1011,8 @@ export async function loadCasesForReplay(
       title: r.title,
       projectId: r.project_id,
       ir: parseIr(r.ir, `case "${r.title}"`),
+      // D-73: the version that ran, so a repair proposal (step 4) is approved against it and no other.
+      ...(typeof r.current_version === "number" ? { version: r.current_version } : {}),
       // Only when the explicit flag is set — never inferred from the column being non-null, so a
       // leftover script from a removed override can never quietly come back to life.
       ...(scriptOverrideEnabled() && r.script_overridden === true

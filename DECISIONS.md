@@ -2340,3 +2340,26 @@ not only for cases with a snapshot. Password-login and ordinary cases are unchan
 login prompt already asks again. Tried in the browser on the real "Lead create and required fields"
 suite: both Check for changes and Run all show the prompt for `ruby-data-2200-dev-ed`, nothing runs;
 a simulated success retried exactly once.
+
+**Step 3, safe repair (built 2026-11-02).** Behind `REGRESSION_REPAIR_ENABLED`. After a replay has run
+every case unchanged, `proposeRepairs` (replay.ts) gives each failed case a verdict from its failing
+step's ACTION (`failureKindFor`): a click/fill/select/press is "element changed" and is repaired; a
+failed check is "result changed", reported as a possible bug and never repaired; a navigate or network
+failure is "site unreachable". When 3+ cases and more than half fail with "element changed" at once,
+nothing is repaired: the app or the login changed. `attemptRepair` walks the steps before the broken
+one in a fresh browser to the page the test reached and tries, in order: (1) the Salesforce field
+binding remembered in step 1B, at the label the org gives that API name NOW (read-only API), and
+(2) the same role with the exact same name — each only when exactly one element matches; two matches
+is no repair. If the saved locator still finds the same element, the page was slow: not a repair. Only
+that step's locator changes (`withNewLocator`: value, frame, lookup and field kept). A later `hidden`
+check on the same element sends it to a person, unverified. Otherwise the whole test runs again from
+step 1 with the change; only a pass is proposed, and on Salesforce the record it saved is read back
+through the API (`readBackRecord`: comparable text fields bound in step 1B, run tokens resolved from
+the spec's own annotation) and must hold what the test typed. The proposal (`cases/<case>/repair/
+proposal.json`, plus the IR it verified) names the library case and the version it applies to; the
+case's status stays "failed" and the run page shows "Healed, needs review" (never green). Proven in
+real Chromium (`tests/regressionRepair.test.ts`, 12): a changed attribute repaired; two matches
+refused; a slow page refused; a later hidden check escalated; a repair that still fails later not
+proposed; a Salesforce rename repaired through the field binding; the replay attaches the proposal.
+Five rules each fail a test when removed. Not built: approving (step 4), pinned hand-edited steps, and
+explaining a mass failure by a single org change from step 2.
