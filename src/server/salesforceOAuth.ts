@@ -481,6 +481,18 @@ export function frontdoorSessionFor(
       });
       if (!res.ok) throw new Error(`Salesforce API DELETE ${path.split("?")[0]} answered HTTP ${res.status}`);
     },
+    // D-73 step 2: the versions list, whose newest entry is labelled with the org's release.
+    apiVersions: async () => {
+      await refreshIfOld(c, cfg, fetchImpl);
+      const runId = currentRunId();
+      if (runId) rememberRunSecretStrings(runId, [c.accessToken]);
+      const res = await fetchImpl(`${c.instanceUrl}/services/data/`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${c.accessToken}`, accept: "application/json" },
+      });
+      if (!res.ok) throw new Error(`Salesforce API /services/data/ answered HTTP ${res.status}`);
+      return res.json();
+    },
   };
 }
 

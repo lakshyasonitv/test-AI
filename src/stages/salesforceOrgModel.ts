@@ -295,8 +295,96 @@ async function countRecords(apiGet: ApiGet, api: string): Promise<number | undef
   return typeof res?.totalSize === "number" ? res.totalSize : undefined;
 }
 
+/**
+ * D-73 step 2: the org's Salesforce release ("Winter '27"), from the newest API version the org
+ * serves. A release changes Lightning's page code with no change to the org's setup, which is why a
+ * suite that broke everywhere at once is checked against it. Undefined when it cannot be read.
+ */
+export async function readSalesforceRelease(session: Pick<FrontdoorSession, "apiVersions">): Promise<{ label: string; version: string } | undefined> {
+  if (!session.apiVersions) return undefined;
+  let list: any;
+  try { list = await session.apiVersions(); } catch { return undefined; }
+  if (!Array.isArray(list) || !list.length) return undefined;
+  const newest = [...list].sort((a, b) => Number(b?.version ?? 0) - Number(a?.version ?? 0))[0];
+  return typeof newest?.label === "string" && newest.label && newest.version != null
+    ? { label: newest.label, version: String(newest.version) } : undefined;
+}
+
+/** One object as the change check reads it: EVERY field (the org model keeps 40, so a field past
+ *  that cap would otherwise look removed), each required flag including the create layout's, the
+ *  picklist values of the default record type, and the record types a user can create. */
+export interface OrgObjectNow {
+  api: string;
+  label: string;
+  fields: Record<string, { label: string; type: string; required: boolean }>;
+  picklists: Record<string, string[]>;
+  recordTypes: { name: string; id: string }[];
+}
+
+async function readObjectNow(apiGet: ApiGet, api: string): Promise<OrgObjectNow | null> {
+  const info = await tryGet(apiGet, `/ui-api/object-info/${encodeURIComponent(api)}`);
+  if (!info?.fields) return null;
+  const rt = info.defaultRecordTypeId;
+  const picks = rt ? (await tryGet(apiGet, `/ui-api/object-info/${encodeURIComponent(api)}/picklist-values/${rt}`))?.picklistFieldValues ?? {} : {};
+  const layout = rt ? await tryGet(apiGet, `/ui-api/layout/${encodeURIComponent(api)}?layoutType=Full&mode=Create&recordTypeId=${rt}`) : null;
+  const layoutRequired = new Set<string>();
+  for (const sec of layout?.sections ?? []) for (const row of sec?.layoutRows ?? []) for (const item of row?.layoutItems ?? []) {
+    const parts = (item?.layoutComponents ?? []).filter((c: any) => c?.componentType === "Field" && c.apiName);
+    if (item?.required && parts.length === 1) layoutRequired.add(parts[0].apiName);
+  }
+  const fields: OrgObjectNow["fields"] = {};
+  for (const f of Object.values<any>(info.fields)) {
+    if (!f || typeof f.apiName !== "string") continue;
+    fields[f.apiName] = {
+      label: String(f.label ?? f.apiName),
+      type: String(f.dataType ?? ""),
+      required: !!((f.required || layoutRequired.has(f.apiName)) && f.createable && f.dataType !== "Boolean"),
+    };
+  }
+  const picklists: OrgObjectNow["picklists"] = {};
+  for (const [api2, v] of Object.entries<any>(picks)) {
+    const values = (v?.values ?? []).map((x: any) => String(x?.label ?? "")).filter(Boolean);
+    if (values.length) picklists[api2] = values;
+  }
+  const recordTypes = Object.values<any>(info.recordTypeInfos ?? {})
+    .filter((r) => r?.available && !r.master && typeof r.name === "string")
+    .map((r) => ({ name: String(r.name), id: String(r.recordTypeId) }));
+  return { api, label: String(info.label ?? api), fields, picklists, recordTypes };
+}
+
+/**
+ * D-73 step 2: what the org says NOW about the objects a suite touches, read-only. An object that
+ * cannot be read is `null`, which the check reports as unknown, never as unchanged. `validationRules`
+ * is null when the Tooling API refused, for the same reason.
+ */
+export async function readOrgForCheck(
+  session: Pick<FrontdoorSession, "apiGet" | "apiVersions">, objects: string[],
+): Promise<{
+  objects: Record<string, OrgObjectNow | null>;
+  validationRules: Record<string, Rule[]> | null;
+  flows: NonNullable<SalesforceOrgModel["flows"]> | null;
+  release?: { label: string; version: string };
+}> {
+  const apiGet = session.apiGet;
+  const out: Record<string, OrgObjectNow | null> = {};
+  if (!apiGet) {
+    for (const o of objects) out[o] = null;
+    return { objects: out, validationRules: null, flows: null };
+  }
+  for (const o of objects) out[o] = await readObjectNow(apiGet, o);
+  const rules = await readValidationRules(apiGet, objects);
+  const flows = await readFlows(apiGet);
+  const release = await readSalesforceRelease(session);
+  return {
+    objects: out,
+    validationRules: rules ? Object.fromEntries(rules) : null,
+    flows: flows ?? null,
+    ...(release ? { release } : {}),
+  };
+}
+
 /** The org model, or null when the connection cannot read even the app. */
-export async function readSalesforceOrgModel(session: Pick<FrontdoorSession, "apiGet">): Promise<SalesforceOrgModel | null> {
+export async function readSalesforceOrgModel(session: Pick<FrontdoorSession, "apiGet" | "apiVersions">): Promise<SalesforceOrgModel | null> {
   const apiGet = session.apiGet;
   if (!apiGet) return null;
   const app = await readApp(apiGet);
@@ -319,12 +407,16 @@ export async function readSalesforceOrgModel(session: Pick<FrontdoorSession, "ap
   }
   const userLocale = await readUserLocale(apiGet);
   const flows = await readFlows(apiGet);
+  // D-73: the release, so a saved case remembers it (step 2 compares). Only with the flag on: it is
+  // part of the setup fingerprint, and with the flag off the model must be exactly what it was.
+  const release = process.env.REGRESSION_MEMORY_ENABLED === "true" ? await readSalesforceRelease(session) : undefined;
   return {
     ...(app.label ? { app: app.label } : {}),
     ...(apps.length ? { apps } : {}),
     objects, validationRulesRead: rules !== null,
     ...(userLocale ? { userLocale } : {}),
     ...(flows?.length ? { flows } : {}),
+    ...(release ? { release } : {}),
   };
 }
 

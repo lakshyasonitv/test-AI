@@ -2305,3 +2305,18 @@ details came from the failing run); `matches > 1` is returned as a warning. Best
 at most, and a failure to remember never fails the step. Flag off: no call and no helper in the spec.
 Proven in real Chromium (`tests/regressionElements.test.ts`): removing the `assignedSlot` hop turns the
 recorded field from `Account.Name` into `null` and fails the test.
+
+**Step 2 (built 2026-11-02).** `POST /api/suites/:suiteId/change-check` (`REGRESSION_CHANGE_CHECK_ENABLED`)
+loads the suite's cases with the replay's own access check, verifies the Connect org link belongs to the
+caller's organisation and to the same org as every Salesforce case, then reads the org NOW with
+`readOrgForCheck` — every field of each object (the org model keeps 40, so a field past that cap would
+otherwise look removed), required flags including the create layout's, picklist values, record types,
+validation rules, flows, and the release — and compares it with each case's snapshot
+(`regressionChangeCheck.ts`). The fields a case uses come from the passing run's field binding first
+(step 1B, survives renames), else its step labels. Verdict = worst finding: affected > likely to fail >
+unknown > changed > unchanged; a case with no snapshot is "no-snapshot", an ordinary site
+"not-salesforce" — listed, never passed. The release is read through a new read-only
+`FrontdoorSession.apiVersions()` (`/services/data/`, outside the versioned path the API helper is bound
+to) and recorded in the org model only with REGRESSION_MEMORY_ENABLED on, because it is part of the
+saved-scan fingerprint. Read-only throughout: no browser, no model, nothing written. Not built yet: a
+button on the Suite screen (the route is ready for it), and comparing page layouts.

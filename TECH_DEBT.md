@@ -6185,3 +6185,14 @@ account with each and every" (the noun left unsaid, live run `2026-10-29T04-02-1
 recognised by its letters (filed, fileds, fild, feild, flied; never "filled"), and a request ending in "each and
 every" counts. Replayed on the 33-field Account case, all three phrasings keep 33 of 33; "create an account" keeps 1.
 Cache key part `test-data:4`.
+
+---
+
+### TD-180. Running some tests in a real checkout leaves stub run folders in `runs/` — Low / Accidental — **Open**
+
+**Found 2026-11-02.** After targeted test runs in the working checkout, `runs/` held folders containing
+only `00-run-target.json` (four at 11:17 and 11:32 that day, timestamps matching the test runs; removed
+by hand). Some test writes the run-target file for a real-looking run id and never cleans up. `runStore`
+skips such stubs in the run list, but they accumulate, and a parallel `apiContract` run once failed while
+they were being written (passes alone). Candidate fix: find the test (likely one that calls the
+run-target writer under a generated run id) and point it at a temporary folder, as TD-164 did for walks.

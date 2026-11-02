@@ -106,6 +106,8 @@ export const Remembered = z.object({
   org: z.object({
     host: z.string(),
     userLocale: z.string().optional(),
+    /** The org's Salesforce release when the case was saved ("Winter '27"), when it was read. */
+    release: z.object({ label: z.string(), version: z.string() }).optional(),
     validationRulesRead: z.boolean(),
     objects: z.array(z.record(z.unknown())),
     flows: z.array(z.record(z.unknown())).optional(),

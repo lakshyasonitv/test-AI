@@ -63,6 +63,7 @@ export function orgSnapshot(appModel: unknown, objects: string[], baseUrl: strin
   return {
     host,
     ...(org.userLocale ? { userLocale: org.userLocale } : {}),
+    ...(org.release?.label ? { release: { label: String(org.release.label), version: String(org.release.version ?? "") } } : {}),
     validationRulesRead: !!org.validationRulesRead,
     objects: picked,
     ...(flows.length ? { flows } : {}),

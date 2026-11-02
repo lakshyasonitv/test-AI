@@ -414,6 +414,8 @@ export const SalesforceOrgModel = z.object({
   validationRulesRead: z.boolean(),
   /** The connected user's locale ("en_US"): Lightning parses typed dates in it. Absent when unread. */
   userLocale: z.string().optional(),
+  /** D-73: the org's Salesforce release ("Winter '27"), read only with REGRESSION_MEMORY_ENABLED on. */
+  release: z.object({ label: z.string(), version: z.string() }).optional(),
   /** Active flows (Phase B): what runs, on what, when, and what it visibly does. Absent when unread. */
   flows: z.array(z.object({
     label: z.string(),

@@ -116,6 +116,8 @@ import {
 } from "./salesforceOAuth.js";
 import { withFrontdoor } from "../stages/salesforceFrontdoor.js";
 import { HealedNeedsReviewError } from "../stages/regressionMemory.js";
+import { checkSuite, regressionChangeCheckEnabled } from "../stages/regressionChangeCheck.js";
+import { readOrgForCheck } from "../stages/salesforceOrgModel.js";
 import {
   checkSpecUpload, distillSpec, getRunSpecWarnings, specIntakeEnabled, DISTILL_FAILED_WARNING,
 } from "../stages/specIntake.js";
@@ -2290,6 +2292,48 @@ app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async 
 });
 
 /**
+ * D-73 step 2: "Check this suite for changes" — before running a suite, compare the Salesforce org now
+ * with what each saved case remembered (step 1), per object, and say which cases a change will break.
+ * Read-only API calls through the Connect org link; no browser, no model, nothing written. Behind
+ * REGRESSION_CHANGE_CHECK_ENABLED (404 when off). The link is verified like a replay's: it must belong
+ * to the caller's organisation, and every Salesforce case in the suite must be an address of that org.
+ * `tester`, like a replay: it reads an org with someone's connection.
+ */
+app.post("/api/suites/:suiteId/change-check", requireRole("tester"), async (req, res) => {
+  if (!regressionChangeCheckEnabled()) {
+    return res.status(404).json({ error: "the change check is not available — this server has REGRESSION_CHANGE_CHECK_ENABLED off" });
+  }
+  try {
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    const orgId = req.organisationId ?? null;
+    const cases = await loadCasesForReplay(userId, req.organisationId!, req.organisationRole!, { suiteId: req.params.suiteId });
+    const withOrg = cases.filter((c) => c.ir.meta.remembered?.org);
+    let now: Awaited<ReturnType<typeof readOrgForCheck>> | null = null;
+    let host: string | null = null;
+    if (withOrg.length) {
+      if (!salesforceEnabled() || !salesforceOAuthEnabled()) {
+        return res.status(400).json({ code: "sf-connection-required", error: "The change check reads the org through Connect org, which is turned off on this server." });
+      }
+      const { sfConnectionId } = req.body ?? {};
+      const conn = typeof sfConnectionId === "string" && sfConnectionId ? await restoreConnection(sfConnectionId, orgId) : null;
+      if (!conn) {
+        return res.status(400).json({ code: sfConnectionId ? "sf-connection-expired" : "sf-connection-required", error: "Connect the Salesforce org these cases belong to, then check again." });
+      }
+      const off = withOrg.find((c) => !connectionMatchesUrl(conn, c.ir.meta.baseUrl));
+      if (off) {
+        return res.status(400).json({ code: "sf-connection-wrong-org", error: `"${off.ir.meta.baseUrl}" is not an address of the connected org. Connect the org these cases belong to.` });
+      }
+      const session = frontdoorSessionFor(conn);
+      host = session.instanceHost;
+      const objects = [...new Set(withOrg.flatMap((c) => (c.ir.meta.remembered!.org!.objects as { api?: unknown }[])
+        .map((o) => String(o.api ?? "")).filter(Boolean)))];
+      now = await readOrgForCheck(session, objects);
+    }
+    res.json(checkSuite(cases.map((c) => ({ id: c.id, title: c.title, ir: c.ir })), now, host));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
  * Replay saved cases — Step 5.3, and the reason the library exists.
  *
  * Three selections, one route: a whole suite (`suiteId`), a chosen subset (`suiteId` + `caseIds`,
@@ -2532,6 +2576,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // the org's setup for the objects it touches and its one-time values; a healed case needs a
   // person's word to be saved. Off: saving is exactly as before.
   "REGRESSION_MEMORY_ENABLED",
+  // D-73: regression testing step 2, "Check this suite for changes" (POST /api/suites/:id/change-check).
+  // Read-only Salesforce API calls through Connect org. Off: the route answers 404.
+  "REGRESSION_CHANGE_CHECK_ENABLED",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

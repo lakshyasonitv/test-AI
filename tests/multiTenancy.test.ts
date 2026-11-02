@@ -240,6 +240,7 @@ function materialise(runId: string): void {
 beforeEach(() => {
   process.env.AUTH_ENABLED = "true";
   process.env.DB_ENABLED = "true";
+  process.env.REGRESSION_CHANGE_CHECK_ENABLED = "true";
   process.env.SUPABASE_URL = "https://fake.supabase.co";
   process.env.SUPABASE_PUBLISHABLE_KEY = "fake-publishable";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "fake-service-role";
@@ -307,6 +308,9 @@ const RESOURCE_ROUTES: { name: string; method: Method; path: string; body?: unkn
   { name: "add a case to org A's suite", method: "post", path: `/api/suites/${SUITE_A}/cases`, body: { caseId: CASE_B }, mounted: "POST /api/suites/:suiteId/cases" },
   { name: "remove a case from org A's suite", method: "delete", path: `/api/suites/${SUITE_A}/cases/${CASE_A}`, mounted: "DELETE /api/suites/:suiteId/cases/:caseId" },
   { name: "reorder org A's suite", method: "patch", path: `/api/suites/${SUITE_A}/order`, body: { caseIds: [CASE_A] }, mounted: "PATCH /api/suites/:suiteId/order" },
+  // D-73 step 2: reads org A's saved cases (and would read their org). The flag is ON in this file
+  // (below), so the 404 comes from the suite not being visible, not from the route being off.
+  { name: "change-check org A's suite", method: "post", path: `/api/suites/${SUITE_A}/change-check`, body: {}, mounted: "POST /api/suites/:suiteId/change-check" },
 
   { name: "read org A's case", method: "get", path: `/api/cases/${CASE_A}`, mounted: "GET /api/cases/:caseId" },
   { name: "read org A's case script", method: "get", path: `/api/cases/${CASE_A}/script`, mounted: "GET /api/cases/:caseId/script" },
