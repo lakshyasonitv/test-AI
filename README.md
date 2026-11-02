@@ -1,61 +1,107 @@
-# AI Test Platform
+# Testbench
 
-A pipeline that turns a natural-language testing request + a URL into **executed** Playwright
-tests — with a live progress UI, per-step screenshots, artifacts (trace, generated spec), per-case
-suite results, and plain-English failure diagnosis on failure. Discovers a site's own internal
-links (not just the entry page), handles multi-page flows by extending discovery on demand, and
-tries once to auto-repair broken locators before reporting failure.
+**Describe a test in plain English, give a web address, and get real, executed Playwright tests
+back** — with per-step screenshots, video, a trace, an HTML report and a plain-English reason for
+every failure.
 
-## Documentation Map
+Testbench explores the site the way a new tester would, plans a coverage suite, compiles each case
+into a strict test model that is **checked against the live page before it runs**, generates the
+Playwright spec with plain code (no AI), and runs every case in its own browser. The AI proposes;
+deterministic code verifies.
 
-Five documents, one job each. **Each topic has exactly one owner** — they link to each other
-rather than repeating, because six copies of the same list is how they drifted out of date before
-(see `DECISIONS.md` D-01).
+## Features
 
-| You want to know… | Read |
-|---|---|
-| What this is, how to run it, what it can do | **this file** |
-| How it works internally — every file, schema | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| **What's broken, ranked, with remediation** | [TECH_DEBT.md](TECH_DEBT.md) |
-| Why a design choice was made, what was rejected | [DECISIONS.md](DECISIONS.md) |
-| Working guidance for an agent editing this repo | [CLAUDE.md](CLAUDE.md) |
-| **What each shipped phase changed, and how to roll it back** | [docs/phases/](docs/phases/) |
+- **Prompt + URL → executed tests.** Normal path, wrong input, boundaries and security cases, each
+  run in its own browser context with screenshots, video and trace.
+- **Discovery without AI cost.** DOM-first page reading, a same-origin site crawl, sign-in on a live
+  login form, and AI vision only as a fallback.
+- **Grounded, not guessed.** Every button, field, link and route the AI names is checked against
+  what was actually found on the site; anything invented is rejected before a test is built.
+- **Stay in control.** Review and edit proposed cases before they run, edit steps as plain English,
+  save tests to a library, group them into suites and replay them with zero AI calls.
+- **Self-repair.** A structural repair first (no AI, no new browser), then a bounded AI self-heal.
+- **Requirements in, tests out (Pro).** Upload a PDF, Word or Markdown requirements document; its
+  rules and open questions steer which cases are written.
+- **Salesforce.** Hardened password login, or **Connect org** over OAuth (no password in runs),
+  saved org scans, valid test data from the org's own metadata, and a screen map between runs.
+- **Jira.** Each user connects their own Atlassian account; a story key fills the prompt.
+- **Your choice of AI.** Google Gemini, Azure OpenAI or Anthropic Claude, per role.
+- **Built for teams.** Sign-in, four roles, project-scoped visibility and per-company separation;
+  a project's discovery can be shared by its runs.
+- **Secrets stay out of storage.** Credentials live in memory for one run; generated tests carry
+  `${env:...}` references, and served artifacts are scrubbed.
 
-`docs/phases/` is the build log for the multi-user platform layered on top of the original
-single-user tool. One report per phase, each with the same ten sections: what changed, new files,
-new flags, new routes, schema changes, what was deliberately left alone, how to verify, how to
-roll back, and what was found but not fixed.
+Every capability beyond the core pipeline sits behind a setting that defaults **off** — with nothing
+set, the app behaves exactly as the core pipeline always has.
 
-## Quick Start
+## Quick start
+
+Requires Node.js 20.12 or newer.
 
 ```bash
-npm install                  # installs deps + `playwright install` (postinstall — all browsers)
-cp .env.example .env         # fill in GEMINI_API_KEYS
-npm run serve                # starts server on http://localhost:3000
+npm install                  # dependencies + Playwright's browsers (postinstall)
+cp .env.example .env         # add one AI provider's key, e.g. GEMINI_API_KEYS
+npm run serve                # http://localhost:3000
 ```
 
-Open the UI, enter a prompt + URL, and watch the phase panel update with live progress. A sidebar
-carries the Projects tree (with controls to add a project or a suite) and your recent runs; the
-topbar carries a hamburger menu holding History, Team and a Settings popover. The two Settings
-toggles — review cases before running, self-heal broken selectors — are **per-session and reset on
-reload**; they are held in a plain in-memory object, not in storage.
+Open the UI, type what to test and the address, and press **Run test**. The phase cards update live;
+when the run finishes, every case has its result, screenshots, video and a downloadable report.
 
 > **If `npm install` appears to hang,** the `playwright install` postinstall is the usual culprit.
 > Check for an `oopDownloadBrowserMain.js` process and a stale `__dirlock` directory under
-> `%LOCALAPPDATA%\ms-playwright` (or `~/.cache/ms-playwright`) before assuming anything else is
-> wrong — that installer can stall indefinitely without timing out, and it can leave a truncated
-> binary behind that looks present but will not execute.
+> `%LOCALAPPDATA%\ms-playwright` (or `~/.cache/ms-playwright`) — that installer can stall without
+> timing out, and can leave a truncated binary that looks present but will not run.
 
-**CLI mode:**
+**Command line:**
 
 ```bash
 npm run generate -- --prompt "Test login with an invalid password" --url "https://the-internet.herokuapp.com/login"
 
-# multiple entry pages, and an explicit coverage level (minimal | standard | full, default standard)
+# several entry pages and an explicit coverage level (minimal | standard | full, default standard)
 npm run generate -- --prompt "Test the homepage" --urls "https://example.com,https://example.com/about" --coverage full
 ```
 
-## Discovery
+## How it works
+
+```
+prompt + url
+  -> Planner (AI)                     -> structured test plan
+  -> Discovery                        -> app model: elements as accessibility role + name
+       |_ DOM extraction (primary)     -> cheerio over page.content(), no LLM needed
+       |_ auth-aware login             -> signs in on a live login gate before crawling on;
+                                          credentials from the prompt or a UI prompt asked
+                                          right when the gate is found
+       |_ site crawl (same-origin)     -> follows the entry page's own internal links; probes
+                                          JS-only nav by clicking once href-following finds none
+       |_ AI vision (fallback)         -> only when DOM extraction finds nothing usable
+  -> Test Cases (AI)                  -> full coverage suite (valid/invalid/boundary/security)
+       \_ case-selection gate (opt.)   -> pauses for you to review/accept/reject a batch and
+                                          ask for a refined regeneration, ENABLE_CASE_SELECTION_GATE
+       \_ login-case cap              -> at most one case targets the login page itself
+  -> Primary-case selection           -> fromPrompt case, else highest priority
+  -> IR generation (AI) + grounding   -> strict JSON test model (the contract)
+       \_ login prefix (on auth)      -> discovery's recorded login replayed as real steps,
+                                          prepended before grounding, so the generated test
+                                          starts authenticated in its own fresh browser
+       \_ credentialPolicyFor(case)    -> full / identifier-only / none, decided from case
+                                          wording before any substitution happens
+       \_ live-extend (on demand)      -> reaches + models pages beyond the entry page,
+                                          policy-aware (only the case's final credential
+                                          attempt gets substituted during replay)
+       \_ text-assertion grounding     -> replays the terminal step, corrects a wrong-worded
+                                          guess against the real page instead of trusting it
+       \_ truncation (fallback)        -> a real, partial test instead of a hard failure
+  -> Playwright Generator (no AI)     -> *.spec.ts with per-step test.step() blocks
+  -> Suite Runner (no AI)             -> every case in its own Playwright test() / browser
+                                          context, run + collect per-case artifacts
+  -> Failure Analysis (AI)            -> diagnosis (only on failure)
+       \_ Deterministic classifier    -> pattern-matches Playwright errors first (free)
+       \_ AI fallback                 -> only for ambiguous cases
+       \_ Bounded self-heal (<=1x)    -> re-snapshot (policy-aware) + regenerate + re-run once
+```
+
+<details>
+<summary><b>Discovery in detail</b></summary>
 
 DOM-based discovery is built in and needs no setup — `domDiscovery.ts` drives Playwright and
 extracts structured elements with cheerio (`domExtract.ts`), no LLM tokens involved. It is the
@@ -86,50 +132,14 @@ Gemini vision is the fallback, used only when DOM extraction returns nothing usa
 challenge) is not distinguished from the real page it's standing in front of — see
 `TECH_DEBT.md` TD-04.
 
-## How It Works
-
-```
-prompt + url
-  -> Planner (Gemini)                 -> structured test plan
-  -> Discovery                        -> app model: elements as accessibility role + name
-       |_ DOM extraction (primary)     -> cheerio over page.content(), no LLM needed
-       |_ auth-aware login             -> signs in on a live login gate before crawling on;
-                                          credentials from the prompt or a UI prompt asked
-                                          right when the gate is found
-       |_ site crawl (same-origin)     -> follows the entry page's own internal links; probes
-                                          JS-only nav by clicking once href-following finds none
-       |_ Gemini Vision (fallback)     -> only when DOM extraction finds nothing usable
-  -> Test Cases (Gemini)              -> full coverage suite (valid/invalid/boundary/security)
-       \_ case-selection gate (opt.)   -> pauses for you to review/accept/reject a batch and
-                                          ask for a refined regeneration, ENABLE_CASE_SELECTION_GATE
-       \_ login-case cap              -> at most one case targets the login page itself
-  -> Primary-case selection           -> fromPrompt case, else highest priority
-  -> IR generation (Gemini) + grounding -> strict JSON test model (the contract)
-       \_ login prefix (on auth)      -> discovery's recorded login replayed as real steps,
-                                          prepended before grounding, so the generated test
-                                          starts authenticated in its own fresh browser
-       \_ credentialPolicyFor(case)    -> full / identifier-only / none, decided from case
-                                          wording before any substitution happens
-       \_ live-extend (on demand)      -> reaches + models pages beyond the entry page,
-                                          policy-aware (only the case's final credential
-                                          attempt gets substituted during replay)
-       \_ text-assertion grounding     -> replays the terminal step, corrects a wrong-worded
-                                          guess against the real page instead of trusting it
-       \_ truncation (fallback)        -> a real, partial test instead of a hard failure
-  -> Playwright Generator (no AI)     -> *.spec.ts with per-step test.step() blocks
-  -> Suite Runner (no AI)             -> every case in its own Playwright test() / browser
-                                          context, run + collect per-case artifacts
-  -> Failure Analysis (Gemini)        -> diagnosis (only on failure)
-       \_ Deterministic classifier    -> pattern-matches Playwright errors first (free)
-       \_ Gemini fallback             -> only for ambiguous cases
-       \_ Bounded self-heal (<=1x)    -> re-snapshot (policy-aware) + regenerate + re-run once
-```
+</details>
 
 Full technical detail, file by file: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Current Capabilities
+<details>
+<summary><b>Capabilities in detail</b></summary>
 
-### What Works
+### The pipeline
 
 | Capability | Details |
 |-----------|---------|
@@ -188,50 +198,56 @@ of guarantees**:
 - Real credentials **never touch disk or the database**. They live in process memory for the
   length of one walk; stored steps keep `${env:...}` references.
 
-### What's Broken
+</details>
 
-**Tracked in one place: [TECH_DEBT.md](TECH_DEBT.md)** — every known gap, ranked by severity, with
-remediation. Not repeated here so it can't drift out of sync (see `DECISIONS.md` D-01).
+**Known limitations** are tracked in one place, ranked, with their fixes:
+[TECH_DEBT.md](TECH_DEBT.md). They are not repeated here so the two cannot drift apart
+(`DECISIONS.md` D-01). By design, there are no built-in demo credentials: a run takes them from your
+prompt or asks for them the moment it finds a live login form (`DECISIONS.md` D-08, D-26).
 
-The headline items, for orientation:
+## Project layout
 
-| Issue | Short version |
+```
+src/            the pipeline (stages/), AI providers (llm/), schemas (schema/), server (server/), Jira (jira/)
+public/         the single-page UI (no build step)
+tests/          vitest suite, including real-browser checks
+supabase/       database migrations (identity, organisations, projects, library, org connections)
+scripts/        operational scripts (Salesforce discovery probe)
+docs/           guides, phase reports, research and an archive — see docs/README.md
+project-brain/  working notes carried between development sessions
+```
+
+## Documentation
+
+| You want to know… | Read |
 |---|---|
-| Duplicate-named elements can still make a locator ambiguous | Partial mitigation shipped, real fix (page-scoping) still open — `TECH_DEBT.md` TD-05 |
-| No blocking-interstitial detection (CAPTCHA/bot walls) at discovery time | `TECH_DEBT.md` TD-04 |
-| Authentication is off by default | It **exists** — Supabase Auth, four roles, project-scoped visibility — but `AUTH_ENABLED` defaults off, and with it off every guard resolves a synthetic local owner and allows everything. An unconfigured server is open to anyone who can reach the port (`TECH_DEBT.md` TD-14) |
-| CI is not a merge gate | `.github/workflows/test.yml` **does** run `tsc --noEmit` and `npm test` on every push and PR. What is missing is branch protection, so a red run can still merge (`TECH_DEBT.md` TD-20) |
+| What this is, how to run it, every setting | **this file** |
+| How it works internally — every file, every schema | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| What is broken or weak, ranked, with the fix | [TECH_DEBT.md](TECH_DEBT.md) |
+| Why a design choice was made, and what was rejected | [DECISIONS.md](DECISIONS.md) |
+| Working rules for anyone (or any AI agent) changing the code | [CLAUDE.md](CLAUDE.md) |
+| Everything else: guides, phase reports, research, archive | [docs/README.md](docs/README.md) |
 
-Fixed since first written up, kept here only so the fix isn't re-discovered as new: a correct test
-could be rejected outright (TD-01), a failing test's report could be destroyed before diagnosis
-ever read it (TD-02), a Groq rate limit could kill a run instead of backing off (TD-03), a
-role target with no name could crash spec generation and take down an entire run with zero cases
-produced (TD-30), a not-yet-hydrated page could be cached as a valid empty AppModel with nothing
-to ground against (TD-31), a page
-title could only be asserted as body text where it can never appear (TD-06), live locator
-resolution matched by substring instead of exact name (TD-32), the deterministic failure
-classifier missed one common Playwright timeout wording (TD-33), a `visible` assertion could lock
-onto a hidden same-named element (TD-34), and one hidden-element click could burn ~113s and blow
-the executor's kill timer (TD-36).
+## Development
 
-By design, not a defect: **no built-in demo credentials.** There's no per-site autofill list —
-credentials come from your prompt when it carries them, otherwise the run pauses and asks via the
-UI the moment discovery finds a live login gate (or times out and continues without them,
-`CREDENTIAL_WAIT_MS`). See `DECISIONS.md` D-08 and D-26.
+```bash
+npm run typecheck            # tsc --noEmit (strict, no unused code)
+npm test                     # vitest run
+```
+
+`.github/workflows/test.yml` runs both on every push and pull request. It is not yet a required
+check, so run them before you push (`TECH_DEBT.md` TD-20).
 
 ## Configuration
 
-### Environment Variables
+### Environment variables
 
-All optional except the API key variable. **Most** descriptions and cost/reliability tradeoffs are
-in `.env.example` — but that file is not a complete index of this table. `MAX_CASES_PER_RUN`,
-`MAX_DISCOVERY_PAGES`, `PLAYWRIGHT_TIMEOUT`, `MAX_SUITE_HEALS`, `APPMODEL_CACHE_TTL_MS`,
-`REGROUND_TIMEOUT_MS` and the `SCREENSHOT_*` group are read by the code and documented here only.
-(The reverse also holds: `.env.example` lists `GEMINI_EMBED_MODEL`, which nothing in `src/` reads.)
+All optional except one AI provider's key. Every setting the code reads is listed in `.env.example`
+with its default and its cost/reliability tradeoff; this table is the short version.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GEMINI_API_KEYS` | Yes | Comma-separated Gemini API keys (quota stacks across distinct projects). `GEMINI_API_KEY` (singular) is accepted as a fallback |
+| `GEMINI_API_KEYS` | Yes (also for document upload) | Comma-separated Gemini API keys (quota stacks across distinct projects). `GEMINI_API_KEY` (singular) is accepted as a fallback |
 | `LLM_PROVIDER` / `LLM_PROVIDER_LITE` | No | Which provider's keys the pipeline uses: `gemini` (default), `azure` (`AZURE_OPENAI_*`) or `claude` (`ANTHROPIC_*`). `_LITE` covers the cheap stages and defaults to `LLM_PROVIDER`. Any other value stops the server at startup |
 | `ANTHROPIC_API_KEY` | When a role is `claude` | Claude API key (`ANTHROPIC_API_KEYS` comma-separated also works). `ANTHROPIC_MODEL` (default `claude-opus-5-5`), `ANTHROPIC_MODEL_LITE` (default = `ANTHROPIC_MODEL`), `ANTHROPIC_EFFORT[_LITE]` (unset = model default). See `.env.example` and `DECISIONS.md` D-66 |
 | `GEMINI_MODEL` | No | Gemini model for IR generation/discovery/test-cases/failure-analysis — verify against your deployed `.env`, not this table |
@@ -280,7 +296,7 @@ in `.env.example` — but that file is not a complete index of this table. `MAX_
 | `TEST_USERNAME` / `TEST_PASSWORD` | No | Credentials for the site under test. **Setting these suppresses every credential prompt** — in runs, in the case editor and in replay. Convenient for an operator, confusing if you are waiting for a dialog that will never appear. The only two variable names a generated spec may reference |
 | `PORT` | No | Web UI port (default: 3000) |
 | `SELECT_TIMEOUT_MS` | No | How long a `select` step waits for its options and for the action itself (default: 10000). Server-populated dropdowns are the norm, so the wait is the default — but it exits the moment the control is populated and still has no match, so a wrong-control resolution fails fast instead of looking like a slow network (`TECH_DEBT.md` TD-79) |
-| `PLAYWRIGHT_TIMEOUT` | No | Per-test timeout in ms, read by `playwright.config.ts` (default: 50000). Note this one is **not** listed in `.env.example` |
+| `PLAYWRIGHT_TIMEOUT` | No | Per-test timeout in ms, read by `playwright.config.ts` (default: 50000) |
 | `AUTH_VERIFY_TIMEOUT_MS` | No | How long discovery polls for the login gate to disappear before reporting `login-failed` (default: 10000, matching `ASSERTION_TIMEOUT_MS`). Polled, so a fast login returns immediately. Raise it for an app that resolves its session slowly after load |
 | `PLAYWRIGHT_VIDEO` | No | `on` records every case **and then deletes the recordings of `passed` cases**, so you keep videos for exactly the outcomes worth debugging — failed, blocked, truncated, unconfirmed. `all` records every case **and keeps every recording**, passed ones included, so every case has a video. `off` records none; unset is `retain-on-failure`, which keeps only what Playwright itself failed and therefore can never give you a blocked or unconfirmed recording. Storage is bounded by the prune; the recording cost per case is not |
 
@@ -306,14 +322,22 @@ not been configured for a capability never advertises it.
 | `SALESFORCE_ALLOW_ALL_ORGS` | `false` | Ticked Salesforce runs accept every Salesforce org (production, Developer Edition, `login.`/`test.salesforce.com`), not only scratch orgs and sandboxes; a non-Salesforce URL is still refused. A production or other non-test org is named in the server log, on the run screen's discovery line and in the HTML report, since generated tests create and change real records. See `DECISIONS.md` D-68 |
 | `PROJECT_DISCOVERY_SHARING` | `false` | A project's site discovery is saved for **7 days** and reused by every run of that project with the same URL and the same login, instead of exploring the site each time (and instead of the 30-minute global cache). If several people start runs on one project at once, one explores and the others wait and reuse it. "Explore the site again" on the home screen makes the next run explore afresh and replace the saved one. Separate per company and per project. Org-connection Salesforce runs keep their own saved scan (`SALESFORCE_DISCOVERY_CACHE_ENABLED`). See `DECISIONS.md` D-72 |
 | `JIRA_ENABLED` | `false` | Jira Phase 1: "Connect Jira" above the prompt box. Each user signs in to their own Atlassian account (OAuth 2.0, read-only `read:jira-work`), types a story key, and the story's title and description fill the prompt box; the URL and Run are unchanged. Needs `JIRA_CLIENT_ID`, `JIRA_CLIENT_SECRET`; `JIRA_REDIRECT_URL` defaults to `http://localhost:<PORT>/api/jira/callback` and must match the Atlassian console exactly. The Jira token is held in server memory only, so a restart means connecting again. `JIRA_MAX_PROMPT_CHARS` (default 4000) caps the text. See `DECISIONS.md` D-71 |
+| `DETERMINISTIC_HEAL` | `false` | A failed step is first re-matched against the discovered page by structure (renamed or moved element), with no AI call and no new browser, before the AI self-heal is tried |
+| `SCREEN_MAP_ENABLED` | `false` | Salesforce runs remember the screens their captures reach (names only, never selectors) and show them to the next run as hints. See `DECISIONS.md` D-54 |
+| `ORG_LLM_CONFIG_ENABLED` | `false` | An organisation can store its own Gemini key, model and budget (sealed with `LLM_KEY_FILE`, never returned to a browser). Off: the routes 404 and runs use the env keys |
+| `SCRIPT_OVERRIDE_ENABLED` | `false` | A saved case can carry a hand-written Playwright script. Off: the routes 404 and a stored override does not run |
+| `TEST_DATA_ENABLED` | `false` | On Salesforce org-connection runs, positive cases get valid typed values from the org's own metadata (unique names, required fields filled by type, real picklist options). Negative cases are never touched |
+| `SALESFORCE_DISCOVERY_CACHE_ENABLED` | `false` | An org-connection run reuses a saved discovery (up to 24 h) while the org's setup fingerprint is unchanged, instead of crawling again |
+| `SALESFORCE_PRODUCTION_ORGS_ENABLED` | `false` | "Connect org" also accepts production orgs, not only scratch, sandbox and Developer Edition. Runs create real records there |
+| `SALESFORCE_CLEANUP_ENABLED` | `false` | After an org-connection run, delete the records that run created (only those the org confirms the connected user created since the run began) |
 | `RUN_RETENTION_DAYS` | unset | Age off `runs/` directories after N days. Unset keeps everything |
 
-### Playwright Config
+### Playwright config
 
 `playwright.config.ts` — Chromium headless, 50s per-test timeout, 0 retries, screenshot on every
 result, trace + video retained on failure only (`DECISIONS.md` D-16).
 
-## Sharing Over the Internet
+## Sharing over the internet
 
 ```bash
 # terminal 1
@@ -353,29 +377,31 @@ curl http://localhost:3000/api/health
 
 ### Azure Container Apps
 
-The image is built in CI (`.github/workflows/image.yml`) and pushed to GHCR — ACR Tasks is
-blocked on the student subscription (`TasksOperationsNotAllowed`), so Azure just pulls the
-pre-built image.
+Every push to `main` runs `.github/workflows/deploy.yml`: it builds the image, pushes it to GHCR
+(tagged with the commit SHA, `v1` and `latest`), rolls it out to the `testbench` Container App in
+`testbench-rg`, waits for the new revision to be the only active one, then calls `/api/health`.
+A deploy changes the image only; settings and secrets are managed on the Container App with
+`az containerapp update --set-env-vars …` and `az containerapp secret set …`, and stay as set.
+
+First-time creation, for reference:
 
 ```bash
-# 0. CI pushes ghcr.io/<github-user>/testbench:v1 on every push to main.
-#    Manual push (override):
-#    docker login ghcr.io -u <github-user>
-#    docker buildx build --push -t ghcr.io/<github-user>/testbench:v1 .
-
 # 1. Create the Container App pulling from GHCR
 az containerapp up \
-  --name ai-test-platform \
+  --name testbench \
   --resource-group <rg> \
   --environment <env-name> \
   --image ghcr.io/<github-user>/testbench:v1 \
   --target-port 3000 \
   --ingress external \
-  --min-replicas 1 --max-replicas 1 \
-  --env-vars "GEMINI_API_KEYS=<key>" "CHROMIUM_EXTRA_ARGS=--disable-dev-shm-usage"
+  --min-replicas 0 --max-replicas 1 \
+  --env-vars "CHROMIUM_EXTRA_ARGS=--disable-dev-shm-usage"
 
-# 2. Mount an Azure Files volume at /app/runs
-#    (az containerapp update with volume + volume-mount — see Azure docs for the exact flag set)
+# 2. Store API keys as secrets, never as plain values
+az containerapp secret set -n testbench -g <rg> --secrets gemini-keys="<key1>,<key2>"
+az containerapp update -n testbench -g <rg> --set-env-vars GEMINI_API_KEYS=secretref:gemini-keys
+
+# 3. Mount an Azure Files volume at /app/runs so run results survive restarts
 ```
 
 GHCR packages are private by default — either publish `testbench` publicly or attach a
@@ -391,8 +417,9 @@ crashing. Locally this var is unset, so bare-metal and `docker compose up` are b
   `playwright:v1.49.0-noble` image and `package-lock.json` resolve the same `1.49.0` — a
   caret range lets `npm install` drift to a newer Playwright than the pre-installed Chromium,
   which fails with `browserType.launch: Executable doesn't exist`.
-- **`MAX_CONCURRENT_RUNS=1` on a small instance** (≤512 MB RAM) — every run launches its own
-  Chromium. The default is 3; reduce it if the container OOMs.
+- **Size `MAX_CONCURRENT_RUNS` to the machine** — every run launches its own Chromium. The default
+  is 3; use 1 on a small instance (≤512 MB RAM). Roughly 1 vCPU and 2 GB per concurrent run is a
+  safe starting point; watch memory and lower it if the container restarts.
 - **Single replica.** The credential prompt and case-selection gate hold promises in process
   memory; a reschedule drops the promise and wastes the full timeout. Scaling horizontally
   requires an external scheduling layer.
@@ -401,8 +428,3 @@ crashing. Locally this var is unset, so bare-metal and `docker compose up` are b
   It is a liveness probe only — it returns 200 regardless of Gemini/DB readiness.
 
 Full phase report: [`docs/phases/PHASE_CONTAINERIZATION_REPORT.md`](docs/phases/PHASE_CONTAINERIZATION_REPORT.md).
-
-## Further Reading
-
-See the [Documentation Map](#documentation-map) at the top of this file — one line per document,
-one job each.

@@ -15,7 +15,7 @@
  * whenever new runs have accumulated without touching rows that already exist.
  */
 
-import { allRunIds, summariseRun } from "../src/runStore.js";
+import { allRunIds, summariseRun } from "../../../src/runStore.js";
 
 /** Must match the bootstrap migration's organisation id, and auth.ts's LOCAL_USER_ID. */
 const DEFAULT_ORG_ID = "00000000-0000-4000-8000-000000000010";

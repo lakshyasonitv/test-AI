@@ -37,8 +37,8 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { encode } from "gpt-tokenizer";
-import { toLiteModel, toMicroModel, INTERACTIVE_ROLES } from "../src/schema/appModel.js";
-import type { AppModel, PageModel, Element } from "../src/schema/appModel.js";
+import { toLiteModel, toMicroModel, INTERACTIVE_ROLES } from "../../../src/schema/appModel.js";
+import type { AppModel, PageModel, Element } from "../../../src/schema/appModel.js";
 
 const countTokens = (s: string): number => encode(s).length;
 

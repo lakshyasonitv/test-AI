@@ -2,6 +2,13 @@
 
 *Last updated: 2026-10-28.*
 
+
+## Repo clean-up (2026-11-02, branch `cleanup/production-ready`)
+
+- [ ] Commit (one per step) and push the branch, then open a PR — ask first.
+- [ ] After merge: nothing to change on Azure (no setting was renamed; GEMINI_EMBED_MODEL was never read).
+- [ ] CLAUDE.md is 216 lines against its own "under 200" rule.
+
 ## Shared discovery per project (D-72) + the main merge
 
 - [ ] Commit D-72, then push the branch (merge commit 2142d16 + D-72) — ask first.
@@ -67,8 +74,8 @@
 - [ ] TD-110 — intermittent tenancy pair-run failure.
 - [ ] Playwright browser version mismatch in the cloud container (see `03-progress.md`) — either pin
       the image's browsers or document the symlink workaround in the setup script.
-- [ ] `CLAUDE.md` / `AGENTS.md` are 214 lines against CLAUDE.md's own "under 200" rule
-      (`docs/FINDINGS_2026-09-28.md` §6.3).
+- [ ] `CLAUDE.md` is 216 lines against its own "under 200" rule (AGENTS.md is now a pointer, 2026-11-02)
+      (`docs/archive/FINDINGS_2026-09-28.md` §6.3).
 
 ## Claude provider (D-66)
 

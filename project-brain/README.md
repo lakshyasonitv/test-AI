@@ -18,7 +18,7 @@ links to those; it never restates them.
 
 **Provenance.** Created 2026-10-13. `CLAUDE.md` and `AGENTS.md` described a brain before this, but it
 was never committed (`git log --all -- '*project-brain*'` was empty; see
-`docs/FINDINGS_2026-09-28.md` §6.3), so whatever it held — including the 2026-09-18 entry `CLAUDE.md`
+`docs/archive/FINDINGS_2026-09-28.md` §6.3), so whatever it held — including the 2026-09-18 entry `CLAUDE.md`
 cites — lived on one machine and is not recoverable here. If someone still has a local, untracked
 `project-brain/`, merge its contents into these files rather than overwriting them: a `git pull` will
 refuse to overwrite untracked files with the same names.

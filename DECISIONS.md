@@ -1020,7 +1020,7 @@ entry to revisit, and it should be revisited deliberately rather than by acciden
 **Rejected: hold the last-known stage per phase and patch forward.** Cheaper than a replay, and it
 keeps the live view stable. Rejected because it re-implements a *second*, partial derivation of the
 view that has to stay consistent with `applyEvent` forever — the precise anti-pattern the structural
-rule in `AGENTS.md` warns about, in a different costume.
+rule in `CLAUDE.md` (then mirrored in `AGENTS.md`) warns about, in a different costume.
 
 **The cost, stated rather than discovered.** A full replay re-runs every `applyEvent` side effect,
 so credential prompts and case-selection panels visibly replay on recovery. That is precisely the
@@ -1278,6 +1278,12 @@ redirect can carry a session id (`sid=`).
 indistinguishable, so "no secret supplied" reads `verification-required` and "secret rejected" reads
 `mfa-required`; Salesforce's own verification-page markup has not been seen. The signature is
 unchanged; `totpCode` is an extra export for tests, not part of the contract.
+
+
+**Removed (2026-11-02).** The server never mounted this check, so the module
+(`src/server/salesforceLogin.ts`) and its own tests were deleted in the repo clean-up. Its login
+steps are live code in `hybridDiscovery.ts` and `codeEntryField` lives in `salesforceOrgLogin.ts`;
+the TD-40 tsx guard (`tests/twoScreenLoginUnderTsx.test.ts`) now drives those directly.
 
 ## D-40. Live discovery gives EVERY element a `css`, most stable first, positional path last — verified to match exactly that element
 

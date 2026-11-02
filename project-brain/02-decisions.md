@@ -84,3 +84,10 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156; 2026-10-28: ou
 - A project's discovery is shared: per login (not across logins), kept 7 days + "Explore the site again", no per-user run limit.
 - Document upload stays on Google AI Studio Gemini (not Azure Foundry); a lite model is fine.
 
+## 2026-11-02 — Repo clean-up (user)
+- Delete unused features; but a "test door" into live code (walkLiveDom) is kept, and a guard test
+  that covers live code (the TD-40 tsx login guard) is kept even when the module it ran through goes.
+- Old documents are archived in docs/archive/, never deleted; useful walkthroughs live in docs/guides/.
+- The README is a front page titled "Testbench"; known problems live only in TECH_DEBT.md.
+- The compiler enforces no unused code (noUnusedLocals, noUnusedParameters).
+

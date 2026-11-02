@@ -1,5 +1,10 @@
 # Progress — where we are
 
+*Last updated: 2026-11-02. Repo clean-up on branch `cleanup/production-ready` (from main `8bcc3e4`):
+unused code removed, docs restructured (`docs/README.md` index, `docs/archive/`, `docs/guides/`),
+README rewritten, settings documented, booleanEnvFlags failure fixed. NOT committed yet — see
+`journal/2026-11-02.md`. Everything below this line is older history.*
+
 *Last updated: 2026-10-28 (second merge of main: main's D-61 insights kept, PR #11 conflict-free). main merged into the branch (2142d16, not pushed); shared discovery per project (D-72) built, NOT committed. Earlier, 2026-10-26: Jira Phase 1 (D-71) built, NOT committed. Earlier, 2026-10-22: Claude provider (D-66) committed + pushed (`72127dc`). Pinned `?login` login (D-67) committed + pushed (`a700c1d`). Allow-all-orgs (D-68) committed (`0da6005`); screen/report warning committed (`69dbe17`). Run insights (D-69) committed (`67e5881`). Salesforce post-login fixes (D-70) + D-67 removal built, NOT committed.*
 
 *Last updated: 2026-10-28, run insights (D-61) ported to `main`. See `journal/2026-10-28.md`.*

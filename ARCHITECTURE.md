@@ -284,13 +284,13 @@ Two supporting routes, both additive:
 | `POST /api/runs/:runId/case-selection/rewrite` | "Ask for a change" for a case that has no IR yet. Behind `GATE_CASE_EDIT_AI` (default off) because it spends a model call. Deliberately does NOT run `parseIrStep` or constrain the model to `STEP_VOCABULARY` — gate steps are prose, and the vocabulary check happens later at IR time, in the stage that owns it. It proposes; it never writes (D-27) |
 
 Full walkthrough of the editing flow, saved cases and gate cases both:
-[docs/EDITABLE_IR.md](docs/EDITABLE_IR.md).
+[docs/guides/EDITABLE_IR.md](docs/guides/EDITABLE_IR.md).
 
 ---
 
 ## Source Files
 
-### `src/stages/` — Pipeline Stages (19 files)
+### `src/stages/` — Pipeline Stages
 
 | File | LLM? | Purpose |
 |------|:-----:|---------|
@@ -310,7 +310,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `discovery.ts` | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
 | `liveExtend.ts` | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding. Its `select` step calls `chooseLive` rather than a bare `selectOption`, sharing option matching and waiting with the generated spec (TD-79). Credential fills resolve their kind from the step's `${env:...}` VALUE, the same way the compiled spec does (TD-84), and a walk that ends on the page it typed a credential into throws instead of snapshotting the login form. `refreshPageModelAt` additionally returns the landed URL, for TD-86's scoped grounding |
 | `testCases.ts` | Gemini | Coverage suite generation, `finalizeCaseSelection`, scope-filtered checklist, login-case cap. **Not edited by Pro** — `tests/testCasesNoChange.test.ts` pins its prompt and cache key byte-for-byte |
-| `salesforceOrgLogin.ts` | No | Salesforce org login hardening (D-64), active only when the Salesforce box is ticked (`salesforceRun()`). `assertTestOrg`: refuses anything but a scratch org or a sandbox before a browser launches (with `SALESFORCE_ALLOW_ALL_ORGS` on, D-68: any Salesforce host, non-test orgs named in the server log). D-70: `parseSalesforceHost` / `sameSalesforceApp` (an org's hosts as My Domain name + partition + purpose, from Salesforce's URL-format tables), `onlyChecksLogin(ir)`, `OrgRefusedError`. `blockLoginAds`: aborts `c.salesforce.com` on discovery's shared page. `reachUsernameForm`: clicks "Log In with Username" on the email-first screen (checked before the username box). `waitForOneScreenPassword`: 2.5 s grace before `loginOnPage`'s instant check (TD-172). `describeLoginFailure`: wrong credentials / verification code / password change / SSO, from page structure. Also owns `codeEntryField`, which `server/salesforceLogin.ts` imports. Does NOT log in — `loginOnPage` still does, and still records the steps the generated spec replays. Also `fixedLoginRun()` — the one gate for D-65 (`SALESFORCE_FIXED_LOGIN` on AND a ticked run), read by `ir.ts` |
+| `salesforceOrgLogin.ts` | No | Salesforce org login hardening (D-64), active only when the Salesforce box is ticked (`salesforceRun()`). `assertTestOrg`: refuses anything but a scratch org or a sandbox before a browser launches (with `SALESFORCE_ALLOW_ALL_ORGS` on, D-68: any Salesforce host, non-test orgs named in the server log). D-70: `parseSalesforceHost` / `sameSalesforceApp` (an org's hosts as My Domain name + partition + purpose, from Salesforce's URL-format tables), `onlyChecksLogin(ir)`, `OrgRefusedError`. `blockLoginAds`: aborts `c.salesforce.com` on discovery's shared page. `reachUsernameForm`: clicks "Log In with Username" on the email-first screen (checked before the username box). `waitForOneScreenPassword`: 2.5 s grace before `loginOnPage`'s instant check (TD-172). `describeLoginFailure`: wrong credentials / verification code / password change / SSO, from page structure. Also owns `codeEntryField`, the verification-code screen detector `describeLoginFailure` uses. Does NOT log in — `loginOnPage` still does, and still records the steps the generated spec replays. Also `fixedLoginRun()` — the one gate for D-65 (`SALESFORCE_FIXED_LOGIN` on AND a ticked run), read by `ir.ts` |
 | `specIntake.ts` | Gemini (pinned) + lite | Pro document intake behind `SPEC_INTAKE_ENABLED`. `checkSpecUpload`: byte limits, magic-byte sniffing, extension-vs-contents (a disagreement is rejected), per-format structure, DOCX text via mammoth — PDFs are never parsed. `distillSpec`: ONE Gemini call (pinned to Gemini even under `LLM_PROVIDER=azure`, since only it reads a PDF inline), cached in the `spec` namespace on the document's SHA-256 + model + instruction text. Never writes the document anywhere. `compareSpecToApp`/`runSpecComparison`: the per-run spec-vs-AppModel comparison on the LITE role via `llm()` (follows `LLM_PROVIDER`); every warning must name a real rule number or discovered page URL or it is dropped; never throws, never fails a run; warnings held in memory only. A Pro run skips reactive (new-page) case generation, which has never seen the spec |
 | `generator.ts` | No | IR -> Playwright spec (pure code). With `SALESFORCE_FIXED_LOGIN` on and `ir.meta.fixedLogin` set (D-65), the leading `auth-*` steps run as one `salesforceLogin(page, loginUrl)` in step 1 (the others stay as empty `test.step`s, no login screenshots) |
 | `hybridDiscovery.ts` | Gemini (text) | Discovery orchestrator: DOM first, auth-aware login + session verification, same-origin + click-probed site crawl, vision fallback; also owns `isAllowedEntryUrl`/`isPrivateOrLoopbackHost`, the entry-URL scheme + private-host allow-list |
@@ -329,7 +329,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `caseEdit.ts` | Gemini (ceiling only) | Re-grounds the steps whose **target** changed, by replaying the earlier steps to arrive at the right page. Grounding is DOM-first, so it usually spends no model call at all. Passes a `GroundingScope` so only those steps are re-verified, and records the URL each walk reached so an edited step resolves against the page actually visited (TD-86). `caseElementContext` supplies the controls a rewrite may name — source-run model first, then cached walk snapshots for the same site (TD-91) |
 | `replay.ts` | No | Walks a stored IR prefix in a real browser and snapshots where it lands. Prefix-cached, so two edits on the same page share one walk. Also owns the replay pre-pass: `ungroundedStepIndexes` + `maybeRegroundForReplay` ground a replay's un-grounded steps against the live page behind `REPLAY_REGROUND` (default off, zero LLM calls, never writes back to the saved case — TD-77) |
 
-### `src/schema/` — Data Contracts (4 files)
+### `src/schema/` — Data Contracts
 
 | File | Purpose |
 |------|---------|
@@ -360,7 +360,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `backoff.ts` | Exponential backoff, per-attempt timeout, rate-limit detection + key rotation |
 | `json.ts` | Strip markdown fences and parse JSON from LLM output |
 
-### `src/jira/` — Jira Phase 1 (3 files, D-71, behind `JIRA_ENABLED`)
+### `src/jira/` — Jira Phase 1 (D-71, behind `JIRA_ENABLED`)
 
 | File | LLM? | Purpose |
 |---|---|---|
@@ -373,7 +373,7 @@ Routes (`src/server/index.ts`, all new, all 404 when the flag is off): `GET /api
 `GET /api/jira/issue/:issueKey[?site=<cloudId>]`, `POST /api/jira/disconnect`. `/api/health` gains
 `jira: true` only when on. The browser (`app.js`, "Jira, Phase 1" block) only fills `#prompt`.
 
-### `src/kb/` — Knowledge Base (4 files)
+### `src/kb/` — Knowledge Base
 
 | File | Purpose |
 |------|---------|
@@ -382,7 +382,7 @@ Routes (`src/server/index.ts`, all new, all 404 when the flag is off): `GET /api
 | `testStrategy.ts` | Static QA knowledge: coverage taxonomy, scope classification, filtering |
 | `projectDiscovery.ts` | D-72, `PROJECT_DISCOVERY_SHARING`: a project's discovery saved under organisation + project + the site key (URL + login + strategy) for 7 days, read by `discoverSiteHybrid` when the run route passes a `discoveryScope`; `readOrClaim` lets only one discovery of a key run at a time (others wait and reuse it). In-process, single replica |
 
-### `src/server/` — Web Server (18 files)
+### `src/server/` — Web Server
 
 | File | Purpose |
 |------|---------|
@@ -410,7 +410,7 @@ Routes (`src/server/index.ts`, all new, all 404 when the flag is off): `GET /api
 | `rewrite.ts` | Where a model proposes step text and **never writes**: `proposeRewrite` ("ask for a change") and `proposeStepTranslation` ("write it for me"). Both return sentences, not IR, so approving one re-enters the ordinary parse/re-ground path, and **both** now run every proposed line through `parseIrStep` before it is shown (TD-91). `proposeRewrite` is also given the site's actual controls, or it invents element names from page headings |
 | `retention.ts` | Ages off `runs/` directories on a schedule, per `RUN_RETENTION_DAYS` |
 
-### `public/` — Frontend (5 files)
+### `public/` — Frontend
 
 | File | Purpose |
 |------|---------|
