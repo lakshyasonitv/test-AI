@@ -82,6 +82,43 @@ export type Step = z.infer<typeof Step>;
 // becomes "medium" instead of failing the parse. Fixing only the test-case side would have left
 // the identical trap one stage downstream — `IR.meta.priority` is parsed in `toIR`'s grounding
 // loop, where a rejection burns a retry attempt and can fail the whole compile over a sort hint.
+/**
+ * Regression memory (D-73, REGRESSION_MEMORY_ENABLED): what a SAVED case remembers beyond its steps,
+ * so a later repair has something to repair from and the safety checks can still read what the case
+ * means. Written in code when the case is saved (regressionMemory.ts), never by the model. Absent on
+ * every run's IR and on every case saved with the flag off, so all stored IRs parse unchanged.
+ */
+export const Remembered = z.object({
+  /** The run the case was saved from, and when. */
+  savedFrom: z.string(),
+  at: z.string(),
+  /** What the case MEANS: the plain-English case it was compiled from. */
+  meaning: z.object({
+    title: z.string(),
+    steps: z.array(z.string()),
+    expected: z.string().optional(),
+    intent: z.string().optional(),
+    /** "valid", "invalid-input", "state-change"... The hollow-pass guards key on it. */
+    category: z.string().optional(),
+  }).optional(),
+  /** Salesforce: the org's setup for the objects this case touches, when it was saved. Objects are
+   *  stored as the org model wrote them (fields, required, picklists, record types, rules). */
+  org: z.object({
+    host: z.string(),
+    userLocale: z.string().optional(),
+    validationRulesRead: z.boolean(),
+    objects: z.array(z.record(z.unknown())),
+    flows: z.array(z.record(z.unknown())).optional(),
+  }).optional(),
+  /** Values that cannot be replayed as saved: an org record id, a fixed calendar date. */
+  oneTimeValues: z.array(z.object({
+    stepId: z.string(),
+    kind: z.enum(["record-id", "fixed-date"]),
+    value: z.string(),
+  })).optional(),
+});
+export type Remembered = z.infer<typeof Remembered>;
+
 const PRIORITIES = ["low", "medium", "high", "critical"] as const;
 const Priority = z.preprocess(
   (v) => {
@@ -130,6 +167,8 @@ export const IR = z.object({
      * everywhere else, so every other IR and every other spec is unchanged.
      */
     fixedLogin: z.literal("salesforce").optional(),
+    /** D-73: written when a case is saved with REGRESSION_MEMORY_ENABLED on. See `Remembered`. */
+    remembered: Remembered.optional(),
   }),
   steps: z.array(Step).min(1),
 });

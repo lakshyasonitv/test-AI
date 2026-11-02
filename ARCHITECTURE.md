@@ -298,6 +298,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `planner.ts` | Gemini | NL request -> structured Plan |
 | `promptSelectors.ts` | No | Honors selectors the user wrote directly into their prompt |
 | `classify.ts` | No | Deterministic failure classifier |
+| `regressionMemory.ts` | No | Regression step 1 (D-73, `REGRESSION_MEMORY_ENABLED`): what a saved case remembers — its plain-English meaning from the run's `03-cases.json`, the org's setup for the objects it touches, its one-time values — and the refusal to save an unreviewed heal. Stored as `IR.meta.remembered` |
 | `heal.ts` | Gemini (LLM path only) | Bounded, one-shot self-heal: try the deterministic structural fix first (see `deterministicHeal.ts`, gated on `DETERMINISTIC_HEAL`), then fall back to re-snapshot + regenerate + re-run |
 | `deterministicHeal.ts` | No | Pure-code structural target matcher: re-matches a failing step's IR target (role/name) against the AppModel — no LLM, no browser relaunch. Tiered name matching shared in shape with `ir.ts`'s `bestNameMatch` |
 | `targetResolver.ts` | No | IR Target -> Playwright Locator with fallbacks (role/css/testId, plus a dedicated field-locator path for `fill`/`select`/`check`). Every branch hangs off `frameRoot`/`frameRootCode` — `page`, or the `page.frameLocator(...)` chain `Target.frame` names; `tests/frameTarget.test.ts` pins the live and emitted forms to the same element |

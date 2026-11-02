@@ -2261,3 +2261,34 @@ credential prompt and case gate already require one). A site that changes within
 against the old picture until someone ticks "Explore the site again"; a failure caused by that looks
 like a missing element. Multi-URL runs (`discoverPagesHybrid`) are not shared.
 
+
+## D-73. Regression testing follows the "Regression testing in Testbench" design: remember, check, repair safely, approve
+
+**Status:** Step 1 ("Remember", part A) built on `refactored-code` 2026-11-02, behind
+`REGRESSION_MEMORY_ENABLED` (default off).
+
+**What.** The team's design (26 Oct, @Vaibhav) is followed in its order: (1) a saved case remembers
+what it means and what the org looked like; (2) a Salesforce change check before a run; (3) a safe
+repair of a broken click/fill/select/press only (field binding, then an exact unique match; the whole
+test must pass again); (4) a person approves every repair (new version; reject means never proposed
+again; hand-edited steps are pinned). Part A of step 1, built now: saving a case from a run also
+stores `IR.meta.remembered` — the plain-English case from the run's `03-cases.json` (steps, expected,
+intent, category), the org model's entries for the objects the case touches (with their flows and the
+user's locale), and its one-time values (an org record id, a fixed date), which are also returned as
+`warnings`. A case that only passed after a self-heal is refused (409 `healed-needs-review`) until
+the person confirms with `acceptHealed: true`.
+
+**Why.** A saved case kept only its locators: when the site changed there was nothing to repair from,
+and the hollow-pass guards could not protect saved cases because they read the plain-English case,
+which was not saved. Self-heal on new runs could already save a heal that hides a broken check
+(the design's "today's risk"); refusing an unreviewed heal closes that without turning heal off.
+
+**Rejected.** Re-grounding every step after the failing one (an earlier plan in this session): the
+design allows one step's locator to change and nothing else. Writing `remembered` from model output:
+it is written in code only, and `toIR` deletes a model-written one. A database column for it: it is
+part of the IR, which `test_cases.ir` and every version already store, so no migration is needed.
+
+**Not yet (step 1, part B).** The element details captured during the PASSING run (role, name, page,
+match count) and the Salesforce field binding (`data-target-selection-name`) need the generated spec
+to record them, so they come with their own real-browser tests. The Salesforce release is not in the
+org model yet; step 2 reads it.

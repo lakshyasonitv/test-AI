@@ -115,6 +115,7 @@ import {
   frontdoorSessionFor, appOrigin, replaySessionFor, restoreConnection,
 } from "./salesforceOAuth.js";
 import { withFrontdoor } from "../stages/salesforceFrontdoor.js";
+import { HealedNeedsReviewError } from "../stages/regressionMemory.js";
 import {
   checkSpecUpload, distillSpec, getRunSpecWarnings, specIntakeEnabled, DISTILL_FAILED_WARNING,
 } from "../stages/specIntake.js";
@@ -2259,7 +2260,7 @@ app.delete("/api/cases/:caseId", requireRole("admin"), async (req, res) => {
  * library.ts independently checks the DESTINATION project. Both matter: they can differ.
  */
 app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async (req, res) => {
-  const { projectId, title, suiteId } = req.body ?? {};
+  const { projectId, title, suiteId, acceptHealed } = req.body ?? {};
   // Narrower than the app.param above, which has to admit a library uuid too: on THIS route the
   // id is a run directory name, so only `case-N` is meaningful. Belt-and-braces in the same shape
   // the runId checks in this file already use — the param layer is what actually stops traversal.
@@ -2276,9 +2277,16 @@ app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async 
       userId, req.organisationId!, role,
       req.params.runId, req.params.caseId, projectId,
       { title: typeof title === "string" ? title : undefined,
-        suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined },
+        suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined,
+        // D-73: optional; only read with REGRESSION_MEMORY_ENABLED on, for a case that was healed.
+        acceptHealed: acceptHealed === true },
     ));
-  } catch (err) { sendAccessError(res, err); }
+  } catch (err) {
+    // D-73: a healed case is not saved without a person's word. A 409 carrying a code, so the page
+    // can ask and send `acceptHealed: true`. Only thrown with REGRESSION_MEMORY_ENABLED on.
+    if (err instanceof HealedNeedsReviewError) return res.status(409).json({ code: err.code, error: err.message });
+    sendAccessError(res, err);
+  }
 });
 
 /**
@@ -2520,6 +2528,10 @@ export const BOOLEAN_ENV_FLAGS = [
   // D-72: a project's discovery is saved for 7 days and shared by every run of that project with the
   // same URL and login; one discovery at a time per project. Off: the global 30-minute cache as before.
   "PROJECT_DISCOVERY_SHARING",
+  // D-73: regression testing step 1, "Remember". A saved case also keeps its plain-English meaning,
+  // the org's setup for the objects it touches and its one-time values; a healed case needs a
+  // person's word to be saved. Off: saving is exactly as before.
+  "REGRESSION_MEMORY_ENABLED",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

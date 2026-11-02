@@ -2890,6 +2890,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     parsed.data.meta.baseUrl = origin;
     // D-65: only this function decides whether the spec runs the fixed Salesforce login.
     delete parsed.data.meta.fixedLogin;
+    // D-73: only saving a case writes what it remembers; a model-written one is dropped.
+    delete parsed.data.meta.remembered;
 
     // Before grounding: the grounding replays type these values too (Session 102). The model's own
     // steps are kept aside first: the fill policy removes optional fields ON PURPOSE, and coverage
