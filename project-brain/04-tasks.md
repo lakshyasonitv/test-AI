@@ -19,9 +19,9 @@
 ## Parallel suite cases (D-73)
 
 - [x] Push `vaibhav/intelligent-edison-l6061z` and open PR #12 into main (carries `cleanup/production-ready`'s 6 commits).
-- [ ] PR #13 (discoveryStrategy fixture vs Chromium escaping): confirm CI green, merge; also carried in PR #12.
-- [ ] After deploy: `MAX_CONCURRENT_RUNS=4`, `MAX_PARALLEL_CASES=4`, then pilot `SUITE_CASE_CONCURRENCY=2` on a
-      scratch org, then 4. Watch `RestartCount` and false-failure rate. Consider `PLAYWRIGHT_VIDEO=on` instead of `all`.
+- [x] PR #13 (fixture vs Chromium escaping + booleanEnvFlags) and PR #12 merged 2026-11-03; deployed as `97ea0c9`; main CI green.
+- [ ] On Azure (user): `MAX_CONCURRENT_RUNS=4 MAX_PARALLEL_CASES=4 SUITE_CASE_CONCURRENCY=4 PLAYWRIGHT_VIDEO=on`
+      (user chose 4 straight away, not a pilot at 2). Watch `RestartCount` and false-failure rate; fall back to 3.
 - [ ] Measure first if possible: `EXTENDED_LOGGING=true` for a few runs (10-insights.json per-case times).
 - [ ] TD-180 follow-ups: count discovery/primary/replay browsers in the same slots; a "run alone" marker for
       dependent cases; parallel replay (`replay.ts`).
