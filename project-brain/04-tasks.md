@@ -4,7 +4,7 @@
 
 ## Pro story -> request (PRO_STORY_PROMPT, TD-181, D-73)
 
-- [ ] Commit + push — ONLY when the user says so.
+- [x] Committed + pushed `b190506` (2026-11-03, user approved). No PR yet.
 - [ ] Turn on in Azure after merge+deploy: `PRO_STORY_PROMPT=true` (needs `SPEC_INTAKE_ENABLED=true`).
 - [ ] One real Pro run with an empty prompt box; check 01-plan.json follows the story — ask first (costs AI).
 

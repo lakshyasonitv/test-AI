@@ -1,7 +1,7 @@
 # Progress — where we are
 
 *Last updated: 2026-11-03. Branch `pro/salesforce-org-context`: TD-180 committed + pushed (`fa5a2b9`);
-PRO_STORY_PROMPT (TD-181, D-73) built and verified, NOT committed (user asked to approve first).
+PRO_STORY_PROMPT (TD-181, D-73) committed + pushed (`b190506`) with the user's OK; no PR.
 Baseline: vitest 2841 passed / 3 failed (browser, pre-existing), 212 files. See journal/2026-11-03.md.*
 
 *Last updated: 2026-11-02 (later). Branch `pro/salesforce-org-context` (from `cleanup/production-ready`):
