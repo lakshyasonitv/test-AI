@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { toIR } from "./ir.js";
 import { generateSpec } from "./generator.js";
-import { runSpec, type ExecResult } from "./executor.js";
+import { extractFailureDetail, runSpec, type ExecResult } from "./executor.js";
 import { refreshPageModel } from "./liveExtend.js";
 import { credentialPolicyFor, promptCarriesCredentials, credentialEnvVars, type Credentials } from "./credentials.js";
 import { healStepTarget } from "./deterministicHeal.js";
@@ -37,6 +37,93 @@ export interface HealArgs {
   /** Caller-owned output directory — a "healed" subdirectory is created inside it. Pass the
    *  run's own directory for the primary case, or a case's own directory for a suite case. */
   outDir: string;
+  /** The failed run's own error (see RunFailure); enables the value heal. */
+  failure?: RunFailure;
+}
+
+// ---- value heal ----------------------------------------------------------------------------------
+
+/** Case categories whose point is a bad or missing value (testData.ts DATA_IS_THE_TEST): a value
+ *  there IS the test, so it is never healed. */
+const VALUE_IS_THE_TEST = new Set(["invalid-input", "empty-boundary"]);
+/** Most picks one run heals, each followed by a re-run: an "every field" case can hold several
+ *  invented values, each found only when the run reaches it. */
+const MAX_VALUE_HEALS = 5;
+
+const OPTION_MISS = /select: no option matching "((?:[^"\\]|\\.)*)"(?:\.\s*Available: (.*)| — the control had no options at all)/;
+
+/** The real options the failure listed, minus what is never a value: "--None--", the "Recent
+ *  Items" heading, a bare "New <Object>" action. */
+function offeredOptions(list: string): string[] {
+  return [...list.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => JSON.parse(`"${m[1]}"`) as string)
+    .filter((t) => t.trim() && !/^(-+\s*none\s*-+|recent items|new( \S+)?|show (all|more).*|search .*)$/i.test(t.trim()));
+}
+
+/** Whole-word, case-insensitive (testData.ts `mentions`): the person's request names this value. */
+const named = (request: string, v: string) => {
+  const k = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return !!k(v) && ` ${k(request)} `.includes(` ${k(v)} `);
+};
+
+/** True when the failure is a pick of a value the control does not offer. */
+export function isValueHealable(failure?: RunFailure): boolean {
+  return !!failure?.failedStep && OPTION_MISS.test(failure.errorDetail ?? "");
+}
+
+/**
+ * The value heal: a picklist or lookup step failed because its value is no option ("Region A",
+ * "Online Campaign"; runs 2026-11-03T04-29-50-846Z-c820d0e1 and 05-42-52-539Z-8f96a6d6). The error
+ * lists what the control does offer, so the step takes the first real one (a lookup: the first
+ * record offered) and the test runs again, up to MAX_VALUE_HEALS picks. Never for a value the
+ * request names or a case whose point is a bad value: then the failure is the finding. Changes only
+ * values, never targets or assertions, so the test still concludes what it concluded.
+ */
+export async function attemptValueHeal(args: HealArgs): Promise<HealResult | null> {
+  const { testCase, runCreds, outDir, sourcePrompt } = args;
+  if (args.scriptOverridden || VALUE_IS_THE_TEST.has(testCase.category ?? "")) return null;
+  let ir = args.ir;
+  let failure = args.failure;
+  const changes: { step: string; from: string; to: string }[] = [];
+  const healedDir = path.join(outDir, "healed");
+  for (let round = 0; round < MAX_VALUE_HEALS && isValueHealable(failure); round++) {
+    const m = OPTION_MISS.exec(failure!.errorDetail ?? "")!;
+    const idx = failure!.failedStep! - 1;
+    const s = ir.steps[idx];
+    if (!s || s.action !== "select") return null;
+    const wanted = JSON.parse(`"${m[1]}"`) as string;
+    if (wanted && !wanted.startsWith("(") && named(sourcePrompt, wanted)) return null;
+    let to: string;
+    if (s.target?.lookup) {
+      if (!s.value) return null;            // already the first record offered: nothing to change
+      to = "";
+    } else {
+      const offered = offeredOptions(m[2] ?? "").filter((t) => t !== s.value);
+      if (!offered.length) return null;
+      to = offered[0];
+    }
+    changes.push({ step: s.id, from: s.value ?? "", to: to || "(first record offered)" });
+    ir = { ...ir, steps: ir.steps.map((x, i) => (i === idx ? { ...x, value: to } : x)) };
+    mkdirSync(healedDir, { recursive: true });
+    const spec = generateSpec(ir, path.join(healedDir, "artifacts"));
+    const run = await runSpec(spec, healedDir, credentialEnvVars(runCreds));
+    console.log(`[heal] value: ${s.id} "${s.value}" -> ${to ? `"${to}"` : "the first record offered"}: ${run.passed ? "passed" : "still failing"}`);
+    if (run.passed) {
+      writeFileSync(path.join(healedDir, "generated.spec.ts"), spec);
+      writeFileSync(path.join(healedDir, "ir.json"), JSON.stringify(ir, null, 2));
+      writeFileSync(path.join(healedDir, "value-heal.json"), JSON.stringify({ changes }, null, 2));
+      return { ir, result: run, specCode: spec, deterministic: true, valueChanges: changes };
+    }
+    failure = extractFailureDetail(run.raw);
+  }
+  return null;
+}
+
+/** The run's own failure, from Playwright's report (executor.ts extractFailureDetail): which step
+ *  died (1-based IR position) and its error text. Optional: a heal works without it, it just
+ *  cannot try the value heal. */
+export interface RunFailure {
+  failedStep?: number;
+  errorDetail?: string;
 }
 
 export interface HealResult {
@@ -47,6 +134,8 @@ export interface HealResult {
    *  re-snapshot. Present so callers can distinguish cheap heals from expensive ones
    *  in logs and UI without inspecting the heal artifact directory. */
   deterministic?: boolean;
+  /** The values a value heal changed, for the report ("Passed (healed)": what was changed). */
+  valueChanges?: { step: string; from: string; to: string }[];
 }
 
 /**
@@ -206,6 +295,14 @@ export async function attemptHeal(args: HealArgs): Promise<HealResult | null> {
   // against a fresh page model, and the IR is not what ran. Returning null is exactly the
   // "not attempted" signal every other guard here uses, so callers need no new branch.
   if (args.scriptOverridden) return null;
+
+  // A value the control does not offer: the cheapest, surest heal, tried first. Its failure falls
+  // through only when it did not apply; once it ran and still failed, the ordinary heal gets the
+  // ORIGINAL failure below, as before.
+  if (isValueHealable(args.failure)) {
+    const valueResult = await attemptValueHeal(args);
+    if (valueResult) return valueResult;
+  }
 
   // A step with no real prefix (first step, or an id toIR never emitted) has nothing to
   // replay from — skip healing, same guard orchestrator.ts's original inline version used.

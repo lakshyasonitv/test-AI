@@ -267,19 +267,27 @@ export function scrubServedSecrets(raw: any, artifactsDir: string, resultsJson: 
   return out;
 }
 
-/** Delete every `trace.zip` under `dir`. Returns how many were removed. Best effort. */
+/**
+ * Delete every `trace.zip` under `dir`, and the unzipped trace a KILLED child leaves in Playwright's
+ * working folder (`.playwright-artifacts-*`: `traces/*.trace`, `*.network`, `resources/` and
+ * hash-named `*.zip` chunks). A child killed by the safety timeout never zips its trace, so before
+ * this the frontdoor URL stayed there, served under /runs. Video and screenshots are kept. Returns how many were
+ * removed. Best effort.
+ */
 function removeTraceZips(dir: string): number {
   let n = 0;
-  const walk = (d: string) => {
+  const walk = (d: string, inWork: boolean) => {
     let entries: import("node:fs").Dirent[] = [];
     try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.name === "trace.zip") { try { rmSync(p, { force: true }); n++; } catch { /* best effort */ } }
+      if (e.isDirectory()) walk(p, inWork || e.name.startsWith(".playwright-artifacts-"));
+      else if (e.name === "trace.zip" || (inWork && !/\.(webm|png|jpe?g)$/i.test(e.name))) {
+        try { rmSync(p, { force: true }); n++; } catch { /* best effort */ }
+      }
     }
   };
-  walk(dir);
+  walk(dir, false);
   return n;
 }
 

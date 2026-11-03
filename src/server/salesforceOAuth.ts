@@ -206,8 +206,11 @@ async function tokenRequest(loginOrigin: string, body: Record<string, string>, f
     // Salesforce's own error words only — never echo the request, which holds the secret and code.
     const why = json?.error_description ?? json?.error ?? `HTTP ${res.status}`;
     const err = new Error(`Salesforce refused the token request: ${String(why).slice(0, 200)}`) as Error & { refused?: boolean };
-    // An OAuth refusal (revoked, expired or rotated-away refresh token) is final; a 5xx is not.
-    err.refused = res.status >= 400 && res.status < 500 && typeof json?.error === "string";
+    // An OAuth refusal (revoked, expired or rotated-away refresh token) is final; a 5xx is not, and
+    // neither is "detected concurrent request, retry request" (another grant for the same token was
+    // in flight, 2026-11-02: treating it as final deleted the stored connection every server shares).
+    const retryable = /concurrent request|retry request/i.test(String(json?.error_description ?? ""));
+    err.refused = !retryable && res.status >= 400 && res.status < 500 && typeof json?.error === "string";
     throw err;
   }
   return json;
@@ -328,6 +331,11 @@ async function persistConnection(c: Connection, deps: PersistenceDeps = {}): Pro
   }
 }
 
+/** Restores in flight, keyed by `${orgId}|${id}`: concurrent requests for one connection share one
+ *  refresh grant (each grant can rotate the refresh token out from under the others), and the
+ *  organisation is in the key so a caller of another organisation never receives this one's. */
+const restoring = new Map<string, Promise<Connection | null>>();
+
 /**
  * The connection by id, for the organisation that made it — from memory, else restored from
  * storage with a freshly minted access token. Null when unknown, foreign, or its refresh token no
@@ -339,6 +347,18 @@ export async function restoreConnection(
 ): Promise<Connection | null> {
   const inMemory = connectionFor(id, orgId);
   if (inMemory || typeof id !== "string" || !id) return inMemory;
+  const key = `${orgId}|${id}`;
+  const inFlight = restoring.get(key);
+  if (inFlight) return inFlight;
+  const p = restoreFromStorage(id, orgId, deps);
+  restoring.set(key, p);
+  try { return await p; } finally { if (restoring.get(key) === p) restoring.delete(key); }
+}
+
+async function restoreFromStorage(
+  id: string, orgId: string | null,
+  deps: PersistenceDeps & { cfg?: OAuthConfig | null; fetchImpl?: FetchLike },
+): Promise<Connection | null> {
   const client = deps.client === undefined ? getServiceClient() : deps.client;
   const custody = deps.custody === undefined ? custodyFromEnv() : deps.custody;
   const cfg = deps.cfg === undefined ? oauthConfig() : deps.cfg;
@@ -423,11 +443,22 @@ export function replaySessionFor(
   return { session: frontdoorSessionFor(conn) };
 }
 
+/** The refresh in flight per connection: parallel mints and API calls share one grant. */
+const refreshing = new WeakMap<Connection, Promise<void>>();
+
 async function refreshIfOld(c: Connection, cfg: OAuthConfig | null, fetchImpl: FetchLike, deps: PersistenceDeps = {}): Promise<void> {
   if (!c.refreshToken || !cfg || Date.now() - c.tokenAt < REFRESH_AFTER_MS) return;
+  const inFlight = refreshing.get(c);
+  if (inFlight) return inFlight;
+  const p = refreshNow(c, c.refreshToken, cfg, fetchImpl, deps);
+  refreshing.set(c, p);
+  try { await p; } finally { if (refreshing.get(c) === p) refreshing.delete(c); }
+}
+
+async function refreshNow(c: Connection, refreshToken: string, cfg: OAuthConfig, fetchImpl: FetchLike, deps: PersistenceDeps): Promise<void> {
   const json = await tokenRequest(c.loginOrigin, {
     grant_type: "refresh_token",
-    refresh_token: c.refreshToken,
+    refresh_token: refreshToken,
     client_id: cfg.clientId,
     client_secret: cfg.clientSecret,
   }, fetchImpl);
@@ -491,4 +522,5 @@ export const SF_API_VERSION = "v62.0";
 export function resetSalesforceOAuthForTests(): void {
   pending.clear();
   connections.clear();
+  restoring.clear();
 }

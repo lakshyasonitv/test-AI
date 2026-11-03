@@ -341,3 +341,28 @@ describe("a text check after a record's Details tab scrolls its lazy sections in
     expect(plain).not.toContain("sfReveal");
   });
 });
+
+// A Lightning picklist is a <button role="combobox"> showing the chosen value as its text. The
+// value branch of assertChoice threw "Not an input element" on it; its visible text is what to
+// compare. Executed in a real browser (D-19), extracted from a generated spec.
+describe("assertChoice on a button-style combobox", () => {
+  it("compares the button's visible text, per mode", async () => {
+    const { chromium, expect: pwExpect } = await import("@playwright/test");
+    const { extractFn } = await import("./fixtures/specHelpers.js");
+    const out = spec([{ id: "s1", action: "assert", target: { role: "combobox", name: "Stage" },
+      assertion: "text_equals", value: "Prospecting" }]);
+    const assertChoice = new Function("expect", `${extractFn(out, "assertChoice")}\nreturn assertChoice;`)(pwExpect);
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage();
+      await page.setContent(`<button type="button" role="combobox" aria-label="Stage" aria-expanded="false"><span>Prospecting</span><span style="display:none">Qualification</span></button>`);
+      const box = page.getByRole("combobox", { name: "Stage" });
+      await assertChoice(box, "Prospecting", "equals");
+      await assertChoice(box, "Prosp", "contains");
+      await expect(assertChoice(box, "Qualification", "equals")).rejects.toThrow(/toHaveText/);
+      await expect(assertChoice(box, "Qualification", "contains")).rejects.toThrow(/toContainText/);
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+});

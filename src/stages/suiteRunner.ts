@@ -6,7 +6,7 @@ import { generateSpec } from "./generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked, extractFailureDetail } from "./executor.js";
 import { credentialEnvVars, type Credentials } from "./credentials.js";
 import { analyzeFailure } from "./failureAnalysis.js";
-import { attemptHeal, isHealable } from "./heal.js";
+import { attemptHeal, isHealable, isValueHealable } from "./heal.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
 import type { OnEvent, StageEvent } from "../orchestrator.js";
@@ -477,7 +477,8 @@ export async function runSuite(
           // suite cases never got it at all until now, even though this category is exactly
           // what heal was built for. Recompute status/blocked against the HEALED ir/result, not
           // the original, or a healed-and-passing case would still get reported truncated/failed.
-          if (selfHeal && healsUsed < MAX_SUITE_HEALS && isHealable(diagnosis, ir)) {
+          const failure = extractFailureDetail(result.raw);
+          if (selfHeal && healsUsed < MAX_SUITE_HEALS && (isHealable(diagnosis, ir) || isValueHealable(failure))) {
             healsUsed++;
             // Say that it is happening, BEFORE it happens.
             //
@@ -505,7 +506,7 @@ export async function runSuite(
             try {
               const healedOutcome = await attemptHeal({
                 testCase: tc, ir, appModel, diagnosis, sourcePrompt, entryUrl, llmBudget,
-                runCreds, outDir: caseDir,
+                runCreds, outDir: caseDir, failure,
               });
               if (healedOutcome) {
                 ir = healedOutcome.ir;
