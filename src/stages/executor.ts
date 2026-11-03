@@ -1,6 +1,6 @@
 import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { redactCredentials, type Credentials } from "./credentials.js";
 import { siteHost } from "../text.js";
@@ -72,6 +72,28 @@ export interface ExecResult {
   /** True when the safety timer killed Playwright: the test was RUNNING (and on an org may already
    *  have created records), so runSpec never runs it again (run 2026-11-03T05-07-28-369Z-388aa153). */
   killed?: boolean;
+  /** On a killed run (no report): the 1-based step that was running, one past the last step
+   *  screenshot this attempt wrote, and that step's title. The failure analysis uses it instead of
+   *  guessing (it blamed Save while the run had stopped at Billing Zip). */
+  killedAtStep?: number;
+  killedAtTitle?: string;
+}
+
+/**
+ * The step a killed run was on: the spec saves `step-N.png` after each step into one directory
+ * named in its own code (generator.ts shot()), so the highest N written since `since` is the last
+ * step that finished. Undefined when the spec takes no step screenshots or none was written.
+ */
+export function stepRunningAtKill(specCode: string, since: number): { step: number; title?: string } | undefined {
+  const dir = /shot\(page, "([^"]+)\/step-\d+\.png"\)/.exec(specCode)?.[1];
+  if (!dir || !existsSync(dir)) return undefined;
+  let last = 0;
+  for (const f of readdirSync(dir)) {
+    const m = /^step-(\d+)\.png$/.exec(f);
+    if (m && statSync(path.join(dir, f)).mtimeMs >= since) last = Math.max(last, Number(m[1]));
+  }
+  const titles = [...specCode.matchAll(/test\.step\(("(?:[^"\\]|\\.)*")/g)].map((t) => JSON.parse(t[1]) as string);
+  return { step: last + 1, title: titles[last] };
 }
 
 /**
@@ -334,6 +356,7 @@ export async function runSpec(
 
   for (let attempt = 1; attempt <= CONFIG.RETRIES; attempt++) {
     try {
+      const started = Date.now();
       const result = await executePlaywright(specPath, resultsJson, artifactsDir, cliPath, perTestTimeoutMs(specCode), secretEnv);
 
       // exitCode 1 with a parsed report = Playwright ran and the test has a verdict.
@@ -343,7 +366,9 @@ export async function runSpec(
       // Killed by the safety timer: the test was running, and its steps may already have changed
       // the site (two Accounts created by one run). Never run it again; it failed.
       if (result.killed) {
-        console.log(executorRunTag() + "[executor] killed while running — not retrying (its steps may already have run)");
+        const at = stepRunningAtKill(specCode, started);
+        if (at) { result.killedAtStep = at.step; result.killedAtTitle = at.title; }
+        console.log(executorRunTag() + `[executor] killed while running${at ? ` step ${at.step}` : ""} — not retrying (its steps may already have run)`);
         return result;
       }
 

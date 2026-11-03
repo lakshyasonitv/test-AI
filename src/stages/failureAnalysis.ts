@@ -82,8 +82,10 @@ function extractQuotedCandidates(text: string): string[] {
  */
 export function recordedFailingStepId(ir: IR, result: ExecResult): string | undefined {
   const { failedStep } = extractFailureDetail(result.raw);
-  if (typeof failedStep !== "number") return undefined;
-  return ir.steps[failedStep - 1]?.id;   // failedStep is 1-based
+  // A killed run has no report; the executor read the step it was on from its screenshots.
+  const step = typeof failedStep === "number" ? failedStep : result.killedAtStep;
+  if (typeof step !== "number") return undefined;
+  return ir.steps[step - 1]?.id;   // 1-based
 }
 
 /**
@@ -266,6 +268,21 @@ export async function analyzeFailure(
   loginUrl?: string,
 ): Promise<Diagnosis> {
   const errorText = errorTextFrom(result);
+
+  // Killed by the safety timer: no report, so no error text to diagnose, but the step it was on is
+  // known from its screenshots. Said as it is rather than guessed (run 2026-11-03T05-07-28-369Z-388aa153
+  // was blamed on Save while it had stopped at Billing Zip).
+  if (result.killed && !result.raw && result.killedAtStep) {
+    const id = ir.steps[result.killedAtStep - 1]?.id ?? null;
+    const name = result.killedAtTitle ? `"${result.killedAtTitle}"` : `step ${result.killedAtStep}`;
+    return {
+      failingStepId: id,
+      category: "timeout",
+      explanation: `The test was stopped by the time limit while ${name} was running; the steps before it had finished. ` +
+        `Playwright wrote no report, so its exact error is unknown: the control was likely covered, missing or never ready.`,
+      suggestedFix: `Open the video and the last step screenshot to see what was on the page at ${name}.`,
+    };
+  }
 
   // Before the generic classifier: an un-authenticated run misreports as whatever the first
   // missing element happened to be, which is the wrong thing to go looking for.
