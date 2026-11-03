@@ -1246,7 +1246,9 @@ function setupCaseCardListeners() {
   // Save-case (Step 5.2). A viewer never gets the control — and the server refuses them anyway,
   // which is the actual guarantee.
   suiteCaseListEl.querySelectorAll(".case-save-btn").forEach((btn) => {
-    if (!roleAtLeast(auth.role, "tester")) { btn.remove(); return; }
+    // Auth off: the synthetic local user is an owner (rule 7), but the page never learns a role
+    // then, so `auth.role` is null — the same `!auth.required ||` every other role check here uses.
+    if (auth.required && !roleAtLeast(auth.role, "tester")) { btn.remove(); return; }
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const card = btn.closest(".case-card");
@@ -4628,7 +4630,7 @@ function refreshCaseSaveAffordance() {
   // still typing, before any browser or save. So it is also the right place to offer the way out.
   // Rendered HERE rather than in paintStepsTab because this function deliberately does not
   // repaint: a repaint mid-typing steals the caret out of the line being fixed.
-  const offer = caseEditor.nlSteps && roleAtLeast(auth.role, "tester");
+  const offer = caseEditor.nlSteps && (!auth.required || roleAtLeast(auth.role, "tester"));
   errEl.innerHTML = `
     <p class="team-error">${escapeHtml(caseEditor.estimateError)}</p>
     ${offer ? `<button type="button" class="dl-btn-inline" id="cdTranslate">Write it for me</button>` : ""}`;

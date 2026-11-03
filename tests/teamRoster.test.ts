@@ -292,6 +292,26 @@ describe("Team screen wiring in public/app.js (source checks — the server is t
   const APP = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
   const team = APP.slice(APP.indexOf("async function renderTeamView("), APP.indexOf("function teamFeedback("));
 
+  // With AUTH_ENABLED off the page never learns a role (`auth.role` stays null), while the server
+  // treats the synthetic local user as an owner (CLAUDE.md rule 7). A bare `roleAtLeast(auth.role, …)`
+  // is therefore false locally and silently hid "Save case" on every result card until 2026-11-03.
+  // Every gate outside the Team screen (which only exists with auth on) must say what auth-off means.
+  it("every role gate outside the Team screen allows everything when auth is off", () => {
+    const teamStart = APP.indexOf("async function renderTeamView(");
+    const teamEnd = APP.indexOf("function teamFeedback(");
+    const lines = APP.split("\n");
+    let offset = 0;
+    const bare: string[] = [];
+    lines.forEach((line, i) => {
+      const at = line.indexOf("roleAtLeast(auth.role");
+      if (at >= 0 && !(offset + at > teamStart && offset + at < teamEnd)
+          && !/auth\.required|unrestricted/.test(line)) bare.push(`app.js:${i + 1}: ${line.trim()}`);
+      offset += line.length + 1;
+    });
+    expect(teamStart).toBeGreaterThan(0);
+    expect(bare, bare.join("\n")).toEqual([]);
+  });
+
   it("the Team button is shown to any signed-in member with a role, not only admins", () => {
     expect(APP).toContain("const showTeam = auth.required && !!auth.token && !!auth.role;");
   });

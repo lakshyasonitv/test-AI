@@ -6206,3 +6206,7 @@ an empty `runs/`), the record is lost and the same repair is proposed again on t
 is saved wrongly: a proposal still needs a person's Approve. Pinned steps (`IR.meta.pinnedSteps`) are
 not affected, they live in the case itself. Candidate fix: store the decision with the library case
 (a column or a row next to `test_case_versions`) when the library is on, keeping the file for local use.
+
+### TD-182. "Save case" was missing from every result card with AUTH_ENABLED off — Medium / Accidental — **Fixed (2026-11-03)**
+
+**Found 2026-11-03**, locally: a finished run showing suite results had no way to save its case. The card's button was removed by `if (!roleAtLeast(auth.role, "tester"))`, and with auth off the page never learns a role (`auth.role` is null) although the server treats the synthetic local user as an owner (rule 7). Every other role gate in `app.js` reads `!auth.required || roleAtLeast(...)`; this one, and the step editor's "rewrite this line" offer, did not. Hosted deployments with auth on were not affected. Fixed both; `tests/teamRoster.test.ts` now fails on any `roleAtLeast(auth.role` outside the Team screen that does not say what auth-off means.
