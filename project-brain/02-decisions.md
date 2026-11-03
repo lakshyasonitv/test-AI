@@ -91,3 +91,8 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156; 2026-10-28: ou
 - The README is a front page titled "Testbench"; known problems live only in TECH_DEBT.md.
 - The compiler enforces no unused code (noUnusedLocals, noUnusedParameters).
 
+## 2026-11-03 — Parallel cases inside a run (user)
+- The user wants one job split across 4 browsers for NEW tests; concurrent runs stay for separate jobs.
+- Built behind `SUITE_CASE_CONCURRENCY` (default 1) with a process-wide `MAX_PARALLEL_CASES` cap, so four
+  runs at once can never start 16 browsers. The primary case stays first. Rationale: DECISIONS.md D-73.
+- New work is based on `cleanup/production-ready`, not main, at the user's request.

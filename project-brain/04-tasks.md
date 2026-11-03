@@ -1,25 +1,42 @@
 # Open tasks
 
-*Last updated: 2026-10-28.*
+*Last updated: 2026-11-03.*
+
+## Parallel suite cases (D-73)
+
+- [ ] Push `vaibhav/intelligent-edison-l6061z`; PR only when the user asks (it carries `cleanup/production-ready`'s
+      6 commits until that branch is merged).
+- [ ] After deploy: `MAX_CONCURRENT_RUNS=4`, `MAX_PARALLEL_CASES=4`, then pilot `SUITE_CASE_CONCURRENCY=2` on a
+      scratch org, then 4. Watch `RestartCount` and false-failure rate. Consider `PLAYWRIGHT_VIDEO=on` instead of `all`.
+- [ ] Measure first if possible: `EXTENDED_LOGGING=true` for a few runs (10-insights.json per-case times).
+- [ ] TD-180 follow-ups: count discovery/primary/replay browsers in the same slots; a "run alone" marker for
+      dependent cases; parallel replay (`replay.ts`).
+
+## Azure findings (2026-11-03 snapshot) — user to decide
+
+- [ ] Mount the `runs` volume at `/app/runs` (not mounted in any kept revision).
+- [ ] Why MAX_CONCURRENT_RUNS went 4 -> 1 on 2026-10-28 14:50 (activity log).
+- [ ] Model auto-upgrade vs the LLM cache key; Log Analytics 0.5 GB cap; unused ACR + storage account; TLS 1.2.
 
 
 ## Repo clean-up (2026-11-02, branch `cleanup/production-ready`)
 
-- [ ] Commit (one per step) and push the branch, then open a PR — ask first.
+- [x] Commit (one per step) and push the branch — done (6 commits on `8bcc3e4`, verified 2026-11-03).
+- [ ] Open a PR — ask first.
 - [ ] After merge: nothing to change on Azure (no setting was renamed; GEMINI_EMBED_MODEL was never read).
 - [ ] CLAUDE.md is 216 lines against its own "under 200" rule.
 
 ## Shared discovery per project (D-72) + the main merge
 
-- [ ] Commit D-72, then push the branch (merge commit 2142d16 + D-72) — ask first.
-- [ ] Turn on in Azure only after the branch reaches main and deploys: `PROJECT_DISCOVERY_SHARING=true`.
+- [x] Commit D-72, then push the branch — in main via PR #11 (2026-10-28).
+- [x] Turn on in Azure: `PROJECT_DISCOVERY_SHARING=true` — live (2026-11-03 snapshot).
 - [ ] Update `app.yaml` to 4 vCPU / 8Gi / MAX_CONCURRENT_RUNS 4 (live since 2026-10-27).
 - [ ] First real check: two runs of one project, same URL + login — the second should say "Used this
       project's saved discovery". Costs AI money for the plan/case steps — ask first.
 
 ## Jira Phase 1 (D-71)
 
-- [ ] Commit and push (ask first).
+- [x] Commit and push — in main via PR #11.
 - [ ] User's first real check: `JIRA_ENABLED=true`, restart, Connect Jira, fetch TBS-1. Free (no AI).
 - [ ] Before Azure: add `https://<host>/api/jira/callback` in the Atlassian console + `JIRA_REDIRECT_URL`;
       enable Distribution -> Sharing so other users can connect; TD-178 if more than one replica.

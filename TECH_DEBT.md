@@ -6184,3 +6184,23 @@ Save fail. IR cache key part bumped to `test-data:3` (TD-22). Tests: `tests/test
 fix / unlisted-field / "all required fields" cases; three fail with the rule disabled). Not changed: optional
 fields the case never touches are not ADDED, and `snapPicklist` still maps a value to the one option containing it
 ("Technology" -> "Biotechnology" in that replay), which saves but may not be the option meant.
+
+### TD-180. Parallel suite cases share one login, and browsers outside the suite are not counted — Medium / Deliberate — **Open**
+
+**What.** With `SUITE_CASE_CONCURRENCY` above 1 (D-73), the cases of one run execute at the same time as the
+same user: one credential set, one Salesforce org connection. Cases that depend on each other's data (one creates
+a record the next edits, a cart one case fills and another expects empty), a case that logs out on a site that ends
+every session of the user, or a site that allows one session per user, can now fail depending on timing. A plain
+sequential suite had the same shared account, but a fixed order.
+
+**Also not counted.** `MAX_PARALLEL_CASES` covers suite cases only. Discovery, the primary case and replays of other
+runs launch their own Chromiums outside it, so the worst case on the server is roughly `MAX_CONCURRENT_RUNS` plus
+`MAX_PARALLEL_CASES` browsers at once. Wrapping the five `chromium.launch()` sites and `runSpec` in the same slot
+would bound it exactly; deferred until memory is measured on the deployed size.
+
+**Pre-existing, noticed here.** `runs/<id>/09-screen-map.json` is rewritten by each case's compile with only that
+case's captures (`writeRunScreenMap`), so the last case to compile wins, in parallel or not. The stored screen map
+(`recordIntoScreenMap`) is unaffected: its load, merge and save are synchronous.
+
+**Remediation.** Pilot at 2, then 4, on a scratch org; keep the setting at 1 for suites whose cases depend on each
+other. A per-case "run alone" marker, or per-case accounts, would let such suites run in parallel safely.

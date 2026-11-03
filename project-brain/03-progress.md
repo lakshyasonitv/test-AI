@@ -1,5 +1,13 @@
 # Progress — where we are
 
+*Last updated: 2026-11-03. Parallel suite cases (D-73, `SUITE_CASE_CONCURRENCY`, default 1) built on
+`vaibhav/intelligent-edison-l6061z`, based on `cleanup/production-ready` (see `journal/2026-11-03.md`).
+Corrections verified that day: `cleanup/production-ready` IS committed and pushed (6 commits on main
+`8bcc3e4`, no PR). D-72 shared discovery, Jira Phase 1, the Claude provider and the Salesforce login work are
+all in main (PR #11, merged 2026-10-28). Live Azure: image `8bcc3e4`, 4 vCPU / 8 GiB, MAX_CONCURRENT_RUNS=1
+(set back from 4 on 2026-10-28 14:50, reason unrecorded), PROJECT_DISCOVERY_SHARING on, and `/app/runs` NOT
+mounted (artifacts and caches lost on every scale-to-zero). The paragraphs below are older history.*
+
 *Last updated: 2026-11-02. Repo clean-up on branch `cleanup/production-ready` (from main `8bcc3e4`):
 unused code removed, docs restructured (`docs/README.md` index, `docs/archive/`, `docs/guides/`),
 README rewritten, settings documented, booleanEnvFlags failure fixed. NOT committed yet — see

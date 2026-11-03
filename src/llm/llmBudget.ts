@@ -141,6 +141,10 @@ export class LlmBudget {
     s.reasoningTokens += reasoningTokens;
     s.provider = provider;
     this.byStage.set(stage, s);
+
+    // D-73: also counted against the suite case whose async chain made this call, if any.
+    const c = caseUsageContext.getStore();
+    if (c) { c.calls++; c.totalTokens += promptTokens + completionTokens; }
   }
 
   get totalTokens(): number {
@@ -207,6 +211,20 @@ export class LlmBudget {
 // ---------------------------------------------------------------------------
 
 const budgetContext = new AsyncLocalStorage<LlmBudget>();
+
+/** D-73: the calls one suite case made, counted wherever in its async chain `record` runs. */
+const caseUsageContext = new AsyncLocalStorage<{ calls: number; totalTokens: number }>();
+
+/**
+ * Run `fn` and report the LLM calls and tokens recorded inside it, on any budget. suiteRunner.ts
+ * reads a case's spend this way because a before/after difference of the run's shared budget also
+ * counts every other case running at the same time (SUITE_CASE_CONCURRENCY > 1).
+ */
+export async function withCaseUsage<T>(fn: () => Promise<T>): Promise<{ value: T; calls: number; totalTokens: number }> {
+  const usage = { calls: 0, totalTokens: 0 };
+  const value = await caseUsageContext.run(usage, fn);
+  return { value, ...usage };
+}
 
 /** Makes `budget` available to every `gemini()` call made anywhere in the async call chain
  *  that follows — however many layers deep — for the rest of the CURRENT execution, without

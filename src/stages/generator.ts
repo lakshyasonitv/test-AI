@@ -1320,8 +1320,10 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     // One context per run of this spec, for every run-token value (see valueCode): the same resolver
     // source the grounding replay uses (text.ts, TD-07). The context rides in results.json as the
     // "run-tokens" annotation, so the report can show the values this run actually typed.
+    // Random, not clock-derived: two cases of one suite can start in the same millisecond
+    // (SUITE_CASE_CONCURRENCY, D-73), and a repeated uid or phone trips an org's duplicate rules.
     body.includes("resolveRunTokens(")
-      ? `const RUN_CTX = { uid: Date.now().toString(36).slice(-6), phone: "415555" + String(Date.now()).slice(-4), now: Date.now() };
+      ? `const RUN_CTX = { uid: (Math.random().toString(36).slice(2) + "000000").slice(0, 6), phone: "415555" + String(Math.floor(Math.random() * 10000)).padStart(4, "0"), now: Date.now() };
 const resolveRunTokens = ${RESOLVE_RUN_TOKENS_JS};
 test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", description: JSON.stringify(RUN_CTX) }); });`
       : "",
