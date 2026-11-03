@@ -73,6 +73,16 @@ describe("value heal", () => {
     expect(runSpecMock).not.toHaveBeenCalled();
   });
 
+  it("never swaps a record this test created (a run-token value) for another one", async () => {
+    runSpecMock.mockResolvedValue({ passed: true, raw: {} });
+    const { attemptValueHeal } = await import("../src/stages/heal.js");
+    const own = steps.map((s) => s.id === "s4" ? { ...s, value: "Zq Thing {{uid}}" } : s);
+    const out = await attemptValueHeal({ testCase: tc(), ir: ir(own), appModel: {} as any, diagnosis, sourcePrompt: "p",
+      entryUrl: "https://zq.example", outDir, failure: miss(4, "Zq Thing 0abc12", ["Zq Other"]) });
+    expect(out).toBeNull();
+    expect(runSpecMock).not.toHaveBeenCalled();
+  });
+
   it("never heals a case whose point is a bad value", async () => {
     runSpecMock.mockResolvedValue({ passed: true, raw: {} });
     const { attemptValueHeal } = await import("../src/stages/heal.js");

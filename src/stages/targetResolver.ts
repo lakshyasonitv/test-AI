@@ -630,28 +630,39 @@ export async function lookupLive(page: Page, target: Locator, value: string, roo
   // Same rule as the spec's lookupPick: action rows (data-value="action...", a bare "New <Object>",
   // "Show all results", the "Recent Items" heading) are never records; "New Campaign x" is one.
   const isRecord = (t: string) => !t.startsWith("§") && !/^(new( \S+)?|show (all|more).*|search .*|recent items)$/i.test(t);
-  const deadline = Date.now() + SELECT_TIMEOUT_MS;
+  const want = value.toLowerCase();
+  const match = (ts: string[]) => want ? ts.findIndex((t) => isRecord(t) && t.toLowerCase().includes(want)) : ts.findIndex(isRecord);
   let where: Locator | null = null;
   let texts: string[] = [];
-  for (;;) {
-    const open = own && await own.isVisible().catch(() => false) ? own : null;
-    const popup = root.locator('[role="listbox"]:visible').first();
-    where = open ?? ((await popup.count().catch(() => 0)) > 0 ? popup : null);
-    if (where) {
-      texts = (await where.getByRole("option").evaluateAll((els) => els.map((el) => ((el.getAttribute("data-value") || "").startsWith("action") ? "§" : "")
-        + ((el.textContent || "").trim() || (el.shadowRoot ? el.shadowRoot.textContent || "" : "")))).catch(() => [] as string[]))
-        .map((t) => t.replace(/\s+/g, " ").trim());
-      if (texts.some(isRecord)) break;
+  const settle = async (ms: number) => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const open = own && await own.isVisible().catch(() => false) ? own : null;
+      const popup = root.locator('[role="listbox"]:visible').first();
+      where = open ?? ((await popup.count().catch(() => 0)) > 0 ? popup : null);
+      if (where) {
+        texts = (await where.getByRole("option").evaluateAll((els) => els.map((el) => ((el.getAttribute("data-value") || "").startsWith("action") ? "§" : "")
+          + ((el.textContent || "").trim() || (el.shadowRoot ? el.shadowRoot.textContent || "" : "")))).catch(() => [] as string[]))
+          .map((t) => t.replace(/\s+/g, " ").trim());
+        if (match(texts) >= 0) return;
+      }
+      if (Date.now() >= deadline) return;
+      await page.waitForTimeout(150);
     }
-    if (Date.now() >= deadline) break;
-    await page.waitForTimeout(150);
+  };
+  await settle(want ? 5000 : SELECT_TIMEOUT_MS);
+  // The spec's rule (lookupPick): a record made seconds ago is not searchable yet, but its lookup's
+  // Recent Items list has it once the input is cleared.
+  if (want && match(texts) < 0) {
+    await target.fill("", { timeout: SELECT_TIMEOUT_MS });
+    await target.click({ timeout: SELECT_TIMEOUT_MS }).catch(() => {});
+    await settle(SELECT_TIMEOUT_MS);
   }
-  const want = value.toLowerCase();
-  let idx = -1;
-  if (want) idx = texts.findIndex((t) => isRecord(t) && t.toLowerCase().includes(want));
-  if (idx < 0 && !want) idx = texts.findIndex(isRecord);
-  if (idx < 0 || !where) throw new Error(optionErrorMessage(value || "(first suggestion)", texts.filter(isRecord)));
-  await where.getByRole("option").nth(idx).click({ timeout: SELECT_TIMEOUT_MS });
+  const idx = match(texts);
+  // `where` is set inside settle(); read back through a cast, as TypeScript narrows it to null here.
+  const list = where as Locator | null;
+  if (idx < 0 || !list) throw new Error(optionErrorMessage(value || "(first suggestion)", texts.filter(isRecord)));
+  await list.getByRole("option").nth(idx).click({ timeout: SELECT_TIMEOUT_MS });
 }
 
 export async function chooseLive(page: Page, target: Locator, value: string, root: LocatorRoot = page): Promise<void> {

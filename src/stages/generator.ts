@@ -71,6 +71,11 @@ function emitAssert(step: Step): string {
   if (t?.field && (step.assertion === "text_contains" || step.assertion === "text_equals")) {
     return `  await sfFieldValue(page, ${q(t.field)}, ${valueCode(comparisonValue(step))}, ${q(step.assertion === "text_equals" ? "equals" : "contains")});`;
   }
+  // A record field's PRESENCE (Target.field, visible): its label EXACTLY. getByText("SLA") also
+  // matches the always-shown "SLA Expiration Date", which made a Dynamic Forms check pass hollow.
+  if (t?.field && step.assertion === "visible") {
+    return `  await expect(page.getByText(${q(t.field)}, { exact: true }).and(page.locator(':visible')).first()).toBeVisible({ timeout: ${ASSERT_TIMEOUT_MS} });`;
+  }
 
   switch (step.assertion) {
     case "visible": {
@@ -697,26 +702,36 @@ async function lookupPick(page, target, value, root) {
   // Lightning marks its actions with data-value="action...". A record may itself be named "New
   // Campaign x" (run 2026-11-03T05-42-52-539Z-8f96a6d6), so only a bare "New <Object>" counts as one.
   const isRecord = (t) => !t.startsWith('\\u00a7') && !/^(new( \\S+)?|show (all|more).*|search .*|recent items)$/i.test(t);
-  const deadline = Date.now() + ${SELECT_TIMEOUT_MS};
-  let where = null, texts = [];
-  for (;;) {
-    const open = own && await own.isVisible().catch(() => false) ? own : null;
-    const popup = inDoc.locator('[role="listbox"]:visible').first();
-    where = open || ((await popup.count().catch(() => 0)) > 0 ? popup : null);
-    if (where) {
-      const opts = where.getByRole('option');
-      texts = (await opts.evaluateAll(els => els.map(el => ((el.getAttribute('data-value') || '').startsWith('action') ? '\\u00a7' : '')
-        + ((el.textContent || '').trim() || (el.shadowRoot ? el.shadowRoot.textContent || '' : '')))).catch(() => []))
-        .map(t => t.replace(/\\s+/g, ' ').trim());
-      if (texts.some(isRecord)) break;
-    }
-    if (Date.now() >= deadline) break;
-    await page.waitForTimeout(150);
-  }
   const want = (value || '').toLowerCase();
-  let idx = -1;
-  if (want) idx = texts.findIndex(t => isRecord(t) && t.toLowerCase().includes(want));
-  if (idx < 0 && !want) idx = texts.findIndex(isRecord);
+  const match = (ts) => want ? ts.findIndex(t => isRecord(t) && t.toLowerCase().includes(want)) : ts.findIndex(isRecord);
+  let where = null, texts = [];
+  const settle = async (ms) => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const open = own && await own.isVisible().catch(() => false) ? own : null;
+      const popup = inDoc.locator('[role="listbox"]:visible').first();
+      where = open || ((await popup.count().catch(() => 0)) > 0 ? popup : null);
+      if (where) {
+        const opts = where.getByRole('option');
+        texts = (await opts.evaluateAll(els => els.map(el => ((el.getAttribute('data-value') || '').startsWith('action') ? '\\u00a7' : '')
+          + ((el.textContent || '').trim() || (el.shadowRoot ? el.shadowRoot.textContent || '' : '')))).catch(() => []))
+          .map(t => t.replace(/\\s+/g, ' ').trim());
+        if (match(texts) >= 0) return;
+      }
+      if (Date.now() >= deadline) return;
+      await page.waitForTimeout(150);
+    }
+  };
+  await settle(want ? 5000 : ${SELECT_TIMEOUT_MS});
+  // A record created seconds ago is not in Salesforce's search index yet, so typing its name finds
+  // nothing (run 2026-11-03T08-05-18-274Z-12e7be67); its record page was just open, so the lookup's
+  // Recent Items list has it. Cleared, the input shows that list.
+  if (want && match(texts) < 0) {
+    await target.fill('', { timeout: ${SELECT_TIMEOUT_MS} });
+    await target.click({ timeout: ${SELECT_TIMEOUT_MS} }).catch(() => {});
+    await settle(${SELECT_TIMEOUT_MS});
+  }
+  const idx = match(texts);
   if (idx < 0 || !where) throw new Error(lookupOptionError(value || '(first suggestion)', texts.filter(isRecord)));
   await where.getByRole('option').nth(idx).click({ timeout: ${SELECT_TIMEOUT_MS} });
 }
@@ -958,6 +973,13 @@ function emitStep(step: Step, baseUrl: string): string {
         ? `  await safeClick(page, ${q(t.role)}, ${q(t.name)});\n  await page.waitForTimeout(500); // Wait for dropdown animation\n`
         : `  await ${locator(t)}.click({ timeout: ${ASSERT_TIMEOUT_MS} });\n  await page.waitForTimeout(500); // Wait for dropdown animation\n`;
     }
+  }
+
+  // The Details tab click salesforceGuidance inserts before a field check: skipped where the record
+  // page has no such tab, since it was inserted on a model that did not show the page's tabs.
+  if (step.action === "click" && /^sf-details/.test(step.id)) {
+    return code + `  { const tab = page.getByRole("tab", { name: "Details", exact: true }).first();\n`
+      + `    if (await tab.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false)) await tab.click({ timeout: ${ASSERT_TIMEOUT_MS} }); }`;
   }
 
   switch (step.action) {
@@ -1261,7 +1283,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
       }
       const label = stepLabel(step, i, ir.meta.baseUrl);
       // A field's value check scrolls its label into being too, Details tab or not (Phase A).
-      const reveal = step.action === "assert" && step.target?.field && (step.assertion === "text_contains" || step.assertion === "text_equals")
+      const reveal = step.action === "assert" && step.target?.field && (step.assertion === "text_contains" || step.assertion === "text_equals" || step.assertion === "visible")
         ? `await sfReveal(page, ${q(step.target.field)});\n`
         : detailsAt >= 0 && i > detailsAt && step.action === "assert" && step.target?.text
         && (step.assertion === "visible" || step.assertion === "hidden")

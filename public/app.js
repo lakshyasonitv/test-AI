@@ -1243,7 +1243,8 @@ function setupCaseCardListeners() {
   // Save-case (Step 5.2). A viewer never gets the control — and the server refuses them anyway,
   // which is the actual guarantee.
   suiteCaseListEl.querySelectorAll(".case-save-btn").forEach((btn) => {
-    if (!roleAtLeast(auth.role, "tester")) { btn.remove(); return; }
+    // Sign-in off, or the role not known yet: nothing is restricted (applyRoleRestrictions).
+    if (auth.required && auth.role && !roleAtLeast(auth.role, "tester")) { btn.remove(); return; }
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const card = btn.closest(".case-card");
