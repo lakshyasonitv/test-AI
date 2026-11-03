@@ -6211,3 +6211,33 @@ decide from the TYPED request only; on a Pro run most of what is asked comes fro
 drop good document-driven cases (e.g. a case on an object only the document names). Adding them needs the
 spec's `entities` folded into the request they read — a separate change. The copy itself remains (D-53): a
 future block added to one generator can drift again; the Salesforce parity test now covers these two.
+
+### TD-181. "Give test cases according to the story" planned and explored nothing — the story reached only the case generator — High / Accidental — **Fixed behind `PRO_STORY_PROMPT` (2026-11-03)**
+
+**Found 2026-11-02** from a user's run: a Case/report/list-view story with a vague typed prompt produced
+twelve cases about Setup, search, New User, Chatter and the Home chart, none about the story. Every stage
+before case generation reads the TYPED prompt only: the planner (`plan(prompt, url, coverage)`), site
+discovery (`discoverSiteHybrid(..., prompt, ...)`), the "fromPrompt" primary case (the literal translation
+of the request) and the Salesforce request filters. So "test as per the story" had no flow to plan and no
+target to explore; the case prompt then told the model to skip rules the discovered pages cannot reach,
+and the checklist floor filled the suite.
+
+**Fix (flag `PRO_STORY_PROMPT`, default off, needs `SPEC_INTAKE_ENABLED`):** `src/stages/storyPrompt.ts`.
+(1) `POST /api/spec/confirm` gains the optional field `promptText`, a plain request built from the
+confirmed spec (actors, actions, entities, criteria + rules, out of scope; never open questions or
+answers; capped at 4000 chars on a line). The browser puts it in an EMPTY prompt box (or replaces its own
+earlier fill); text the user typed is never overwritten, a "Use the requirements as the prompt" button is
+offered instead. Every stage then reads it like a typed prompt. (2) On a Pro run the planner's message
+also carries the story (`storyPlanBlock`), and its cache key gains that block (TD-22), so an emptied or
+vague box still plans the story's flow. Flag off: confirm returns `{ spec }` only, the planner is called
+with three arguments, its message and 8-part key are unchanged. Tests: `tests/proStoryPrompt.test.ts`
+(renderings, planner message/key, the browser functions extracted from app.js), `tests/specRoutes.test.ts`
+(field present only with the flag), `tests/proOrchestrator.test.ts` (planner gets the spec only with flag +
+spec). Every flag-on assertion fails with the wiring reverted (the flag-off ones pin "unchanged"). Checked in a real browser against the real confirm
+route (upload's model answer faked): empty box filled, typed prompt kept + button, flag off unchanged.
+
+**Not changed:** discovery does not yet look for the story's pages on its own — it is steered only through
+the prompt text (a Case list view or report the prompt does not lead to can still go unexplored); the
+primary case still follows the request (now the story's request when filled); a user who keeps a typed
+prompt that contradicts the story still gets the planner reading both.
+

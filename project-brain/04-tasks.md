@@ -1,6 +1,12 @@
 # Open tasks
 
-*Last updated: 2026-11-02.*
+*Last updated: 2026-11-03.*
+
+## Pro story -> request (PRO_STORY_PROMPT, TD-181, D-73)
+
+- [ ] Commit + push — ONLY when the user says so.
+- [ ] Turn on in Azure after merge+deploy: `PRO_STORY_PROMPT=true` (needs `SPEC_INTAKE_ENABLED=true`).
+- [ ] One real Pro run with an empty prompt box; check 01-plan.json follows the story — ask first (costs AI).
 
 ## Pro on Salesforce (TD-180, branch `pro/salesforce-org-context`)
 

@@ -159,3 +159,29 @@ describe("a standard run is untouched", () => {
     expect(opts.systemInstruction).not.toContain("REQUIREMENTS SPECIFICATION");
   });
 });
+
+// PRO_STORY_PROMPT (TD-181): a Pro run's planner reads the confirmed story; off, it never does.
+describe("the planner is handed the story only with PRO_STORY_PROMPT on a Pro run", () => {
+  async function storyGivenToPlanner(options: Record<string, unknown>) {
+    modelAnswers({ testcases: async () => ok(CASES), spec_compare: async () => ok({ gaps: [] }) });
+    awaitCaseSelectionMock.mockResolvedValue({ action: "done", selectedIndexes: [] });
+    await runPipeline({ prompt: "give test cases according to the story", url: URL, options: { gateReview: true, ...options } },
+      () => {}, runId, async () => ({}) as any);
+    return planMock.mock.calls[0][3];
+  }
+  afterEach(() => { delete process.env.PRO_STORY_PROMPT; });
+
+  it("on, with a spec: the planner gets the spec", async () => {
+    process.env.PRO_STORY_PROMPT = "true";
+    expect(await storyGivenToPlanner({ spec: SPEC })).toEqual(SPEC);
+  });
+
+  it("off, with a spec: the planner is called exactly as before", async () => {
+    expect(await storyGivenToPlanner({ spec: SPEC })).toBeUndefined();
+  });
+
+  it("on, without a spec: nothing to hand over", async () => {
+    process.env.PRO_STORY_PROMPT = "true";
+    expect(await storyGivenToPlanner({})).toBeUndefined();
+  });
+});

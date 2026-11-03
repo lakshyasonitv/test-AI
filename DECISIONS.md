@@ -2273,3 +2273,30 @@ credential prompt and case gate already require one). A site that changes within
 against the old picture until someone ticks "Explore the site again"; a failure caused by that looks
 like a missing element. Multi-URL runs (`discoverPagesHybrid`) are not shared.
 
+## D-73. A Pro story becomes the run's request — filled into the prompt box, and read by the planner
+
+**Decision.** Behind `PRO_STORY_PROMPT` (default off), a Pro story reaches the stages that read the request,
+not only the case generator (TD-181). Two parts: the confirmed spec is rendered into a plain request that
+the browser puts in the prompt box, and on a Pro run the planner also reads the story.
+
+**Why the prompt box, not more server plumbing.** The typed prompt feeds the planner, discovery, the
+primary case and the Salesforce filters. Filling the box upgrades all of them at once, with no change to
+any of those stages, and the user SEES the request the run will use and can edit it before paying for it.
+The same mechanism already exists for Jira (D-71).
+
+**Why the server builds the text.** One deterministic function from the confirmed spec's structured
+fields (no model call, free, testable in TypeScript), returned as an OPTIONAL field of the existing confirm
+route (platform rule 1). Flag off, the body is exactly `{ spec }`, so the browser does nothing.
+
+**Never overwrite the user's words.** An empty box, or one still holding exactly our own earlier fill, is
+filled; anything the user typed stays and a button offers the replacement. Silently replacing a prompt
+someone wrote would be the tool deciding what they meant to test.
+
+**Why the planner too.** The box can be emptied or ignored ("test as per the story"). The planner reading
+the story is the server-side safety net. It keys on the block (TD-22); without a story its message and key
+are byte-identical.
+
+**Rejected.** Replacing the typed prompt server-side when it "looks vague" — that is a regex over the
+user's prose deciding intent, and an invisible one. Passing the spec into discovery directly — a larger
+change to a stage with its own caches and shared-discovery keys (D-72); left for a later step.
+

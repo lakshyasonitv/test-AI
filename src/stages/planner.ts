@@ -5,6 +5,8 @@ import { classifyScope, ALL_SCOPES } from "../kb/testStrategy.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { salesforceGuidance } from "./salesforceGuidance.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
+import type { SpecModel } from "../schema/spec.js";
+import { storyPlanBlock } from "./storyPrompt.js";
 
 export type Coverage = "minimal" | "standard" | "full";
 
@@ -21,7 +23,10 @@ export type Plan = z.infer<typeof Plan>;
 export async function plan(
   prompt: string, 
   url: string, 
-  coverage: Coverage = "standard"
+  coverage: Coverage = "standard",
+  // Pro + PRO_STORY_PROMPT only (the orchestrator decides): the user's confirmed story. Absent on
+  // every other run, and then the message and the cache key are exactly what they were.
+  story?: SpecModel,
 ): Promise<Plan> {
   const testTypeScope = classifyScope(prompt);
   const scopeNote = testTypeScope.length < ALL_SCOPES.length
@@ -45,13 +50,17 @@ Example of the exact shape required:
   const system = baseSystem + salesforceGuidance("plan");
   // Keyed after `system` exists, and on it — the disk cache never expires, so a planning rule
   // this prompt gains would otherwise never reach a request already seen.
+  const storyBlock = story ? storyPlanBlock(story) : "";
   const cacheKey = makeCacheKey(
     prompt, url, coverage, testTypeScope.join(","),
-    cacheModelDimension("lite"), llmCacheDimension("lite"), system, llmCacheVersion());
+    cacheModelDimension("lite"), llmCacheDimension("lite"), system, llmCacheVersion(),
+    // The story is in the message, so it is in the key (TD-22): a plan cached without it must
+    // never answer a run that has it. Appended only when present, so other keys are unchanged.
+    ...(storyBlock ? [storyBlock] : []));
   const cached = llmCacheGet<Plan>(cacheKey);
   if (cached) return cached;
 
-  const user = `Request: ${prompt}\nTarget URL: ${url}\nCoverage: ${coverage}\nReturn JSON: { "goal": string, "steps": string[] }`;
+  const user = `Request: ${prompt}\nTarget URL: ${url}\nCoverage: ${coverage}${storyBlock}\nReturn JSON: { "goal": string, "steps": string[] }`;
 
   let lastErr = "";
   for (let attempt = 0; attempt < 2; attempt++) {

@@ -118,6 +118,7 @@ import {
   checkSpecUpload, distillSpec, getRunSpecWarnings, specIntakeEnabled, DISTILL_FAILED_WARNING,
 } from "../stages/specIntake.js";
 import { SpecModel } from "../schema/spec.js";
+import { proStoryPromptEnabled, storyPromptText } from "../stages/storyPrompt.js";
 import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabled, JiraError, parseIssueKey } from "../jira/client.js";
 import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
 import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
@@ -1036,7 +1037,11 @@ app.post("/api/spec/confirm", requireRole("tester"), (req, res) => {
   if (stray.length > 0) {
     return res.status(400).json({ error: "an answer was given to a question that was not asked" });
   }
-  res.json({ spec: parsed.data });
+  // PRO_STORY_PROMPT: an OPTIONAL extra field (rule 1) — the plain request built from this spec,
+  // which the browser puts in an EMPTY prompt box (or offers as a button when the user typed one).
+  // Off, or a spec with nothing to test: the body is exactly { spec } as before.
+  const promptText = proStoryPromptEnabled() ? storyPromptText(parsed.data) : "";
+  res.json({ spec: parsed.data, ...(promptText ? { promptText } : {}) });
 });
 
 // What the browser needs to talk to Supabase Auth directly (Step 2.2). A NEW route rather than
@@ -2497,6 +2502,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // Pro document intake (src/stages/specIntake.ts). Off: no Pro toggle, the /api/spec/* routes
   // 403, and options.spec on POST /api/runs is ignored.
   "SPEC_INTAKE_ENABLED",
+  // Pro story -> request (src/stages/storyPrompt.ts). Needs SPEC_INTAKE_ENABLED. Off: POST
+  // /api/spec/confirm returns { spec } only, and the planner never sees the story.
+  "PRO_STORY_PROMPT",
   "SCREEN_MAP_ENABLED",
   "NETWORK_SETTLE_ENABLED",
   "SCREEN_BEST_MATCH_ENABLED",
