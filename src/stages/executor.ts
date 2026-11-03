@@ -69,6 +69,9 @@ export interface ExecResult {
    * unless ffmpeg is missing.
    */
   videoUnavailable?: string;
+  /** True when the safety timer killed Playwright: the test was RUNNING (and on an org may already
+   *  have created records), so runSpec never runs it again (run 2026-11-03T05-07-28-369Z-388aa153). */
+  killed?: boolean;
 }
 
 /**
@@ -204,7 +207,10 @@ export function killTimeoutMs(specCode: string): number {
 /** The backstop for a given per-test budget — the ONE formula, used by the run below and by
  *  `killTimeoutMs`, so the tested value and the timer that actually fires cannot drift apart. */
 function killAfter(perTestMs: number): number {
-  return perTestMs + KILL_SLACK_MS;
+  // Twice the budget: after a failure Playwright gives its after-hooks (screenshot, video, fixture
+  // teardown) a fresh slot of the full test timeout, so per-test + 50s killed it mid-teardown, before
+  // results.json existed (run 2026-11-03T05-07-28-369Z-388aa153: 290s against a 480s legal limit).
+  return 2 * perTestMs + KILL_SLACK_MS;
 }
 
 /**
@@ -334,8 +340,15 @@ export async function runSpec(
       // That verdict is the answer, pass or fail.
       if (result.passed || result.raw) return result;
 
-      // No report at all: Playwright didn't get far enough to produce one (bad spawn,
-      // missing browser, killed by the safety timeout). That is worth another go.
+      // Killed by the safety timer: the test was running, and its steps may already have changed
+      // the site (two Accounts created by one run). Never run it again; it failed.
+      if (result.killed) {
+        console.log(executorRunTag() + "[executor] killed while running — not retrying (its steps may already have run)");
+        return result;
+      }
+
+      // No report at all and not killed: Playwright didn't get far enough to produce one (bad
+      // spawn, missing browser). That is worth another go.
       if (attempt === CONFIG.RETRIES) return result;
       console.log(executorRunTag() + `[executor] no report produced — retrying (${attempt + 1}/${CONFIG.RETRIES})`);
       await sleep(CONFIG.TIMEOUTS.RETRY_DELAY);
@@ -363,6 +376,7 @@ async function executePlaywright(
    *  logged anywhere in this file. */
   secretEnv: Record<string, string> = {}
 ): Promise<ExecResult> {
+  let killed = false;
   const exitCode: number = await new Promise((resolve) => {
     console.log(executorRunTag() + "[executor] Spawning Playwright...");
     // One probe per process (memoized). Decides whether this child records video at all.
@@ -443,6 +457,9 @@ async function executePlaywright(
           // proportional to its step count instead of every case sharing one 50s ceiling. An
           // explicitly-set PLAYWRIGHT_TIMEOUT passes straight through — see perTestTimeoutMs.
           PLAYWRIGHT_TIMEOUT: String(perTestMs),
+          // D-63: no trace on an org-connection run. Its trace holds the sign-in URL and is deleted
+          // anyway, and writing it is the slow, unbounded part of a failed test's teardown.
+          ...(secretEnv[FRONTDOOR_ENV] ? { PLAYWRIGHT_TRACE: 'off' } : {}),
           // Read by playwright.config.ts. Missing ffmpeg does not degrade video to "off" on its
           // own — it stops browserContext.newPage() outright, failing a valid case before it
           // navigates (TD-71). Turning recording off is what keeps the run runnable.
@@ -510,6 +527,7 @@ async function executePlaywright(
     const killMs = killAfter(perTestMs);
     const timeout = setTimeout(() => {
       console.error(executorRunTag() + `[executor] TIMEOUT ${killMs / 1000}s — killing Playwright (pid=${p.pid})`);
+      killed = true;
       p.kill("SIGKILL");
       resolve(1);
     }, killMs);
@@ -562,6 +580,7 @@ async function executePlaywright(
     raw: scrubServedSecrets(raw, artifactsDir, resultsJson, errorContextFiles, secretEnv),
     screenshot,
     accessibilitySnapshot,
+    ...(killed ? { killed } : {}),
     // Present only when recording was suppressed, so the UI can say "video unavailable" rather
     // than silently showing no player — and above all so this is never again mistaken for a
     // test failure (TD-71).
