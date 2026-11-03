@@ -446,6 +446,16 @@ describe("fill policy: required + rule-read fields only, other fields only when 
     expect(r.steps.some((s) => s.id === "s20")).toBe(true);
   });
 
+  // Run 2026-11-02T17-24-47-449Z-ab0328f3: the model left "Primary Campaign Source" blank on purpose (no
+  // value). Kept by the every-field rule it became choose(..., ""): a click on whatever row came first.
+  it("an 'every field' request does not keep a step that types or picks nothing", () => {
+    const r = { meta: {}, steps: [...flow().slice(0, 7),
+      { id: "s20", action: "select", target: { role: "combobox", name: "Zq Promo Source" } }, ...flow().slice(7)] } as unknown as IR;
+    applyTestData(r, valid, policyOrg, "Create a Zq Lead filling each and every field");
+    expect(r.steps.some((s) => s.id === "s20")).toBe(false);
+    expect(names(r)).toEqual(["Zq Surname", "Zq Given", "Zq Mail", "Zq Cell", "Zq Job", "Zq Firm Name", "Zq Due"]);
+  });
+
   it("'all required fields' still means the required ones only", () => {
     const { r } = run("Create a Zq Lead with all required fields");
     expect(names(r)).toEqual(["Zq Surname", "Zq Cell", "Zq Due"]);
@@ -647,6 +657,51 @@ describe("dependent picklists: the controlling field first, with a value that of
     const r = ir([territory("Zq South West"), region("Zq North"), save]);
     applyTestData(r, { category: "invalid-input" } as any, dep, ask);
     expect(order(r).slice(1, 3)).toEqual(["Zq Territory=Zq South West", "Zq Region=Zq North"]);
+  });
+
+  // Run 2026-11-02T17-17-02-125Z-59cae03e: "each and every field" kept TB Region "North" with the
+  // model's TB Territory "Territory 1", an option of no region; the replay died on it.
+  it("a dependent value that is no option at all becomes one offered under the controlling value", () => {
+    const r = ir([region("Zq North"), territory("Somewhere"), save]);
+    applyTestData(r, valid, dep, "Create a Zq Thing filling each and every field");
+    expect(order(r).slice(1, 3)).toEqual(["Zq Region=Zq North", "Zq Territory=Zq North East"]);
+  });
+
+  // Run 2026-11-03T04-29-50-846Z-c820d0e1: the model wrote "Region A" and "Territory 1"; neither exists.
+  it("an invented controlling value becomes a real option, and the dependent value follows it", () => {
+    const r = ir([region("Zq Area A"), territory("Zq Patch 1"), save]);
+    applyTestData(r, valid, dep, "Create a Zq Thing filling each and every field");
+    expect(order(r).slice(1, 3)).toEqual(["Zq Region=Zq North", "Zq Territory=Zq North East"]);
+  });
+
+  it("a website is made unique per run, so a duplicate rule does not match an earlier run's record", () => {
+    const web = structuredClone(dep) as AppModel;
+    web.salesforceOrg!.objects[0].fields.push({ label: "Zq Site", api: "Zq_Site__c", type: "Url" } as any);
+    const r = ir([{ id: "s4", action: "fill", target: { role: "textbox", name: "Zq Site" }, value: "https://www.example.com" }, save] as any);
+    applyTestData(r, valid, web, "Create a Zq Thing filling each and every field");
+    expect(r.steps.find((s) => s.id === "s4")?.value).toBe("https://{{uid}}.example.com");
+  });
+
+  it("an 'every field' request drops a step whose value is 'None' (the model leaving it blank)", () => {
+    const r = ir([{ id: "s14", action: "select", target: { role: "combobox", name: "Zq Promo Source" }, value: "None" }, save] as any);
+    applyTestData(r, valid, dep, "Create a Zq Thing filling each and every field");
+    expect(r.steps.some((s) => s.id === "s14")).toBe(false);
+  });
+
+  it("a select the form names in its own words ('Primary Campaign Source') is treated as that lookup", () => {
+    const lk = structuredClone(dep) as AppModel;
+    lk.salesforceOrg!.objects[0].fields.push({ label: "Zq Campaign ID", api: "Zq_Campaign__c", type: "Reference", lookup: "Zqcampaign" } as any);
+    const r = ir([{ id: "s13", action: "select", target: { role: "combobox", name: "Primary Zqcampaign Source" }, value: "Online Zqcampaign" }, save] as any);
+    applyTestData(r, valid, lk, "Create a Zq Thing filling each and every field");
+    const s = r.steps.find((x) => x.id === "s13")!;
+    expect(s.target?.lookup).toBe(true);
+    expect(s.value).toBe("");
+  });
+
+  it("keeps an invented value the request itself names", () => {
+    const r = ir([region("Zq Area A"), save]);
+    applyTestData(r, valid, dep, "Create a Zq Thing with Zq Region Zq Area A and check the error");
+    expect(order(r)[1]).toBe("Zq Region=Zq Area A");
   });
 });
 

@@ -17,7 +17,6 @@ export const GateCaseEditSchema = z.object({
   expected: z.string().trim().min(1).max(2000).optional(),
   whyItMatters: z.string().trim().min(1).max(2000).optional(),
 });
-export type GateCaseEdit = z.infer<typeof GateCaseEditSchema>;
 
 /**
  * A case the user wrote themselves. Only the four fields a person can meaningfully author are

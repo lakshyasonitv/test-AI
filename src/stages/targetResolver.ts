@@ -613,11 +613,23 @@ export async function resolveLive(page: Page, t: Target, action?: string): Promi
  */
 export async function lookupLive(page: Page, target: Locator, value: string, root: LocatorRoot = page): Promise<void> {
   await target.click({ timeout: SELECT_TIMEOUT_MS });
-  if (value) await target.fill(value, { timeout: SELECT_TIMEOUT_MS });
   const ownId = ((await target.getAttribute("aria-controls").catch(() => null))
     || (await target.getAttribute("aria-owns").catch(() => null)) || "").trim();
   const own = /^[\w:.-]+$/.test(ownId) ? root.locator(`[id="${ownId}"]`).first() : null;
-  const isRecord = (t: string) => !/^(new\b|show (all|more)|search )/i.test(t);
+  // A click that did not open it is repeated once, as in chooseLive (run
+  // 2026-11-02T17-17-02-125Z-59cae03e: the field above dropped its error line on blur, the lookup
+  // moved before mouseup, no click fired). Only when the control says it is NOT open.
+  if (own || (await target.getAttribute("aria-expanded").catch(() => null)) !== null) {
+    const isOpen = async () => (own !== null && await own.isVisible().catch(() => false))
+      || (await target.getAttribute("aria-expanded").catch(() => null)) === "true";
+    const openBy = Date.now() + 1500;
+    while (!(await isOpen()) && Date.now() < openBy) await page.waitForTimeout(100);
+    if (!(await isOpen())) await target.click({ timeout: SELECT_TIMEOUT_MS });
+  }
+  if (value) await target.fill(value, { timeout: SELECT_TIMEOUT_MS });
+  // Same rule as the spec's lookupPick: action rows (data-value="action...", a bare "New <Object>",
+  // "Show all results", the "Recent Items" heading) are never records; "New Campaign x" is one.
+  const isRecord = (t: string) => !t.startsWith("§") && !/^(new( \S+)?|show (all|more).*|search .*|recent items)$/i.test(t);
   const deadline = Date.now() + SELECT_TIMEOUT_MS;
   let where: Locator | null = null;
   let texts: string[] = [];
@@ -626,8 +638,8 @@ export async function lookupLive(page: Page, target: Locator, value: string, roo
     const popup = root.locator('[role="listbox"]:visible').first();
     where = open ?? ((await popup.count().catch(() => 0)) > 0 ? popup : null);
     if (where) {
-      texts = (await where.getByRole("option").evaluateAll((els) => els.map((el) => (el.textContent || "").trim()
-        || (el.shadowRoot ? el.shadowRoot.textContent || "" : ""))).catch(() => [] as string[]))
+      texts = (await where.getByRole("option").evaluateAll((els) => els.map((el) => ((el.getAttribute("data-value") || "").startsWith("action") ? "§" : "")
+        + ((el.textContent || "").trim() || (el.shadowRoot ? el.shadowRoot.textContent || "" : "")))).catch(() => [] as string[]))
         .map((t) => t.replace(/\s+/g, " ").trim());
       if (texts.some(isRecord)) break;
     }

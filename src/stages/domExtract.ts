@@ -109,7 +109,7 @@ function isExternal(url: string, baseOrigin: string): boolean {
 /** Walk up from an element to <body>, recording only tag names.
  *  Result: "body>main>div>ul>li>button" — no IDs, no classes, no indices.
  *  Identical for all 48 product cards in a grid. */
-function computeGenericPath($: CQ, el: AnyNode): string {
+function computeGenericPath(el: AnyNode): string {
   const parts: string[] = [];
   let node: AnyNode | null = el;
   while (node && (node as DomElement).tagName) {
@@ -220,7 +220,7 @@ function extractHeadings($: CQ): CrawlResponse["headings"] {
  * Deliberately shallow — the immediately preceding sibling, then the wrapper's preceding
  * sibling. Anything further away stops being a label and starts being unrelated page copy.
  */
-function proximityLabel($: CQ, $el: cheerio.Cheerio<AnyNode>): string {
+function proximityLabel($el: cheerio.Cheerio<AnyNode>): string {
   const candidates = [$el.prev(), $el.parent().prev()];
   for (const $c of candidates) {
     if (!$c.length) continue;
@@ -261,7 +261,7 @@ function extractForms($: CQ, baseUrl: string): CrawlResponse["forms"] {
       if (!labelText && !attr($in, "placeholder") && !attr($in, "aria-label")) {
         // A checkbox/radio is labelled by the text after it, not the heading above (TD-144).
         const toggle = tag === "input" && (inputType === "checkbox" || inputType === "radio");
-        labelText = (toggle ? followingLabel(inputEl) : "") || proximityLabel($, $in);
+        labelText = (toggle ? followingLabel(inputEl) : "") || proximityLabel($in);
       }
 
       const options: string[] = [];
@@ -468,7 +468,7 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
     // user actually sees and therefore what a test prompt will call the field.
     // A checkbox or radio with no <label> is labelled by the text AFTER it (TD-144).
     const isToggle = tag === "input" && (role === "checkbox" || role === "radio");
-    const nearby = isField ? ((isToggle ? followingLabel(el) : "") || proximityLabel($, $el)) : "";
+    const nearby = isField ? ((isToggle ? followingLabel(el) : "") || proximityLabel($el)) : "";
 
     // Accessible name in accname precedence order — see roleForField's comment in
     // domDiscovery.ts for why the HTML `name` attribute must come last, not first.
@@ -522,7 +522,7 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
       name_from_proximity: nameFromProximity,
       aria_label: attr($el, "aria-label"), aria_role: attr($el, "role"),
       visible: true, enabled: !has($el, "disabled"),
-      generic_path: computeGenericPath($, el),
+      generic_path: computeGenericPath(el),
     });
   });
 
@@ -546,7 +546,7 @@ function extractInteractiveElements($: CQ, baseUrl: string): CrawlResponse["inte
       id: attr($el, "id"), css_classes: classesOf($el), test_id: "", css: "", derived_name: false,
       aria_label: attr($el, "aria-label"), aria_role: role,
       visible: true, enabled: !has($el, "aria-disabled"),
-      generic_path: computeGenericPath($, el),
+      generic_path: computeGenericPath(el),
     });
   });
 

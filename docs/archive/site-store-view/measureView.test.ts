@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { coverage, irReferences, elKey, checkMicroBaseline, buildView, hoistShared } from "../scripts/measureView.js";
+import { coverage, irReferences, elKey, checkMicroBaseline, buildView, hoistShared } from "./measureView.js";
 
 /**
  * Self-test for the measurement harness.

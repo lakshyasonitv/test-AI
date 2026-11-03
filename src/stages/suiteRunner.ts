@@ -1,12 +1,13 @@
 import { mkdirSync, writeFileSync, cpSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { toIR } from "./ir.js";
-import type { LlmBudget } from "../llm/llmBudget.js";
+import { withCaseUsage, type LlmBudget } from "../llm/llmBudget.js";
+import { Semaphore } from "../server/concurrency.js";
 import { generateSpec } from "./generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked, extractFailureDetail } from "./executor.js";
 import { credentialEnvVars, type Credentials } from "./credentials.js";
 import { analyzeFailure } from "./failureAnalysis.js";
-import { attemptHeal, isHealable } from "./heal.js";
+import { attemptHeal, isHealable, isValueHealable } from "./heal.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
 import type { OnEvent, StageEvent } from "../orchestrator.js";
@@ -303,6 +304,51 @@ function emit(
   if (onEvent) onEvent(event);
 }
 
+/**
+ * D-73: how many of ONE run's suite cases may build and execute at once. `SUITE_CASE_CONCURRENCY`,
+ * default 1 — one case after another, as before it existed. Capped at 8: every case is a Chromium
+ * (the grounding replay, then the spec's own), and the process-wide cap below is the real limit.
+ */
+export function suiteCaseConcurrency(): number {
+  const n = Number(process.env.SUITE_CASE_CONCURRENCY ?? 1);
+  return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), 8) : 1;
+}
+
+/**
+ * D-73: how many suite cases may run at once across EVERY run in this process. `MAX_PARALLEL_CASES`,
+ * defaulting to `MAX_CONCURRENT_RUNS` (and its own default, 3). With SUITE_CASE_CONCURRENCY at 1
+ * that default can never make a case wait: at most MAX_CONCURRENT_RUNS runs hold one case each.
+ */
+export function maxParallelCases(): number {
+  const raw = process.env.MAX_PARALLEL_CASES ?? process.env.MAX_CONCURRENT_RUNS ?? 3;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
+}
+
+let slots: Semaphore | null = null;
+/** The process-wide case slots, sized on first use (so the env is read after it is loaded). */
+function caseSlots(): Semaphore {
+  return (slots ??= new Semaphore(maxParallelCases()));
+}
+/** Test seam: forget the slots, so the next suite sizes them from the current env. */
+export function _resetCaseSlots(): void { slots = null; }
+
+/**
+ * Run `work(0)`, `work(1)`, ... with at most `limit` in flight, STARTING them in index order.
+ * `limit` 1 is a plain sequential loop. runSuite's case body catches its own errors; one that still
+ * escapes stops its worker, and is rethrown only after the OTHER workers have finished, so no case is
+ * left running unobserved after runSuite has returned.
+ */
+export async function forEachInOrder(count: number, limit: number, work: (i: number) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < count) await work(next++);
+  };
+  const done = await Promise.allSettled(Array.from({ length: Math.max(1, Math.min(limit, count)) }, worker));
+  const failed = done.find((d): d is PromiseRejectedResult => d.status === "rejected");
+  if (failed) throw failed.reason;
+}
+
 export async function runSuite(
   cases: TestCase[],
   appModel: AppModel,
@@ -318,7 +364,9 @@ export async function runSuite(
    *  the behaviour before the switch existed. */
   selfHeal = true
 ): Promise<CaseRunResult[]> {
-  const results: CaseRunResult[] = [];
+  // Filled by index, not pushed: with SUITE_CASE_CONCURRENCY > 1 cases finish out of order, and
+  // the summary, the UI's case list and `case-N` must all still read in the suite's order.
+  const results: CaseRunResult[] = new Array(cases.length);
   const runId = path.basename(runDir);
 
   // A suite can have several element_missing/selector_changed cases in one pass — each heal
@@ -329,7 +377,7 @@ export async function runSuite(
 
   emit(runId, "suite", "started", { total: cases.length }, undefined, onEvent);
 
-  for (let i = 0; i < cases.length; i++) {
+  const runCase = async (i: number): Promise<void> => {
     const tc = cases[i];
     const caseId = `case-${i}`;
     const caseDir = path.join(runDir, "cases", caseId);
@@ -386,7 +434,7 @@ export async function runSuite(
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
         }
 
-        results.push({
+        results[i] = {
           caseId, title: tc.title, status, irPath, resultPath, diagnosisPath,
           whyItMatters: tc.whyItMatters, intent: tc.intent, expected: tc.expected,
           blockedBy: primaryBlocked?.reason,
@@ -397,10 +445,10 @@ export async function runSuite(
           // this branch reuses that result, not a second heal attempt.
           healed: primaryResult.healed,
           ...(primaryResult.deterministicHeal ? { deterministicHeal: true } : {}),
-        });
+        };
         emit(runId, "suite", "completed", { caseId, title: tc.title, status, reused: true, healed: primaryResult.healed, deterministicHeal: primaryResult.deterministicHeal }, undefined, onEvent);
       } catch (err: any) {
-        results.push({ caseId, title: tc.title, status: "failed", irPath: "", resultPath: "" });
+        results[i] = { caseId, title: tc.title, status: "failed", irPath: "", resultPath: "" };
         emit(runId, "suite", "failed", { caseId, title: tc.title }, err?.message ?? String(err), onEvent);
       }
     } else {
@@ -410,11 +458,13 @@ export async function runSuite(
         console.log("Running:", tc.title);
 
         console.log("Generating IR...");
-        const usageBefore = llmBudget?.snapshot();
-        let { ir } = await toIR(tc, appModel, sourcePrompt, entryUrl, llmBudget, runCreds);
-        const usageAfter = llmBudget?.snapshot();
-        const llmCalls = usageAfter && usageBefore ? usageAfter.calls - usageBefore.calls : undefined;
-        const llmTokens = usageAfter && usageBefore ? usageAfter.totalTokens - usageBefore.totalTokens : undefined;
+        // Counted inside this case's own async chain (withCaseUsage), not as a before/after difference
+        // of the run's shared budget: with cases running at once that difference would also hold
+        // every other case's calls.
+        const compiled = await withCaseUsage(() => toIR(tc, appModel, sourcePrompt, entryUrl, llmBudget, runCreds));
+        let { ir } = compiled.value;
+        const llmCalls = llmBudget ? compiled.calls : undefined;
+        const llmTokens = llmBudget ? compiled.totalTokens : undefined;
         console.log("IR generated");
         // D-61 (EXTENDED_LOGGING only): per-case facts, keyed by caseId — never the AI-written title.
         insight("ir", () => ({
@@ -454,7 +504,7 @@ export async function runSuite(
         // long time and the errors were carried as a known baseline. They were not cosmetic:
         // `tsx` transpiles without type-checking, this file is an ES module (so strict mode), and
         // reading or assigning an undeclared binding in strict mode throws ReferenceError at
-        // runtime. `deterministicHeal` is read at the `results.push` below, which every suite case
+        // runtime. `deterministicHeal` is read at the `results[i]` write below, which every suite case
         // reaches whether it passed or failed — so EVERY executed suite case threw there, landed
         // in the catch, and was recorded `status: "failed"` with none of whyItMatters/intent/
         // expected/diagnosisPath. That is why a passing suite case showed as Failed in the UI with
@@ -462,7 +512,6 @@ export async function runSuite(
         // case threw even earlier, at `healAttempted` in the heal path, for the same net effect.
         // The primary case was never affected — it runs through orchestrator.ts, not this loop.
         let deterministicHeal = false;
-        let healAttempted = 0;
         if (!result.passed) {
           const callsBeforeDiagnosis = llmBudget?.snapshot().calls ?? 0;
           const diagnosis = await analyzeFailure(ir, result, appModel.auth?.loginUrl);
@@ -478,9 +527,9 @@ export async function runSuite(
           // suite cases never got it at all until now, even though this category is exactly
           // what heal was built for. Recompute status/blocked against the HEALED ir/result, not
           // the original, or a healed-and-passing case would still get reported truncated/failed.
-          if (selfHeal && healsUsed < MAX_SUITE_HEALS && isHealable(diagnosis, ir)) {
+          const failure = extractFailureDetail(result.raw);
+          if (selfHeal && healsUsed < MAX_SUITE_HEALS && (isHealable(diagnosis, ir) || isValueHealable(failure))) {
             healsUsed++;
-            healAttempted = 1;   // per-case: heal is one-shot, so this case is on its retry 1
             // Say that it is happening, BEFORE it happens.
             //
             // A heal re-runs the whole case in a real browser, so the user watches the tests run
@@ -507,7 +556,7 @@ export async function runSuite(
             try {
               const healedOutcome = await attemptHeal({
                 testCase: tc, ir, appModel, diagnosis, sourcePrompt, entryUrl, llmBudget,
-                runCreds, outDir: caseDir,
+                runCreds, outDir: caseDir, failure,
               });
               if (healedOutcome) {
                 ir = healedOutcome.ir;
@@ -554,25 +603,34 @@ export async function runSuite(
           raw: result.raw,
         }, null, 2));
 
-        results.push({
+        results[i] = {
           caseId, title: tc.title, status, irPath, resultPath, diagnosisPath, llmCalls, llmTokens, healed,
           whyItMatters: tc.whyItMatters, intent: tc.intent, expected: tc.expected,
           blockedBy: blocked?.reason, blockedScreenshot: blocked?.screenshot ?? undefined,
           ...(deterministicHeal ? { deterministicHeal: true } : {}),
-        });
+        };
 
         emit(runId, "suite", "completed", { caseId, title: tc.title, status, healed }, undefined, onEvent);
       } catch (err: any) {
-        results.push({
+        results[i] = {
           caseId, title: tc.title, status: "failed",
           irPath: "", resultPath: "",
-        });
+        };
 
         emit(runId, "suite", "failed", { caseId, title: tc.title },
           err?.message ?? String(err), onEvent);
       }
     } // end non-primary else branch
-  }
+  };
+
+  // D-73: up to SUITE_CASE_CONCURRENCY cases of this run at once (default 1: one after another,
+  // exactly the loop this replaced), each holding one of the process-wide case slots while it runs,
+  // so four runs at once can never start four cases each. Cases START in index order (the pool
+  // hands out indices in order and the slot queue is first come, first served), which is what
+  // app.js's progress list relies on to give each "started" event the right row.
+  const concurrency = suiteCaseConcurrency();
+  if (concurrency > 1) console.log(`[suite] ${cases.length} case(s), up to ${concurrency} at once`);
+  await forEachInOrder(cases.length, concurrency, (i) => caseSlots().run(() => runCase(i)));
 
   // Prune BEFORE the summary is built: buildSuiteSummary resolves videoUrl by looking for the file,
   // so a pruned case must have no file left to find or the card would link a deleted recording.

@@ -1,9 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { AppModel } from "../src/schema/appModel.js";
 import {
-  screenFingerprint, sameScreen, mergeScreenInto, labelOverlap, screenCount, findScreen, fingerprintOf,
+  screenFingerprint, sameScreen, mergeScreenInto, labelOverlap, findScreen, fingerprintOf,
 } from "../src/stages/screens.js";
 import { groundingError, screenBoundaries } from "../src/stages/ir.js";
+import { pageKey } from "../src/text.js";
+
+/** How many screens the model holds for `url` (same page key every stage uses). */
+const screenCount = (model: { pages: Array<{ url: string }> }, url: string): number =>
+  model.pages.filter((p) => pageKey(p.url) === pageKey(url)).length;
 
 // Pure tests of the screen model (D-52). The real-browser flow is tests/multiScreenWizard.test.ts.
 

@@ -31,8 +31,8 @@ export function fixedLoginRun(): boolean {
  * generated tests unable to sign in. This file only prepares the page for it (the production
  * guard, the ad block, the email-first switch, the slow-form wait) and explains a failure after it.
  *
- * The name is deliberately not `salesforceLogin.ts`: `src/server/salesforceLogin.ts` (D-49) is a
- * different file with a contract another stream builds against.
+ * (Not named `salesforceLogin.ts`: that was D-49's never-mounted "Check login" module, removed on
+ * 2026-11-02, and the generated spec's own login routine is also called `salesforceLogin`.)
  *
  * TD-40: every `page.evaluate` callback below has nothing named inside it. esbuild (what tsx, and
  * so the real server, runs) wraps named functions in a `__name()` helper the browser does not have,
@@ -373,9 +373,9 @@ export async function waitForOneScreenPassword(page: Page, graceMs: number = ONE
  * username box, and that input is CODE-SHAPED by its attributes — `autocomplete="one-time-code"`,
  * a numeric `inputmode`, `type` tel/number, or a `maxlength` of 4–10. Structure only.
  *
- * Moved here from `src/server/salesforceLogin.ts` (D-49), which now imports it: discovery needs
- * the same detector, and a stage importing the server module that imports the stage would be an
- * import cycle. One definition, unchanged.
+ * Moved here from D-49's "Check login" module (src/server/salesforceLogin.ts, removed 2026-11-02):
+ * discovery's failure reasons (`describeLoginFailure`) use it, and the tsx guard
+ * (tests/twoScreenLoginUnderTsx.test.ts) runs it under the server's own transform.
  *
  * Returns indexes, not selectors: the result is used once by its caller and never recorded or
  * replayed, so a positional handle is enough.

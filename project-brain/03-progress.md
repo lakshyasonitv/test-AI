@@ -1,5 +1,18 @@
 # Progress — where we are
 
+*Last updated: 2026-11-03. Parallel suite cases (D-73, `SUITE_CASE_CONCURRENCY`, default 1) built on
+`vaibhav/intelligent-edison-l6061z`, based on `cleanup/production-ready` (see `journal/2026-11-03.md`).
+Corrections verified that day: `cleanup/production-ready` IS committed and pushed (6 commits on main
+`8bcc3e4`, no PR). D-72 shared discovery, Jira Phase 1, the Claude provider and the Salesforce login work are
+all in main (PR #11, merged 2026-10-28). Live Azure: image `8bcc3e4`, 4 vCPU / 8 GiB, MAX_CONCURRENT_RUNS=1
+(set back from 4 on 2026-10-28 14:50, reason unrecorded), PROJECT_DISCOVERY_SHARING on, and `/app/runs` NOT
+mounted (artifacts and caches lost on every scale-to-zero). The paragraphs below are older history.*
+
+*Last updated: 2026-11-02. Repo clean-up on branch `cleanup/production-ready` (from main `8bcc3e4`):
+unused code removed, docs restructured (`docs/README.md` index, `docs/archive/`, `docs/guides/`),
+README rewritten, settings documented, booleanEnvFlags failure fixed. NOT committed yet — see
+`journal/2026-11-02.md`. Everything below this line is older history.*
+
 *Last updated: 2026-10-28 (second merge of main: main's D-61 insights kept, PR #11 conflict-free). main merged into the branch (2142d16, not pushed); shared discovery per project (D-72) built, NOT committed. Earlier, 2026-10-26: Jira Phase 1 (D-71) built, NOT committed. Earlier, 2026-10-22: Claude provider (D-66) committed + pushed (`72127dc`). Pinned `?login` login (D-67) committed + pushed (`a700c1d`). Allow-all-orgs (D-68) committed (`0da6005`); screen/report warning committed (`69dbe17`). Run insights (D-69) committed (`67e5881`). Salesforce post-login fixes (D-70) + D-67 removal built, NOT committed.*
 
 *Last updated: 2026-10-28, run insights (D-61) ported to `main`. See `journal/2026-10-28.md`.*

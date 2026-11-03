@@ -6,7 +6,7 @@ import {
 } from "./targetResolver.js";
 import { isAuthTriggeringStep } from "./authSettle.js";
 import { isEnvValueRef } from "./credentials.js";
-import { FRONTDOOR_ENV, isFrontdoorRef, recordRefIndex, recordRefObject, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
+import { FRONTDOOR_ENV, isFrontdoorRef, recordRefIndex, recordRefObject, SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
 import { hasRunToken, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
 
 const q = (s: string) => JSON.stringify(s);
@@ -179,10 +179,10 @@ function emitAssert(step: Step): string {
  * Branches on what the element really is, the same way `choose()` does for the select action
  * (TD-70): a native `<select>` has `<option>` children and `option:checked` is its current value;
  * a React/custom combobox is an `<input role="combobox">` with no options at all, where the input's
- * value is what the user sees.
+ * value is what the user sees; a button-style combobox (Lightning picklist) shows it as its text.
  *
- * Deliberately no `page.evaluate` — TD-40's `__name` trap makes an evaluate callback a runtime-only
- * failure, and `count()` answers the same question through the ordinary API.
+ * Deliberately no `page.evaluate` with a named callback — TD-40's `__name` trap makes one a
+ * runtime-only failure. The tag read is a bare arrow, as in `choose()`.
  */
 const ASSERT_CHOICE_HELPER = `
 async function assertChoice(loc, expected, mode) {
@@ -190,6 +190,14 @@ async function assertChoice(loc, expected, mode) {
   if (await chosen.count() > 0) {
     if (mode === "equals") await expect(chosen).toHaveText(expected, { timeout: ${ASSERT_TIMEOUT_MS} });
     else await expect(chosen).toContainText(expected, { timeout: ${ASSERT_TIMEOUT_MS} });
+    return;
+  }
+  // A Lightning picklist is a <button role="combobox">: no value to read ("Not an input element"),
+  // the chosen option is its visible text.
+  const tag = await loc.evaluate(el => el.tagName, null, { timeout: ${ASSERT_TIMEOUT_MS} }).catch(() => "INPUT");
+  if (!/^(INPUT|SELECT|TEXTAREA)$/i.test(tag)) {
+    if (mode === "equals") await expect(loc).toHaveText(expected, { useInnerText: true, timeout: ${ASSERT_TIMEOUT_MS} });
+    else await expect(loc).toContainText(expected, { useInnerText: true, timeout: ${ASSERT_TIMEOUT_MS} });
     return;
   }
   const pattern = mode === "equals"
@@ -346,6 +354,15 @@ const SF_REVEAL_HELPER = `async function sfReveal(page, text) {
     await page.evaluate(() => window.scrollBy(0, window.innerHeight)).catch(() => {});
     await page.waitForTimeout(300);
   }
+}`;
+
+/** Salesforce's duplicate-rule warning ("Similar Records Exist") opens upward from a form's footer
+ *  and covers the fields under it; typing into one then waits until the run is killed (run
+ *  2026-11-03T05-07-28-369Z-388aa153, Billing Zip). It is a warning, not a block: closed before each
+ *  step of an org-connection test, the Save still goes through. Same names as liveExtend's replay. */
+const SF_DISMISS_DUPLICATES_HELPER = `async function sfDismissDuplicates(page) {
+  if (!(await page.getByText(${JSON.stringify(SF_DUPLICATE_WARNING)}, { exact: true }).first().isVisible().catch(() => false))) return;
+  await page.getByRole("button", { name: ${JSON.stringify(SF_DUPLICATE_CLOSE)} }).first().click({ timeout: 2000 }).catch(() => {});
 }`;
 
 // -----------------------------------------------------------------------------
@@ -662,11 +679,24 @@ const lookupOptionError = ${OPTION_ERROR_JS};
 async function lookupPick(page, target, value, root) {
   const inDoc = root || page;
   await target.click({ timeout: ${SELECT_TIMEOUT_MS} });
-  if (value) await target.fill(value, { timeout: ${SELECT_TIMEOUT_MS} });
   const ownId = ((await target.getAttribute('aria-controls').catch(() => null))
     || (await target.getAttribute('aria-owns').catch(() => null)) || '').trim();
   const own = /^[\\w:.-]+$/.test(ownId) ? inDoc.locator('[id="' + ownId + '"]').first() : null;
-  const isRecord = (t) => !/^(new\\b|show (all|more)|search )/i.test(t);
+  // A click that did not open it is repeated once, as in choose() (run
+  // 2026-11-02T17-17-02-125Z-59cae03e: the field above dropped its error line on blur, the lookup
+  // moved before mouseup, no click fired). Only when the control says it is NOT open.
+  if (own || (await target.getAttribute('aria-expanded').catch(() => null)) !== null) {
+    const isOpen = async () => (own && await own.isVisible().catch(() => false))
+      || (await target.getAttribute('aria-expanded').catch(() => null)) === 'true';
+    const openBy = Date.now() + 1500;
+    while (!(await isOpen()) && Date.now() < openBy) await page.waitForTimeout(100);
+    if (!(await isOpen())) await target.click({ timeout: ${SELECT_TIMEOUT_MS} });
+  }
+  if (value) await target.fill(value, { timeout: ${SELECT_TIMEOUT_MS} });
+  // An action row ("New Campaign", "Show all results", the "Recent Items" heading) is never a record;
+  // Lightning marks its actions with data-value="action...". A record may itself be named "New
+  // Campaign x" (run 2026-11-03T05-42-52-539Z-8f96a6d6), so only a bare "New <Object>" counts as one.
+  const isRecord = (t) => !t.startsWith('\\u00a7') && !/^(new( \\S+)?|show (all|more).*|search .*|recent items)$/i.test(t);
   const deadline = Date.now() + ${SELECT_TIMEOUT_MS};
   let where = null, texts = [];
   for (;;) {
@@ -675,8 +705,8 @@ async function lookupPick(page, target, value, root) {
     where = open || ((await popup.count().catch(() => 0)) > 0 ? popup : null);
     if (where) {
       const opts = where.getByRole('option');
-      texts = (await opts.evaluateAll(els => els.map(el => (el.textContent || '').trim()
-        || (el.shadowRoot ? el.shadowRoot.textContent || '' : ''))).catch(() => []))
+      texts = (await opts.evaluateAll(els => els.map(el => ((el.getAttribute('data-value') || '').startsWith('action') ? '\\u00a7' : '')
+        + ((el.textContent || '').trim() || (el.shadowRoot ? el.shadowRoot.textContent || '' : '')))).catch(() => []))
         .map(t => t.replace(/\\s+/g, ' ').trim());
       if (texts.some(isRecord)) break;
     }
@@ -906,6 +936,11 @@ async function safeClick(page, role, name, nth) {
 // Emit one IR step
 // -----------------------------------------------------------------------------
 
+/** Salesforce's login page after a frontdoor sign-in, inlined into the spec (which cannot import
+ *  it): the same selector and message as openFrontdoor's in salesforceFrontdoor.ts. */
+const SF_LOGIN_FORM = 'input[type="password"], input#username, input[name="username"], #Login';
+const SF_LOGIN_ERROR = "The Salesforce org connection did not sign in: Salesforce showed its login page. The connection has expired or was revoked (another Testbench server refreshing the same connection does this). Click Connect org and run again.";
+
 function emitStep(step: Step, baseUrl: string): string {
   let code: string;
 
@@ -934,7 +969,11 @@ function emitStep(step: Step, baseUrl: string): string {
         // (CI), `sf org open --url-only` prints a URL of the same kind.
         code += `  if (!process.env.${FRONTDOOR_ENV}) throw new Error("${FRONTDOOR_ENV} is not set: this test signs in through a Salesforce org connection. Set it to a signed-in frontdoor URL (for example from: sf org open --url-only).");\n`;
         code += `  await page.goto(process.env.${FRONTDOOR_ENV}, { waitUntil: "domcontentloaded", timeout: 60000 });\n`;
-        code += `  await page.waitForURL((u) => !u.pathname.toLowerCase().includes("frontdoor.jsp"), { timeout: 60000 }).catch(() => {});`;
+        code += `  await page.waitForURL((u) => !u.pathname.toLowerCase().includes("frontdoor.jsp"), { timeout: 60000 }).catch(() => {});\n`;
+        // A refused session lands on the org's login page (?ec=302&startURL=..., a username-first
+        // form): stop here, not at some later step (run 2026-11-02T17-24-43-232Z-d9a20fcf). Same check
+        // as openFrontdoor's; the message never carries the URL, which held the sid.
+        code += `  if ((new URL(page.url()).searchParams.has("ec") && new URL(page.url()).searchParams.has("startURL")) || await page.locator(${q(SF_LOGIN_FORM)}).first().isVisible().catch(() => false)) throw new Error(${q(SF_LOGIN_ERROR)});`;
         break;
       }
       // Phase A: the record this test created, known only when the test runs (SF_OPEN_RECORD_HELPER).
@@ -973,7 +1012,11 @@ function emitStep(step: Step, baseUrl: string): string {
     }
 
     case "fill":
-      code += `  await ${locator(step.target!, "fill")}.fill(${valueCode(step.value)}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
+      // Focus, then the one fill. A field holding a value that redraws on focus (Lightning shows a
+      // percent as "10%", the raw "10" when focused) drops the selection fill() made, so the text
+      // was added to the old value: "1010" (run 2026-11-02T17-24-47-449Z-ab0328f3). Mirrored by
+      // runStepLive's fill in liveExtend.ts.
+      code += `  { const el = ${locator(step.target!, "fill")}; await el.focus({ timeout: ${ASSERT_TIMEOUT_MS} }); await el.fill(${valueCode(step.value)}, { timeout: ${ASSERT_TIMEOUT_MS} }); }`;
       break;
 
     case "select":
@@ -1204,6 +1247,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   // A text check after a click on a record's "Details" tab first scrolls its lower sections into
   // being: Lightning draws them only when scrolled to (run 2026-10-26T07-53-42-185Z-83b50b3b).
   const detailsAt = ir.steps.findIndex((s) => s.action === "click" && s.target?.role === "tab" && s.target.name === "Details");
+  const orgConnection = ir.steps.some((s) => s.action === "navigate" && isFrontdoorRef(s.target?.url ?? ""));
   const body = ir.steps
     .map((step, i) => {
       if (login?.ids.has(i)) {
@@ -1222,7 +1266,9 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
         : detailsAt >= 0 && i > detailsAt && step.action === "assert" && step.target?.text
         && (step.assertion === "visible" || step.assertion === "hidden")
         ? `await sfReveal(page, ${q(step.target.text)});\n` : "";
-      const code = reveal + emitStep(step, ir.meta.baseUrl);
+      const dismiss = orgConnection && (step.action === "fill" || step.action === "select" || step.action === "click")
+        ? "await sfDismissDuplicates(page);\n" : "";
+      const code = dismiss + reveal + emitStep(step, ir.meta.baseUrl);
       const indented = code.split("\n").map((l) => "    " + l).join("\n");
       return `    await test.step(${q(label)}, async () => {\n${indented}\n      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)});\n    });`;
     })
@@ -1274,8 +1320,10 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     // One context per run of this spec, for every run-token value (see valueCode): the same resolver
     // source the grounding replay uses (text.ts, TD-07). The context rides in results.json as the
     // "run-tokens" annotation, so the report can show the values this run actually typed.
+    // Random, not clock-derived: two cases of one suite can start in the same millisecond
+    // (SUITE_CASE_CONCURRENCY, D-73), and a repeated uid or phone trips an org's duplicate rules.
     body.includes("resolveRunTokens(")
-      ? `const RUN_CTX = { uid: Date.now().toString(36).slice(-6), phone: "415555" + String(Date.now()).slice(-4), now: Date.now() };
+      ? `const RUN_CTX = { uid: (Math.random().toString(36).slice(2) + "000000").slice(0, 6), phone: "415555" + String(Math.floor(Math.random() * 10000)).padStart(4, "0"), now: Date.now() };
 const resolveRunTokens = ${RESOLVE_RUN_TOKENS_JS};
 test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", description: JSON.stringify(RUN_CTX) }); });`
       : "",
@@ -1284,6 +1332,7 @@ test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", descr
     // org confirms this user created during the run (salesforceCleanup.ts).
     body.includes(`process.env.${FRONTDOOR_ENV}`) ? SF_RECORDS_HELPER : "",
     body.includes("await sfReveal(") ? SF_REVEAL_HELPER : "",
+    body.includes("await sfDismissDuplicates(") ? SF_DISMISS_DUPLICATES_HELPER : "",
     body.includes("await sfOpenRecord(") ? SF_OPEN_RECORD_HELPER : "",
     body.includes("await sfFieldValue(") ? SF_FIELD_HELPER : "",
   ]

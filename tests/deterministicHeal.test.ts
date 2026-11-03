@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   healStepTarget,
   diffTargets,
-  healSuiteSteps,
 } from "../src/stages/deterministicHeal.js";
 import type { AppModel, Element, PageModel } from "../src/schema/appModel.js";
 import type { Step } from "../src/schema/ir.js";
@@ -147,24 +146,5 @@ describe("diffTargets", () => {
   it("returns empty for identical targets", () => {
     const diffs = diffTargets({ role: "button", name: "X" }, { role: "button", name: "X" });
     expect(diffs).toEqual([]);
-  });
-});
-
-// ──────────────────────────────────────────────────────────────────────────────
-// healSuiteSteps
-// ──────────────────────────────────────────────────────────────────────────────
-
-describe("healSuiteSteps", () => {
-  it("heals healable steps and reports the rest as unhealable", () => {
-    const result = healSuiteSteps(
-      [
-        step({ id: "s1", target: { role: "button", name: "Subm" } }),
-        step({ id: "s2", target: { role: "button", name: "Nope" } }),
-        step({ id: "s3" }), // no target at all
-      ],
-      appModel([el({ role: "button", name: "Submit" })]),
-    );
-    expect(result.healedSteps.map((h) => h.stepId)).toEqual(["s1"]);
-    expect(result.unhealableStepIds.sort()).toEqual(["s2", "s3"]);
   });
 });

@@ -1020,7 +1020,7 @@ entry to revisit, and it should be revisited deliberately rather than by acciden
 **Rejected: hold the last-known stage per phase and patch forward.** Cheaper than a replay, and it
 keeps the live view stable. Rejected because it re-implements a *second*, partial derivation of the
 view that has to stay consistent with `applyEvent` forever — the precise anti-pattern the structural
-rule in `AGENTS.md` warns about, in a different costume.
+rule in `CLAUDE.md` (then mirrored in `AGENTS.md`) warns about, in a different costume.
 
 **The cost, stated rather than discovered.** A full replay re-runs every `applyEvent` side effect,
 so credential prompts and case-selection panels visibly replay on recovery. That is precisely the
@@ -1278,6 +1278,12 @@ redirect can carry a session id (`sid=`).
 indistinguishable, so "no secret supplied" reads `verification-required` and "secret rejected" reads
 `mfa-required`; Salesforce's own verification-page markup has not been seen. The signature is
 unchanged; `totpCode` is an extra export for tests, not part of the contract.
+
+
+**Removed (2026-11-02).** The server never mounted this check, so the module
+(`src/server/salesforceLogin.ts`) and its own tests were deleted in the repo clean-up. Its login
+steps are live code in `hybridDiscovery.ts` and `codeEntryField` lives in `salesforceOrgLogin.ts`;
+the TD-40 tsx guard (`tests/twoScreenLoginUnderTsx.test.ts`) now drives those directly.
 
 ## D-40. Live discovery gives EVERY element a `css`, most stable first, positional path last — verified to match exactly that element
 
@@ -2261,3 +2267,39 @@ credential prompt and case gate already require one). A site that changes within
 against the old picture until someone ticks "Explore the site again"; a failure caused by that looks
 like a missing element. Multi-URL runs (`discoverPagesHybrid`) are not shared.
 
+## D-73. A run's suite cases may run several at a time, under one cap for the whole server
+
+**Context.** The deployed app has 4 vCPU / 8 GiB and 4 run slots (D-72), but one run's cases ran one
+after another (`runSuite`'s loop), so a single run with 4 cases used one browser while three slots'
+worth of machine sat idle. The user asked for one job split across 4 browsers.
+
+**Decision.** Behind `SUITE_CASE_CONCURRENCY` (default 1):
+- `runSuite` runs its case body through `forEachInOrder`: at most N cases in flight, STARTED in index
+  order, results written by index (`results[i]`), so the summary, `case-N` and the UI list keep the
+  suite's order. At 1 it is the old sequential loop, and both modes take the same code path (rule 7).
+- Every case holds one slot of a process-wide `Semaphore` (`MAX_PARALLEL_CASES`, default
+  `MAX_CONCURRENT_RUNS`) while it builds, runs, diagnoses and heals. Four runs wanting four cases each
+  therefore share the cap instead of starting 16 browsers. FIFO, so starts stay in order and no run
+  waits forever. With concurrency 1 the default cap can never bind.
+- The whole case runs in parallel, not only the Playwright step: building a case (model calls plus the
+  grounding replay in its own Chromium) is the larger part of a case's time.
+- A case's `llmCalls`/`llmTokens` are counted inside its own async chain (`withCaseUsage`, an
+  `AsyncLocalStorage` that `LlmBudget.record` also writes to). The old before/after difference of the
+  run's shared budget counts every case running beside it.
+- The generated spec's run tokens (`{{uid}}`, `{{phone}}`) are random instead of clock-derived: two
+  cases can start in the same millisecond, and a repeated value trips an org's duplicate rules.
+- Unchanged: the primary case still runs first (later cases are built against the pages its replay
+  found, `updatedAppModel`); the suite-wide heal budget (`healsUsed` is checked and incremented with no
+  `await` between); `app.js`, routes and events (the progress list already tracks rows by `caseId`).
+
+**Measured.** `tests/suiteParallelBrowser.test.ts`, three cases through the real generator and executor
+against a local page that holds each load for 2.5 s: 19.8 s one at a time, 8.2 s three at once.
+
+**Rejected.** *Playwright `--workers` over one batch of specs* — parallelises only execution, not the
+build, shows nothing until every case is built, and undoes the executor's one-process-per-case design
+(per-case `results.json`, scrubbing, kill timer, heal). *Starting the primary case with the others* —
+loses `updatedAppModel` for the later cases; possible later for gate runs, whose case list is final
+before the primary runs. *Splitting a request into several runs* — each run plans and writes its own
+cases again, more model spend and a review screen per run.
+
+**Known limits.** TECH_DEBT.md TD-180.

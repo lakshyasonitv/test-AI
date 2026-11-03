@@ -20,7 +20,9 @@ export default defineConfig({
     // retain-on-failure, not "on": a full trace per passing run was ~0.5 MB each and made up
     // ~80% of the runs/ folder. Traces matter for debugging failures; a passing run doesn't
     // need one. screenshot stays "on" — the UI shows it for every result and it's tiny.
-    trace: "retain-on-failure",
+    // "off" on a Salesforce org-connection run (executor.ts sets PLAYWRIGHT_TRACE): that trace holds
+    // the sign-in URL, is deleted anyway, and slowed a failed test's teardown past the kill timer.
+    trace: process.env.PLAYWRIGHT_TRACE === "off" ? "off" : "retain-on-failure",
     screenshot: "on",
     // TD-71: recording starts when the CONTEXT is created, so a missing ffmpeg does not degrade
     // to "no video" — it stops browserContext.newPage() outright and reports a valid case as a

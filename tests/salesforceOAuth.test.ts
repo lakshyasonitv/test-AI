@@ -254,6 +254,46 @@ describe("0d. restore keeps the row on a temporary failure, and keeps a rotated 
     expect(String(next.mock.calls[0][1]?.body)).toContain("zqcanary-rotated-refresh-0123");
   });
 
+  it("Salesforce's 'detected concurrent request, retry request' is not final: null, row kept", async () => {
+    const id = await stored();
+    const busy = vi.fn(async () => ({ ok: false, status: 400,
+      json: async () => ({ error: "invalid_grant", error_description: "detected concurrent request, retry request" }) }));
+    expect(await oauth.restoreConnection(id, "org-a", { client, custody, cfg: CFG, fetchImpl: busy as any })).toBeNull();
+    expect(rows.has(id)).toBe(true);
+  });
+
+  it("concurrent restores of one connection share one token request; another organisation still gets null", async () => {
+    const id = await stored();
+    const slow = vi.fn(async (_url: string, _init?: any) => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { ok: true, status: 200, json: async () => ({ access_token: "zqcanary-newtoken-0123456789", instance_url: INSTANCE }) };
+    });
+    const deps = { client, custody, cfg: CFG, fetchImpl: slow };
+    const [a, b, other] = await Promise.all([
+      oauth.restoreConnection(id, "org-a", deps),
+      oauth.restoreConnection(id, "org-a", deps),
+      oauth.restoreConnection(id, "org-b", deps),
+    ]);
+    expect(slow).toHaveBeenCalledTimes(1);
+    expect(a).not.toBeNull();
+    expect(b).toBe(a);
+    expect(other).toBeNull();
+  });
+
+  it("parallel mints of an old token share one refresh", async () => {
+    const { done } = await connect("org-a");
+    const c = oauth.connectionFor(done.connectionId, "org-a")!;
+    (c as any).tokenAt = Date.now() - 2 * 60 * 60 * 1000;
+    const slow = vi.fn(async (_url: string, _init?: any) => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { ok: true, status: 200, json: async () => ({ access_token: "zqcanaryrefreshedtoken0123456789", instance_url: INSTANCE }) };
+    });
+    const session = oauth.frontdoorSessionFor(c, { cfg: CFG, fetchImpl: slow });
+    const urls = await Promise.all([1, 2, 3, 4, 5].map(() => session.mint()));
+    expect(slow).toHaveBeenCalledTimes(1);
+    for (const u of urls) expect(u).toContain("sid=zqcanaryrefreshedtoken0123456789");
+  });
+
   it("an off-org case is its own code, so the page does not throw away a good connection", async () => {
     const own = await connect("org-a");
     const other = oauth.replaySessionFor([{ ir: { meta: { baseUrl: "https://zq-other-dev-ed.develop.lightning.force.com" },
@@ -665,6 +705,8 @@ describe("3b. real Chromium against a local stand-in for frontdoor.jsp", () => {
   let base = "";
   let browser: Browser;
   const GOOD = "zqcanarygoodsession0123456789";
+  /** A refused token on an org whose login is username-first (run 2026-11-02T17-24-43-232Z-d9a20fcf). */
+  const USERNAME_FIRST = "zqcanaryusernamefirst0123456789";
 
   beforeAll(async () => {
     server = http.createServer((req, res) => {
@@ -674,9 +716,18 @@ describe("3b. real Chromium against a local stand-in for frontdoor.jsp", () => {
           res.writeHead(302, { Location: u.searchParams.get("retURL") ?? "/" });
           return res.end();
         }
+        if (u.searchParams.get("sid") === USERNAME_FIRST) {
+          res.writeHead(302, { Location: `/?ec=302&startURL=${encodeURIComponent("/lightning/page/home")}` });
+          return res.end();
+        }
         // A refused token: Salesforce shows its login form instead of the app.
         res.writeHead(200, { "content-type": "text/html" });
         return res.end(`<form><input id="username"><input type="password" id="password"><button id="Login">Log In</button></form>`);
+      }
+      if (u.pathname === "/") {
+        // Salesforce's login page for that org: Username and "Log In to Sandbox", NO password box.
+        res.writeHead(200, { "content-type": "text/html" });
+        return res.end(`<form><input id="username" name="username"><input type="submit" id="Login" value="Log In to Sandbox"></form>`);
       }
       if (u.pathname === "/lightning/page/home") {
         res.writeHead(200, { "content-type": "text/html" });
@@ -713,6 +764,21 @@ describe("3b. real Chromium against a local stand-in for frontdoor.jsp", () => {
     }
   }, 60_000);
 
+  it("a refused token on a username-first login (no password box) throws without the sid or URL", async () => {
+    const page = await browser.newPage();
+    try {
+      const err = await fd.openFrontdoor(page, session(USERNAME_FIRST)).catch((e) => e as Error);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toBe("The Salesforce org connection did not sign in: Salesforce showed its login page. The connection has expired or was revoked (another Testbench server refreshing the same connection does this). Click Connect org and run again.");
+      expect(err.message).not.toContain(USERNAME_FIRST);
+      expect(err.message).not.toContain(base);
+      expect(err.message).not.toContain("ec=302");
+      expect(await fd.openFrontdoor(page, session(GOOD))).toBe(`${base}/lightning/page/home`);
+    } finally {
+      await page.close();
+    }
+  }, 60_000);
+
   it("the grounding replay resolves the env reference through the run's connection", async () => {
     const page = await browser.newPage();
     try {
@@ -731,8 +797,10 @@ describe("3b. real Chromium against a local stand-in for frontdoor.jsp", () => {
       steps: buildLoginPrefix({ status: "authenticated", frontdoor: true, url: `${base}/lightning/page/home` }),
     } as any);
     const start = spec.indexOf(`  if (!process.env.${fd.FRONTDOOR_ENV})`);
-    const endMarker = ".catch(() => {});";
-    const end = spec.indexOf(endMarker, start) + endMarker.length;
+    // Through the login-page post-check, the line that throws "did not sign in".
+    const check = spec.indexOf("did not sign in", start);
+    expect(check).toBeGreaterThan(-1);
+    const end = spec.indexOf("\n", check) === -1 ? spec.length : spec.indexOf("\n", check);
     expect(start).toBeGreaterThan(-1);
     const snippet = spec.slice(start, end);
     const AsyncFunction = Object.getPrototypeOf(async function () { /* */ }).constructor;
@@ -743,6 +811,12 @@ describe("3b. real Chromium against a local stand-in for frontdoor.jsp", () => {
       await run(page, { env: { [fd.FRONTDOOR_ENV]: await session(GOOD).mint() } });
       expect(new URL(page.url()).pathname).toBe("/lightning/page/home");
       await expect(run(page, { env: {} })).rejects.toThrow(/SF_FRONTDOOR_URL is not set/);
+      // A refused session on a username-first login stops at sign-in, without the sid or URL.
+      const err = await run(page, { env: { [fd.FRONTDOOR_ENV]: await session(USERNAME_FIRST).mint() } }).catch((e: Error) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/did not sign in/);
+      expect(err.message).not.toContain(USERNAME_FIRST);
+      expect(err.message).not.toContain(base);
     } finally {
       await page.close();
     }

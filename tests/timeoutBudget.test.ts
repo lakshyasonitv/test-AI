@@ -82,15 +82,17 @@ describe("killTimeoutMs — the SIGKILL backstop (TD-02)", () => {
     }
   });
 
-  it("preserves TD-02's 50s finalization slack", () => {
-    // Trace/video finalization on a failing test was measured at 7-20MB to zip; the gap is what
-    // pays for it. Kept as a difference so it survives the budget changing.
-    expect(killTimeoutMs(spec(1)) - perTestTimeoutMs(spec(1))).toBe(50_000);
-    expect(killTimeoutMs(spec(25)) - perTestTimeoutMs(spec(25))).toBe(50_000);
+  it("covers Playwright's after-hooks slot too, plus TD-02's 50s slack", () => {
+    // After a failure Playwright gives its after-hooks a fresh slot of the full test timeout, so a
+    // kill at per-test + 50s landed mid-teardown with no results.json (run
+    // 2026-11-03T05-07-28-369Z-388aa153: 290s for a 40-step spec whose legal limit was 480s).
+    for (const steps of [1, 25, 40]) {
+      expect(killTimeoutMs(spec(steps)) - 2 * perTestTimeoutMs(spec(steps)), `${steps} steps`).toBe(50_000);
+    }
   });
 
   it("still clears the budget when PLAYWRIGHT_TIMEOUT is set very high", () => {
     process.env.PLAYWRIGHT_TIMEOUT = "300000";
-    expect(killTimeoutMs(spec(3))).toBe(350_000);
+    expect(killTimeoutMs(spec(3))).toBe(650_000);
   });
 });

@@ -185,7 +185,7 @@ export function browserContextOptions(locale?: string): BrowserContextLocaleOpti
  *
  * The three LLM keys that DO matter (`hybridDiscovery`'s labels, `testCases`, `ir`) already carry
  * the page content or the AppModel itself, so they re-key themselves the moment discovery output
- * changes and need nothing added — see `docs/FINDINGS_2026-09-28.md` §7.4. Adding a dimension to
+ * changes and need nothing added — see `docs/archive/FINDINGS_2026-09-28.md` §7.4. Adding a dimension to
  * all seven call sites would be noise; these two are the real exposures.
  *
  * Returns "system" when pinning is off, so an unpinned entry and an en-US entry are still

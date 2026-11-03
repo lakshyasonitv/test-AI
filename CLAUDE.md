@@ -24,25 +24,27 @@ classifier tries first, Gemini vision second.
 | Why a design choice was made, what was rejected | `DECISIONS.md` |
 | Working guidance for an agent (this file) | `CLAUDE.md` |
 | What each shipped phase changed, and how to roll it back | `docs/phases/` |
-| How a person edits a compiled test, end to end | `docs/EDITABLE_IR.md` (walkthrough, not an owner) |
-| Briefing an LLM that CANNOT read this repo | `docs/LLM_CONTEXT_BRIEFING.md` |
-| Onboarding a new teammate, end to end | `docs/team-guide/` (five Word volumes, not an owner) |
+| How a person edits a compiled test, end to end | `docs/guides/EDITABLE_IR.md` (walkthrough, not an owner) |
+| Briefing an LLM that CANNOT read this repo | `docs/guides/LLM_CONTEXT_BRIEFING.md` |
+| Onboarding a new teammate, end to end | `docs/guides/team-guide/` (five Word volumes, not an owner) |
+| Where every doc is, one line each | `docs/README.md` (an index, not an owner) |
 
 **Before adding a "what's broken" note anywhere, put it in `TECH_DEBT.md` instead.** Every owner
 above has exactly one job, and the what's-broken list lives in exactly one file — it used to be
 copied into six, and every copy drifted (`DECISIONS.md` D-01). Don't recreate the overlap.
 
-Also present, but not owners — nothing should be filed *into* them: `PROJECT_OVERVIEW.md` (a
-walkthrough), `problems.md` (a dated audit), and `SITE_STORE_VIEW_SPEC_v2.md` — **a spec for work
-that was never built; not a description of the current code** (its gate failed, TD-56).
+`docs/archive/` holds history, not owners — nothing should be filed *into* it: the old walkthrough
+(`PROJECT_OVERVIEW.md`), the dated audit (`problems.md`), dated plans and notes, and
+`site-store-view/` — **a spec for work that was never built; not a description of the current code**
+(its gate failed, TD-56). `docs/archive/README.md` lists what is there and where it used to live.
 
-`docs/EDITABLE_IR.md` is a **walkthrough**, not a topic owner: the editable-IR flow spans
+`docs/guides/EDITABLE_IR.md` is a **walkthrough**, not a topic owner: the editable-IR flow spans
 `stepText.ts`, `caseEdit.ts`, `replay.ts`, `rewrite.ts`, the editor routes and the gate, and no
 single existing doc explains how they fit together. It states its own subordination at the top —
 `ARCHITECTURE.md` still owns the file map and schema, `DECISIONS.md` the rationale, `TECH_DEBT.md`
 the defects. Extend it for flow; put a defect in TECH_DEBT and a rationale in DECISIONS.
 
-`docs/LLM_CONTEXT_BRIEFING.md` is **not** a topic owner either — it is a dated, self-contained
+`docs/guides/LLM_CONTEXT_BRIEFING.md` is **not** a topic owner either — it is a dated, self-contained
 export for pasting into a chat with a model that has no access to these files. It necessarily
 restates things the five docs own, which is exactly the duplication D-01 warns about, so it is
 allowed only on those terms: it says so at the top, it defers to the real docs whenever both are

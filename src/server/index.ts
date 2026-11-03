@@ -26,7 +26,6 @@ import {
   canViewRun,
   filterRunsForUser,
   isRole,
-  orgForRun,
   primaryOrgFor,
   requireOrgRole,
   requireRole,
@@ -95,7 +94,7 @@ import { insight } from "../insights.js";
 import { withRunId } from "../runContext.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
 import {
-  credentialsFromEnv, credentialKindsNeeded, restoreCredentialRefs, isEnvValueRef,
+  credentialKindsNeeded, restoreCredentialRefs, isEnvValueRef,
   type Credentials,
 } from "../stages/credentials.js";
 import { resolveCredentialsVia } from "./resolveCredentials.js";
@@ -111,7 +110,7 @@ import { summariseRun } from "../runStore.js";
 import { isAllowedEntryUrl, orgDiscoveryCacheEnabled, savedDiscoveriesFor } from "../stages/hybridDiscovery.js";
 import { isTargetApp, salesforceEnabled, TARGET_APPS, withTargetApp, type TargetApp } from "../runTarget.js";
 import {
-  salesforceOAuthEnabled, startAuthorization, completeAuthorization, connectionFor, connectionMatchesUrl,
+  salesforceOAuthEnabled, startAuthorization, completeAuthorization, connectionMatchesUrl,
   frontdoorSessionFor, appOrigin, replaySessionFor, restoreConnection,
 } from "./salesforceOAuth.js";
 import { withFrontdoor } from "../stages/salesforceFrontdoor.js";
@@ -2474,9 +2473,7 @@ export const BOOLEAN_ENV_FLAGS = [
   // read false, and silently skipped the cheap structural heal so every heal paid for a full LLM
   // IR regeneration — invisible, because the expensive path produces a correct-looking result.
   "DETERMINISTIC_HEAL",
-  // RESERVED: registered before its reader lands, so a typo (`=truebro`) is fatal from the moment
-  // the flag exists instead of silently reading false. The live-DOM discovery walker
-  // (`src/schema/appModel.ts` documents the fields it will write) reads it once that stream ships.
+  // Live-DOM discovery (src/stages/liveDomDiscovery.ts): element lists read from the live page.
   "DISCOVERY_LIVE_DOM",
   "ENABLE_CASE_SELECTION_GATE",
   // Phase 2: gates the new diagnostic OUTPUT only (per-call provider/model/token line, per-run
@@ -2486,8 +2483,7 @@ export const BOOLEAN_ENV_FLAGS = [
   "NL_STEPS_ENABLED",
   "ORG_LLM_CONFIG_ENABLED",
   "REPLAY_REGROUND",
-  // RESERVED: registered before its reader lands (same reason as DISCOVERY_LIVE_DOM above). Names
-  // the Salesforce-specific discovery support; nothing reads it yet.
+  // D-50: the "This URL is a Salesforce org" box and every Salesforce-only path behind it.
   "SALESFORCE_ENABLED",
   // D-65: the fixed Salesforce login for generated tests (src/stages/salesforceOrgLogin.ts). Off:
   // every compile and every spec is exactly what it was. Read only on a ticked Salesforce run.

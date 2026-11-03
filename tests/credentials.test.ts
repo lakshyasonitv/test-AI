@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   credentialFieldsNeeded, promptCarriesCredentials, applyCredentials, isEnvValueRef,
   credentialEnvVars, credentialKindForTarget, credentialForTarget, redactCredentials, REDACTED,
-  wantsRealCredentials, credentialFieldMap, credentialPolicyFor, lastFillIndexByKind,
+  credentialFieldMap, credentialPolicyFor, lastFillIndexByKind,
   extractCredentialsFromPrompt, looksLikeCompoundLoginCase,
   credentialsFromEnv, credentialKindsNeeded,
 } from "../src/stages/credentials.js";
@@ -324,7 +324,7 @@ describe("credential substitution is opt-in, per step", () => {
 
   it("substitutes for a valid-login case", () => {
     const steps = [{ action: "fill", target: { name: "Email Address" }, value: "placeholder@x.com" }];
-    expect(wantsRealCredentials(login, false)).toBe(true);
+    expect(credentialPolicyFor(login, false) !== "none").toBe(true);
     applyCredentials(steps, secret, "full", ["https://x.example/login"]);
     expect(isEnvValueRef(steps[0].value)).toBe("TEST_USERNAME");
   });
@@ -335,14 +335,14 @@ describe("credential substitution is opt-in, per step", () => {
   // always substituting is strictly safer than trusting the model copied it faithfully).
   it("uses supplied credentials for the fromPrompt case, whether or not the prompt had its own", () => {
     const p = tc({ title: "Log in as asked", fromPrompt: true, category: "functional-other" });
-    expect(wantsRealCredentials(p, false)).toBe(true);
-    expect(wantsRealCredentials(p, true)).toBe(true);
+    expect(credentialPolicyFor(p, false) !== "none").toBe(true);
+    expect(credentialPolicyFor(p, true) !== "none").toBe(true);
   });
 
   // These are the exact categories that let the old blocklist through.
   it("does NOT substitute for injection, validation or boundary cases", () => {
     for (const category of ["security-injection", "security-xss", "invalid-input", "empty-boundary"] as const) {
-      expect(wantsRealCredentials(tc({ title: "t", category }), false)).toBe(false);
+      expect(credentialPolicyFor(tc({ title: "t", category }), false) !== "none").toBe(false);
     }
   });
 
@@ -512,7 +512,7 @@ describe("credentialFieldMap — unlabelled login forms", () => {
 // received the user's REAL account, logged in successfully, was redirected off /login, and
 // then failed its own assertion — with the UI blaming the site.
 //
-// Cause: wantsRealCredentials checked `fromPrompt` BEFORE the category and short-circuited,
+// Cause: the credential policy (then wrapped as wantsRealCredentials) checked `fromPrompt` BEFORE the category and short-circuited,
 // so a negative case that happened to be the literal translation of the request got working
 // credentials regardless of intent.
 // ---------------------------------------------------------------------------
