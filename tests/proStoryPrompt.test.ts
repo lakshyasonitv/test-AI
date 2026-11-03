@@ -56,17 +56,17 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("storyPromptText — the prompt-box request", () => {
-  it("says who, what, on which object, what to check, and what not to test", () => {
-    expect(storyPromptText(STORY)).toBe([
-      "Test the requirements from the uploaded document.",
-      "As: Sales Representative",
-      "Do: Create a new Account from the Accounts tab",
-      "On: Account",
-      "Check:",
-      "- Saving with only Account Name creates the Account and opens its record page.",
-      "- Account Name is required.",
-      "Do not test: Editing or deleting an Account",
-    ].join("\n"));
+  it("is ONE short line: the objects, the first action, and how much more there is", () => {
+    expect(storyPromptText(STORY)).toBe(
+      "Test the uploaded requirements on Account: Create a new Account from the Accounts tab (2 checks)");
+    expect(storyPromptText({ ...STORY, actions: [...STORY.actions, "Edit it", "View it"], entities: ["Case", "Report", "List View"] }))
+      .toBe("Test the uploaded requirements on Case and Report: Create a new Account from the Accounts tab (+2 more, 2 checks)");
+  });
+
+  it("with no actions, the first check names the flow", () => {
+    expect(storyPromptText({ ...EMPTY, rules: ["Name is required.", "Phone is optional."] }))
+      .toBe("Test the uploaded requirements: Name is required. (+1 more check)");
+    expect(storyPromptText({ ...EMPTY, criteria: ["Saving works."] })).toBe("Test the uploaded requirements: Saving works.");
   });
 
   it("is empty when the story names nothing to test — the browser then leaves the box alone", () => {
@@ -74,18 +74,22 @@ describe("storyPromptText — the prompt-box request", () => {
     expect(storyPromptText({ ...EMPTY, actors: ["Someone"], entities: ["Lead"] })).toBe("");
   });
 
-  it("never carries the open questions or the user's answers", () => {
+  it("never carries the open questions, the answers, the actors or the out-of-scope list", () => {
     const text = storyPromptText(STORY);
-    expect(text).not.toContain("Which record type?");
-    expect(text).not.toContain("Default");
+    for (const t of ["Which record type?", "Default", "Sales Representative", "Editing or deleting"]) expect(text).not.toContain(t);
   });
 
-  it("is capped, and cut at a line so no check is half-written", () => {
-    const long = { ...STORY, rules: Array.from({ length: 50 }, (_, i) => `Rule ${i} `.padEnd(400, "x")) };
+  it("stays short however long the story is — the user's real story stays on one line", () => {
+    const long = {
+      ...STORY,
+      actions: ["Create reports on the Case object including survey fields and a very long tail ".repeat(5), ..."abcde".split("").map((c) => `Action ${c}`)],
+      entities: ["Case object with an extremely long descriptive name here", "Work Order", "Account"],
+      rules: Array.from({ length: 50 }, (_, i) => `Rule ${i}`),
+    };
     const text = storyPromptText(long);
     expect(text.length).toBeLessThanOrEqual(STORY_PROMPT_MAX_CHARS);
-    expect(text.endsWith("x")).toBe(true);
-    expect(text.split("\n").every((l) => l.startsWith("- Rule") ? l.length === 400 + 2 : true)).toBe(true);
+    expect(text).not.toContain("\n");
+    expect(text).toContain("(+5 more, 51 checks)"); // 50 rules + STORY's one criterion
   });
 });
 

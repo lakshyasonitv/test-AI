@@ -253,8 +253,7 @@ describe("flag ON — POST /api/spec/confirm", () => {
       const res = await request(app).post("/api/spec/confirm").send({ spec: GOOD_SPEC });
       expect(res.status).toBe(200);
       expect(res.body.spec).toEqual(GOOD_SPEC);
-      expect(res.body.promptText).toContain("Do: Convert a Lead");
-      expect(res.body.promptText).toContain("- A Lead cannot convert without a phone number.");
+      expect(res.body.promptText).toBe("Test the uploaded requirements on Lead: Convert a Lead (1 check)");
       // A spec with nothing to test gets no field at all, so the browser leaves the box alone.
       const bare = { ...GOOD_SPEC, actions: [], rules: [], criteria: [] };
       expect("promptText" in (await request(app).post("/api/spec/confirm").send({ spec: bare })).body).toBe(false);

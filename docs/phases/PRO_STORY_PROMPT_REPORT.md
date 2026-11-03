@@ -20,23 +20,20 @@ reads the story on a Pro run, as a safety net when the box is vague or emptied.
 | Our own earlier fill (you edited rules and pressed Continue again) | Refilled with the new version |
 | Setting off | Nothing changes |
 
-Example fill, from the Account story:
+Example fills (one line, at most 160 characters):
 ```
-Test the requirements from the uploaded document.
-As: Sales Representative
-Do: Create a new Account from the Accounts tab
-On: Account
-Check:
-- Saving with only Account Name creates the Account.
-- Account Name is required.
-Do not test: Editing an Account
+Test the uploaded requirements on Account: Create a new Account from the Accounts tab (2 checks)
+Test the uploaded requirements on Case and Work Order: Create reports on the Case object including survey fields (+5 more, 10 checks)
 ```
+The first version filled the box with the whole story (about 2,000 characters for the Case story), which
+made the run screen's title a wall of text. It is one line now: the full story already reaches the
+planner and the case writer directly, so the box only needs to name the flow and the objects.
 
 ## What changed
 
 | File | Change |
 |---|---|
-| `src/stages/storyPrompt.ts` (new) | `proStoryPromptEnabled()`; `storyPromptText(spec)`: the prompt-box text (no AI call, never the open questions or answers, max 4000 characters, cut at a line); `storyPlanBlock(spec)`: the block the planner reads |
+| `src/stages/storyPrompt.ts` (new) | `proStoryPromptEnabled()`; `storyPromptText(spec)`: the one-line prompt-box text (no AI call, never the open questions or answers, max 160 characters; the action is shortened first so the objects and counts always show); `storyPlanBlock(spec)`: the block the planner reads |
 | `src/server/index.ts` | `POST /api/spec/confirm` returns an **optional** `promptText` when the setting is on (rule 1: existing routes only gain optional fields). `PRO_STORY_PROMPT` registered as a true/false setting |
 | `src/stages/planner.ts` | Optional 4th argument `story`. When given: the block goes into the message **and** the cache key. Without it: message and key byte-identical to before |
 | `src/orchestrator.ts` | Passes the run's spec to the planner only when the setting is on and the run has a spec |

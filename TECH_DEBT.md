@@ -6223,9 +6223,12 @@ target to explore; the case prompt then told the model to skip rules the discove
 and the checklist floor filled the suite.
 
 **Fix (flag `PRO_STORY_PROMPT`, default off, needs `SPEC_INTAKE_ENABLED`):** `src/stages/storyPrompt.ts`.
-(1) `POST /api/spec/confirm` gains the optional field `promptText`, a plain request built from the
-confirmed spec (actors, actions, entities, criteria + rules, out of scope; never open questions or
-answers; capped at 4000 chars on a line). The browser puts it in an EMPTY prompt box (or replaces its own
+(1) `POST /api/spec/confirm` gains the optional field `promptText`, ONE short line built from the
+confirmed spec: up to two objects, the first action, and counts ("Test the uploaded requirements on Case
+and Work Order: <first action> (+5 more, 10 checks)"), at most 160 chars; never open questions or answers.
+A first version put the whole story in the box (about 2,000 chars) and the run screen's title became a
+wall of text; the full story reaches the planner and the case generator directly, so the box only names
+the flow. The browser puts it in an EMPTY prompt box (or replaces its own
 earlier fill); text the user typed is never overwritten, a "Use the requirements as the prompt" button is
 offered instead. Every stage then reads it like a typed prompt. (2) On a Pro run the planner's message
 also carries the story (`storyPlanBlock`), and its cache key gains that block (TD-22), so an emptied or

@@ -23,33 +23,42 @@ export function proStoryPromptEnabled(): boolean {
   return process.env.PRO_STORY_PROMPT === "true";
 }
 
-/** The prompt box text is capped like the Jira fill (JIRA_MAX_PROMPT_CHARS default). */
-export const STORY_PROMPT_MAX_CHARS = 4000;
+/**
+ * The prompt-box text is ONE short line. The full story already reaches the planner
+ * (`storyPlanBlock`) and the case generator (`proTestCases`) directly, so the box only needs to
+ * name the main action and objects — for discovery and the Salesforce request filters, which read
+ * the typed prompt — and it stays readable as the run's title and the report's "You asked".
+ */
+export const STORY_PROMPT_MAX_CHARS = 160;
 
 const unique = (xs: string[]) => [...new Set(xs.map((x) => x.trim()).filter(Boolean))];
+const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1).trimEnd()}…`);
 
 /**
  * The prompt-box text for a confirmed spec, or "" when the spec names nothing to test (no actions,
- * criteria or rules) — the browser then leaves the box alone.
+ * criteria or rules) — the browser then leaves the box alone. Shape:
+ *   "Test the uploaded requirements on Case and Report: <first action> (+5 more, 10 checks)"
+ * Never the open questions or the user's answers.
  */
 export function storyPromptText(spec: SpecModel): string {
   const actions = unique(spec.actions);
   const checks = unique([...spec.criteria, ...spec.rules]);
   if (!actions.length && !checks.length) return "";
-  const lines: string[] = ["Test the requirements from the uploaded document."];
-  const actors = unique(spec.actors);
-  if (actors.length) lines.push(`As: ${actors.join(", ")}`);
-  if (actions.length) lines.push(`Do: ${actions.join("; ")}`);
-  const entities = unique(spec.entities);
-  if (entities.length) lines.push(`On: ${entities.join(", ")}`);
-  if (checks.length) lines.push("Check:", ...checks.map((c) => `- ${c}`));
-  const out = unique(spec.outOfScope);
-  if (out.length) lines.push(`Do not test: ${out.join("; ")}`);
-  const text = lines.join("\n");
-  if (text.length <= STORY_PROMPT_MAX_CHARS) return text;
-  // Cut at a line boundary so no check is left half-written.
-  const cut = text.slice(0, STORY_PROMPT_MAX_CHARS);
-  return cut.slice(0, Math.max(cut.lastIndexOf("\n"), 0)).trimEnd();
+  const entities = unique(spec.entities).slice(0, 2).map((e) => clip(e, 24));
+  const on = entities.length ? ` on ${entities.join(" and ")}` : "";
+  const counts: string[] = [];
+  if (actions.length) {
+    if (actions.length > 1) counts.push(`+${actions.length - 1} more`);
+    if (checks.length) counts.push(`${checks.length} check${checks.length === 1 ? "" : "s"}`);
+  } else if (checks.length > 1) {
+    counts.push(`+${checks.length - 1} more check${checks.length === 2 ? "" : "s"}`);
+  }
+  const head = `Test the uploaded requirements${on}: `;
+  const tail = counts.length ? ` (${counts.join(", ")})` : "";
+  // The first action names the flow (with no actions, the first check does). It is the part that
+  // gets shortened, so the objects and the counts always survive and the line stays under the cap.
+  const first = clip(actions[0] ?? checks[0], Math.min(80, STORY_PROMPT_MAX_CHARS - head.length - tail.length));
+  return head + first + tail;
 }
 
 /**
