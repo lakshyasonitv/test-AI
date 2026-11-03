@@ -1,7 +1,8 @@
 # Progress — where we are
 
-*Last updated: 2026-11-03. Parallel suite cases (D-73, `SUITE_CASE_CONCURRENCY`, default 1) built on
-`vaibhav/intelligent-edison-l6061z`, based on `cleanup/production-ready` (see `journal/2026-11-03.md`).
+*Last updated: 2026-11-03, evening. PRs #12 and #13 MERGED and DEPLOYED (live image `97ea0c9`); main's CI green.
+Parallel suite cases (D-73, `SUITE_CASE_CONCURRENCY`, default 1) are in main but OFF on Azure until the user sets
+them (see `journal/2026-11-03.md`). Earlier the same day:
 Corrections verified that day: `cleanup/production-ready` IS committed and pushed (6 commits on main
 `8bcc3e4`, no PR). D-72 shared discovery, Jira Phase 1, the Claude provider and the Salesforce login work are
 all in main (PR #11, merged 2026-10-28). Live Azure: image `8bcc3e4`, 4 vCPU / 8 GiB, MAX_CONCURRENT_RUNS=1
