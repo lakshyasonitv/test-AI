@@ -4,8 +4,8 @@
 
 ## Parallel suite cases (D-73)
 
-- [ ] Push `vaibhav/intelligent-edison-l6061z`; PR only when the user asks (it carries `cleanup/production-ready`'s
-      6 commits until that branch is merged).
+- [x] Push `vaibhav/intelligent-edison-l6061z` and open PR #12 into main (carries `cleanup/production-ready`'s 6 commits).
+- [ ] PR #13 (discoveryStrategy fixture vs Chromium escaping): confirm CI green, merge; also carried in PR #12.
 - [ ] After deploy: `MAX_CONCURRENT_RUNS=4`, `MAX_PARALLEL_CASES=4`, then pilot `SUITE_CASE_CONCURRENCY=2` on a
       scratch org, then 4. Watch `RestartCount` and false-failure rate. Consider `PLAYWRIGHT_VIDEO=on` instead of `all`.
 - [ ] Measure first if possible: `EXTENDED_LOGGING=true` for a few runs (10-insights.json per-case times).
