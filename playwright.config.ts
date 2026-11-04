@@ -8,7 +8,10 @@ import { chromiumLaunchOptions, browserContextOptions } from "./src/browserLaunc
 const VIDEO_SETTING = process.env.PLAYWRIGHT_VIDEO === "all" ? "on" : process.env.PLAYWRIGHT_VIDEO;
 
 export default defineConfig({
-  testDir: "./runs",
+  // executor.ts points this at the ONE spec's own folder (PLAYWRIGHT_TEST_DIR, TD-185). With the
+  // whole of ./runs as testDir, every spec start walked every run folder first, and a folder another
+  // run deleted mid-walk ended the spec before it ran: "ENOENT: no such file or directory, scandir".
+  testDir: process.env.PLAYWRIGHT_TEST_DIR || "./runs",
   // TD-24: this used to be hardcoded and silently ignore PLAYWRIGHT_TIMEOUT, which executor.ts
   // documented setting but nothing ever read. Now genuinely configurable; unset, the default
   // (50000) is unchanged from before this line existed.

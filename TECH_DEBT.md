@@ -6265,3 +6265,19 @@ the prompt text (a Case list view or report the prompt does not lead to can stil
 primary case still follows the request (now the story's request when filled); a user who keeps a typed
 prompt that contradicts the story still gets the planner reading both.
 
+### TD-185. A spec run could end before its first step because another run deleted a folder under runs/ — High / Accidental — **Fixed (2026-11-04)**
+
+**Found** through `tests/suiteParallelBrowser.test.ts` failing one CI run of two on the same commit (PR #19, run
+41873986872: one of three cases `failed` in 6 s, the other two passed). `playwright.config.ts` had `testDir: "./runs"`,
+so every `runSpec` started Playwright with the whole run folder as its test directory, and Playwright walks that
+directory before filtering to the one spec it was given. A folder deleted during the walk ends the process with
+`Error: ENOENT: no such file or directory, scandir 'runs/…'` and no report. Reproduced: with a loop creating and deleting
+folders under runs/, 5 of 12 plain spec runs died that way; with no churn the same suite passed 8/8 idle and 6/6 under
+full CPU load. On the deployment the same race exists between one run's spec start and another run's clean-up or the
+retention job, and the walk itself grows with every run kept.
+
+**Fix.** `runSpec` sets `PLAYWRIGHT_TEST_DIR` to the spec's own folder (`<caseDir>/generated`) and
+`playwright.config.ts` uses it as `testDir` (`./runs` when unset, e.g. a manual `npx playwright test`). Playwright now
+scans one folder holding one file. Tests: `tests/specScanRace.test.ts` runs three real specs while folders under runs/
+are created and deleted (failed 2 of 3 times without the fix, passed 9 of 9 with it); `tests/executorChildEnv.test.ts`
+pins the variable the child receives.

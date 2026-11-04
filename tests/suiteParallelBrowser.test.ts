@@ -44,7 +44,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await new Promise<void>((r) => server.close(() => r())); });
 
-// Playwright only finds specs under ./runs (playwright.config.ts testDir).
+// A short-lived folder under ./runs, like a real run's; runSpec scopes Playwright to each spec's folder (TD-185).
 const runDir = path.join("runs", `0000-suiteparallel-${process.pid}-${Date.now()}`);
 afterAll(() => rmSync(runDir, { recursive: true, force: true }));
 

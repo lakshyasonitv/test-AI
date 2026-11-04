@@ -123,9 +123,9 @@ describe("a none-policy (negative) case never keeps the real credential as a lit
 describe("at run time the reference resolves to the run's password (real Playwright run)", () => {
   // suiteRunner.ts:429 hands EVERY case's process the run's credentials, whatever the case's policy:
   //   let result = await runSpec(spec, caseDir, credentialEnvVars(runCreds));
-  // This runs the spec of a none-policy case through the real executor the same way. Playwright only
-  // finds specs under ./runs (playwright.config.ts testDir), so a short-lived folder is used there,
-  // named to sort after every real run, and removed afterwards.
+  // This runs the spec of a none-policy case through the real executor the same way, in a short-lived
+  // folder under ./runs like a real run's (runSpec scopes Playwright's testDir to it, TD-185), named to
+  // sort after every real run, and removed afterwards.
   const runDir = path.join("runs", `0000-negcreds-${process.pid}-${Date.now()}`);
   afterAll(() => rmSync(runDir, { recursive: true, force: true }));
 
