@@ -37,6 +37,7 @@ import { store } from "./runStore.js";
 import { rememberRunSecrets, scrubRunSecrets } from "./runSecrets.js";
 import { buttonExplorerEnabled, exploreButtons } from "./stages/buttonExplorer.js";
 import { ALL_SCOPES } from "./kb/testStrategy.js";
+import { proStoryPromptEnabled } from "./stages/storyPrompt.js";
 
 export type StageName =
   | "input" | "plan" | "discovery" | "testcases" | "credentials" | "ir"
@@ -329,7 +330,10 @@ export async function runPipeline(
     save("00-input.json", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
     emit("input", "completed", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
 
-    const thePlan = await step("plan", "01-plan.json", () => plan(prompt, resolvedUrls[0], coverage));
+    // PRO_STORY_PROMPT: a Pro run's planner also reads the confirmed story, so a vague prompt
+    // ("test as per the story") still plans the story's flow. Off, or no spec: exactly as before.
+    const planStory = options?.spec && proStoryPromptEnabled() ? options.spec : undefined;
+    const thePlan = await step("plan", "01-plan.json", () => plan(prompt, resolvedUrls[0], coverage, planStory));
     insight("plan", () => ({
       planSteps: thePlan.steps.length, coverage: thePlan.coverage,
       scope: thePlan.testTypeScope, llmCalls: llmBudget.snapshot().byStage.plan?.calls ?? 0,

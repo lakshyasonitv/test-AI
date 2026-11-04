@@ -6204,3 +6204,63 @@ case's captures (`writeRunScreenMap`), so the last case to compile wins, in para
 
 **Remediation.** Pilot at 2, then 4, on a scratch org; keep the setting at 1 for suites whose cases depend on each
 other. A per-case "run alone" marker, or per-case accounts, would let such suites run in parallel safely.
+
+### TD-183. A Pro (document upload) run on Salesforce wrote its cases without the org scan or the screen map — High / Accidental — **Fixed (2026-11-02)**
+
+**Found 2026-11-02** by reading the code while checking whether the uploaded document reaches case
+generation (it does). `proTestCases.ts` began as a copy of `toTestCases` (D-53). Later the standard
+generator gained two Salesforce blocks beside the application model: the screen map (TD-137, with
+`SCREEN_MAP_ENABLED`) and the org model read through the org connection (D-63: objects, required fields,
+picklists, record types, validation rules). The copy never got them. `toLiteModel` strips
+`salesforceOrg` because the generator is expected to add it back as its own block, so on a Pro
+Salesforce run the org scan reached no prompt at all: the model saw the document and the crawled pages
+and had to guess field names, required fields and picklist values. Nothing caught it: the key-parity test
+in `tests/proTestCases.test.ts` only ran a non-Salesforce case, where both blocks are empty.
+
+**Fix:** `proTestCases.ts` builds both blocks with the same calls as `testCases.ts`
+(`screensForCases(loadScreenMap(...))`, `orgModelForCases(appModel.salesforceOrg)`), puts them at the same
+place in the prompt (`Application model: ...${screensBlock}${orgBlock}`) and in the cache key at the same
+position, before the spec (TD-22). Non-Salesforce runs: both are "", prompt and key unchanged. Tests
+(`tests/proTestCases.test.ts`, "Pro on a Salesforce run ..."): the prompt carries both blocks, byte-for-byte
+the standard generator's; key parity with the standard key on a Salesforce run (13 + spec); a different org
+scan changes the key; a non-Salesforce Pro run is unchanged. Three of the four fail with the fix reverted.
+
+**Not changed (deliberately):** the standard generator's Salesforce post-processing is still absent from Pro:
+`restoreControlNames`, `restoreDroppedValues`, `dropOffObjectCases`, `dropUnrequestedChecklistCases`. All four
+decide from the TYPED request only; on a Pro run most of what is asked comes from the document, so they could
+drop good document-driven cases (e.g. a case on an object only the document names). Adding them needs the
+spec's `entities` folded into the request they read — a separate change. The copy itself remains (D-53): a
+future block added to one generator can drift again; the Salesforce parity test now covers these two.
+
+### TD-184. "Give test cases according to the story" planned and explored nothing — the story reached only the case generator — High / Accidental — **Fixed behind `PRO_STORY_PROMPT` (2026-11-03)**
+
+**Found 2026-11-02** from a user's run: a Case/report/list-view story with a vague typed prompt produced
+twelve cases about Setup, search, New User, Chatter and the Home chart, none about the story. Every stage
+before case generation reads the TYPED prompt only: the planner (`plan(prompt, url, coverage)`), site
+discovery (`discoverSiteHybrid(..., prompt, ...)`), the "fromPrompt" primary case (the literal translation
+of the request) and the Salesforce request filters. So "test as per the story" had no flow to plan and no
+target to explore; the case prompt then told the model to skip rules the discovered pages cannot reach,
+and the checklist floor filled the suite.
+
+**Fix (flag `PRO_STORY_PROMPT`, default off, needs `SPEC_INTAKE_ENABLED`):** `src/stages/storyPrompt.ts`.
+(1) `POST /api/spec/confirm` gains the optional field `promptText`, ONE short line built from the
+confirmed spec: up to two objects, the first action, and counts ("Test the uploaded requirements on Case
+and Work Order: <first action> (+5 more, 10 checks)"), at most 160 chars; never open questions or answers.
+A first version put the whole story in the box (about 2,000 chars) and the run screen's title became a
+wall of text; the full story reaches the planner and the case generator directly, so the box only names
+the flow. The browser puts it in an EMPTY prompt box (or replaces its own
+earlier fill); text the user typed is never overwritten, a "Use the requirements as the prompt" button is
+offered instead. Every stage then reads it like a typed prompt. (2) On a Pro run the planner's message
+also carries the story (`storyPlanBlock`), and its cache key gains that block (TD-22), so an emptied or
+vague box still plans the story's flow. Flag off: confirm returns `{ spec }` only, the planner is called
+with three arguments, its message and 8-part key are unchanged. Tests: `tests/proStoryPrompt.test.ts`
+(renderings, planner message/key, the browser functions extracted from app.js), `tests/specRoutes.test.ts`
+(field present only with the flag), `tests/proOrchestrator.test.ts` (planner gets the spec only with flag +
+spec). Every flag-on assertion fails with the wiring reverted (the flag-off ones pin "unchanged"). Checked in a real browser against the real confirm
+route (upload's model answer faked): empty box filled, typed prompt kept + button, flag off unchanged.
+
+**Not changed:** discovery does not yet look for the story's pages on its own — it is steered only through
+the prompt text (a Case list view or report the prompt does not lead to can still go unexplored); the
+primary case still follows the request (now the story's request when filled); a user who keeps a typed
+prompt that contradicts the story still gets the planner reading both.
+

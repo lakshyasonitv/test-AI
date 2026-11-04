@@ -1589,6 +1589,12 @@ an out-of-scope item, and filtering on the case's wording would be the regex-ove
 check CLAUDE.md warns against (TD-01). A structural check needs a structural link first — for
 example cases citing the rule they prove — which is Pro's own logic to add later.
 
+**Salesforce blocks (2026-11-02, TD-183).** The copy had missed the two Salesforce blocks the standard
+generator gained after Pro was written (screen map, org model). Pro now builds them with the same calls
+and keys on them at the same position; `tests/proTestCases.test.ts` pins that parity on a Salesforce run.
+The standard path's Salesforce post-filters are still not applied to Pro, on purpose — they read only the
+typed request, and Pro's request is mostly the document (see TD-183).
+
 **Rejected.** An optional field on `toTestCases` (one edit, but every future Pro change would reopen
 the standard path's file). A JSON upload carrying base64 (the global `express.json()` has a 100 KB
 limit; the route uses `express.raw` on itself only). Trusting the browser's MIME type (browsers
@@ -2303,3 +2309,31 @@ before the primary runs. *Splitting a request into several runs* — each run pl
 cases again, more model spend and a review screen per run.
 
 **Known limits.** TECH_DEBT.md TD-180.
+
+## D-74. A Pro story becomes the run's request — filled into the prompt box, and read by the planner
+
+**Decision.** Behind `PRO_STORY_PROMPT` (default off), a Pro story reaches the stages that read the request,
+not only the case generator (TD-184). Two parts: the confirmed spec is rendered into a plain request that
+the browser puts in the prompt box, and on a Pro run the planner also reads the story.
+
+**Why the prompt box, not more server plumbing.** The typed prompt feeds the planner, discovery, the
+primary case and the Salesforce filters. Filling the box upgrades all of them at once, with no change to
+any of those stages, and the user SEES the request the run will use and can edit it before paying for it.
+The same mechanism already exists for Jira (D-71).
+
+**Why the server builds the text.** One deterministic function from the confirmed spec's structured
+fields (no model call, free, testable in TypeScript), returned as an OPTIONAL field of the existing confirm
+route (platform rule 1). Flag off, the body is exactly `{ spec }`, so the browser does nothing.
+
+**Never overwrite the user's words.** An empty box, or one still holding exactly our own earlier fill, is
+filled; anything the user typed stays and a button offers the replacement. Silently replacing a prompt
+someone wrote would be the tool deciding what they meant to test.
+
+**Why the planner too.** The box can be emptied or ignored ("test as per the story"). The planner reading
+the story is the server-side safety net. It keys on the block (TD-22); without a story its message and key
+are byte-identical.
+
+**Rejected.** Replacing the typed prompt server-side when it "looks vague" — that is a regex over the
+user's prose deciding intent, and an invisible one. Passing the spec into discovery directly — a larger
+change to a stage with its own caches and shared-discovery keys (D-72); left for a later step.
+

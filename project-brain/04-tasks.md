@@ -2,6 +2,20 @@
 
 *Last updated: 2026-11-03.*
 
+## Pro story -> request (PRO_STORY_PROMPT, TD-184, D-74)
+
+- [x] Committed + pushed `b190506` (2026-11-03, user approved). No PR yet.
+- [ ] Turn on in Azure after merge+deploy: `PRO_STORY_PROMPT=true` (needs `SPEC_INTAKE_ENABLED=true`).
+- [ ] One real Pro run with an empty prompt box; check 01-plan.json follows the story — ask first (costs AI).
+
+## Pro on Salesforce (TD-183, branch `pro/salesforce-org-context`)
+
+- [x] main merged in, renumbered TD-183/TD-184/D-74, PR into main opened (2026-11-04). Merge = deploy: user's click.
+- [ ] One real Pro run on the org to confirm (costs one Azure case-generation call) — ask first.
+- [ ] Next, if wanted: Pro post-filters with spec.entities; backoff skips a 401/403 key; Azure
+      distillation path; Pro rule-coverage check.
+- [ ] Azure: replace the invalid second key in the `gemini-keys` secret (user, config only).
+
 ## Parallel suite cases (D-73)
 
 - [x] Push `vaibhav/intelligent-edison-l6061z` and open PR #12 into main (carries `cleanup/production-ready`'s 6 commits).
