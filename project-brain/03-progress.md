@@ -1,8 +1,9 @@
 # Progress — where we are
 
-*Last updated: 2026-11-04, afternoon. Branch plan (user): main is the clean working branch; old material moves to a
-new `archive` branch + tag; `cleanup/production-ready` is retired once main holds its last commit (`647d41a`, deep
-discovery, D-75). Step 1 PR in progress — see `journal/2026-11-04.md` and `04-tasks.md`.*
+*Last updated: 2026-11-04, evening. **main is the only working branch.** Old documents live on the `archive` branch
+(read with `git show origin/archive:<path>`); `cleanup/production-ready` is retired and fully contained in main.
+PRs #16 (deep discovery D-75 + its docs) and #17 (old docs off main) merged; dead-code chain removed (orgForRun,
+fetchRunOrgIds). Open: the `archive-2026-11-04` tag (user). See `journal/2026-11-04.md`.*
 
 *Last updated: 2026-11-04. main (PR #12, #13: parallel suite cases D-73 / TD-180, the discovery fixture fix,
 the rest of cleanup) merged INTO `pro/salesforce-org-context`; this branch's records renumbered to TD-183,

@@ -4,12 +4,12 @@
 
 ## Branch clean-up (user, 2026-11-04)
 
-- [ ] PR: main gets `cleanup/production-ready`'s last commit (`647d41a`, D-75 docs added). Merge when green.
-- [ ] Create branch `archive` + tag `archive-2026-11-04` from main after that merge.
-- [ ] PR removing from main: docs/archive/, docs/guides/team-guide/, docs/research/, docs/handoff/,
-      docs/guides/LLM_CONTEXT_BRIEFING.md, app.yaml; references now `archive:<path>` (prepared 2026-11-04).
-- [ ] Dead-code scan on main; show the list to the user BEFORE deleting anything.
-- [ ] Retire `cleanup/production-ready` (not deleted): main must contain its latest commit.
+- [x] PR #16: main got `cleanup/production-ready`'s last commit (`647d41a`, D-75 docs added). Merged `6a57d1d`.
+- [x] Branch `archive` created at `6a57d1d`.
+- [ ] Tag `archive-2026-11-04` on `origin/archive` — USER (tag pushes are refused from the cloud container).
+- [x] PR #17 merged (`c41ccdf`): old documents off main; references read `archive:<path>`.
+- [x] Dead-code scan run; one dead chain (orgForRun + fetchRunOrgIds) removed with the user's OK (PR after #17).
+- [x] `cleanup/production-ready` retired (not deleted); main contains its latest commit (`647d41a`). Do not work on it.
 
 ## Pro story -> request (PRO_STORY_PROMPT, TD-184, D-74)
 
