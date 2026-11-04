@@ -478,6 +478,10 @@ async function executePlaywright(
           ...secretEnv,
           PLAYWRIGHT_JSON_OUTPUT_NAME: resultsJson,
           PLAYWRIGHT_HEADLESS: 'true',
+          // Read by playwright.config.ts as testDir (TD-185): Playwright scans only this spec's own
+          // folder, not every run under runs/, so another run deleting its folder mid-scan cannot
+          // end this one with "ENOENT ... scandir" before a single step runs.
+          PLAYWRIGHT_TEST_DIR: path.resolve(path.dirname(specPath)),
           // Read by playwright.config.ts (since TD-24). Set per run so a long case gets a budget
           // proportional to its step count instead of every case sharing one 50s ceiling. An
           // explicitly-set PLAYWRIGHT_TIMEOUT passes straight through — see perTestTimeoutMs.
