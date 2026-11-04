@@ -1,5 +1,10 @@
 # Progress — where we are
 
+*Last updated: 2026-11-04, end of day. **Everything is merged into main** (PRs #16-#20); main is the only
+working branch. #19: docs say the `archive` branch is protected, no tag. #20: TD-185 fixed — Playwright scans only
+the spec's own folder (`PLAYWRIGHT_TEST_DIR`), so a run folder deleted elsewhere can no longer end a spec before its
+first step. Baseline: vitest 2915 passed / 1 failed (safeClickBrowser, needs network) / 23 skipped, 223 files; tsc clean. Open on the user's side: protect `archive`; the Azure settings in `04-tasks.md`.*
+
 *Last updated: 2026-11-04, evening. **main is the only working branch.** Old documents live on the `archive` branch
 (read with `git show origin/archive:<path>`); `cleanup/production-ready` is retired and fully contained in main.
 PRs #16 (deep discovery D-75 + its docs) and #17 (old docs off main) merged; dead-code chain removed (orgForRun,
@@ -108,6 +113,9 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
 - 2026-10-22, same cloud container with a local link `chromium_headless_shell-1148 -> -1194` (container
   only, not in the repo) so the browser tests run: **2368 passed, 2 failed (the same two below), 23
   skipped, 176 files** with D-67; with D-68: 2377 passed, same 2 failed, 177 files; with D-69: 2390 passed, same 2 failed; with D-70: 2412 passed, same 2 failed; with D-71 (2026-10-26): 2447 passed, same 2 failed, 181 files.
+- 2026-11-04, main + TD-185 (PR #20), browser link now `-1148 -> -1243`: **2915 passed, 1 failed, 23 skipped,
+  223 files**; tsc clean. The one failure is `safeClickBrowser` (needs `example.com`; passes in CI).
+  `booleanEnvFlags` and `discoveryStrategy` were fixed in #13.
 - The 2 failures pre-date all of this: `booleanEnvFlags` (stale RESERVED list) and
   `safeClickBrowser` (needs `example.com`, blocked in the cloud container; passes in CI).
 - CI also fails `discoveryStrategy` "shadowAndFrame" on `main` (Chromium-version dependent

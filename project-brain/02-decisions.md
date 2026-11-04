@@ -110,3 +110,10 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156; 2026-10-28: ou
 - The tag `archive-2026-11-04` is not created (tag pushes are refused from the cloud container, and the user judged
   it unnecessary). The `archive` branch is made read-only in GitHub's branch protection instead, which covers the
   real risk (someone pushing to it by mistake). Docs no longer mention a tag.
+
+## 2026-11-04 (evening) — an intermittent CI failure gets a root cause, not reruns
+- `suiteParallelBrowser` failed once and passed on the rerun of the same commit (PR #19). It was not left as a flake:
+  the cause (Playwright scanning all of `runs/` while another process deletes a folder, TD-185) also hits production
+  runs, and D-73's parallel cases make it more likely. Fixed structurally (scan only the spec's own folder), proved
+  with a test that reproduces the race (fails without the fix), and shipped as its own PR (#20), not folded into a
+  docs PR. One rerun is allowed to confirm a suspected flake; the second step is always finding why.

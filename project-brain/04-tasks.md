@@ -1,6 +1,6 @@
 # Open tasks
 
-*Last updated: 2026-11-04.*
+*Last updated: 2026-11-04, end of day.*
 
 ## Branch clean-up (user, 2026-11-04)
 
@@ -11,16 +11,18 @@
 - [x] PR #17 merged (`c41ccdf`): old documents off main; references read `archive:<path>`.
 - [x] Dead-code scan run; one dead chain (orgForRun + fetchRunOrgIds) removed with the user's OK (PR after #17).
 - [x] `cleanup/production-ready` retired (not deleted); main contains its latest commit (`647d41a`). Do not work on it.
+- [x] PR #18 merged (`16cae6c`): dead chain removed. PR #19 merged (`aafa6f4`): docs say "protected branch", no tag.
+- [x] TD-185 (spec ended by a run folder deleted mid-scan) fixed in PR #20 (`10381ba`), with a race test.
 
 ## Pro story -> request (PRO_STORY_PROMPT, TD-184, D-74)
 
-- [x] Committed + pushed `b190506` (2026-11-03, user approved). No PR yet.
+- [x] Committed + pushed `b190506` (2026-11-03, user approved). In main via PR #15.
 - [ ] Turn on in Azure after merge+deploy: `PRO_STORY_PROMPT=true` (needs `SPEC_INTAKE_ENABLED=true`).
 - [ ] One real Pro run with an empty prompt box; check 01-plan.json follows the story — ask first (costs AI).
 
 ## Pro on Salesforce (TD-183, branch `pro/salesforce-org-context`)
 
-- [x] main merged in, renumbered TD-183/TD-184/D-74, PR into main opened (2026-11-04). Merge = deploy: user's click.
+- [x] main merged in, renumbered TD-183/TD-184/D-74; merged into main as PR #15 (2026-11-04).
 - [ ] One real Pro run on the org to confirm (costs one Azure case-generation call) — ask first.
 - [ ] Next, if wanted: Pro post-filters with spec.entities; backoff skips a 401/403 key; Azure
       distillation path; Pro rule-coverage check.
@@ -46,9 +48,9 @@
 ## Repo clean-up (2026-11-02, branch `cleanup/production-ready`)
 
 - [x] Commit (one per step) and push the branch — done (6 commits on `8bcc3e4`, verified 2026-11-03).
-- [ ] Open a PR — ask first.
-- [ ] After merge: nothing to change on Azure (no setting was renamed; GEMINI_EMBED_MODEL was never read).
-- [ ] CLAUDE.md is 216 lines against its own "under 200" rule.
+- [x] In main: its 6 commits via PR #12, its last commit (`647d41a`) via PR #16. Branch retired 2026-11-04.
+- [x] After merge: nothing to change on Azure (no setting was renamed; GEMINI_EMBED_MODEL was never read).
+- [ ] CLAUDE.md is 208 lines against its own "under 200" rule (216 before PR #17).
 
 ## Shared discovery per project (D-72) + the main merge
 
