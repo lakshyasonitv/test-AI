@@ -6,7 +6,8 @@
 
 - [x] PR #16: main got `cleanup/production-ready`'s last commit (`647d41a`, D-75 docs added). Merged `6a57d1d`.
 - [x] Branch `archive` created at `6a57d1d`.
-- [ ] Tag `archive-2026-11-04` on `origin/archive` — USER (tag pushes are refused from the cloud container).
+- [x] ~~Tag `archive-2026-11-04`~~ — dropped (user, 2026-11-04): the `archive` branch is protected in GitHub instead.
+- [ ] USER: protect `archive` (Settings → Branches → classic rule `archive`, "Lock branch"). Confirm once done.
 - [x] PR #17 merged (`c41ccdf`): old documents off main; references read `archive:<path>`.
 - [x] Dead-code scan run; one dead chain (orgForRun + fetchRunOrgIds) removed with the user's OK (PR after #17).
 - [x] `cleanup/production-ready` retired (not deleted); main contains its latest commit (`647d41a`). Do not work on it.
