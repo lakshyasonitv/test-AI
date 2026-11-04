@@ -305,7 +305,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `caseSelectionGate.ts` | Gemini (via testCases) | Optional human-review loop over generated case batches, incl. reactive-case rounds. Its generator is INJECTED (`generate`, default `toTestCases`), so a Pro run's "not satisfied" rounds regenerate with the spec too |
 | `caseGeneration.ts` | No | The router — the only place that chooses a generator. `generateCases`: a spec means `proTestCases`, none means `toTestCases` with exactly its old arguments. `generatorFor(spec)` is what the gate is handed. Never catches a Pro failure (no fallback) |
 | `proTestCases.ts` | Gemini | Pro's own case generator. A copy of `toTestCases`' prompt, cache key and retry loop, plus the confirmed spec (rules, criteria, the user's answers, out-of-scope). Imports — never copies — the TestCase schema, `dropCompoundLoginCases` and `NoTestCasesError`. Key = the same eleven dimensions in the same order (plus the screens and org blocks on a Salesforce run, as in `toTestCases`, TD-183) + the spec, pinned by `tests/proTestCases.test.ts`. Failures are prefixed "Pro generation failed — run again without Pro." |
-| `suiteRunner.ts` | No | Runs every case in its own browser context, per-case artifacts. `buildSuiteSummary` also reads each failed case's own `05-result.json` off disk and surfaces the failing step and error onto the case (optional additive fields, TD-80) |
+| `suiteRunner.ts` | No | Runs every case in its own browser context, per-case artifacts. Up to `SUITE_CASE_CONCURRENCY` cases of a run at once (default 1), each holding one of the process-wide `MAX_PARALLEL_CASES` slots; cases start in index order and results stay in index order (D-73). `buildSuiteSummary` also reads each failed case's own `05-result.json` off disk and surfaces the failing step and error onto the case (optional additive fields, TD-80) |
 | `executor.ts` | No | Runs spec, captures artifacts, redacts secrets from served output. `extractFailureDetail` turns Playwright's own JSON report into the failing step number/title and the error line — the deterministic failure reason a replay gets with no model call (TD-80) |
 | `discovery.ts` | Gemini (vision) | Playwright + ARIA snapshot + screenshot -> AppModel (fallback path) |
 | `liveExtend.ts` | No | Policy-aware browser replay: new-page discovery + terminal-assertion grounding. Its `select` step calls `chooseLive` rather than a bare `selectOption`, sharing option matching and waiting with the generated spec (TD-79). Credential fills resolve their kind from the step's `${env:...}` VALUE, the same way the compiled spec does (TD-84), and a walk that ends on the page it typed a credential into throws instead of snapshotting the login form. `refreshPageModelAt` additionally returns the landed URL, for TD-86's scoped grounding |
@@ -357,7 +357,7 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 | `gemini.ts` | Google Gemini client (REST API, key-pool rotation, backoff); returns `{content, usage}` and records ambient per-stage spend via `llmBudget.ts`. Takes an optional image (`imageBase64`) or document (`fileBase64` + `fileMime`, Pro's PDF) as an `inline_data` part — neither is counted by the `LLM_MAX_PROMPT_CHARS` guard |
 | `claude.ts` | Anthropic Claude provider (D-66) via `@anthropic-ai/sdk`, chosen by `LLM_PROVIDER[_LITE]=claude`. Same `{content, usage}` contract as `azureOpenAI.ts`; SDK retries off, `callWithPool` keeps rotation/backoff/timeout; never sends `temperature`; refusal / `max_tokens` thrown without retry; image and PDF as content blocks. Model/effort resolved in `llmContext.ts` (`resolvedClaudeModel`, `resolvedClaudeEffort`); `client.ts` `modelFor()` names the model for cache keys and errors |
 | `keyPool.ts` | Round-robin API key pool with cooldown tracking; `poolFromEnv` accepts a singular `_KEY` var as a fallback when the plural `_KEYS` var isn't set |
-| `llmBudget.ts` | Per-run hard cap on LLM calls across every stage (plan, discovery, testcases, ir, failure-analysis, heal), not just IR; usage recorded to `08-llm-usage.json`, broken down per stage. See `DECISIONS.md` D-21 |
+| `llmBudget.ts` | Per-run hard cap on LLM calls across every stage (plan, discovery, testcases, ir, failure-analysis, heal), not just IR; usage recorded to `08-llm-usage.json`, broken down per stage. See `DECISIONS.md` D-21. `withCaseUsage` counts one suite case's own calls, so parallel cases (D-73) do not count each other's |
 | `backoff.ts` | Exponential backoff, per-attempt timeout, rate-limit detection + key rotation |
 | `json.ts` | Strip markdown fences and parse JSON from LLM output |
 
@@ -758,4 +758,6 @@ never by a second loop. See `DECISIONS.md` D-53.
 
 `concurrency.ts` implements an in-process semaphore that caps concurrent pipeline runs (default:
 3, configurable via `MAX_CONCURRENT_RUNS`). Each run launches a Chromium instance. Overflow
-requests queue and wait.
+requests queue and wait. A second instance in `suiteRunner.ts` caps suite cases across all runs
+(`MAX_PARALLEL_CASES`) when a run executes several of its cases at once (`SUITE_CASE_CONCURRENCY`,
+D-73).

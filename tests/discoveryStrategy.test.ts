@@ -86,8 +86,30 @@ describe("the discovery cache key carries the strategy", () => {
   });
 });
 
+/**
+ * `cleanedHtml` is `page.content()`: the BROWSER's serialization, not ours. Chromium changed it: newer
+ * builds escape `<` and `>` inside attribute values (`srcdoc="&lt;button&gt;…"`), while Playwright
+ * 1.49's own Chromium (CI's `npm ci`, and the production image `playwright:v1.49.0-noble`) writes them
+ * raw. The fixture was captured on a newer one, so shadowAndFrame failed in CI with the extraction code
+ * unchanged. Folding both spellings to one keeps this guard about the code, not the browser version.
+ */
+const serializerNeutral = (model: unknown): unknown => JSON.parse(JSON.stringify(model), (key, value) =>
+  key === "cleanedHtml" && typeof value === "string" ? value.replace(/&lt;/g, "<").replace(/&gt;/g, ">") : value);
+
 describe("FLAG OFF: byte-identical to the code before the switch existed", () => {
   const fixture = JSON.parse(readFileSync(new URL("./fixtures/discoveryFlagOff/pre-phase5.json", import.meta.url), "utf8"));
+
+  it("both Chromium serializations of an attribute holding markup compare equal, and only those", () => {
+    const captured = fixture.shadowAndFrame;
+    // What CI's Chromium wrote for the same page (test run 41643662552, 2026-11-03).
+    const ci = JSON.parse(JSON.stringify(captured).replace(
+      "&lt;button&gt;InFrame&lt;/button&gt;", "<button>InFrame</button>"));
+    expect(ci).not.toEqual(captured);
+    expect(serializerNeutral(ci)).toEqual(serializerNeutral(captured));
+    // A real difference in what discovery found still fails.
+    const changed = JSON.parse(JSON.stringify(captured).replace("InFrame", "Other"));
+    expect(serializerNeutral(changed)).not.toEqual(serializerNeutral(captured));
+  });
 
   it("the fixture covers every page here", () => {
     expect(Object.keys(fixture).sort()).toEqual(Object.keys(PAGES).sort());
@@ -95,12 +117,12 @@ describe("FLAG OFF: byte-identical to the code before the switch existed", () =>
 
   it.each(Object.keys(PAGES))("%s, flag unset", async (name) => {
     delete process.env.DISCOVERY_LIVE_DOM;
-    expect(JSON.parse(JSON.stringify(await extract(name)))).toEqual(fixture[name]);
+    expect(serializerNeutral(await extract(name))).toEqual(serializerNeutral(fixture[name]));
   });
 
   it.each(Object.keys(PAGES))("%s, flag explicitly false", async (name) => {
     process.env.DISCOVERY_LIVE_DOM = "false";
-    expect(JSON.parse(JSON.stringify(await extract(name)))).toEqual(fixture[name]);
+    expect(serializerNeutral(await extract(name))).toEqual(serializerNeutral(fixture[name]));
   });
 });
 

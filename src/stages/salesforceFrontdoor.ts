@@ -136,12 +136,26 @@ export function withoutFrontdoorSecret(message: string, url?: string): string {
 }
 
 /**
+ * What Salesforce's login page shows: a password box, or (an identifier-first login) a Username box
+ * and "Log In to Sandbox" with NO password box, which is what a refused sid showed in run
+ * 2026-11-02T17-24-43-232Z-d9a20fcf. The generated spec inlines the same literal (it cannot import).
+ */
+/** Salesforce's duplicate-rule warning and its close button's accessible name, as a run on the scratch
+ *  org showed them (run 2026-11-03T05-07-28-369Z-388aa153): closed before each step by the generated
+ *  spec (generator.ts sfDismissDuplicates) and the grounding replay (liveExtend.ts). */
+export const SF_DUPLICATE_WARNING = "Similar Records Exist";
+export const SF_DUPLICATE_CLOSE = "Close error dialog";
+
+export const SF_LOGIN_FORM ='input[type="password"], input#username, input[name="username"], #Login';
+
+/**
  * Sign `page` in through the org connection and wait until Salesforce has left frontdoor.
  * Returns where it landed, origin + path only (a query can carry a session id).
  *
- * Throws a sentence that names the org host and never the URL when it does not sign in. "Did not
- * sign in" is decided by structure: a visible password box after frontdoor means Salesforce showed
- * its login form instead of the app, i.e. the token was refused (expired or revoked).
+ * Throws a sentence that never names the URL when it does not sign in. "Did not sign in" is decided
+ * by structure: after frontdoor, a visible login form (SF_LOGIN_FORM) or Salesforce's login redirect
+ * (`?ec=...&startURL=...`) means it showed its login page instead of the app, i.e. the token was
+ * refused (expired or revoked).
  */
 export async function openFrontdoor(page: Page, session: FrontdoorSession | null = currentFrontdoor()): Promise<string> {
   if (!session) {
@@ -154,18 +168,19 @@ export async function openFrontdoor(page: Page, session: FrontdoorSession | null
     throw new Error(`Opening ${session.instanceHost} through its org connection failed: ${withoutFrontdoorSecret(err?.message ?? String(err), url).split("\n")[0]}`);
   }
   // frontdoor.jsp answers with a redirect chain into Lightning. Wait for whichever comes first: it
-  // left frontdoor, or a password box appeared (a refused token shows the login form, possibly
+  // left frontdoor, or a login form appeared (a refused token shows the login form, possibly
   // without leaving the frontdoor URL — waiting for the URL alone then hangs the full timeout).
-  const passwordBox = page.locator('input[type="password"]').first();
+  const loginForm = page.locator(SF_LOGIN_FORM).first();
   await Promise.race([
     page.waitForURL((u) => !/frontdoor\.jsp/i.test(u.pathname), { timeout: 60_000 }),
-    passwordBox.waitFor({ state: "visible", timeout: 60_000 }),
+    loginForm.waitFor({ state: "visible", timeout: 60_000 }),
   ]).catch(() => { });
   await page.waitForLoadState("domcontentloaded").catch(() => { });
-  const loginShown = await passwordBox.isVisible().catch(() => false);
-  if (loginShown) {
-    throw new Error(`The org connection for ${session.instanceHost} did not sign in: Salesforce showed its login form. The access may have expired or been revoked; connect the org again.`);
-  }
   const landed = new URL(page.url());
+  const loginShown = (landed.searchParams.has("ec") && landed.searchParams.has("startURL"))
+    || await loginForm.isVisible().catch(() => false);
+  if (loginShown) {
+    throw new Error("The Salesforce org connection did not sign in: Salesforce showed its login page. The connection has expired or was revoked (another Testbench server refreshing the same connection does this). Click Connect org and run again.");
+  }
   return landed.origin + landed.pathname;
 }

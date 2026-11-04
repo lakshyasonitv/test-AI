@@ -272,6 +272,8 @@ with its default and its cost/reliability tradeoff; this table is the short vers
 | `MAX_CASES_PER_RUN` | No | Hard ceiling on cases turned into runnable scripts (default: 5) |
 | `MAX_LOGIN_CASES` | No | Max cases in a suite that may target the login page itself, on an auth-aware run (default: 1) |
 | `MAX_CONCURRENT_RUNS` | No | Max parallel pipeline runs (default: 3) |
+| `SUITE_CASE_CONCURRENCY` | No | Suite cases of one run built and executed at once (default: 1, one after another). The primary case still runs first. Every case is a Chromium, and cases of one run share one login (`DECISIONS.md` D-73, `TECH_DEBT.md` TD-180) |
+| `MAX_PARALLEL_CASES` | No | Suite cases running at once across every run on the server (default: `MAX_CONCURRENT_RUNS`) |
 | `CREDENTIAL_WAIT_MS` | No | How long a paused run waits for credentials before continuing without them (default: 300000 / 5 min) |
 | `ENABLE_CASE_SELECTION_GATE` | No | Set `true` to pause a run after generating each batch of cases for review (default: off) |
 | `MAX_CASE_REGEN_ATTEMPTS` | No | "Not satisfied" regeneration rounds allowed (default: 3) |
@@ -420,7 +422,9 @@ crashing. Locally this var is unset, so bare-metal and `docker compose up` are b
   which fails with `browserType.launch: Executable doesn't exist`.
 - **Size `MAX_CONCURRENT_RUNS` to the machine** — every run launches its own Chromium. The default
   is 3; use 1 on a small instance (≤512 MB RAM). Roughly 1 vCPU and 2 GB per concurrent run is a
-  safe starting point; watch memory and lower it if the container restarts.
+  safe starting point; watch memory and lower it if the container restarts. With
+  `SUITE_CASE_CONCURRENCY` above 1, size `MAX_PARALLEL_CASES` the same way: it counts suite cases,
+  each one a Chromium, across all runs.
 - **Single replica.** The credential prompt and case-selection gate hold promises in process
   memory; a reschedule drops the promise and wastes the full timeout. Scaling horizontally
   requires an external scheduling layer.

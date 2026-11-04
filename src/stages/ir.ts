@@ -2371,7 +2371,12 @@ Example — handling duplicate selectors with nth:
     // Session 102: values fixed from the org model (TEST_DATA_ENABLED); an IR cached without it keeps the old values.
     // 2: a lookup keeps the name of the record this case created (Phase A).
     // 3: an "each and every field" request keeps every field the case fills (asksForEveryField).
-    ...(testDataEnabled() ? ["test-data:3"] : []),
+    // 4: a dependent value that is no option is replaced; a no-value step is not kept by "every field".
+    // 5: an invented picklist value ("Region A") becomes a real option (inventedOption).
+    // 6: websites and street/city made unique per run; "Phone" matches the org label "Account Phone".
+    // 7: an "every field" step whose value is "None" / "N/A" is dropped like an empty one.
+    // 8: a select the form names in its own words is matched to its lookup (lookupNamedFor).
+    ...(testDataEnabled() ? ["test-data:8"] : []),
     // D-63: an IR compiled on a frontdoor run starts with the env-referenced login; it must never be
     // served to a password run on the same org, nor the reverse. Absent on every other run.
     ...(currentFrontdoor() ? [`sf-frontdoor:${currentFrontdoor()!.instanceHost}`] : []),

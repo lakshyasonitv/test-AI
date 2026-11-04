@@ -1,5 +1,17 @@
 # Progress — where we are
 
+*Last updated: 2026-11-04. main (PR #12, #13: parallel suite cases D-73 / TD-180, the discovery fixture fix,
+the rest of cleanup) merged INTO `pro/salesforce-org-context`; this branch's records renumbered to TD-183,
+TD-184, D-74 to avoid main's TD-180 / D-73. PR into main opened from this branch. See journal/2026-11-04.md.*
+
+*Last updated: 2026-11-03. Parallel suite cases (D-73, `SUITE_CASE_CONCURRENCY`, default 1) built on
+`vaibhav/intelligent-edison-l6061z`, based on `cleanup/production-ready` (see `journal/2026-11-03.md`).
+Corrections verified that day: `cleanup/production-ready` IS committed and pushed (6 commits on main
+`8bcc3e4`, no PR). D-72 shared discovery, Jira Phase 1, the Claude provider and the Salesforce login work are
+all in main (PR #11, merged 2026-10-28). Live Azure: image `8bcc3e4`, 4 vCPU / 8 GiB, MAX_CONCURRENT_RUNS=1
+(set back from 4 on 2026-10-28 14:50, reason unrecorded), PROJECT_DISCOVERY_SHARING on, and `/app/runs` NOT
+mounted (artifacts and caches lost on every scale-to-zero). The paragraphs below are older history.*
+
 *Last updated: 2026-11-03. Branch `pro/salesforce-org-context`: TD-183 committed + pushed (`fa5a2b9`);
 PRO_STORY_PROMPT (TD-184, D-74) committed + pushed (`b190506`) with the user's OK; no PR.
 Baseline: vitest 2841 passed / 3 failed (browser, pre-existing), 212 files. See journal/2026-11-03.md.*

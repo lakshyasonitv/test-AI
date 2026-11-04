@@ -31,7 +31,7 @@ import {
 import { generateSpec } from "./stages/generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked, extractFailureDetail } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
-import { attemptHeal, isHealable, selfHealDefault } from "./stages/heal.js";
+import { attemptHeal, isHealable, isValueHealable, selfHealDefault } from "./stages/heal.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 import { rememberRunSecrets, scrubRunSecrets } from "./runSecrets.js";
@@ -580,13 +580,14 @@ export async function runPipeline(
       // shared with suiteRunner.ts's non-primary cases, see that module's own doc comment.
       // isHealable is the same gate attemptHeal applies internally — checked here too only so
       // "heal started" isn't emitted for a category that was never going to attempt anything.
-      if (selfHealEnabled && isHealable(diagnosis, ir)) {
+      const failure = extractFailureDetail(result.raw);
+      if (selfHealEnabled && (isHealable(diagnosis, ir) || isValueHealable(failure))) {
         try {
           emit("heal", "started");
           const healedOutcome = await attemptHeal({
             testCase: primary, ir, appModel, diagnosis,
             sourcePrompt: prompt, entryUrl: resolvedUrls[0], llmBudget, runCreds,
-            outDir: runDir,
+            outDir: runDir, failure,
           });
           if (healedOutcome) {
             finalResult = {
