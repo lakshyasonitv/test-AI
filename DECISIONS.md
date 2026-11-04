@@ -2337,3 +2337,26 @@ are byte-identical.
 user's prose deciding intent, and an invisible one. Passing the spec into discovery directly — a larger
 change to a stage with its own caches and shared-discovery keys (D-72); left for a later step.
 
+## D-75. Salesforce deep discovery: read record types, Dynamic Forms rules and calculated fields for the request's objects
+
+**Context.** The org model (fields, picklists, validation rules) could not support cases about behaviour the org
+sets up beyond them: a record type that shows a different form and different picklist values, a field Dynamic Forms
+shows only under a condition ("SLA shows only when Customer Priority = High"), or a roll-up whose value has to be
+checked. Cases about these were written blind. Built and run live on the scratch org on 2026-11-03 (`647d41a`, on
+`cleanup/production-ready`; brought into main on 2026-11-04).
+
+**Decision.** Behind `SALESFORCE_DEEP_DISCOVERY_ENABLED` (default off), `salesforceOrgDeep.ts` reads, for the objects
+the request names (`objectsNamedIn`, matched against the org's own object labels, up to 3 objects and 4 record pages):
+- each record type's create layout and picklist values, where they differ from the default record type (UI API);
+- Dynamic Forms visibility rules from the object's Lightning record page (FlexiPage metadata);
+- what a calculated field computes: a formula, or a roll-up's operation and summed field (Tooling API).
+The facts are added to the org model and given to the case writer; a check on a Dynamic Forms field uses the field's
+exact label and opens the record's Details tab first. Read-only GETs, best effort: a call that fails leaves that fact
+out. The org model is read fresh on every run, so the facts are never served from the saved discovery.
+
+**Live passes recorded with the commit.** Account / Opportunity / Contact "every field", Lead create, the SLA Dynamic
+Forms case and the TB Total Opportunity Amount roll-up, on the scratch org.
+
+**Not covered.** Objects the request does not name by their org label. More than 3 objects per run (a scratch org's
+API allowance is small). Record types, rules and formulas are described to the case writer; nothing checks
+structurally that a case exercised the rule it was told about.

@@ -96,3 +96,12 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156; 2026-10-28: ou
 - Built behind `SUITE_CASE_CONCURRENCY` (default 1) with a process-wide `MAX_PARALLEL_CASES` cap, so four
   runs at once can never start 16 browsers. The primary case stays first. Rationale: DECISIONS.md D-73.
 - New work is based on `cleanup/production-ready`, not main, at the user's request.
+
+## 2026-11-04 — main is the clean working branch; old material lives on `archive` (user)
+- `main` stays the branch everyone works on, and stays clean: no dead code, no archived or unneeded documents.
+- Old documents move to a new `archive` branch plus a tag (`archive-2026-11-04`), not to `cleanup/production-ready`
+  (the user's pick over reusing that name, which says "production-ready").
+- Leaving main: docs/archive/, docs/guides/team-guide/, docs/research/, docs/handoff/,
+  docs/guides/LLM_CONTEXT_BRIEFING.md, app.yaml.
+- `cleanup/production-ready` is retired, not deleted, and only after main contains its latest commit.
+- Dead code: scan main and show the user the list before deleting anything.

@@ -1318,7 +1318,7 @@ async function discoverSiteHybridInner(
   let earlyOrgModel: SalesforceOrgModel | null = null;
   let orgKey: string | null = null;
   if (frontdoor?.apiGet && orgDiscoveryCacheEnabled()) {
-    earlyOrgModel = await readSalesforceOrgModel(frontdoor).catch(() => null);
+    earlyOrgModel = await readSalesforceOrgModel(frontdoor, request).catch(() => null);
     const fingerprint = earlyOrgModel && await orgSetupFingerprint(earlyOrgModel, frontdoor.apiGet).catch(() => null);
     if (earlyOrgModel && fingerprint) {
       orgKey = orgCacheKey(frontdoor.instanceHost, url, fingerprint, earlyOrgModel, request);
@@ -1576,7 +1576,7 @@ async function discoverSiteHybridInner(
       entryUrlForCrawl = entrySnapshot.finalUrl;
       // What the org says about itself (objects, fields, required, picklists, list views, validation
       // rules), read through its metadata APIs with the same connection. Best effort, read-only.
-      orgModel = earlyOrgModel ?? await readSalesforceOrgModel(frontdoor).catch(() => null);
+      orgModel = earlyOrgModel ?? await readSalesforceOrgModel(frontdoor, request).catch(() => null);
       console.log(orgModel
         ? `[hybrid] org model: ${orgModel.objects.length} object(s) from the app${orgModel.app ? ` "${orgModel.app}"` : ""}, `
           + `${orgModel.objects.reduce((n, o) => n + (o.validationRules?.length ?? 0), 0)} validation rule(s), `

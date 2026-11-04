@@ -147,6 +147,31 @@ describe("lookupLive", () => {
     }
   }, 60_000);
 
+  // Run 2026-11-03T08-05-18-274Z-12e7be67: the Account this test had just created was not in search
+  // yet, so typing its name listed nothing; the empty input's Recent Items had it.
+  it("finds a record the search does not know yet in the Recent Items list", async () => {
+    const RECENT = `<html><body><label for="lk">Zq Account</label>
+      <input id="lk" role="combobox" aria-controls="ls" aria-expanded="false" />
+      <div id="ls" role="listbox" style="display:none"></div><div id="picked"></div>
+      <script>{ const lk = document.getElementById("lk"), ls = document.getElementById("ls");
+        const show = () => { ls.innerHTML = ""; const rows = lk.value ? [] : ["Zq Fresh 0abc12", "Zq Older"];
+          for (const v of rows) { const o = document.createElement("div"); o.setAttribute("role", "option"); o.dataset.value = "001" + v.length; o.textContent = v;
+            o.addEventListener("click", () => { document.getElementById("picked").textContent = v; }); ls.appendChild(o); }
+          ls.style.display = "block"; lk.setAttribute("aria-expanded", "true"); };
+        lk.addEventListener("click", show); lk.addEventListener("input", () => setTimeout(show, 50)); }</script>
+      </body></html>`;
+    const { generateSpec } = await import("../src/stages/generator.js");
+    const { extractFn, extractConst } = await import("./fixtures/specHelpers.js");
+    const spec = generateSpec({ meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [{ id: "s1", action: "select", target: { role: "combobox", name: "Zq Account", css: "#lk", lookup: true }, value: "x" }] } as any);
+    const pick = new Function(`${extractConst(spec, "lookupOptionError")}\n${extractFn(spec, "lookupPick")}\nreturn lookupPick;`)();
+    for (const fn of [lookupLive, pick]) {
+      await page.setContent(RECENT);
+      await fn(page, page.getByRole("combobox", { name: "Zq Account" }), "Zq Fresh 0abc12");
+      expect(await page.locator("#picked").textContent()).toBe("Zq Fresh 0abc12");
+    }
+  }, 60_000);
+
   it("says what was on offer when nothing matches", async () => {
     await page.setContent(LOOKUP);
     await expect(lookupLive(page, page.getByRole("combobox", { name: "Zq Firm Name" }), "zz-nothing")).rejects.toThrow(/zz-nothing/);
