@@ -105,3 +105,8 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156; 2026-10-28: ou
   docs/guides/LLM_CONTEXT_BRIEFING.md, app.yaml.
 - `cleanup/production-ready` is retired, not deleted, and only after main contains its latest commit.
 - Dead code: scan main and show the user the list before deleting anything.
+
+## 2026-11-04 (later) — no archive tag; protect the `archive` branch instead (user)
+- The tag `archive-2026-11-04` is not created (tag pushes are refused from the cloud container, and the user judged
+  it unnecessary). The `archive` branch is made read-only in GitHub's branch protection instead, which covers the
+  real risk (someone pushing to it by mistake). Docs no longer mention a tag.

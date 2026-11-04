@@ -31,7 +31,7 @@ classifier tries first, Gemini vision second.
 above has exactly one job, and the what's-broken list lives in exactly one file — it used to be
 copied into six, and every copy drifted (`DECISIONS.md` D-01). Don't recreate the overlap.
 
-**Old material is not on `main`.** It lives on the `archive` branch (frozen at tag `archive-2026-11-04`):
+**Old material is not on `main`.** It lives on the read-only `archive` branch (protected in GitHub, never pushed to):
 `docs/archive/` (old walkthrough, dated audit `problems.md`, dated plans, and `site-store-view/` — **a spec for
 work that was never built**, TD-56), the onboarding Word volumes, market research, handoff notes, the old
 LLM context briefing and the stale `app.yaml`. A reference written `archive:<path>` means that file there:
