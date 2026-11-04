@@ -1,6 +1,15 @@
 # Open tasks
 
-*Last updated: 2026-11-03.*
+*Last updated: 2026-11-04.*
+
+## Branch clean-up (user, 2026-11-04)
+
+- [ ] PR: main gets `cleanup/production-ready`'s last commit (`647d41a`, D-75 docs added). Merge when green.
+- [ ] Create branch `archive` + tag `archive-2026-11-04` from main after that merge.
+- [ ] PR removing from main: docs/archive/, docs/guides/team-guide/, docs/research/, docs/handoff/,
+      docs/guides/LLM_CONTEXT_BRIEFING.md, app.yaml; update every reference (CLAUDE.md, docs/README.md, code comments).
+- [ ] Dead-code scan on main; show the list to the user BEFORE deleting anything.
+- [ ] Retire `cleanup/production-ready` (not deleted): main must contain its latest commit.
 
 ## Pro story -> request (PRO_STORY_PROMPT, TD-184, D-74)
 

@@ -331,6 +331,7 @@ not been configured for a capability never advertises it.
 | `SCRIPT_OVERRIDE_ENABLED` | `false` | A saved case can carry a hand-written Playwright script. Off: the routes 404 and a stored override does not run |
 | `TEST_DATA_ENABLED` | `false` | On Salesforce org-connection runs, positive cases get valid typed values from the org's own metadata (unique names, required fields filled by type, real picklist options). Negative cases are never touched |
 | `SALESFORCE_DISCOVERY_CACHE_ENABLED` | `false` | An org-connection run reuses a saved discovery (up to 24 h) while the org's setup fingerprint is unchanged, instead of crawling again |
+| `SALESFORCE_DEEP_DISCOVERY_ENABLED` | `false` | Org-connection runs only. For up to 3 objects the request names, also reads each record type's own form fields and picklist values, the Dynamic Forms visibility rules on the record page, and what formula and roll-up fields compute; the case writer is told these facts. Read-only API calls, a few per object. See `DECISIONS.md` D-75 |
 | `SALESFORCE_PRODUCTION_ORGS_ENABLED` | `false` | "Connect org" also accepts production orgs, not only scratch, sandbox and Developer Edition. Runs create real records there |
 | `SALESFORCE_CLEANUP_ENABLED` | `false` | After an org-connection run, delete the records that run created (only those the org confirms the connected user created since the run began) |
 | `RUN_RETENTION_DAYS` | unset | Age off `runs/` directories after N days. Unset keeps everything |
