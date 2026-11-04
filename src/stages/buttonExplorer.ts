@@ -29,7 +29,7 @@ import { pageKey } from "../text.js";
  *   and the click that opened it go into the stored screen map, as HINTS (D-54), never grounding.
  *
  * SAFETY IS DETERMINISTIC, never the model's call (WebGuard: frontier models miss most HIGH-risk
- * actions; docs/research/.../academic_exploration.md §5):
+ * actions; archive:docs/research/.../academic_exploration.md §5):
  * 1. DENY always wins: a destructive or committing name (delete, remove, submit, save, send, pay,
  *    confirm, approve, reject, log out, publish, purchase, …), a submit button inside a <form>, a
  *    link that leaves the site's origin.

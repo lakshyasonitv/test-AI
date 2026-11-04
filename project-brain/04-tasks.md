@@ -7,7 +7,7 @@
 - [ ] PR: main gets `cleanup/production-ready`'s last commit (`647d41a`, D-75 docs added). Merge when green.
 - [ ] Create branch `archive` + tag `archive-2026-11-04` from main after that merge.
 - [ ] PR removing from main: docs/archive/, docs/guides/team-guide/, docs/research/, docs/handoff/,
-      docs/guides/LLM_CONTEXT_BRIEFING.md, app.yaml; update every reference (CLAUDE.md, docs/README.md, code comments).
+      docs/guides/LLM_CONTEXT_BRIEFING.md, app.yaml; references now `archive:<path>` (prepared 2026-11-04).
 - [ ] Dead-code scan on main; show the list to the user BEFORE deleting anything.
 - [ ] Retire `cleanup/production-ready` (not deleted): main must contain its latest commit.
 
@@ -53,7 +53,8 @@
 
 - [x] Commit D-72, then push the branch — in main via PR #11 (2026-10-28).
 - [x] Turn on in Azure: `PROJECT_DISCOVERY_SHARING=true` — live (2026-11-03 snapshot).
-- [ ] Update `app.yaml` to 4 vCPU / 8Gi / MAX_CONCURRENT_RUNS 4 (live since 2026-10-27).
+- [x] ~~Update `app.yaml`~~ — obsolete: `app.yaml` moved to the `archive` branch (2026-11-04); the live settings are
+      read with `az containerapp show` (see journal 2026-11-03).
 - [ ] First real check: two runs of one project, same URL + login — the second should say "Used this
       project's saved discovery". Costs AI money for the plan/case steps — ask first.
 
@@ -115,7 +116,7 @@
 - [ ] Playwright browser version mismatch in the cloud container (see `03-progress.md`) — either pin
       the image's browsers or document the symlink workaround in the setup script.
 - [ ] `CLAUDE.md` is 216 lines against its own "under 200" rule (AGENTS.md is now a pointer, 2026-11-02)
-      (`docs/archive/FINDINGS_2026-09-28.md` §6.3).
+      (`archive:docs/archive/FINDINGS_2026-09-28.md` §6.3).
 
 ## Claude provider (D-66)
 
