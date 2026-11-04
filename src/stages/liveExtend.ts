@@ -111,7 +111,14 @@ export async function runStepLive(
       await el.fill(val);
       return;
     }
-    case "click": await (await resolveLive(page, step.target!)).click(); return;
+    case "click":
+      // The spec's own rule (generator.ts): the inserted Details tab click is skipped where there is none.
+      if (/^sf-details/.test(step.id)) {
+        const tab = page.getByRole("tab", { name: "Details", exact: true }).first();
+        if (await tab.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false)) await tab.click();
+        return;
+      }
+      await (await resolveLive(page, step.target!)).click(); return;
     // Not a bare selectOption(): that is an EXACT match against an option list that is very often
     // still being fetched, and its failure ("did not find some options") names neither the wanted
     // value nor the available ones. chooseLive shares its matching and its message with the

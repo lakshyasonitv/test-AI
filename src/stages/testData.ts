@@ -32,6 +32,8 @@ export function testDataEnabled(): boolean {
 
 /** Case categories whose point is a bad or missing value: their fields are never rewritten. */
 const DATA_IS_THE_TEST = new Set(["invalid-input", "empty-boundary"]);
+/** Roles of a form's own input controls. */
+const FORM_CONTROL_ROLE = /^(textbox|combobox|spinbutton|checkbox|searchbox|listbox|radiogroup)$/;
 
 type OrgObject = SalesforceOrgModel["objects"][number];
 type OrgField = OrgObject["fields"][number];
@@ -346,6 +348,19 @@ function applyToSection(
     ir.steps.splice(i, 1);
     to--;
   }
+  // Every case: a date is typed, never picked from the calendar. "Select a date for Close Date" then
+  // "Today" opens a popup no screen captured (run 2026-11-03T08-32-47-277Z-249e547b truncated there);
+  // the clicks go, with the day pick and waits after them, and a required date is then filled below.
+  for (let i = to - 1; i >= from; i--) {
+    const s = ir.steps[i];
+    if (s.action !== "click" || !/^select a date\b/i.test(s.target?.name ?? "")) continue;
+    let end = i + 1;
+    while (end < to && (ir.steps[end].action === "wait"
+      || (ir.steps[end].action === "click" && /^(today|\d{1,2})$/i.test(ir.steps[end].target?.name?.trim() ?? "")))) end++;
+    notes.push(`${s.id}: dropped the date picker clicks — the date is typed instead`);
+    ir.steps.splice(i, end - i);
+    to -= end - i;
+  }
   // Every case: a picklist offers only its options, so a value that is not one is never what a test
   // means ("Working" for "Working - Contacted", run 2026-10-24T20-37-00-424Z-410671c2).
   for (const s of steps()) {
@@ -386,6 +401,24 @@ function applyToSection(
   const quoted = (v: string | undefined) => !!v?.trim() && asserted.includes(v.trim());
   // "Each and every field": every field the case fills is wanted; values are still fixed below.
   const everyField = asksForEveryField(request);
+  // "Each and every field": a check on one of the form's own controls before Save is a field the
+  // model skipped, not a check the request asked for ("Private" asserted hidden, run
+  // 2026-11-03T10-42-46-258Z-6b58f976, failed there). A checkbox is ticked; any other goes.
+  if (everyField && positive) {
+    for (let i = from; i < to; i++) {
+      const s = ir.steps[i];
+      if (s.action === "click" && /\bsave\b/i.test(s.target?.name ?? "")) break;
+      if (s.action !== "assert" || !FORM_CONTROL_ROLE.test(s.target?.role ?? "")) continue;
+      if (s.target!.role === "checkbox") {
+        notes.push(`${s.id}: a check on the "${nameOf(s)}" checkbox -> ticks it (every field)`);
+        ir.steps[i] = { id: s.id, action: "check", target: s.target };
+        continue;
+      }
+      notes.push(`${s.id}: dropped a check on the "${nameOf(s)}" field mid-form (every field)`);
+      ir.steps.splice(i--, 1);
+      to--;
+    }
+  }
   // A step with no value fills nothing (the model leaving a field blank on purpose): not kept for this.
   // Nor does "None" or "N/A": the model's way of saying the same (Primary Campaign Source "None", run
   // 2026-11-03T05-36-38-368Z-379eb1ea, which then found no such option).

@@ -716,3 +716,33 @@ describe("a field the org calculates is never filled", () => {
     expect(r.steps.some((s) => s.target?.name === "Zq Total")).toBe(false);
   });
 });
+
+// Run 2026-11-03T08-32-47-277Z-249e547b: "Select a date for Close Date" then "Today" opened a popup
+// no screen captured, and grounding truncated the case there.
+describe("a date is typed, never picked from the calendar", () => {
+  it("drops the picker click, the waits and the day pick after it", () => {
+    const r = ir([{ id: "s2", action: "click", target: { role: "button", name: "Select a date for Zq Date" } },
+      { id: "s3", action: "wait", value: "1000" } as any,
+      { id: "s4", action: "click", target: { role: "button", name: "Today" } },
+      { id: "s9", action: "click", target: { role: "button", name: "Save" } }]);
+    applyTestData(r, valid, appModel, "Create a Zq Thing");
+    expect(r.steps.map((s) => s.id)).not.toContain("s2");
+    expect(r.steps.map((s) => s.id)).not.toContain("s4");
+    expect(r.steps.some((s) => s.target?.name === "Save")).toBe(true);
+  });
+});
+
+// Run 2026-11-03T10-42-46-258Z-6b58f976: "every field" with "Private" asserted hidden mid-form.
+describe("every field: a check on a form control before Save is a field to fill", () => {
+  it("ticks a checkbox and drops any other control check; leaves the final check", () => {
+    const r = ir([
+      { id: "s2", action: "assert", target: { role: "checkbox", name: "Zq Private" }, assertion: "hidden" } as any,
+      { id: "s3", action: "assert", target: { role: "combobox", name: "Zq Source" }, assertion: "visible" } as any,
+      { id: "s9", action: "click", target: { role: "button", name: "Save" } },
+      { id: "s10", action: "assert", target: { text: "was created" }, assertion: "visible" } as any]);
+    applyTestData(r, valid, appModel, "Create a Zq Thing and fill each and every field on the form");
+    expect(r.steps.find((s) => s.id === "s2")?.action).toBe("check");
+    expect(r.steps.some((s) => s.id === "s3")).toBe(false);
+    expect(r.steps.some((s) => s.id === "s10")).toBe(true);
+  });
+});

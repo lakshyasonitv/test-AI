@@ -79,7 +79,10 @@ export function stepsMissingValues(steps: StepText[], c: Pick<TestCase, "steps" 
   const hay = steps.flatMap((s) => [s.value, s.target?.name, s.target?.text, s.target?.label, s.target?.placeholder, s.target?.field,
     s.value && (s.target?.name ?? s.target?.label ?? s.target?.field) ? `${s.target?.name ?? s.target?.label ?? s.target?.field} ${s.value}` : undefined])
     .filter((x): x is string => typeof x === "string" && x.length > 0).map(loose).join("|");
-  return carried.filter((v) => !hay.includes(loose(v)));
+  // "Account's TB Total Opportunity Amount" is checked as the field "TB Total Opportunity Amount"
+  // (valuesFromRequest strips the object's name; run 2026-11-03T09-58-44-651Z-fd8a02f9).
+  const bare = (v: string) => v.replace(/^[A-Z][\w ]*?['’]s\s+/, "");
+  return carried.filter((v) => !hay.includes(loose(v)) && !hay.includes(loose(bare(v))));
 }
 
 const Rewrite = z.object({ steps: z.array(z.string().min(1)).min(1), expected: z.string().min(1) });

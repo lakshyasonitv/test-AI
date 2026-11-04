@@ -2518,6 +2518,9 @@ export const BOOLEAN_ENV_FLAGS = [
   "SALESFORCE_CLEANUP_ENABLED",
   // src/stages/hybridDiscovery.ts: reuse an org-connection discovery while the org's setup is unchanged.
   "SALESFORCE_DISCOVERY_CACHE_ENABLED",
+  // src/stages/salesforceOrgDeep.ts (Phase 1): record-type differences, Dynamic Forms visibility rules
+  // and calculated-field definitions for the request's objects. Off: the org model is unchanged.
+  "SALESFORCE_DEEP_DISCOVERY_ENABLED",
   // D-71: Jira Phase 1 — "Connect Jira" and read a story into the prompt box. Off: no Jira row on
   // the home view, and every /api/jira/* route answers 404.
   "JIRA_ENABLED",

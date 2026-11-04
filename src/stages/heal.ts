@@ -3,6 +3,7 @@ import path from "node:path";
 import { toIR } from "./ir.js";
 import { generateSpec } from "./generator.js";
 import { extractFailureDetail, runSpec, type ExecResult } from "./executor.js";
+import { hasRunToken } from "../text.js";
 import { refreshPageModel } from "./liveExtend.js";
 import { credentialPolicyFor, promptCarriesCredentials, credentialEnvVars, type Credentials } from "./credentials.js";
 import { healStepTarget } from "./deterministicHeal.js";
@@ -92,6 +93,10 @@ export async function attemptValueHeal(args: HealArgs): Promise<HealResult | nul
     if (!s || s.action !== "select") return null;
     const wanted = JSON.parse(`"${m[1]}"`) as string;
     if (wanted && !wanted.startsWith("(") && named(sourcePrompt, wanted)) return null;
+    // A run-token value names a record THIS test created ("Test Account {{uid}}"): another record
+    // would make the rest of the test check the wrong one (run 2026-11-03T08-05-18-274Z-12e7be67's
+    // roll-up), so the failure stands.
+    if (hasRunToken(s.value)) return null;
     let to: string;
     if (s.target?.lookup) {
       if (!s.value) return null;            // already the first record offered: nothing to change
