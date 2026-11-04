@@ -6281,3 +6281,21 @@ retention job, and the walk itself grows with every run kept.
 scans one folder holding one file. Tests: `tests/specScanRace.test.ts` runs three real specs while folders under runs/
 are created and deleted (failed 2 of 3 times without the fix, passed 9 of 9 with it); `tests/executorChildEnv.test.ts`
 pins the variable the child receives.
+
+### TD-186. History (`GET /api/runs`) failed with a 500 when a run folder was deleted while it was being listed — Medium / Accidental — **Fixed (2026-11-04)**
+
+**Found** through `tests/tenancy.test.ts` ("the synthetic local user reaches /api/runs exactly as before") failing one
+CI run of two on the same docs-only commit (PR #21, run 41881998878: `expected 500 to be 200`). `/api/runs` reads the
+folder list with `allRunIds()`, then `listRuns()` -> `summariseRun()` reads each folder (`statSync` of the folder,
+`events.ndjson`, the stage JSON files). A folder deleted between the two steps threw `ENOENT` out of `summariseRun`, and
+the route's catch turned the WHOLE list into `500 could not list runs`. In CI, a dozen test files create and delete
+run folders while others list them; on the deployment, `DELETE /api/runs/:runId` and the retention sweep delete folders
+while History is polled. Same family as TD-185 (a reader of runs/ meeting another process's deletion).
+
+**Fix.** `listRuns()` skips a run whose summary throws `ENOENT` and lets the next id take its slot, so the list is still
+"the newest 20". Only `ENOENT` is skipped: every read in `summariseRun` is `existsSync`-guarded or names a folder
+`allRunIds` just saw, so only a folder being deleted can raise it; any other error (a corrupt file) still throws as
+before. `summariseRun` itself is unchanged (the Phase 3 backfill and the run-status hook call it directly). Tests:
+`tests/listRunsRace.test.ts` (a gone folder is skipped, the cap still yields 20, a corrupt run still throws, and no
+error while a second process creates and deletes the folders being read; the three race tests fail without the fix
+with the CI error, `ENOENT ... stat 'runs/…'`).

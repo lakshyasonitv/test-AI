@@ -1,5 +1,9 @@
 # Progress — where we are
 
+*Last updated: 2026-11-04, late. TD-186 (History 500 when a run folder is deleted mid-listing) fixed in its own
+PR after #21 (brain update, merged `1c170f2`). Baseline with it: 2919 passed / 1 failed (safeClickBrowser) / 23
+skipped, 224 files. See journal/2026-11-04.md.*
+
 *Last updated: 2026-11-04, end of day. **Everything is merged into main** (PRs #16-#20); main is the only
 working branch. #19: docs say the `archive` branch is protected, no tag. #20: TD-185 fixed — Playwright scans only
 the spec's own folder (`PLAYWRIGHT_TEST_DIR`), so a run folder deleted elsewhere can no longer end a spec before its
@@ -116,6 +120,7 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
 - 2026-11-04, main + TD-185 (PR #20), browser link now `-1148 -> -1243`: **2915 passed, 1 failed, 23 skipped,
   223 files**; tsc clean. The one failure is `safeClickBrowser` (needs `example.com`; passes in CI).
   `booleanEnvFlags` and `discoveryStrategy` were fixed in #13.
+- 2026-11-04 later, main + TD-186: **2919 passed, 1 failed (safeClickBrowser), 23 skipped, 224 files**; tsc clean.
 - The 2 failures pre-date all of this: `booleanEnvFlags` (stale RESERVED list) and
   `safeClickBrowser` (needs `example.com`, blocked in the cloud container; passes in CI).
 - CI also fails `discoveryStrategy` "shadowAndFrame" on `main` (Chromium-version dependent

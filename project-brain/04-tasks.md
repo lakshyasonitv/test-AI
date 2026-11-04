@@ -13,6 +13,8 @@
 - [x] `cleanup/production-ready` retired (not deleted); main contains its latest commit (`647d41a`). Do not work on it.
 - [x] PR #18 merged (`16cae6c`): dead chain removed. PR #19 merged (`aafa6f4`): docs say "protected branch", no tag.
 - [x] TD-185 (spec ended by a run folder deleted mid-scan) fixed in PR #20 (`10381ba`), with a race test.
+- [x] PR #21 (brain) merged (`1c170f2`). TD-186 (History 500 when a run folder is deleted mid-listing) fixed
+      in its own PR after #21, with a race test (user OK'd open + merge once green).
 
 ## Pro story -> request (PRO_STORY_PROMPT, TD-184, D-74)
 
