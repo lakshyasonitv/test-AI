@@ -318,7 +318,20 @@ export function summariseMissingRun(row: {
 }
 
 export function listRuns(ids: string[] = allRunIds()): RunSummary[] {
-  const diskRuns = ids.slice(0, 20).map(summariseRun);
+  // A folder deleted after `ids` was read (DELETE /api/runs/:runId, retention, another process) is
+  // skipped, and the next id takes its slot. It used to throw ENOENT out of summariseRun and turn the
+  // whole History list into a 500 (TD-186). Only ENOENT is skipped: every read in summariseRun is
+  // existsSync-guarded or names a folder allRunIds just saw, so a run that is not being deleted
+  // cannot raise it. Any other error (a corrupt events.ndjson, say) still throws, as before.
+  const diskRuns: RunSummary[] = [];
+  for (const id of ids) {
+    if (diskRuns.length === 20) break;
+    try {
+      diskRuns.push(summariseRun(id));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+    }
+  }
   shadowCompareRuns(diskRuns); // no await: never blocks or alters the response
   return diskRuns;
 }
