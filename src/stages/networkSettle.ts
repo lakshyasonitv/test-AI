@@ -11,7 +11,7 @@ import type { Page, Request } from "playwright";
  * long-poll open, so the network is never idle and the wait always runs to its timeout.
  *
  * So this counts in-flight fetch/XHR requests itself and IGNORES the long-lived ones, the approach
- * Copado's open-source QWeb engine takes for Lightning (docs/research/.../salesforce_specialists.md
+ * Copado's open-source QWeb engine takes for Lightning (archive:docs/research/.../salesforce_specialists.md
  * §2): a request is long-lived if it is a streaming / long-poll endpoint by URL or by its Bayeux
  * body (`"connectionType":"long-polling"`), or simply if it has been open longer than
  * LONG_LIVED_MS. The page counts as settled once none of the rest have been in flight for

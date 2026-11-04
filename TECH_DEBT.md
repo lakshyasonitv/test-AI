@@ -663,7 +663,7 @@ cache, then three steps: `npm ci`, `npx tsc --noEmit`, `npm test` (which `packag
 this entry required.
 
 > **This entry read "no CI" for longer than it was true, and the claim propagated.** It was repeated
-> in `docs/guides/team-guide/` Vol 5 and in conversation before anyone opened `.github/workflows/`. If you
+> in the team guide's Vol 5 (`archive:docs/guides/team-guide/`) and in conversation before anyone opened `.github/workflows/`. If you
 > are about to state that this project has no CI, check the directory first. Two workflows live
 > there, not one.
 >
@@ -1725,12 +1725,13 @@ suite run (87 -> 87, previously 85 -> 87).
 ## Site Store / View — Phase 0 measurement result
 
 > **Archived 2026-11-02.** The spec, the `measureView.ts` harness and its test now live together in
-> `docs/archive/site-store-view/`. The test no longer runs in CI (vitest runs `tests/` only), so the
-> guards described below are history until the work is picked up again and the folder moved back.
+> `archive:docs/archive/site-store-view/`. The test no longer runs in CI (vitest runs `tests/` only), so the
+> guards described below are history until the work is picked up again and the folder moved back. Since
+> 2026-11-04 the folder is on the `archive` branch only (`archive:docs/archive/site-store-view/`).
 
-`docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md` proposes replacing the AppModel-in-prompt with a Store + retrieval +
+`archive:docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md` proposes replacing the AppModel-in-prompt with a Store + retrieval +
 View. Its ground rule 7 gates the whole project on one unmeasured number, and rule 8 says the
-finding is recorded here either way. `docs/archive/site-store-view/measureView.ts` produced it over **all 38 saved runs
+finding is recorded here either way. `archive:docs/archive/site-store-view/measureView.ts` produced it over **all 38 saved runs
 that have an `02-appmodel.json`**, with a real tokenizer (`gpt-tokenizer`), no browser and no LLM.
 
 **Outcome: the gate was not met. Phases 1, 2.5 and 3 are NOT STARTED, BLOCKED ON EVIDENCE — not
@@ -1815,7 +1816,7 @@ confidently. A further instance was then caught *by the guard written for bug 2*
 `(role, name)` joiner still sitting inside `elementId`, which nothing had noticed. That is four
 occurrences of one root cause inside a single piece of work.
 
-So it is not fixed, it is **guarded**, in `docs/archive/site-store-view/measureView.test.ts`:
+So it is not fixed, it is **guarded**, in `archive:docs/archive/site-store-view/measureView.test.ts`:
 
 - `coverage()` **throws** on zero references instead of returning `1`. The caller decides "not
   measured"; the function refuses to invent a score. This is TD-01's shape — a check that passes
@@ -1876,7 +1877,7 @@ for. Recorded so the negative headline does not bury it.
 Do not build Phases 1–3 as specified. Build the narrow projection of the test-case prompt only,
 above the threshold above, and re-measure retrieval when the corpus can support it.
 
-**Re-run with:** `npx tsx docs/archive/site-store-view/measureView.ts`. Touches no shipped file, costs nothing.
+**Re-run with** (on a checkout of the `archive` branch): `npx tsx docs/archive/site-store-view/measureView.ts`. Touches no shipped file, costs nothing.
 `VIEW_TOKEN_BUDGET` overrides the 2500-token default.
 
 **Caveat on the tokenizer.** `gpt-tokenizer` counts GPT tokens; this pipeline sends Gemini. The
@@ -1932,12 +1933,12 @@ custom-logo anchor.
 **Deliberately not fixed.** The proposed fix was to make the cap rank before it cuts, reusing the
 View's Pass 3 priority function. That would change how *every* IR prompt is built, on evidence of
 one logo anchor on one run — the same disproportion that killed Phases 1–3 of
-`docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md`. **Do not fix by raising the cap**; if this is ever fixed, rank before
+`archive:docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md`. **Do not fix by raising the cap**; if this is ever fixed, rank before
 cutting and keep the cap at 30.
 
 **Promote to Medium when:** a run grounds against an element the cap dropped *and* that element is
 load-bearing for the case (a form field, a submit control), rather than a decorative logo link.
-`docs/archive/site-store-view/measureView.ts` reports this per run under `element-cap`.
+`archive:docs/archive/site-store-view/measureView.ts` reports this per run under `element-cap`.
 
 **TD-62 did NOT close this, though it was expected to.** The theory was that hidden inputs were
 competing for the 30 slots, so evicting them would let the missing element back in. Measured after
@@ -1981,12 +1982,12 @@ page, and the test fails at run time against the page it is actually on.
 
 **Trigger — promote to a bug when:** any run grounds a target absent from the prompt in **all three**
 blocks (elements, navigation tree, form labels) *and* that target is load-bearing. This is not
-something to remember to check — `docs/archive/site-store-view/measureView.ts` §3.0 computes exactly this and attributes
+something to remember to check — `archive:docs/archive/site-store-view/measureView.ts` §3.0 computes exactly this and attributes
 each miss to its cause. A non-`live-extended` miss on a form or submit control is the signal.
 
 ### TD-61. The identity hypothesis was never a token argument, and has never been measured — Medium / Strategic — Open
 
-`docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md` bundled two independent claims. Phase 0 tested one of them.
+`archive:docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md` bundled two independent claims. Phase 0 tested one of them.
 
 - **Token argument** — the View is smaller than what ships today. Tested. Fails on the IR prompt,
   partially holds on the test-case prompt. That is TD-56.
@@ -2046,10 +2047,10 @@ value**, which is why a CSRF token looks like it is named after its own contents
 - `visible === false` catches only part: 30 of the 474 elements carry it, while
   `SIGNIN_CLAIM_COLLECT`, `claimType` and `countryCode` are all recorded **`visible: true`**.
 
-**Fixed in the View** (`docs/archive/site-store-view/measureView.ts`), filtered in **two** places — the per-page element
+**Fixed in the View** (`archive:docs/archive/site-store-view/measureView.ts`), filtered in **two** places — the per-page element
 filter and Pass 1's shared hoist, because the hoist runs first and on raw `p.elements`. Without the
 second, a CSRF token still led the `shared:` line, precisely because appearing on every sign-in
-page makes it look like site chrome. Six tests in `docs/archive/site-store-view/measureView.test.ts`, at four densities
+page makes it look like site chrome. Six tests in `archive:docs/archive/site-store-view/measureView.test.ts`, at four densities
 plus the hoist and the visible-alone case; all six verified failing without the filter.
 
 **What the fix recovered, measured.** `toMicroModel` caps at 30, so junk does not merely add
@@ -2262,7 +2263,7 @@ going near a merge, and check `git diff --stat main..appmodel-projection` shows 
 
 ## Where the Site Store / View work ended — read this before picking it up
 
-Written 2026-08-27, at the point the work was deliberately stopped. `docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md`
+Written 2026-08-27, at the point the work was deliberately stopped. `archive:docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md`
 planned 18–19 days across seven phases after a measurement spike. **The spike's gate fired on day
 two and most of the plan was cancelled.** What follows is what shipped, what is parked, and the
 conditions under which each parked thing should be looked at again.
@@ -2279,7 +2280,7 @@ it.
 | `isUsableElement` (TD-62) | Hidden inputs and skip-links were reaching the model as ordinary controls. On one run, 11 of `toMicroModel`'s 30 slots were spent on things no test can act on; eleven real category links took their place. |
 | `promptFormFields` (TD-63) | The `forms` block carried every hidden field's name **and value** into both prompts, including a live CSRF token. 1 → 0 and 2 → 0 leaking runs. |
 | capture-time fix (TD-64) | A hidden input's value is no longer recorded at all — not in `fields[].value`, not as an element's accessible name. |
-| `docs/archive/site-store-view/measureView.ts` | The offline harness. Replays every saved run: no browser, no LLM, no cost. |
+| `archive:docs/archive/site-store-view/measureView.ts` | The offline harness. Replays every saved run: no browser, no LLM, no cost. |
 
 Every one of those bugs was found **by the measurement, not by the feature it was measuring.**
 
@@ -2334,7 +2335,7 @@ If one of these fails, do not "repair" it by widening whatever filter is nearby.
 
 ### The harness is load-bearing, and it lied five times
 
-Every decision above came out of `docs/archive/site-store-view/measureView.ts`. It shipped **five** bugs before producing
+Every decision above came out of `archive:docs/archive/site-store-view/measureView.ts`. It shipped **five** bugs before producing
 a number worth trusting, and **not one of them threw** — each produced a confident, wrong table:
 
 1. `04-ir.json` is `{ir, updatedAppModel}`; reading `.steps` off the wrapper gave zero references,
@@ -2349,7 +2350,7 @@ a number worth trusting, and **not one of them threw** — each produced a confi
    `visible`.
 
 Bugs 2, 4 and 5 are one failure class: **a structure modelled incompletely, then compared
-confidently.** `docs/archive/site-store-view/measureView.test.ts` now guards it — `coverage()` throws on zero references
+confidently.** `archive:docs/archive/site-store-view/measureView.test.ts` now guards it — `coverage()` throws on zero references
 rather than returning a figure, and the source is scanned for hand-rolled `(role, name)` keys.
 
 **Treat a number from this harness as provisional until a test pins it.** That is not pessimism;
@@ -3001,7 +3002,7 @@ empty. Add a capture-time assertion that no element name exceeds a sane bound, s
 silently return.
 
 **Trigger — promote to a bug when:** a run's `02-appmodel.json` contains any element whose `name`
-exceeds ~1,000 characters. `docs/archive/site-store-view/measureView.ts` already walks every saved AppModel and is the
+exceeds ~1,000 characters. `archive:docs/archive/site-store-view/measureView.ts` already walks every saved AppModel and is the
 natural place to report it.
 
 ### TD-76. `selectOption()` is an exact match, so different casing looked like a missing option — Medium / Accidental — Fixed
@@ -3885,7 +3886,7 @@ value in `.env.example` has been replaced with the placeholder `your-key-here`.
 - **Gemini:** `AQ\.[A-Za-z0-9_-]{20,}` (current format) and legacy `AIza[0-9A-Za-z_-]{20,}`, in
   source, system prompts, and `.env.example`.
 - **Supabase:** `sb_publishable_[A-Za-z0-9_-]{20,}` and `sb_secret_[A-Za-z0-9_-]{20,}` (and the
-  `eyJ…` JWT form, excluding the gzip/base64 false-positive class seen in `docs/archive/testbench-ui-export.html`).
+  `eyJ…` JWT form, excluding the gzip/base64 false-positive class seen in `archive:docs/archive/testbench-ui-export.html`).
 
 The check must scope or review false positives rather than blanket-excluding them — a saved-HTML
 page full of base64 blobs is what produced `eyJ…` noise in the audit.
@@ -4739,7 +4740,7 @@ negative into a true positive, and a real failure still fails.
 ### TD-108. The access token was never renewed, so a signed-in tab broke after an hour of use or idleness — High / Accidental — **Fixed behind `AUTH_TOKEN_REFRESH`**
 
 Reported as *"it is not working after some time of idleness."* Two causes produce that symptom on the
-Azure deployment; this entry is the one in code. (The other is `minReplicas: 0` in `app.yaml` — the
+Azure deployment; this entry is the one in code. (The other is `minReplicas: 0` in the Azure app's settings — the
 container scales to zero when idle and cold-starts on the next visit. That is configuration, not a
 defect in this repo, and is not touched here.)
 
@@ -5330,7 +5331,7 @@ generated. The Phase 2 screen map could carry that, but it stores names only.
 
 ### TD-134. Retained `trace.zip` files are not scrubbed and may hold filled credentials — High / Unverified — **Open**
 
-Found while writing `docs/research/reports/AI test automation competitor features.md` (plan item 0.2),
+Found while writing `archive:docs/research/reports/AI test automation competitor features.md` (plan item 0.2),
 from reading the code only. `scrubServedSecrets` (`src/stages/executor.ts`) redacts `results.json`,
 `final-page.txt` and error-context files, but not the Playwright trace. `playwright.config.ts` keeps
 traces on failure (`trace: "retain-on-failure"`) inside `runs/<id>/artifacts`, which is served over

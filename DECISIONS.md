@@ -1546,8 +1546,8 @@ write cases the document excludes. Recorded in the event log as `skipped: "pro_s
 
 **Distillation is pinned to Gemini.** Only Gemini takes a PDF inline; production runs
 `LLM_PROVIDER=azure`, whose chat completions take images, not PDFs. This is the first call in the
-codebase that goes to `gemini()` while the provider is azure; `GEMINI_API_KEYS` is already mounted
-in `app.yaml`. PDFs are never parsed on our side. The cache key hashes the instruction TEXT, not a
+codebase that goes to `gemini()` while the provider is azure; `GEMINI_API_KEYS` is already set
+on the Azure app (as the `gemini-keys` secret). PDFs are never parsed on our side. The cache key hashes the instruction TEXT, not a
 version constant (D-10), plus `llmCacheVersion()`; an all-empty answer is the "may be a scan"
 warning and is never cached. Output is capped at 8192 tokens (`SPEC_DISTILL_MAX_OUTPUT_TOKENS`)
 because thinking tokens count against the cap. No run budget covers the call; its usage is logged.
@@ -1743,7 +1743,7 @@ the live-extend replay all pass through) and every screen capture, `src/stages/n
 
 **Why.** Salesforce (and any SPA) fetches a page's data after the DOM looks ready, so a snapshot at the call sites'
 fixed 800 ms models half a page. Copado's open-source QWeb engine targets Lightning with the same idea: its own
-pending-request counter that skips the CometD long-poll (docs/research/.../salesforce_specialists.md §2).
+pending-request counter that skips the CometD long-poll (archive:docs/research/.../salesforce_specialists.md §2).
 
 **Rejected.**
 - `waitForLoadState("networkidle")`: Salesforce holds a CometD long-poll open, so the network never goes idle and
@@ -1962,7 +1962,7 @@ was not built either, because replacing `loginOnPage` would drop the `loginSteps
 steps the generated spec replays so each test logs itself in (D-24). Copying a login routine into
 `generator.ts` instead was considered and rejected for now: it contradicts D-24 (one login, injected
 into the IR once, not duplicated into the generator) and would touch files another stream is
-editing (`docs/handoff/HANDOFF_SCREEN_MAP_AND_LOCATORS.md`). The cases it would cover (a fresh browser
+editing (`archive:docs/handoff/HANDOFF_SCREEN_MAP_AND_LOCATORS.md`). The cases it would cover (a fresh browser
 shown the email-first screen) are unverified; TD-171 records the check to make on the first real-org run.
 
 **Why the slow-form wait is Salesforce-only.** `loginOnPage` decides one-screen vs two-screen with

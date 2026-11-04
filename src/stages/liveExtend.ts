@@ -368,7 +368,7 @@ async function replayAndSnapshot(
   // locale was served verbatim to a run using another, permanently, because the disk half of this
   // cache never expires. That is the same defect as the credential case above with a different
   // input, and the three LLM keys do not have it: theirs already contain the AppModel or the page
-  // text, so they re-key themselves (see docs/archive/FINDINGS_2026-09-28.md §7.4). This one cannot.
+  // text, so they re-key themselves (see archive:docs/archive/FINDINGS_2026-09-28.md §7.4). This one cannot.
   //
   // `settle` captures something different (a fully-rendered screen, plus its tab), so it is a key
   // part — appended ONLY when set, so every existing walk keeps its exact key and cache entry.

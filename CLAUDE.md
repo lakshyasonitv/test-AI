@@ -25,31 +25,23 @@ classifier tries first, Gemini vision second.
 | Working guidance for an agent (this file) | `CLAUDE.md` |
 | What each shipped phase changed, and how to roll it back | `docs/phases/` |
 | How a person edits a compiled test, end to end | `docs/guides/EDITABLE_IR.md` (walkthrough, not an owner) |
-| Briefing an LLM that CANNOT read this repo | `docs/guides/LLM_CONTEXT_BRIEFING.md` |
-| Onboarding a new teammate, end to end | `docs/guides/team-guide/` (five Word volumes, not an owner) |
 | Where every doc is, one line each | `docs/README.md` (an index, not an owner) |
 
 **Before adding a "what's broken" note anywhere, put it in `TECH_DEBT.md` instead.** Every owner
 above has exactly one job, and the what's-broken list lives in exactly one file — it used to be
 copied into six, and every copy drifted (`DECISIONS.md` D-01). Don't recreate the overlap.
 
-`docs/archive/` holds history, not owners — nothing should be filed *into* it: the old walkthrough
-(`PROJECT_OVERVIEW.md`), the dated audit (`problems.md`), dated plans and notes, and
-`site-store-view/` — **a spec for work that was never built; not a description of the current code**
-(its gate failed, TD-56). `docs/archive/README.md` lists what is there and where it used to live.
+**Old material is not on `main`.** It lives on the `archive` branch (frozen at tag `archive-2026-11-04`):
+`docs/archive/` (old walkthrough, dated audit `problems.md`, dated plans, and `site-store-view/` — **a spec for
+work that was never built**, TD-56), the onboarding Word volumes, market research, handoff notes, the old
+LLM context briefing and the stale `app.yaml`. A reference written `archive:<path>` means that file there:
+`git show origin/archive:<path>`. Nothing new is filed into the archive; `main` stays the working branch.
 
 `docs/guides/EDITABLE_IR.md` is a **walkthrough**, not a topic owner: the editable-IR flow spans
 `stepText.ts`, `caseEdit.ts`, `replay.ts`, `rewrite.ts`, the editor routes and the gate, and no
 single existing doc explains how they fit together. It states its own subordination at the top —
 `ARCHITECTURE.md` still owns the file map and schema, `DECISIONS.md` the rationale, `TECH_DEBT.md`
 the defects. Extend it for flow; put a defect in TECH_DEBT and a rationale in DECISIONS.
-
-`docs/guides/LLM_CONTEXT_BRIEFING.md` is **not** a topic owner either — it is a dated, self-contained
-export for pasting into a chat with a model that has no access to these files. It necessarily
-restates things the five docs own, which is exactly the duplication D-01 warns about, so it is
-allowed only on those terms: it says so at the top, it defers to the real docs whenever both are
-available, and it is regenerated rather than edited in place. Do not cite it as authority, and do
-not let a fix land there instead of in the file that owns the topic.
 
 `docs/phases/` is a build log, not a sixth topic owner: one report per shipped phase, each ending
 with what it deliberately did **not** fix. Read the report for the area you are about to touch
