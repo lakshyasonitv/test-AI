@@ -6185,7 +6185,7 @@ fix / unlisted-field / "all required fields" cases; three fail with the rule dis
 fields the case never touches are not ADDED, and `snapPicklist` still maps a value to the one option containing it
 ("Technology" -> "Biotechnology" in that replay), which saves but may not be the option meant.
 
-### TD-180. A Pro (document upload) run on Salesforce wrote its cases without the org scan or the screen map — High / Accidental — **Fixed (2026-11-02)**
+### TD-183. A Pro (document upload) run on Salesforce wrote its cases without the org scan or the screen map — High / Accidental — **Fixed (2026-11-02)**
 
 **Found 2026-11-02** by reading the code while checking whether the uploaded document reaches case
 generation (it does). `proTestCases.ts` began as a copy of `toTestCases` (D-53). Later the standard
@@ -6212,7 +6212,7 @@ drop good document-driven cases (e.g. a case on an object only the document name
 spec's `entities` folded into the request they read — a separate change. The copy itself remains (D-53): a
 future block added to one generator can drift again; the Salesforce parity test now covers these two.
 
-### TD-181. "Give test cases according to the story" planned and explored nothing — the story reached only the case generator — High / Accidental — **Fixed behind `PRO_STORY_PROMPT` (2026-11-03)**
+### TD-184. "Give test cases according to the story" planned and explored nothing — the story reached only the case generator — High / Accidental — **Fixed behind `PRO_STORY_PROMPT` (2026-11-03)**
 
 **Found 2026-11-02** from a user's run: a Case/report/list-view story with a vague typed prompt produced
 twelve cases about Setup, search, New User, Chatter and the Home chart, none about the story. Every stage

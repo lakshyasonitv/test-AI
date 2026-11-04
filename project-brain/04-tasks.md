@@ -2,13 +2,13 @@
 
 *Last updated: 2026-11-03.*
 
-## Pro story -> request (PRO_STORY_PROMPT, TD-181, D-73)
+## Pro story -> request (PRO_STORY_PROMPT, TD-184, D-74)
 
 - [x] Committed + pushed `b190506` (2026-11-03, user approved). No PR yet.
 - [ ] Turn on in Azure after merge+deploy: `PRO_STORY_PROMPT=true` (needs `SPEC_INTAKE_ENABLED=true`).
 - [ ] One real Pro run with an empty prompt box; check 01-plan.json follows the story — ask first (costs AI).
 
-## Pro on Salesforce (TD-180, branch `pro/salesforce-org-context`)
+## Pro on Salesforce (TD-183, branch `pro/salesforce-org-context`)
 
 - [ ] Open a PR when the user asks (base: `cleanup/production-ready` or main after that merges).
 - [ ] One real Pro run on the org to confirm (costs one Azure case-generation call) — ask first.

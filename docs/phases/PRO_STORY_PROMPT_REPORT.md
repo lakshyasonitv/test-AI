@@ -1,4 +1,4 @@
-# Pro: the story becomes the run's request (PRO_STORY_PROMPT, TD-181, D-73)
+# Pro: the story becomes the run's request (PRO_STORY_PROMPT, TD-184, D-74)
 
 *2026-11-03 · branch `pro/salesforce-org-context` · NOT committed (waiting for the user's go-ahead)*
 
@@ -39,7 +39,7 @@ planner and the case writer directly, so the box only needs to name the flow and
 | `src/orchestrator.ts` | Passes the run's spec to the planner only when the setting is on and the run has a spec |
 | `public/app.js` | After Continue: fill or offer, using existing CSS classes only (`field-label`, `composer-save-btn`). Edit / new upload clears the note |
 | `.env.example`, `README.md`, `ARCHITECTURE.md` | Setting documented; new file listed |
-| `TECH_DEBT.md` TD-181, `DECISIONS.md` D-73 | The defect and the reasoning |
+| `TECH_DEBT.md` TD-184, `DECISIONS.md` D-74 | The defect and the reasoning |
 
 ## Why it was built this way
 
@@ -72,7 +72,7 @@ box, press Continue, then check that `runs/<id>/01-plan.json` describes the stor
   text. A Case list view or report the prompt doesn't lead to can still go unexplored (improvement #4).
 - **A typed prompt that contradicts the story** is kept. The planner reads both, and the button is there
   to switch.
-- **The Salesforce clean-up steps are still not applied to Pro (TD-180).** They do now read the filled
+- **The Salesforce clean-up steps are still not applied to Pro (TD-183).** They do now read the filled
   prompt, which names the story's objects.
 
 ## How to roll back

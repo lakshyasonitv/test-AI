@@ -246,7 +246,7 @@ describe("flag ON — POST /api/spec/confirm", () => {
     expect(Object.keys(res.body)).toEqual(["spec"]);
   });
 
-  it("PRO_STORY_PROMPT on: an OPTIONAL promptText built from the spec rides along (TD-181)", async () => {
+  it("PRO_STORY_PROMPT on: an OPTIONAL promptText built from the spec rides along (TD-184)", async () => {
     flagOn();
     process.env.PRO_STORY_PROMPT = "true";
     try {

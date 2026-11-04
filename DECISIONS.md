@@ -1589,11 +1589,11 @@ an out-of-scope item, and filtering on the case's wording would be the regex-ove
 check CLAUDE.md warns against (TD-01). A structural check needs a structural link first — for
 example cases citing the rule they prove — which is Pro's own logic to add later.
 
-**Salesforce blocks (2026-11-02, TD-180).** The copy had missed the two Salesforce blocks the standard
+**Salesforce blocks (2026-11-02, TD-183).** The copy had missed the two Salesforce blocks the standard
 generator gained after Pro was written (screen map, org model). Pro now builds them with the same calls
 and keys on them at the same position; `tests/proTestCases.test.ts` pins that parity on a Salesforce run.
 The standard path's Salesforce post-filters are still not applied to Pro, on purpose — they read only the
-typed request, and Pro's request is mostly the document (see TD-180).
+typed request, and Pro's request is mostly the document (see TD-183).
 
 **Rejected.** An optional field on `toTestCases` (one edit, but every future Pro change would reopen
 the standard path's file). A JSON upload carrying base64 (the global `express.json()` has a 100 KB
@@ -2273,10 +2273,10 @@ credential prompt and case gate already require one). A site that changes within
 against the old picture until someone ticks "Explore the site again"; a failure caused by that looks
 like a missing element. Multi-URL runs (`discoverPagesHybrid`) are not shared.
 
-## D-73. A Pro story becomes the run's request — filled into the prompt box, and read by the planner
+## D-74. A Pro story becomes the run's request — filled into the prompt box, and read by the planner
 
 **Decision.** Behind `PRO_STORY_PROMPT` (default off), a Pro story reaches the stages that read the request,
-not only the case generator (TD-181). Two parts: the confirmed spec is rendered into a plain request that
+not only the case generator (TD-184). Two parts: the confirmed spec is rendered into a plain request that
 the browser puts in the prompt box, and on a Pro run the planner also reads the story.
 
 **Why the prompt box, not more server plumbing.** The typed prompt feeds the planner, discovery, the

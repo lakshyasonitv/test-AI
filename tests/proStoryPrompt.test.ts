@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import type { SpecModel } from "../src/schema/spec.js";
 
 /**
- * PRO_STORY_PROMPT (TD-181): a vague prompt like "give test cases according to the story" used to
+ * PRO_STORY_PROMPT (TD-184): a vague prompt like "give test cases according to the story" used to
  * plan and explore nothing in particular, because only the case generator ever saw the story.
  *
  *   1. storyPromptText / storyPlanBlock — the two deterministic renderings of the confirmed spec.

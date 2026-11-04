@@ -160,7 +160,7 @@ describe("a standard run is untouched", () => {
   });
 });
 
-// PRO_STORY_PROMPT (TD-181): a Pro run's planner reads the confirmed story; off, it never does.
+// PRO_STORY_PROMPT (TD-184): a Pro run's planner reads the confirmed story; off, it never does.
 describe("the planner is handed the story only with PRO_STORY_PROMPT on a Pro run", () => {
   async function storyGivenToPlanner(options: Record<string, unknown>) {
     modelAnswers({ testcases: async () => ok(CASES), spec_compare: async () => ok({ gaps: [] }) });
