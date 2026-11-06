@@ -6151,12 +6151,37 @@ fetch("/api/health")
     if (h && h.specIntake === true) renderProToggle();
     if (h && h.jira === true) renderJiraRow();
     if (h && h.projectDiscovery === true) renderProjectFreshBox();
+    if (h && typeof h.landingUrl === "string") renderLandingLink(h.landingUrl);
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);
     if (!("selfHeal" in runOptions)) paintToggle(healToggleEl, optionDefaults.selfHeal);
   })
   .catch(() => { /* health is a diagnostic; the toggles still work without it */ });
+
+// -----------------------------------------------------------------------------
+// Link back to the landing page (LANDING_URL, D-76)
+//
+// The landing page is hosted apart from the app (landing/, e.g. on Hostinger) and links INTO the
+// app; this is the way back. Built only when /api/health carries `landingUrl`, which the server
+// sends only for a valid http(s) LANDING_URL. Flag off: no element is created, nothing is hidden
+// with .hidden (rule 4). Reuses .topbar-btn (rule 3); the inline style only gives an <a> the box
+// a <button> already has. Prepended to .topbar-actions, outside the header menu, so it stays
+// visible beside the menu button. A second call does nothing.
+// -----------------------------------------------------------------------------
+
+function renderLandingLink(url) {
+  if (document.getElementById("landingLink")) return;
+  const actions = document.querySelector(".topbar-actions");
+  if (!actions) return;
+  const a = document.createElement("a");
+  a.id = "landingLink";
+  a.className = "topbar-btn";
+  a.href = url;
+  a.textContent = "Landing page";
+  a.style.cssText = "display:inline-flex;align-items:center;text-decoration:none";
+  actions.insertBefore(a, actions.firstChild);
+}
 
 // -----------------------------------------------------------------------------
 // Pro document intake (SPEC_INTAKE_ENABLED)

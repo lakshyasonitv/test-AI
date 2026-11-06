@@ -411,6 +411,7 @@ Routes (`src/server/index.ts`, all new, all 404 when the flag is off): `GET /api
 | `regroundJobs.ts` | A re-ground is a job, not a blocking request: `POST -> 202 {id}` + SSE + polling + cancel. The same protocol runs use, because a 90-second PATCH can report neither progress nor be stopped |
 | `rewrite.ts` | Where a model proposes step text and **never writes**: `proposeRewrite` ("ask for a change") and `proposeStepTranslation` ("write it for me"). Both return sentences, not IR, so approving one re-enters the ordinary parse/re-ground path, and **both** now run every proposed line through `parseIrStep` before it is shown (TD-91). `proposeRewrite` is also given the site's actual controls, or it invents element names from page headings |
 | `retention.ts` | Ages off `runs/` directories on a schedule, per `RUN_RETENTION_DAYS` |
+| `landingLink.ts` | `landingUrl()`: the validated `LANDING_URL` (http/https only, else `null`). `/api/health` carries it as an optional `landingUrl`, and `app.js` then prepends a "Landing page" `.topbar-btn` link. Unset: no field, no link (`DECISIONS.md` D-76) |
 
 ### `public/` — Frontend
 
@@ -421,6 +422,8 @@ Routes (`src/server/index.ts`, all new, all 404 when the flag is off): `GET /api
 | `index.html` | Single-page HTML shell (348 lines): nine `<section class="view">` screens, sidebar, topbar, case-selection panel, credential and screenshot modals |
 | `style.css` | Single **light** theme (1,915 lines) — white plus ThinkVibes blue `#0b63ce`, black text, every other surface that blue at low opacity. There is no dark variant and no `[data-theme]` override; the previous dark/light token pair and its toggle were removed rather than half-maintained. Responsive: the sidebar becomes a drawer below 900px |
 | `app.js` | Single-page app (5,611 lines): run form, phase UI, suite cards, history, case-selection panel; renders executed IR steps (not raw case prose) in the results panel. Also the whole platform UI — login/sign-up, projects tree, Team screen, suites, and the case detail screen with its step editor, live estimate, job progress and diff-based proposal cards. Builds the topbar hamburger (`#hdrMenuBtn`) at runtime and applies the `role-no-edit` / `role-no-admin` body classes |
+
+The marketing landing page is **not** in `public/` and the app does not serve it: it lives in `landing/` (own HTML/CSS/JS, relative asset paths, every class `lp-`) and is hosted separately, e.g. on Hostinger. Its buttons link to the app's address; the way back is `LANDING_URL` above. Hosting steps: `landing/README.md`.
 
 ---
 

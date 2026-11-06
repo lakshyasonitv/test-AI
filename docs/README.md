@@ -18,6 +18,7 @@ nothing is written twice (`DECISIONS.md` D-01).
 | Read this | For |
 |---|---|
 | [`guides/EDITABLE_IR.md`](guides/EDITABLE_IR.md) | How a person edits a compiled test, end to end |
+| [`../landing/README.md`](../landing/README.md) | Hosting the landing page on its own (e.g. Hostinger) and linking it to the app both ways |
 
 ## History
 

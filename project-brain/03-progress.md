@@ -1,5 +1,11 @@
 # Progress — where we are
 
+*Last updated: 2026-11-06. Branch `redesign/app-ui` (3 commits ahead of main: landing page, top-bar link, theme.css
+re-theme). On top of it, NOT committed: the landing page moved out of the app into `landing/` for Hostinger, linked
+both ways (buttons → Azure app; `LANDING_URL` → "Landing page" link in the app, off when unset), D-76. Uncommitted
+`public/theme.css` edits are someone else's. Windows-checkout baseline: 2913 passed / 7 failed (all pre-existing,
+TD-170 + browser) / 23 skipped, 225 files. See journal/2026-11-06.md.*
+
 *Last updated: 2026-11-04, late. TD-186 (History 500 when a run folder is deleted mid-listing) fixed in its own
 PR after #21 (brain update, merged `1c170f2`). Baseline with it: 2919 passed / 1 failed (safeClickBrowser) / 23
 skipped, 224 files. See journal/2026-11-04.md.*

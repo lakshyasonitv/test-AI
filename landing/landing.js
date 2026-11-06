@@ -1,4 +1,4 @@
-/* Testbench landing page — small, self-contained enhancements for public/landing.html.
+/* Testbench landing page — small, self-contained enhancements for landing/index.html.
    The page is complete without this file: it only adds reveal-on-scroll, the ticking run
    timer, the typing prompt, and swaps a demo slot's placeholder for a real <video> when that
    slot has a data-video URL. Nothing here talks to the app or any /api route. */

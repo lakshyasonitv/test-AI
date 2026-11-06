@@ -1,6 +1,15 @@
 # Open tasks
 
-*Last updated: 2026-11-04, end of day.*
+*Last updated: 2026-11-06.*
+
+## Landing page on Hostinger (D-76, 2026-11-06)
+
+- [x] Landing page moved to `landing/`, linked both ways, tested, documented (`landing/README.md`). Not committed.
+- [ ] USER: say "commit" (branch `redesign/app-ui`); then PR into main. Merging deploys to Azure.
+- [ ] USER: upload `landing/` contents to Hostinger `public_html`, turn on SSL + Force HTTPS.
+- [ ] USER: once deployed, `az containerapp update -n testbench -g testbench-rg --set-env-vars LANDING_URL=https://<domain>/`.
+- [ ] Optional: `app.<domain>` custom domain for the app (steps in `landing/README.md`). If done, update the landing
+      links, `.htaccess`, and the Salesforce/Jira/Supabase callback URLs together.
 
 ## Branch clean-up (user, 2026-11-04)
 

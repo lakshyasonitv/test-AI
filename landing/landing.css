@@ -271,8 +271,10 @@ body.lp {
 .lp-ring { width: 92px; height: 92px; flex: none; transform: rotate(-90deg); }
 .lp-ring circle { fill: none; stroke-width: 4; stroke-linecap: round; }
 .lp-ring-bg { stroke: #eef0f3; }
-.lp-ring-a { stroke: var(--lp-blue); stroke-dasharray: 92 100; animation: lp-ring-a 1.8s cubic-bezier(.2, .7, .2, 1) .5s both; }
-.lp-ring-b { stroke: var(--lp-yellow); stroke-dasharray: 8 69.1; animation: lp-ring-b 1.8s cubic-bezier(.2, .7, .2, 1) .8s both; }
+/* Outer ring = passed (2 of the mock's 4 cases = 50%), inner ring = repaired (1 of 4 = 25%
+   of the inner circle's 69.1 circumference). Keep these in step with the mock's numbers. */
+.lp-ring-a { stroke: var(--lp-blue); stroke-dasharray: 50 100; animation: lp-ring-a 1.8s cubic-bezier(.2, .7, .2, 1) .5s both; }
+.lp-ring-b { stroke: var(--lp-yellow); stroke-dasharray: 17.3 69.1; animation: lp-ring-b 1.8s cubic-bezier(.2, .7, .2, 1) .8s both; }
 .lp-mock-cases { grid-column: 1 / -1; }
 .lp-case { display: grid; grid-template-columns: auto minmax(0, 1.5fr) minmax(60px, 1fr) 58px; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid #f1f2f4; }
 .lp-case em { font-style: normal; font-weight: 600; font-size: .7rem; color: var(--lp-ink-3); text-align: right; }
@@ -344,6 +346,7 @@ body.lp {
 .lp-video-pink { background: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, .22) 1px, transparent 0) 0 0 / 12px 12px, linear-gradient(150deg, #ff9ab6, #ff5c8a); }
 .lp-video-yellow { background: radial-gradient(circle at 1px 1px, rgba(0, 0, 0, .08) 1px, transparent 0) 0 0 / 12px 12px, linear-gradient(150deg, #ffe27a, #ffb21f); }
 .lp-video video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+.lp-video:has(video) { aspect-ratio: 16 / 9; } /* the demo videos are 16:9: show them whole, captions included */
 .lp-play {
   display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%;
   background: rgba(255, 255, 255, .55); border: 1px solid rgba(255, 255, 255, .9);
@@ -391,7 +394,23 @@ body.lp {
 
 /* ---------- cta / foot ---------- */
 .lp-cta { max-width: 1180px; margin: 0 auto; padding: 110px 16px 90px; text-align: center; }
-.lp-cta .lp-h2 { margin-bottom: 28px; }
+.lp-cta .lp-h2 { margin-bottom: 12px; }
+.lp-cta .lp-sub { margin-bottom: 28px; }
+
+/* plain-English steps card (features grid) */
+.lp-demo-steps { align-items: stretch; }
+.lp-steps {
+  list-style: none; margin: 0; padding: 14px 16px; display: grid; gap: 9px;
+  border-radius: 12px; background: #fff; box-shadow: var(--lp-shadow);
+  font-size: .84rem; color: var(--lp-ink-2);
+}
+.lp-steps li { display: flex; align-items: center; gap: 10px; }
+.lp-steps b { color: var(--lp-ink); font-weight: 600; }
+
+/* "Works with" as names, not letter tiles */
+.lp-works-names { flex-wrap: wrap; gap: 6px; }
+.lp-works-names .lp-chip { background: #fff; color: var(--lp-ink); box-shadow: 0 4px 10px -6px rgba(0, 0, 0, .25); }
+.lp-tier .lp-tier-big { margin-top: 0; }
 .lp-foot {
   max-width: 1180px; margin: 0 auto; padding: 24px 16px 40px;
   display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px;

@@ -122,6 +122,7 @@ import { proStoryPromptEnabled, storyPromptText } from "../stages/storyPrompt.js
 import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabled, JiraError, parseIssueKey } from "../jira/client.js";
 import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
 import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
+import { landingUrl } from "./landingLink.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -900,6 +901,9 @@ app.get("/api/health", (_req, res) => {
     // ADDITIVE, present ONLY when PROJECT_DISCOVERY_SHARING is on (D-72): the home view then offers
     // "Explore the site again". Off: the body is unchanged.
     ...(projectDiscoveryEnabled() ? { projectDiscovery: true } : {}),
+    // ADDITIVE, present ONLY when LANDING_URL is a valid http(s) address (D-76): app.js then adds a
+    // "Landing page" link to the top bar. The landing page is public, so its address is too.
+    ...(landingUrl() ? { landingUrl: landingUrl() } : {}),
   });
 });
 

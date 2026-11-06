@@ -2360,3 +2360,25 @@ Forms case and the TB Total Opportunity Amount roll-up, on the scratch org.
 **Not covered.** Objects the request does not name by their org label. More than 3 objects per run (a scratch org's
 API allowance is small). Record types, rules and formulas are described to the case writer; nothing checks
 structurally that a case exercised the rule it was told about.
+
+## D-76. The landing page is its own site; the app links back to it only through `LANDING_URL`
+
+**Context.** A marketing landing page was first added inside the app (`public/landing.html`, served by the app's own
+static mount, with a hard-coded "Landing page" link in the top bar). The user wants to host it on another server
+(Hostinger) while the app stays in its Azure container, with links both ways.
+
+**Decision.** The page moved to `landing/` (`index.html`, `landing.css`, `landing.js`, an optional `.htaccess`), which
+the app does not serve and the Docker image does not copy (`.dockerignore`). Its assets load by relative path, so it
+works from any host or folder. Landing to app: its buttons are plain links to the app's Azure address, and `.htaccess`
+adds `/app` as a short redirect there. App to landing: `LANDING_URL` (unset = off). `/api/health` carries an optional
+`landingUrl` only for a valid http/https value (`src/server/landingLink.ts`), and `app.js` then prepends one
+`.topbar-btn` link. The hard-coded top-bar link was removed from `index.html`.
+
+**Rejected.** Keeping the hard-coded `/landing.html` link: it would 404 once the page left `public/`. A new route for
+the setting: `/api/health` already carries every optional UI capability (`jira`, `specIntake`, ...), and an optional
+field there keeps rule 1. Making the landing buttons relative (`/app`) and relying on the redirect: the page would
+then only work on a host that reads `.htaccess`.
+
+**Not covered.** The app's address appears in two places in `landing/` (`index.html` and `.htaccess`); changing it is a
+search-and-replace there, not a setting. A custom domain for the app (`app.yourdomain.com`) is documented in
+`landing/README.md` but not set up.
