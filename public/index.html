@@ -60,6 +60,11 @@
           <button type="button" class="crumb crumb-root" id="crumbRoot">Testbench</button>
         </div>
         <div class="topbar-actions">
+          <!-- Plain link to the static landing page (public/landing.html). Not in app.js's
+               header-menu id list, so it stays visible in the topbar beside the menu button.
+               Reuses .topbar-btn (style.css class contract, CLAUDE.md rule 3); the inline style
+               only gives an <a> the box a <button> already has. -->
+          <a id="landingLink" class="topbar-btn" href="/landing.html" style="display:inline-flex;align-items:center;text-decoration:none">Landing page</a>
           <button type="button" id="historyBtn" class="topbar-btn">History</button>
           <!-- Admin/owner only. app.js unhides it from the role reported by /api/auth/me; the
                server refuses the member routes regardless, so this is a courtesy not a control. -->
