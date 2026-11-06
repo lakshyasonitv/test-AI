@@ -24,6 +24,7 @@ import type { AppModel, SalesforceOrgModel } from "../schema/appModel.js";
 import type { TestCase } from "./testCases.js";
 import { isPositiveCase } from "./hollowPassGuards.js";
 import { isEnvValueRef } from "./credentials.js";
+import { multiValueEnabled } from "./targetResolver.js";
 import { UNIQUE_TOKEN, PHONE_TOKEN, dateToken, hasRunToken, lineKey } from "../text.js";
 
 export function testDataEnabled(): boolean {
@@ -143,8 +144,8 @@ function formNamesOf(f: OrgField): string[] {
   return [f.label, `${base} Name`, base];
 }
 
-/** The org field a form control names. */
-function fieldOf(o: OrgObject, name: string): OrgField | undefined {
+/** The org field a form control names. Exported for salesforceFlowChecks (the same mapping). */
+export function fieldOf(o: OrgObject, name: string): OrgField | undefined {
   const k = lineKey(name);
   if (!k) return undefined;
   return o.fields.find((f) => k === lineKey(f.label) || k === lineKey(`${o.label} ${f.label}`))
@@ -314,6 +315,53 @@ function fixDependentPicklists(
   return n;
 }
 
+/**
+ * The role discovery recorded for a multi-select picklist on this object's create form: the
+ * dual listbox's group (or one of its lists) named by the field's label. "group" when the form
+ * was not captured: Lightning's dual listbox labels its group with the field's label.
+ */
+function multiPicklistRole(appModel: AppModel, o: OrgObject, label: string): string {
+  const page = appModel.pages.find((p) => new RegExp(`/lightning/o/${o.api}/new(\\?|$)`).test(p.url));
+  const el = page?.elements.find((e) => (e.role === "group" || e.role === "listbox") && lineKey(e.name ?? "") === lineKey(label));
+  return el?.role ?? "group";
+}
+
+/**
+ * D-74: each fill or select on a MultiPicklist field becomes one `select` per option it names, in
+ * order, on the field's discovered group. Salesforce writes such a value "A;B"; a model also writes
+ * "A, B". It is split only when EVERY part is one of this field's options (structure: the org
+ * model's picklist), so an option whose own name holds a comma stays whole, and a value that is not
+ * an option is left for the snap and the error it will fail with. Returns the section's new end.
+ */
+function splitMultiPicklists(ir: IR, o: OrgObject, from: number, to: number, appModel: AppModel, notes: string[]): number {
+  for (let i = to - 1; i >= from; i--) {
+    const s = ir.steps[i];
+    if ((s.action !== "fill" && s.action !== "select") || isEnvValueRef(s.value)) continue;
+    const f = fieldOf(o, s.target?.name ?? s.target?.label ?? "");
+    if (!f || f.type !== "MultiPicklist") continue;
+    const options = f.picklist ?? [];
+    // An option exactly, else the one option a part means (the same snap a single picklist gets).
+    const option = (v: string) => options.find((p) => lineKey(p) === lineKey(v)) ?? snapPicklist(o, v, f);
+    const raw = (s.value ?? "").trim();
+    const parts = raw.split(/[;,]/).map((p) => p.trim()).filter(Boolean);
+    const values = !raw ? (options.length ? [options[0]] : [])
+      : options.some((p) => lineKey(p) === lineKey(raw)) ? [option(raw)!]
+        : parts.length > 1 && parts.every((p) => option(p)) ? [...new Set(parts.map((p) => option(p)!))]
+          : parts.length === 1 && option(raw) ? [option(raw)!]
+            : [raw];
+    if (!values.length) continue;
+    const label = s.target?.name ?? s.target?.label ?? f.label;
+    const target = { ...s.target, role: multiPicklistRole(appModel, o, label), name: label };
+    const steps: Step[] = values.map((value, j) => ({ ...s, id: j ? `${s.id}-${j + 1}` : s.id, action: "select", target: { ...target }, value }));
+    const same = values.length === 1 && s.action === "select" && s.target?.role === target.role && s.value === values[0];
+    if (same) continue;
+    ir.steps.splice(i, 1, ...steps);
+    to += steps.length - 1;
+    notes.push(`${s.id}: multi-select picklist "${label}" -> ${values.length === 1 ? `selects "${values[0]}"` : `one select per option: ${values.map((v) => `"${v}"`).join(", ")}`}`);
+  }
+  return to;
+}
+
 function applyToSection(
   ir: IR, o: OrgObject, from: number, to: number,
   testCase: Pick<TestCase, "category">, appModel: AppModel, request: string, notes: string[], n: number,
@@ -331,10 +379,17 @@ function applyToSection(
     ir.steps.splice(i, 1);
     to--;
   }
+  // D-74 (MULTI_VALUE_CONTROLS_ENABLED), every case, BEFORE the snap below: a multi-select picklist
+  // takes several options, one select step each. Off: "Red;Blue" reached the snap, which kept only
+  // the longer option it found inside ("Blue") and dropped the other without a word.
+  if (multiValueEnabled()) to = splitMultiPicklists(ir, o, from, to, appModel, notes);
   // Every case: a picklist offers only its options, so a value that is not one is never what a test
   // means ("Working" for "Working - Contacted", run 2026-10-24T20-37-00-424Z-410671c2).
   for (const s of steps()) {
     if (s.action !== "select" || !s.value || isEnvValueRef(s.value)) continue;
+    // D-74: a multi-select value was split and snapped part by part above; snapping what is left
+    // ("A;not-an-option") to ONE option is the silent drop that pass exists to stop.
+    if (multiValueEnabled() && fieldFor(nameOf(s))?.type === "MultiPicklist") continue;
     const snapped = snapPicklist(o, s.value, fieldFor(nameOf(s)));
     if (snapped) { notes.push(`${s.id}: "${s.value}" -> "${snapped}" (the org's picklist option)`); s.value = snapped; }
   }
@@ -443,6 +498,12 @@ function applyToSection(
       if (!f.picklist?.length) continue;
       add({ id: `td-${++n}`, action: "select", target: { role: "combobox", name: label }, value: f.picklist[0] },
         `required picklist "${label}" had no step -> "${f.picklist[0]}"`);
+    } else if (f.type === "MultiPicklist" && multiValueEnabled()) {
+      // D-74: off, this fell through to valueFor and FILLED "Test <label> {{uid}}" into a textbox
+      // that does not exist: a multi-select picklist is a dual listbox, not a text field.
+      if (!f.picklist?.length) continue;
+      add({ id: `td-${++n}`, action: "select", target: { role: multiPicklistRole(appModel, o, label), name: label }, value: f.picklist[0] },
+        `required multi-select picklist "${label}" had no step -> "${f.picklist[0]}"`);
     } else {
       const v = valueFor(f, locale);
       if (!v) continue;

@@ -2389,3 +2389,105 @@ browser on a demo replay run: the buttons show, and the first click exposed a re
 did not carry its case id, so approve refused) now fixed and covered by test (f). A real approve
 against the hosted case library was not tried. Rejections live under `runs/`, so where `runs/` is not
 kept (TD-181) a rejected repair can be proposed again after a restart.
+
+## D-74. A field that takes several values gets one `select` per value, added and confirmed by structure at run time
+
+*Numbered past both sides of the `refactored-code` / `main` split (`main` uses D-73 for parallel suite
+cases, this branch for regression testing), so the clash does not grow.*
+
+**Context.** The user (2026-11-04): "i am not able to check the screen flows with multiple value". A
+headless check against SLDS-shaped markup (`tests/multiValueControls.test.ts`; no saved run holds a dual
+listbox or a checkbox group) showed three defects and two in the test data, all in `TECH_DEBT.md` TD-183:
+a `select` on a Lightning dual listbox ("Available" -> "Selected", what a Screen Flow's multi-select
+picklist and a record form's multi-select picklist field render) clicked the option, which only
+HIGHLIGHTS it, and passed; a `check` on an SLDS checkbox timed out (the real input is a clipped 1px box
+and the painted box in its label takes the click — Playwright counts it visible, then retries "label
+intercepts pointer events"); a radio `click` got there only through `safeClick`'s forced-click fallback
+(~7 s), and the grounding replay's plain click has no fallback; on record forms the test-data pass
+snapped "A;B" to ONE option and filled a required multi-select picklist as a text box. Several fields on
+one screen, and several screens on one URL (D-52), already worked.
+
+**Decision.** Behind `MULTI_VALUE_CONTROLS_ENABLED` (default off):
+- **One value per step.** "Red and Blue in Interests" is two `select` steps. The IR, the step editor's
+  sentence format (two copies, `stepText.ts` and `app.js`) and every consumer of a step stay as they are.
+- **Decided at run time from structure**, as `choose()` already decides native-vs-custom (TD-70):
+  `chooseMulti` (spec) / `chooseMultiLive` (replay) look at the resolved element — two
+  `aria-multiselectable` listboxes under the field's group or around the targeted list; a fieldset or
+  `role=group/radiogroup` (or a wrapper holding 2+ boxes) of checkboxes/radios; a `<select multiple>` —
+  and otherwise call the ordinary `choose()` untouched. Dual listbox: click the option in the first list,
+  click the first button between the two lists (by POSITION; its label is in the org's language), then
+  confirm the option sits in the second list or fail saying what it holds. Already chosen: nothing to do.
+- **`checkBox`** for `check`, a radio `click`, and a checkbox group's value: already checked = done; a box
+  whose centre receives the click (`elementFromPoint`) is checked as before; otherwise its label is
+  clicked (the `for=` label, the label around it, or the one label beside it in a parent with one input);
+  then the box is VERIFIED checked.
+- **One source for spec and replay** (`checkBoxJs` / `chooseMultiJs` in `targetResolver.ts`, emitted into
+  the spec and built with `new Function` for the replay): TD-07 is what restating it by hand produces.
+- **Grounding (TD-125 part B):** on a Salesforce screen, a `select` whose value names one CHECKBOX of a
+  group the model called by its legend becomes a `check` on that box (a click would toggle it).
+- **Test data:** a fill/select on a `MultiPicklist` field becomes one select per option, split on `;`/`,`
+  only when every part is (or snaps to) one of THAT field's options; the single-picklist snap skips the
+  field; a required one with no step selects its first option on the discovered group.
+- **Prompt:** one line APPENDED to the Salesforce IR guidance — one `select` per value, never "A;B" —
+  named with its backing check; appended rather than edited in, so flag-off prompts stay byte-identical.
+
+**Rejected.** *A `values: string[]` on the step* — changes the editor's sentence format in both copies
+and the parse-onto-original contract for one feature. *`check({ force: true })`* — it fires at the hidden
+input's coordinates and works only because the label happens to sit there; it would also "check" a box
+a person cannot reach. *Splitting "A;B" inside `chooseMulti`* — that parses model text at run time;
+the test data does it against the org model's options instead, and elsewhere the step fails naming the
+options. *Running one flow with several data sets* — not built: asked the user whether "multiple value"
+means that (2026-11-04), no answer yet.
+
+**Known limits.** Verified on synthetic SLDS-shaped markup only, never a live org. Grounding does not
+check that a dual-listbox value is an option (the run fails naming what is offered). The first of the two
+lists is taken as the source. See TD-183.
+
+## D-75. A record-triggered flow's field updates are checked on the SAVED record, through the org connection, when the case's own values meet its conditions
+
+**Context.** The user (2026-11-04): "how can i check for a record triggered flow ... with fast field update
+how will it check it". A before-save flow ("fast field update") has no screen, no toast and no page: the
+only evidence it ran is a field value on the saved record. The org model already read each active flow
+and described it in lines ("only when Rating = Hot", "sets Tier = Gold"), and the prompts asked the model
+to write a case that meets the conditions and checks the field — both lines said "(No deterministic
+check.)" (TD-184).
+
+**Decision.** Behind `SALESFORCE_FLOW_CHECKS_ENABLED` (default off), on org-connection runs:
+- **The flow as data** (`flowFieldUpdates`, read from the metadata the org model already fetches):
+  object API name, before- or after-save, start conditions (field, operator, fixed value) and logic, and
+  every assignment to `$Record.<Field>` (before-save) or "update the triggering record" input (after-save)
+  with a FIXED value, walking `connector` from the start element through assignments, updates and other
+  records' lookups/creates/deletes, stopping at the first decision. Anything else — behind a decision,
+  from a variable or formula, "Add" to its own value, a related record's field — goes in `skipped`.
+- **When to check** (`flowFieldChecks`, an IR pass before grounding, after the other Salesforce passes):
+  per create form a case saves (navigate to `/lightning/o/<Obj>/new` … Save … "was created"), each flow
+  on that object that runs on create is judged against the values the case itself typed into that form
+  (org field by label -> literal), three-valued. True: one `assert` per field, `text_equals` the flow's
+  value, `target: { field, recordField: { object, n, api } }`, inserted right after the save's outcome.
+  False: nothing ("does not run for this case"). Undecided — a condition on a field the case does not set
+  (its default is invisible here), a run-token value, `IsChanged`, a formula start, unreadable custom
+  logic, a picklist "not equal" (label vs API value): nothing, and the log names the field.
+- **How it is read** (`sfSavedField` in the spec): the record id from the same create-form tracker as
+  `sfOpenRecord`; the instance and token from `SF_FRONTDOOR_URL` (its `sid`), already in the child's env
+  for the sign-in; `GET /services/data/v62.0/sobjects/<Obj>/<Id>?fields=<Api>` with Node's own `fetch`
+  (never a Playwright request, so no trace records it), token in a header only, never in an error;
+  polled to the assertion timeout; values compared as the API spells them (numbers as numbers,
+  booleans by case, multi-select parts in any order). `SF_API_VERSION` moved to `salesforceFrontdoor.ts`
+  so the generator does not import the server.
+- **Prompt:** on org-connection runs, one line APPENDED to the case-writer's guidance: give the fields a
+  flow's conditions read fixed values (never `{{uid}}`), so the pass can decide; break one to show the
+  flow not running.
+
+**Rejected.** *Check the record page (`sfFieldValue`)* — depends on the layout showing the field;
+a checkbox has no text; a picklist shows its label, the flow sets its API value. *A server-side check
+after the spec, like the Phase D cleanup* — the verdict would live outside `results.json`, which the
+report, failure analysis and heal all read, and the spec run in CI would check nothing. *Evaluate the
+conditions at run time on the saved record* — a case that missed the conditions would then pass with the
+check silently skipped; deciding from the case's own inputs at compile time makes "not checked" visible
+in the log instead. *Leave it to the prompt* — the status quo, no check behind it.
+
+**Known limits.** Create only (an edit's record and an update-triggered flow are not checked). A create
+form opened by a click ("New") stops the pass for the rest of the case, since the run counts it and
+this pass cannot. The case must show the save succeeded ("was created", which `strengthenSaveOutcome`
+adds under HOLLOW_PASS_GUARDS). With the flag on, the org model holds more, so the org setup hash changes
+once and a saved scan made with it off is not reused. Never run against a real org. See TD-184, TD-185.

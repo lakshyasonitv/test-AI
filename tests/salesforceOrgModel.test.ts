@@ -389,9 +389,12 @@ describe("active flows: what runs by itself after a save", () => {
       }
       if (q.includes(`FROM Flow WHERE Id = '${VERSION}'`)) {
         return { records: [{ Metadata: {
-          start: { object: "Lead", filters: [{ field: "Rating", operator: "EqualTo", value: { stringValue: "Hot" } }] },
-          recordUpdates: [{ inputReference: "$Record", inputAssignments: [{ field: "Zq_Tier__c", value: { stringValue: "Gold" } }] }],
-          recordCreates: [{ object: "Task" }],
+          // Element names and connectors as the Tooling API returns them (D-75 walks them; flowEffects does not).
+          start: { object: "Lead", filters: [{ field: "Rating", operator: "EqualTo", value: { stringValue: "Hot" } }],
+            connector: { targetReference: "Zq_Upd" } },
+          recordUpdates: [{ name: "Zq_Upd", inputReference: "$Record", inputAssignments: [{ field: "Zq_Tier__c", value: { stringValue: "Gold" } }],
+            connector: { targetReference: "Zq_Task" } }],
+          recordCreates: [{ name: "Zq_Task", object: "Task" }],
         } }] };
       }
       return base.apiGet(path);
@@ -404,6 +407,19 @@ describe("active flows: what runs by itself after a save", () => {
       effects: ["only when Rating = Hot", "sets Zq_Tier__c = Gold", "creates a Task"] });
     expect(org.flows?.[1]).toMatchObject({ api: "Zq_Screen", type: "screen" });
     expect(orgModelForCases(org)).toContain(`- flow "Zq Hot Lead" (record-triggered on Lead, on create): only when Rating = Hot; sets Zq_Tier__c = Gold; creates a Task`);
+  });
+
+  it("D-75: with SALESFORCE_FLOW_CHECKS_ENABLED on, the record-triggered flow also carries its field updates as data", async () => {
+    expect((await readSalesforceOrgModel({ apiGet: flowApi() }))!.flows?.[0]).not.toHaveProperty("fieldUpdates");
+    process.env.SALESFORCE_FLOW_CHECKS_ENABLED = "true";
+    try {
+      const org = (await readSalesforceOrgModel({ apiGet: flowApi() }))!;
+      expect(org.flows?.[0].fieldUpdates).toEqual({ object: "Lead", timing: "after-save", logic: "and",
+        conditions: [{ field: "Rating", op: "EqualTo", value: "Hot" }], sets: [{ field: "Zq_Tier__c", value: "Gold" }] });
+      expect(org.flows?.[1]).not.toHaveProperty("fieldUpdates");   // the screen flow
+    } finally {
+      delete process.env.SALESFORCE_FLOW_CHECKS_ENABLED;
+    }
   });
 
   it("an org that refuses the query simply has no flows listed", async () => {

@@ -29,7 +29,7 @@ const { chromiumLaunchOptions } = await import("../src/browserLaunch.js");
  *   dupSelf: two buttons both named "Self Use" — no way to tell which one "select Self Use" means
  *   single: the fields are on the entry page itself, no Next (for the ordinary-run comparison)
  */
-const BUDGET = (o: { both?: boolean; dupSelf?: boolean; single?: boolean; num?: boolean }) => {
+const BUDGET = (o: { both?: boolean; dupSelf?: boolean; single?: boolean; num?: boolean; boxes?: boolean }) => {
   // num: the budgets are <input type="number"> (role spinbutton), as on the real site.
   const ty = o.num ? ' type="number"' : "";
   const screen2 =
@@ -40,6 +40,12 @@ const BUDGET = (o: { both?: boolean; dupSelf?: boolean; single?: boolean; num?: 
     `<div role="group" aria-label="Purpose"><button type="button" id="self">Self Use</button>` +
     (o.dupSelf ? `<button type="button" id="self2">Self Use</button>` : "") +
     `<button type="button" id="inv">Investment</button></div>` +
+    // D-74: a Screen Flow checkbox group as SLDS draws it — a fieldset no role names, the real input
+    // a clipped 1px box, the painted box in its label.
+    (o.boxes ? `<style>.slds-checkbox input{width:1px;height:1px;border:0;clip:rect(0 0 0 0);margin:-1px;overflow:hidden;padding:0;position:absolute}` +
+      `.faux{display:inline-block;width:16px;height:16px;border:1px solid #888}</style><fieldset><legend>Channels</legend>` +
+      `<span class="slds-checkbox"><input type="checkbox" id="cbE"><label for="cbE"><span class="faux"></span><span>Email</span></label></span>` +
+      `<span class="slds-checkbox"><input type="checkbox" id="cbS"><label for="cbS"><span class="faux"></span><span>SMS</span></label></span></fieldset>` : "") +
     `<button type="button" id="go">Submit</button>`;
   return `<!doctype html><html><head><title>Express Interest</title></head>
 <body><main><h2>Express Interest</h2><div id="f"></div><p id="out"></p></main>
@@ -52,7 +58,8 @@ const BUDGET = (o: { both?: boolean; dupSelf?: boolean; single?: boolean; num?: 
     document.getElementById("go").onclick = () => {
       document.getElementById("out").textContent = "min=" + document.getElementById("min").value +
         " max=" + document.getElementById("max").value + " when=" + document.getElementById("when").value +
-        " purpose=" + purpose;
+        " purpose=" + purpose + (document.getElementById("cbE") ? " channels=" +
+        ["cbE", "cbS"].filter((id) => document.getElementById(id).checked).map((id) => id === "cbE" ? "Email" : "SMS").join(",") : "");
     };
   }
   ${o.single ? "s2();" : `f.innerHTML = '<label>Full Name <input id="fn"></label><button type="button" id="n1">Next</button>';
@@ -67,7 +74,7 @@ beforeAll(async () => {
     const q = new URL(req.url ?? "/", "http://x").searchParams;
     res.setHeader("content-type", "text/html");
     if (req.url?.startsWith("/budget")) {
-      res.end(BUDGET({ both: q.has("both"), dupSelf: q.has("dup"), single: q.has("single"), num: q.has("num") }));
+      res.end(BUDGET({ both: q.has("both"), dupSelf: q.has("dup"), single: q.has("single"), num: q.has("num"), boxes: q.has("boxes") }));
     } else { res.statusCode = 404; res.end("nope"); }
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -349,4 +356,31 @@ describe("retries keep the best attempt and reuse captured screens (Salesforce r
       if (prev === undefined) delete process.env.MAX_SCREEN_CAPTURES; else process.env.MAX_SCREEN_CAPTURES = prev;
     }
   }, 180_000);
+});
+
+describe("a select step aimed at a CHECKBOX group (Salesforce run, D-74, MULTI_VALUE_CONTROLS_ENABLED)", () => {
+  const ORIGINAL = process.env.MULTI_VALUE_CONTROLS_ENABLED;
+  afterAll(() => { if (ORIGINAL === undefined) delete process.env.MULTI_VALUE_CONTROLS_ENABLED; else process.env.MULTI_VALUE_CONTROLS_ENABLED = ORIGINAL; });
+  const channels = [choose("s8", "Channels", "Email"), choose("s8b", "Channels", "SMS")];
+
+  it("flag off: nothing on the screen is a dropdown named Channels, so the case is cut there (the defect)", async () => {
+    delete process.env.MULTI_VALUE_CONTROLS_ENABLED;
+    const model = await discover("/budget?boxes=1");
+    geminiMock.mockImplementation(answer(BUDGET_IR("/budget?boxes=1", channels)));
+    const { ir } = await withTargetApp("salesforce", () => toIR(testCase("boxes-off"), model, unique(), base + "/budget?boxes=1"));
+    expect(ir.meta.truncated).toBe(true);
+    expect(ir.steps.some((s: any) => s.id === "s8")).toBe(false);
+  }, 120_000);
+
+  it("flag on: one select per value becomes a CHECK on that box; the replay checks the hidden SLDS inputs", async () => {
+    process.env.MULTI_VALUE_CONTROLS_ENABLED = "true";
+    const model = await discover("/budget?boxes=1");
+    geminiMock.mockImplementation(answer(BUDGET_IR("/budget?boxes=1", channels)));
+    const { ir } = await withTargetApp("salesforce", () => toIR(testCase("boxes-on"), model, unique(), base + "/budget?boxes=1"));
+    expect(ir.meta.truncated ?? false).toBe(false);
+    expect(step(ir, "s8")).toMatchObject({ action: "check", target: { role: "checkbox", name: "Email" } });
+    expect(step(ir, "s8b")).toMatchObject({ action: "check", target: { role: "checkbox", name: "SMS" } });
+    expect(step(ir, "s8").value).toBeUndefined();
+    expect(await execute(ir)).toContain("channels=Email,SMS");
+  }, 120_000);
 });

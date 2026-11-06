@@ -1,6 +1,17 @@
 # Open tasks
 
-*Last updated: 2026-10-28.*
+*Last updated: 2026-11-04.*
+
+## Multi-value screen flows (D-74) + record-triggered flow checks (D-75)
+
+- [ ] Commit (ask first) — working tree only on `refactored-code`.
+- [ ] Get the user's answer: does "multiple value" also mean one flow run with several data sets? Not built.
+- [ ] First real check on a scratch org with both flags on: a Screen Flow with a multi-select picklist
+      and a checkbox group; a before-save flow on Lead/Account whose conditions a case meets. Costs
+      Gemini + org time — ask first.
+- [ ] TD-185: a sentence of its own for a saved-record check in both `formatIrStep` copies.
+- [ ] Later (TD-184): update-triggered flows on edits; show "not checked: why" on the report, not only
+      in the compile log.
 
 ## Shared discovery per project (D-72) + the main merge
 

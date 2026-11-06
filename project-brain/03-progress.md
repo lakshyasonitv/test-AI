@@ -1,5 +1,27 @@
 # Progress — where we are
 
+*Last updated: 2026-11-04. Branch `refactored-code` (pushed, no PR; 13 commits behind `origin/main`,
+merge conflicts in DECISIONS/TECH_DEBT/generator/ir). Multi-value screen-flow fields (D-74,
+`MULTI_VALUE_CONTROLS_ENABLED`) and record-triggered flow checks (D-75, `SALESFORCE_FLOW_CHECKS_ENABLED`)
+built, NOT committed. See `journal/2026-11-04.md`. **Gap:** D-73 regression steps 1–4 and TD-179..182
+(committed 2026-10-29..11-03) were never logged in this brain — read `DECISIONS.md` D-73.*
+
+## 2026-11-04 — `refactored-code`
+
+- **D-74** (TD-183): a `select` in a dual listbox / checkbox group / `<select multiple>` ADDS the value
+  and confirms it; SLDS checkboxes and radios are checked through their label and verified — spec and
+  grounding replay from one source (`targetResolver.ts`). Test data splits "A;B" per option.
+- **D-75** (TD-184, TD-185): new `src/stages/salesforceFlowChecks.ts`. Before/after-save flows that set
+  their own record's fields are checked on the SAVED record through the org connection (REST GET) when
+  the case's own values meet the flow's start conditions.
+- New records numbered past both sides of the main split (main has D-73 = parallel cases, TD-180 differs).
+- **Baseline (unmodified tree):** `tsc` clean; `vitest` 2957 passed / 8 failed / 23 skipped, 218 files.
+  **After:** 3017 passed / 8 failed / 23 skipped (3048), 220 files — the same 8 as the baseline
+  (`specRoutes` test 15 passed in one of the two after-runs: flaky). Pre-existing failures: `booleanEnvFlags` (reserved list),
+  `discoveryStrategy` x3, `liveDomDiscovery` TD-40 tsx, `appJsProIntake` x2, `specRoutes` 15.
+- Not done: no live org / Gemini run; the user has not said whether "multiple value" also means
+  running one flow with several data sets (not built).
+
 *Last updated: 2026-10-28 (second merge of main: main's D-61 insights kept, PR #11 conflict-free). main merged into the branch (2142d16, not pushed); shared discovery per project (D-72) built, NOT committed. Earlier, 2026-10-26: Jira Phase 1 (D-71) built, NOT committed. Earlier, 2026-10-22: Claude provider (D-66) committed + pushed (`72127dc`). Pinned `?login` login (D-67) committed + pushed (`a700c1d`). Allow-all-orgs (D-68) committed (`0da6005`); screen/report warning committed (`69dbe17`). Run insights (D-69) committed (`67e5881`). Salesforce post-login fixes (D-70) + D-67 removal built, NOT committed.*
 
 *Last updated: 2026-10-28, run insights (D-61) ported to `main`. See `journal/2026-10-28.md`.*

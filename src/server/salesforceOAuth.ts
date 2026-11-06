@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { isFrontdoorRef, type FrontdoorSession } from "../stages/salesforceFrontdoor.js";
+import { isFrontdoorRef, SF_API_VERSION, type FrontdoorSession } from "../stages/salesforceFrontdoor.js";
 import { rememberRunSecretStrings } from "../runSecrets.js";
 import { currentRunId } from "../runContext.js";
 import { getServiceClient } from "../db.js";
@@ -496,8 +496,9 @@ export function frontdoorSessionFor(
   };
 }
 
-/** The REST/UI API version the connection reads with. */
-export const SF_API_VERSION = "v62.0";
+/** The REST/UI API version the connection reads with. Defined beside the frontdoor rail so the
+ *  generated spec (D-75's saved-field read) uses the same version without importing the server. */
+export { SF_API_VERSION };
 
 /** Test seam: forget every pending sign-in and connection. */
 export function resetSalesforceOAuthForTests(): void {

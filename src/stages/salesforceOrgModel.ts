@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { testDataEnabled } from "./testData.js";
+import { flowChecksEnabled, flowFieldUpdates } from "./salesforceFlowChecks.js";
 import type { FrontdoorSession } from "./salesforceFrontdoor.js";
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 
@@ -265,15 +266,19 @@ async function readFlows(apiGet: ApiGet): Promise<SalesforceOrgModel["flows"]> {
   for (const { r, type } of rows) {
     if (typeof r?.ApiName !== "string") continue;
     let effects: string[] = [];
+    let fieldUpdates: ReturnType<typeof flowFieldUpdates>;
     if (typeof r.ActiveVersionId === "string" && /^[a-zA-Z0-9]{15,18}$/.test(r.ActiveVersionId)) {
       const one = await tryGet(apiGet, `/tooling/query?q=${encodeURIComponent(`SELECT Metadata FROM Flow WHERE Id = '${r.ActiveVersionId}'`)}`);
       effects = flowEffects(one?.records?.[0]?.Metadata);
+      // D-75: the same metadata, as data a check can use. Flag off: not read, model unchanged.
+      if (type === "record-triggered" && flowChecksEnabled()) fieldUpdates = flowFieldUpdates(one?.records?.[0]?.Metadata, String(r.TriggerType ?? ""));
     }
     flows.push({
       label: String(r.Label ?? r.ApiName), api: r.ApiName, type,
       ...(type === "record-triggered" && r.TriggerObjectOrEventLabel ? { object: String(r.TriggerObjectOrEventLabel) } : {}),
       ...(RECORD_TRIGGER[r.RecordTriggerType] ? { when: RECORD_TRIGGER[r.RecordTriggerType] } : {}),
       ...(effects.length ? { effects } : {}),
+      ...(fieldUpdates ? { fieldUpdates } : {}),
     });
   }
   return flows;

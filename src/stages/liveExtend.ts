@@ -6,7 +6,7 @@ import { extractDomModelFromPage } from "./domDiscovery.js";
 import {
   modelFromAria, detectInteractiveElements, formatInteractiveElements, attachElementIdentity,
 } from "./discovery.js";
-import { resolveLive, chooseLive, lookupLive } from "./targetResolver.js";
+import { resolveLive, chooseLive, lookupLive, checkBoxLive, chooseMultiLive, multiValueEnabled } from "./targetResolver.js";
 import {
   credentialForStep, redactCredentials, credentialFieldMap, credentialKindForStep,
   lastFillIndexByKind, type Credentials, type CredentialKind, type CredentialPolicy,
@@ -96,7 +96,15 @@ export async function runStepLive(
       await (await resolveLive(page, step.target!, "fill")).fill(val);
       return;
     }
-    case "click": await (await resolveLive(page, step.target!)).click(); return;
+    case "click":
+      // D-74: a radio is chosen through its label when the page draws it (SLDS), as the spec does;
+      // a plain click on the hidden input waits for a visibility that never comes.
+      if (multiValueEnabled() && step.target?.role?.toLowerCase() === "radio") {
+        await checkBoxLive(page, await resolveLive(page, step.target, "check"));
+        return;
+      }
+      await (await resolveLive(page, step.target!)).click();
+      return;
     // Not a bare selectOption(): that is an EXACT match against an option list that is very often
     // still being fetched, and its failure ("did not find some options") names neither the wanted
     // value nor the available ones. chooseLive shares its matching and its message with the
@@ -108,9 +116,18 @@ export async function runStepLive(
         await lookupLive(page, await resolveLive(page, step.target!, "select"), ctx && hasRunToken(v) ? resolveRunTokens(v, ctx) : v);
         return;
       }
+      // D-74: the spec's chooseMulti, from the same source — or the replay would move to the next
+      // screen with a multi-select value only highlighted, and ground the rest of the case on that.
+      if (multiValueEnabled()) {
+        await chooseMultiLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "", undefined, chooseLive, checkBoxLive);
+        return;
+      }
       await chooseLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "");
       return;
-    case "check": await (await resolveLive(page, step.target!, "check")).check(); return;
+    case "check":
+      if (multiValueEnabled()) { await checkBoxLive(page, await resolveLive(page, step.target!, "check")); return; }
+      await (await resolveLive(page, step.target!, "check")).check();
+      return;
     // No target: the key goes to whatever has focus, exactly as generator.ts emits it.
     case "press":
       if (!step.target) { await page.keyboard.press(step.value ?? "Enter"); return; }

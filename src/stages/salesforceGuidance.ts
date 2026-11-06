@@ -26,6 +26,8 @@
 import { currentRunTargetApp } from "../runTarget.js";
 import { currentFrontdoor, recordRef, recordRefObject } from "./salesforceFrontdoor.js";
 import { hasRunToken, lineKey, shownNumber } from "../text.js";
+import { multiValueEnabled } from "./targetResolver.js";
+import { flowChecksEnabled } from "./salesforceFlowChecks.js";
 import type { IR as IRSteps, Step } from "../schema/ir.js";
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 
@@ -372,5 +374,24 @@ const CONNECTED_GUIDANCE = byStage("url");
  */
 export function salesforceGuidance(stage: GuidanceStage): string {
   if (currentRunTargetApp() !== "salesforce") return "";
-  return (currentFrontdoor() ? CONNECTED_GUIDANCE : SALESFORCE_GUIDANCE)[stage];
+  return (currentFrontdoor() ? CONNECTED_GUIDANCE : SALESFORCE_GUIDANCE)[stage] + flaggedGuidance(stage);
+}
+
+/** D-74: how a field that takes several values is written, backed by chooseMulti in the spec. */
+const MULTI_VALUE_IR = `
+- A field that takes SEVERAL values — a multi-select picklist (two lists, "Available" and "Selected", under the field's label) or a group of checkboxes — gets one "select" step PER value, each naming the field and ONE option; never "A;B" in one step. (Backed by: the spec's chooseMulti, which adds each value and fails unless it reached the chosen list, D-74.)`;
+
+/** D-75: what makes a flow's effect checkable, backed by flowFieldChecks. */
+const FLOW_CASES = `
+- A record-triggered flow's field updates are checked by code on the saved record when the case's OWN values meet the flow's "only when" conditions: give each field those conditions read a fixed value in the case (never {{uid}}); to show the flow NOT running, break one of them. (Backed by: flowFieldChecks, D-75.)`;
+
+/**
+ * Lines added only with their feature flags on, so every flag-off prompt — and its LLM cache key — is
+ * byte-identical to before (tests/salesforceTargetApp.test.ts pins that).
+ */
+function flaggedGuidance(stage: GuidanceStage): string {
+  let out = "";
+  if (stage === "ir" && multiValueEnabled()) out += MULTI_VALUE_IR;
+  if (stage === "cases" && flowChecksEnabled() && currentFrontdoor()) out += FLOW_CASES;
+  return out;
 }

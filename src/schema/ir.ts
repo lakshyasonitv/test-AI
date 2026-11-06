@@ -37,6 +37,14 @@ export const Target = z.object({
    */
   field: z.string().optional(),
   /**
+   * D-75 (SALESFORCE_FLOW_CHECKS_ENABLED): the same field of the SAVED record, read through the run's
+   * org connection rather than off the page — `object` (API name), which of the records this test's
+   * create forms saved for it (`n`, 1 = the first), and the field's API name. Written in code only
+   * (salesforceFlowChecks.flowFieldChecks), never by the LLM, for a field a record-triggered flow sets.
+   * Additive: absent on every other target, so every stored IR parses unchanged.
+   */
+  recordField: z.object({ object: z.string(), n: z.number().int().positive(), api: z.string() }).optional(),
+  /**
    * Provenance, not behaviour. `"replay"` marks a target that was grounded against the LIVE page
    * during a replay (`REPLAY_REGROUND`) rather than against the model discovery built — the case
    * of a control revealed by a click, which discovery never saw.

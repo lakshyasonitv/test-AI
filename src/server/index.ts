@@ -2680,6 +2680,12 @@ export const BOOLEAN_ENV_FLAGS = [
   // D-73: regression testing step 3, the safe repair of a replayed case whose click/fill/select/press
   // lost its element. No model calls; a proposal waits for a person. Off: replays are as before.
   "REGRESSION_REPAIR_ENABLED",
+  // D-74: fields that take several values (a dual listbox, a checkbox or radio group drawn by SLDS,
+  // a <select multiple>, a multi-select picklist's test data). Off: specs and replays as before.
+  "MULTI_VALUE_CONTROLS_ENABLED",
+  // D-75: a record-triggered flow's field updates (before-save "fast field updates" included) are
+  // checked on the saved record through the org connection. Off: the org model and IRs as before.
+  "SALESFORCE_FLOW_CHECKS_ENABLED",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

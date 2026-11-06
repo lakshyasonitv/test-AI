@@ -6210,3 +6210,63 @@ not affected, they live in the case itself. Candidate fix: store the decision wi
 ### TD-182. "Save case" was missing from every result card with AUTH_ENABLED off — Medium / Accidental — **Fixed (2026-11-03)**
 
 **Found 2026-11-03**, locally: a finished run showing suite results had no way to save its case. The card's button was removed by `if (!roleAtLeast(auth.role, "tester"))`, and with auth off the page never learns a role (`auth.role` is null) although the server treats the synthetic local user as an owner (rule 7). Every other role gate in `app.js` reads `!auth.required || roleAtLeast(...)`; this one, and the step editor's "rewrite this line" offer, did not. Hosted deployments with auth on were not affected. Fixed both; `tests/teamRoster.test.ts` now fails on any `roleAtLeast(auth.role` outside the Team screen that does not say what auth-off means.
+
+### TD-183. A field that takes several values could not be tested: a hollow pass, a timeout, and test data that dropped values — High / Accidental — **Fixed behind `MULTI_VALUE_CONTROLS_ENABLED` (2026-11-04), off by default**
+
+**Found 2026-11-04** from the user's report ("not able to check the screen flows with multiple value"),
+reproduced headless against SLDS-shaped markup (`tests/multiValueControls.test.ts`, the "flag off"
+cases pin each defect):
+1. **Hollow pass.** A `select` on a Lightning dual listbox (a Screen Flow's or a record form's
+   multi-select picklist: "Available" -> "Selected") resolved the group or a list, clicked the option —
+   which only highlights it — and returned. The step passed; nothing was chosen. "Red;Blue" passed too.
+2. **Timeout.** `check` on an SLDS checkbox (checkbox group, single checkbox): the input is a clipped 1px
+   box, the label's painted box takes the click; Playwright counts the input visible and retries
+   "label intercepts pointer events" for the whole timeout. In the grounding replay the same, so the
+   rest of the case could not be grounded.
+3. **Slow radios.** A radio `click` passed only through `safeClick`'s forced fallback (~7 s each); the
+   replay's plain click had no fallback.
+4. **Test data** (record forms with an org model): "Red;Blue" on a multi-select picklist was snapped to
+   ONE option ("Blue"), silently; a required multi-select picklist with no step got a `fill` of
+   "Test <label> {{uid}}" into a textbox that does not exist.
+5. **Grounding.** A `select` naming a box of a checkbox group (a fieldset; no role names it) found no
+   control and the case was cut there.
+
+**Fix (D-74), flag on:** `chooseMulti` / `checkBox` (one source for spec and replay), the TD-125B
+conversion to `check`, the test-data split. Flag off: specs and replays byte-identical (tested).
+
+**Still open.** Verified on synthetic markup only, never a live org — a Lightning release that renames
+nothing structural keeps working, one that drops `aria-multiselectable` does not. Grounding never checks
+a dual-listbox VALUE against its options (the run fails naming them). The first of the two lists is
+taken as the source and the first button between them as "move"; a component that orders them otherwise
+fails with "did not move into the chosen list", not silently. "A;B" in ONE select on a screen flow (no org
+model to split against) fails naming the options; the model must write one select per value.
+
+### TD-184. A record-triggered flow's effect was checked only if the model wrote the check — Medium / Deliberate gap — **Fixed behind `SALESFORCE_FLOW_CHECKS_ENABLED` (2026-11-04), off by default**
+
+**Found 2026-11-04** (user: "how will it check" a record-triggered flow with fast field updates). The org
+model read each flow and the case-writing and IR prompts asked for a case that meets its conditions and
+checks the field on the record page; both lines said "(No deterministic check.)". Whether the case met
+the conditions, and whether it checked the right field for the right value, was whatever the model wrote,
+and a before-save flow leaves no other trace. A field the page layout hides could not be checked at all.
+
+**Fix (D-75), flag on:** `flowFieldUpdates` keeps the flow as data; `flowFieldChecks` adds one saved-record
+check per field the flow sets when the case's own typed values meet the conditions; `sfSavedField` reads
+the field through the org connection (REST GET).
+
+**Still open.** Create only: an edit (update-triggered flow) is not checked. Conditions on fields the case
+does not set are "undecided" (a default value this code cannot see) and add nothing — logged, but only in
+the compile log, not on the report. Assignments behind a decision, from a variable or a formula are never
+checked. The base prompt lines still say "(No deterministic check.)"; with the flag on (org-connection
+runs) a backed line is APPENDED to the case-writer's prompt telling it to give the condition fields fixed
+values, rather than editing those lines, so flag-off prompts and their cache keys stay byte-identical.
+Never run against a real org.
+
+### TD-185. The step editor shows a saved-record flow check as a page check — Low / Deliberate — **Open**
+
+**Found 2026-11-04** (D-75). A `recordField` assertion renders as `Check that the "Zq Tier" field shows
+"Gold"`, the same sentence as a record-PAGE field check (`fieldChecksOnRecordView`). An untouched line keeps
+the saved-record read (`parseIrStep` onto the original, tested), but a person cannot tell the two apart,
+and editing the field name turns it into a page check (the new `{ field }` has no `recordField`). The
+report's step label does say "Check the saved Lead record: … (set by a flow)". Candidate fix: a sentence of
+its own in BOTH `formatIrStep` copies (`stepText.ts`, `app.js`) with a parse rule — left out to keep the
+editor's format unchanged for this change.

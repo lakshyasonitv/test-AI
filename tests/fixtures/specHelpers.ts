@@ -56,7 +56,7 @@ export function extractConst(src: string, name: string): string {
  * the generator only splices in the helpers a spec actually uses, so a fill-only spec has no
  * `choose()` and asking for one unconditionally would fail for the wrong reason.
  */
-const CONSTS = ["optionProbeJs", "matchOptionIndex", "optionErrorMessage", "selectableJs"];
+const CONSTS = ["optionProbeJs", "matchOptionIndex", "optionErrorMessage", "selectableJs", "checkBox", "chooseMulti"];
 const FNS = ["scopeOf", "firstUnique", "nearField", "field", "choose", "locate", "safeClick"];
 
 /** Build the requested helpers into a callable object, from the spec text itself. */
