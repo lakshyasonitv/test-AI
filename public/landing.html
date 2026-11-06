@@ -26,7 +26,7 @@
       <a href="#lp-videos">Demos</a>
       <a href="#lp-salesforce">Salesforce</a>
     </nav>
-    <a class="lp-btn lp-btn-outline lp-btn-sm" href="/">Open the app</a>
+    <a class="lp-btn lp-btn-outline lp-btn-sm" href="/">Start testing</a>
   </header>
 
   <main>
@@ -46,47 +46,46 @@
         </div>
 
         <div class="lp-float lp-ground lp-glass" aria-hidden="true" style="--d:-4s">
-          <p class="lp-card-title">Grounding</p>
+          <p class="lp-card-title">Checked on the page</p>
           <ul>
             <li><span class="lp-ok"></span>button <b>Place order</b></li>
             <li><span class="lp-ok"></span>field <b>Email</b></li>
             <li><span class="lp-bad"></span>link <s>Express checkout</s></li>
           </ul>
-          <span class="lp-chip lp-chip-blue">2 of 3 found &middot; 1 rejected</span>
+          <span class="lp-chip lp-chip-blue">Not on the page, so removed</span>
         </div>
 
         <div class="lp-float lp-runs lp-glass" aria-hidden="true" style="--d:-1s">
-          <p class="lp-card-title">Today&rsquo;s runs</p>
+          <p class="lp-card-title">Example runs</p>
           <div class="lp-run-row">
             <span class="lp-sq lp-sq-pink">C</span>
-            <div><b>Checkout &mdash; wrong input</b><span class="lp-bar"><i style="--w:100%"></i></span></div>
-            <em>5/5</em>
+            <div><b>Checkout with a wrong card</b><span class="lp-bar"><i style="--w:100%"></i></span></div>
+            <em>Passed</em>
           </div>
           <div class="lp-run-row">
             <span class="lp-sq lp-sq-green">L</span>
-            <div><b>Login boundaries</b><span class="lp-bar"><i style="--w:72%"></i></span></div>
-            <em>3/4</em>
+            <div><b>Login with an empty password</b><span class="lp-bar"><i style="--w:72%"></i></span></div>
+            <em>Running</em>
           </div>
         </div>
 
         <div class="lp-float lp-works lp-glass" aria-hidden="true" style="--d:-3s">
           <p class="lp-card-title">Works with</p>
-          <div class="lp-works-row">
-            <span class="lp-app" style="--c:#2ea44f">Pw</span>
-            <span class="lp-app" style="--c:#1f7bff">Gm</span>
-            <span class="lp-app" style="--c:#00a1e0">Sf</span>
-            <span class="lp-app" style="--c:#2684ff">Ji</span>
+          <div class="lp-works-row lp-works-names">
+            <span class="lp-chip">Playwright</span>
+            <span class="lp-chip">Salesforce</span>
+            <span class="lp-chip">Jira</span>
           </div>
         </div>
 
         <!-- hero copy -->
         <div class="lp-hero-copy">
           <span class="lp-hero-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-          <h1 id="lp-title">Describe a test,<br /><span>watch it really run</span></h1>
+          <h1 id="lp-title">Describe it.<br /><span>Testbench tests it.</span></h1>
           <p class="lp-lede">
-            Testbench turns a plain-English testing request and a URL into executed Playwright tests.
-            Gemini plans, the site is read from its own DOM, and every case is compiled to a strict
-            test plan checked against the live app &mdash; then plain code writes the spec and runs it.
+            Write what you want to test in plain English and add the web address.
+            Testbench reads the site, writes the test steps and checks each one against the real page.
+            Then it runs them in a real browser and shows you what happened.
           </p>
           <div class="lp-actions">
             <a class="lp-btn lp-btn-primary" href="/">Start testing</a>
@@ -98,28 +97,29 @@
 
     <!-- ================= VALUE STRIP ================= -->
     <section class="lp-section" id="lp-how">
-      <h2 class="lp-h2 lp-reveal">AI proposes.<br />Deterministic code verifies.</h2>
+      <h2 class="lp-h2 lp-reveal">How a sentence becomes a test run</h2>
       <div class="lp-strip lp-reveal">
         <div>
           <svg class="lp-ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5" /></svg>
-          <p><b>Discovery without AI cost.</b> Pages are read from the DOM with a same-origin crawl; vision is only a fallback.</p>
+          <p><b>It reads your site first.</b> Testbench looks at each page's buttons, fields and links, and follows links within your site. This step uses no AI credits.</p>
         </div>
         <div>
           <svg class="lp-ico" viewBox="0 0 24 24"><path d="M4 6h10M4 12h16M4 18h7" /><path d="M16 4l2 2 3-3" /></svg>
-          <p><b>Grounded, not guessed.</b> Every button, field and route the model names is checked against the real page.</p>
+          <p><b>It checks every step.</b> Every button and field a test uses must exist on the real page. Anything the AI made up is removed before the test runs.</p>
         </div>
         <div>
           <svg class="lp-ico" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M10 9.5v5l4-2.5z" /></svg>
-          <p><b>Really executed.</b> Each case runs in its own browser with screenshots, video, a trace and a plain-English reason.</p>
+          <p><b>It runs in a real browser.</b> Each test runs on its own and comes back with screenshots, a video, and a plain reason if it fails.</p>
         </div>
       </div>
 
-      <!-- product mock on a blue panel -->
+      <!-- product mock on a blue panel. Illustrative: the numbers agree with each other
+           (4 cases: 2 passed, 1 healed, 1 running) and are not real usage figures. -->
       <div class="lp-stage lp-reveal">
-        <span class="lp-stage-badge lp-glass lp-float" style="--d:-1.5s" aria-hidden="true"><b>5</b><small>cases</small></span>
+        <span class="lp-stage-badge lp-glass lp-float" style="--d:-1.5s" aria-hidden="true"><b>4</b><small>cases</small></span>
         <span class="lp-stage-tick lp-float" style="--d:-3.5s" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 12.5l4 4 8-9" /></svg></span>
 
-        <div class="lp-app-mock" role="img" aria-label="Testbench run view: a five-step pipeline, a timer, a 92% pass rate and a list of test cases">
+        <div class="lp-app-mock" role="img" aria-label="Illustration of a Testbench run: four checkout test cases, two passed, one repaired and one still running">
           <aside class="lp-mock-side">
             <span class="lp-brand lp-brand-sm"><span class="lp-logo"><i></i><i></i><i></i><i></i></span>Testbench</span>
             <span class="lp-mock-new">+ New run</span>
@@ -134,16 +134,16 @@
           </aside>
 
           <div class="lp-mock-main">
-            <p class="lp-mock-hello">Run #128, <b>checkout flow</b></p>
+            <p class="lp-mock-hello">Example run: <b>checkout</b></p>
             <div class="lp-mock-grid">
               <div class="lp-mock-card lp-mock-steps">
-                <p class="lp-mock-title">Pipeline</p>
+                <p class="lp-mock-title">Progress</p>
                 <ol>
-                  <li class="lp-done">Plan coverage</li>
-                  <li class="lp-done">Discover the site</li>
-                  <li class="lp-done">Compile &amp; ground the plan</li>
-                  <li class="lp-done">Generate the spec</li>
-                  <li class="lp-live">Execute in browser</li>
+                  <li class="lp-done">Understand the request</li>
+                  <li class="lp-done">Read the site</li>
+                  <li class="lp-done">Write and check the steps</li>
+                  <li class="lp-done">Build the test</li>
+                  <li class="lp-live">Run it in a browser</li>
                 </ol>
               </div>
               <div class="lp-mock-card lp-mock-timer">
@@ -155,9 +155,9 @@
                 <p class="lp-mock-title">Results</p>
                 <div class="lp-rate-wrap">
                   <ul>
-                    <li><span style="--c:#1f7bff"></span>Passed <b>11</b></li>
-                    <li><span style="--c:#ffc83d"></span>Healed <b>1</b></li>
-                    <li><span style="--c:#ff5c8a"></span>Failed <b>1</b></li>
+                    <li><span style="--c:#1f7bff"></span>Passed <b>2</b></li>
+                    <li><span style="--c:#ffc83d"></span>Repaired <b>1</b></li>
+                    <li><span style="--c:#c4c8d0"></span>Running <b>1</b></li>
                   </ul>
                   <svg class="lp-ring" viewBox="0 0 42 42" aria-hidden="true">
                     <circle cx="21" cy="21" r="15.9" class="lp-ring-bg" />
@@ -169,10 +169,10 @@
               </div>
               <div class="lp-mock-card lp-mock-cases">
                 <p class="lp-mock-title">Cases</p>
-                <div class="lp-case"><span class="lp-sq lp-sq-blue">1</span>Happy path &mdash; card accepted<span class="lp-bar"><i style="--w:100%"></i></span><em class="lp-pass">pass</em></div>
-                <div class="lp-case"><span class="lp-sq lp-sq-pink">2</span>Wrong card number rejected<span class="lp-bar"><i style="--w:100%"></i></span><em class="lp-pass">pass</em></div>
-                <div class="lp-case"><span class="lp-sq lp-sq-yellow">3</span>Empty email shows an error<span class="lp-bar"><i style="--w:100%"></i></span><em class="lp-heal">healed</em></div>
-                <div class="lp-case"><span class="lp-sq lp-sq-green">4</span>Script in name field is escaped<span class="lp-bar"><i style="--w:64%"></i></span><em>running</em></div>
+                <div class="lp-case"><span class="lp-sq lp-sq-blue">1</span>Valid card is accepted<span class="lp-bar"><i style="--w:100%"></i></span><em class="lp-pass">passed</em></div>
+                <div class="lp-case"><span class="lp-sq lp-sq-pink">2</span>Wrong card number is rejected<span class="lp-bar"><i style="--w:100%"></i></span><em class="lp-pass">passed</em></div>
+                <div class="lp-case"><span class="lp-sq lp-sq-yellow">3</span>Empty email shows an error<span class="lp-bar"><i style="--w:100%"></i></span><em class="lp-heal">repaired</em></div>
+                <div class="lp-case"><span class="lp-sq lp-sq-green">4</span>Code typed in the name field is blocked<span class="lp-bar"><i style="--w:64%"></i></span><em>running</em></div>
               </div>
             </div>
           </div>
@@ -182,8 +182,8 @@
 
     <!-- ================= BENTO ================= -->
     <section class="lp-section" id="lp-features">
-      <h2 class="lp-h2 lp-reveal">Everything a test run needs</h2>
-      <p class="lp-sub lp-reveal">From a sentence to evidence you can trust, without writing a selector.</p>
+      <h2 class="lp-h2 lp-reveal">What you get</h2>
+      <p class="lp-sub lp-reveal">No test code to write, and nothing to install on your site.</p>
 
       <div class="lp-bento">
         <article class="lp-cell lp-reveal">
@@ -191,35 +191,38 @@
             <p class="lp-type"><span data-lp-type="Verify a new user can't sign up with a 3-character password">Verify a new user can't sign up with a 3-character password</span><i class="lp-caret"></i></p>
             <span class="lp-chip">https://shop.example.test</span>
           </div>
-          <h3>Plain English in</h3>
-          <p>A request and a URL. Optionally a Jira story key or a requirements document (Pro).</p>
+          <h3>Start with a sentence</h3>
+          <p>Type what to test and the web address. You can also start from a Jira story or a requirements document.</p>
         </article>
 
         <article class="lp-cell lp-cell-wide lp-reveal">
-          <div class="lp-demo lp-demo-ir">
-<pre><code>{ <span class="k">"action"</span>: <span class="s">"fill"</span>,
-  <span class="k">"target"</span>: { <span class="k">"role"</span>: <span class="s">"textbox"</span>, <span class="k">"name"</span>: <span class="s">"Password"</span> },
-  <span class="k">"value"</span>: <span class="s">"${env:TEST_PASSWORD}"</span> }</code></pre>
-            <span class="lp-verified"><svg viewBox="0 0 24 24"><path d="M6 12.5l4 4 8-9" /></svg>Found on the live page</span>
+          <div class="lp-demo lp-demo-steps">
+            <ol class="lp-steps">
+              <li><span class="lp-ok"></span>Go to the sign-up page</li>
+              <li><span class="lp-ok"></span>Type a 3-character password into <b>Password</b></li>
+              <li><span class="lp-ok"></span>Click <b>Create account</b></li>
+              <li><span class="lp-ok"></span>Check that an error message appears</li>
+            </ol>
+            <span class="lp-verified"><svg viewBox="0 0 24 24"><path d="M6 12.5l4 4 8-9" /></svg>Every field and button found on the page</span>
           </div>
-          <h3>A strict plan, checked before it runs</h3>
-          <p>Each case becomes a schema-validated JSON plan. Anything the model invented is rejected, and credentials stay as <code>${env:…}</code> references.</p>
+          <h3>Steps checked against the real page</h3>
+          <p>Each test is a short list of steps you can read and edit. Before it runs, every field and button in it is matched to your actual page. Passwords are never saved with the test.</p>
         </article>
 
         <article class="lp-cell lp-cell-wide lp-reveal">
           <div class="lp-demo lp-demo-heal">
             <div class="lp-diff">
-              <span class="lp-del">&minus; click button "Submit"</span>
-              <span class="lp-add">+ click button "Create account"</span>
+              <span class="lp-del">&minus; Click "Submit"</span>
+              <span class="lp-add">+ Click "Create account"</span>
             </div>
             <div class="lp-heal-steps">
-              <span class="lp-chip lp-chip-blue">1 &middot; structural repair &middot; no AI</span>
-              <span class="lp-chip">2 &middot; bounded AI self-heal</span>
-              <span class="lp-chip lp-chip-yellow">you approve the diff</span>
+              <span class="lp-chip lp-chip-blue">1. Fixes simple changes without AI</span>
+              <span class="lp-chip">2. Asks the AI once if needed</span>
+              <span class="lp-chip lp-chip-yellow">3. You approve the change</span>
             </div>
           </div>
-          <h3>Self-repair you sign off on</h3>
-          <p>A deterministic classifier tries first, Gemini vision second. A model proposes a change; a person approves it.</p>
+          <h3>Repairs you approve</h3>
+          <p>When your site changes and a step breaks, Testbench suggests a fix. Nothing in a saved test changes until you approve it.</p>
         </article>
 
         <article class="lp-cell lp-reveal">
@@ -229,27 +232,27 @@
             <span class="lp-ev" style="--c:#ffc83d">&#9776; Trace</span>
             <span class="lp-ev" style="--c:#2ea44f">&#128196; HTML report</span>
           </div>
-          <h3>Evidence for every step</h3>
-          <p>And a plain-English reason for every failure.</p>
+          <h3>Proof for every step</h3>
+          <p>And a plain explanation whenever a test fails.</p>
         </article>
 
         <article class="lp-cell lp-reveal">
           <div class="lp-demo lp-demo-library">
-            <div class="lp-lib"><span class="lp-sq lp-sq-blue">S</span>Smoke suite<em>12 tests</em></div>
-            <div class="lp-lib"><span class="lp-sq lp-sq-pink">R</span>Regression<em>48 tests</em></div>
-            <span class="lp-chip lp-chip-yellow">replay &middot; 0 AI calls</span>
+            <div class="lp-lib"><span class="lp-sq lp-sq-blue">S</span>Smoke tests<em>suite</em></div>
+            <div class="lp-lib"><span class="lp-sq lp-sq-pink">R</span>Before each release<em>suite</em></div>
+            <span class="lp-chip lp-chip-yellow">Re-runs use no AI credits</span>
           </div>
-          <h3>Library &amp; suites</h3>
-          <p>Edit steps as plain English, save tests, group them, replay them for free.</p>
+          <h3>Save and re-run</h3>
+          <p>Keep the tests you like, group them into suites and run them again whenever you need.</p>
         </article>
 
         <article class="lp-cell lp-reveal">
           <div class="lp-demo lp-demo-team">
             <span class="lp-av" style="--c:#1f7bff">O</span><span class="lp-av" style="--c:#ff5c8a">A</span><span class="lp-av" style="--c:#ffc83d">E</span><span class="lp-av" style="--c:#2ea44f">V</span>
-            <span class="lp-chip">4 roles &middot; per-company separation</span>
+            <span class="lp-chip">Owner, admin, tester, viewer</span>
           </div>
           <h3>Built for teams</h3>
-          <p>Sign-in, project-scoped visibility, and your choice of Gemini, Azure OpenAI or Claude per role.</p>
+          <p>Sign-in, four roles and separate projects. Choose the AI you use: Gemini, Azure OpenAI or Claude.</p>
         </article>
       </div>
     </section>
@@ -295,44 +298,39 @@
         <span class="lp-blob lp-blob-3" aria-hidden="true"><i></i></span>
         <span class="lp-blob lp-blob-4" aria-hidden="true"><i></i></span>
 
-        <h2 class="lp-h2 lp-reveal">Deep Salesforce support,<br />and <mark>no passwords</mark> on disk</h2>
+        <h2 class="lp-h2 lp-reveal">Works on any website,<br />with <mark>extra help</mark> for Salesforce</h2>
 
+        <!-- Three areas of the product, not pricing plans: no plan names and no per-card
+             buttons, so nothing here reads as a price list. -->
         <div class="lp-tiers">
           <article class="lp-tier lp-reveal">
-            <span class="lp-pill">Core</span>
-            <p class="lp-tier-big">Prompt &rarr; tests</p>
-            <p class="lp-tier-sub">The full pipeline on any web app</p>
+            <p class="lp-tier-big">Any website</p>
+            <p class="lp-tier-sub">Point it at a web address</p>
             <ul>
-              <li>DOM-first discovery &amp; crawl</li>
-              <li>Grounded JSON test plans</li>
-              <li>Per-case browser execution</li>
-              <li>Failure diagnosis &amp; self-heal</li>
+              <li>Reads your pages and follows links within your site</li>
+              <li>Signs in through a normal login form</li>
+              <li>Runs each test in its own browser</li>
+              <li>Explains every failure in plain words</li>
             </ul>
-            <a class="lp-btn lp-btn-primary lp-btn-block" href="/">Start testing</a>
           </article>
           <article class="lp-tier lp-tier-hot lp-reveal">
-            <span class="lp-pill">Salesforce</span>
-            <p class="lp-tier-big">Connect org</p>
-            <p class="lp-tier-sub">OAuth or hardened password login</p>
+            <p class="lp-tier-big">Salesforce</p>
+            <p class="lp-tier-sub">Sign in with your Salesforce account</p>
             <ul>
-              <li>Saved org scans</li>
-              <li>Valid test data from org metadata</li>
-              <li>Screen map kept between runs</li>
-              <li>Screen-flow &amp; record-triggered flow checks</li>
+              <li>Connect an org through Salesforce&rsquo;s own sign-in page, so tests never type a password</li>
+              <li>Scans the org once and reuses the scan</li>
+              <li>Fills forms with values your org accepts</li>
+              <li>Remembers the org&rsquo;s screens between runs</li>
             </ul>
-            <a class="lp-btn lp-btn-primary lp-btn-block" href="/">Connect an org</a>
           </article>
           <article class="lp-tier lp-reveal">
-            <span class="lp-pill">Pro</span>
-            <p class="lp-tier-big">Requirements in</p>
-            <p class="lp-tier-sub">PDF, Word or Markdown</p>
+            <p class="lp-tier-big">Requirements</p>
+            <p class="lp-tier-sub">Upload a PDF, Word or Markdown file</p>
             <ul>
-              <li>Rules steer which cases are written</li>
-              <li>Open questions surfaced</li>
-              <li>Jira story key fills the prompt</li>
-              <li>Every extra behind an off-by-default flag</li>
+              <li>Tests are written from the rules in your document</li>
+              <li>Unclear points are listed for you to answer</li>
+              <li>A Jira story can fill in the request for you</li>
             </ul>
-            <a class="lp-btn lp-btn-primary lp-btn-block" href="/">Open the app</a>
           </article>
         </div>
       </div>
@@ -340,14 +338,15 @@
 
     <!-- ================= CTA ================= -->
     <section class="lp-cta lp-reveal">
-      <h2 class="lp-h2">Think it, type it,<br /><span>test it for real</span></h2>
+      <h2 class="lp-h2">Try it on your own site</h2>
+      <p class="lp-sub">Describe one thing to test and see what happens.</p>
       <a class="lp-btn lp-btn-primary" href="/">Start testing</a>
     </section>
   </main>
 
   <footer class="lp-foot">
     <span class="lp-brand lp-brand-sm"><span class="lp-logo" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Testbench</span>
-    <span>AI-planned, code-verified Playwright testing</span>
+    <span>Automated website testing from plain English</span>
   </footer>
 
   <script src="/landing.js" defer></script>
