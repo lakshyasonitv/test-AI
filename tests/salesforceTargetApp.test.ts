@@ -89,7 +89,7 @@ describe("a Salesforce run: base prompt + guidance, and its own cache entries", 
     }
   });
 
-  it("D-74/D-75: the multi-value and flow-check lines are appended ONLY with their flags on", async () => {
+  it("D-77/D-78: the multi-value and flow-check lines are appended ONLY with their flags on", async () => {
     const plain = withTargetApp("salesforce", () => salesforceGuidance("ir"));
     expect(plain).toBe(SALESFORCE_GUIDANCE.ir);
     process.env.MULTI_VALUE_CONTROLS_ENABLED = "true";

@@ -1513,7 +1513,7 @@ export function groundingError(
     // meant is a guess, so the step is rejected naming them (TD-126).
     if (!matched && screenPage && step.action === "select" && step.value) {
       const want = norm(step.value);
-      // D-74 (MULTI_VALUE_CONTROLS_ENABLED): a CHECKBOX group too ("Channels": "Email" / "SMS") — a
+      // D-77 (MULTI_VALUE_CONTROLS_ENABLED): a CHECKBOX group too ("Channels": "Email" / "SMS") — a
       // Screen Flow's checkbox group is a fieldset no role names, so the select found nothing and was
       // rejected. One select per value becomes a `check` on that box (a click would toggle it).
       const multi = multiValueEnabled();
@@ -2896,7 +2896,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     parsed.data.meta.baseUrl = origin;
     // D-65: only this function decides whether the spec runs the fixed Salesforce login.
     delete parsed.data.meta.fixedLogin;
-    // D-73: only saving a case writes what it remembers; a model-written one is dropped.
+    // D-76: only saving a case writes what it remembers; a model-written one is dropped.
     delete parsed.data.meta.remembered;
     delete parsed.data.meta.pinnedSteps;
 
@@ -2917,7 +2917,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       for (const r of returnToCreatedRecords(parsed.data)) console.log(`[ir] ${r}`);
       for (const f of fieldChecksOnRecordView(parsed.data, currentModel)) console.log(`[ir] ${f}`);
     }
-    // D-75: what a record-triggered flow sets on the record a case saves, checked on the SAVED record
+    // D-78: what a record-triggered flow sets on the record a case saves, checked on the SAVED record
     // when — and only when — the case's own inputs meet the flow's start conditions. After the passes
     // above, so it sees their "was created" outcome. Flag off: never called, the IR is unchanged.
     if (flowChecksEnabled() && currentRunTargetApp() === "salesforce") {

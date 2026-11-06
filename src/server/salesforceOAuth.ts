@@ -481,7 +481,7 @@ export function frontdoorSessionFor(
       });
       if (!res.ok) throw new Error(`Salesforce API DELETE ${path.split("?")[0]} answered HTTP ${res.status}`);
     },
-    // D-73 step 2: the versions list, whose newest entry is labelled with the org's release.
+    // D-76 step 2: the versions list, whose newest entry is labelled with the org's release.
     apiVersions: async () => {
       await refreshIfOld(c, cfg, fetchImpl);
       const runId = currentRunId();
@@ -497,7 +497,7 @@ export function frontdoorSessionFor(
 }
 
 /** The REST/UI API version the connection reads with. Defined beside the frontdoor rail so the
- *  generated spec (D-75's saved-field read) uses the same version without importing the server. */
+ *  generated spec (D-78's saved-field read) uses the same version without importing the server. */
 export { SF_API_VERSION };
 
 /** Test seam: forget every pending sign-in and connection. */

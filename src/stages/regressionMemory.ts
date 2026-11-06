@@ -4,7 +4,7 @@ import type { IR, Remembered } from "../schema/ir.js";
 import { hasRunToken } from "../text.js";
 
 /**
- * Regression testing, step 1 "Remember" (D-73, REGRESSION_MEMORY_ENABLED, default off).
+ * Regression testing, step 1 "Remember" (D-76, REGRESSION_MEMORY_ENABLED, default off).
  *
  * A saved case used to keep only its steps and their exact locators. When the site changes there
  * was nothing to repair FROM, and the hollow-pass guards could not protect it because they read

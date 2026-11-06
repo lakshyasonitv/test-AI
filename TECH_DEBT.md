@@ -6188,7 +6188,9 @@ Cache key part `test-data:4`.
 
 ---
 
-### TD-180. Running some tests in a real checkout leaves stub run folders in `runs/` — Low / Accidental — **Open**
+### TD-187. Running some tests in a real checkout leaves stub run folders in `runs/` — Low / Accidental — **Open**
+
+*Renumbered from TD-180 on 2026-11-06 (main merge: `main`'s TD-180 is parallel suite cases' shared login).*
 
 **Found 2026-11-02.** After targeted test runs in the working checkout, `runs/` held folders containing
 only `00-run-target.json` (four at 11:17 and 11:32 that day, timestamps matching the test runs; removed
@@ -6199,7 +6201,7 @@ run-target writer under a generated run id) and point it at a temporary folder, 
 
 ### TD-181. A rejected repair is remembered under `runs/`, which a container may not keep — Low / Deliberate — **Open**
 
-**Found 2026-11-02** (D-73 step 4). A person's Reject on a repair proposal is stored in
+**Found 2026-11-02** (D-76 step 4). A person's Reject on a repair proposal is stored in
 `runs/_cache/repair-decisions/<caseId>.json`, and `attemptRepair` reads it to avoid proposing the same
 repair again. On a host where `runs/` is not on persistent storage (the Azure container restarts with
 an empty `runs/`), the record is lost and the same repair is proposed again on the next replay. Nothing
@@ -6211,7 +6213,9 @@ not affected, they live in the case itself. Candidate fix: store the decision wi
 
 **Found 2026-11-03**, locally: a finished run showing suite results had no way to save its case. The card's button was removed by `if (!roleAtLeast(auth.role, "tester"))`, and with auth off the page never learns a role (`auth.role` is null) although the server treats the synthetic local user as an owner (rule 7). Every other role gate in `app.js` reads `!auth.required || roleAtLeast(...)`; this one, and the step editor's "rewrite this line" offer, did not. Hosted deployments with auth on were not affected. Fixed both; `tests/teamRoster.test.ts` now fails on any `roleAtLeast(auth.role` outside the Team screen that does not say what auth-off means.
 
-### TD-183. A field that takes several values could not be tested: a hollow pass, a timeout, and test data that dropped values — High / Accidental — **Fixed behind `MULTI_VALUE_CONTROLS_ENABLED` (2026-11-04), off by default**
+### TD-188. A field that takes several values could not be tested: a hollow pass, a timeout, and test data that dropped values — High / Accidental — **Fixed behind `MULTI_VALUE_CONTROLS_ENABLED` (2026-11-04), off by default**
+
+*TD-188..TD-190 were written as TD-183..TD-185 on 2026-11-04 and renumbered on 2026-11-06, when `main` was merged in with its own TD-183..TD-186.*
 
 **Found 2026-11-04** from the user's report ("not able to check the screen flows with multiple value"),
 reproduced headless against SLDS-shaped markup (`tests/multiValueControls.test.ts`, the "flag off"
@@ -6231,7 +6235,7 @@ cases pin each defect):
 5. **Grounding.** A `select` naming a box of a checkbox group (a fieldset; no role names it) found no
    control and the case was cut there.
 
-**Fix (D-74), flag on:** `chooseMulti` / `checkBox` (one source for spec and replay), the TD-125B
+**Fix (D-77), flag on:** `chooseMulti` / `checkBox` (one source for spec and replay), the TD-125B
 conversion to `check`, the test-data split. Flag off: specs and replays byte-identical (tested).
 
 **Still open.** Verified on synthetic markup only, never a live org — a Lightning release that renames
@@ -6241,7 +6245,7 @@ taken as the source and the first button between them as "move"; a component tha
 fails with "did not move into the chosen list", not silently. "A;B" in ONE select on a screen flow (no org
 model to split against) fails naming the options; the model must write one select per value.
 
-### TD-184. A record-triggered flow's effect was checked only if the model wrote the check — Medium / Deliberate gap — **Fixed behind `SALESFORCE_FLOW_CHECKS_ENABLED` (2026-11-04), off by default**
+### TD-189. A record-triggered flow's effect was checked only if the model wrote the check — Medium / Deliberate gap — **Fixed behind `SALESFORCE_FLOW_CHECKS_ENABLED` (2026-11-04), off by default**
 
 **Found 2026-11-04** (user: "how will it check" a record-triggered flow with fast field updates). The org
 model read each flow and the case-writing and IR prompts asked for a case that meets its conditions and
@@ -6249,7 +6253,7 @@ checks the field on the record page; both lines said "(No deterministic check.)"
 the conditions, and whether it checked the right field for the right value, was whatever the model wrote,
 and a before-save flow leaves no other trace. A field the page layout hides could not be checked at all.
 
-**Fix (D-75), flag on:** `flowFieldUpdates` keeps the flow as data; `flowFieldChecks` adds one saved-record
+**Fix (D-78), flag on:** `flowFieldUpdates` keeps the flow as data; `flowFieldChecks` adds one saved-record
 check per field the flow sets when the case's own typed values meet the conditions; `sfSavedField` reads
 the field through the org connection (REST GET).
 
@@ -6261,9 +6265,9 @@ runs) a backed line is APPENDED to the case-writer's prompt telling it to give t
 values, rather than editing those lines, so flag-off prompts and their cache keys stay byte-identical.
 Never run against a real org.
 
-### TD-185. The step editor shows a saved-record flow check as a page check — Low / Deliberate — **Open**
+### TD-190. The step editor shows a saved-record flow check as a page check — Low / Deliberate — **Open**
 
-**Found 2026-11-04** (D-75). A `recordField` assertion renders as `Check that the "Zq Tier" field shows
+**Found 2026-11-04** (D-78). A `recordField` assertion renders as `Check that the "Zq Tier" field shows
 "Gold"`, the same sentence as a record-PAGE field check (`fieldChecksOnRecordView`). An untouched line keeps
 the saved-record read (`parseIrStep` onto the original, tested), but a person cannot tell the two apart,
 and editing the field name turns it into a page check (the new `{ field }` has no `recordField`). The

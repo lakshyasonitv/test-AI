@@ -377,13 +377,13 @@ export function salesforceGuidance(stage: GuidanceStage): string {
   return (currentFrontdoor() ? CONNECTED_GUIDANCE : SALESFORCE_GUIDANCE)[stage] + flaggedGuidance(stage);
 }
 
-/** D-74: how a field that takes several values is written, backed by chooseMulti in the spec. */
+/** D-77: how a field that takes several values is written, backed by chooseMulti in the spec. */
 const MULTI_VALUE_IR = `
-- A field that takes SEVERAL values — a multi-select picklist (two lists, "Available" and "Selected", under the field's label) or a group of checkboxes — gets one "select" step PER value, each naming the field and ONE option; never "A;B" in one step. (Backed by: the spec's chooseMulti, which adds each value and fails unless it reached the chosen list, D-74.)`;
+- A field that takes SEVERAL values — a multi-select picklist (two lists, "Available" and "Selected", under the field's label) or a group of checkboxes — gets one "select" step PER value, each naming the field and ONE option; never "A;B" in one step. (Backed by: the spec's chooseMulti, which adds each value and fails unless it reached the chosen list, D-77.)`;
 
-/** D-75: what makes a flow's effect checkable, backed by flowFieldChecks. */
+/** D-78: what makes a flow's effect checkable, backed by flowFieldChecks. */
 const FLOW_CASES = `
-- A record-triggered flow's field updates are checked by code on the saved record when the case's OWN values meet the flow's "only when" conditions: give each field those conditions read a fixed value in the case (never {{uid}}); to show the flow NOT running, break one of them. (Backed by: flowFieldChecks, D-75.)`;
+- A record-triggered flow's field updates are checked by code on the saved record when the case's OWN values meet the flow's "only when" conditions: give each field those conditions read a fixed value in the case (never {{uid}}); to show the flow NOT running, break one of them. (Backed by: flowFieldChecks, D-78.)`;
 
 /**
  * Lines added only with their feature flags on, so every flag-off prompt — and its LLM cache key — is

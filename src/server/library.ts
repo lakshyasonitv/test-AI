@@ -636,7 +636,7 @@ export async function saveCaseFromRun(
   }
   let ir = parseIr(raw, "that run's test plan");
 
-  // D-73 (REGRESSION_MEMORY_ENABLED): the case also remembers what it means, the org's setup for the
+  // D-76 (REGRESSION_MEMORY_ENABLED): the case also remembers what it means, the org's setup for the
   // objects it touches and the values that cannot be replayed; a healed case needs a person's word.
   // Off: exactly the IR the run left, as before.
   let warnings: string[] = [];
@@ -1011,7 +1011,7 @@ export async function loadCasesForReplay(
       title: r.title,
       projectId: r.project_id,
       ir: parseIr(r.ir, `case "${r.title}"`),
-      // D-73: the version that ran, so a repair proposal (step 4) is approved against it and no other.
+      // D-76: the version that ran, so a repair proposal (step 4) is approved against it and no other.
       ...(typeof r.current_version === "number" ? { version: r.current_version } : {}),
       // Only when the explicit flag is set — never inferred from the column being non-null, so a
       // leftover script from a removed override can never quietly come back to life.

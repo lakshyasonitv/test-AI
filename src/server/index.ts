@@ -904,7 +904,7 @@ app.get("/api/health", (_req, res) => {
     // ADDITIVE, present ONLY when PROJECT_DISCOVERY_SHARING is on (D-72): the home view then offers
     // "Explore the site again". Off: the body is unchanged.
     ...(projectDiscoveryEnabled() ? { projectDiscovery: true } : {}),
-    // ADDITIVE, present ONLY when REGRESSION_CHANGE_CHECK_ENABLED is on (D-73 step 2): the Suite
+    // ADDITIVE, present ONLY when REGRESSION_CHANGE_CHECK_ENABLED is on (D-76 step 2): the Suite
     // screen then offers "Check for changes". Off: the body is unchanged.
     ...(regressionChangeCheckEnabled() ? { regressionChangeCheck: true } : {}),
   });
@@ -1845,7 +1845,7 @@ async function prepareEdit(req: express.Request, res: express.Response) {
 
   // Structurally valid before it is ever checked against a live site — a malformed plan should
   // fail in milliseconds, not after a browser walk.
-  // D-73 step 4 (REGRESSION_REPAIR_ENABLED): a step a person edits here is pinned, so a repair never
+  // D-76 step 4 (REGRESSION_REPAIR_ENABLED): a step a person edits here is pinned, so a repair never
   // changes it automatically afterwards. Pins already on the case are kept. Off: no field is added.
   const pinned = regressionRepairEnabled()
     ? [...new Set([...(found.ir.meta.pinnedSteps ?? []),
@@ -2297,11 +2297,11 @@ app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async 
       req.params.runId, req.params.caseId, projectId,
       { title: typeof title === "string" ? title : undefined,
         suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined,
-        // D-73: optional; only read with REGRESSION_MEMORY_ENABLED on, for a case that was healed.
+        // D-76: optional; only read with REGRESSION_MEMORY_ENABLED on, for a case that was healed.
         acceptHealed: acceptHealed === true },
     ));
   } catch (err) {
-    // D-73: a healed case is not saved without a person's word. A 409 carrying a code, so the page
+    // D-76: a healed case is not saved without a person's word. A 409 carrying a code, so the page
     // can ask and send `acceptHealed: true`. Only thrown with REGRESSION_MEMORY_ENABLED on.
     if (err instanceof HealedNeedsReviewError) return res.status(409).json({ code: err.code, error: err.message });
     sendAccessError(res, err);
@@ -2309,7 +2309,7 @@ app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async 
 });
 
 /**
- * D-73 step 2: "Check this suite for changes" — before running a suite, compare the Salesforce org now
+ * D-76 step 2: "Check this suite for changes" — before running a suite, compare the Salesforce org now
  * with what each saved case remembered (step 1), per object, and say which cases a change will break.
  * Read-only API calls through the Connect org link; no browser, no model, nothing written. Behind
  * REGRESSION_CHANGE_CHECK_ENABLED (404 when off). The link is verified like a replay's: it must belong
@@ -2358,7 +2358,7 @@ app.post("/api/suites/:suiteId/change-check", requireRole("tester"), async (req,
 });
 
 /**
- * D-73 step 4: a person decides on a repair proposal a replay made (REGRESSION_REPAIR_ENABLED; 404 off).
+ * D-76 step 4: a person decides on a repair proposal a replay made (REGRESSION_REPAIR_ENABLED; 404 off).
  *
  * APPROVE saves the IR the repair VERIFIED (the whole test passed with it) as the next version of the
  * SAME library case — never a new case — with the version the replay ran as `expectedVersion`, so a
@@ -2670,20 +2670,20 @@ export const BOOLEAN_ENV_FLAGS = [
   // D-72: a project's discovery is saved for 7 days and shared by every run of that project with the
   // same URL and login; one discovery at a time per project. Off: the global 30-minute cache as before.
   "PROJECT_DISCOVERY_SHARING",
-  // D-73: regression testing step 1, "Remember". A saved case also keeps its plain-English meaning,
+  // D-76: regression testing step 1, "Remember". A saved case also keeps its plain-English meaning,
   // the org's setup for the objects it touches and its one-time values; a healed case needs a
   // person's word to be saved. Off: saving is exactly as before.
   "REGRESSION_MEMORY_ENABLED",
-  // D-73: regression testing step 2, "Check this suite for changes" (POST /api/suites/:id/change-check).
+  // D-76: regression testing step 2, "Check this suite for changes" (POST /api/suites/:id/change-check).
   // Read-only Salesforce API calls through Connect org. Off: the route answers 404.
   "REGRESSION_CHANGE_CHECK_ENABLED",
-  // D-73: regression testing step 3, the safe repair of a replayed case whose click/fill/select/press
+  // D-76: regression testing step 3, the safe repair of a replayed case whose click/fill/select/press
   // lost its element. No model calls; a proposal waits for a person. Off: replays are as before.
   "REGRESSION_REPAIR_ENABLED",
-  // D-74: fields that take several values (a dual listbox, a checkbox or radio group drawn by SLDS,
+  // D-77: fields that take several values (a dual listbox, a checkbox or radio group drawn by SLDS,
   // a <select multiple>, a multi-select picklist's test data). Off: specs and replays as before.
   "MULTI_VALUE_CONTROLS_ENABLED",
-  // D-75: a record-triggered flow's field updates (before-save "fast field updates" included) are
+  // D-78: a record-triggered flow's field updates (before-save "fast field updates" included) are
   // checked on the saved record through the org connection. Off: the org model and IRs as before.
   "SALESFORCE_FLOW_CHECKS_ENABLED",
 ] as const;

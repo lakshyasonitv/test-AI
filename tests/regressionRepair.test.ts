@@ -11,7 +11,7 @@ import { runReplay } from "../src/stages/replay.js";
 import { IR } from "../src/schema/ir.js";
 
 /**
- * D-73 step 3, the safe repair, against a real browser (D-19). A local site plays the website before
+ * D-76 step 3, the safe repair, against a real browser (D-19). A local site plays the website before
  * and after a deploy: `version` decides which page it serves. The saved case was grounded on v1.
  */
 

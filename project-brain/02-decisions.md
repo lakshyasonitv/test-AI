@@ -87,7 +87,8 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156; 2026-10-28: ou
 
 ## 2026-11-04 — Record numbers while two branches diverge (from the starting session)
 - New D-/TD- records go past the highest number on BOTH `refactored-code` and `main` (this session:
-  D-74, D-75, TD-183..185), because D-73 and TD-180 already mean different things on each side.
+  D-74, D-75, TD-183..185, renumbered on 2026-11-06 to D-77, D-78, TD-188..190), because D-73 and TD-180
+  already meant different things on each side.
   Reason: renumbering after a merge is how the clashes were cleaned up twice before; not adding to them
   keeps the next merge to the existing two.
 - An ambiguous request ("multiple value") is asked about once, and the parts that are broken under

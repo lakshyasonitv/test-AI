@@ -6,7 +6,7 @@ import type { IR } from "../src/schema/ir.js";
 import { specHelpers } from "./fixtures/specHelpers.js";
 
 /**
- * D-74 (MULTI_VALUE_CONTROLS_ENABLED): screen-flow fields that take SEVERAL values, executed in a
+ * D-77 (MULTI_VALUE_CONTROLS_ENABLED): screen-flow fields that take SEVERAL values, executed in a
  * real browser (D-19) — the helpers are lifted from the generated spec's TEXT and run, never a
  * reimplementation.
  *

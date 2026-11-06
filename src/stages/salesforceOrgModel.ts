@@ -270,7 +270,7 @@ async function readFlows(apiGet: ApiGet): Promise<SalesforceOrgModel["flows"]> {
     if (typeof r.ActiveVersionId === "string" && /^[a-zA-Z0-9]{15,18}$/.test(r.ActiveVersionId)) {
       const one = await tryGet(apiGet, `/tooling/query?q=${encodeURIComponent(`SELECT Metadata FROM Flow WHERE Id = '${r.ActiveVersionId}'`)}`);
       effects = flowEffects(one?.records?.[0]?.Metadata);
-      // D-75: the same metadata, as data a check can use. Flag off: not read, model unchanged.
+      // D-78: the same metadata, as data a check can use. Flag off: not read, model unchanged.
       if (type === "record-triggered" && flowChecksEnabled()) fieldUpdates = flowFieldUpdates(one?.records?.[0]?.Metadata, String(r.TriggerType ?? ""));
     }
     flows.push({
@@ -301,7 +301,7 @@ async function countRecords(apiGet: ApiGet, api: string): Promise<number | undef
 }
 
 /**
- * D-73 step 2: the org's Salesforce release ("Winter '27"), from the newest API version the org
+ * D-76 step 2: the org's Salesforce release ("Winter '27"), from the newest API version the org
  * serves. A release changes Lightning's page code with no change to the org's setup, which is why a
  * suite that broke everywhere at once is checked against it. Undefined when it cannot be read.
  */
@@ -358,7 +358,7 @@ async function readObjectNow(apiGet: ApiGet, api: string): Promise<OrgObjectNow 
 }
 
 /**
- * D-73 step 2: what the org says NOW about the objects a suite touches, read-only. An object that
+ * D-76 step 2: what the org says NOW about the objects a suite touches, read-only. An object that
  * cannot be read is `null`, which the check reports as unknown, never as unchanged. `validationRules`
  * is null when the Tooling API refused, for the same reason.
  */
@@ -412,7 +412,7 @@ export async function readSalesforceOrgModel(session: Pick<FrontdoorSession, "ap
   }
   const userLocale = await readUserLocale(apiGet);
   const flows = await readFlows(apiGet);
-  // D-73: the release, so a saved case remembers it (step 2 compares). Only with the flag on: it is
+  // D-76: the release, so a saved case remembers it (step 2 compares). Only with the flag on: it is
   // part of the setup fingerprint, and with the flag off the model must be exactly what it was.
   const release = process.env.REGRESSION_MEMORY_ENABLED === "true" ? await readSalesforceRelease(session) : undefined;
   return {

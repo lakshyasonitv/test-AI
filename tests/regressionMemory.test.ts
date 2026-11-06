@@ -9,7 +9,7 @@ import {
 import { IR } from "../src/schema/ir.js";
 
 /**
- * D-73, regression testing step 1 "Remember": what a saved case keeps beyond its steps. All names
+ * D-76, regression testing step 1 "Remember": what a saved case keeps beyond its steps. All names
  * below are made-up canaries; the org shape matches what the org model writes (salesforceOrgModel.ts).
  */
 

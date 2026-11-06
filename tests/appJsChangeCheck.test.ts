@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 
 /**
- * D-73 step 2's Suite-screen button, held to the UI's standing rules (CLAUDE.md 3 and 4): no new CSS
+ * D-76 step 2's Suite-screen button, held to the UI's standing rules (CLAUDE.md 3 and 4): no new CSS
  * class, never switch views by toggling `.hidden` or calling `showView`, and nothing at all unless
  * /api/health says `regressionChangeCheck: true`. Line endings normalised first, so a Windows
  * checkout reads the same text as CI (TD-170).
@@ -16,7 +16,7 @@ const e = APP.indexOf(END, s);
 const BLOCK = APP.slice(s, e);
 const CODE = BLOCK.split("\n").map((l) => { const i = l.indexOf("//"); return i < 0 ? l : l.slice(0, i); }).join("\n");
 
-describe("the Suite screen's Check for changes (D-73 step 2)", () => {
+describe("the Suite screen's Check for changes (D-76 step 2)", () => {
   it("the block is found (the checks below are not vacuous)", () => {
     expect(s).toBeGreaterThan(0);
     expect(e).toBeGreaterThan(s);
@@ -45,7 +45,7 @@ describe("the Suite screen's Check for changes (D-73 step 2)", () => {
   });
 });
 
-describe("connect the org the cases need, then retry (D-73)", () => {
+describe("connect the org the cases need, then retry (D-76)", () => {
   const P_START = "let orgPrompt = null;";
   const P_END = "/** The org connection this tab holds";
   const ps = APP.indexOf(P_START);
@@ -85,7 +85,7 @@ describe("connect the org the cases need, then retry (D-73)", () => {
   });
 });
 
-describe("the run page shows a repair proposal, never as a pass (D-73 step 3)", () => {
+describe("the run page shows a repair proposal, never as a pass (D-76 step 3)", () => {
   const R_START = "function describeTarget(t) {";
   const R_END = "function renderCaseErrorBlock(";
   const rs = APP.indexOf(R_START);
@@ -114,7 +114,7 @@ describe("the run page shows a repair proposal, never as a pass (D-73 step 3)", 
   });
 });
 
-describe("approve or reject a repair on the run page (D-73 step 4)", () => {
+describe("approve or reject a repair on the run page (D-76 step 4)", () => {
   const H_START = `document.addEventListener("click", async (ev) => {\n  const btn = ev.target && ev.target.closest ? ev.target.closest("[data-repair-act]") : null;`;
   const hs = APP.indexOf(H_START);
   const he = APP.indexOf("function renderCaseErrorBlock(", hs);

@@ -9,7 +9,7 @@ import type { IR } from "../src/schema/ir.js";
 import type { SalesforceOrgModel } from "../src/schema/appModel.js";
 
 /**
- * D-75 (SALESFORCE_FLOW_CHECKS_ENABLED): a record-triggered flow's field updates — before-save "fast
+ * D-78 (SALESFORCE_FLOW_CHECKS_ENABLED): a record-triggered flow's field updates — before-save "fast
  * field updates" included — checked on the SAVED record. Canary names throughout (Zq...); the flow
  * metadata shapes are the Tooling API's (Flow.Metadata: start, assignments, recordUpdates, decisions).
  */

@@ -3,7 +3,7 @@ import type { OrgObjectNow } from "./salesforceOrgModel.js";
 import { hasRunToken, lineKey } from "../text.js";
 
 /**
- * Regression testing, step 2 "Change check" (D-73, REGRESSION_CHANGE_CHECK_ENABLED, default off).
+ * Regression testing, step 2 "Change check" (D-76, REGRESSION_CHANGE_CHECK_ENABLED, default off).
  *
  * Before a suite runs, compare the Salesforce org NOW with what each saved case remembered when it
  * was saved (step 1), object by object, and say which cases a change will break. API reads only: no

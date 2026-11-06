@@ -309,9 +309,9 @@ const RESOURCE_ROUTES: { name: string; method: Method; path: string; body?: unkn
   { name: "add a case to org A's suite", method: "post", path: `/api/suites/${SUITE_A}/cases`, body: { caseId: CASE_B }, mounted: "POST /api/suites/:suiteId/cases" },
   { name: "remove a case from org A's suite", method: "delete", path: `/api/suites/${SUITE_A}/cases/${CASE_A}`, mounted: "DELETE /api/suites/:suiteId/cases/:caseId" },
   { name: "reorder org A's suite", method: "patch", path: `/api/suites/${SUITE_A}/order`, body: { caseIds: [CASE_A] }, mounted: "PATCH /api/suites/:suiteId/order" },
-  // D-73 step 2: reads org A's saved cases (and would read their org). The flag is ON in this file
+  // D-76 step 2: reads org A's saved cases (and would read their org). The flag is ON in this file
   // (below), so the 404 comes from the suite not being visible, not from the route being off.
-  // D-73 step 4: deciding on a repair of org A's run. The flag is ON in this file, so the 404 is isolation.
+  // D-76 step 4: deciding on a repair of org A's run. The flag is ON in this file, so the 404 is isolation.
   { name: "approve a repair on org A's run", method: "post", path: `/api/runs/${RUN_A}/cases/case-0/repair/approve`, body: {}, mounted: "POST /api/runs/:runId/cases/:caseId/repair/approve" },
   { name: "reject a repair on org A's run", method: "post", path: `/api/runs/${RUN_A}/cases/case-0/repair/reject`, body: {}, mounted: "POST /api/runs/:runId/cases/:caseId/repair/reject" },
   { name: "change-check org A's suite", method: "post", path: `/api/suites/${SUITE_A}/change-check`, body: {}, mounted: "POST /api/suites/:suiteId/change-check" },
@@ -718,10 +718,10 @@ describe("the isolation tables account for every mounted /api route", () => {
   });
 });
 
-// D-73: a refused replay or change check names the org the cases need (`orgUrl`), so the page can ask
+// D-76: a refused replay or change check names the org the cases need (`orgUrl`), so the page can ask
 // the person to connect THAT org and retry. The check verifies the connection for a case that signs in
 // through the org even when no case remembers an org snapshot yet.
-describe("a missing org connection is asked for, naming the org (D-73)", () => {
+describe("a missing org connection is asked for, naming the org (D-76)", () => {
   const ORG = "https://zq-dev.scratch.lightning.force.com";
   const SF_IR = {
     meta: { feature: "f", title: "Create a Zq Deal", priority: "high", sourcePrompt: "p", baseUrl: ORG },
@@ -770,8 +770,8 @@ describe("a missing org connection is asked for, naming the org (D-73)", () => {
   });
 });
 
-// D-73 step 4: a person decides on a repair a replay proposed.
-describe("approve or reject a repair proposal (D-73 step 4)", () => {
+// D-76 step 4: a person decides on a repair a replay proposed.
+describe("approve or reject a repair proposal (D-76 step 4)", () => {
   const SAVED_IR = {
     meta: { feature: "f", title: "Save a Zq name", priority: "high", sourcePrompt: "p", baseUrl: "https://a-one.example.com" },
     steps: [

@@ -128,7 +128,7 @@ export interface CaseRunResult {
    *  from an expensive one without inspecting the heal artifact directory. Absent when the
    *  case didn't heal, or when the heal went through the LLM path. */
   deterministicHeal?: boolean;
-  /** D-73 step 3 (REGRESSION_REPAIR_ENABLED): what the safe repair found for a failed replayed case.
+  /** D-76 step 3 (REGRESSION_REPAIR_ENABLED): what the safe repair found for a failed replayed case.
    *  "proposed" waits for a person (step 4); the case still counts as failed. Absent otherwise. */
   repair?: RepairProposal;
 }
@@ -293,7 +293,7 @@ export function buildSuiteSummary(results: CaseRunResult[], runDir: string): Sui
         // and the shape is unchanged (rule 1, additive-optional) — which is what the sibling test
         // "a PASSING case carries none of it — the fields stay absent, not empty" pins.
         ...failure,
-        // D-73: additive, only when a repair was looked for (REGRESSION_REPAIR_ENABLED).
+        // D-76: additive, only when a repair was looked for (REGRESSION_REPAIR_ENABLED).
         ...(r.repair ? { repair: r.repair } : {}),
       };
     }),

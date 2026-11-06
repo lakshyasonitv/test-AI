@@ -1,20 +1,20 @@
 # Progress — where we are
 
 *Last updated: 2026-11-04. Branch `refactored-code` (pushed, no PR; 13 commits behind `origin/main`,
-merge conflicts in DECISIONS/TECH_DEBT/generator/ir). Multi-value screen-flow fields (D-74,
-`MULTI_VALUE_CONTROLS_ENABLED`) and record-triggered flow checks (D-75, `SALESFORCE_FLOW_CHECKS_ENABLED`)
-built, NOT committed. See `journal/2026-11-04.md`. **Gap:** D-73 regression steps 1–4 and TD-179..182
-(committed 2026-10-29..11-03) were never logged in this brain — read `DECISIONS.md` D-73.*
+merge conflicts in DECISIONS/TECH_DEBT/generator/ir). Multi-value screen-flow fields (D-77,
+`MULTI_VALUE_CONTROLS_ENABLED`) and record-triggered flow checks (D-78, `SALESFORCE_FLOW_CHECKS_ENABLED`)
+built, NOT committed. See `journal/2026-11-04.md`. **Gap:** D-76 regression steps 1–4 and TD-179..182
+(committed 2026-10-29..11-03) were never logged in this brain — read `DECISIONS.md` D-76.*
 
 ## 2026-11-04 — `refactored-code`
 
-- **D-74** (TD-183): a `select` in a dual listbox / checkbox group / `<select multiple>` ADDS the value
+- **D-77** (TD-188): a `select` in a dual listbox / checkbox group / `<select multiple>` ADDS the value
   and confirms it; SLDS checkboxes and radios are checked through their label and verified — spec and
   grounding replay from one source (`targetResolver.ts`). Test data splits "A;B" per option.
-- **D-75** (TD-184, TD-185): new `src/stages/salesforceFlowChecks.ts`. Before/after-save flows that set
+- **D-78** (TD-189, TD-190): new `src/stages/salesforceFlowChecks.ts`. Before/after-save flows that set
   their own record's fields are checked on the SAVED record through the org connection (REST GET) when
   the case's own values meet the flow's start conditions.
-- New records numbered past both sides of the main split (main has D-73 = parallel cases, TD-180 differs).
+- Written as D-74/D-75, TD-183..185; renumbered 2026-11-06 (main merge) to D-77/D-78, TD-188..190.
 - **Baseline (unmodified tree):** `tsc` clean; `vitest` 2957 passed / 8 failed / 23 skipped, 218 files.
   **After:** 3017 passed / 8 failed / 23 skipped (3048), 220 files — the same 8 as the baseline
   (`specRoutes` test 15 passed in one of the two after-runs: flaky). Pre-existing failures: `booleanEnvFlags` (reserved list),

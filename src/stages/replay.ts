@@ -38,7 +38,7 @@ import { attemptRepair, failureDetailOf, failureKindFor, isMassFailure, regressi
 export interface ReplayCase {
   /** The library id (test_cases.id) — used to record the outcome afterwards, not by the runner. */
   id: string;
-  /** D-73: the saved version that runs, so a repair proposal names what it applies to. */
+  /** D-76: the saved version that runs, so a repair proposal names what it applies to. */
   version?: number;
   title: string;
   ir: IR;
@@ -299,7 +299,7 @@ export async function runReplay(
       }
     }
 
-    // D-73 step 3: the safe repair, after every case has run unchanged, so the whole suite is seen.
+    // D-76 step 3: the safe repair, after every case has run unchanged, so the whole suite is seen.
     if (regressionRepairEnabled()) await proposeRepairs(cases, results, runDir, creds, emit);
 
     const summary = buildSuiteSummary(results, runDir);
@@ -332,7 +332,7 @@ export async function runReplay(
 }
 
 /**
- * D-73 step 3: the safe repair, run after every case of the replay has run unchanged. Each failed case
+ * D-76 step 3: the safe repair, run after every case of the replay has run unchanged. Each failed case
  * gets a verdict from its failing step: only "element changed" (a click, fill, select or press could
  * not find or use its element) is repaired; a failed check is reported as a possible bug and left
  * alone. When most of the suite failed at once, nothing is repaired: the app or the login changed.

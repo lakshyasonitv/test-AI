@@ -327,7 +327,7 @@ function multiPicklistRole(appModel: AppModel, o: OrgObject, label: string): str
 }
 
 /**
- * D-74: each fill or select on a MultiPicklist field becomes one `select` per option it names, in
+ * D-77: each fill or select on a MultiPicklist field becomes one `select` per option it names, in
  * order, on the field's discovered group. Salesforce writes such a value "A;B"; a model also writes
  * "A, B". It is split only when EVERY part is one of this field's options (structure: the org
  * model's picklist), so an option whose own name holds a comma stays whole, and a value that is not
@@ -379,7 +379,7 @@ function applyToSection(
     ir.steps.splice(i, 1);
     to--;
   }
-  // D-74 (MULTI_VALUE_CONTROLS_ENABLED), every case, BEFORE the snap below: a multi-select picklist
+  // D-77 (MULTI_VALUE_CONTROLS_ENABLED), every case, BEFORE the snap below: a multi-select picklist
   // takes several options, one select step each. Off: "Red;Blue" reached the snap, which kept only
   // the longer option it found inside ("Blue") and dropped the other without a word.
   if (multiValueEnabled()) to = splitMultiPicklists(ir, o, from, to, appModel, notes);
@@ -387,7 +387,7 @@ function applyToSection(
   // means ("Working" for "Working - Contacted", run 2026-10-24T20-37-00-424Z-410671c2).
   for (const s of steps()) {
     if (s.action !== "select" || !s.value || isEnvValueRef(s.value)) continue;
-    // D-74: a multi-select value was split and snapped part by part above; snapping what is left
+    // D-77: a multi-select value was split and snapped part by part above; snapping what is left
     // ("A;not-an-option") to ONE option is the silent drop that pass exists to stop.
     if (multiValueEnabled() && fieldFor(nameOf(s))?.type === "MultiPicklist") continue;
     const snapped = snapPicklist(o, s.value, fieldFor(nameOf(s)));
@@ -499,7 +499,7 @@ function applyToSection(
       add({ id: `td-${++n}`, action: "select", target: { role: "combobox", name: label }, value: f.picklist[0] },
         `required picklist "${label}" had no step -> "${f.picklist[0]}"`);
     } else if (f.type === "MultiPicklist" && multiValueEnabled()) {
-      // D-74: off, this fell through to valueFor and FILLED "Test <label> {{uid}}" into a textbox
+      // D-77: off, this fell through to valueFor and FILLED "Test <label> {{uid}}" into a textbox
       // that does not exist: a multi-select picklist is a dual listbox, not a text field.
       if (!f.picklist?.length) continue;
       add({ id: `td-${++n}`, action: "select", target: { role: multiPicklistRole(appModel, o, label), name: label }, value: f.picklist[0] },

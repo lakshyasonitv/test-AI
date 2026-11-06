@@ -4,7 +4,7 @@ import { readOrgForCheck, readSalesforceRelease, type OrgObjectNow } from "../sr
 import { IR } from "../src/schema/ir.js";
 
 /**
- * D-73 step 2: compare the org now with what a saved case remembered. One test per row of the
+ * D-76 step 2: compare the org now with what a saved case remembered. One test per row of the
  * design's table, plus its overriding rule: what could not be read is "unknown", never "unchanged".
  * All names are made-up canaries in the shape the org model and UI API use.
  */

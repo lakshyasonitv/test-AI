@@ -8,7 +8,7 @@ import { runSpec } from "../src/stages/executor.js";
 import type { IR } from "../src/schema/ir.js";
 
 /**
- * D-73 step 1B, run for real (D-19): with REGRESSION_MEMORY_ENABLED on, the generated spec records
+ * D-76 step 1B, run for real (D-19): with REGRESSION_MEMORY_ENABLED on, the generated spec records
  * what each element looked like just before its step acted, into artifacts/elements.json.
  *
  * The page copies how a real Lightning Account form nests a field (seen in a captured form): a

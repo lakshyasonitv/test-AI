@@ -16,7 +16,7 @@ import { recordsFromResults } from "./salesforceCleanup.js";
 import { hasRunToken, lineKey, resolveRunTokens } from "../text.js";
 
 /**
- * Regression testing, step 3 "Safe repair" (D-73, REGRESSION_REPAIR_ENABLED, default off).
+ * Regression testing, step 3 "Safe repair" (D-76, REGRESSION_REPAIR_ENABLED, default off).
  *
  * The saved test always runs first, unchanged (a replay). Only when a CLICK, FILL, SELECT or PRESS
  * could not find or use its element is a repair tried, and only two ways, in this order, never by a

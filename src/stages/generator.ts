@@ -67,7 +67,7 @@ function emitAssert(step: Step): string {
     }
   }
 
-  // D-75: a field a record-triggered flow sets, read from the SAVED record through the org connection
+  // D-78: a field a record-triggered flow sets, read from the SAVED record through the org connection
   // (Target.recordField, written only by salesforceFlowChecks). See SF_SAVED_FIELD_HELPER.
   if (t?.recordField && t.field && (step.assertion === "text_contains" || step.assertion === "text_equals")) {
     const r = t.recordField;
@@ -344,7 +344,7 @@ async function sfFieldValue(page, label, expected, mode) {
 }`;
 
 /**
- * D-75: does a saved record's field VALUE, as the REST API returns it, equal the value a flow sets?
+ * D-78: does a saved record's field VALUE, as the REST API returns it, equal the value a flow sets?
  * Both sides are the API's own spelling (a picklist's API value, `true`, `25000`), not page text.
  * Numbers compare as numbers ("100" and 100.0 agree); booleans ignore case; a multi-select value
  * ("A;B") compares its parts in any order. Exported for its tests.
@@ -366,7 +366,7 @@ export const SF_SAVED_MATCH_JS = `(shown, expected, mode) => {
 }`;
 
 /**
- * D-75: the value a record-triggered flow sets, read from the SAVED record through the run's org
+ * D-78: the value a record-triggered flow sets, read from the SAVED record through the run's org
  * connection. A before-save flow ("fast field update") has no screen and no message: the saved field
  * is the only evidence it ran, and the record page shows it only when the layout has the field.
  *
@@ -481,7 +481,7 @@ async function waitForAuthSettle(page) {
  * 2-3s delay that would be paid on every step of every case regardless.
  */
 /**
- * Regression step 1B (D-73, REGRESSION_MEMORY_ENABLED): what each element a step acts on looked like,
+ * Regression step 1B (D-76, REGRESSION_MEMORY_ENABLED): what each element a step acts on looked like,
  * read just BEFORE the step acts (a click can take the element away) and written to
  * `<artifacts>/elements.json`, keyed by step id so a retry overwrites rather than duplicates. Saving a
  * case from a PASSING run keeps it (regressionMemory.ts), so a later repair knows what to look for.
@@ -1088,7 +1088,7 @@ function emitStep(step: Step, baseUrl: string): string {
 
     case "click": {
       const t = step.target!;
-      // D-74: a radio is CHOSEN, which a click on its label does when the page draws the dot itself
+      // D-77: a radio is CHOSEN, which a click on its label does when the page draws the dot itself
       // (SLDS) — instead of safeClick's ~7 s forced-click fallback. Then verified chosen.
       if (multiValueEnabled() && t.role?.toLowerCase() === "radio") {
         code += `  await checkBox(page, ${locator(t, "check")}${t.frame ? `, ${frameRootCode(t)}` : ""});`;
@@ -1130,7 +1130,7 @@ function emitStep(step: Step, baseUrl: string): string {
       // A target in an iframe passes its frame root as choose()'s 4th argument, for the two
       // lookups that must happen in the target's own document. Omitted otherwise, so a spec with
       // no frames is emitted exactly as before.
-      // D-74 (MULTI_VALUE_CONTROLS_ENABLED): chooseMulti first — a dual listbox, a checkbox group or
+      // D-77 (MULTI_VALUE_CONTROLS_ENABLED): chooseMulti first — a dual listbox, a checkbox group or
       // a <select multiple> gets the value ADDED; anything else goes on to choose() unchanged.
       if (multiValueEnabled()) {
         code += `  await chooseMulti(page, ${locator(step.target!, "select")}, ${valueCode(step.value)}, ${step.target!.frame ? frameRootCode(step.target!) : "undefined"}, choose, checkBox);`;
@@ -1140,7 +1140,7 @@ function emitStep(step: Step, baseUrl: string): string {
       break;
 
     case "check":
-      // D-74: a box the page draws itself (SLDS) is checked through its label, then verified.
+      // D-77: a box the page draws itself (SLDS) is checked through its label, then verified.
       if (multiValueEnabled()) {
         code += `  await checkBox(page, ${locator(step.target!, "check")}${step.target!.frame ? `, ${frameRootCode(step.target!)}` : ""});`;
         break;
@@ -1207,7 +1207,7 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
     case "wait": return `Wait ${step.value ?? 1000}ms`;
     case "assert": {
       const assertion = step.assertion ?? "visible";
-      // D-75: says what is read — the saved record, not the page.
+      // D-78: says what is read — the saved record, not the page.
       if (t?.recordField && (assertion === "text_equals" || assertion === "text_contains")) {
         return `Check the saved ${t.recordField.object} record: ${t.field ?? t.recordField.api} is${val} (set by a flow)`;
       }
@@ -1375,14 +1375,14 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
       }
       const label = stepLabel(step, i, ir.meta.baseUrl);
       // A field's value check scrolls its label into being too, Details tab or not (Phase A).
-      // Not for a saved-field read (D-75): it reads the record, not the page.
+      // Not for a saved-field read (D-78): it reads the record, not the page.
       const reveal = step.action === "assert" && step.target?.field && !step.target.recordField
         && (step.assertion === "text_contains" || step.assertion === "text_equals")
         ? `await sfReveal(page, ${q(step.target.field)});\n`
         : detailsAt >= 0 && i > detailsAt && step.action === "assert" && step.target?.text
         && (step.assertion === "visible" || step.assertion === "hidden")
         ? `await sfReveal(page, ${q(step.target.text)});\n` : "";
-      // D-73 step 1B: read the element before the step acts. Off: nothing emitted, spec unchanged.
+      // D-76 step 1B: read the element before the step acts. Off: nothing emitted, spec unchanged.
       const memLoc = rememberSteps ? rememberLocatorCode(step) : null;
       const memo = memLoc ? `await remember(page, ${memLoc}, ${q(step.id)}, ${q(`${shotDir}/elements.json`)});\n` : "";
       const code = reveal + memo + emitStep(step, ir.meta.baseUrl);
@@ -1411,7 +1411,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   const needsAssertChoice = body.includes("await assertChoice(");
   const needsAssertGone = body.includes("await assertGone(");
   const needsField = body.includes("await field(");
-  // chooseMulti (D-74) falls back to choose(), so it needs choose() and everything choose() needs.
+  // chooseMulti (D-77) falls back to choose(), so it needs choose() and everything choose() needs.
   const needsChooseMulti = body.includes("await chooseMulti(");
   const needsCheckBox = needsChooseMulti || body.includes("await checkBox(");
   const needsChoose = body.includes("await choose(") || needsChooseMulti;
@@ -1432,7 +1432,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     needsScope ? SCOPE_HELPER : "",
     needsField ? FIELD_HELPER : "",
     needsChoose ? CHOOSE_HELPER : "",
-    // D-74: the same source the grounding replay runs (targetResolver.ts), so the two cannot drift.
+    // D-77: the same source the grounding replay runs (targetResolver.ts), so the two cannot drift.
     needsCheckBox ? `const checkBox = ${checkBoxJs(SELECT_TIMEOUT_MS)};` : "",
     needsChooseMulti ? `const chooseMulti = ${chooseMultiJs(SELECT_TIMEOUT_MS)};` : "",
     needsLookup ? LOOKUP_HELPER : "",
@@ -1454,7 +1454,7 @@ test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", descr
     // org confirms this user created during the run (salesforceCleanup.ts).
     body.includes(`process.env.${FRONTDOOR_ENV}`) ? SF_RECORDS_HELPER : "",
     body.includes("await sfReveal(") ? SF_REVEAL_HELPER : "",
-    // sfSavedField (D-75) finds its record the way sfOpenRecord does.
+    // sfSavedField (D-78) finds its record the way sfOpenRecord does.
     body.includes("await sfOpenRecord(") || body.includes("await sfSavedField(") ? SF_OPEN_RECORD_HELPER : "",
     body.includes("await sfFieldValue(") ? SF_FIELD_HELPER : "",
     body.includes("await sfSavedField(") ? SF_SAVED_FIELD_HELPER : "",

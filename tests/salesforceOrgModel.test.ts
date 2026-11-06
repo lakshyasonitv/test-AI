@@ -389,7 +389,7 @@ describe("active flows: what runs by itself after a save", () => {
       }
       if (q.includes(`FROM Flow WHERE Id = '${VERSION}'`)) {
         return { records: [{ Metadata: {
-          // Element names and connectors as the Tooling API returns them (D-75 walks them; flowEffects does not).
+          // Element names and connectors as the Tooling API returns them (D-78 walks them; flowEffects does not).
           start: { object: "Lead", filters: [{ field: "Rating", operator: "EqualTo", value: { stringValue: "Hot" } }],
             connector: { targetReference: "Zq_Upd" } },
           recordUpdates: [{ name: "Zq_Upd", inputReference: "$Record", inputAssignments: [{ field: "Zq_Tier__c", value: { stringValue: "Gold" } }],
@@ -409,7 +409,7 @@ describe("active flows: what runs by itself after a save", () => {
     expect(orgModelForCases(org)).toContain(`- flow "Zq Hot Lead" (record-triggered on Lead, on create): only when Rating = Hot; sets Zq_Tier__c = Gold; creates a Task`);
   });
 
-  it("D-75: with SALESFORCE_FLOW_CHECKS_ENABLED on, the record-triggered flow also carries its field updates as data", async () => {
+  it("D-78: with SALESFORCE_FLOW_CHECKS_ENABLED on, the record-triggered flow also carries its field updates as data", async () => {
     expect((await readSalesforceOrgModel({ apiGet: flowApi() }))!.flows?.[0]).not.toHaveProperty("fieldUpdates");
     process.env.SALESFORCE_FLOW_CHECKS_ENABLED = "true";
     try {

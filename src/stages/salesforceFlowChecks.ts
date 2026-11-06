@@ -1,7 +1,7 @@
 /**
  * Record-triggered flows that update the record's own fields — Salesforce's "fast field updates"
  * (before-save) and an after-save flow's "update the triggering record" — CHECKED, not just asked
- * for (SALESFORCE_FLOW_CHECKS_ENABLED, default off, `DECISIONS.md` D-75).
+ * for (SALESFORCE_FLOW_CHECKS_ENABLED, default off, `DECISIONS.md` D-78).
  *
  * WHAT WAS THERE. The org model already read each active flow and described it in plain lines
  * ("only when Rating = Hot", "sets Tier__c = Gold"), and the case-writing prompt asked the model to

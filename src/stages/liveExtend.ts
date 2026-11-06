@@ -97,7 +97,7 @@ export async function runStepLive(
       return;
     }
     case "click":
-      // D-74: a radio is chosen through its label when the page draws it (SLDS), as the spec does;
+      // D-77: a radio is chosen through its label when the page draws it (SLDS), as the spec does;
       // a plain click on the hidden input waits for a visibility that never comes.
       if (multiValueEnabled() && step.target?.role?.toLowerCase() === "radio") {
         await checkBoxLive(page, await resolveLive(page, step.target, "check"));
@@ -116,7 +116,7 @@ export async function runStepLive(
         await lookupLive(page, await resolveLive(page, step.target!, "select"), ctx && hasRunToken(v) ? resolveRunTokens(v, ctx) : v);
         return;
       }
-      // D-74: the spec's chooseMulti, from the same source — or the replay would move to the next
+      // D-77: the spec's chooseMulti, from the same source — or the replay would move to the next
       // screen with a multi-select value only highlighted, and ground the rest of the case on that.
       if (multiValueEnabled()) {
         await chooseMultiLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "", undefined, chooseLive, checkBoxLive);

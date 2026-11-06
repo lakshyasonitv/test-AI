@@ -193,7 +193,7 @@ const RUN_SCOPED_ROUTES: { name: string; method: "get" | "post" | "delete"; path
   // reachable and the DESTINATION project must be too — so it belongs in this table like any
   // other run-scoped route.
   { name: "POST save case",             method: "post",   path: `/api/runs/${RUN_A}/cases/case-0/save`, body: { projectId: PROJ_A1 } },
-  // D-73 step 4. REGRESSION_REPAIR_ENABLED is off here, so these 404 before the run is looked up;
+  // D-76 step 4. REGRESSION_REPAIR_ENABLED is off here, so these 404 before the run is looked up;
   // the isolation itself (flag on) is asserted in tests/multiTenancy.test.ts.
   { name: "POST repair approve",        method: "post",   path: `/api/runs/${RUN_A}/cases/case-0/repair/approve`, body: {} },
   { name: "POST repair reject",         method: "post",   path: `/api/runs/${RUN_A}/cases/case-0/repair/reject`, body: {} },

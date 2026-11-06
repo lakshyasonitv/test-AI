@@ -37,7 +37,7 @@ export const Target = z.object({
    */
   field: z.string().optional(),
   /**
-   * D-75 (SALESFORCE_FLOW_CHECKS_ENABLED): the same field of the SAVED record, read through the run's
+   * D-78 (SALESFORCE_FLOW_CHECKS_ENABLED): the same field of the SAVED record, read through the run's
    * org connection rather than off the page — `object` (API name), which of the records this test's
    * create forms saved for it (`n`, 1 = the first), and the field's API name. Written in code only
    * (salesforceFlowChecks.flowFieldChecks), never by the LLM, for a field a record-triggered flow sets.
@@ -91,7 +91,7 @@ export type Step = z.infer<typeof Step>;
 // the identical trap one stage downstream — `IR.meta.priority` is parsed in `toIR`'s grounding
 // loop, where a rejection burns a retry attempt and can fail the whole compile over a sort hint.
 /**
- * Regression memory (D-73, REGRESSION_MEMORY_ENABLED): what a SAVED case remembers beyond its steps,
+ * Regression memory (D-76, REGRESSION_MEMORY_ENABLED): what a SAVED case remembers beyond its steps,
  * so a later repair has something to repair from and the safety checks can still read what the case
  * means. Written in code when the case is saved (regressionMemory.ts), never by the model. Absent on
  * every run's IR and on every case saved with the flag off, so all stored IRs parse unchanged.
@@ -189,10 +189,10 @@ export const IR = z.object({
      * everywhere else, so every other IR and every other spec is unchanged.
      */
     fixedLogin: z.literal("salesforce").optional(),
-    /** D-73: written when a case is saved with REGRESSION_MEMORY_ENABLED on. See `Remembered`. */
+    /** D-76: written when a case is saved with REGRESSION_MEMORY_ENABLED on. See `Remembered`. */
     remembered: Remembered.optional(),
     /**
-     * D-73 step 4: ids of steps a person edited by hand in the step editor (REGRESSION_REPAIR_ENABLED).
+     * D-76 step 4: ids of steps a person edited by hand in the step editor (REGRESSION_REPAIR_ENABLED).
      * A pinned step is never repaired automatically: a person chose it. Written in code by the edit
      * route, never by the model (toIR drops one). Absent on every other IR.
      */

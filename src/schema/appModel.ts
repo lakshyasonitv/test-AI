@@ -414,7 +414,7 @@ export const SalesforceOrgModel = z.object({
   validationRulesRead: z.boolean(),
   /** The connected user's locale ("en_US"): Lightning parses typed dates in it. Absent when unread. */
   userLocale: z.string().optional(),
-  /** D-73: the org's Salesforce release ("Winter '27"), read only with REGRESSION_MEMORY_ENABLED on. */
+  /** D-76: the org's Salesforce release ("Winter '27"), read only with REGRESSION_MEMORY_ENABLED on. */
   release: z.object({ label: z.string(), version: z.string() }).optional(),
   /** Active flows (Phase B): what runs, on what, when, and what it visibly does. Absent when unread. */
   flows: z.array(z.object({
@@ -428,7 +428,7 @@ export const SalesforceOrgModel = z.object({
     /** Plain lines: "sets Rating = Hot", "creates a Task", "only when Customer Priority = High". */
     effects: z.array(z.string()).optional(),
     /**
-     * D-75, read only with SALESFORCE_FLOW_CHECKS_ENABLED on: what a record-triggered flow sets on its
+     * D-78, read only with SALESFORCE_FLOW_CHECKS_ENABLED on: what a record-triggered flow sets on its
      * own record, as data a check can use (salesforceFlowChecks.flowFieldUpdates). `sets` holds only
      * fixed values assigned on the path from the start element up to the first decision; anything
      * else is in `skipped`, with why. Absent with the flag off, so the model is unchanged.

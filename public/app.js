@@ -1945,7 +1945,7 @@ function setSuiteRetryNote(item, text) {
 }
 
 /**
- * D-73 step 3: what the safe repair found for a failed replayed case (REGRESSION_REPAIR_ENABLED; absent
+ * D-76 step 3: what the safe repair found for a failed replayed case (REGRESSION_REPAIR_ENABLED; absent
  * otherwise). A proposal shows the one step it changes, before and after, and why; approving it is
  * step 4. A failed CHECK reads as a possible bug, never as something to repair. Existing classes only
  * (.case-notice.notice / .case-notice.error); filled in place, no .hidden (rules 3 and 4).
@@ -4043,7 +4043,7 @@ async function api(path, init) {
   if (!res.ok) {
     const err = new Error(body.error || `That didn't work (${res.status}).`);
     err.code = body.code;   // a machine-readable reason, when the server gives one
-    if (body.orgUrl) err.orgUrl = body.orgUrl;   // D-73: the Salesforce org a refused replay/check needs
+    if (body.orgUrl) err.orgUrl = body.orgUrl;   // D-76: the Salesforce org a refused replay/check needs
     throw err;
   }
   return body;
@@ -4082,7 +4082,7 @@ async function startReplay(selection, label) {
 // ---------------------------------------------------------------- Suite view
 
 /**
- * D-73 step 2: "Check for changes" on a suite (REGRESSION_CHANGE_CHECK_ENABLED). Before running the
+ * D-76 step 2: "Check for changes" on a suite (REGRESSION_CHANGE_CHECK_ENABLED). Before running the
  * suite, the server compares the Salesforce org now with what each saved case remembered and says
  * which cases a change will break. Nothing runs, nothing is written. Rendered only when /api/health
  * says `regressionChangeCheck: true`; off, this button and its report do not exist.
@@ -4104,7 +4104,7 @@ const CHANGE_VERDICTS = {
 };
 
 /**
- * D-73: when a replay or a check is refused because the Salesforce org connection is missing, expired
+ * D-76: when a replay or a check is refused because the Salesforce org connection is missing, expired
  * or for another org, ask for it right here instead of only refusing: say which org the cases need
  * (the server names it, `orgUrl`), offer Connect org for THAT org, and retry what was clicked once the
  * popup reports success. Only on the Suite screen (it needs #suiteFeedback); elsewhere the old toast.
@@ -6111,7 +6111,7 @@ async function connectSalesforceOrg() {
 }
 
 /** The org sign-in popup for `url`, reporting progress through `setStatus`. Shared by the home
- *  view's Connect org and the Suite screen's "connect this org, then retry" (D-73). The result comes
+ *  view's Connect org and the Suite screen's "connect this org, then retry" (D-76). The result comes
  *  back as a postMessage, handled below. */
 async function openOrgSignIn(url, setStatus) {
   // Opened synchronously, inside the click, so a popup blocker lets it through; pointed at
@@ -6153,7 +6153,7 @@ window.addEventListener("message", (ev) => {
   }
   showSalesforceConnected(d);
   try { sessionStorage.setItem("sfConnection", JSON.stringify(sfConnection)); } catch { /* ignore */ }
-  // D-73: the Suite screen asked for this org to retry a run or a check. Retry it once; a wrong org
+  // D-76: the Suite screen asked for this org to retry a run or a check. Retry it once; a wrong org
   // is refused by the server again and asks again.
   if (orgPrompt) {
     const retry = orgPrompt.retry;
@@ -6355,7 +6355,7 @@ fetch("/api/health")
     if (h && h.specIntake === true) renderProToggle();
     if (h && h.jira === true) renderJiraRow();
     if (h && h.projectDiscovery === true) renderProjectFreshBox();
-    // D-73 step 2. Health can land after a suite was already drawn; redraw that suite once so its
+    // D-76 step 2. Health can land after a suite was already drawn; redraw that suite once so its
     // toolbar gains the button.
     if (h && h.regressionChangeCheck === true) {
       regressionChangeCheckOn = true;

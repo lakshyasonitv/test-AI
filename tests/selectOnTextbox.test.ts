@@ -40,7 +40,7 @@ const BUDGET = (o: { both?: boolean; dupSelf?: boolean; single?: boolean; num?: 
     `<div role="group" aria-label="Purpose"><button type="button" id="self">Self Use</button>` +
     (o.dupSelf ? `<button type="button" id="self2">Self Use</button>` : "") +
     `<button type="button" id="inv">Investment</button></div>` +
-    // D-74: a Screen Flow checkbox group as SLDS draws it — a fieldset no role names, the real input
+    // D-77: a Screen Flow checkbox group as SLDS draws it — a fieldset no role names, the real input
     // a clipped 1px box, the painted box in its label.
     (o.boxes ? `<style>.slds-checkbox input{width:1px;height:1px;border:0;clip:rect(0 0 0 0);margin:-1px;overflow:hidden;padding:0;position:absolute}` +
       `.faux{display:inline-block;width:16px;height:16px;border:1px solid #888}</style><fieldset><legend>Channels</legend>` +
@@ -358,7 +358,7 @@ describe("retries keep the best attempt and reuse captured screens (Salesforce r
   }, 180_000);
 });
 
-describe("a select step aimed at a CHECKBOX group (Salesforce run, D-74, MULTI_VALUE_CONTROLS_ENABLED)", () => {
+describe("a select step aimed at a CHECKBOX group (Salesforce run, D-77, MULTI_VALUE_CONTROLS_ENABLED)", () => {
   const ORIGINAL = process.env.MULTI_VALUE_CONTROLS_ENABLED;
   afterAll(() => { if (ORIGINAL === undefined) delete process.env.MULTI_VALUE_CONTROLS_ENABLED; else process.env.MULTI_VALUE_CONTROLS_ENABLED = ORIGINAL; });
   const channels = [choose("s8", "Channels", "Email"), choose("s8b", "Channels", "SMS")];

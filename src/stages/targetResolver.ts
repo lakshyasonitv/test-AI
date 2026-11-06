@@ -419,7 +419,7 @@ export const optionErrorMessage = new Function(`return (${OPTION_ERROR_JS});`)()
   (wanted: string, available: string[]) => string;
 
 // -----------------------------------------------------------------------------
-// Multi-value controls (D-74, MULTI_VALUE_CONTROLS_ENABLED, default off)
+// Multi-value controls (D-77, MULTI_VALUE_CONTROLS_ENABLED, default off)
 // -----------------------------------------------------------------------------
 //
 // A field that takes SEVERAL values — a Salesforce multi-select picklist (Lightning's dual listbox:

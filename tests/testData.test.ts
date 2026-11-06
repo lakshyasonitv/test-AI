@@ -670,7 +670,7 @@ describe("a field the org calculates is never filled", () => {
   });
 });
 
-// D-74 (MULTI_VALUE_CONTROLS_ENABLED): a multi-select picklist takes several options, one step each.
+// D-77 (MULTI_VALUE_CONTROLS_ENABLED): a multi-select picklist takes several options, one step each.
 describe("a multi-select picklist (MultiPicklist) keeps every value it is given", () => {
   const multi = (() => {
     const m = structuredClone(nameOnlyRequired) as AppModel;
