@@ -113,7 +113,11 @@ import {
   salesforceOAuthEnabled, startAuthorization, completeAuthorization, connectionMatchesUrl,
   frontdoorSessionFor, appOrigin, replaySessionFor, restoreConnection,
 } from "./salesforceOAuth.js";
-import { withFrontdoor } from "../stages/salesforceFrontdoor.js";
+import { withFrontdoor, isFrontdoorRef } from "../stages/salesforceFrontdoor.js";
+import { HealedNeedsReviewError } from "../stages/regressionMemory.js";
+import { checkSuite, regressionChangeCheckEnabled } from "../stages/regressionChangeCheck.js";
+import { regressionRepairEnabled, loadProposal, recordDecision, recordRejection, irToApprove } from "../stages/regressionRepair.js";
+import { readOrgForCheck } from "../stages/salesforceOrgModel.js";
 import {
   checkSpecUpload, distillSpec, getRunSpecWarnings, specIntakeEnabled, DISTILL_FAILED_WARNING,
 } from "../stages/specIntake.js";
@@ -900,6 +904,9 @@ app.get("/api/health", (_req, res) => {
     // ADDITIVE, present ONLY when PROJECT_DISCOVERY_SHARING is on (D-72): the home view then offers
     // "Explore the site again". Off: the body is unchanged.
     ...(projectDiscoveryEnabled() ? { projectDiscovery: true } : {}),
+    // ADDITIVE, present ONLY when REGRESSION_CHANGE_CHECK_ENABLED is on (D-76 step 2): the Suite
+    // screen then offers "Check for changes". Off: the body is unchanged.
+    ...(regressionChangeCheckEnabled() ? { regressionChangeCheck: true } : {}),
   });
 });
 
@@ -1223,6 +1230,12 @@ app.post("/api/auth/signup", async (req, res) => {
 // --------------------------------------------------------------------------
 
 /** Translate an AccessError into its status; anything else is a 500 we shouldn't leak details of. */
+/** A saved case that signs in through a Salesforce org connection: one of its steps opens the
+ *  `${env:SF_FRONTDOOR_URL}` sign-in (D-63). Structural, never read from text. */
+function signsInThroughOrg(ir: { steps: ReadonlyArray<{ action: string; target?: { url?: string } }> }): boolean {
+  return ir.steps.some((s) => s.action === "navigate" && isFrontdoorRef(s.target?.url));
+}
+
 function sendAccessError(res: express.Response, err: unknown): void {
   // A stale edit is not an access failure — it carries the winning state so the loser of the race
   // can see what they would have overwritten, which is the entire point of refusing.
@@ -1836,13 +1849,20 @@ async function prepareEdit(req: express.Request, res: express.Response) {
 
   // Structurally valid before it is ever checked against a live site — a malformed plan should
   // fail in milliseconds, not after a browser walk.
+  // D-76 step 4 (REGRESSION_REPAIR_ENABLED): a step a person edits here is pinned, so a repair never
+  // changes it automatically afterwards. Pins already on the case are kept. Off: no field is added.
+  const pinned = regressionRepairEnabled()
+    ? [...new Set([...(found.ir.meta.pinnedSteps ?? []),
+      ...parsed.result.changedIndexes.map((i) => safe.steps[i]?.id).filter((id): id is string => !!id)])]
+    : null;
+  const pins = pinned && pinned.length ? { pinnedSteps: pinned } : {};
   const validated = parseIr(
-    { ...found.ir, steps: safe.steps, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts } },
+    { ...found.ir, steps: safe.steps, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts, ...pins } },
     "the edited test plan",
   );
   // Same IR with the typed literals still in place. NEVER written, never serialised to a client.
   const liveIr = parseIr(
-    { ...found.ir, steps: safe.live, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts } },
+    { ...found.ir, steps: safe.live, meta: { ...found.ir.meta, hasTerminalAssertion: stillAsserts, ...pins } },
     "the edited test plan",
   );
   return { ctx, found, parsed: parsed.result, validated, liveIr, credentialNote: safe.note, typedCreds: safe.creds };
@@ -2263,7 +2283,7 @@ app.delete("/api/cases/:caseId", requireRole("admin"), async (req, res) => {
  * library.ts independently checks the DESTINATION project. Both matter: they can differ.
  */
 app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async (req, res) => {
-  const { projectId, title, suiteId } = req.body ?? {};
+  const { projectId, title, suiteId, acceptHealed } = req.body ?? {};
   // Narrower than the app.param above, which has to admit a library uuid too: on THIS route the
   // id is a run directory name, so only `case-N` is meaningful. Belt-and-braces in the same shape
   // the runId checks in this file already use — the param layer is what actually stops traversal.
@@ -2280,8 +2300,133 @@ app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async 
       userId, req.organisationId!, role,
       req.params.runId, req.params.caseId, projectId,
       { title: typeof title === "string" ? title : undefined,
-        suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined },
+        suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined,
+        // D-76: optional; only read with REGRESSION_MEMORY_ENABLED on, for a case that was healed.
+        acceptHealed: acceptHealed === true },
     ));
+  } catch (err) {
+    // D-76: a healed case is not saved without a person's word. A 409 carrying a code, so the page
+    // can ask and send `acceptHealed: true`. Only thrown with REGRESSION_MEMORY_ENABLED on.
+    if (err instanceof HealedNeedsReviewError) return res.status(409).json({ code: err.code, error: err.message });
+    sendAccessError(res, err);
+  }
+});
+
+/**
+ * D-76 step 2: "Check this suite for changes" — before running a suite, compare the Salesforce org now
+ * with what each saved case remembered (step 1), per object, and say which cases a change will break.
+ * Read-only API calls through the Connect org link; no browser, no model, nothing written. Behind
+ * REGRESSION_CHANGE_CHECK_ENABLED (404 when off). The link is verified like a replay's: it must belong
+ * to the caller's organisation, and every Salesforce case in the suite must be an address of that org.
+ * `tester`, like a replay: it reads an org with someone's connection.
+ */
+app.post("/api/suites/:suiteId/change-check", requireRole("tester"), async (req, res) => {
+  if (!regressionChangeCheckEnabled()) {
+    return res.status(404).json({ error: "the change check is not available — this server has REGRESSION_CHANGE_CHECK_ENABLED off" });
+  }
+  try {
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    const orgId = req.organisationId ?? null;
+    const cases = await loadCasesForReplay(userId, req.organisationId!, req.organisationRole!, { suiteId: req.params.suiteId });
+    const withOrg = cases.filter((c) => c.ir.meta.remembered?.org);
+    // The connection is checked for every case that NEEDS the org: one that remembers it, and one that
+    // signs in through it (saved from a Connect org run). The refusal names the org (`orgUrl`,
+    // additive) so the page can ask the person to connect THAT org and retry.
+    const needOrg = cases.filter((c) => c.ir.meta.remembered?.org || signsInThroughOrg(c.ir));
+    const orgUrl = needOrg[0]?.ir.meta.baseUrl;
+    let now: Awaited<ReturnType<typeof readOrgForCheck>> | null = null;
+    let host: string | null = null;
+    if (needOrg.length) {
+      if (!salesforceEnabled() || !salesforceOAuthEnabled()) {
+        return res.status(400).json({ code: "sf-connection-required", error: "The change check reads the org through Connect org, which is turned off on this server." });
+      }
+      const { sfConnectionId } = req.body ?? {};
+      const conn = typeof sfConnectionId === "string" && sfConnectionId ? await restoreConnection(sfConnectionId, orgId) : null;
+      if (!conn) {
+        return res.status(400).json({ code: sfConnectionId ? "sf-connection-expired" : "sf-connection-required", error: "Connect the Salesforce org these cases belong to, then check again.", ...(orgUrl ? { orgUrl } : {}) });
+      }
+      const off = needOrg.find((c) => !connectionMatchesUrl(conn, c.ir.meta.baseUrl));
+      if (off) {
+        return res.status(400).json({ code: "sf-connection-wrong-org", error: `"${off.ir.meta.baseUrl}" is not an address of the connected org. Connect the org these cases belong to.`, orgUrl: off.ir.meta.baseUrl });
+      }
+      const session = frontdoorSessionFor(conn);
+      host = session.instanceHost;
+      // Connection verified; with no snapshot to compare there is nothing to read.
+      if (!withOrg.length) return res.json(checkSuite(cases.map((c) => ({ id: c.id, title: c.title, ir: c.ir })), null, host));
+      const objects = [...new Set(withOrg.flatMap((c) => (c.ir.meta.remembered!.org!.objects as { api?: unknown }[])
+        .map((o) => String(o.api ?? "")).filter(Boolean)))];
+      now = await readOrgForCheck(session, objects);
+    }
+    res.json(checkSuite(cases.map((c) => ({ id: c.id, title: c.title, ir: c.ir })), now, host));
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * D-76 step 4: a person decides on a repair proposal a replay made (REGRESSION_REPAIR_ENABLED; 404 off).
+ *
+ * APPROVE saves the IR the repair VERIFIED (the whole test passed with it) as the next version of the
+ * SAME library case — never a new case — with the version the replay ran as `expectedVersion`, so a
+ * case that moved on since answers 409 with the newer state instead of being overwritten. REJECT
+ * records the decision so exactly this repair is never proposed again for that case. Both record the
+ * outcome on the run's own files, so the run page shows it after a reload. `tester`, on both the run
+ * (requireRunRole) and the case (getCase checks its project), like saving a case.
+ */
+function repairDecisionPreamble(req: express.Request, res: express.Response) {
+  if (!regressionRepairEnabled()) {
+    res.status(404).json({ error: "repairs are not available — this server has REGRESSION_REPAIR_ENABLED off" });
+    return null;
+  }
+  if (!RUN_CASE_ID.test(req.params.caseId)) { res.status(400).json({ error: "invalid caseId" }); return null; }
+  const runDir = path.join("runs", req.params.runId);
+  const loaded = loadProposal(runDir, req.params.caseId);
+  if (!loaded) { res.status(404).json({ error: "this case has no repair proposal" }); return null; }
+  return { runDir, ...loaded };
+}
+
+app.post("/api/runs/:runId/cases/:caseId/repair/approve", requireRunRole("tester"), async (req, res) => {
+  const pre = repairDecisionPreamble(req, res);
+  if (!pre) return;
+  const { runDir, proposal, ir } = pre;
+  if (proposal.state !== "proposed") {
+    return res.status(409).json({
+      error: proposal.state === "approved" ? `This repair was already approved (saved as version ${proposal.newVersion}).`
+        : `This repair is "${proposal.state}" and cannot be approved.`,
+      repair: proposal,
+    });
+  }
+  if (!ir || !proposal.caseId) return res.status(409).json({ error: "This proposal does not carry the test it would save.", repair: proposal });
+  try {
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    const role = await assertOrgAccess(userId, req.organisationId!, "tester");
+    const current = await getCase(userId, req.organisationId!, role, proposal.caseId);
+    const describe = (t: any) => (t?.role && t?.name ? `${t.role} "${t.name}"` : t?.css ?? "an element");
+    const updated = await updateCase(userId, req.organisationId!, role, proposal.caseId, {
+      ir: irToApprove(ir, current.ir),
+      changeNote: `Repair approved: step ${proposal.stepId} now finds ${describe(proposal.after)} (was ${describe(proposal.before)}); verified in run ${req.params.runId}.`,
+      ...(typeof proposal.fromVersion === "number" ? { expectedVersion: proposal.fromVersion } : {}),
+    });
+    const repair = recordDecision(runDir, req.params.caseId, {
+      state: "approved", decidedBy: userId, decidedAt: new Date().toISOString(), newVersion: updated.currentVersion,
+    });
+    res.json({ repair, case: updated });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.post("/api/runs/:runId/cases/:caseId/repair/reject", requireRunRole("tester"), async (req, res) => {
+  const pre = repairDecisionPreamble(req, res);
+  if (!pre) return;
+  const { runDir, proposal } = pre;
+  if (proposal.state !== "proposed" && proposal.state !== "needs-person") {
+    return res.status(409).json({ error: `This repair is "${proposal.state}" and cannot be rejected.`, repair: proposal });
+  }
+  if (!proposal.caseId || !proposal.stepId) return res.status(409).json({ error: "This proposal does not say which case it is for.", repair: proposal });
+  try {
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    const role = await assertOrgAccess(userId, req.organisationId!, "tester");
+    await getCase(userId, req.organisationId!, role, proposal.caseId);   // access to the case, not only the run
+    recordRejection(proposal.caseId, proposal.stepId, proposal.after, userId);
+    const repair = recordDecision(runDir, req.params.caseId, { state: "rejected", decidedBy: userId, decidedAt: new Date().toISOString() });
+    res.json({ repair });
   } catch (err) { sendAccessError(res, err); }
 });
 
@@ -2328,7 +2473,12 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
     const sfReplay = salesforceOAuthEnabled()
       ? replaySessionFor(cases, sfConnectionId, req.organisationId ?? null)
       : { session: null };
-    if ("error" in sfReplay) return res.status(400).json({ code: sfReplay.code, error: sfReplay.error });
+    // `orgUrl` (additive): which org the cases sign in to, so the page can ask the person to connect
+    // THAT org and retry, instead of only refusing.
+    if ("error" in sfReplay) {
+      const orgUrl = cases.find((c) => signsInThroughOrg(c.ir))?.ir.meta.baseUrl;
+      return res.status(400).json({ code: sfReplay.code, error: sfReplay.error, ...(orgUrl ? { orgUrl } : {}) });
+    }
 
     const credentialFields = credentialKindsNeeded(cases.flatMap((c) => c.ir.steps));
     if (credentialFields.length > 0) {
@@ -2527,6 +2677,22 @@ export const BOOLEAN_ENV_FLAGS = [
   // D-72: a project's discovery is saved for 7 days and shared by every run of that project with the
   // same URL and login; one discovery at a time per project. Off: the global 30-minute cache as before.
   "PROJECT_DISCOVERY_SHARING",
+  // D-76: regression testing step 1, "Remember". A saved case also keeps its plain-English meaning,
+  // the org's setup for the objects it touches and its one-time values; a healed case needs a
+  // person's word to be saved. Off: saving is exactly as before.
+  "REGRESSION_MEMORY_ENABLED",
+  // D-76: regression testing step 2, "Check this suite for changes" (POST /api/suites/:id/change-check).
+  // Read-only Salesforce API calls through Connect org. Off: the route answers 404.
+  "REGRESSION_CHANGE_CHECK_ENABLED",
+  // D-76: regression testing step 3, the safe repair of a replayed case whose click/fill/select/press
+  // lost its element. No model calls; a proposal waits for a person. Off: replays are as before.
+  "REGRESSION_REPAIR_ENABLED",
+  // D-77: fields that take several values (a dual listbox, a checkbox or radio group drawn by SLDS,
+  // a <select multiple>, a multi-select picklist's test data). Off: specs and replays as before.
+  "MULTI_VALUE_CONTROLS_ENABLED",
+  // D-78: a record-triggered flow's field updates (before-save "fast field updates" included) are
+  // checked on the saved record through the org connection. Off: the org model and IRs as before.
+  "SALESFORCE_FLOW_CHECKS_ENABLED",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

@@ -418,6 +418,242 @@ export const OPTION_ERROR_JS = `(wanted, available) => {
 export const optionErrorMessage = new Function(`return (${OPTION_ERROR_JS});`)() as
   (wanted: string, available: string[]) => string;
 
+// -----------------------------------------------------------------------------
+// Multi-value controls (D-77, MULTI_VALUE_CONTROLS_ENABLED, default off)
+// -----------------------------------------------------------------------------
+//
+// A field that takes SEVERAL values — a Salesforce multi-select picklist (Lightning's dual listbox:
+// "Available" -> "Selected"), a checkbox group, a radio group drawn by SLDS — met three defects,
+// each reproduced headless against SLDS-shaped markup (tests/multiValueControls.test.ts):
+//   - `select` on a dual listbox clicked the option and returned: the option was only HIGHLIGHTED,
+//     never moved to the chosen list, and the step reported success (a hollow pass);
+//   - `check` on an SLDS checkbox timed out: the real <input> is visually hidden (a 1px clipped box)
+//     and a painted box in its <label> takes the click, so Playwright never sees it as clickable;
+//   - a radio `click` got there only through safeClick's forced-click fallback, ~7 s per radio, and
+//     the grounding replay's plain click has no such fallback at all.
+// The two functions below are SOURCE, emitted into the spec and built here for the replay from the
+// same characters (TD-07: the generator restating this logic by hand is how the two drift).
+// Everything the page is asked is STRUCTURE — aria-multiselectable lists, their options, input
+// types, labels — never page wording. In-page callbacks hold no named or const-assigned functions
+// (TD-40), and the strings are never passed through esbuild either way.
+
+export function multiValueEnabled(): boolean {
+  return process.env.MULTI_VALUE_CONTROLS_ENABLED === "true";
+}
+
+/**
+ * Check a checkbox or radio, including one the page draws itself. Already checked: done (check,
+ * never toggle). A box that receives a click at its centre is checked as before. One that does not
+ * (SLDS: the input is a clipped 1px box and the painted box in its label sits on top — Playwright
+ * counts it VISIBLE and then retries "label intercepts pointer events" until it times out) is
+ * reached the way a person reaches it, by clicking its label — the `for=` label, the label around
+ * it, or the one label beside it when its parent holds only that box — and then VERIFIED checked:
+ * a click that changed nothing fails here instead of passing.
+ */
+export const checkBoxJs = (timeoutMs: number) => `async (page, target, root) => {
+  const inDoc = root || page;
+  if (await target.isChecked().catch(() => false)) return;
+  const tok = "tbcb" + Math.random().toString(36).slice(2, 10);
+  const how = await target.evaluate((el, t) => {
+    // Hit-test the box's own centre (in its own tree, so a shadow root answers for itself).
+    if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(); else el.scrollIntoView({ block: "center" });
+    const r = el.getBoundingClientRect();
+    const tree = el.getRootNode && el.getRootNode().elementFromPoint ? el.getRootNode() : document;
+    const hit = r.width > 0 && r.height > 0 ? tree.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+    if (hit && (hit === el || el.contains(hit))) return "self";
+    let lab = (el.labels && el.labels[0]) || (el.closest ? el.closest("label") : null);
+    const p = el.parentElement;
+    if (!lab && p && p.querySelectorAll("input").length === 1) lab = p.querySelector("label");
+    if (!lab) return "none";
+    lab.setAttribute("data-tb-label", t);
+    return "label";
+  }, tok).catch(() => "self");
+  if (how === "self") {
+    await target.check({ timeout: ${timeoutMs} });
+    return;
+  }
+  if (how === "label") await inDoc.locator('[data-tb-label="' + tok + '"]').first().click({ timeout: ${timeoutMs} });
+  else await target.check({ force: true, timeout: ${timeoutMs} });
+  const deadline = Date.now() + 3000;
+  while (!(await target.isChecked().catch(() => false))) {
+    if (Date.now() >= deadline) {
+      throw new Error("check: clicking " + (how === "label" ? "its label" : "the box") + " did not check it; it is still unchecked.");
+    }
+    await page.waitForTimeout(100);
+  }
+}`;
+
+/**
+ * `select` VALUE in a field that takes several values; one value per step, ADDED to what is already
+ * chosen. Decided from the element's structure at run time, as choose() decides native-vs-custom:
+ *  - a dual listbox (the target is its group, one of its two aria-multiselectable lists, or an option
+ *    in one): click the option in the FIRST list, click the first button between the two lists (the
+ *    "move to chosen" arrow, by position — its wording is the org's language), then confirm the
+ *    option now sits in the SECOND list. Already there: nothing to do.
+ *  - a group of checkboxes/radios (a fieldset or role=group/radiogroup, or a wrapper holding two or
+ *    more boxes): check the box whose name is VALUE, through checkBox.
+ *  - a native <select multiple>: select VALUE alongside what is already selected.
+ *  - anything else: `fallback` (the ordinary choose()), so a single-value dropdown is untouched.
+ * A value that is not on offer fails naming what is.
+ */
+export const chooseMultiJs = (timeoutMs: number) => `async (page, target, value, root, fallback, checkBox) => {
+  const inDoc = root || page;
+  const tok = "tbmv" + Math.random().toString(36).slice(2, 10);
+  const found = await target.evaluate((start, a) => {
+    const want = String(a.want).replace(/\\s+/g, " ").trim().toLowerCase();
+    if (start.tagName === "SELECT" && start.multiple) return { kind: "select-multiple" };
+    // A list the target is, or sits in (an option), a few levels up through shadow hosts.
+    let listEl = null;
+    for (let n = start, up = 0; n && up < 4 && !listEl; up++) {
+      if (n.getAttribute && n.getAttribute("role") === "listbox" && n.getAttribute("aria-multiselectable") === "true") listEl = n;
+      n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+    }
+    // The nearest element holding EXACTLY two such lists: the target itself (a field's group), or
+    // an ancestor of the list it is in. Read in document order, open shadow content included.
+    let node = listEl || start;
+    let all = null;
+    let lists = null;
+    for (let up = 0; node && up < (listEl ? 8 : 1); up++) {
+      all = [];
+      const stack = [node];
+      while (stack.length) {
+        const n = stack.pop();
+        if (!n || n.nodeType !== 1) continue;
+        all.push(n);
+        const kids = (n.shadowRoot ? Array.prototype.slice.call(n.shadowRoot.children) : [])
+          .concat(Array.prototype.slice.call(n.children || []));
+        for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+      }
+      const pair = all.filter((n) => n.getAttribute("role") === "listbox" && n.getAttribute("aria-multiselectable") === "true");
+      if (pair.length === 2) { lists = pair; break; }
+      if (pair.length > 2) break;
+      node = node.parentElement || (node.getRootNode && node.getRootNode().host) || null;
+    }
+    if (lists) {
+      const src = lists[0];
+      const dst = lists[1];
+      const srcOpts = [];
+      const dstOpts = [];
+      for (const o of all.filter((n) => n.getAttribute("role") === "option")) {
+        let p = o;
+        while (p && p !== src && p !== dst) p = p.parentElement || (p.getRootNode && p.getRootNode().host) || null;
+        if (p === src) srcOpts.push(o);
+        else if (p === dst) dstOpts.push(o);
+      }
+      const srcTexts = srcOpts.map((o) => String((o.textContent || "").trim() || (o.shadowRoot ? o.shadowRoot.textContent || "" : "")).replace(/\\s+/g, " ").trim());
+      const dstTexts = dstOpts.map((o) => String((o.textContent || "").trim() || (o.shadowRoot ? o.shadowRoot.textContent || "" : "")).replace(/\\s+/g, " ").trim());
+      let pick = srcTexts.findIndex((t) => t.toLowerCase() === want);
+      if (pick < 0) {
+        const near = srcTexts.map((t, i) => (t && (t.toLowerCase().includes(want) || want.includes(t.toLowerCase())) ? i : -1)).filter((i) => i >= 0);
+        if (near.length === 1) pick = near[0];
+      }
+      if (pick < 0 && dstTexts.some((t) => t.toLowerCase() === want)) return { kind: "dual", state: "already" };
+      if (pick < 0) return { kind: "dual", state: "missing", offered: srcTexts, chosen: dstTexts };
+      srcOpts[pick].setAttribute("data-tb-mv", a.tok + "-opt");
+      dst.setAttribute("data-tb-mv", a.tok + "-dst");
+      // The move-to-chosen button: the first button after the first list and before the second.
+      const iSrc = all.indexOf(src);
+      const iDst = all.indexOf(dst);
+      let move = null;
+      for (let i = iSrc + 1; i < iDst && !move; i++) {
+        const b = all[i];
+        let p = b;
+        while (p && p !== src) p = p.parentElement || (p.getRootNode && p.getRootNode().host) || null;
+        if (p === src) continue;
+        if (b.tagName === "BUTTON" || b.getAttribute("role") === "button") move = b;
+      }
+      if (!move) return { kind: "dual", state: "no-move", offered: srcTexts };
+      move.setAttribute("data-tb-mv", a.tok + "-move");
+      return { kind: "dual", state: "move", picked: srcTexts[pick] };
+    }
+    if (listEl || !all) return { kind: "none" };
+    const boxes = all.filter((n) => (n.tagName === "INPUT" && (n.type === "checkbox" || n.type === "radio"))
+      || n.getAttribute("role") === "checkbox" || n.getAttribute("role") === "radio");
+    const grouped = start.tagName === "FIELDSET" || /^(group|radiogroup)$/.test(start.getAttribute("role") || "");
+    if (boxes.indexOf(start) >= 0 || !(boxes.length >= 2 || (grouped && boxes.length >= 1))) return { kind: "none" };
+    const names = boxes.map((b) => String(b.getAttribute("aria-label")
+      || (b.labels && b.labels[0] ? b.labels[0].textContent : "")
+      || (b.closest && b.closest("label") ? b.closest("label").textContent : "")
+      || (b.tagName !== "INPUT" ? b.textContent : "") || "").replace(/\\s+/g, " ").trim());
+    let pick = names.findIndex((t) => t.toLowerCase() === want);
+    if (pick < 0) {
+      const near = names.map((t, i) => (t && (t.toLowerCase().includes(want) || want.includes(t.toLowerCase())) ? i : -1)).filter((i) => i >= 0);
+      if (near.length === 1) pick = near[0];
+    }
+    if (pick < 0) return { kind: "group", state: "missing", offered: names };
+    boxes[pick].setAttribute("data-tb-mv", a.tok + "-box");
+    return { kind: "group", state: "check" };
+  }, { want: value, tok }).catch(() => null);
+
+  if (!found || found.kind === "none") return fallback(page, target, value, root);
+  const quoteList = (xs) => (xs || []).slice(0, 12).map((t) => JSON.stringify(String(t))).join(", ");
+  if (found.kind === "select-multiple") {
+    const r = await target.evaluate((el, w) => {
+      const opts = Array.prototype.slice.call(el.options || []);
+      const want = String(w).replace(/\\s+/g, " ").trim().toLowerCase();
+      return {
+        idx: opts.findIndex((o) => (o.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase() === want || String(o.value).toLowerCase() === want),
+        chosen: opts.map((o, i) => (o.selected ? i : -1)).filter((i) => i >= 0),
+        offered: opts.map((o) => (o.textContent || "").trim()),
+      };
+    }, value);
+    if (r.idx < 0) throw new Error("select: no option matching " + JSON.stringify(String(value)) + ". Available: " + quoteList(r.offered));
+    const keep = r.chosen.indexOf(r.idx) >= 0 ? r.chosen : r.chosen.concat([r.idx]);
+    await target.selectOption(keep.map((i) => ({ index: i })), { timeout: ${timeoutMs} });
+    return;
+  }
+  if (found.state === "missing") {
+    throw new Error("select: no option matching " + JSON.stringify(String(value)) + " in this multi-value field. Available: "
+      + (quoteList(found.offered) || "(none)") + ((found.chosen || []).length ? ". Already chosen: " + quoteList(found.chosen) : ""));
+  }
+  if (found.kind === "group") {
+    await checkBox(page, inDoc.locator('[data-tb-mv="' + tok + '-box"]').first(), root);
+    return;
+  }
+  if (found.state === "already") return;
+  if (found.state === "no-move") {
+    throw new Error("select: " + JSON.stringify(String(value)) + " is in the list of choices, but there is no button between the two lists to move it across.");
+  }
+  await inDoc.locator('[data-tb-mv="' + tok + '-opt"]').first().click({ timeout: ${timeoutMs} });
+  await inDoc.locator('[data-tb-mv="' + tok + '-move"]').first().click({ timeout: ${timeoutMs} });
+  // A highlighted option is not a chosen one: confirm it now sits in the second list.
+  const dst = inDoc.locator('[data-tb-mv="' + tok + '-dst"]').first();
+  const want = String(found.picked).toLowerCase();
+  const deadline = Date.now() + 3000;
+  for (;;) {
+    const texts = await dst.evaluate((el) => {
+      const out = [];
+      const stack = [el];
+      while (stack.length) {
+        const n = stack.pop();
+        if (!n || n.nodeType !== 1) continue;
+        if (n.getAttribute("role") === "option") {
+          out.push(String((n.textContent || "").trim() || (n.shadowRoot ? n.shadowRoot.textContent || "" : "")).replace(/\\s+/g, " ").trim().toLowerCase());
+        }
+        const kids = (n.shadowRoot ? Array.prototype.slice.call(n.shadowRoot.children) : [])
+          .concat(Array.prototype.slice.call(n.children || []));
+        for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+      }
+      return out;
+    }).catch(() => []);
+    if (texts.indexOf(want) >= 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error("select: " + JSON.stringify(String(value)) + " was picked in the list of choices but did not move into the chosen list"
+        + (texts.length ? " (it holds " + quoteList(texts) + ")." : " (it is empty)."));
+    }
+    await page.waitForTimeout(100);
+  }
+}`;
+
+/** The grounding replay's twins of the spec's checkBox/chooseMulti: the same source. */
+export const checkBoxLive = new Function(`return (${checkBoxJs(SELECT_TIMEOUT_MS)});`)() as
+  (page: Page, target: Locator, root?: LocatorRoot) => Promise<void>;
+export const chooseMultiLive = new Function(`return (${chooseMultiJs(SELECT_TIMEOUT_MS)});`)() as (
+  page: Page, target: Locator, value: string, root: LocatorRoot | undefined,
+  fallback: (page: Page, target: Locator, value: string, root?: LocatorRoot) => Promise<void>,
+  checkBox: (page: Page, target: Locator, root?: LocatorRoot) => Promise<void>,
+) => Promise<void>;
+
 /**
  * Locator expression as source code (for the generator). role+name targets call the
  * `locate()` helper generator.ts injects once per spec — its LOCATE_HELPER constant mirrors

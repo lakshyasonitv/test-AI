@@ -64,6 +64,11 @@ describe("asksForEveryField: the person's own words ask for the whole form", () 
     "create a contact with every feild",
     "can you create a account filling each and every componet of that",   // the real request, typo and all
     "fill all the filds",
+    "can you create aan account and fill all the filed which are there",  // run 2026-10-29T04-50-18-125Z-a0fe4a84
+    "create account with all fileds",
+    "fill every flied",
+    "can you fill the account with each and every",                       // live run 2026-10-29T04-02-12-018Z-8fc37033
+    "create a contact and fill each and every of it",
   ])("yes: %s", (request) => expect(asksForEveryField(request)).toBe(true));
 
   it.each([
@@ -73,6 +78,9 @@ describe("asksForEveryField: the person's own words ask for the whole form", () 
     "fill one opportunity with full of the fields which are required",
     "all fields are required",
     "check every link on the page",
+    "make sure all filled values show on the record",
+    "fill all the required filds",
+    "check each and every link on the home page",
   ])("no: %s", (request) => expect(asksForEveryField(request)).toBe(false));
 });
 
@@ -714,6 +722,70 @@ describe("a field the org calculates is never filled", () => {
       { id: "s9", action: "click", target: { role: "button", name: "Save" } }]);
     applyTestData(r, { category: "invalid-input" } as any, m, "Create a Zq Thing with Zq Total 10");
     expect(r.steps.some((s) => s.target?.name === "Zq Total")).toBe(false);
+  });
+});
+
+// D-77 (MULTI_VALUE_CONTROLS_ENABLED): a multi-select picklist takes several options, one step each.
+describe("a multi-select picklist (MultiPicklist) keeps every value it is given", () => {
+  const multi = (() => {
+    const m = structuredClone(nameOnlyRequired) as AppModel;
+    m.salesforceOrg!.objects[0].fields.push({ label: "Zq Colours", api: "Zq_Colours__c", type: "MultiPicklist", picklist: ["Zq Red", "Zq Blue", "Zq Green, Dark"] } as any);
+    // The create form as discovery recorded it: the dual listbox's group, named by the field.
+    (m as any).pages = [{ url: "https://zq.example/lightning/o/Zq_Thing__c/new", elements: [{ role: "group", name: "Zq Colours" }] }];
+    return m;
+  })();
+  const pickColours = (v: string) => ir([
+    { id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "N {{uid}}" },
+    { id: "s3", action: "select", target: { role: "combobox", name: "Zq Colours" }, value: v },
+    { id: "s9", action: "click", target: { role: "button", name: "Save" } },
+  ]);
+  const colours = (r: IR) => r.steps.filter((s) => s.target?.name === "Zq Colours").map((s) => `${s.id} ${s.action} ${s.target?.role}=${s.value}`);
+  const ORIGINAL = process.env.MULTI_VALUE_CONTROLS_ENABLED;
+  afterEach(() => { if (ORIGINAL === undefined) delete process.env.MULTI_VALUE_CONTROLS_ENABLED; else process.env.MULTI_VALUE_CONTROLS_ENABLED = ORIGINAL; });
+  const ask = "Create a Zq Thing with Zq Colours Zq Red and Zq Blue";
+
+  it("flag off (the defect): \"Zq Red;Zq Blue\" collapses to one option, silently", () => {
+    delete process.env.MULTI_VALUE_CONTROLS_ENABLED;
+    const r = pickColours("Zq Red;Zq Blue");
+    applyTestData(r, valid, multi, ask);
+    expect(colours(r)).toEqual(["s3 select combobox=Zq Blue"]);
+  });
+
+  it("flag on: one select per option, on the field's discovered group, in order", () => {
+    process.env.MULTI_VALUE_CONTROLS_ENABLED = "true";
+    for (const v of ["Zq Red;Zq Blue", "Zq Red, Zq Blue"]) {
+      const r = pickColours(v);
+      const notes = applyTestData(r, valid, multi, ask);
+      expect(colours(r)).toEqual(["s3 select group=Zq Red", "s3-2 select group=Zq Blue"]);
+      expect(notes).toContain(`s3: multi-select picklist "Zq Colours" -> one select per option: "Zq Red", "Zq Blue"`);
+    }
+  });
+
+  it("flag on: an option whose own name holds a comma stays whole; a value that is not an option is not split", () => {
+    process.env.MULTI_VALUE_CONTROLS_ENABLED = "true";
+    let r = pickColours("Zq Green, Dark");
+    applyTestData(r, valid, multi, "Create a Zq Thing with Zq Colours Zq Green, Dark");
+    expect(colours(r)).toEqual(["s3 select group=Zq Green, Dark"]);
+    r = pickColours("Zq Red;Zq Purple");
+    applyTestData(r, { category: "invalid-input" } as any, multi, ask);
+    expect(colours(r)).toEqual(["s3 select group=Zq Red;Zq Purple"]);
+  });
+
+  it("a required multi-select picklist with no step: flag off FILLS a textbox (the defect), flag on selects its first option", () => {
+    const req = structuredClone(multi) as AppModel;
+    (req.salesforceOrg!.objects[0].fields.find((f) => f.api === "Zq_Colours__c") as any).required = true;
+    const plain = () => ir([
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "N {{uid}}" },
+      { id: "s9", action: "click", target: { role: "button", name: "Save" } },
+    ]);
+    delete process.env.MULTI_VALUE_CONTROLS_ENABLED;
+    let r = plain();
+    applyTestData(r, valid, req, "Create a Zq Thing");
+    expect(r.steps.find((s) => s.target?.name === "Zq Colours")).toMatchObject({ action: "fill", target: { role: "textbox" } });
+    process.env.MULTI_VALUE_CONTROLS_ENABLED = "true";
+    r = plain();
+    applyTestData(r, valid, req, "Create a Zq Thing");
+    expect(r.steps.find((s) => s.target?.name === "Zq Colours")).toMatchObject({ action: "select", target: { role: "group" }, value: "Zq Red" });
   });
 });
 

@@ -426,6 +426,8 @@ export const SalesforceOrgModel = z.object({
   validationRulesRead: z.boolean(),
   /** The connected user's locale ("en_US"): Lightning parses typed dates in it. Absent when unread. */
   userLocale: z.string().optional(),
+  /** D-76: the org's Salesforce release ("Winter '27"), read only with REGRESSION_MEMORY_ENABLED on. */
+  release: z.object({ label: z.string(), version: z.string() }).optional(),
   /** Active flows (Phase B): what runs, on what, when, and what it visibly does. Absent when unread. */
   flows: z.array(z.object({
     label: z.string(),
@@ -437,6 +439,23 @@ export const SalesforceOrgModel = z.object({
     when: z.string().optional(),
     /** Plain lines: "sets Rating = Hot", "creates a Task", "only when Customer Priority = High". */
     effects: z.array(z.string()).optional(),
+    /**
+     * D-78, read only with SALESFORCE_FLOW_CHECKS_ENABLED on: what a record-triggered flow sets on its
+     * own record, as data a check can use (salesforceFlowChecks.flowFieldUpdates). `sets` holds only
+     * fixed values assigned on the path from the start element up to the first decision; anything
+     * else is in `skipped`, with why. Absent with the flag off, so the model is unchanged.
+     */
+    fieldUpdates: z.object({
+      /** The object's API name, from the flow's start element. */
+      object: z.string(),
+      timing: z.enum(["before-save", "after-save"]),
+      /** Start conditions: field API name, the flow's operator ("EqualTo", "IsNull"...), a fixed value. */
+      conditions: z.array(z.object({ field: z.string(), op: z.string(), value: z.string() })),
+      /** "none" (no conditions), "and", "or", "formula", or custom logic such as "1 and (2 or 3)". */
+      logic: z.string(),
+      sets: z.array(z.object({ field: z.string(), value: z.string() })),
+      skipped: z.array(z.string()).optional(),
+    }).optional(),
   })).optional(),
 });
 export type SalesforceOrgModel = z.infer<typeof SalesforceOrgModel>;

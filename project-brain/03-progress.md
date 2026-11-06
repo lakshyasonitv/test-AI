@@ -1,5 +1,35 @@
 # Progress — where we are
 
+*Last updated: 2026-11-06. `origin/main` (to `1ab33b3`, PR #22) merged INTO `refactored-code` and pushed.
+Before the merge this branch's records were renumbered past main (`2704e43`): regression D-73 -> D-76,
+multi-value D-74 -> D-77, flow checks D-75 -> D-78; TD-180 -> TD-187, TD-183..185 -> TD-188..190 (TD-181/182
+kept). Merge conflicts were all "keep both" except `app.js`'s Save-case role check (main's line covers
+TD-182) and the IR cache key (test-data:11, plus `multi-value:1` / `sf-flow-checks:1` when those flags are
+on). On this Windows checkout after the merge: tsc clean; the failures are environmental — CRLF `app.js`
+(`appJsProIntake` x2, `proStoryPrompt`), `discoveryStrategy` one-place check, `liveDomDiscovery` TD-40 tsx,
+`listRunsRace` (Windows EPERM, see 04-tasks), `lookupLive` flaky. No PR from `refactored-code` yet.*
+
+*2026-11-04. Branch `refactored-code`. Multi-value screen-flow fields (D-77, `MULTI_VALUE_CONTROLS_ENABLED`)
+and record-triggered flow checks (D-78, `SALESFORCE_FLOW_CHECKS_ENABLED`) built and committed (`029e6c5`).
+**Gap:** D-76 regression steps 1–4 and TD-179..182 (committed 2026-10-29..11-03) were never logged in this
+brain — read `DECISIONS.md` D-76.*
+
+## 2026-11-04 — `refactored-code`
+
+- **D-77** (TD-188): a `select` in a dual listbox / checkbox group / `<select multiple>` ADDS the value
+  and confirms it; SLDS checkboxes and radios are checked through their label and verified — spec and
+  grounding replay from one source (`targetResolver.ts`). Test data splits "A;B" per option.
+- **D-78** (TD-189, TD-190): new `src/stages/salesforceFlowChecks.ts`. Before/after-save flows that set
+  their own record's fields are checked on the SAVED record through the org connection (REST GET) when
+  the case's own values meet the flow's start conditions.
+- Written as D-74/D-75, TD-183..185; renumbered 2026-11-06 (main merge) to D-77/D-78, TD-188..190.
+- **Baseline (unmodified tree):** `tsc` clean; `vitest` 2957 passed / 8 failed / 23 skipped, 218 files.
+  **After:** 3017 passed / 8 failed / 23 skipped (3048), 220 files — the same 8 as the baseline
+  (`specRoutes` test 15 passed in one of the two after-runs: flaky). Pre-existing failures: `booleanEnvFlags` (reserved list),
+  `discoveryStrategy` x3, `liveDomDiscovery` TD-40 tsx, `appJsProIntake` x2, `specRoutes` 15.
+- Not done: no live org / Gemini run; the user has not said whether "multiple value" also means
+  running one flow with several data sets (not built).
+
 *Last updated: 2026-11-04, late. TD-186 (History 500 when a run folder is deleted mid-listing) fixed in its own
 PR after #21 (brain update, merged `1c170f2`). Baseline with it: 2919 passed / 1 failed (safeClickBrowser) / 23
 skipped, 224 files. See journal/2026-11-04.md.*

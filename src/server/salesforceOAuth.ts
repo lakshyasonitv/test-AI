@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { isFrontdoorRef, type FrontdoorSession } from "../stages/salesforceFrontdoor.js";
+import { isFrontdoorRef, SF_API_VERSION, type FrontdoorSession } from "../stages/salesforceFrontdoor.js";
 import { rememberRunSecretStrings } from "../runSecrets.js";
 import { currentRunId } from "../runContext.js";
 import { getServiceClient } from "../db.js";
@@ -512,11 +512,24 @@ export function frontdoorSessionFor(
       });
       if (!res.ok) throw new Error(`Salesforce API DELETE ${path.split("?")[0]} answered HTTP ${res.status}`);
     },
+    // D-76 step 2: the versions list, whose newest entry is labelled with the org's release.
+    apiVersions: async () => {
+      await refreshIfOld(c, cfg, fetchImpl);
+      const runId = currentRunId();
+      if (runId) rememberRunSecretStrings(runId, [c.accessToken]);
+      const res = await fetchImpl(`${c.instanceUrl}/services/data/`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${c.accessToken}`, accept: "application/json" },
+      });
+      if (!res.ok) throw new Error(`Salesforce API /services/data/ answered HTTP ${res.status}`);
+      return res.json();
+    },
   };
 }
 
-/** The REST/UI API version the connection reads with. */
-export const SF_API_VERSION = "v62.0";
+/** The REST/UI API version the connection reads with. Defined beside the frontdoor rail so the
+ *  generated spec (D-78's saved-field read) uses the same version without importing the server. */
+export { SF_API_VERSION };
 
 /** Test seam: forget every pending sign-in and connection. */
 export function resetSalesforceOAuthForTests(): void {

@@ -89,6 +89,24 @@ describe("a Salesforce run: base prompt + guidance, and its own cache entries", 
     }
   });
 
+  it("D-77/D-78: the multi-value and flow-check lines are appended ONLY with their flags on", async () => {
+    const plain = withTargetApp("salesforce", () => salesforceGuidance("ir"));
+    expect(plain).toBe(SALESFORCE_GUIDANCE.ir);
+    process.env.MULTI_VALUE_CONTROLS_ENABLED = "true";
+    process.env.SALESFORCE_FLOW_CHECKS_ENABLED = "true";
+    try {
+      const ir = withTargetApp("salesforce", () => salesforceGuidance("ir"));
+      expect(ir.startsWith(SALESFORCE_GUIDANCE.ir)).toBe(true);
+      expect(ir.slice(SALESFORCE_GUIDANCE.ir.length)).toMatch(/one "select" step PER value/);
+      // The flow line is for org-connection runs only: a password run has no org model to check against.
+      expect(withTargetApp("salesforce", () => salesforceGuidance("cases"))).toBe(SALESFORCE_GUIDANCE.cases);
+      expect(withTargetApp("other" as any, () => salesforceGuidance("ir"))).toBe("");
+    } finally {
+      delete process.env.MULTI_VALUE_CONTROLS_ENABLED;
+      delete process.env.SALESFORCE_FLOW_CHECKS_ENABLED;
+    }
+  });
+
   it("the three guidance blocks are different, non-trivial and carry no URL or credential", () => {
     const g = SALESFORCE_GUIDANCE;
     expect(new Set([g.plan, g.cases, g.ir]).size).toBe(3);

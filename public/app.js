@@ -1157,12 +1157,15 @@ function renderCaseCard(c, runId, index) {
           ${expected && expected !== whyItMatters ? `<p class="case-expected"><span>What should happen:</span> ${escapeHtml(expected)}</p>` : ""}
         </span>
         <span class="case-badge ${statusBadge}">${escapeHtml(STATUS_LABEL[c.status] ?? c.status)}</span>
+        ${c.repair && c.repair.state === "proposed" ? `<span class="case-badge case-badge-healed" title="A repair was found and the whole test passed with it, but nobody has approved it yet. Not counted as passed.">Healed, needs review</span>` : ""}
+        ${c.repair && c.repair.state === "needs-person" ? `<span class="case-badge badge-truncated" title="A repair was found but cannot be applied on its own.">Needs a person</span>` : ""}
         ${c.healed && c.status === "passed" ? `<span class="case-badge case-badge-healed" title="This failed on the first attempt; the system automatically found a fix and re-ran it, and it passed.${c.deterministicHeal ? " This fix was found deterministically, without a model call." : ""}">${icon("refresh", { size: 11 })} Fixed automatically${c.deterministicHeal ? ` ${icon("zap", { size: 10 })}` : ""}</span>` : ""}
         ${c.deterministicHeal ? `<span class="case-badge case-badge-deterministic" title="The fix was found by matching the element's structure in the crawled page model — no model call, essentially free.">${icon("zap", { size: 10 })} Healed deterministically</span>` : ""}
         <span class="case-expand-icon">${icon("chevron-down", { size: 14 })}</span>
       </div>
       <div class="case-card-body">
         ${c.blockedBy ? `<p class="blocked-note">Couldn't finish: ${escapeHtml(c.blockedBy)}. The screenshot below is where it stopped.</p>` : ""}
+        ${c.repair ? renderRepairNotice(c.repair) : ""}
         ${renderCaseErrorBlock(c, screenshotUrl)}
         <div class="case-narrative hidden"></div>
         <div class="case-diagnosis-block hidden"></div>
@@ -1939,6 +1942,65 @@ function setSuiteRetryNote(item, text) {
   }
   note.textContent = text;
 }
+
+/**
+ * D-76 step 3: what the safe repair found for a failed replayed case (REGRESSION_REPAIR_ENABLED; absent
+ * otherwise). A proposal shows the one step it changes, before and after, and why; approving it is
+ * step 4. A failed CHECK reads as a possible bug, never as something to repair. Existing classes only
+ * (.case-notice.notice / .case-notice.error); filled in place, no .hidden (rules 3 and 4).
+ */
+function describeTarget(t) {
+  if (!t) return "nothing";
+  const what = t.role && t.name ? `${t.role} "${t.name}"` : t.name ? `"${t.name}"` : t.text ? `text "${t.text}"` : "an element";
+  return t.css ? `${what} at ${t.css}` : what;
+}
+function renderRepairNotice(r) {
+  const step = r.stepId ? `Step ${escapeHtml(r.stepId)}${r.stepText ? ` (${escapeHtml(r.stepText)})` : ""}` : "This case";
+  // Step 4: a decision already made reads as such, with no buttons.
+  if (r.state === "approved") {
+    return `<p class="case-notice notice" data-repair-notice><b>Repair approved.</b> ${step} now finds ${escapeHtml(describeTarget(r.after))}. Saved as version ${escapeHtml(String(r.newVersion ?? "?"))} of the case.</p>`;
+  }
+  if (r.state === "rejected") {
+    return `<p class="case-notice notice" data-repair-notice><b>Repair rejected.</b> ${step}: it will not be proposed again. The saved case is unchanged.</p>`;
+  }
+  if (r.state === "proposed" || r.state === "needs-person") {
+    const head = r.state === "proposed" ? "Healed, needs review" : "Needs a person";
+    const proof = r.verification && r.verification.passed ? " The whole test passed again with this change." : "";
+    const back = r.readBack && r.readBack.checked ? ` The saved record read back with ${r.readBack.matched} of ${r.readBack.checked} typed values.` : "";
+    return `<p class="case-notice notice" data-repair-notice><b>${head}.</b> ${step}: ${escapeHtml(describeTarget(r.before))} → ${escapeHtml(describeTarget(r.after))}.
+      ${escapeHtml(r.reason)}${proof && !r.reason.includes("passed again") ? escapeHtml(proof) : ""}${back && !r.reason.includes("read back") ? escapeHtml(back) : ""}
+      Nothing is saved until it is approved.
+      ${r.verification && r.verification.screenshot ? `<a href="${escapeHtml(r.verification.screenshot)}" target="_blank" rel="noopener">Screenshot of the passing re-run</a>` : ""}
+      <span data-repair-actions>
+        ${r.state === "proposed" ? `<button type="button" class="dl-btn-inline" data-repair-act="approve">Approve</button>` : ""}
+        <button type="button" class="dl-btn-inline" data-repair-act="reject">Reject</button>
+      </span></p>`;
+  }
+  if (r.kind === "result-changed") return `<p class="case-notice error"><b>Possible bug.</b> ${escapeHtml(r.reason)}</p>`;
+  return `<p class="case-notice notice"><b>No repair.</b> ${escapeHtml(r.reason)}</p>`;
+}
+
+document.addEventListener("click", async (ev) => {
+  const btn = ev.target && ev.target.closest ? ev.target.closest("[data-repair-act]") : null;
+  if (!btn) return;
+  const card = btn.closest(".case-card");
+  const notice = btn.closest("[data-repair-notice]");
+  const caseId = card && card.dataset.caseId;
+  if (!caseId || !currentRunId || !notice) return;
+  const act = btn.dataset.repairAct;
+  const buttons = notice.querySelectorAll("[data-repair-act]");
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    const body = await api(`/api/runs/${encodeURIComponent(currentRunId)}/cases/${encodeURIComponent(caseId)}/repair/${act}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    notice.outerHTML = renderRepairNotice(body.repair);
+    toast(act === "approve" ? `Approved: saved as version ${body.repair.newVersion} of the case.` : "Rejected: this repair will not be proposed again.");
+  } catch (err) {
+    buttons.forEach((b) => { b.disabled = false; });
+    toast(err.message);
+  }
+});
 
 function renderCaseErrorBlock(c, screenshotUrl) {
   if (c.status !== "failed" && c.status !== "blocked") return "";
@@ -3980,6 +4042,7 @@ async function api(path, init) {
   if (!res.ok) {
     const err = new Error(body.error || `That didn't work (${res.status}).`);
     err.code = body.code;   // a machine-readable reason, when the server gives one
+    if (body.orgUrl) err.orgUrl = body.orgUrl;   // D-76: the Salesforce org a refused replay/check needs
     throw err;
   }
   return body;
@@ -4004,6 +4067,7 @@ async function startReplay(selection, label) {
     toast("Replaying — this costs nothing, the steps are already saved.");
     navigate("#/run/" + runId);
   } catch (err) {
+    if (askToConnectOrg(err, () => startReplay(selection, label))) return;
     // TD-166: the server no longer holds the org connection this page remembers.
     if (err.code === "sf-connection-expired" && sfConnectStatusEl) {
       sfConnection = null;
@@ -4016,7 +4080,128 @@ async function startReplay(selection, label) {
 
 // ---------------------------------------------------------------- Suite view
 
+/**
+ * D-76 step 2: "Check for changes" on a suite (REGRESSION_CHANGE_CHECK_ENABLED). Before running the
+ * suite, the server compares the Salesforce org now with what each saved case remembered and says
+ * which cases a change will break. Nothing runs, nothing is written. Rendered only when /api/health
+ * says `regressionChangeCheck: true`; off, this button and its report do not exist.
+ * No new class (rule 3): the report reuses .panel, .hrow, .hrow-main, .hrow-label, .hrow-meta and the
+ * .case-badge/.badge-* pills; it is a plain element filled in place, never shown or hidden through
+ * .hidden (rule 4).
+ */
+let regressionChangeCheckOn = false;
+let lastSuiteViewId = null;
+
+const CHANGE_VERDICTS = {
+  "affected": { label: "Affected", cls: "badge-failed" },
+  "likely-to-fail": { label: "Likely to fail", cls: "badge-truncated" },
+  "unknown": { label: "Unknown", cls: "badge-blocked" },
+  "changed": { label: "Changed", cls: "case-badge-healed" },
+  "unchanged": { label: "Unchanged", cls: "badge-passed" },
+  "no-snapshot": { label: "No snapshot", cls: "badge-pending" },
+  "not-salesforce": { label: "Not Salesforce", cls: "badge-pending" },
+};
+
+/**
+ * D-76: when a replay or a check is refused because the Salesforce org connection is missing, expired
+ * or for another org, ask for it right here instead of only refusing: say which org the cases need
+ * (the server names it, `orgUrl`), offer Connect org for THAT org, and retry what was clicked once the
+ * popup reports success. Only on the Suite screen (it needs #suiteFeedback); elsewhere the old toast.
+ * Existing classes only; filled in place (rules 3 and 4). Returns true when it took over.
+ */
+let orgPrompt = null;
+function askToConnectOrg(err, retry) {
+  const host = document.getElementById("suiteFeedback");
+  if (!err || !err.orgUrl || !/^sf-connection-/.test(err.code || "") || !host) return false;
+  if (err.code === "sf-connection-expired") {
+    sfConnection = null;
+    try { sessionStorage.removeItem("sfConnection"); } catch { /* ignore */ }
+  }
+  let orgHost = err.orgUrl;
+  try { orgHost = new URL(err.orgUrl).hostname; } catch { /* keep as given */ }
+  const why = err.code === "sf-connection-wrong-org"
+    ? "This tab is connected to a different org."
+    : err.code === "sf-connection-expired" ? "This tab's connection to it has expired." : "This tab is not connected to it.";
+  host.innerHTML = `<p class="team-error">These cases sign in to <b>${escapeHtml(orgHost)}</b>. ${escapeHtml(why)}
+    <button type="button" class="dl-btn-inline" data-org-connect>Connect org</button>
+    <span data-org-status></span></p>`;
+  const status = host.querySelector("[data-org-status]");
+  const setStatus = (msg) => { status.textContent = " " + msg; };
+  host.querySelector("[data-org-connect]").addEventListener("click", () => {
+    orgPrompt = { retry, setStatus };
+    openOrgSignIn(err.orgUrl, setStatus);
+  });
+  return true;
+}
+
+/** The org connection this tab holds: the home view's, or the one this tab saved earlier. */
+function currentSfConnectionId() {
+  if (sfConnection && sfConnection.connectionId) return sfConnection.connectionId;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("sfConnection") || "null");
+    return saved && saved.connectionId ? saved.connectionId : null;
+  } catch { return null; }
+}
+
+function renderChangeReport(el, report) {
+  const order = ["affected", "likely-to-fail", "unknown", "changed", "unchanged", "no-snapshot", "not-salesforce"];
+  const cases = [...(report.cases || [])].sort((a, b) => order.indexOf(a.verdict) - order.indexOf(b.verdict));
+  const count = (v) => cases.filter((c) => c.verdict === v).length;
+  const summary = order.filter((v) => count(v)).map((v) => `${count(v)} ${CHANGE_VERDICTS[v].label.toLowerCase()}`).join(" · ");
+  const org = report.org
+    ? `Org ${escapeHtml(report.org.host)}${report.org.release ? ` · Salesforce ${escapeHtml(report.org.release.label)}` : ""}`
+    : "No Salesforce org was read";
+  el.innerHTML = `
+    <div class="panel">
+      <div class="hrow"><div class="hrow-main">
+        <div class="hrow-label">Change check: ${escapeHtml(summary || "no cases")}</div>
+        <div class="hrow-meta">${org} · checked ${escapeHtml(new Date(report.checkedAt).toLocaleString())} · nothing was run</div>
+        ${report.releaseNote ? `<div class="hrow-meta">${escapeHtml(report.releaseNote)}</div>` : ""}
+      </div></div>
+      ${cases.map((c) => {
+        const v = CHANGE_VERDICTS[c.verdict] || CHANGE_VERDICTS.unknown;
+        const lines = (c.findings || []).map((f) => `<div class="hrow-meta">${escapeHtml(f.message)}</div>`).join("")
+          || (c.note ? `<div class="hrow-meta">${escapeHtml(c.note)}</div>` : "");
+        return `<div class="hrow lib-row">
+          <span class="case-badge ${v.cls}">${escapeHtml(v.label)}</span>
+          <div class="hrow-main"><div class="hrow-label">${escapeHtml(c.title)}</div>${lines}</div>
+        </div>`;
+      }).join("")}
+    </div>`;
+}
+
+async function runChangeCheck(suiteId, btn, feedback) {
+  let el = document.getElementById("suiteChangeReport");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "suiteChangeReport";
+    document.getElementById("suiteFeedback").insertAdjacentElement("afterend", el);
+  }
+  const before = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  el.innerHTML = "";
+  try {
+    const connectionId = currentSfConnectionId();
+    const report = await api(`/api/suites/${encodeURIComponent(suiteId)}/change-check`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(connectionId ? { sfConnectionId: connectionId } : {}),
+    });
+    renderChangeReport(el, report);
+  } catch (err) {
+    if (askToConnectOrg(err, () => runChangeCheck(suiteId, btn, feedback))) return;
+    const msg = String(err && err.message || err);
+    feedback(/connect/i.test(msg) && !/turned off/i.test(msg)
+      ? `${msg} Use Connect org on the home screen in this tab, then check again.`
+      : msg, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = before;
+  }
+}
+
 async function renderSuiteView(suiteId) {
+  lastSuiteViewId = suiteId;
   const body = document.getElementById("suiteViewBody");
   body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
 
@@ -4052,6 +4237,7 @@ async function renderSuiteView(suiteId) {
       ${canDelete ? `<button type="button" class="dl-btn-inline" data-act="delete-suite">Delete suite</button>` : ""}
       <span class="lib-toolbar-gap"></span>
       ${canAuthor ? `
+        ${regressionChangeCheckOn && cases.length ? `<button type="button" class="dl-btn-inline" data-act="change-check" title="Compare the Salesforce org now with what each case remembered. Nothing runs.">Check for changes</button>` : ""}
         <button type="button" class="dl-btn-inline" data-act="run-selected" disabled>▸ Run 0 selected</button>
         <button type="button" class="run-btn lib-run-all" data-act="run-all"${cases.length === 0 ? " disabled" : ""}>▸ Run all</button>` : ""}
     </div>
@@ -4231,6 +4417,7 @@ async function renderSuiteView(suiteId) {
       const row = btn.closest(".lib-row");
       const caseId = row?.dataset.caseId;
       try {
+        if (act === "change-check") return runChangeCheck(suiteId, btn, feedback);
         if (act === "run-all") {
           // Belt-and-braces for the empty-suite case: the button renders disabled, but a rerender
           // race between render and the click could still reach here, and running zero cases is
@@ -4442,7 +4629,7 @@ function refreshCaseSaveAffordance() {
   // still typing, before any browser or save. So it is also the right place to offer the way out.
   // Rendered HERE rather than in paintStepsTab because this function deliberately does not
   // repaint: a repaint mid-typing steals the caret out of the line being fixed.
-  const offer = caseEditor.nlSteps && roleAtLeast(auth.role, "tester");
+  const offer = caseEditor.nlSteps && (!auth.required || roleAtLeast(auth.role, "tester"));
   errEl.innerHTML = `
     <p class="team-error">${escapeHtml(caseEditor.estimateError)}</p>
     ${offer ? `<button type="button" class="dl-btn-inline" id="cdTranslate">Write it for me</button>` : ""}`;
@@ -5844,7 +6031,7 @@ function renderSalesforceConnect() {
 
 function showSalesforceConnected(c) {
   sfConnection = { connectionId: c.connectionId, host: c.host, kind: c.kind };
-  sfConnectStatusEl.textContent = `Connected: ${c.host} (${c.kind}). Runs on this org sign in without a password.`;
+  if (sfConnectStatusEl) sfConnectStatusEl.textContent = `Connected: ${c.host} (${c.kind}). Runs on this org sign in without a password.`;
   if (targetAppBoxEl && !targetAppBoxEl.checked) targetAppBoxEl.checked = true;
   refreshSavedDiscovery();
 }
@@ -5919,10 +6106,17 @@ function paintSavedDiscovery() {
 async function connectSalesforceOrg() {
   const url = stripScheme(urlEl.value).trim() ? absoluteUrl() : "";
   if (!url) { sfConnectStatusEl.textContent = "Type the org's URL first."; return; }
+  return openOrgSignIn(url, (msg) => { sfConnectStatusEl.textContent = msg; });
+}
+
+/** The org sign-in popup for `url`, reporting progress through `setStatus`. Shared by the home
+ *  view's Connect org and the Suite screen's "connect this org, then retry" (D-76). The result comes
+ *  back as a postMessage, handled below. */
+async function openOrgSignIn(url, setStatus) {
   // Opened synchronously, inside the click, so a popup blocker lets it through; pointed at
   // Salesforce once the server has built the authorise URL.
   const popup = window.open("about:blank", "sfConnect", "width=520,height=720");
-  sfConnectStatusEl.textContent = "Opening Salesforce sign-in…";
+  setStatus("Opening Salesforce sign-in…");
   try {
     const res = await fetch("/api/salesforce/oauth/start", {
       method: "POST",
@@ -5933,14 +6127,14 @@ async function connectSalesforceOrg() {
     if (!res.ok || !body.authorizeUrl) throw new Error(body.error || `Server responded with HTTP ${res.status}`);
     const win = popup && !popup.closed ? popup : window.open(body.authorizeUrl, "sfConnect", "width=520,height=720");
     if (!win) {
-      sfConnectStatusEl.textContent = "The sign-in window was blocked. Allow pop-ups for this site, then click Connect org again.";
+      setStatus("The sign-in window was blocked. Allow pop-ups for this site, then click Connect org again.");
       return;
     }
     if (win === popup) popup.location.href = body.authorizeUrl;
-    sfConnectStatusEl.textContent = "Sign in to the org in the window that opened…";
+    setStatus("Sign in to the org in the window that opened…");
   } catch (err) {
     if (popup && !popup.closed) popup.close();
-    sfConnectStatusEl.textContent = err.message;
+    setStatus(err.message);
   }
 }
 
@@ -5948,15 +6142,24 @@ window.addEventListener("message", (ev) => {
   // Only the callback page served by THIS server may set the connection.
   if (ev.origin !== window.location.origin) return;
   const d = ev.data;
-  if (!d || d.type !== "sf-oauth" || !sfConnectStatusEl) return;
+  if (!d || d.type !== "sf-oauth" || (!sfConnectStatusEl && !orgPrompt)) return;
   if (d.error) {
     sfConnection = null;
     try { sessionStorage.removeItem("sfConnection"); } catch { /* ignore */ }
-    sfConnectStatusEl.textContent = d.error;
+    if (sfConnectStatusEl) sfConnectStatusEl.textContent = d.error;
+    if (orgPrompt) orgPrompt.setStatus(d.error);
     return;
   }
   showSalesforceConnected(d);
   try { sessionStorage.setItem("sfConnection", JSON.stringify(sfConnection)); } catch { /* ignore */ }
+  // D-76: the Suite screen asked for this org to retry a run or a check. Retry it once; a wrong org
+  // is refused by the server again and asks again.
+  if (orgPrompt) {
+    const retry = orgPrompt.retry;
+    orgPrompt.setStatus(`Connected to ${d.host}. Retrying…`);
+    orgPrompt = null;
+    retry();
+  }
 });
 
 /**
@@ -6151,6 +6354,12 @@ fetch("/api/health")
     if (h && h.specIntake === true) renderProToggle();
     if (h && h.jira === true) renderJiraRow();
     if (h && h.projectDiscovery === true) renderProjectFreshBox();
+    // D-76 step 2. Health can land after a suite was already drawn; redraw that suite once so its
+    // toolbar gains the button.
+    if (h && h.regressionChangeCheck === true) {
+      regressionChangeCheckOn = true;
+      if (lastSuiteViewId && document.getElementById("suiteRows")) renderSuiteView(lastSuiteViewId);
+    }
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);

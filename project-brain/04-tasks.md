@@ -1,5 +1,23 @@
 # Open tasks
 
+*Last updated: 2026-11-04.*
+
+## Multi-value screen flows (D-77) + record-triggered flow checks (D-78)
+
+- [ ] `tests/listRunsRace.test.ts` (main, TD-186) fails on Windows: `listRuns` tolerates ENOENT but a folder
+      being deleted answers EPERM here. Fix in main's TD-186 code (treat EPERM like ENOENT) — its own small PR.
+- [ ] Tests that slice `public/app.js` by `
+` fail on a CRLF checkout (`appJsProIntake`, `proStoryPrompt`).
+
+- [x] Committed `029e6c5`; main merged in 2026-11-06.
+- [ ] Get the user's answer: does "multiple value" also mean one flow run with several data sets? Not built.
+- [ ] First real check on a scratch org with both flags on: a Screen Flow with a multi-select picklist
+      and a checkbox group; a before-save flow on Lead/Account whose conditions a case meets. Costs
+      Gemini + org time — ask first.
+- [ ] TD-190: a sentence of its own for a saved-record check in both `formatIrStep` copies.
+- [ ] Later (TD-189): update-triggered flows on edits; show "not checked: why" on the report, not only
+      in the compile log.
+
 *Last updated: 2026-11-04, end of day.*
 
 ## Branch clean-up (user, 2026-11-04)

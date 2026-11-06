@@ -40,10 +40,18 @@ export interface FrontdoorSession {
    * the run itself created. Discovery never deletes. Throws a sentence with the HTTP status.
    */
   apiDelete?(path: string): Promise<void>;
+  /**
+   * GET `<instance>/services/data/`: the API versions the org serves, the newest one labelled with
+   * the org's Salesforce release ("Winter '27"). Read-only. D-76 step 2 reads the release from it;
+   * a release changes Lightning's page code with no change to the org's setup.
+   */
+  apiVersions?(): Promise<any>;
 }
 
 /** The env name the generated spec reads the frontdoor URL from. */
 export const FRONTDOOR_ENV = "SF_FRONTDOOR_URL";
+/** The REST/UI API version an org connection reads with (re-exported by server/salesforceOAuth.ts). */
+export const SF_API_VERSION = "v62.0";
 /** What an IR step carries instead of the URL. Same `${env:...}` shape as credential fills. */
 export const FRONTDOOR_REF = "${env:SF_FRONTDOOR_URL}";
 

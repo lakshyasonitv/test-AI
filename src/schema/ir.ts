@@ -37,6 +37,14 @@ export const Target = z.object({
    */
   field: z.string().optional(),
   /**
+   * D-78 (SALESFORCE_FLOW_CHECKS_ENABLED): the same field of the SAVED record, read through the run's
+   * org connection rather than off the page — `object` (API name), which of the records this test's
+   * create forms saved for it (`n`, 1 = the first), and the field's API name. Written in code only
+   * (salesforceFlowChecks.flowFieldChecks), never by the LLM, for a field a record-triggered flow sets.
+   * Additive: absent on every other target, so every stored IR parses unchanged.
+   */
+  recordField: z.object({ object: z.string(), n: z.number().int().positive(), api: z.string() }).optional(),
+  /**
    * Provenance, not behaviour. `"replay"` marks a target that was grounded against the LIVE page
    * during a replay (`REPLAY_REGROUND`) rather than against the model discovery built — the case
    * of a control revealed by a click, which discovery never saw.
@@ -82,6 +90,57 @@ export type Step = z.infer<typeof Step>;
 // becomes "medium" instead of failing the parse. Fixing only the test-case side would have left
 // the identical trap one stage downstream — `IR.meta.priority` is parsed in `toIR`'s grounding
 // loop, where a rejection burns a retry attempt and can fail the whole compile over a sort hint.
+/**
+ * Regression memory (D-76, REGRESSION_MEMORY_ENABLED): what a SAVED case remembers beyond its steps,
+ * so a later repair has something to repair from and the safety checks can still read what the case
+ * means. Written in code when the case is saved (regressionMemory.ts), never by the model. Absent on
+ * every run's IR and on every case saved with the flag off, so all stored IRs parse unchanged.
+ */
+export const Remembered = z.object({
+  /** The run the case was saved from, and when. */
+  savedFrom: z.string(),
+  at: z.string(),
+  /** What the case MEANS: the plain-English case it was compiled from. */
+  meaning: z.object({
+    title: z.string(),
+    steps: z.array(z.string()),
+    expected: z.string().optional(),
+    intent: z.string().optional(),
+    /** "valid", "invalid-input", "state-change"... The hollow-pass guards key on it. */
+    category: z.string().optional(),
+  }).optional(),
+  /** Salesforce: the org's setup for the objects this case touches, when it was saved. Objects are
+   *  stored as the org model wrote them (fields, required, picklists, record types, rules). */
+  org: z.object({
+    host: z.string(),
+    userLocale: z.string().optional(),
+    /** The org's Salesforce release when the case was saved ("Winter '27"), when it was read. */
+    release: z.object({ label: z.string(), version: z.string() }).optional(),
+    validationRulesRead: z.boolean(),
+    objects: z.array(z.record(z.unknown())),
+    flows: z.array(z.record(z.unknown())).optional(),
+  }).optional(),
+  /** Step 1B: what each element a step acted on looked like during the PASSING run, by step id,
+   *  read by the generated spec just before the step acted. `matches` over 1 is a guess. `sfField` is
+   *  the Salesforce field ("Account.Name") from Lightning's own binding: it survives label renames. */
+  elements: z.record(z.object({
+    path: z.string(),
+    matches: z.number(),
+    tag: z.string().optional(),
+    role: z.string().optional(),
+    type: z.string().optional(),
+    name: z.string().optional(),
+    sfField: z.string().nullable().optional(),
+  })).optional(),
+  /** Values that cannot be replayed as saved: an org record id, a fixed calendar date. */
+  oneTimeValues: z.array(z.object({
+    stepId: z.string(),
+    kind: z.enum(["record-id", "fixed-date"]),
+    value: z.string(),
+  })).optional(),
+});
+export type Remembered = z.infer<typeof Remembered>;
+
 const PRIORITIES = ["low", "medium", "high", "critical"] as const;
 const Priority = z.preprocess(
   (v) => {
@@ -130,6 +189,14 @@ export const IR = z.object({
      * everywhere else, so every other IR and every other spec is unchanged.
      */
     fixedLogin: z.literal("salesforce").optional(),
+    /** D-76: written when a case is saved with REGRESSION_MEMORY_ENABLED on. See `Remembered`. */
+    remembered: Remembered.optional(),
+    /**
+     * D-76 step 4: ids of steps a person edited by hand in the step editor (REGRESSION_REPAIR_ENABLED).
+     * A pinned step is never repaired automatically: a person chose it. Written in code by the edit
+     * route, never by the model (toIR drops one). Absent on every other IR.
+     */
+    pinnedSteps: z.array(z.string()).optional(),
   }),
   steps: z.array(Step).min(1),
 });

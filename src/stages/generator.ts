@@ -3,10 +3,11 @@ import {
   resolveCode as locator, frameRootCode,
   DOM_ORDER_FIELD_JS, FIELD_SELECTOR, VISIBLE_DIALOG_SELECTOR,
   SELECTABLE_JS, OPTION_PROBE_JS, MATCH_OPTION_INDEX_JS, OPTION_ERROR_JS, SELECT_TIMEOUT_MS,
+  checkBoxJs, chooseMultiJs, multiValueEnabled,
 } from "./targetResolver.js";
 import { isAuthTriggeringStep } from "./authSettle.js";
 import { isEnvValueRef } from "./credentials.js";
-import { FRONTDOOR_ENV, isFrontdoorRef, recordRefIndex, recordRefObject, SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
+import { FRONTDOOR_ENV, isFrontdoorRef, recordRefIndex, recordRefObject, SF_API_VERSION, SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
 import { hasRunToken, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
 
 const q = (s: string) => JSON.stringify(s);
@@ -64,6 +65,13 @@ function emitAssert(step: Step): string {
         `nothing at all (it matches any page). Refusing to emit a vacuous assertion.`
       );
     }
+  }
+
+  // D-78: a field a record-triggered flow sets, read from the SAVED record through the org connection
+  // (Target.recordField, written only by salesforceFlowChecks). See SF_SAVED_FIELD_HELPER.
+  if (t?.recordField && t.field && (step.assertion === "text_contains" || step.assertion === "text_equals")) {
+    const r = t.recordField;
+    return `  await sfSavedField(page, ${q(r.object)}, ${r.n}, ${q(r.api)}, ${q(t.field)}, ${valueCode(comparisonValue(step))}, ${q(step.assertion === "text_equals" ? "equals" : "contains")});`;
   }
 
   // A record field's VALUE (Target.field, Phase A): read inside that field's own block, never as text
@@ -348,6 +356,72 @@ async function sfFieldValue(page, label, expected, mode) {
     ? "it shows " + seen.map((s) => '"' + s + '"').join(", ") : 'no visible field labelled "' + label + '" is on the page') + ".");
 }`;
 
+/**
+ * D-78: does a saved record's field VALUE, as the REST API returns it, equal the value a flow sets?
+ * Both sides are the API's own spelling (a picklist's API value, `true`, `25000`), not page text.
+ * Numbers compare as numbers ("100" and 100.0 agree); booleans ignore case; a multi-select value
+ * ("A;B") compares its parts in any order. Exported for its tests.
+ */
+export const SF_SAVED_MATCH_JS = `(shown, expected, mode) => {
+  if (shown === null || shown === undefined) return String(expected).trim() === "";
+  const s = String(shown).trim();
+  const e = String(expected).trim();
+  if (/^-?\\d+(\\.\\d+)?$/.test(s) && /^-?\\d+(\\.\\d+)?$/.test(e)) return Number(s) === Number(e);
+  if (/^(true|false)$/i.test(e)) return s.toLowerCase() === e.toLowerCase();
+  if (s.includes(";") || e.includes(";")) {
+    const got = s.split(";").map((x) => x.trim()).filter(Boolean);
+    const want = e.split(";").map((x) => x.trim()).filter(Boolean);
+    return mode === "equals"
+      ? got.length === want.length && want.every((x) => got.includes(x))
+      : want.every((x) => got.includes(x));
+  }
+  return mode === "equals" ? s === e : s.includes(e);
+}`;
+
+/**
+ * D-78: the value a record-triggered flow sets, read from the SAVED record through the run's org
+ * connection. A before-save flow ("fast field update") has no screen and no message: the saved field
+ * is the only evidence it ran, and the record page shows it only when the layout has the field.
+ *
+ * The record is the one this test's create form saved (sfRecordPages, as sfOpenRecord uses), waited
+ * for while Lightning moves to it. The token is the one already in the child's env for the sign-in
+ * (SF_FRONTDOOR_URL's `sid`), sent in a header only, with Node's own fetch — never a Playwright
+ * request, so no trace can record it — and never put into an error. GET only.
+ */
+const SF_SAVED_FIELD_HELPER = `const sfSavedMatch = ${SF_SAVED_MATCH_JS};
+async function sfSavedField(page, object, n, api, label, expected, mode) {
+  let origin = "";
+  let token = "";
+  try {
+    const door = new URL(process.env.${FRONTDOOR_ENV} || "");
+    origin = door.origin;
+    token = door.searchParams.get("sid") || "";
+  } catch (e) { /* below */ }
+  if (!token) throw new Error("Checking the saved " + object + " record's " + label + " needs the org connection (${FRONTDOOR_ENV} holding a signed-in frontdoor URL), and there is none.");
+  const deadline = Date.now() + ${ASSERT_TIMEOUT_MS};
+  let id = null;
+  while (!(id = sfRecordPages && sfRecordPages.created(object, n)) && Date.now() < deadline) await page.waitForTimeout(250);
+  if (!id) throw new Error("No " + object + " record this test created (number " + n + ") was reached, so the field a flow sets on it cannot be read.");
+  const url = origin + "/services/data/${SF_API_VERSION}/sobjects/" + encodeURIComponent(object) + "/" + id + "?fields=" + encodeURIComponent(api);
+  let shown;
+  for (;;) {
+    let res;
+    try {
+      res = await fetch(url, { headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
+    } catch (e) {
+      throw new Error("Reading the saved " + object + " record through the org connection failed: " + String((e && e.message) || e).split(token).join("[token]"));
+    }
+    if (!res.ok) throw new Error("Reading the saved " + object + " record through the org connection failed: HTTP " + res.status + ".");
+    const rec = await res.json().catch(() => null);
+    shown = rec ? rec[api] : undefined;
+    if (sfSavedMatch(shown, expected, mode)) return;
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(500);
+  }
+  throw new Error("The saved " + object + " record's " + label + " (" + api + ") is " + JSON.stringify(shown === undefined ? null : shown)
+    + ", not " + JSON.stringify(expected) + ": the flow that sets it did not run, or set something else.");
+}`;
+
 /** Scrolls down a screen at a time until `text` shows or the page ends, so a lazily drawn section
  *  exists before it is checked (and a "hidden" check has really looked everywhere). */
 const SF_REVEAL_HELPER = `async function sfReveal(page, text) {
@@ -428,6 +502,67 @@ async function waitForAuthSettle(page) {
  * (3 samples: one extra versus before, to prove the picture was ever drawn), versus a blind
  * 2-3s delay that would be paid on every step of every case regardless.
  */
+/**
+ * Regression step 1B (D-76, REGRESSION_MEMORY_ENABLED): what each element a step acts on looked like,
+ * read just BEFORE the step acts (a click can take the element away) and written to
+ * `<artifacts>/elements.json`, keyed by step id so a retry overwrites rather than duplicates. Saving a
+ * case from a PASSING run keeps it (regressionMemory.ts), so a later repair knows what to look for.
+ *
+ * - `matches`: how many elements the step's locator matched. More than one is a guess waiting to go wrong.
+ * - `sfField`: the Salesforce field the element belongs to, from the `data-target-selection-name=
+ *   "sfdc:RecordField.<Object>.<Field>"` Lightning puts around every record field. It keeps its API
+ *   name when the label is renamed. Found by walking up through slots and shadow-root hosts, because
+ *   that is how Lightning nests a field's input inside its wrapper (seen on a real Account form).
+ * - Never the element's VALUE: only what identifies it. The page's path only, never its query.
+ *
+ * Best effort throughout: remembering must never fail or slow a step beyond its 2 s waits. The
+ * in-page callback has no inner functions (TD-40).
+ */
+const REMEMBER_HELPER = `
+const REMEMBERED = {};
+async function remember(page, loc, stepId, file) {
+  try {
+    await loc.first().waitFor({ state: "attached", timeout: 2000 }).catch(() => {});
+    const matches = await loc.count();
+    const info = matches ? await loc.first().evaluate((el) => {
+      let sfField = null;
+      let n = el;
+      for (let k = 0; n && k < 60 && !sfField; k++) {
+        const v = n.getAttribute ? n.getAttribute("data-target-selection-name") : null;
+        if (v && v.indexOf("sfdc:RecordField.") === 0) sfField = v.slice(17);
+        const root = n.getRootNode ? n.getRootNode() : null;
+        n = n.assignedSlot || n.parentElement || (root && root !== document && root.host) || null;
+      }
+      const named = el.getAttribute("aria-label") || (el.labels && el.labels[0] ? el.labels[0].innerText : "")
+        || el.getAttribute("placeholder") || el.getAttribute("title") || el.innerText || "";
+      return {
+        tag: el.tagName.toLowerCase(),
+        role: el.getAttribute("role") || "",
+        type: el.getAttribute("type") || "",
+        name: String(named).replace(/\\s+/g, " ").trim().slice(0, 80),
+        sfField,
+      };
+    }, undefined, { timeout: 2000 }) : null;
+    REMEMBERED[stepId] = { path: new URL(page.url()).pathname, matches, ...(info || {}) };
+    writeFileSync(file, JSON.stringify(REMEMBERED, null, 2));
+  } catch { /* best effort: remembering never fails a step */ }
+}`;
+
+/** The locator `remember` counts for a step: every element its target can match, NOT `.first()`, so
+ *  `matches` is the real number. Null for a target with nothing stable to count. */
+export function rememberLocatorCode(step: Step): string | null {
+  const t = step.target;
+  if (!t || !["click", "fill", "select", "check", "press"].includes(step.action)) return null;
+  const root = frameRootCode(t);
+  if (t.css) return `${root}.locator(${q(t.css)})`;
+  if (t.testId) return `${root}.getByTestId(${q(t.testId)})`;
+  if (t.role && t.name) return `${root}.getByRole(${q(t.role)}, { name: ${q(t.name)}, exact: true })`;
+  if (t.label) return `${root}.getByLabel(${q(t.label)}, { exact: true })`;
+  if (t.placeholder) return `${root}.getByPlaceholder(${q(t.placeholder)}, { exact: true })`;
+  if (t.text) return `${root}.getByText(${q(t.text)}, { exact: true })`;
+  return null;
+}
+
 const SHOT_HELPER = `
 async function shot(page, path) {
   const step = Number(process.env.SCREENSHOT_SETTLE_MS ?? 150);
@@ -1014,6 +1149,13 @@ function emitStep(step: Step, baseUrl: string): string {
 
     case "click": {
       const t = step.target!;
+      // D-77: a radio is CHOSEN, which a click on its label does when the page draws the dot itself
+      // (SLDS) — instead of safeClick's ~7 s forced-click fallback. Then verified chosen.
+      if (multiValueEnabled() && t.role?.toLowerCase() === "radio") {
+        code += `  await checkBox(page, ${locator(t, "check")}${t.frame ? `, ${frameRootCode(t)}` : ""});`;
+        code += `\n  await page.waitForLoadState("domcontentloaded", { timeout: ${ASSERT_TIMEOUT_MS} }).catch(() => {});`;
+        break;
+      }
       // safeClick is the role+name path only — it calls getByRole under the hood, and
       // Playwright rejects an empty role outright ("Role must not be empty"). A target
       // carrying only text/label/placeholder/testId is legitimate (dynamic content the
@@ -1053,10 +1195,21 @@ function emitStep(step: Step, baseUrl: string): string {
       // A target in an iframe passes its frame root as choose()'s 4th argument, for the two
       // lookups that must happen in the target's own document. Omitted otherwise, so a spec with
       // no frames is emitted exactly as before.
+      // D-77 (MULTI_VALUE_CONTROLS_ENABLED): chooseMulti first — a dual listbox, a checkbox group or
+      // a <select multiple> gets the value ADDED; anything else goes on to choose() unchanged.
+      if (multiValueEnabled()) {
+        code += `  await chooseMulti(page, ${locator(step.target!, "select")}, ${valueCode(step.value)}, ${step.target!.frame ? frameRootCode(step.target!) : "undefined"}, choose, checkBox);`;
+        break;
+      }
       code += `  await choose(page, ${locator(step.target!, "select")}, ${valueCode(step.value)}${step.target!.frame ? `, ${frameRootCode(step.target!)}` : ""});`;
       break;
 
     case "check":
+      // D-77: a box the page draws itself (SLDS) is checked through its label, then verified.
+      if (multiValueEnabled()) {
+        code += `  await checkBox(page, ${locator(step.target!, "check")}${step.target!.frame ? `, ${frameRootCode(step.target!)}` : ""});`;
+        break;
+      }
       code += `  await ${locator(step.target!, "check")}.check({ timeout: ${ASSERT_TIMEOUT_MS} });`;
       break;
 
@@ -1119,6 +1272,10 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
     case "wait": return `Wait ${step.value ?? 1000}ms`;
     case "assert": {
       const assertion = step.assertion ?? "visible";
+      // D-78: says what is read — the saved record, not the page.
+      if (t?.recordField && (assertion === "text_equals" || assertion === "text_contains")) {
+        return `Check the saved ${t.recordField.object} record: ${t.field ?? t.recordField.api} is${val} (set by a flow)`;
+      }
       if (assertion === "text_contains") return `Assert${name} contains${val}`;
       if (assertion === "text_equals") return `Assert${name} text is${val}`;
       if (assertion === "url_contains") return `Assert URL contains${val}`;
@@ -1266,6 +1423,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   // runs the whole login and screenshots where it landed; the rest record that it is done and take
   // no screenshot, so no login frame (with the username readable) is written (TD-173).
   const login = fixedLoginBlock(ir);
+  const rememberSteps = process.env.REGRESSION_MEMORY_ENABLED === "true";
   // A text check after a click on a record's "Details" tab first scrolls its lower sections into
   // being: Lightning draws them only when scrolled to (run 2026-10-26T07-53-42-185Z-83b50b3b).
   const detailsAt = ir.steps.findIndex((s) => s.action === "click" && s.target?.role === "tab" && s.target.name === "Details");
@@ -1283,14 +1441,19 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
       }
       const label = stepLabel(step, i, ir.meta.baseUrl);
       // A field's value check scrolls its label into being too, Details tab or not (Phase A).
-      const reveal = step.action === "assert" && step.target?.field && (step.assertion === "text_contains" || step.assertion === "text_equals" || step.assertion === "visible")
+      // Not for a saved-field read (D-78): it reads the record, not the page.
+      const reveal = step.action === "assert" && step.target?.field && !step.target.recordField
+        && (step.assertion === "text_contains" || step.assertion === "text_equals" || step.assertion === "visible")
         ? `await sfReveal(page, ${q(step.target.field)});\n`
         : detailsAt >= 0 && i > detailsAt && step.action === "assert" && step.target?.text
         && (step.assertion === "visible" || step.assertion === "hidden")
         ? `await sfReveal(page, ${q(step.target.text)});\n` : "";
       const dismiss = orgConnection && (step.action === "fill" || step.action === "select" || step.action === "click")
         ? "await sfDismissDuplicates(page);\n" : "";
-      const code = dismiss + reveal + emitStep(step, ir.meta.baseUrl);
+      // D-76 step 1B: read the element before the step acts. Off: nothing emitted, spec unchanged.
+      const memLoc = rememberSteps ? rememberLocatorCode(step) : null;
+      const memo = memLoc ? `await remember(page, ${memLoc}, ${q(step.id)}, ${q(`${shotDir}/elements.json`)});\n` : "";
+      const code = dismiss + reveal + memo + emitStep(step, ir.meta.baseUrl);
       const indented = code.split("\n").map((l) => "    " + l).join("\n");
       return `    await test.step(${q(label)}, async () => {\n${indented}\n      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)});\n    });`;
     })
@@ -1316,7 +1479,10 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
   const needsAssertChoice = body.includes("await assertChoice(");
   const needsAssertGone = body.includes("await assertGone(");
   const needsField = body.includes("await field(");
-  const needsChoose = body.includes("await choose(");
+  // chooseMulti (D-77) falls back to choose(), so it needs choose() and everything choose() needs.
+  const needsChooseMulti = body.includes("await chooseMulti(");
+  const needsCheckBox = needsChooseMulti || body.includes("await checkBox(");
+  const needsChoose = body.includes("await choose(") || needsChooseMulti;
   const needsLookup = body.includes("await lookupPick(");
   const needsScope = needsField || needsChoose || needsSafeClick;
 
@@ -1329,10 +1495,14 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     // only ever be true — and if the splice order ever shifted it could compute false and emit
     // a spec that calls an undefined function. Always-on cannot fail that way.
     SHOT_HELPER,
+    body.includes("await remember(") ? REMEMBER_HELPER : "",
     needsLocate ? LOCATE_HELPER : "",
     needsScope ? SCOPE_HELPER : "",
     needsField ? FIELD_HELPER : "",
     needsChoose ? CHOOSE_HELPER : "",
+    // D-77: the same source the grounding replay runs (targetResolver.ts), so the two cannot drift.
+    needsCheckBox ? `const checkBox = ${checkBoxJs(SELECT_TIMEOUT_MS)};` : "",
+    needsChooseMulti ? `const chooseMulti = ${chooseMultiJs(SELECT_TIMEOUT_MS)};` : "",
     needsLookup ? LOOKUP_HELPER : "",
     needsSafeClick ? SAFE_CLICK_HELPER : "",
     needsAssertChoice ? ASSERT_CHOICE_HELPER : "",
@@ -1355,8 +1525,10 @@ test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", descr
     body.includes(`process.env.${FRONTDOOR_ENV}`) ? SF_RECORDS_HELPER : "",
     body.includes("await sfReveal(") ? SF_REVEAL_HELPER : "",
     body.includes("await sfDismissDuplicates(") ? SF_DISMISS_DUPLICATES_HELPER : "",
-    body.includes("await sfOpenRecord(") ? SF_OPEN_RECORD_HELPER : "",
+    // sfSavedField (D-78) finds its record the way sfOpenRecord does.
+    body.includes("await sfOpenRecord(") || body.includes("await sfSavedField(") ? SF_OPEN_RECORD_HELPER : "",
     body.includes("await sfFieldValue(") ? SF_FIELD_HELPER : "",
+    body.includes("await sfSavedField(") ? SF_SAVED_FIELD_HELPER : "",
   ]
     .filter(Boolean)
     .join("\n\n");

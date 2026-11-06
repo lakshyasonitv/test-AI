@@ -6186,6 +6186,15 @@ fix / unlisted-field / "all required fields" cases; three fail with the rule dis
 fields the case never touches are not ADDED, and `snapPicklist` still maps a value to the one option containing it
 ("Technology" -> "Biotechnology" in that replay), which saves but may not be the option meant.
 
+**Follow-up (2026-11-02).** Two real requests still slipped through: "fill all the **filed** which are there" (run
+`2026-10-29T04-50-18-125Z-a0fe4a84`: the case planned 25 Account fields, 24 were dropped) and "can you fill the
+account with each and every" (the noun left unsaid, live run `2026-10-29T04-02-12-018Z-8fc37033`). "Field" is now
+recognised by its letters (filed, fileds, fild, feild, flied; never "filled"), and a request ending in "each and
+every" counts. Replayed on the 33-field Account case, all three phrasings keep 33 of 33; "create an account" keeps 1.
+Cache key part `test-data:4`.
+
+---
+
 ### TD-180. Parallel suite cases share one login, and browsers outside the suite are not counted — Medium / Deliberate — **Open**
 
 **What.** With `SUITE_CASE_CONCURRENCY` above 1 (D-73), the cases of one run execute at the same time as the
@@ -6299,3 +6308,90 @@ before. `summariseRun` itself is unchanged (the Phase 3 backfill and the run-sta
 `tests/listRunsRace.test.ts` (a gone folder is skipped, the cap still yields 20, a corrupt run still throws, and no
 error while a second process creates and deletes the folders being read; the three race tests fail without the fix
 with the CI error, `ENOENT ... stat 'runs/…'`).
+
+### TD-187. Running some tests in a real checkout leaves stub run folders in `runs/` — Low / Accidental — **Open**
+
+*Renumbered from TD-180 on 2026-11-06 (main merge: `main`'s TD-180 is parallel suite cases' shared login).*
+
+**Found 2026-11-02.** After targeted test runs in the working checkout, `runs/` held folders containing
+only `00-run-target.json` (four at 11:17 and 11:32 that day, timestamps matching the test runs; removed
+by hand). Some test writes the run-target file for a real-looking run id and never cleans up. `runStore`
+skips such stubs in the run list, but they accumulate, and a parallel `apiContract` run once failed while
+they were being written (passes alone). Candidate fix: find the test (likely one that calls the
+run-target writer under a generated run id) and point it at a temporary folder, as TD-164 did for walks.
+
+### TD-181. A rejected repair is remembered under `runs/`, which a container may not keep — Low / Deliberate — **Open**
+
+**Found 2026-11-02** (D-76 step 4). A person's Reject on a repair proposal is stored in
+`runs/_cache/repair-decisions/<caseId>.json`, and `attemptRepair` reads it to avoid proposing the same
+repair again. On a host where `runs/` is not on persistent storage (the Azure container restarts with
+an empty `runs/`), the record is lost and the same repair is proposed again on the next replay. Nothing
+is saved wrongly: a proposal still needs a person's Approve. Pinned steps (`IR.meta.pinnedSteps`) are
+not affected, they live in the case itself. Candidate fix: store the decision with the library case
+(a column or a row next to `test_case_versions`) when the library is on, keeping the file for local use.
+
+### TD-182. "Save case" was missing from every result card with AUTH_ENABLED off — Medium / Accidental — **Fixed (2026-11-03)**
+
+**Found 2026-11-03**, locally: a finished run showing suite results had no way to save its case. The card's button was removed by `if (!roleAtLeast(auth.role, "tester"))`, and with auth off the page never learns a role (`auth.role` is null) although the server treats the synthetic local user as an owner (rule 7). Every other role gate in `app.js` reads `!auth.required || roleAtLeast(...)`; this one, and the step editor's "rewrite this line" offer, did not. Hosted deployments with auth on were not affected. Fixed both; `tests/teamRoster.test.ts` now fails on any `roleAtLeast(auth.role` outside the Team screen that does not say what auth-off means.
+
+### TD-188. A field that takes several values could not be tested: a hollow pass, a timeout, and test data that dropped values — High / Accidental — **Fixed behind `MULTI_VALUE_CONTROLS_ENABLED` (2026-11-04), off by default**
+
+*TD-188..TD-190 were written as TD-183..TD-185 on 2026-11-04 and renumbered on 2026-11-06, when `main` was merged in with its own TD-183..TD-186.*
+
+**Found 2026-11-04** from the user's report ("not able to check the screen flows with multiple value"),
+reproduced headless against SLDS-shaped markup (`tests/multiValueControls.test.ts`, the "flag off"
+cases pin each defect):
+1. **Hollow pass.** A `select` on a Lightning dual listbox (a Screen Flow's or a record form's
+   multi-select picklist: "Available" -> "Selected") resolved the group or a list, clicked the option —
+   which only highlights it — and returned. The step passed; nothing was chosen. "Red;Blue" passed too.
+2. **Timeout.** `check` on an SLDS checkbox (checkbox group, single checkbox): the input is a clipped 1px
+   box, the label's painted box takes the click; Playwright counts the input visible and retries
+   "label intercepts pointer events" for the whole timeout. In the grounding replay the same, so the
+   rest of the case could not be grounded.
+3. **Slow radios.** A radio `click` passed only through `safeClick`'s forced fallback (~7 s each); the
+   replay's plain click had no fallback.
+4. **Test data** (record forms with an org model): "Red;Blue" on a multi-select picklist was snapped to
+   ONE option ("Blue"), silently; a required multi-select picklist with no step got a `fill` of
+   "Test <label> {{uid}}" into a textbox that does not exist.
+5. **Grounding.** A `select` naming a box of a checkbox group (a fieldset; no role names it) found no
+   control and the case was cut there.
+
+**Fix (D-77), flag on:** `chooseMulti` / `checkBox` (one source for spec and replay), the TD-125B
+conversion to `check`, the test-data split. Flag off: specs and replays byte-identical (tested).
+
+**Still open.** Verified on synthetic markup only, never a live org — a Lightning release that renames
+nothing structural keeps working, one that drops `aria-multiselectable` does not. Grounding never checks
+a dual-listbox VALUE against its options (the run fails naming them). The first of the two lists is
+taken as the source and the first button between them as "move"; a component that orders them otherwise
+fails with "did not move into the chosen list", not silently. "A;B" in ONE select on a screen flow (no org
+model to split against) fails naming the options; the model must write one select per value.
+
+### TD-189. A record-triggered flow's effect was checked only if the model wrote the check — Medium / Deliberate gap — **Fixed behind `SALESFORCE_FLOW_CHECKS_ENABLED` (2026-11-04), off by default**
+
+**Found 2026-11-04** (user: "how will it check" a record-triggered flow with fast field updates). The org
+model read each flow and the case-writing and IR prompts asked for a case that meets its conditions and
+checks the field on the record page; both lines said "(No deterministic check.)". Whether the case met
+the conditions, and whether it checked the right field for the right value, was whatever the model wrote,
+and a before-save flow leaves no other trace. A field the page layout hides could not be checked at all.
+
+**Fix (D-78), flag on:** `flowFieldUpdates` keeps the flow as data; `flowFieldChecks` adds one saved-record
+check per field the flow sets when the case's own typed values meet the conditions; `sfSavedField` reads
+the field through the org connection (REST GET).
+
+**Still open.** Create only: an edit (update-triggered flow) is not checked. Conditions on fields the case
+does not set are "undecided" (a default value this code cannot see) and add nothing — logged, but only in
+the compile log, not on the report. Assignments behind a decision, from a variable or a formula are never
+checked. The base prompt lines still say "(No deterministic check.)"; with the flag on (org-connection
+runs) a backed line is APPENDED to the case-writer's prompt telling it to give the condition fields fixed
+values, rather than editing those lines, so flag-off prompts and their cache keys stay byte-identical.
+Never run against a real org.
+
+### TD-190. The step editor shows a saved-record flow check as a page check — Low / Deliberate — **Open**
+
+**Found 2026-11-04** (D-78). A `recordField` assertion renders as `Check that the "Zq Tier" field shows
+"Gold"`, the same sentence as a record-PAGE field check (`fieldChecksOnRecordView`). An untouched line keeps
+the saved-record read (`parseIrStep` onto the original, tested), but a person cannot tell the two apart,
+and editing the field name turns it into a page check (the new `{ field }` has no `recordField`). The
+report's step label does say "Check the saved Lead record: … (set by a flow)". Candidate fix: a sentence of
+its own in BOTH `formatIrStep` copies (`stepText.ts`, `app.js`) with a parse rule — left out to keep the
+editor's format unchanged for this change.

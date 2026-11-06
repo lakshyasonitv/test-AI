@@ -2360,3 +2360,235 @@ Forms case and the TB Total Opportunity Amount roll-up, on the scratch org.
 **Not covered.** Objects the request does not name by their org label. More than 3 objects per run (a scratch org's
 API allowance is small). Record types, rules and formulas are described to the case writer; nothing checks
 structurally that a case exercised the rule it was told about.
+
+## D-76. Regression testing follows the "Regression testing in Testbench" design: remember, check, repair safely, approve
+
+*Renumbered from D-73 on 2026-11-06, when `main` was merged in: `main`'s D-73 is parallel suite cases. Commits before that date call this record D-73.*
+
+**Status:** Step 1 ("Remember", parts A and B) built on `refactored-code` 2026-11-02, behind
+`REGRESSION_MEMORY_ENABLED` (default off).
+
+**What.** The team's design (26 Oct, @Vaibhav) is followed in its order: (1) a saved case remembers
+what it means and what the org looked like; (2) a Salesforce change check before a run; (3) a safe
+repair of a broken click/fill/select/press only (field binding, then an exact unique match; the whole
+test must pass again); (4) a person approves every repair (new version; reject means never proposed
+again; hand-edited steps are pinned). Part A of step 1, built now: saving a case from a run also
+stores `IR.meta.remembered` — the plain-English case from the run's `03-cases.json` (steps, expected,
+intent, category), the org model's entries for the objects the case touches (with their flows and the
+user's locale), and its one-time values (an org record id, a fixed date), which are also returned as
+`warnings`. A case that only passed after a self-heal is refused (409 `healed-needs-review`) until
+the person confirms with `acceptHealed: true`.
+
+**Why.** A saved case kept only its locators: when the site changed there was nothing to repair from,
+and the hollow-pass guards could not protect saved cases because they read the plain-English case,
+which was not saved. Self-heal on new runs could already save a heal that hides a broken check
+(the design's "today's risk"); refusing an unreviewed heal closes that without turning heal off.
+
+**Rejected.** Re-grounding every step after the failing one (an earlier plan in this session): the
+design allows one step's locator to change and nothing else. Writing `remembered` from model output:
+it is written in code only, and `toIR` deletes a model-written one. A database column for it: it is
+part of the IR, which `test_cases.ir` and every version already store, so no migration is needed.
+
+**Not yet (step 1, part B).** The element details captured during the PASSING run (role, name, page,
+match count) and the Salesforce field binding (`data-target-selection-name`) need the generated spec
+to record them, so they come with their own real-browser tests. The Salesforce release is not in the
+org model yet; step 2 reads it.
+
+**Part B (built 2026-11-02).** With the flag on, the generated spec calls `remember()` before each
+click/fill/select/check/press: the step's locator WITHOUT `.first()` (so `matches` is the real
+count), the element's tag, role, type and identifying name (never its value), the page's path (never
+its query), and the Salesforce field from `data-target-selection-name="sfdc:RecordField.<Object>.<Field>"`.
+The field is found by walking up through `assignedSlot`, parents and shadow-root hosts, because a real
+Lightning Account form slots the input's component into the wrapper's shadow root (confirmed in this
+project's captured forms: 130 such bindings on one Account form). Written to `artifacts/elements.json`
+by step id. Saving keeps it only when the case PASSED in that run, and never for a healed case (its
+details came from the failing run); `matches > 1` is returned as a warning. Best effort: two 2 s waits
+at most, and a failure to remember never fails the step. Flag off: no call and no helper in the spec.
+Proven in real Chromium (`tests/regressionElements.test.ts`): removing the `assignedSlot` hop turns the
+recorded field from `Account.Name` into `null` and fails the test.
+
+**Step 2 (built 2026-11-02).** `POST /api/suites/:suiteId/change-check` (`REGRESSION_CHANGE_CHECK_ENABLED`)
+loads the suite's cases with the replay's own access check, verifies the Connect org link belongs to the
+caller's organisation and to the same org as every Salesforce case, then reads the org NOW with
+`readOrgForCheck` — every field of each object (the org model keeps 40, so a field past that cap would
+otherwise look removed), required flags including the create layout's, picklist values, record types,
+validation rules, flows, and the release — and compares it with each case's snapshot
+(`regressionChangeCheck.ts`). The fields a case uses come from the passing run's field binding first
+(step 1B, survives renames), else its step labels. Verdict = worst finding: affected > likely to fail >
+unknown > changed > unchanged; a case with no snapshot is "no-snapshot", an ordinary site
+"not-salesforce" — listed, never passed. The release is read through a new read-only
+`FrontdoorSession.apiVersions()` (`/services/data/`, outside the versioned path the API helper is bound
+to) and recorded in the org model only with REGRESSION_MEMORY_ENABLED on, because it is part of the
+saved-scan fingerprint. Read-only throughout: no browser, no model, nothing written. Not built yet: a
+button on the Suite screen (the route is ready for it), and comparing page layouts.
+
+**Step 2 button (2026-11-02).** The Suite screen shows **Check for changes** when `/api/health` says
+`regressionChangeCheck: true` (additive) and the suite has cases. It sends the tab's Connect org id
+(the home view's, or the one this tab saved) and fills a report in place under the toolbar: a summary
+line (counts per verdict, the org and its release, "nothing was run"), the release note, then one row
+per case, worst first, each with its findings. Existing classes only (`.panel`, `.hrow*`,
+`.case-badge`/`.badge-*`); no `.hidden`, no `showView` (`tests/appJsChangeCheck.test.ts`). Tried on a
+real saved Salesforce suite: three cases saved before step 1 report "No snapshot", nothing ran.
+
+**Connect the org the cases need, then retry (2026-11-02).** A replay or change check refused for a
+missing, expired or wrong-org connection now answers with `orgUrl` (additive): the address of the org
+the cases sign in to. On the Suite screen the page shows that org and a **Connect org** button, opens
+Salesforce's own sign-in for THAT org (the same popup as the home view, `openOrgSignIn`), and when the
+popup reports success it retries what was clicked, once; a wrong org is refused again and asks again.
+Elsewhere (a case's own page) the old toast stays. The change check now verifies the connection for
+every case that signs in through the org (`signsInThroughOrg`: a navigate to `${env:SF_FRONTDOOR_URL}`),
+not only for cases with a snapshot. Password-login and ordinary cases are unchanged: the replay's own
+login prompt already asks again. Tried in the browser on the real "Lead create and required fields"
+suite: both Check for changes and Run all show the prompt for `ruby-data-2200-dev-ed`, nothing runs;
+a simulated success retried exactly once.
+
+**Step 3, safe repair (built 2026-11-02).** Behind `REGRESSION_REPAIR_ENABLED`. After a replay has run
+every case unchanged, `proposeRepairs` (replay.ts) gives each failed case a verdict from its failing
+step's ACTION (`failureKindFor`): a click/fill/select/press is "element changed" and is repaired; a
+failed check is "result changed", reported as a possible bug and never repaired; a navigate or network
+failure is "site unreachable". When 3+ cases and more than half fail with "element changed" at once,
+nothing is repaired: the app or the login changed. `attemptRepair` walks the steps before the broken
+one in a fresh browser to the page the test reached and tries, in order: (1) the Salesforce field
+binding remembered in step 1B, at the label the org gives that API name NOW (read-only API), and
+(2) the same role with the exact same name — each only when exactly one element matches; two matches
+is no repair. If the saved locator still finds the same element, the page was slow: not a repair. Only
+that step's locator changes (`withNewLocator`: value, frame, lookup and field kept). A later `hidden`
+check on the same element sends it to a person, unverified. Otherwise the whole test runs again from
+step 1 with the change; only a pass is proposed, and on Salesforce the record it saved is read back
+through the API (`readBackRecord`: comparable text fields bound in step 1B, run tokens resolved from
+the spec's own annotation) and must hold what the test typed. The proposal (`cases/<case>/repair/
+proposal.json`, plus the IR it verified) names the library case and the version it applies to; the
+case's status stays "failed" and the run page shows "Healed, needs review" (never green). Proven in
+real Chromium (`tests/regressionRepair.test.ts`, 12): a changed attribute repaired; two matches
+refused; a slow page refused; a later hidden check escalated; a repair that still fails later not
+proposed; a Salesforce rename repaired through the field binding; the replay attaches the proposal.
+Five rules each fail a test when removed. Not built: approving (step 4), pinned hand-edited steps, and
+explaining a mass failure by a single org change from step 2.
+
+**Step 4, approve (built 2026-11-02).** Same flag, `REGRESSION_REPAIR_ENABLED` (off: both routes 404).
+Two NEW routes, `POST /api/runs/:runId/cases/:caseId/repair/approve` and `.../repair/reject`, tester
+role on the run. Approve takes only a proposal in state "proposed" and saves the IR the re-run verified
+as the NEXT VERSION of the same library case through the ordinary `updateCase` path, with
+`expectedVersion` = the version the replay ran (`fromVersion` on the proposal): a case edited since
+the run answers 409 with the newer version, never overwritten, and approving twice is a 409. The
+version note reads "Repair approved: step <id> ..."; the proposal and the run's summary record who
+decided, when, and the new version. Reject takes "proposed" or "needs-person", leaves the case
+untouched, and is remembered per case as step id + the new element's role and name
+(`runs/_cache/repair-decisions/<caseId>.json`): `attemptRepair` never proposes that exact repair again,
+but a different element for the same step can still be proposed. A step a person edits by hand in the
+step editor is PINNED (`IR.meta.pinnedSteps`, written by `prepareEdit` only while the flag is on, kept
+by an approval, stripped from model output in `toIR`): a pinned step is never repaired automatically,
+the replay reports it as "edited by hand" instead. The run page shows Approve (proposed only) and
+Reject buttons and a link to the passing re-run's screenshot; the buttons replace the notice in place.
+Rejected: approving without a version check (a stale run could silently undo a person's later edit),
+and approving a "needs-person" proposal (it was never verified). Proven: route tests in
+`tests/multiTenancy.test.ts` (approve makes v2 of the same case, stale 409, approve twice 409, viewer
+403, reject remembered, no proposal or flag off 404, an edit pins its step, org B gets 404 on org A's
+run); `tests/regressionRepair.test.ts` (a pinned step and a rejected repair are not proposed; the
+proposal on disk names the case and version); the UI in `tests/appJsChangeCheck.test.ts`. Tried in the
+browser on a demo replay run: the buttons show, and the first click exposed a real bug (the proposal
+did not carry its case id, so approve refused) now fixed and covered by test (f). A real approve
+against the hosted case library was not tried. Rejections live under `runs/`, so where `runs/` is not
+kept (TD-181) a rejected repair can be proposed again after a restart.
+
+## D-77. A field that takes several values gets one `select` per value, added and confirmed by structure at run time
+
+*Written as D-74 on 2026-11-04; renumbered D-77 on 2026-11-06 when `main` was merged in (`main` had
+taken D-73 to D-75 meanwhile; this branch's D-73 regression record became D-76, D-75 became D-78).*
+
+**Context.** The user (2026-11-04): "i am not able to check the screen flows with multiple value". A
+headless check against SLDS-shaped markup (`tests/multiValueControls.test.ts`; no saved run holds a dual
+listbox or a checkbox group) showed three defects and two in the test data, all in `TECH_DEBT.md` TD-188:
+a `select` on a Lightning dual listbox ("Available" -> "Selected", what a Screen Flow's multi-select
+picklist and a record form's multi-select picklist field render) clicked the option, which only
+HIGHLIGHTS it, and passed; a `check` on an SLDS checkbox timed out (the real input is a clipped 1px box
+and the painted box in its label takes the click — Playwright counts it visible, then retries "label
+intercepts pointer events"); a radio `click` got there only through `safeClick`'s forced-click fallback
+(~7 s), and the grounding replay's plain click has no fallback; on record forms the test-data pass
+snapped "A;B" to ONE option and filled a required multi-select picklist as a text box. Several fields on
+one screen, and several screens on one URL (D-52), already worked.
+
+**Decision.** Behind `MULTI_VALUE_CONTROLS_ENABLED` (default off):
+- **One value per step.** "Red and Blue in Interests" is two `select` steps. The IR, the step editor's
+  sentence format (two copies, `stepText.ts` and `app.js`) and every consumer of a step stay as they are.
+- **Decided at run time from structure**, as `choose()` already decides native-vs-custom (TD-70):
+  `chooseMulti` (spec) / `chooseMultiLive` (replay) look at the resolved element — two
+  `aria-multiselectable` listboxes under the field's group or around the targeted list; a fieldset or
+  `role=group/radiogroup` (or a wrapper holding 2+ boxes) of checkboxes/radios; a `<select multiple>` —
+  and otherwise call the ordinary `choose()` untouched. Dual listbox: click the option in the first list,
+  click the first button between the two lists (by POSITION; its label is in the org's language), then
+  confirm the option sits in the second list or fail saying what it holds. Already chosen: nothing to do.
+- **`checkBox`** for `check`, a radio `click`, and a checkbox group's value: already checked = done; a box
+  whose centre receives the click (`elementFromPoint`) is checked as before; otherwise its label is
+  clicked (the `for=` label, the label around it, or the one label beside it in a parent with one input);
+  then the box is VERIFIED checked.
+- **One source for spec and replay** (`checkBoxJs` / `chooseMultiJs` in `targetResolver.ts`, emitted into
+  the spec and built with `new Function` for the replay): TD-07 is what restating it by hand produces.
+- **Grounding (TD-125 part B):** on a Salesforce screen, a `select` whose value names one CHECKBOX of a
+  group the model called by its legend becomes a `check` on that box (a click would toggle it).
+- **Test data:** a fill/select on a `MultiPicklist` field becomes one select per option, split on `;`/`,`
+  only when every part is (or snaps to) one of THAT field's options; the single-picklist snap skips the
+  field; a required one with no step selects its first option on the discovered group.
+- **Prompt:** one line APPENDED to the Salesforce IR guidance — one `select` per value, never "A;B" —
+  named with its backing check; appended rather than edited in, so flag-off prompts stay byte-identical.
+
+**Rejected.** *A `values: string[]` on the step* — changes the editor's sentence format in both copies
+and the parse-onto-original contract for one feature. *`check({ force: true })`* — it fires at the hidden
+input's coordinates and works only because the label happens to sit there; it would also "check" a box
+a person cannot reach. *Splitting "A;B" inside `chooseMulti`* — that parses model text at run time;
+the test data does it against the org model's options instead, and elsewhere the step fails naming the
+options. *Running one flow with several data sets* — not built: asked the user whether "multiple value"
+means that (2026-11-04), no answer yet.
+
+**Known limits.** Verified on synthetic SLDS-shaped markup only, never a live org. Grounding does not
+check that a dual-listbox value is an option (the run fails naming what is offered). The first of the two
+lists is taken as the source. See TD-188.
+
+## D-78. A record-triggered flow's field updates are checked on the SAVED record, through the org connection, when the case's own values meet its conditions
+
+**Context.** The user (2026-11-04): "how can i check for a record triggered flow ... with fast field update
+how will it check it". A before-save flow ("fast field update") has no screen, no toast and no page: the
+only evidence it ran is a field value on the saved record. The org model already read each active flow
+and described it in lines ("only when Rating = Hot", "sets Tier = Gold"), and the prompts asked the model
+to write a case that meets the conditions and checks the field — both lines said "(No deterministic
+check.)" (TD-189).
+
+**Decision.** Behind `SALESFORCE_FLOW_CHECKS_ENABLED` (default off), on org-connection runs:
+- **The flow as data** (`flowFieldUpdates`, read from the metadata the org model already fetches):
+  object API name, before- or after-save, start conditions (field, operator, fixed value) and logic, and
+  every assignment to `$Record.<Field>` (before-save) or "update the triggering record" input (after-save)
+  with a FIXED value, walking `connector` from the start element through assignments, updates and other
+  records' lookups/creates/deletes, stopping at the first decision. Anything else — behind a decision,
+  from a variable or formula, "Add" to its own value, a related record's field — goes in `skipped`.
+- **When to check** (`flowFieldChecks`, an IR pass before grounding, after the other Salesforce passes):
+  per create form a case saves (navigate to `/lightning/o/<Obj>/new` … Save … "was created"), each flow
+  on that object that runs on create is judged against the values the case itself typed into that form
+  (org field by label -> literal), three-valued. True: one `assert` per field, `text_equals` the flow's
+  value, `target: { field, recordField: { object, n, api } }`, inserted right after the save's outcome.
+  False: nothing ("does not run for this case"). Undecided — a condition on a field the case does not set
+  (its default is invisible here), a run-token value, `IsChanged`, a formula start, unreadable custom
+  logic, a picklist "not equal" (label vs API value): nothing, and the log names the field.
+- **How it is read** (`sfSavedField` in the spec): the record id from the same create-form tracker as
+  `sfOpenRecord`; the instance and token from `SF_FRONTDOOR_URL` (its `sid`), already in the child's env
+  for the sign-in; `GET /services/data/v62.0/sobjects/<Obj>/<Id>?fields=<Api>` with Node's own `fetch`
+  (never a Playwright request, so no trace records it), token in a header only, never in an error;
+  polled to the assertion timeout; values compared as the API spells them (numbers as numbers,
+  booleans by case, multi-select parts in any order). `SF_API_VERSION` moved to `salesforceFrontdoor.ts`
+  so the generator does not import the server.
+- **Prompt:** on org-connection runs, one line APPENDED to the case-writer's guidance: give the fields a
+  flow's conditions read fixed values (never `{{uid}}`), so the pass can decide; break one to show the
+  flow not running.
+
+**Rejected.** *Check the record page (`sfFieldValue`)* — depends on the layout showing the field;
+a checkbox has no text; a picklist shows its label, the flow sets its API value. *A server-side check
+after the spec, like the Phase D cleanup* — the verdict would live outside `results.json`, which the
+report, failure analysis and heal all read, and the spec run in CI would check nothing. *Evaluate the
+conditions at run time on the saved record* — a case that missed the conditions would then pass with the
+check silently skipped; deciding from the case's own inputs at compile time makes "not checked" visible
+in the log instead. *Leave it to the prompt* — the status quo, no check behind it.
+
+**Known limits.** Create only (an edit's record and an update-triggered flow are not checked). A create
+form opened by a click ("New") stops the pass for the rest of the case, since the run counts it and
+this pass cannot. The case must show the save succeeded ("was created", which `strengthenSaveOutcome`
+adds under HOLLOW_PASS_GUARDS). With the flag on, the org model holds more, so the org setup hash changes
+once and a saved scan made with it off is not reused. Never run against a real org. See TD-189, TD-190.

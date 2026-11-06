@@ -8,6 +8,7 @@ import { buildSuiteSummary, computeCaseStatus, type CaseRunResult } from "./suit
 import { store } from "../runStore.js";
 import type { IR } from "../schema/ir.js";
 import type { OnEvent, StageEvent, StageName } from "../orchestrator.js";
+import { attemptRepair, failureDetailOf, failureKindFor, isMassFailure, regressionRepairEnabled } from "./regressionRepair.js";
 
 /**
  * The replay path — implentationplan.md Step 5.3.
@@ -37,6 +38,8 @@ import type { OnEvent, StageEvent, StageName } from "../orchestrator.js";
 export interface ReplayCase {
   /** The library id (test_cases.id) — used to record the outcome afterwards, not by the runner. */
   id: string;
+  /** D-76: the saved version that runs, so a repair proposal names what it applies to. */
+  version?: number;
   title: string;
   ir: IR;
   /**
@@ -296,6 +299,9 @@ export async function runReplay(
       }
     }
 
+    // D-76 step 3: the safe repair, after every case has run unchanged, so the whole suite is seen.
+    if (regressionRepairEnabled()) await proposeRepairs(cases, results, runDir, creds, emit);
+
     const summary = buildSuiteSummary(results, runDir);
     save("07-suite-summary.json", summary);
     emit("suite", "completed", { summary });
@@ -322,5 +328,50 @@ export async function runReplay(
     try { save("08-llm-usage.json", ZERO_USAGE); } catch { /* best effort */ }
     emit("error", "failed", { llmUsage: ZERO_USAGE }, err?.message ?? String(err));
     throw err;
+  }
+}
+
+/**
+ * D-76 step 3: the safe repair, run after every case of the replay has run unchanged. Each failed case
+ * gets a verdict from its failing step: only "element changed" (a click, fill, select or press could
+ * not find or use its element) is repaired; a failed check is reported as a possible bug and left
+ * alone. When most of the suite failed at once, nothing is repaired: the app or the login changed.
+ * Proposals are attached to the results (and written beside each case); the saved cases are untouched.
+ */
+async function proposeRepairs(
+  cases: ReplayCase[], results: CaseRunResult[], runDir: string, creds: Credentials | undefined,
+  emit: (stage: StageName, status: StageEvent["status"], data?: unknown, error?: string) => void,
+): Promise<void> {
+  const failed = results.map((r, i) => ({ r, c: cases[i], i })).filter((x) => x.r.status === "failed" && x.c);
+  if (!failed.length) return;
+  const verdicts = failed.map((x) => ({ ...x, v: failureKindFor(x.c.ir, failureDetailOf(path.join(runDir, "cases", x.r.caseId))) }));
+  const elementChanged = verdicts.filter((x) => x.v.kind === "element-changed" && !x.c.scriptOverride);
+  const mass = isMassFailure(results.length, elementChanged.length);
+
+  for (const x of verdicts) {
+    const libraryRef = { caseId: x.c.id, ...(typeof x.c.version === "number" ? { fromVersion: x.c.version } : {}) };
+    if (x.v.kind !== "element-changed" || x.c.scriptOverride || mass) {
+      x.r.repair = {
+        state: "no-repair", kind: x.v.kind, ...libraryRef,
+        ...(x.v.stepId ? { stepId: x.v.stepId } : {}),
+        reason: x.c.scriptOverride ? "This case runs a hand-written script, which a repair never changes."
+          : mass && x.v.kind === "element-changed" ? `Most of the suite failed at once (${elementChanged.length} of ${results.length} cases could not find an element): the app or the login changed, not one locator. Nothing was repaired.`
+          : x.v.reason,
+      };
+      continue;
+    }
+    // Step 4: a step a person edited by hand is never repaired automatically.
+    if (x.v.stepId && x.c.ir.meta.pinnedSteps?.includes(x.v.stepId)) {
+      x.r.repair = {
+        state: "no-repair", kind: x.v.kind, stepId: x.v.stepId, ...libraryRef,
+        reason: `A person edited step ${x.v.stepId} by hand, so it is never repaired automatically. Edit it again if the page changed.`,
+      };
+      continue;
+    }
+    emit("suite", "started", { caseId: x.r.caseId, title: x.r.title, repair: "looking" });
+    const proposal = await attemptRepair({ ir: x.c.ir, stepIndex: x.v.stepIndex!, creds, caseDir: path.join(runDir, "cases", x.r.caseId), caseId: x.c.id,
+      ...(typeof x.c.version === "number" ? { fromVersion: x.c.version } : {}) });
+    x.r.repair = { ...proposal, ...libraryRef };
+    emit("suite", "completed", { caseId: x.r.caseId, title: x.r.title, status: x.r.status, repair: x.r.repair.state });
   }
 }

@@ -14,6 +14,7 @@ import { currentRunTargetApp } from "../runTarget.js";
 import { requestValues, stepsMissingValues } from "./requestValues.js";
 import { hollowPassGuardsEnabled, isPositiveCase, describeMarkers } from "./hollowPassGuards.js";
 import { applyTestData, testDataEnabled } from "./testData.js";
+import { flowChecksEnabled, flowFieldChecks } from "./salesforceFlowChecks.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
@@ -30,7 +31,7 @@ import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "
 import { llmCacheDimension } from "../llm/llmContext.js";
 // The generator's OWN rule for when a step becomes `field(page, hint, …)` and which slot supplies
 // the hint — imported, never restated, so the guard below cannot drift from what is emitted (TD-07).
-import { fieldHint, isFieldAction } from "./targetResolver.js";
+import { fieldHint, isFieldAction, multiValueEnabled } from "./targetResolver.js";
 
 /** Return type for toIR that includes the updated AppModel after live-extension. */
 export interface IRResult {
@@ -1515,7 +1516,12 @@ export function groundingError(
     // meant is a guess, so the step is rejected naming them (TD-126).
     if (!matched && screenPage && step.action === "select" && step.value) {
       const want = norm(step.value);
-      const pressable = elements.filter((e) => (norm(e.role) === "button" || norm(e.role) === "radio")
+      // D-77 (MULTI_VALUE_CONTROLS_ENABLED): a CHECKBOX group too ("Channels": "Email" / "SMS") — a
+      // Screen Flow's checkbox group is a fieldset no role names, so the select found nothing and was
+      // rejected. One select per value becomes a `check` on that box (a click would toggle it).
+      const multi = multiValueEnabled();
+      const pressable = elements.filter((e) => (norm(e.role) === "button" || norm(e.role) === "radio"
+        || (multi && norm(e.role) === "checkbox"))
         && e.visible !== false && e.enabled !== false && norm(e.name));
       const exact = pressable.filter((e) => norm(e.name) === want);
       const options = exact.length ? exact
@@ -1531,10 +1537,10 @@ export function groundingError(
       }
       if (options.length === 1) {
         matched = options[0];
-        step.action = "click";
+        step.action = norm(matched.role) === "checkbox" ? "check" : "click";
         delete step.value;
         delete t.nth; // counted the dropdowns the model imagined, not these buttons
-        console.log(`[ir] step ${step.id}: select on a button group -> click ${matched.role} "${matched.name}"`);
+        console.log(`[ir] step ${step.id}: select on a button group -> ${step.action} ${matched.role} "${matched.name}"`);
       }
     }
     // TD-152: a click on a HEADING when the same page has a LINK of exactly that name means the link —
@@ -2390,7 +2396,12 @@ Example — handling duplicate selectors with nth:
     // 8: a select the form names in its own words is matched to its lookup (lookupNamedFor).
     // 9: date picker clicks dropped; the date is typed.
     // 10: "every field": a mid-form check on a checkbox ticks it; on another control it goes.
-    ...(testDataEnabled() ? ["test-data:10"] : []),
+    // 11: refactored-code's "every field" check also reads "filed"/"flied" and a trailing "each and every" (TD-179), merged in.
+    ...(testDataEnabled() ? ["test-data:11"] : []),
+    // D-77/D-78: the multi-value and flow-check passes change the IR; an IR compiled with either off
+    // must never be served with it on, or the reverse. Absent when off: every key unchanged.
+    ...(multiValueEnabled() ? ["multi-value:1"] : []),
+    ...(flowChecksEnabled() && currentRunTargetApp() === "salesforce" ? ["sf-flow-checks:1"] : []),
     // D-63: an IR compiled on a frontdoor run starts with the env-referenced login; it must never be
     // served to a password run on the same org, nor the reverse. Absent on every other run.
     ...(currentFrontdoor() ? [`sf-frontdoor:${currentFrontdoor()!.instanceHost}`] : []),
@@ -2908,6 +2919,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     parsed.data.meta.baseUrl = origin;
     // D-65: only this function decides whether the spec runs the fixed Salesforce login.
     delete parsed.data.meta.fixedLogin;
+    // D-76: only saving a case writes what it remembers; a model-written one is dropped.
+    delete parsed.data.meta.remembered;
+    delete parsed.data.meta.pinnedSteps;
 
     // Before grounding: the grounding replays type these values too (Session 102). The model's own
     // steps are kept aside first: the fill policy removes optional fields ON PURPOSE, and coverage
@@ -2927,6 +2941,12 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       for (const r of valuesFromRequest(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of checksOnCreatedRecord(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const f of fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt)) console.log(`[ir] ${f}`);
+    }
+    // D-78: what a record-triggered flow sets on the record a case saves, checked on the SAVED record
+    // when — and only when — the case's own inputs meet the flow's start conditions. After the passes
+    // above, so it sees their "was created" outcome. Flag off: never called, the IR is unchanged.
+    if (flowChecksEnabled() && currentRunTargetApp() === "salesforce") {
+      for (const f of flowFieldChecks(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
     }
     // Data safety, not a flag: grounding replays these steps in the real org, so a delete of a
     // record this case did not create is refused here, before any replay can carry it out.

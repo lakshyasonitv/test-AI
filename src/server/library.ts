@@ -3,6 +3,7 @@ import path from "node:path";
 import { getServiceClient } from "../db.js";
 import { IR } from "../schema/ir.js";
 import { generateSpec } from "../stages/generator.js";
+import { regressionMemoryEnabled, rememberForSave } from "../stages/regressionMemory.js";
 import { AccessError, roleAtLeast, visibleProjectIds, type Role } from "./authz.js";
 import { assertProjectVisible } from "./projects.js";
 
@@ -619,8 +620,8 @@ export function irFileForRunCase(runId: string, caseId: string, root = "runs"): 
 export async function saveCaseFromRun(
   userId: string, orgId: string, role: Role,
   runId: string, caseId: string, projectId: string,
-  opts: { title?: string; suiteId?: string } = {},
-): Promise<CaseRow> {
+  opts: { title?: string; suiteId?: string; acceptHealed?: boolean } = {},
+): Promise<CaseRow & { warnings?: string[] }> {
   await assertProjectVisible(userId, orgId, role, projectId);
 
   const file = irFileForRunCase(runId, caseId);
@@ -633,7 +634,17 @@ export async function saveCaseFromRun(
   } catch (err) {
     throw new AccessError(500, `could not read that run's test plan: ${(err as Error)?.message}`);
   }
-  const ir = parseIr(raw, "that run's test plan");
+  let ir = parseIr(raw, "that run's test plan");
+
+  // D-76 (REGRESSION_MEMORY_ENABLED): the case also remembers what it means, the org's setup for the
+  // objects it touches and the values that cannot be replayed; a healed case needs a person's word.
+  // Off: exactly the IR the run left, as before.
+  let warnings: string[] = [];
+  if (regressionMemoryEnabled()) {
+    const remembered = rememberForSave({ runsRoot: "runs", runId, caseId, ir, irFile: file, acceptHealed: opts.acceptHealed });
+    ir = remembered.ir;
+    warnings = remembered.warnings;
+  }
 
   const title = (opts.title ?? ir.meta.title ?? "Untitled case").trim() || "Untitled case";
   const client = requireClient();
@@ -670,7 +681,8 @@ export async function saveCaseFromRun(
   if (opts.suiteId) {
     await addCaseToSuite(userId, orgId, role, opts.suiteId, data.id);
   }
-  return toCaseRow(data);
+  // `warnings` is additive (rule 1) and only ever present with REGRESSION_MEMORY_ENABLED on.
+  return warnings.length ? { ...toCaseRow(data), warnings } : toCaseRow(data);
 }
 
 /**
@@ -953,7 +965,7 @@ export async function recordCaseOutcome(caseId: string, status: string): Promise
 export async function loadCasesForReplay(
   userId: string, orgId: string, role: Role,
   sel: { suiteId?: string; caseIds?: string[] },
-): Promise<{ id: string; title: string; ir: IR; projectId: string; scriptOverride?: string }[]> {
+): Promise<{ id: string; title: string; ir: IR; projectId: string; scriptOverride?: string; version?: number }[]> {
   const client = requireClient();
 
   let ids: string[];
@@ -976,11 +988,11 @@ export async function loadCasesForReplay(
   if (ids.length === 0) throw new AccessError(400, "no cases selected to run");
 
   const { data, error } = await client
-    .from("test_cases").select("id, project_id, title, ir, script_override, script_overridden").in("id", ids);
+    .from("test_cases").select("id, project_id, title, ir, script_override, script_overridden, current_version").in("id", ids);
   if (error) throw new AccessError(500, `could not load cases: ${error.message}`);
   const rows = (data ?? []) as {
     id: string; project_id: string; title: string; ir: unknown;
-    script_override?: string | null; script_overridden?: boolean;
+    script_override?: string | null; script_overridden?: boolean; current_version?: number;
   }[];
   if (rows.length === 0) throw new AccessError(404, "none of those cases exist");
 
@@ -999,6 +1011,8 @@ export async function loadCasesForReplay(
       title: r.title,
       projectId: r.project_id,
       ir: parseIr(r.ir, `case "${r.title}"`),
+      // D-76: the version that ran, so a repair proposal (step 4) is approved against it and no other.
+      ...(typeof r.current_version === "number" ? { version: r.current_version } : {}),
       // Only when the explicit flag is set — never inferred from the column being non-null, so a
       // leftover script from a removed override can never quietly come back to life.
       ...(scriptOverrideEnabled() && r.script_overridden === true
