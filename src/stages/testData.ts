@@ -33,6 +33,8 @@ export function testDataEnabled(): boolean {
 
 /** Case categories whose point is a bad or missing value: their fields are never rewritten. */
 const DATA_IS_THE_TEST = new Set(["invalid-input", "empty-boundary"]);
+/** Roles of a form's own input controls. */
+const FORM_CONTROL_ROLE = /^(textbox|combobox|spinbutton|checkbox|searchbox|listbox|radiogroup)$/;
 
 type OrgObject = SalesforceOrgModel["objects"][number];
 type OrgField = OrgObject["fields"][number];
@@ -136,6 +138,21 @@ function snapPicklist(o: OrgObject, value: string, field?: OrgField): string | u
   return inside.length && (inside.length === 1 || lineKey(inside[0]).length > lineKey(inside[1]).length) ? inside[0] : undefined;
 }
 
+/**
+ * A value that is no option of its picklist and resembles none (the model's "Region A" for TB Region
+ * North/South, run 2026-11-03T04-29-50-846Z-c820d0e1): the field's first option, or for a controlling
+ * picklist the first one a dependent field offers values under, so fixDependentPicklists can then
+ * fix the dependent step. A value the request names is kept: then the missing option is the test.
+ */
+function inventedOption(o: OrgObject, value: string, field: OrgField | undefined, request: string): string | undefined {
+  const options = field?.picklist ?? [];
+  // A dependent field's value is fixed by fixDependentPicklists, under its controlling value.
+  if (!options.length || field!.controlledBy || options.some((p) => lineKey(p) === lineKey(value)) || mentions(request, value)) return undefined;
+  const offered = new Set(o.fields.filter((d) => d.controlledBy === field!.api && d.validFor)
+    .flatMap((d) => Object.values(d.validFor!).flat()));
+  return options.find((p) => offered.has(p)) ?? options[0];
+}
+
 /** The names a lookup field goes by on the form: "<X> ID" in the metadata is "<X> Name" or "<X>"
  *  on the page (Contact's "Account ID" is the form's "Account Name"). */
 function formNamesOf(f: OrgField): string[] {
@@ -144,12 +161,24 @@ function formNamesOf(f: OrgField): string[] {
   return [f.label, `${base} Name`, base];
 }
 
+/** A lookup the form labels in its own words: Opportunity's "Primary Campaign Source" is the field
+ *  "Campaign ID" (run 2026-11-03T05-42-52-539Z-8f96a6d6). The one lookup whose target object the
+ *  control's name contains as a word; none when two lookups could be meant. */
+function lookupNamedFor(o: OrgObject, name: string): OrgField | undefined {
+  const k = ` ${lineKey(name)} `;
+  const hits = o.fields.filter((f) => f.lookup?.split("/").some((obj) => lineKey(obj) && k.includes(` ${lineKey(obj)} `)));
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
 /** The org field a form control names. Exported for salesforceFlowChecks (the same mapping). */
 export function fieldOf(o: OrgObject, name: string): OrgField | undefined {
   const k = lineKey(name);
   if (!k) return undefined;
   return o.fields.find((f) => k === lineKey(f.label) || k === lineKey(`${o.label} ${f.label}`))
-    ?? o.fields.find((f) => formNamesOf(f).some((n) => lineKey(n) === k));
+    ?? o.fields.find((f) => formNamesOf(f).some((n) => lineKey(n) === k))
+    // The form says "Phone" where the metadata label is "Account Phone" (also Fax, Type, Rating,
+    // Description on Account): without this their values were never fixed (run 2026-11-03T05-07-28).
+    ?? o.fields.find((f) => lineKey(f.label) === lineKey(`${o.label} ${name}`));
 }
 
 /** The label the create form actually shows for a field, from the discovered page; the first form
@@ -303,6 +332,11 @@ function fixDependentPicklists(
       } else if (f.validFor[s.value]?.length) {
         notes.push(`${cs.id}: ${c.label} "${cs.value}" does not offer ${f.label} "${s.value}" -> "${f.validFor[s.value][0]}"`);
         cs.value = f.validFor[s.value][0];
+      } else if (offered && !mentions(request, s.value)) {
+        // Not an option of the field under ANY controlling value (the model's "Territory 1"): the
+        // first value offered under the controlling one, as for a dependent step added above.
+        notes.push(`${s.id}: "${s.value}" is no ${f.label} option -> "${offered}" (offered under ${c.label} "${cs.value}")`);
+        s.value = offered;
       }
     }
     if (ci > i) {
@@ -379,6 +413,19 @@ function applyToSection(
     ir.steps.splice(i, 1);
     to--;
   }
+  // Every case: a date is typed, never picked from the calendar. "Select a date for Close Date" then
+  // "Today" opens a popup no screen captured (run 2026-11-03T08-32-47-277Z-249e547b truncated there);
+  // the clicks go, with the day pick and waits after them, and a required date is then filled below.
+  for (let i = to - 1; i >= from; i--) {
+    const s = ir.steps[i];
+    if (s.action !== "click" || !/^select a date\b/i.test(s.target?.name ?? "")) continue;
+    let end = i + 1;
+    while (end < to && (ir.steps[end].action === "wait"
+      || (ir.steps[end].action === "click" && /^(today|\d{1,2})$/i.test(ir.steps[end].target?.name?.trim() ?? "")))) end++;
+    notes.push(`${s.id}: dropped the date picker clicks — the date is typed instead`);
+    ir.steps.splice(i, end - i);
+    to -= end - i;
+  }
   // D-77 (MULTI_VALUE_CONTROLS_ENABLED), every case, BEFORE the snap below: a multi-select picklist
   // takes several options, one select step each. Off: "Red;Blue" reached the snap, which kept only
   // the longer option it found inside ("Blue") and dropped the other without a word.
@@ -387,10 +434,11 @@ function applyToSection(
   // means ("Working" for "Working - Contacted", run 2026-10-24T20-37-00-424Z-410671c2).
   for (const s of steps()) {
     if (s.action !== "select" || !s.value || isEnvValueRef(s.value)) continue;
+    const f = fieldFor(nameOf(s));
     // D-77: a multi-select value was split and snapped part by part above; snapping what is left
     // ("A;not-an-option") to ONE option is the silent drop that pass exists to stop.
-    if (multiValueEnabled() && fieldFor(nameOf(s))?.type === "MultiPicklist") continue;
-    const snapped = snapPicklist(o, s.value, fieldFor(nameOf(s)));
+    if (multiValueEnabled() && f?.type === "MultiPicklist") continue;
+    const snapped = snapPicklist(o, s.value, f) ?? inventedOption(o, s.value, f, request);
     if (snapped) { notes.push(`${s.id}: "${s.value}" -> "${snapped}" (the org's picklist option)`); s.value = snapped; }
   }
   // Every case but those whose point is a bad or missing value: a lookup holds a RECORD, picked from
@@ -401,7 +449,7 @@ function applyToSection(
   // first record the org offers.
   if (!DATA_IS_THE_TEST.has(testCase.category ?? "")) {
     for (const s of steps()) {
-      const f = fieldFor(nameOf(s));
+      const f = fieldFor(nameOf(s)) ?? (s.action === "select" ? lookupNamedFor(o, nameOf(s)) : undefined);
       if (!f?.lookup || (s.action !== "fill" && s.action !== "select") || s.target?.lookup) continue;
       s.action = "select";
       s.target = { ...s.target, role: "combobox", lookup: true };
@@ -425,7 +473,30 @@ function applyToSection(
   const quoted = (v: string | undefined) => !!v?.trim() && asserted.includes(v.trim());
   // "Each and every field": every field the case fills is wanted; values are still fixed below.
   const everyField = asksForEveryField(request);
-  const wanted = (f: OrgField, s: Step) => everyField || !!f.required || ruleMentions(o, f) || mentions(request, f.label)
+  // "Each and every field": a check on one of the form's own controls before Save is a field the
+  // model skipped, not a check the request asked for ("Private" asserted hidden, run
+  // 2026-11-03T10-42-46-258Z-6b58f976, failed there). A checkbox is ticked; any other goes.
+  if (everyField && positive) {
+    for (let i = from; i < to; i++) {
+      const s = ir.steps[i];
+      if (s.action === "click" && /\bsave\b/i.test(s.target?.name ?? "")) break;
+      if (s.action !== "assert" || !FORM_CONTROL_ROLE.test(s.target?.role ?? "")) continue;
+      if (s.target!.role === "checkbox") {
+        notes.push(`${s.id}: a check on the "${nameOf(s)}" checkbox -> ticks it (every field)`);
+        ir.steps[i] = { id: s.id, action: "check", target: s.target };
+        continue;
+      }
+      notes.push(`${s.id}: dropped a check on the "${nameOf(s)}" field mid-form (every field)`);
+      ir.steps.splice(i--, 1);
+      to--;
+    }
+  }
+  // A step with no value fills nothing (the model leaving a field blank on purpose): not kept for this.
+  // Nor does "None" or "N/A": the model's way of saying the same (Primary Campaign Source "None", run
+  // 2026-11-03T05-36-38-368Z-379eb1ea, which then found no such option).
+  const blank = (v: string) => /^(-+\s*)?(none|n\/?a|null|blank|empty)(\s*-+)?$/i.test(v.trim());
+  const fills = (s: Step) => s.value?.trim() ? !blank(s.value) : !!s.target?.lookup;
+  const wanted = (f: OrgField, s: Step) => (everyField && fills(s)) || !!f.required || ruleMentions(o, f) || mentions(request, f.label)
     || formNamesOf(f).some((nm) => mentions(request, nm)) || mentions(request, nameOf(s))
     || (!!s.value && !hasRunToken(s.value) && mentions(request, s.value)) || quoted(s.value);
 
@@ -440,7 +511,7 @@ function applyToSection(
     // one: the model keeps the required fields first and only the first 40 (run
     // 2026-10-25T05-01-36-627Z-b0d6a138 kept an unrequested Phone that way).
     const keep = f ? wanted(f, s)
-      : everyField || mentions(request, nameOf(s)) || (!!s.value && !hasRunToken(s.value) && mentions(request, s.value)) || quoted(s.value);
+      : (everyField && fills(s)) || mentions(request, nameOf(s)) || (!!s.value && !hasRunToken(s.value) && mentions(request, s.value)) || quoted(s.value);
     if (keep) continue;
     notes.push(`${s.id}: dropped "${nameOf(s)}" — optional, no rule reads it and the request does not name it`);
     ir.steps.splice(i, 1);
@@ -464,6 +535,14 @@ function applyToSection(
     } else if (f.type === "Phone" && !hasRunToken(s.value) && !mentions(request, s.value)) {
       notes.push(`${s.id}: "${f.label}" -> a phone unique per run`);
       s.value = PHONE_TOKEN;
+    } else if (f.type === "Url" && !hasRunToken(s.value) && !mentions(request, s.value)) {
+      // Duplicate rules match on website and address too: an earlier run's Account with the same
+      // ones raised "Similar Records Exist" (run 2026-11-03T05-07-28-369Z-388aa153).
+      notes.push(`${s.id}: "${f.label}" -> a website unique per run`);
+      s.value = `https://${UNIQUE_TOKEN}.example.com`;
+    } else if (/\b(street|city)\b/i.test(f.label) && !hasRunToken(s.value) && !mentions(request, s.value)) {
+      notes.push(`${s.id}: "${f.label}" made unique per run`);
+      s.value = `${s.value} ${UNIQUE_TOKEN}`;
     } else if (f.type === "Date" && !hasRunToken(s.value) && !mentions(request, s.value)) {
       notes.push(`${s.id}: "${f.label}" -> a date computed when the test runs`);
       s.value = dateToken(30, locale);

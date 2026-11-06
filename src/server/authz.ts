@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { getServiceClient, isDbEnabled, DEFAULT_ORG_ID, fetchRunOrgIds, fetchRunScopes } from "../db.js";
+import { getServiceClient, isDbEnabled, DEFAULT_ORG_ID, fetchRunScopes } from "../db.js";
 import { LOCAL_USER_ID, isAuthEnabled } from "./auth.js";
 
 /**
@@ -188,12 +188,6 @@ export async function assertOrgAccess(
     throw new AccessError(403, `this action requires the ${minRole} role or higher`);
   }
   return found.role;
-}
-
-/** The organisation that owns a run, or null when the database has never heard of it. */
-export async function orgForRun(runId: string): Promise<string | null> {
-  const map = await fetchRunOrgIds([runId]);
-  return map?.get(runId) ?? null;
 }
 
 // ---------------------------------------------------------------------------

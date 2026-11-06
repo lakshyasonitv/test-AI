@@ -393,10 +393,22 @@ export const SalesforceOrgObject = z.object({
   createable: z.boolean().optional(),
   /** The record types the user can create, when there are two or more. /lightning/o/<api>/new opens
    *  the DEFAULT one's form with no chooser; another opens at /lightning/o/<api>/new?recordTypeId=<id>. */
-  recordTypes: z.array(z.object({ name: z.string(), id: z.string(), default: z.boolean().optional() })).optional(),
+  recordTypes: z.array(z.object({
+    name: z.string(), id: z.string(), default: z.boolean().optional(),
+    /** Phase 1 (SALESFORCE_DEEP_DISCOVERY_ENABLED): fields only this record type's create layout
+     *  shows, and picklists whose values differ from the default record type's (by field label). */
+    onlyFields: z.array(z.string()).optional(),
+    picklists: z.record(z.array(z.string())).optional(),
+  })).optional(),
   /** Fields the org computes (formula, roll-up summary): read-only, on the record page only. A case
    *  checks them after a save; it can never type into one. */
-  calculated: z.array(z.object({ label: z.string(), api: z.string(), type: z.string() })).optional(),
+  calculated: z.array(z.object({
+    label: z.string(), api: z.string(), type: z.string(),
+    /** Phase 1: what it computes, "= Amount * Probability" or "sum of Opportunity.Amount". */
+    definition: z.string().optional(),
+  })).optional(),
+  /** Phase 1: Dynamic Forms visibility rules on the record page: a field or section shown only when. */
+  visibilityRules: z.array(z.object({ target: z.string(), when: z.string() })).optional(),
   validationRules: z.array(z.object({
     name: z.string(),
     field: z.string().optional(),

@@ -4,7 +4,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 // id) was retried up to MAX_IR_ATTEMPTS times — re-sending the exact same doomed request —
 // then reported as "IR failed schema validation after retry: Groq 401: Invalid API Key",
 // indistinguishable from a genuine product test failure. Confirmed against two real runs
-// (problems.md RC-D / Cross-cutting #1): `7bcbf4de` burned 8 calls on a 401, `4f582417`
+// (archive:docs/archive/problems.md RC-D / Cross-cutting #1): `7bcbf4de` burned 8 calls on a 401, `4f582417`
 // burned 4 on a 404, both with zero usable tokens and both reported to the user as failed
 // tests. Fixed: a definitively non-retryable status fails fast, on the FIRST attempt, with a
 // distinctly-labeled, structurally-marked error — provider-agnostic, since the bug was in

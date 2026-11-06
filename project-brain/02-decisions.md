@@ -93,3 +93,37 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156; 2026-10-28: ou
   keeps the next merge to the existing two.
 - An ambiguous request ("multiple value") is asked about once, and the parts that are broken under
   every reading are built meanwhile. Reason: the user's time on a question should not block a proven fix.
+
+## 2026-11-02 — Repo clean-up (user)
+- Delete unused features; but a "test door" into live code (walkLiveDom) is kept, and a guard test
+  that covers live code (the TD-40 tsx login guard) is kept even when the module it ran through goes.
+- Old documents are archived in docs/archive/, never deleted; useful walkthroughs live in docs/guides/.
+- The README is a front page titled "Testbench"; known problems live only in TECH_DEBT.md.
+- The compiler enforces no unused code (noUnusedLocals, noUnusedParameters).
+
+## 2026-11-03 — Parallel cases inside a run (user)
+- The user wants one job split across 4 browsers for NEW tests; concurrent runs stay for separate jobs.
+- Built behind `SUITE_CASE_CONCURRENCY` (default 1) with a process-wide `MAX_PARALLEL_CASES` cap, so four
+  runs at once can never start 16 browsers. The primary case stays first. Rationale: DECISIONS.md D-73.
+- New work is based on `cleanup/production-ready`, not main, at the user's request.
+
+## 2026-11-04 — main is the clean working branch; old material lives on `archive` (user)
+- `main` stays the branch everyone works on, and stays clean: no dead code, no archived or unneeded documents.
+- Old documents move to a new `archive` branch plus a tag (`archive-2026-11-04`), not to `cleanup/production-ready`
+  (the user's pick over reusing that name, which says "production-ready").
+- Leaving main: docs/archive/, docs/guides/team-guide/, docs/research/, docs/handoff/,
+  docs/guides/LLM_CONTEXT_BRIEFING.md, app.yaml.
+- `cleanup/production-ready` is retired, not deleted, and only after main contains its latest commit.
+- Dead code: scan main and show the user the list before deleting anything.
+
+## 2026-11-04 (later) — no archive tag; protect the `archive` branch instead (user)
+- The tag `archive-2026-11-04` is not created (tag pushes are refused from the cloud container, and the user judged
+  it unnecessary). The `archive` branch is made read-only in GitHub's branch protection instead, which covers the
+  real risk (someone pushing to it by mistake). Docs no longer mention a tag.
+
+## 2026-11-04 (evening) — an intermittent CI failure gets a root cause, not reruns
+- `suiteParallelBrowser` failed once and passed on the rerun of the same commit (PR #19). It was not left as a flake:
+  the cause (Playwright scanning all of `runs/` while another process deletes a folder, TD-185) also hits production
+  runs, and D-73's parallel cases make it more likely. Fixed structurally (scan only the spec's own folder), proved
+  with a test that reproduces the race (fails without the fix), and shipped as its own PR (#20), not folded into a
+  docs PR. One rerun is allowed to confirm a suspected flake; the second step is always finding why.

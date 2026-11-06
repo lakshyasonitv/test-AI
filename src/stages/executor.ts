@@ -1,6 +1,6 @@
 import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { redactCredentials, type Credentials } from "./credentials.js";
 import { siteHost } from "../text.js";
@@ -69,6 +69,31 @@ export interface ExecResult {
    * unless ffmpeg is missing.
    */
   videoUnavailable?: string;
+  /** True when the safety timer killed Playwright: the test was RUNNING (and on an org may already
+   *  have created records), so runSpec never runs it again (run 2026-11-03T05-07-28-369Z-388aa153). */
+  killed?: boolean;
+  /** On a killed run (no report): the 1-based step that was running, one past the last step
+   *  screenshot this attempt wrote, and that step's title. The failure analysis uses it instead of
+   *  guessing (it blamed Save while the run had stopped at Billing Zip). */
+  killedAtStep?: number;
+  killedAtTitle?: string;
+}
+
+/**
+ * The step a killed run was on: the spec saves `step-N.png` after each step into one directory
+ * named in its own code (generator.ts shot()), so the highest N written since `since` is the last
+ * step that finished. Undefined when the spec takes no step screenshots or none was written.
+ */
+export function stepRunningAtKill(specCode: string, since: number): { step: number; title?: string } | undefined {
+  const dir = /shot\(page, "([^"]+)\/step-\d+\.png"\)/.exec(specCode)?.[1];
+  if (!dir || !existsSync(dir)) return undefined;
+  let last = 0;
+  for (const f of readdirSync(dir)) {
+    const m = /^step-(\d+)\.png$/.exec(f);
+    if (m && statSync(path.join(dir, f)).mtimeMs >= since) last = Math.max(last, Number(m[1]));
+  }
+  const titles = [...specCode.matchAll(/test\.step\(("(?:[^"\\]|\\.)*")/g)].map((t) => JSON.parse(t[1]) as string);
+  return { step: last + 1, title: titles[last] };
 }
 
 /**
@@ -198,7 +223,16 @@ export function perTestTimeoutMs(specCode: string): number {
  * any case long enough to pass it.
  */
 export function killTimeoutMs(specCode: string): number {
-  return perTestTimeoutMs(specCode) + KILL_SLACK_MS;
+  return killAfter(perTestTimeoutMs(specCode));
+}
+
+/** The backstop for a given per-test budget — the ONE formula, used by the run below and by
+ *  `killTimeoutMs`, so the tested value and the timer that actually fires cannot drift apart. */
+function killAfter(perTestMs: number): number {
+  // Twice the budget: after a failure Playwright gives its after-hooks (screenshot, video, fixture
+  // teardown) a fresh slot of the full test timeout, so per-test + 50s killed it mid-teardown, before
+  // results.json existed (run 2026-11-03T05-07-28-369Z-388aa153: 290s against a 480s legal limit).
+  return 2 * perTestMs + KILL_SLACK_MS;
 }
 
 /**
@@ -261,19 +295,27 @@ export function scrubServedSecrets(raw: any, artifactsDir: string, resultsJson: 
   return out;
 }
 
-/** Delete every `trace.zip` under `dir`. Returns how many were removed. Best effort. */
+/**
+ * Delete every `trace.zip` under `dir`, and the unzipped trace a KILLED child leaves in Playwright's
+ * working folder (`.playwright-artifacts-*`: `traces/*.trace`, `*.network`, `resources/` and
+ * hash-named `*.zip` chunks). A child killed by the safety timeout never zips its trace, so before
+ * this the frontdoor URL stayed there, served under /runs. Video and screenshots are kept. Returns how many were
+ * removed. Best effort.
+ */
 function removeTraceZips(dir: string): number {
   let n = 0;
-  const walk = (d: string) => {
+  const walk = (d: string, inWork: boolean) => {
     let entries: import("node:fs").Dirent[] = [];
     try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.name === "trace.zip") { try { rmSync(p, { force: true }); n++; } catch { /* best effort */ } }
+      if (e.isDirectory()) walk(p, inWork || e.name.startsWith(".playwright-artifacts-"));
+      else if (e.name === "trace.zip" || (inWork && !/\.(webm|png|jpe?g)$/i.test(e.name))) {
+        try { rmSync(p, { force: true }); n++; } catch { /* best effort */ }
+      }
     }
   };
-  walk(dir);
+  walk(dir, false);
   return n;
 }
 
@@ -314,14 +356,24 @@ export async function runSpec(
 
   for (let attempt = 1; attempt <= CONFIG.RETRIES; attempt++) {
     try {
+      const started = Date.now();
       const result = await executePlaywright(specPath, resultsJson, artifactsDir, cliPath, perTestTimeoutMs(specCode), secretEnv);
 
       // exitCode 1 with a parsed report = Playwright ran and the test has a verdict.
       // That verdict is the answer, pass or fail.
       if (result.passed || result.raw) return result;
 
-      // No report at all: Playwright didn't get far enough to produce one (bad spawn,
-      // missing browser, killed by the safety timeout). That is worth another go.
+      // Killed by the safety timer: the test was running, and its steps may already have changed
+      // the site (two Accounts created by one run). Never run it again; it failed.
+      if (result.killed) {
+        const at = stepRunningAtKill(specCode, started);
+        if (at) { result.killedAtStep = at.step; result.killedAtTitle = at.title; }
+        console.log(executorRunTag() + `[executor] killed while running${at ? ` step ${at.step}` : ""} — not retrying (its steps may already have run)`);
+        return result;
+      }
+
+      // No report at all and not killed: Playwright didn't get far enough to produce one (bad
+      // spawn, missing browser). That is worth another go.
       if (attempt === CONFIG.RETRIES) return result;
       console.log(executorRunTag() + `[executor] no report produced — retrying (${attempt + 1}/${CONFIG.RETRIES})`);
       await sleep(CONFIG.TIMEOUTS.RETRY_DELAY);
@@ -349,6 +401,7 @@ async function executePlaywright(
    *  logged anywhere in this file. */
   secretEnv: Record<string, string> = {}
 ): Promise<ExecResult> {
+  let killed = false;
   const exitCode: number = await new Promise((resolve) => {
     console.log(executorRunTag() + "[executor] Spawning Playwright...");
     // One probe per process (memoized). Decides whether this child records video at all.
@@ -425,10 +478,17 @@ async function executePlaywright(
           ...secretEnv,
           PLAYWRIGHT_JSON_OUTPUT_NAME: resultsJson,
           PLAYWRIGHT_HEADLESS: 'true',
+          // Read by playwright.config.ts as testDir (TD-185): Playwright scans only this spec's own
+          // folder, not every run under runs/, so another run deleting its folder mid-scan cannot
+          // end this one with "ENOENT ... scandir" before a single step runs.
+          PLAYWRIGHT_TEST_DIR: path.resolve(path.dirname(specPath)),
           // Read by playwright.config.ts (since TD-24). Set per run so a long case gets a budget
           // proportional to its step count instead of every case sharing one 50s ceiling. An
           // explicitly-set PLAYWRIGHT_TIMEOUT passes straight through — see perTestTimeoutMs.
           PLAYWRIGHT_TIMEOUT: String(perTestMs),
+          // D-63: no trace on an org-connection run. Its trace holds the sign-in URL and is deleted
+          // anyway, and writing it is the slow, unbounded part of a failed test's teardown.
+          ...(secretEnv[FRONTDOOR_ENV] ? { PLAYWRIGHT_TRACE: 'off' } : {}),
           // Read by playwright.config.ts. Missing ffmpeg does not degrade video to "off" on its
           // own — it stops browserContext.newPage() outright, failing a valid case before it
           // navigates (TD-71). Turning recording off is what keeps the run runnable.
@@ -493,9 +553,10 @@ async function executePlaywright(
 
     // Safety timeout: kill Playwright if it outlives its own per-test budget plus finalization
     // slack. Derived per spec rather than fixed, so it stays above the budget as that scales.
-    const killMs = perTestMs + KILL_SLACK_MS;
+    const killMs = killAfter(perTestMs);
     const timeout = setTimeout(() => {
       console.error(executorRunTag() + `[executor] TIMEOUT ${killMs / 1000}s — killing Playwright (pid=${p.pid})`);
+      killed = true;
       p.kill("SIGKILL");
       resolve(1);
     }, killMs);
@@ -548,6 +609,7 @@ async function executePlaywright(
     raw: scrubServedSecrets(raw, artifactsDir, resultsJson, errorContextFiles, secretEnv),
     screenshot,
     accessibilitySnapshot,
+    ...(killed ? { killed } : {}),
     // Present only when recording was suppressed, so the UI can say "video unavailable" rather
     // than silently showing no player — and above all so this is never again mistaken for a
     // test failure (TD-71).

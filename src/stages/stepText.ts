@@ -112,12 +112,12 @@ export function formatIrStep(step: Step | null | undefined): string {
       return `Wait briefly`;
     case "assert": {
       const assertion = step.assertion || "visible";
+      if (assertion === "visible" && target?.field) return `Check that the "${target.field}" field is shown`;
       if (assertion === "visible") return `Check that ${targetDesc} appears on the page`;
       if (assertion === "hidden") return `Check that ${targetDesc} is not shown`;
       if (assertion === "url_contains") return `Check the page address contains "${step.value || target?.url || ""}"`;
       // A record field's value (Target.field): read inside that field on the record page, not anywhere.
-      if (target?.field && (assertion === "text_contains" || assertion === "text_equals")) return `Check that the "${target.field}" field shows "${step.value || ""}"`;
-      if (assertion === "text_contains") return `Check that the text "${step.value || ""}" is displayed`;
+      if (target?.field && (assertion === "text_contains" || assertion === "text_equals")) return `Check that the "${target.field}" field shows "${step.value || ""}"`;      if (assertion === "text_contains") return `Check that the text "${step.value || ""}" is displayed`;
       if (assertion === "text_equals") return `Check that the text "${step.value || ""}" is displayed`;
       if (assertion === "enabled") return `Check that ${targetDesc} is enabled`;
       if (assertion === "disabled") return `Check that ${targetDesc} is disabled`;

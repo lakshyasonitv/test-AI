@@ -59,8 +59,8 @@ describe("a press step with no target", () => {
     expect(spec).toContain(`test.step("Press 'Enter'",`);
   });
 
-  // Playwright only finds specs under ./runs (playwright.config.ts testDir): a short-lived folder there,
-  // named to sort after every real run, removed afterwards.
+  // A short-lived folder under ./runs, like a real run's (runSpec points Playwright's testDir at the
+  // spec's own folder, TD-185), named to sort after every real run, removed afterwards.
   const runDir = path.join("runs", `0000-targetlesspress-${process.pid}-${Date.now()}`);
   afterAll(() => rmSync(runDir, { recursive: true, force: true }));
 

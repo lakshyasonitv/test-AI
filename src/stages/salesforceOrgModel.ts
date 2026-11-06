@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { testDataEnabled } from "./testData.js";
 import { flowChecksEnabled, flowFieldUpdates } from "./salesforceFlowChecks.js";
+import { deepDiscoveryEnabled, readDeepFacts } from "./salesforceOrgDeep.js";
 import type { FrontdoorSession } from "./salesforceFrontdoor.js";
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 
@@ -389,7 +390,11 @@ export async function readOrgForCheck(
 }
 
 /** The org model, or null when the connection cannot read even the app. */
-export async function readSalesforceOrgModel(session: Pick<FrontdoorSession, "apiGet" | "apiVersions">): Promise<SalesforceOrgModel | null> {
+export async function readSalesforceOrgModel(
+  session: Pick<FrontdoorSession, "apiGet" | "apiVersions">,
+  /** The person's request: the objects it names get the Phase 1 deep read (flag on only). */
+  request = "",
+): Promise<SalesforceOrgModel | null> {
   const apiGet = session.apiGet;
   if (!apiGet) return null;
   const app = await readApp(apiGet);
@@ -415,6 +420,10 @@ export async function readSalesforceOrgModel(session: Pick<FrontdoorSession, "ap
   // D-76: the release, so a saved case remembers it (step 2 compares). Only with the flag on: it is
   // part of the setup fingerprint, and with the flag off the model must be exactly what it was.
   const release = process.env.REGRESSION_MEMORY_ENABLED === "true" ? await readSalesforceRelease(session) : undefined;
+  if (deepDiscoveryEnabled()) {
+    const deep = await readDeepFacts(apiGet, { objects, validationRulesRead: rules !== null }, request).catch(() => null);
+    if (deep) console.log(`[org model] deep read: ${deep.objects} object(s), ${deep.calls} API call(s), ${(deep.ms / 1000).toFixed(1)} s`);
+  }
   return {
     ...(app.label ? { app: app.label } : {}),
     ...(apps.length ? { apps } : {}),
@@ -540,7 +549,11 @@ export function objectsNamedIn<O extends { api: string; label: string; labelPlur
 export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars = 9000): string {
   if (!org?.objects.length) return "";
   const lines: string[] = [];
-  for (const o of org.objects) {
+  // Phase 1: objects carrying deep facts (the request's own) first, so the character ceiling below
+  // never cuts them. Without the flag none has any, and the stable sort keeps the order as it was.
+  const deep = (o: typeof org.objects[number]) => !!(o.visibilityRules?.length || o.calculated?.some((c) => c.definition)
+    || o.recordTypes?.some((r) => r.onlyFields || r.picklists));
+  for (const o of [...org.objects].sort((a, b) => Number(deep(b)) - Number(deep(a)))) {
     const req = o.fields.filter((f) => f.required).map((f) => f.label);
     const label = (api: string) => o.fields.find((x) => x.api === api)?.label ?? api;
     const picks = o.fields.filter((f) => f.picklist?.length)
@@ -564,7 +577,13 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
       req.length ? `  required on create: ${req.join(", ")}` : "",
       picks.length ? `  picklists: ${picks.join("; ")}` : "",
       looks.length ? `  lookups: ${looks.join("; ")}` : "",
-      o.calculated?.length ? `  calculated by the org (read-only, on the record page after a save; never filled): ${o.calculated.map((c) => `${c.label} (${c.type})`).join(", ")}` : "",
+      o.calculated?.length ? `  calculated by the org (read-only, on the record page after a save; never filled): ${o.calculated.map((c) => `${c.label} (${c.type})${c.definition ? ` ${c.definition.startsWith("=") ? "" : "= "}${c.definition}` : ""}`).join(", ")}` : "",
+      // Phase 1: a case about a record type checks what only that type shows; one about a visibility
+      // rule sets the controlling value and expects the field or section to appear without a reload.
+      ...(o.recordTypes ?? []).filter((r) => r.onlyFields?.length || r.picklists).map((r) => `  record type ${r.name} differs from the default:`
+        + (r.onlyFields?.length ? ` only its form shows ${r.onlyFields.join(", ")};` : "")
+        + Object.entries(r.picklists ?? {}).map(([f, v]) => ` ${f} offers ${v.join(" | ")}`).join(";")),
+      o.visibilityRules?.length ? `  shown only when (Dynamic Forms; appears on the page without a reload once the condition holds): ${o.visibilityRules.map((v) => `${v.target} when ${v.when}`).join("; ")}` : "",
       typed.length ? `  field types: ${typed.join(", ")}` : "",
       o.listViews?.length ? `  list views: ${o.listViews.join(", ")}` : "",
       ...(o.validationRules ?? []).map((r) => `  validation rule ${r.name}${r.field ? ` (on ${r.field})` : ""}: "${r.message}"`

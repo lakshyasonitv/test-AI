@@ -8,7 +8,7 @@ import type { SpecModel } from "./schema/spec.js";
 import { generateCases, generatorFor } from "./stages/caseGeneration.js";
 import { runSpecComparison } from "./stages/specIntake.js";
 import { generateCasesForNewPages, finalizeCaseSelection, budgetFor, NoTestCasesError, type TestCase } from "./stages/testCases.js";
-import { toIR, type IRResult } from "./stages/ir.js";
+import { toIR } from "./stages/ir.js";
 import { LlmBudget, enterWithBudget, type LlmUsageSnapshot } from "./llm/llmBudget.js";
 import { enterWithLlmConfig, type LlmConfig } from "./llm/llmContext.js";
 import { enterWithRunLocale } from "./browserLaunch.js";
@@ -31,13 +31,13 @@ import {
 import { generateSpec } from "./stages/generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked, extractFailureDetail } from "./stages/executor.js";
 import { analyzeFailure } from "./stages/failureAnalysis.js";
-import { attemptHeal, isHealable, selfHealDefault } from "./stages/heal.js";
+import { attemptHeal, isHealable, isValueHealable, selfHealDefault } from "./stages/heal.js";
 import { runSuite, type PrimaryCaseResult } from "./stages/suiteRunner.js";
 import { store } from "./runStore.js";
 import { rememberRunSecrets, scrubRunSecrets } from "./runSecrets.js";
 import { buttonExplorerEnabled, exploreButtons } from "./stages/buttonExplorer.js";
 import { ALL_SCOPES } from "./kb/testStrategy.js";
-import type { IR, Step } from "./schema/ir.js";
+import { proStoryPromptEnabled } from "./stages/storyPrompt.js";
 
 export type StageName =
   | "input" | "plan" | "discovery" | "testcases" | "credentials" | "ir"
@@ -330,7 +330,10 @@ export async function runPipeline(
     save("00-input.json", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
     emit("input", "completed", { prompt: safePrompt, url: resolvedUrls[0], urls: resolvedUrls, coverage });
 
-    const thePlan = await step("plan", "01-plan.json", () => plan(prompt, resolvedUrls[0], coverage));
+    // PRO_STORY_PROMPT: a Pro run's planner also reads the confirmed story, so a vague prompt
+    // ("test as per the story") still plans the story's flow. Off, or no spec: exactly as before.
+    const planStory = options?.spec && proStoryPromptEnabled() ? options.spec : undefined;
+    const thePlan = await step("plan", "01-plan.json", () => plan(prompt, resolvedUrls[0], coverage, planStory));
     insight("plan", () => ({
       planSteps: thePlan.steps.length, coverage: thePlan.coverage,
       scope: thePlan.testTypeScope, llmCalls: llmBudget.snapshot().byStage.plan?.calls ?? 0,
@@ -577,13 +580,14 @@ export async function runPipeline(
       // shared with suiteRunner.ts's non-primary cases, see that module's own doc comment.
       // isHealable is the same gate attemptHeal applies internally — checked here too only so
       // "heal started" isn't emitted for a category that was never going to attempt anything.
-      if (selfHealEnabled && isHealable(diagnosis, ir)) {
+      const failure = extractFailureDetail(result.raw);
+      if (selfHealEnabled && (isHealable(diagnosis, ir) || isValueHealable(failure))) {
         try {
           emit("heal", "started");
           const healedOutcome = await attemptHeal({
             testCase: primary, ir, appModel, diagnosis,
             sourcePrompt: prompt, entryUrl: resolvedUrls[0], llmBudget, runCreds,
-            outDir: runDir,
+            outDir: runDir, failure,
           });
           if (healedOutcome) {
             finalResult = {

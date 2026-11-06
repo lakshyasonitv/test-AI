@@ -220,11 +220,14 @@ export function assertRecordTypeForms(ir: IRSteps, org: SalesforceOrgModel | und
  * object's create form, after that form's Save, becomes a navigate to that record (`recordRef`: the
  * object, and which of its saved create forms it was), resolved where the step runs. Any object,
  * parent or child, the same object for both included. Not inside a create form not yet saved (its
- * Save would never happen), and not when the flow went looking for it since the last Save (anything
- * but navigates, waits and asserts: the object's tab clicked, the name typed into a search; or the
- * object's list or home page): finding it there may be what the case checks. Returns notes.
+ * Save would never happen), and not when the flow went looking for it since the last Save (a name
+ * typed into a search; or, when the request is about finding it, the object's tab clicked or its list
+ * or home page): finding it there may be what the case checks. Returns notes.
  */
-export function returnToCreatedRecords(ir: IRSteps): string[] {
+/** A request about finding the record in a list or search: the way there is then the test. */
+const FINDS_IT = /\b(lists?|listed|search(es|ed)?|finds?|appears?|shows? up)\b/i;
+
+export function returnToCreatedRecords(ir: IRSteps, request = ""): string[] {
   const notes: string[] = [];
   /** The run-token names each saved create form typed (by their words): the form's object, and which
    *  of that object's saved create forms it was (all of them count, named or not, as the spec counts). */
@@ -259,11 +262,112 @@ export function returnToCreatedRecords(ir: IRSteps): string[] {
     const rec = name ? created.get(lineKey(name)) : undefined;
     if (!rec) continue;
     const object = rec.object;
-    const looked = ir.steps.slice(lastSave + 1, i).some((x) => !["navigate", "wait", "assert"].includes(x.action)
+    // Tab clicks alone are only the way there unless the request is about finding it (run
+    // 2026-11-03T08-39-38-811Z-a28f4ed4: Home, Accounts, then the new Account's link, for a check of
+    // its roll-up field); a name typed into a search is always looking.
+    const between = ir.steps.slice(lastSave + 1, i);
+    const looked = between.some((x) => ["fill", "select", "press"].includes(x.action))
+      || FINDS_IT.test(request) && between.some((x) => !["navigate", "wait", "assert"].includes(x.action)
       || (x.action === "navigate" && new RegExp(`/lightning/o/${object}/(list|home)\\b`).test(x.target?.url ?? "")));
     if (looked) continue;
     ir.steps[i] = { id: s.id, action: "navigate", target: { url: recordRef(object, rec.n) } };
+    // The way there goes with it: a guessed list URL is rejected by grounding (run
+    // 2026-11-03T09-46-16-921Z-04a94b10), and tab clicks are nothing the case checks.
+    for (let j = i - 1; j > lastSave; j--) {
+      if (ir.steps[j].action !== "navigate" && ir.steps[j].action !== "click") continue;
+      ir.steps.splice(j, 1);
+      i--;
+    }
     notes.push(`${s.id}: clicks "${name}", the name this case typed for the ${object} it created -> opens that ${object} record directly`);
+  }
+  return notes;
+}
+
+/**
+ * A value check written without its value, when the request states it: "verify the Account's TB
+ * Total Opportunity Amount shows 5,000" gave `text_contains` on "TB Total Opportunity Amount" with no
+ * value in 4 of 5 attempts (run 2026-11-03T08-26-40-331Z-684ad8dc), each rejected as vacuous until the
+ * check was dropped. The value is the number or quoted text the request puts right after that label
+ * ("shows", "is", "=", "of", "displays", "reads"). Only an empty value is filled. Returns notes.
+ */
+export function valuesFromRequest(ir: IRSteps, request: string): string[] {
+  const notes: string[] = [];
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const s of ir.steps) {
+    // "Account's TB Total Opportunity Amount" (run 2026-11-03T09-52-32-235Z-e9e0149b): no page shows
+    // the object's name with the label, and the org's label is the rest. Value and field checks only:
+    // a heading's own words ("Today's Tasks") stay.
+    const valueOrField = s.action === "assert" && (s.assertion === "text_contains" || s.assertion === "text_equals" || !!s.target?.field);
+    for (const k of ["field", "text", "name"] as const) {
+      const v = valueOrField ? s.target?.[k] : undefined;
+      const bare = v?.replace(/^[A-Z][\w ]*?['’]s\s+/, "");
+      if (v && bare && bare !== v) { s.target![k] = bare; notes.push(`${s.id}: the check on "${v}" -> "${bare}"`); }
+    }
+    if (s.action !== "assert" || (s.assertion !== "text_contains" && s.assertion !== "text_equals") || s.value?.trim()) continue;
+    const label = s.target?.field ?? s.target?.text ?? s.target?.name;
+    if (!label?.trim()) continue;
+    const m = new RegExp(`${esc(label.trim())}\\s+(?:shows|is|=|equals|displays|reads|of)\\s+(?:"([^"]+)"|'([^']+)'|(\\$?\\d[\\d,]*(?:\\.\\d+)?%?))`, "i").exec(request);
+    const value = m ? (m[1] ?? m[2] ?? m[3]) : undefined;
+    if (!value) continue;
+    s.value = value;
+    notes.push(`${s.id}: the check on "${label}" had no value -> "${value}", as the request states it`);
+  }
+  return notes;
+}
+
+/**
+ * A check of a field of a record THIS case created, made away from that record, opens the record
+ * first. Run 2026-11-03T08-18-32-287Z-885b1ba6: after creating an Account and an Opportunity for it,
+ * the flow went home, clicked the Accounts tab and looked for "TB Total Opportunity Amount" 5,000 on
+ * the Accounts LIST. The field belongs to the Account; the case created one; so the check runs on
+ * that record (`recordRef`: the last one of that object it saved). Field label -> object from the org
+ * model. Runs before fieldChecksOnRecordView, which then reads it on the Details tab. Returns notes.
+ */
+export function checksOnCreatedRecord(ir: IRSteps, org: { objects: { api: string; fields: { label: string }[]; calculated?: { label: string }[] }[] } | undefined, request = ""): string[] {
+  const notes: string[] = [];
+  if (!org?.objects.length) return notes;
+  const ownerOf = (label: string) => {
+    const owners = org.objects.filter((o) => [...o.fields, ...(o.calculated ?? [])].some((f) => f.label === label));
+    return owners.length === 1 ? owners[0].api : undefined;
+  };
+  const saved = new Map<string, number>();
+  let form: string | null = null;
+  let onRecord: string | null = null;
+  let lastSave = -1;
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action === "navigate") {
+      const m = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "");
+      form = m ? decodeURIComponent(m[1]) : null;
+      onRecord = recordRefObject(s.target?.url);
+      continue;
+    }
+    if (s.action === "click" && isSave(s)) {
+      lastSave = i;
+      if (form) { saved.set(form, (saved.get(form) ?? 0) + 1); onRecord = form; }
+      form = null;
+      continue;
+    }
+    // Moving elsewhere (a nav tab, a link) leaves the record; a tab inside the record page does not.
+    if (s.action === "click" && s.target?.role !== "tab") { if (!form) onRecord = null; continue; }
+    if (s.action !== "assert" || form) continue;
+    const valueCheck = (s.assertion === "text_contains" || s.assertion === "text_equals") && !!s.value?.trim();
+    const label = s.target?.field ?? (valueCheck ? s.target?.text : undefined);
+    const owner = label ? ownerOf(label) : undefined;
+    if (!owner || !saved.get(owner) || onRecord === owner) continue;
+    // The way the flow went looking (a guessed list URL, run 2026-11-03T09-46-16-921Z-04a94b10; tab
+    // clicks) goes, unless finding the record is what the request asks.
+    if (!FINDS_IT.test(request)) {
+      for (let j = i - 1; j > lastSave; j--) {
+        if (ir.steps[j].action !== "navigate" && ir.steps[j].action !== "click") continue;
+        ir.steps.splice(j, 1);
+        i--;
+      }
+    }
+    ir.steps.splice(i, 0, { id: `sf-open-${owner}`, action: "navigate", target: { url: recordRef(owner, saved.get(owner)!) } });
+    notes.push(`the check of "${label}" belongs to the ${owner} this case created -> opens that record first`);
+    onRecord = owner;
+    i++;
   }
   return notes;
 }
@@ -275,6 +379,8 @@ const FORM_CONTROL = /^(textbox|combobox|spinbutton|checkbox|searchbox|listbox|r
 const isShownValue = (text: string) => shownNumber(text) !== null || /^(?:\d{1,4}([./-])\d{1,2}\1\d{1,4}\b|\{\{date:)/.test(text.trim());
 /** The field's label (or words of it) written as its value: a check that the label shows, not a value. */
 const namesLabel = (value: string, label: string) => ` ${lineKey(label)} `.includes(` ${lineKey(value)} `);
+/** The request names this label as whole words ("verify the SLA field" names "SLA"). */
+const mentionsWord = (request: string, label: string) => !!lineKey(label) && ` ${lineKey(request)} `.includes(` ${lineKey(label)} `);
 
 /**
  * On a record's view page (after a Save lands there with "was created"/"was saved", or after a record
@@ -292,11 +398,22 @@ const namesLabel = (value: string, label: string) => ` ${lineKey(label)} `.inclu
  */
 export function fieldChecksOnRecordView(ir: IRSteps, model: {
   pages: { url: string; elements: { role?: string; name?: string }[] }[];
-  salesforceOrg?: { objects: { fields: { label: string; picklist?: string[] }[]; calculated?: { label: string }[] }[] };
-}): string[] {
+  salesforceOrg?: { objects: {
+    fields: { label: string; picklist?: string[] }[]; calculated?: { label: string }[];
+    visibilityRules?: { target: string; when: string }[];
+  }[] };
+}, request = ""): string[] {
   const steps = ir.steps;
-  const hasDetailsTab = model.pages.some((p) => /\/lightning\/r\//.test(p.url)
-    && p.elements.some((e) => e.role === "tab" && e.name === "Details"));
+  const recordPages = model.pages.filter((p) => /\/lightning\/r\//.test(p.url));
+  // A record page captured before Lightning drew its tabs shows none at all (run
+  // 2026-11-03T07-31-20-798Z-dcc341ef: the page had Related | Details). Only a captured page WITH tabs
+  // and no Details says there is none; the spec's Details click is skipped when the tab is absent.
+  const hasDetailsTab = recordPages.some((p) => p.elements.some((e) => e.role === "tab" && e.name === "Details"))
+    || (recordPages.length > 0 && !recordPages.some((p) => p.elements.some((e) => e.role === "tab")));
+  // Phase 1: a Dynamic Forms rule's own field. The request asks about "SLA"; the writer checked
+  // "SLA Expiration Date", a different, always-shown field (same run). The org's rule names the field.
+  const ruleTargets = (model.salesforceOrg?.objects ?? []).flatMap((o) => o.visibilityRules ?? []).map((v) => v.target)
+    .filter((t) => !t.startsWith("section ") && mentionsWord(request, t));
   // A text check naming one of the org's fields is a field check too ("Expected Revenue", run
   // 2026-10-26T07-23-19-810Z-0d14eb03: the Opportunity page opened on Activity, the field on Details).
   const fields: { label: string; picklist?: string[] }[] = (model.salesforceOrg?.objects ?? [])
@@ -325,7 +442,24 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
     lastLabel = undefined;
     const valueCheck = (s.assertion === "text_equals" || s.assertion === "text_contains") && !!s.value?.trim();
     if (s.assertion !== "visible" && s.assertion !== "hidden" && !valueCheck) continue;
-    const text = s.target?.text ?? "";
+    const ruled = !valueCheck && s.target?.text
+      ? ruleTargets.find((t) => s.target!.text !== t && s.target!.text!.startsWith(`${t} `) && !mentionsWord(request, s.target!.text!))
+      : undefined;
+    if (ruled) {
+      notes.push(`"${s.target!.text}" -> "${ruled}", the field the org's Dynamic Forms rule shows (the request names it), its label exactly`);
+      steps[i] = { ...s, target: { field: ruled } };
+      if (hasDetailsTab && !onDetails) {
+        const n = tabs++ ? `-${tabs}` : "";
+        steps.splice(i, 0,
+          { id: `sf-details${n}`, action: "click", target: { role: "tab", name: "Details" } },
+          { id: `sf-details${n}-wait`, action: "wait", value: "500" });
+        i += 2;
+        onDetails = true;
+        notes.push(`fields are on the record page's Details tab -> clicks it first`);
+      }
+      continue;
+    }
+    const text = steps[i].target?.text ?? "";
     if (FORM_CONTROL.test(s.target?.role ?? "") && s.target?.name) {
       const label = s.target.name.replace(/^\*\s*|\s*\*$/g, "").trim();
       if (valueCheck && namesLabel(s.value!, label)) continue;

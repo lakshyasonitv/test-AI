@@ -23,7 +23,7 @@ const step = (o: Partial<Step>): Step => ({ id: "s1", action: "assert", ...o }) 
 // other top-level code, including a plain `const` declaration referenced from inside them.
 const { fillSpy } = vi.hoisted(() => ({ fillSpy: vi.fn(async () => {}) }));
 vi.mock("../src/stages/targetResolver.js", () => ({
-  resolveLive: vi.fn(async () => ({ fill: fillSpy })),
+  resolveLive: vi.fn(async () => ({ fill: fillSpy, focus: vi.fn(async () => {}) })),
 }));
 
 // Regression for run 2026-08-02T18-34-28-317Z-9ef3c101: a compound case's grounding replay

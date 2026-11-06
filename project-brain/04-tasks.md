@@ -4,7 +4,12 @@
 
 ## Multi-value screen flows (D-77) + record-triggered flow checks (D-78)
 
-- [ ] Commit (ask first) — working tree only on `refactored-code`.
+- [ ] `tests/listRunsRace.test.ts` (main, TD-186) fails on Windows: `listRuns` tolerates ENOENT but a folder
+      being deleted answers EPERM here. Fix in main's TD-186 code (treat EPERM like ENOENT) — its own small PR.
+- [ ] Tests that slice `public/app.js` by `
+` fail on a CRLF checkout (`appJsProIntake`, `proStoryPrompt`).
+
+- [x] Committed `029e6c5`; main merged in 2026-11-06.
 - [ ] Get the user's answer: does "multiple value" also mean one flow run with several data sets? Not built.
 - [ ] First real check on a scratch org with both flags on: a Screen Flow with a multi-select picklist
       and a checkbox group; a before-save flow on Lead/Account whose conditions a case meets. Costs
@@ -13,17 +18,72 @@
 - [ ] Later (TD-189): update-triggered flows on edits; show "not checked: why" on the report, not only
       in the compile log.
 
+*Last updated: 2026-11-04, end of day.*
+
+## Branch clean-up (user, 2026-11-04)
+
+- [x] PR #16: main got `cleanup/production-ready`'s last commit (`647d41a`, D-75 docs added). Merged `6a57d1d`.
+- [x] Branch `archive` created at `6a57d1d`.
+- [x] ~~Tag `archive-2026-11-04`~~ — dropped (user, 2026-11-04): the `archive` branch is protected in GitHub instead.
+- [ ] USER: protect `archive` (Settings → Branches → classic rule `archive`, "Lock branch"). Confirm once done.
+- [x] PR #17 merged (`c41ccdf`): old documents off main; references read `archive:<path>`.
+- [x] Dead-code scan run; one dead chain (orgForRun + fetchRunOrgIds) removed with the user's OK (PR after #17).
+- [x] `cleanup/production-ready` retired (not deleted); main contains its latest commit (`647d41a`). Do not work on it.
+- [x] PR #18 merged (`16cae6c`): dead chain removed. PR #19 merged (`aafa6f4`): docs say "protected branch", no tag.
+- [x] TD-185 (spec ended by a run folder deleted mid-scan) fixed in PR #20 (`10381ba`), with a race test.
+- [x] PR #21 (brain) merged (`1c170f2`). TD-186 (History 500 when a run folder is deleted mid-listing) fixed
+      in its own PR after #21, with a race test (user OK'd open + merge once green).
+
+## Pro story -> request (PRO_STORY_PROMPT, TD-184, D-74)
+
+- [x] Committed + pushed `b190506` (2026-11-03, user approved). In main via PR #15.
+- [ ] Turn on in Azure after merge+deploy: `PRO_STORY_PROMPT=true` (needs `SPEC_INTAKE_ENABLED=true`).
+- [ ] One real Pro run with an empty prompt box; check 01-plan.json follows the story — ask first (costs AI).
+
+## Pro on Salesforce (TD-183, branch `pro/salesforce-org-context`)
+
+- [x] main merged in, renumbered TD-183/TD-184/D-74; merged into main as PR #15 (2026-11-04).
+- [ ] One real Pro run on the org to confirm (costs one Azure case-generation call) — ask first.
+- [ ] Next, if wanted: Pro post-filters with spec.entities; backoff skips a 401/403 key; Azure
+      distillation path; Pro rule-coverage check.
+- [ ] Azure: replace the invalid second key in the `gemini-keys` secret (user, config only).
+
+## Parallel suite cases (D-73)
+
+- [x] Push `vaibhav/intelligent-edison-l6061z` and open PR #12 into main (carries `cleanup/production-ready`'s 6 commits).
+- [x] PR #13 (fixture vs Chromium escaping + booleanEnvFlags) and PR #12 merged 2026-11-03; deployed as `97ea0c9`; main CI green.
+- [ ] On Azure (user): `MAX_CONCURRENT_RUNS=4 MAX_PARALLEL_CASES=4 SUITE_CASE_CONCURRENCY=4 PLAYWRIGHT_VIDEO=on`
+      (user chose 4 straight away, not a pilot at 2). Watch `RestartCount` and false-failure rate; fall back to 3.
+- [ ] Measure first if possible: `EXTENDED_LOGGING=true` for a few runs (10-insights.json per-case times).
+- [ ] TD-180 follow-ups: count discovery/primary/replay browsers in the same slots; a "run alone" marker for
+      dependent cases; parallel replay (`replay.ts`).
+
+## Azure findings (2026-11-03 snapshot) — user to decide
+
+- [ ] Mount the `runs` volume at `/app/runs` (not mounted in any kept revision).
+- [ ] Why MAX_CONCURRENT_RUNS went 4 -> 1 on 2026-10-28 14:50 (activity log).
+- [ ] Model auto-upgrade vs the LLM cache key; Log Analytics 0.5 GB cap; unused ACR + storage account; TLS 1.2.
+
+
+## Repo clean-up (2026-11-02, branch `cleanup/production-ready`)
+
+- [x] Commit (one per step) and push the branch — done (6 commits on `8bcc3e4`, verified 2026-11-03).
+- [x] In main: its 6 commits via PR #12, its last commit (`647d41a`) via PR #16. Branch retired 2026-11-04.
+- [x] After merge: nothing to change on Azure (no setting was renamed; GEMINI_EMBED_MODEL was never read).
+- [ ] CLAUDE.md is 208 lines against its own "under 200" rule (216 before PR #17).
+
 ## Shared discovery per project (D-72) + the main merge
 
-- [ ] Commit D-72, then push the branch (merge commit 2142d16 + D-72) — ask first.
-- [ ] Turn on in Azure only after the branch reaches main and deploys: `PROJECT_DISCOVERY_SHARING=true`.
-- [ ] Update `app.yaml` to 4 vCPU / 8Gi / MAX_CONCURRENT_RUNS 4 (live since 2026-10-27).
+- [x] Commit D-72, then push the branch — in main via PR #11 (2026-10-28).
+- [x] Turn on in Azure: `PROJECT_DISCOVERY_SHARING=true` — live (2026-11-03 snapshot).
+- [x] ~~Update `app.yaml`~~ — obsolete: `app.yaml` moved to the `archive` branch (2026-11-04); the live settings are
+      read with `az containerapp show` (see journal 2026-11-03).
 - [ ] First real check: two runs of one project, same URL + login — the second should say "Used this
       project's saved discovery". Costs AI money for the plan/case steps — ask first.
 
 ## Jira Phase 1 (D-71)
 
-- [ ] Commit and push (ask first).
+- [x] Commit and push — in main via PR #11.
 - [ ] User's first real check: `JIRA_ENABLED=true`, restart, Connect Jira, fetch TBS-1. Free (no AI).
 - [ ] Before Azure: add `https://<host>/api/jira/callback` in the Atlassian console + `JIRA_REDIRECT_URL`;
       enable Distribution -> Sharing so other users can connect; TD-178 if more than one replica.
@@ -78,8 +138,8 @@
 - [ ] TD-110 — intermittent tenancy pair-run failure.
 - [ ] Playwright browser version mismatch in the cloud container (see `03-progress.md`) — either pin
       the image's browsers or document the symlink workaround in the setup script.
-- [ ] `CLAUDE.md` / `AGENTS.md` are 214 lines against CLAUDE.md's own "under 200" rule
-      (`docs/FINDINGS_2026-09-28.md` §6.3).
+- [ ] `CLAUDE.md` is 216 lines against its own "under 200" rule (AGENTS.md is now a pointer, 2026-11-02)
+      (`archive:docs/archive/FINDINGS_2026-09-28.md` §6.3).
 
 ## Claude provider (D-66)
 

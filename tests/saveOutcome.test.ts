@@ -167,8 +167,96 @@ describe("fieldChecksOnRecordView", () => {
     expect(noTab.steps[noTab.steps.length - 1].target).toEqual({ text: "Zq Expiry" });
   });
 
-  it("is wired into IR generation", () => {
-    expect(readFileSync("src/stages/ir.ts", "utf8")).toMatch(/fieldChecksOnRecordView\(parsed\.data, currentModel\)/);
+  it("is wired into IR generation, with the request", () => {
+    expect(readFileSync("src/stages/ir.ts", "utf8")).toMatch(/fieldChecksOnRecordView\(parsed\.data, currentModel, sourcePrompt\)/);
+  });
+
+  // Run 2026-11-03T07-31-20-798Z-dcc341ef: the record page was captured before its tabs drew, so the
+  // model showed none, though the page has Related | Details; the field check never opened Details.
+  it("a record page captured with no tabs at all still gets the Details click", () => {
+    const i = ir([...base(), fieldIs("textbox", "Zq Expiry")]);
+    fieldChecksOnRecordView(i, { pages: [model.pages[0], { url: model.pages[1].url, elements: [{ role: "button", name: "Edit" }] }] });
+    expect(i.steps.filter((s) => s.target?.name === "Details")).toHaveLength(1);
+  });
+
+  it("a captured page whose tabs include no Details gets none", () => {
+    const i = ir([...base(), fieldIs("textbox", "Zq Expiry")]);
+    fieldChecksOnRecordView(i, { pages: [model.pages[0], { url: model.pages[1].url, elements: [{ role: "tab", name: "Related" }] }] });
+    expect(i.steps.some((s) => s.target?.name === "Details")).toBe(false);
+  });
+
+  // Run 2026-11-03T08-18-32-287Z-885b1ba6: the roll-up was looked for on the Accounts LIST after the
+  // flow went home and clicked the tab. It belongs to the Account this case created: open it first.
+  it("a created record's field checked elsewhere opens that record first", async () => {
+    const { checksOnCreatedRecord } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [
+      { api: "Zq_Parent__c", fields: [{ label: "Zq Name" }], calculated: [{ label: "Zq Total" }] },
+      { api: "Zq_Child__c", fields: [{ label: "Zq Amount" }] },
+    ] };
+    const textAt = (text: string, value: string): Step => ({ id: "c", action: "assert", target: { text }, assertion: "text_contains", value } as Step);
+    const i = ir([
+      nav("/lightning/o/Zq_Parent__c/new"), fill("Zq Name", "Zq P {{uid}}"), click("Save"), created,
+      nav("/lightning/o/Zq_Child__c/new"), fill("Zq Amount", "5000"), click("Save"), created,
+      nav("/"), click("Zq Parents"), textAt("Zq Total", "5,000"),
+    ]);
+    expect(checksOnCreatedRecord(i, org)).toHaveLength(1);
+    const k = i.steps.findIndex((s) => s.id === "sf-open-Zq_Parent__c");
+    expect(i.steps[k].target?.url).toMatch(/Zq_Parent__c/);
+    expect(i.steps[k + 1]).toMatchObject({ target: { text: "Zq Total" } });
+    // Already on that record (its own Save landed there): nothing added.
+    const here = ir([nav("/lightning/o/Zq_Parent__c/new"), fill("Zq Name", "Zq P {{uid}}"), click("Save"), created, textAt("Zq Total", "0")]);
+    expect(checksOnCreatedRecord(here, org)).toEqual([]);
+    // Run 2026-11-03T09-46-16-921Z-04a94b10: a guessed list URL on the way, rejected by grounding.
+    // The record is opened directly, so the way there goes, unless finding it is the request.
+    const routed = () => ir([
+      nav("/lightning/o/Zq_Parent__c/new"), fill("Zq Name", "Zq P {{uid}}"), click("Save"), created,
+      nav("/lightning/o/Zq_Child__c/new"), fill("Zq Amount", "5000"), click("Save"), created,
+      nav("/lightning/o/Zq_Parent__c/list?filterName=__Recent"), click("Zq Parents"), textAt("Zq Total", "5,000"),
+    ]);
+    const direct = routed();
+    checksOnCreatedRecord(direct, org, "verify the Zq Total shows 5,000");
+    expect(direct.steps.some((s) => /list\?/.test(s.target?.url ?? "") || s.target?.name === "Zq Parents")).toBe(false);
+    const finding = routed();
+    checksOnCreatedRecord(finding, org, "check the Zq Parent appears in the list with Zq Total 5,000");
+    expect(finding.steps.some((s) => /list\?/.test(s.target?.url ?? ""))).toBe(true);
+  });
+
+  // Run 2026-11-03T08-26-40-331Z-684ad8dc: the check on the roll-up came without its value 4 times.
+  it("a value check with no value takes the one the request states after the label", async () => {
+    const { valuesFromRequest } = await import("../src/stages/salesforceGuidance.js");
+    const empty = (text: string): Step => ({ id: "v", action: "assert", target: { text }, assertion: "text_contains" } as Step);
+    const i = ir([empty("Zq Total Amount")]);
+    expect(valuesFromRequest(i, "verify the Account's Zq Total Amount shows 5,000")).toHaveLength(1);
+    expect(i.steps[0].value).toBe("5,000");
+    const quoted = ir([empty("Zq Status")]);
+    valuesFromRequest(quoted, "and check Zq Status is 'Closed Won'");
+    expect(quoted.steps[0].value).toBe("Closed Won");
+    // Run 2026-11-03T09-52-32-235Z-e9e0149b: the label written with its object's name.
+    const owned = ir([empty("Zq Parent's Zq Total Amount")]);
+    valuesFromRequest(owned, "verify the Zq Parent's Zq Total Amount shows 5,000");
+    expect(owned.steps[0].target?.text).toBe("Zq Total Amount");
+    expect(owned.steps[0].value).toBe("5,000");
+    const heading = ir([{ id: "h", action: "assert", target: { text: "Today's Zq Tasks" }, assertion: "visible" } as Step]);
+    valuesFromRequest(heading, "p");
+    expect(heading.steps[0].target?.text).toBe("Today's Zq Tasks");
+    const none = ir([empty("Zq Total Amount")]);
+    expect(valuesFromRequest(none, "verify the Zq Total Amount updates")).toEqual([]);
+    expect(none.steps[0].value).toBeUndefined();
+  });
+
+  // Same run: the request said "the SLA field"; the writer checked "SLA Expiration Date". The org's
+  // Dynamic Forms rule shows "SLA" only when Customer Priority = High: that is the field to check.
+  it("checks the field the org's Dynamic Forms rule shows, when the request names it", () => {
+    const textIs = (text: string): Step => ({ id: "t", action: "assert", target: { text }, assertion: "visible" } as Step);
+    const org = { objects: [{ fields: [{ label: "Zq SLA" }, { label: "Zq SLA Expiry" }],
+      visibilityRules: [{ target: "Zq SLA", when: "Zq Priority = High" }] }] };
+    const i = ir([...base(), textIs("Zq SLA Expiry")]);
+    fieldChecksOnRecordView(i, { ...model, salesforceOrg: org }, "Create an Account with Zq Priority High and verify the Zq SLA field is shown");
+    expect(i.steps[i.steps.length - 1].target).toEqual({ field: "Zq SLA" });
+    expect(i.steps.filter((s) => s.target?.name === "Details")).toHaveLength(1);
+    const asked = ir([...base(), textIs("Zq SLA Expiry")]);
+    fieldChecksOnRecordView(asked, { ...model, salesforceOrg: org }, "verify the Zq SLA Expiry field is shown");
+    expect(asked.steps[asked.steps.length - 1].target).toEqual({ text: "Zq SLA Expiry" });
   });
 });
 
@@ -279,13 +367,23 @@ describe("returnToCreatedRecords", () => {
   it("leaves alone a click that finds the record in its list or a search: finding it may be the check", () => {
     const saved = [nav("/lightning/o/Zq_Parent__c/new"), fill("Zq Parent Name", "Zq Parent {{uid}}"), click("Save"), created];
     const inList = ir([...saved, nav("/lightning/o/Zq_Parent__c/list?filterName=Recent"), link("back", "Zq Parent {{uid}}")]);
-    expect(returnToCreatedRecords(inList)).toEqual([]);
+    const finds = "Create a Zq Parent and check it appears in the Zq Parents list";
+    expect(returnToCreatedRecords(inList, finds)).toEqual([]);
     const searched = ir([...saved, fill("Search", "Zq Parent {{uid}}"), link("back", "Zq Parent {{uid}}")]);
     expect(returnToCreatedRecords(searched)).toEqual([]);
     // The list reached the way the click-route guidance says: the object's tab in the navigation bar.
     const byTab = ir([...saved, link("tab", "Zq Parents"), link("back", "Zq Parent {{uid}}")]);
-    expect(returnToCreatedRecords(byTab)).toEqual([]);
+    expect(returnToCreatedRecords(byTab, finds)).toEqual([]);
     expect(byTab.steps.find((s) => s.id === "back")?.action).toBe("click");
+  });
+
+  // Run 2026-11-03T08-39-38-811Z-a28f4ed4: Home, the object's tab, then the new record's link, for a
+  // check of its field. The request is not about finding it: the tabs were only the way there.
+  it("opens the record when the tab clicks were only the way to it", () => {
+    const saved = [nav("/lightning/o/Zq_Parent__c/new"), fill("Zq Parent Name", "Zq Parent {{uid}}"), click("Save"), created];
+    const byTab = ir([...saved, link("home", "Home"), link("tab", "Zq Parents"), link("back", "Zq Parent {{uid}}")]);
+    expect(returnToCreatedRecords(byTab, "Create a Zq Parent and verify its Zq Total shows 5,000")).toHaveLength(1);
+    expect(byTab.steps.find((s) => s.id === "back")?.target?.url).toBe(recordRef("Zq_Parent__c", 1));
   });
 
   it("the record opened again is a record page: its field value check is read inside the field", () => {
@@ -310,9 +408,9 @@ describe("returnToCreatedRecords", () => {
 
   it("is wired into IR generation before the field checks", () => {
     const src = readFileSync("src/stages/ir.ts", "utf8");
-    const back = src.indexOf("returnToCreatedRecords(parsed.data)");
+    const back = src.indexOf("returnToCreatedRecords(parsed.data, sourcePrompt)");
     expect(back).toBeGreaterThan(-1);
-    expect(back).toBeLessThan(src.indexOf("fieldChecksOnRecordView(parsed.data, currentModel)"));
+    expect(back).toBeLessThan(src.indexOf("fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt)"));
   });
 });
 

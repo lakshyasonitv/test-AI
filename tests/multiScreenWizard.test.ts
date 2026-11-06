@@ -21,7 +21,10 @@ const { toIR } = await import("../src/stages/ir.js");
 const { extractDomModelFromPage } = await import("../src/stages/domDiscovery.js");
 const { runStepLive, waitForScreenSettle } = await import("../src/stages/liveExtend.js");
 const { withTargetApp } = await import("../src/runTarget.js");
-const { screenCount } = await import("../src/stages/screens.js");
+const { pageKey } = await import("../src/text.js");
+/** How many screens the model holds for `url` (same page key every stage uses). */
+const screenCount = (model: { pages: Array<{ url: string }> }, url: string): number =>
+  model.pages.filter((p) => pageKey(p.url) === pageKey(url)).length;
 const { chromiumLaunchOptions } = await import("../src/browserLaunch.js");
 
 // Each screen REPLACES the form's DOM (as Lightning does); nothing changes the URL. Every screen

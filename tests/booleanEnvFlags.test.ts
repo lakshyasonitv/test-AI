@@ -146,7 +146,10 @@ describe("boolean env flag boot guard", () => {
      * lands, the stale exemption is caught and removed rather than quietly widening the guard's
      * blind spot forever). See TD-100 for why this list matters at all.
      */
-    const RESERVED_FLAGS = ["DISCOVERY_LIVE_DOM", "SALESFORCE_ENABLED"] as const;
+    // Empty since 2026-11-02: DISCOVERY_LIVE_DOM and SALESFORCE_ENABLED both have readers now, so the
+    // reverse assertion below covers them like every other flag. Add a name here only while its
+    // reader has not landed yet.
+    const RESERVED_FLAGS: readonly string[] = [];
 
     /** Every `process.env.X === "true"` / `!== "false"` in src/, found by reading the source. */
     function flagsTheCodeReads(): string[] {

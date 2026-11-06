@@ -4,7 +4,7 @@ import { parseJson } from "../llm/json.js";
 import { isRateLimitError } from "../llm/backoff.js";
 import { IR, type Step } from "../schema/ir.js";
 import type { TestCase } from "./testCases.js";
-import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, INTERACTIVE_ROLES, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
+import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary, siteHost, pageKey, lineKey } from "../text.js";
 import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion, finalScreenErrors } from "./liveExtend.js";
 import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
@@ -24,7 +24,7 @@ import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import {
   salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
-  returnToCreatedRecords,
+  returnToCreatedRecords, checksOnCreatedRecord, valuesFromRequest,
 } from "./salesforceGuidance.js";
 import { FRONTDOOR_REF, currentFrontdoor, isFrontdoorRef, recordRefObject } from "./salesforceFrontdoor.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
@@ -1434,6 +1434,9 @@ export function groundingError(
       if (hintErr) return hintErr;
       continue; // navigate / text-only / wait steps
     }
+    // The record page's Details tab, added by fieldChecksOnRecordView: the spec clicks it only if it
+    // shows, so a capture without it (run 2026-11-03T09-37-18-648Z-47d0b2e9) is no reason to cut the case.
+    if (step.id === "sf-details") continue;
     const role = norm(t.role);
     const name = norm(t.name);
 
@@ -2373,12 +2376,32 @@ Example — handling duplicate selectors with nth:
     ...(refuseErrors ? ["hollow-guards:1"] : []),
     // Session 103: a Salesforce case ending on the Save button alone gains the outcome assertion.
     // 4: back to a record the case created, and field value checks on the record page (Phase A).
-    ...(sfOutcome ? ["sf-outcome:4"] : []),
+    // 5: the Details click on a record page captured without tabs; a Dynamic Forms rule's own field.
+    // 6: that field checked by its exact label (Target.field, visible).
+    // 7: a lookup finds a just-created record in Recent Items (grounding could not, and truncated).
+    // 8: a check of a created record's field made elsewhere opens that record first.
+    // 9: a value check written without its value takes the one the request states.
+    // 10: tab clicks on the way to a created record no longer stop it being opened directly.
+    // 11: the detour to a created record (tab clicks, a guessed list URL) goes when it is opened directly.
+    // 12: a value check's label written with its object's name ("Account's X") is the org's label.
+    // 13: the request-values check reads "Account's X" as the field X.
+    ...(sfOutcome ? ["sf-outcome:13"] : []),
     // Session 102: values fixed from the org model (TEST_DATA_ENABLED); an IR cached without it keeps the old values.
     // 2: a lookup keeps the name of the record this case created (Phase A).
     // 3: an "each and every field" request keeps every field the case fills (asksForEveryField).
-    // 4: that check also reads "filed"/"flied" and a trailing "each and every" (TD-179).
-    ...(testDataEnabled() ? ["test-data:4"] : []),
+    // 4: a dependent value that is no option is replaced; a no-value step is not kept by "every field".
+    // 5: an invented picklist value ("Region A") becomes a real option (inventedOption).
+    // 6: websites and street/city made unique per run; "Phone" matches the org label "Account Phone".
+    // 7: an "every field" step whose value is "None" / "N/A" is dropped like an empty one.
+    // 8: a select the form names in its own words is matched to its lookup (lookupNamedFor).
+    // 9: date picker clicks dropped; the date is typed.
+    // 10: "every field": a mid-form check on a checkbox ticks it; on another control it goes.
+    // 11: refactored-code's "every field" check also reads "filed"/"flied" and a trailing "each and every" (TD-179), merged in.
+    ...(testDataEnabled() ? ["test-data:11"] : []),
+    // D-77/D-78: the multi-value and flow-check passes change the IR; an IR compiled with either off
+    // must never be served with it on, or the reverse. Absent when off: every key unchanged.
+    ...(multiValueEnabled() ? ["multi-value:1"] : []),
+    ...(flowChecksEnabled() && currentRunTargetApp() === "salesforce" ? ["sf-flow-checks:1"] : []),
     // D-63: an IR compiled on a frontdoor run starts with the env-referenced login; it must never be
     // served to a password run on the same org, nor the reverse. Absent on every other run.
     ...(currentFrontdoor() ? [`sf-frontdoor:${currentFrontdoor()!.instanceHost}`] : []),
@@ -2864,7 +2887,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // mistyped model id) will never succeed by re-sending the same request — burning the
       // rest of MAX_ATTEMPTS on it just wastes budget, and worse, previously reported "IR
       // failed schema validation after retry" for what was actually an API-key/model problem
-      // (problems.md Cross-cutting #1 — a user reading that message has no way to tell "your
+      // (archive:docs/archive/problems.md Cross-cutting #1 — a user reading that message has no way to tell "your
       // site is broken" apart from "your credentials are wrong"). Fail fast, and mark the
       // thrown error structurally (`.isInfrastructureError`), not just in its message text, so
       // a caller can route it differently without string-matching — this is exactly the class
@@ -2914,8 +2937,10 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       if (note) console.log(`[ir] ${note}`);
       for (const rt of assertRecordTypeForms(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${rt}`);
       // Before the field checks: a record opened again is a record page too.
-      for (const r of returnToCreatedRecords(parsed.data)) console.log(`[ir] ${r}`);
-      for (const f of fieldChecksOnRecordView(parsed.data, currentModel)) console.log(`[ir] ${f}`);
+      for (const r of returnToCreatedRecords(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
+      for (const r of valuesFromRequest(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
+      for (const r of checksOnCreatedRecord(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
+      for (const f of fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt)) console.log(`[ir] ${f}`);
     }
     // D-78: what a record-triggered flow sets on the record a case saves, checked on the SAVED record
     // when — and only when — the case's own inputs meet the flow's start conditions. After the passes

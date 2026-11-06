@@ -24,8 +24,17 @@ vi.mock("../src/kb/llmCache.js", async (importOriginal) => {
   };
 });
 
+// The screen map is read from disk; on a Salesforce run with SCREEN_MAP_ENABLED both generators
+// render it through screensForCases, so a fixed block stands in for a stored map here.
+vi.mock("../src/stages/screenMap.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/stages/screenMap.js")>()),
+  loadScreenMap: () => null,
+  screensForCases: () => "\nScreens an earlier run reached: SCREENS-BLOCK-MARKER",
+}));
+
 const { toTestCases, NoTestCasesError } = await import("../src/stages/testCases.js");
 const { proTestCases, PRO_FAILURE_PREFIX } = await import("../src/stages/proTestCases.js");
+const { withTargetApp } = await import("../src/runTarget.js");
 const { makeCacheKey } = await vi.importActual<typeof import("../src/kb/llmCache.js")>("../src/kb/llmCache.js");
 
 const appModel: AppModel = {
@@ -52,7 +61,7 @@ const OK = [{
 }];
 const answer = (o: unknown) => ({ content: JSON.stringify(o), usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } });
 
-const ENV = ["LLM_PROVIDER", "GEMINI_MODEL", "LLM_CACHE_VERSION"];
+const ENV = ["LLM_PROVIDER", "GEMINI_MODEL", "LLM_CACHE_VERSION", "SCREEN_MAP_ENABLED"];
 let saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
@@ -160,5 +169,72 @@ describe("a Pro failure is labelled, and keeps its type", () => {
     expect(err).toBeInstanceOf(NoTestCasesError);
     expect(err.message.startsWith(PRO_FAILURE_PREFIX)).toBe(true);
     expect(err.rawResponse).toBe("[]");
+  });
+});
+
+// Pro on a Salesforce run used to write its cases WITHOUT the org scan and the screen map: both are
+// blocks toTestCases adds beside the application model, and Pro's copy of that function predated
+// them. These pin that Pro now sends the same two blocks, keys on them the same way, and that a
+// non-Salesforce Pro run is untouched.
+describe("Pro on a Salesforce run carries the org scan and the screen map", () => {
+  const sfModel: AppModel = {
+    ...appModel,
+    salesforceOrg: {
+      validationRulesRead: true,
+      objects: [{
+        api: "Lead", label: "Lead", labelPlural: "Leads", createable: true,
+        fields: [
+          { api: "Company", label: "Company", type: "String", required: true },
+          { api: "Status", label: "Lead Status", type: "Picklist", picklist: ["Open", "Qualified"] },
+        ],
+      }],
+    },
+  };
+
+  it("the prompt holds the org block and the screens block, the way the standard prompt does", async () => {
+    process.env.SCREEN_MAP_ENABLED = "true";
+    await withTargetApp("salesforce", () => proTestCases(plan, sfModel, undefined, { sourcePrompt: "p", spec: SPEC }));
+    const user: string = geminiMock.mock.calls[0][0];
+    expect(user).toContain("- Leads (object Lead)");
+    expect(user).toContain("required on create: Company");
+    expect(user).toContain("Lead Status = Open | Qualified");
+    expect(user).toContain("SCREENS-BLOCK-MARKER");
+    // Beside the application model, before the checklist and the spec — the standard layout.
+    expect(user.indexOf("- Leads (object Lead)")).toBeLessThan(user.indexOf("Coverage checklist floor"));
+    expect(user.indexOf("SCREENS-BLOCK-MARKER")).toBeLessThan(user.indexOf("- Leads (object Lead)"));
+    expect(user.indexOf("Coverage checklist floor")).toBeLessThan(user.indexOf("Requirements specification"));
+
+    // Byte-for-byte the same blocks the standard generator sends for the same run.
+    geminiMock.mockClear();
+    await withTargetApp("salesforce", () => toTestCases(plan, sfModel, undefined, { sourcePrompt: "p" }));
+    const std: string = geminiMock.mock.calls[0][0];
+    const blocks = (s: string) => s.slice(s.indexOf("SCREENS-BLOCK-MARKER"), s.indexOf("\n\nCoverage checklist floor"));
+    expect(blocks(user)).toBe(blocks(std));
+  });
+
+  it("the key keeps parity: the standard key's dimensions, Salesforce blocks included, then the spec", async () => {
+    process.env.SCREEN_MAP_ENABLED = "true";
+    const std = await keyParts(() => withTargetApp("salesforce", () => toTestCases(plan, sfModel, undefined, { sourcePrompt: "p" })));
+    const pro = await keyParts(() => withTargetApp("salesforce", () => proTestCases(plan, sfModel, undefined, { sourcePrompt: "p", spec: SPEC })));
+    expect(std).toHaveLength(13); // the eleven, plus the screens block, plus the org block
+    expect(pro).toHaveLength(std.length + 1);
+    const SYSTEM = 7;
+    for (let i = 0; i < std.length; i++) if (i !== SYSTEM) expect(pro[i], `dimension ${i}`).toBe(std[i]);
+    expect(pro[pro.length - 1]).toBe(JSON.stringify(SPEC));
+  });
+
+  it("a different org scan gives a different key — a suite cached without it is never reused", async () => {
+    const a = await keyParts(() => withTargetApp("salesforce", () => proTestCases(plan, sfModel, undefined, { sourcePrompt: "p", spec: SPEC })));
+    const b = await keyParts(() => withTargetApp("salesforce", () => proTestCases(plan, appModel, undefined, { sourcePrompt: "p", spec: SPEC })));
+    expect(makeCacheKey(...a)).not.toBe(makeCacheKey(...b));
+  });
+
+  it("a non-Salesforce Pro run is unchanged: no org block, no screens block, the twelve-part key", async () => {
+    process.env.SCREEN_MAP_ENABLED = "true";
+    const key = await keyParts(() => proTestCases(plan, sfModel, undefined, { sourcePrompt: "p", spec: SPEC }));
+    expect(key).toHaveLength(12);
+    const user: string = geminiMock.mock.calls[0][0];
+    expect(user).not.toContain("(object Lead)");
+    expect(user).not.toContain("SCREENS-BLOCK-MARKER");
   });
 });

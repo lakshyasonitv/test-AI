@@ -93,6 +93,11 @@ describe("the Playwright child's environment", () => {
     expect(env.RUN_TIMEZONE).toBe("Europe/London");
   });
 
+  it("points Playwright's testDir at the spec's own folder, never all of runs/ (TD-185)", async () => {
+    await runSpec("test('x', async () => {});", runDir, {});
+    expect(childEnv().PLAYWRIGHT_TEST_DIR).toBe(path.resolve(runDir, "generated"));
+  });
+
   it("forwards PLAYWRIGHT_VIDEO, which playwright.config.ts reads to decide recording (TD-129)", async () => {
     vi.stubEnv("PLAYWRIGHT_VIDEO", "all");
     await runSpec("test('x', async () => {});", runDir, {});

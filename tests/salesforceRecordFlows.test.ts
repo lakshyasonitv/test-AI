@@ -173,6 +173,8 @@ describe("grounding: a step back to a created record", () => {
 
   it("a field check carries its label for the request-values check", () => {
     expect(stepsMissingValues([valueCheck("Zq Total Amount", "5,000")], { steps: ["check Zq Total Amount"], expected: "" }, ["Zq Total Amount"])).toEqual([]);
+    // Run 2026-11-03T09-58-44-651Z-fd8a02f9: the request's "Zq Parent's Zq Total Amount" is that field.
+    expect(stepsMissingValues([valueCheck("Zq Total Amount", "5,000")], { steps: ["check Zq Parent's Zq Total Amount"], expected: "" }, ["Zq Parent's Zq Total Amount"])).toEqual([]);
   });
 });
 

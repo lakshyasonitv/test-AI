@@ -172,8 +172,3 @@ export function mergeScreenInto(
 export function findScreen(model: AppModel, key: string): PageModel | undefined {
   return model.pages.find((p) => fingerprintOf(p).key === key);
 }
-
-/** How many screens the model holds for `url`. */
-export function screenCount(model: AppModel, url: string): number {
-  return model.pages.filter((p) => pageKey(p.url) === pageKey(url)).length;
-}

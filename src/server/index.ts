@@ -26,7 +26,6 @@ import {
   canViewRun,
   filterRunsForUser,
   isRole,
-  orgForRun,
   primaryOrgFor,
   requireOrgRole,
   requireRole,
@@ -95,7 +94,7 @@ import { insight } from "../insights.js";
 import { withRunId } from "../runContext.js";
 import { regroundEditedIr } from "../stages/caseEdit.js";
 import {
-  credentialsFromEnv, credentialKindsNeeded, restoreCredentialRefs, isEnvValueRef,
+  credentialKindsNeeded, restoreCredentialRefs, isEnvValueRef,
   type Credentials,
 } from "../stages/credentials.js";
 import { resolveCredentialsVia } from "./resolveCredentials.js";
@@ -111,7 +110,7 @@ import { summariseRun } from "../runStore.js";
 import { isAllowedEntryUrl, orgDiscoveryCacheEnabled, savedDiscoveriesFor } from "../stages/hybridDiscovery.js";
 import { isTargetApp, salesforceEnabled, TARGET_APPS, withTargetApp, type TargetApp } from "../runTarget.js";
 import {
-  salesforceOAuthEnabled, startAuthorization, completeAuthorization, connectionFor, connectionMatchesUrl,
+  salesforceOAuthEnabled, startAuthorization, completeAuthorization, connectionMatchesUrl,
   frontdoorSessionFor, appOrigin, replaySessionFor, restoreConnection,
 } from "./salesforceOAuth.js";
 import { withFrontdoor, isFrontdoorRef } from "../stages/salesforceFrontdoor.js";
@@ -123,6 +122,7 @@ import {
   checkSpecUpload, distillSpec, getRunSpecWarnings, specIntakeEnabled, DISTILL_FAILED_WARNING,
 } from "../stages/specIntake.js";
 import { SpecModel } from "../schema/spec.js";
+import { proStoryPromptEnabled, storyPromptText } from "../stages/storyPrompt.js";
 import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabled, JiraError, parseIssueKey } from "../jira/client.js";
 import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
 import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
@@ -1044,7 +1044,11 @@ app.post("/api/spec/confirm", requireRole("tester"), (req, res) => {
   if (stray.length > 0) {
     return res.status(400).json({ error: "an answer was given to a question that was not asked" });
   }
-  res.json({ spec: parsed.data });
+  // PRO_STORY_PROMPT: an OPTIONAL extra field (rule 1) — the plain request built from this spec,
+  // which the browser puts in an EMPTY prompt box (or offers as a button when the user typed one).
+  // Off, or a spec with nothing to test: the body is exactly { spec } as before.
+  const promptText = proStoryPromptEnabled() ? storyPromptText(parsed.data) : "";
+  res.json({ spec: parsed.data, ...(promptText ? { promptText } : {}) });
 });
 
 // What the browser needs to talk to Supabase Auth directly (Step 2.2). A NEW route rather than
@@ -2624,9 +2628,7 @@ export const BOOLEAN_ENV_FLAGS = [
   // read false, and silently skipped the cheap structural heal so every heal paid for a full LLM
   // IR regeneration — invisible, because the expensive path produces a correct-looking result.
   "DETERMINISTIC_HEAL",
-  // RESERVED: registered before its reader lands, so a typo (`=truebro`) is fatal from the moment
-  // the flag exists instead of silently reading false. The live-DOM discovery walker
-  // (`src/schema/appModel.ts` documents the fields it will write) reads it once that stream ships.
+  // Live-DOM discovery (src/stages/liveDomDiscovery.ts): element lists read from the live page.
   "DISCOVERY_LIVE_DOM",
   "ENABLE_CASE_SELECTION_GATE",
   // Phase 2: gates the new diagnostic OUTPUT only (per-call provider/model/token line, per-run
@@ -2636,8 +2638,7 @@ export const BOOLEAN_ENV_FLAGS = [
   "NL_STEPS_ENABLED",
   "ORG_LLM_CONFIG_ENABLED",
   "REPLAY_REGROUND",
-  // RESERVED: registered before its reader lands (same reason as DISCOVERY_LIVE_DOM above). Names
-  // the Salesforce-specific discovery support; nothing reads it yet.
+  // D-50: the "This URL is a Salesforce org" box and every Salesforce-only path behind it.
   "SALESFORCE_ENABLED",
   // D-65: the fixed Salesforce login for generated tests (src/stages/salesforceOrgLogin.ts). Off:
   // every compile and every spec is exactly what it was. Read only on a ticked Salesforce run.
@@ -2651,6 +2652,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // Pro document intake (src/stages/specIntake.ts). Off: no Pro toggle, the /api/spec/* routes
   // 403, and options.spec on POST /api/runs is ignored.
   "SPEC_INTAKE_ENABLED",
+  // Pro story -> request (src/stages/storyPrompt.ts). Needs SPEC_INTAKE_ENABLED. Off: POST
+  // /api/spec/confirm returns { spec } only, and the planner never sees the story.
+  "PRO_STORY_PROMPT",
   "SCREEN_MAP_ENABLED",
   "NETWORK_SETTLE_ENABLED",
   "SCREEN_BEST_MATCH_ENABLED",
@@ -2664,6 +2668,9 @@ export const BOOLEAN_ENV_FLAGS = [
   "SALESFORCE_CLEANUP_ENABLED",
   // src/stages/hybridDiscovery.ts: reuse an org-connection discovery while the org's setup is unchanged.
   "SALESFORCE_DISCOVERY_CACHE_ENABLED",
+  // src/stages/salesforceOrgDeep.ts (Phase 1): record-type differences, Dynamic Forms visibility rules
+  // and calculated-field definitions for the request's objects. Off: the org model is unchanged.
+  "SALESFORCE_DEEP_DISCOVERY_ENABLED",
   // D-71: Jira Phase 1 — "Connect Jira" and read a story into the prompt box. Off: no Jira row on
   // the home view, and every /api/jira/* route answers 404.
   "JIRA_ENABLED",

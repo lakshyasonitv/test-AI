@@ -1246,9 +1246,8 @@ function setupCaseCardListeners() {
   // Save-case (Step 5.2). A viewer never gets the control — and the server refuses them anyway,
   // which is the actual guarantee.
   suiteCaseListEl.querySelectorAll(".case-save-btn").forEach((btn) => {
-    // Auth off: the synthetic local user is an owner (rule 7), but the page never learns a role
-    // then, so `auth.role` is null — the same `!auth.required ||` every other role check here uses.
-    if (auth.required && !roleAtLeast(auth.role, "tester")) { btn.remove(); return; }
+    // Sign-in off, or the role not known yet: nothing is restricted (applyRoleRestrictions).
+    if (auth.required && auth.role && !roleAtLeast(auth.role, "tester")) { btn.remove(); return; }
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const card = btn.closest(".case-card");
@@ -3960,12 +3959,12 @@ const runMetaEl = document.getElementById("runMeta");
  *
  *  - truncated / truncated_no_assertion / incomplete all become "unconfirmed".
  *    They are three names for one situation: the test ran and proved nothing.
- *    Reporting any of them as a pass is what problems.md calls out under
+ *    Reporting any of them as a pass is what archive:docs/archive/problems.md calls out under
  *    "a truncated test can report green".
  *
  *  - error becomes "blocked", NOT "failed". An invalid API key or a dead model
  *    id is not the site under test misbehaving, and reporting it as a failure is
- *    the single most expensive defect in problems.md ("you were told your
+ *    the single most expensive defect in archive:docs/archive/problems.md ("you were told your
  *    website has failing tests when the truth was that your API key was
  *    invalid"). --blocked carries its own hue precisely so "we couldn't run"
  *    can never be read as "your site is broken".
@@ -6412,6 +6411,9 @@ const pro = {
   draftAnswers: [],    // the right column, one string per question ("" = unanswered)
   confirmed: null,     // the spec after Continue — what a run will carry
   notice: "",          // the one blocking line under the upload row
+  storyPrompt: "",     // PRO_STORY_PROMPT: the request the server built from the confirmed story ("" = none)
+  storyNote: "",       // the neutral line under the upload row about that request ("" = none)
+  storyFilled: "",     // exactly what we last put in the prompt box — still equal = not the user's text
   warnings: [],        // every warning of this intake, append-only
 };
 
@@ -6505,9 +6507,46 @@ function renderProFileLine() {
       : "PDF, Word (.docx) or Markdown — one document.";
   pro.root.querySelector('[data-pro="pick"]').disabled = pro.busy;
   const notice = pro.root.querySelector('[data-pro="notice"]');
-  notice.innerHTML = pro.notice
+  notice.innerHTML = (pro.notice
     ? `<p class="team-error" role="alert" style="margin-top:var(--sp-3)">${escapeHtml(pro.notice)}</p>`
-    : "";
+    : "") + (pro.storyNote
+    // Existing classes only (style.css contract): the Jira fill's note and the Pro block's button.
+    ? `<p class="field-label" style="margin-top:var(--sp-2)">${escapeHtml(pro.storyNote)}</p>` +
+      (pro.storyPrompt && pro.storyNote === PRO_STORY_OFFER
+        ? `<button type="button" class="composer-save-btn" data-pro="use-story">Use the requirements as the prompt</button>`
+        : "")
+    : "");
+  notice.querySelector('[data-pro="use-story"]')?.addEventListener("click", () => {
+    proFillPrompt();
+    renderProFileLine();
+  });
+}
+
+const PRO_STORY_FILLED = "The prompt box was filled from your requirements. Check it, then Run.";
+const PRO_STORY_OFFER = "Your typed prompt is kept. The run will test what it says, alongside the requirements.";
+
+/** Put the story's request in the prompt box (the same way the Jira fill does) and say so. */
+function proFillPrompt() {
+  const promptEl = document.getElementById("prompt");
+  if (!promptEl || !pro.storyPrompt) return;
+  promptEl.value = pro.storyPrompt;
+  pro.storyFilled = pro.storyPrompt;
+  promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+  pro.storyNote = PRO_STORY_FILLED;
+}
+
+/**
+ * After Continue (PRO_STORY_PROMPT): an EMPTY prompt box is filled from the story; text the user
+ * typed is never overwritten — a button offers the replacement instead. No `promptText` from the
+ * server (flag off) means nothing happens at all.
+ */
+function proApplyStoryPrompt() {
+  if (!pro.storyPrompt) { pro.storyNote = ""; return; }
+  const promptEl = document.getElementById("prompt");
+  if (!promptEl) return;
+  // Empty, or still exactly our own earlier fill (the user re-confirmed edited rules): fill it.
+  if (!promptEl.value.trim() || promptEl.value === pro.storyFilled) proFillPrompt();
+  else pro.storyNote = PRO_STORY_OFFER;
 }
 
 function renderProWarnings() {
@@ -6547,6 +6586,7 @@ async function proUpload(file) {
       pro.draftRules = [...body.spec.rules];
       pro.draftAnswers = body.spec.unresolved.map(() => "");
       pro.confirmed = null;
+      pro.storyPrompt = ""; pro.storyNote = "";
     }
   } catch {
     proWarn(PRO_FAILED);
@@ -6569,7 +6609,11 @@ function renderProQuestions() {
         <span class="field-label" style="flex:1">Confirmed: ${n} rule${n === 1 ? "" : "s"} and ${a} answer${a === 1 ? "" : "s"} will steer the next run.</span>
         <button type="button" class="composer-save-btn" data-pro="edit">Edit</button>
       </div>`;
-    host.querySelector('[data-pro="edit"]').addEventListener("click", () => { pro.confirmed = null; renderProQuestions(); });
+    host.querySelector('[data-pro="edit"]').addEventListener("click", () => {
+      pro.confirmed = null; pro.storyNote = "";
+      renderProFileLine();
+      renderProQuestions();
+    });
     return;
   }
 
@@ -6646,8 +6690,11 @@ async function proConfirm() {
       body: JSON.stringify({ spec }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    pro.confirmed = (await res.json()).spec;
+    const body = await res.json();
+    pro.confirmed = body.spec;
     pro.notice = "";
+    pro.storyPrompt = typeof body.promptText === "string" ? body.promptText : "";
+    proApplyStoryPrompt();
   } catch {
     proWarn("Those requirements couldn't be confirmed. Check them and press Continue again.");
   }

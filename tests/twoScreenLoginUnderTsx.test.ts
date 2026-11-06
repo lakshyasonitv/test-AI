@@ -8,8 +8,7 @@ import path from "node:path";
  *
  * TD-40, CLAUDE.md "sharp edges": a named function inside a `page.evaluate` callback becomes a
  * `__name(...)` call under esbuild/tsx, and `__name` does not exist in the browser. vitest does not
- * inject that helper, so tests/twoScreenLogin.test.ts and tests/salesforceLogin.test.ts would pass
- * with the bug present. This one would not: it fails with the ReferenceError the server would hit.
+ * inject that helper, so tests/twoScreenLogin.test.ts would pass with the bug present. This one would not: it fails with the ReferenceError the server would hit.
  * The script it runs is tests/fixtures/loginUnderTsx.ts.
  */
 
@@ -26,6 +25,6 @@ describe("two-screen login under tsx (TD-40)", () => {
     expect(out.error, "the script threw").toBeUndefined();
     expect(JSON.stringify(out)).not.toContain("__name");
     expect(out.gate, "identifier-first detection").toBe(true);
-    expect(out.check, "two screens + the authenticator code screen").toMatchObject({ ok: true, landedUrl: "http://app.test/home" });
+    expect(out.check, "two screens + the verification code screen").toMatchObject({ ok: true, codeScreen: true, landedUrl: "http://app.test/home" });
   }, 150_000);
 });

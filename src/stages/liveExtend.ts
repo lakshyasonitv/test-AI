@@ -22,6 +22,7 @@ import { dropVolatileIdCss, volatileIdDetectionEnabled } from "./volatileIds.js"
 import { captureErrorMarkers, errorMarkersOf, lastInteractionIndex, pageAlertTexts, type ErrorMarker } from "./hollowPassGuards.js";
 import {
   currentFrontdoor, isFrontdoorRef, openFrontdoor, recordPages, recordRefIndex, recordRefObject, type RecordPages,
+  SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING,
 } from "./salesforceFrontdoor.js";
 import type { RunTokenContext } from "../text.js";
 
@@ -45,6 +46,12 @@ export function prepareReplayPage(page: Page, prefix: Step[]): void {
   if (prefix.some((s) => s.action === "select" && s.target?.lookup && hasRunToken(s.value))) replayTokens.set(page, newRunTokenContext());
 }
 
+/** Close Salesforce's "Similar Records Exist" warning when it is open (generator.ts sfDismissDuplicates). */
+export async function dismissDuplicateWarning(page: Page): Promise<void> {
+  if (!(await page.getByText(SF_DUPLICATE_WARNING, { exact: true }).first().isVisible().catch(() => false))) return;
+  await page.getByRole("button", { name: SF_DUPLICATE_CLOSE }).first().click({ timeout: 2000 }).catch(() => {});
+}
+
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
  *  check state, they don't advance it, and a strict assertion shouldn't abort the replay. */
@@ -62,6 +69,10 @@ export async function runStepLive(
    *  single-occurrence call is unaffected. */
   isFinalCredentialAttempt: boolean = true,
 ): Promise<void> {
+  // The spec's sfDismissDuplicates: Salesforce's duplicate warning covers the fields under it.
+  if (currentFrontdoor() && (step.action === "fill" || step.action === "select" || step.action === "click")) {
+    await dismissDuplicateWarning(page);
+  }
   switch (step.action) {
     case "navigate": {
       const u = step.target?.url ?? "/";
@@ -93,10 +104,20 @@ export async function runStepLive(
       // created, prepareReplayPage). A replay that clicks Save creates a real record too, and must not
       // collide with the run's own name or another replay's (duplicate rules).
       const val = hasRunToken(raw) ? resolveRunTokens(raw, replayTokens.get(page) ?? newRunTokenContext()) : raw;
-      await (await resolveLive(page, step.target!, "fill")).fill(val);
+      // Focus first, as the spec's fill step does: a prefilled field that redraws on focus would
+      // otherwise get the value appended ("10" into "10%" gave "1010").
+      const el = await resolveLive(page, step.target!, "fill");
+      await el.focus();
+      await el.fill(val);
       return;
     }
     case "click":
+      // The spec's own rule (generator.ts): the inserted Details tab click is skipped where there is none.
+      if (/^sf-details/.test(step.id)) {
+        const tab = page.getByRole("tab", { name: "Details", exact: true }).first();
+        if (await tab.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false)) await tab.click();
+        return;
+      }
       // D-77: a radio is chosen through its label when the page draws it (SLDS), as the spec does;
       // a plain click on the hidden input waits for a visibility that never comes.
       if (multiValueEnabled() && step.target?.role?.toLowerCase() === "radio") {
@@ -363,7 +384,7 @@ async function replayAndSnapshot(
   // locale was served verbatim to a run using another, permanently, because the disk half of this
   // cache never expires. That is the same defect as the credential case above with a different
   // input, and the three LLM keys do not have it: theirs already contain the AppModel or the page
-  // text, so they re-key themselves (see docs/FINDINGS_2026-09-28.md §7.4). This one cannot.
+  // text, so they re-key themselves (see archive:docs/archive/FINDINGS_2026-09-28.md §7.4). This one cannot.
   //
   // `settle` captures something different (a fully-rendered screen, plus its tab), so it is a key
   // part — appended ONLY when set, so every existing walk keeps its exact key and cache entry.

@@ -1,10 +1,18 @@
 # Progress — where we are
 
-*Last updated: 2026-11-04. Branch `refactored-code` (pushed, no PR; 13 commits behind `origin/main`,
-merge conflicts in DECISIONS/TECH_DEBT/generator/ir). Multi-value screen-flow fields (D-77,
-`MULTI_VALUE_CONTROLS_ENABLED`) and record-triggered flow checks (D-78, `SALESFORCE_FLOW_CHECKS_ENABLED`)
-built, NOT committed. See `journal/2026-11-04.md`. **Gap:** D-76 regression steps 1–4 and TD-179..182
-(committed 2026-10-29..11-03) were never logged in this brain — read `DECISIONS.md` D-76.*
+*Last updated: 2026-11-06. `origin/main` (to `1ab33b3`, PR #22) merged INTO `refactored-code` and pushed.
+Before the merge this branch's records were renumbered past main (`2704e43`): regression D-73 -> D-76,
+multi-value D-74 -> D-77, flow checks D-75 -> D-78; TD-180 -> TD-187, TD-183..185 -> TD-188..190 (TD-181/182
+kept). Merge conflicts were all "keep both" except `app.js`'s Save-case role check (main's line covers
+TD-182) and the IR cache key (test-data:11, plus `multi-value:1` / `sf-flow-checks:1` when those flags are
+on). On this Windows checkout after the merge: tsc clean; the failures are environmental — CRLF `app.js`
+(`appJsProIntake` x2, `proStoryPrompt`), `discoveryStrategy` one-place check, `liveDomDiscovery` TD-40 tsx,
+`listRunsRace` (Windows EPERM, see 04-tasks), `lookupLive` flaky. No PR from `refactored-code` yet.*
+
+*2026-11-04. Branch `refactored-code`. Multi-value screen-flow fields (D-77, `MULTI_VALUE_CONTROLS_ENABLED`)
+and record-triggered flow checks (D-78, `SALESFORCE_FLOW_CHECKS_ENABLED`) built and committed (`029e6c5`).
+**Gap:** D-76 regression steps 1–4 and TD-179..182 (committed 2026-10-29..11-03) were never logged in this
+brain — read `DECISIONS.md` D-76.*
 
 ## 2026-11-04 — `refactored-code`
 
@@ -21,6 +29,46 @@ built, NOT committed. See `journal/2026-11-04.md`. **Gap:** D-76 regression step
   `discoveryStrategy` x3, `liveDomDiscovery` TD-40 tsx, `appJsProIntake` x2, `specRoutes` 15.
 - Not done: no live org / Gemini run; the user has not said whether "multiple value" also means
   running one flow with several data sets (not built).
+
+*Last updated: 2026-11-04, late. TD-186 (History 500 when a run folder is deleted mid-listing) fixed in its own
+PR after #21 (brain update, merged `1c170f2`). Baseline with it: 2919 passed / 1 failed (safeClickBrowser) / 23
+skipped, 224 files. See journal/2026-11-04.md.*
+
+*Last updated: 2026-11-04, end of day. **Everything is merged into main** (PRs #16-#20); main is the only
+working branch. #19: docs say the `archive` branch is protected, no tag. #20: TD-185 fixed — Playwright scans only
+the spec's own folder (`PLAYWRIGHT_TEST_DIR`), so a run folder deleted elsewhere can no longer end a spec before its
+first step. Baseline: vitest 2915 passed / 1 failed (safeClickBrowser, needs network) / 23 skipped, 223 files; tsc clean. Open on the user's side: protect `archive`; the Azure settings in `04-tasks.md`.*
+
+*Last updated: 2026-11-04, evening. **main is the only working branch.** Old documents live on the `archive` branch
+(read with `git show origin/archive:<path>`); `cleanup/production-ready` is retired and fully contained in main.
+PRs #16 (deep discovery D-75 + its docs) and #17 (old docs off main) merged; dead-code chain removed (orgForRun,
+fetchRunOrgIds). No tag: the user chose to protect the `archive` branch instead (2026-11-04). See `journal/2026-11-04.md`.*
+
+*Last updated: 2026-11-04. main (PR #12, #13: parallel suite cases D-73 / TD-180, the discovery fixture fix,
+the rest of cleanup) merged INTO `pro/salesforce-org-context`; this branch's records renumbered to TD-183,
+TD-184, D-74 to avoid main's TD-180 / D-73. PR into main opened from this branch. See journal/2026-11-04.md.*
+
+*Last updated: 2026-11-03, evening. PRs #12 and #13 MERGED and DEPLOYED (live image `97ea0c9`); main's CI green.
+Parallel suite cases (D-73, `SUITE_CASE_CONCURRENCY`, default 1) are in main but OFF on Azure until the user sets
+them (see `journal/2026-11-03.md`). Earlier the same day:
+Corrections verified that day: `cleanup/production-ready` IS committed and pushed (6 commits on main
+`8bcc3e4`, no PR). D-72 shared discovery, Jira Phase 1, the Claude provider and the Salesforce login work are
+all in main (PR #11, merged 2026-10-28). Live Azure: image `8bcc3e4`, 4 vCPU / 8 GiB, MAX_CONCURRENT_RUNS=1
+(set back from 4 on 2026-10-28 14:50, reason unrecorded), PROJECT_DISCOVERY_SHARING on, and `/app/runs` NOT
+mounted (artifacts and caches lost on every scale-to-zero). The paragraphs below are older history.*
+
+*Last updated: 2026-11-03. Branch `pro/salesforce-org-context`: TD-183 committed + pushed (`fa5a2b9`);
+PRO_STORY_PROMPT (TD-184, D-74) committed + pushed (`b190506`) with the user's OK; no PR.
+Baseline: vitest 2841 passed / 3 failed (browser, pre-existing), 212 files. See journal/2026-11-03.md.*
+
+*Last updated: 2026-11-02 (later). Branch `pro/salesforce-org-context` (from `cleanup/production-ready`):
+Pro on Salesforce now sends the org scan + screen map to case generation (TD-183). Committed and pushed;
+no PR. Baseline: vitest 2822 passed / 3 failed (browser tests, pre-existing), 211 files. See journal.*
+
+*Last updated: 2026-11-02. Repo clean-up on branch `cleanup/production-ready` (from main `8bcc3e4`):
+unused code removed, docs restructured (`docs/README.md` index, `docs/archive/`, `docs/guides/`),
+README rewritten, settings documented, booleanEnvFlags failure fixed. NOT committed yet — see
+`journal/2026-11-02.md`. Everything below this line is older history.*
 
 *Last updated: 2026-10-28 (second merge of main: main's D-61 insights kept, PR #11 conflict-free). main merged into the branch (2142d16, not pushed); shared discovery per project (D-72) built, NOT committed. Earlier, 2026-10-26: Jira Phase 1 (D-71) built, NOT committed. Earlier, 2026-10-22: Claude provider (D-66) committed + pushed (`72127dc`). Pinned `?login` login (D-67) committed + pushed (`a700c1d`). Allow-all-orgs (D-68) committed (`0da6005`); screen/report warning committed (`69dbe17`). Run insights (D-69) committed (`67e5881`). Salesforce post-login fixes (D-70) + D-67 removal built, NOT committed.*
 
@@ -99,6 +147,10 @@ was not touched. Our numbers were moved to avoid clashes: D-54 -> D-56, TD-130/1
 - 2026-10-22, same cloud container with a local link `chromium_headless_shell-1148 -> -1194` (container
   only, not in the repo) so the browser tests run: **2368 passed, 2 failed (the same two below), 23
   skipped, 176 files** with D-67; with D-68: 2377 passed, same 2 failed, 177 files; with D-69: 2390 passed, same 2 failed; with D-70: 2412 passed, same 2 failed; with D-71 (2026-10-26): 2447 passed, same 2 failed, 181 files.
+- 2026-11-04, main + TD-185 (PR #20), browser link now `-1148 -> -1243`: **2915 passed, 1 failed, 23 skipped,
+  223 files**; tsc clean. The one failure is `safeClickBrowser` (needs `example.com`; passes in CI).
+  `booleanEnvFlags` and `discoveryStrategy` were fixed in #13.
+- 2026-11-04 later, main + TD-186: **2919 passed, 1 failed (safeClickBrowser), 23 skipped, 224 files**; tsc clean.
 - The 2 failures pre-date all of this: `booleanEnvFlags` (stale RESERVED list) and
   `safeClickBrowser` (needs `example.com`, blocked in the cloud container; passes in CI).
 - CI also fails `discoveryStrategy` "shadowAndFrame" on `main` (Chromium-version dependent

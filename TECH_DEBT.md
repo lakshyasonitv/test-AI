@@ -654,6 +654,8 @@ to `main`.
 scope filtering — was unenforced on any change. It was the highest leverage-per-effort item in this
 register: one workflow file protects every other fix listed here.
 
+(`directory-tree.yml` was removed on 2026-11-02: it only uploaded a tree artifact nobody read.)
+
 **Fix, verified 2026-09-05.** `.github/workflows/test.yml` exists, is git-tracked, and is exactly
 the remediation this entry proposed. It runs `on: push` and `on: pull_request`, Node 22 with npm
 cache, then three steps: `npm ci`, `npx tsc --noEmit`, `npm test` (which `package.json` defines as
@@ -661,7 +663,7 @@ cache, then three steps: `npm ci`, `npx tsc --noEmit`, `npm test` (which `packag
 this entry required.
 
 > **This entry read "no CI" for longer than it was true, and the claim propagated.** It was repeated
-> in `docs/team-guide/` Vol 5 and in conversation before anyone opened `.github/workflows/`. If you
+> in the team guide's Vol 5 (`archive:docs/guides/team-guide/`) and in conversation before anyone opened `.github/workflows/`. If you
 > are about to state that this project has no CI, check the directory first. Two workflows live
 > there, not one.
 >
@@ -1722,9 +1724,14 @@ suite run (87 -> 87, previously 85 -> 87).
 
 ## Site Store / View — Phase 0 measurement result
 
-`SITE_STORE_VIEW_SPEC_v2.md` proposes replacing the AppModel-in-prompt with a Store + retrieval +
+> **Archived 2026-11-02.** The spec, the `measureView.ts` harness and its test now live together in
+> `archive:docs/archive/site-store-view/`. The test no longer runs in CI (vitest runs `tests/` only), so the
+> guards described below are history until the work is picked up again and the folder moved back. Since
+> 2026-11-04 the folder is on the `archive` branch only (`archive:docs/archive/site-store-view/`).
+
+`archive:docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md` proposes replacing the AppModel-in-prompt with a Store + retrieval +
 View. Its ground rule 7 gates the whole project on one unmeasured number, and rule 8 says the
-finding is recorded here either way. `scripts/measureView.ts` produced it over **all 38 saved runs
+finding is recorded here either way. `archive:docs/archive/site-store-view/measureView.ts` produced it over **all 38 saved runs
 that have an `02-appmodel.json`**, with a real tokenizer (`gpt-tokenizer`), no browser and no LLM.
 
 **Outcome: the gate was not met. Phases 1, 2.5 and 3 are NOT STARTED, BLOCKED ON EVIDENCE — not
@@ -1809,7 +1816,7 @@ confidently. A further instance was then caught *by the guard written for bug 2*
 `(role, name)` joiner still sitting inside `elementId`, which nothing had noticed. That is four
 occurrences of one root cause inside a single piece of work.
 
-So it is not fixed, it is **guarded**, in `tests/measureView.test.ts`:
+So it is not fixed, it is **guarded**, in `archive:docs/archive/site-store-view/measureView.test.ts`:
 
 - `coverage()` **throws** on zero references instead of returning `1`. The caller decides "not
   measured"; the function refuses to invent a score. This is TD-01's shape — a check that passes
@@ -1870,7 +1877,7 @@ for. Recorded so the negative headline does not bury it.
 Do not build Phases 1–3 as specified. Build the narrow projection of the test-case prompt only,
 above the threshold above, and re-measure retrieval when the corpus can support it.
 
-**Re-run with:** `npx tsx scripts/measureView.ts`. Touches no shipped file, costs nothing.
+**Re-run with** (on a checkout of the `archive` branch): `npx tsx docs/archive/site-store-view/measureView.ts`. Touches no shipped file, costs nothing.
 `VIEW_TOKEN_BUDGET` overrides the 2500-token default.
 
 **Caveat on the tokenizer.** `gpt-tokenizer` counts GPT tokens; this pipeline sends Gemini. The
@@ -1926,12 +1933,12 @@ custom-logo anchor.
 **Deliberately not fixed.** The proposed fix was to make the cap rank before it cuts, reusing the
 View's Pass 3 priority function. That would change how *every* IR prompt is built, on evidence of
 one logo anchor on one run — the same disproportion that killed Phases 1–3 of
-`SITE_STORE_VIEW_SPEC_v2.md`. **Do not fix by raising the cap**; if this is ever fixed, rank before
+`archive:docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md`. **Do not fix by raising the cap**; if this is ever fixed, rank before
 cutting and keep the cap at 30.
 
 **Promote to Medium when:** a run grounds against an element the cap dropped *and* that element is
 load-bearing for the case (a form field, a submit control), rather than a decorative logo link.
-`scripts/measureView.ts` reports this per run under `element-cap`.
+`archive:docs/archive/site-store-view/measureView.ts` reports this per run under `element-cap`.
 
 **TD-62 did NOT close this, though it was expected to.** The theory was that hidden inputs were
 competing for the 30 slots, so evicting them would let the missing element back in. Measured after
@@ -1975,12 +1982,12 @@ page, and the test fails at run time against the page it is actually on.
 
 **Trigger — promote to a bug when:** any run grounds a target absent from the prompt in **all three**
 blocks (elements, navigation tree, form labels) *and* that target is load-bearing. This is not
-something to remember to check — `scripts/measureView.ts` §3.0 computes exactly this and attributes
+something to remember to check — `archive:docs/archive/site-store-view/measureView.ts` §3.0 computes exactly this and attributes
 each miss to its cause. A non-`live-extended` miss on a form or submit control is the signal.
 
 ### TD-61. The identity hypothesis was never a token argument, and has never been measured — Medium / Strategic — Open
 
-`SITE_STORE_VIEW_SPEC_v2.md` bundled two independent claims. Phase 0 tested one of them.
+`archive:docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md` bundled two independent claims. Phase 0 tested one of them.
 
 - **Token argument** — the View is smaller than what ships today. Tested. Fails on the IR prompt,
   partially holds on the test-case prompt. That is TD-56.
@@ -2040,10 +2047,10 @@ value**, which is why a CSRF token looks like it is named after its own contents
 - `visible === false` catches only part: 30 of the 474 elements carry it, while
   `SIGNIN_CLAIM_COLLECT`, `claimType` and `countryCode` are all recorded **`visible: true`**.
 
-**Fixed in the View** (`scripts/measureView.ts`), filtered in **two** places — the per-page element
+**Fixed in the View** (`archive:docs/archive/site-store-view/measureView.ts`), filtered in **two** places — the per-page element
 filter and Pass 1's shared hoist, because the hoist runs first and on raw `p.elements`. Without the
 second, a CSRF token still led the `shared:` line, precisely because appearing on every sign-in
-page makes it look like site chrome. Six tests in `tests/measureView.test.ts`, at four densities
+page makes it look like site chrome. Six tests in `archive:docs/archive/site-store-view/measureView.test.ts`, at four densities
 plus the hoist and the visible-alone case; all six verified failing without the filter.
 
 **What the fix recovered, measured.** `toMicroModel` caps at 30, so junk does not merely add
@@ -2256,7 +2263,7 @@ going near a merge, and check `git diff --stat main..appmodel-projection` shows 
 
 ## Where the Site Store / View work ended — read this before picking it up
 
-Written 2026-08-27, at the point the work was deliberately stopped. `SITE_STORE_VIEW_SPEC_v2.md`
+Written 2026-08-27, at the point the work was deliberately stopped. `archive:docs/archive/site-store-view/SITE_STORE_VIEW_SPEC_v2.md`
 planned 18–19 days across seven phases after a measurement spike. **The spike's gate fired on day
 two and most of the plan was cancelled.** What follows is what shipped, what is parked, and the
 conditions under which each parked thing should be looked at again.
@@ -2273,7 +2280,7 @@ it.
 | `isUsableElement` (TD-62) | Hidden inputs and skip-links were reaching the model as ordinary controls. On one run, 11 of `toMicroModel`'s 30 slots were spent on things no test can act on; eleven real category links took their place. |
 | `promptFormFields` (TD-63) | The `forms` block carried every hidden field's name **and value** into both prompts, including a live CSRF token. 1 → 0 and 2 → 0 leaking runs. |
 | capture-time fix (TD-64) | A hidden input's value is no longer recorded at all — not in `fields[].value`, not as an element's accessible name. |
-| `scripts/measureView.ts` | The offline harness. Replays every saved run: no browser, no LLM, no cost. |
+| `archive:docs/archive/site-store-view/measureView.ts` | The offline harness. Replays every saved run: no browser, no LLM, no cost. |
 
 Every one of those bugs was found **by the measurement, not by the feature it was measuring.**
 
@@ -2328,7 +2335,7 @@ If one of these fails, do not "repair" it by widening whatever filter is nearby.
 
 ### The harness is load-bearing, and it lied five times
 
-Every decision above came out of `scripts/measureView.ts`. It shipped **five** bugs before producing
+Every decision above came out of `archive:docs/archive/site-store-view/measureView.ts`. It shipped **five** bugs before producing
 a number worth trusting, and **not one of them threw** — each produced a confident, wrong table:
 
 1. `04-ir.json` is `{ir, updatedAppModel}`; reading `.steps` off the wrapper gave zero references,
@@ -2343,7 +2350,7 @@ a number worth trusting, and **not one of them threw** — each produced a confi
    `visible`.
 
 Bugs 2, 4 and 5 are one failure class: **a structure modelled incompletely, then compared
-confidently.** `tests/measureView.test.ts` now guards it — `coverage()` throws on zero references
+confidently.** `archive:docs/archive/site-store-view/measureView.test.ts` now guards it — `coverage()` throws on zero references
 rather than returning a figure, and the source is scanned for hand-rolled `(role, name)` keys.
 
 **Treat a number from this harness as provisional until a test pins it.** That is not pessimism;
@@ -2995,7 +3002,7 @@ empty. Add a capture-time assertion that no element name exceeds a sane bound, s
 silently return.
 
 **Trigger — promote to a bug when:** a run's `02-appmodel.json` contains any element whose `name`
-exceeds ~1,000 characters. `scripts/measureView.ts` already walks every saved AppModel and is the
+exceeds ~1,000 characters. `archive:docs/archive/site-store-view/measureView.ts` already walks every saved AppModel and is the
 natural place to report it.
 
 ### TD-76. `selectOption()` is an exact match, so different casing looked like a missing option — Medium / Accidental — Fixed
@@ -3879,7 +3886,7 @@ value in `.env.example` has been replaced with the placeholder `your-key-here`.
 - **Gemini:** `AQ\.[A-Za-z0-9_-]{20,}` (current format) and legacy `AIza[0-9A-Za-z_-]{20,}`, in
   source, system prompts, and `.env.example`.
 - **Supabase:** `sb_publishable_[A-Za-z0-9_-]{20,}` and `sb_secret_[A-Za-z0-9_-]{20,}` (and the
-  `eyJ…` JWT form, excluding the gzip/base64 false-positive class seen in `Testbench (1).html`).
+  `eyJ…` JWT form, excluding the gzip/base64 false-positive class seen in `archive:docs/archive/testbench-ui-export.html`).
 
 The check must scope or review false positives rather than blanket-excluding them — a saved-HTML
 page full of base64 blobs is what produced `eyJ…` noise in the audit.
@@ -4733,7 +4740,7 @@ negative into a true positive, and a real failure still fails.
 ### TD-108. The access token was never renewed, so a signed-in tab broke after an hour of use or idleness — High / Accidental — **Fixed behind `AUTH_TOKEN_REFRESH`**
 
 Reported as *"it is not working after some time of idleness."* Two causes produce that symptom on the
-Azure deployment; this entry is the one in code. (The other is `minReplicas: 0` in `app.yaml` — the
+Azure deployment; this entry is the one in code. (The other is `minReplicas: 0` in the Azure app's settings — the
 container scales to zero when idle and cold-starts on the next visit. That is configuration, not a
 defect in this repo, and is not touched here.)
 
@@ -4924,8 +4931,8 @@ and would fail at run time on an invisible input. Remediation: skip `isHiddenInp
 ### TD-114. `isAllowedEntryUrl` checks the hostname string, not where it resolves — Medium / Accidental — **Open**
 
 The SSRF guard blocks `127.*`, `10.*`, `169.254.*` and the like by text only, so a public hostname
-that resolves to a private address passes. It guards POST /api/runs and, since D-49,
-`checkSalesforceLogin`. Remediation: resolve the host and check the address too, at the point the
+that resolves to a private address passes. It guards POST /api/runs (and guarded D-49's
+`checkSalesforceLogin` until that unmounted module was removed on 2026-11-02). Remediation: resolve the host and check the address too, at the point the
 browser connects.
 
 ### LS-5. Deterministic heal pairs the new element's `css` with the OLD step's `frame` — Medium / Accidental — **Fixed**
@@ -5324,7 +5331,7 @@ generated. The Phase 2 screen map could carry that, but it stores names only.
 
 ### TD-134. Retained `trace.zip` files are not scrubbed and may hold filled credentials — High / Unverified — **Open**
 
-Found while writing `docs/research/reports/AI test automation competitor features.md` (plan item 0.2),
+Found while writing `archive:docs/research/reports/AI test automation competitor features.md` (plan item 0.2),
 from reading the code only. `scrubServedSecrets` (`src/stages/executor.ts`) redacts `results.json`,
 `final-page.txt` and error-context files, but not the Playwright trace. `playwright.config.ts` keeps
 traces on failure (`trace: "retain-on-failure"`) inside `runs/<id>/artifacts`, which is served over
@@ -6187,6 +6194,120 @@ every" counts. Replayed on the 33-field Account case, all three phrasings keep 3
 Cache key part `test-data:4`.
 
 ---
+
+### TD-180. Parallel suite cases share one login, and browsers outside the suite are not counted — Medium / Deliberate — **Open**
+
+**What.** With `SUITE_CASE_CONCURRENCY` above 1 (D-73), the cases of one run execute at the same time as the
+same user: one credential set, one Salesforce org connection. Cases that depend on each other's data (one creates
+a record the next edits, a cart one case fills and another expects empty), a case that logs out on a site that ends
+every session of the user, or a site that allows one session per user, can now fail depending on timing. A plain
+sequential suite had the same shared account, but a fixed order.
+
+**Also not counted.** `MAX_PARALLEL_CASES` covers suite cases only. Discovery, the primary case and replays of other
+runs launch their own Chromiums outside it, so the worst case on the server is roughly `MAX_CONCURRENT_RUNS` plus
+`MAX_PARALLEL_CASES` browsers at once. Wrapping the five `chromium.launch()` sites and `runSpec` in the same slot
+would bound it exactly; deferred until memory is measured on the deployed size.
+
+**Pre-existing, noticed here.** `runs/<id>/09-screen-map.json` is rewritten by each case's compile with only that
+case's captures (`writeRunScreenMap`), so the last case to compile wins, in parallel or not. The stored screen map
+(`recordIntoScreenMap`) is unaffected: its load, merge and save are synchronous.
+
+**Remediation.** Pilot at 2, then 4, on a scratch org; keep the setting at 1 for suites whose cases depend on each
+other. A per-case "run alone" marker, or per-case accounts, would let such suites run in parallel safely.
+
+### TD-183. A Pro (document upload) run on Salesforce wrote its cases without the org scan or the screen map — High / Accidental — **Fixed (2026-11-02)**
+
+**Found 2026-11-02** by reading the code while checking whether the uploaded document reaches case
+generation (it does). `proTestCases.ts` began as a copy of `toTestCases` (D-53). Later the standard
+generator gained two Salesforce blocks beside the application model: the screen map (TD-137, with
+`SCREEN_MAP_ENABLED`) and the org model read through the org connection (D-63: objects, required fields,
+picklists, record types, validation rules). The copy never got them. `toLiteModel` strips
+`salesforceOrg` because the generator is expected to add it back as its own block, so on a Pro
+Salesforce run the org scan reached no prompt at all: the model saw the document and the crawled pages
+and had to guess field names, required fields and picklist values. Nothing caught it: the key-parity test
+in `tests/proTestCases.test.ts` only ran a non-Salesforce case, where both blocks are empty.
+
+**Fix:** `proTestCases.ts` builds both blocks with the same calls as `testCases.ts`
+(`screensForCases(loadScreenMap(...))`, `orgModelForCases(appModel.salesforceOrg)`), puts them at the same
+place in the prompt (`Application model: ...${screensBlock}${orgBlock}`) and in the cache key at the same
+position, before the spec (TD-22). Non-Salesforce runs: both are "", prompt and key unchanged. Tests
+(`tests/proTestCases.test.ts`, "Pro on a Salesforce run ..."): the prompt carries both blocks, byte-for-byte
+the standard generator's; key parity with the standard key on a Salesforce run (13 + spec); a different org
+scan changes the key; a non-Salesforce Pro run is unchanged. Three of the four fail with the fix reverted.
+
+**Not changed (deliberately):** the standard generator's Salesforce post-processing is still absent from Pro:
+`restoreControlNames`, `restoreDroppedValues`, `dropOffObjectCases`, `dropUnrequestedChecklistCases`. All four
+decide from the TYPED request only; on a Pro run most of what is asked comes from the document, so they could
+drop good document-driven cases (e.g. a case on an object only the document names). Adding them needs the
+spec's `entities` folded into the request they read — a separate change. The copy itself remains (D-53): a
+future block added to one generator can drift again; the Salesforce parity test now covers these two.
+
+### TD-184. "Give test cases according to the story" planned and explored nothing — the story reached only the case generator — High / Accidental — **Fixed behind `PRO_STORY_PROMPT` (2026-11-03)**
+
+**Found 2026-11-02** from a user's run: a Case/report/list-view story with a vague typed prompt produced
+twelve cases about Setup, search, New User, Chatter and the Home chart, none about the story. Every stage
+before case generation reads the TYPED prompt only: the planner (`plan(prompt, url, coverage)`), site
+discovery (`discoverSiteHybrid(..., prompt, ...)`), the "fromPrompt" primary case (the literal translation
+of the request) and the Salesforce request filters. So "test as per the story" had no flow to plan and no
+target to explore; the case prompt then told the model to skip rules the discovered pages cannot reach,
+and the checklist floor filled the suite.
+
+**Fix (flag `PRO_STORY_PROMPT`, default off, needs `SPEC_INTAKE_ENABLED`):** `src/stages/storyPrompt.ts`.
+(1) `POST /api/spec/confirm` gains the optional field `promptText`, ONE short line built from the
+confirmed spec: up to two objects, the first action, and counts ("Test the uploaded requirements on Case
+and Work Order: <first action> (+5 more, 10 checks)"), at most 160 chars; never open questions or answers.
+A first version put the whole story in the box (about 2,000 chars) and the run screen's title became a
+wall of text; the full story reaches the planner and the case generator directly, so the box only names
+the flow. The browser puts it in an EMPTY prompt box (or replaces its own
+earlier fill); text the user typed is never overwritten, a "Use the requirements as the prompt" button is
+offered instead. Every stage then reads it like a typed prompt. (2) On a Pro run the planner's message
+also carries the story (`storyPlanBlock`), and its cache key gains that block (TD-22), so an emptied or
+vague box still plans the story's flow. Flag off: confirm returns `{ spec }` only, the planner is called
+with three arguments, its message and 8-part key are unchanged. Tests: `tests/proStoryPrompt.test.ts`
+(renderings, planner message/key, the browser functions extracted from app.js), `tests/specRoutes.test.ts`
+(field present only with the flag), `tests/proOrchestrator.test.ts` (planner gets the spec only with flag +
+spec). Every flag-on assertion fails with the wiring reverted (the flag-off ones pin "unchanged"). Checked in a real browser against the real confirm
+route (upload's model answer faked): empty box filled, typed prompt kept + button, flag off unchanged.
+
+**Not changed:** discovery does not yet look for the story's pages on its own — it is steered only through
+the prompt text (a Case list view or report the prompt does not lead to can still go unexplored); the
+primary case still follows the request (now the story's request when filled); a user who keeps a typed
+prompt that contradicts the story still gets the planner reading both.
+
+### TD-185. A spec run could end before its first step because another run deleted a folder under runs/ — High / Accidental — **Fixed (2026-11-04)**
+
+**Found** through `tests/suiteParallelBrowser.test.ts` failing one CI run of two on the same commit (PR #19, run
+41873986872: one of three cases `failed` in 6 s, the other two passed). `playwright.config.ts` had `testDir: "./runs"`,
+so every `runSpec` started Playwright with the whole run folder as its test directory, and Playwright walks that
+directory before filtering to the one spec it was given. A folder deleted during the walk ends the process with
+`Error: ENOENT: no such file or directory, scandir 'runs/…'` and no report. Reproduced: with a loop creating and deleting
+folders under runs/, 5 of 12 plain spec runs died that way; with no churn the same suite passed 8/8 idle and 6/6 under
+full CPU load. On the deployment the same race exists between one run's spec start and another run's clean-up or the
+retention job, and the walk itself grows with every run kept.
+
+**Fix.** `runSpec` sets `PLAYWRIGHT_TEST_DIR` to the spec's own folder (`<caseDir>/generated`) and
+`playwright.config.ts` uses it as `testDir` (`./runs` when unset, e.g. a manual `npx playwright test`). Playwright now
+scans one folder holding one file. Tests: `tests/specScanRace.test.ts` runs three real specs while folders under runs/
+are created and deleted (failed 2 of 3 times without the fix, passed 9 of 9 with it); `tests/executorChildEnv.test.ts`
+pins the variable the child receives.
+
+### TD-186. History (`GET /api/runs`) failed with a 500 when a run folder was deleted while it was being listed — Medium / Accidental — **Fixed (2026-11-04)**
+
+**Found** through `tests/tenancy.test.ts` ("the synthetic local user reaches /api/runs exactly as before") failing one
+CI run of two on the same docs-only commit (PR #21, run 41881998878: `expected 500 to be 200`). `/api/runs` reads the
+folder list with `allRunIds()`, then `listRuns()` -> `summariseRun()` reads each folder (`statSync` of the folder,
+`events.ndjson`, the stage JSON files). A folder deleted between the two steps threw `ENOENT` out of `summariseRun`, and
+the route's catch turned the WHOLE list into `500 could not list runs`. In CI, a dozen test files create and delete
+run folders while others list them; on the deployment, `DELETE /api/runs/:runId` and the retention sweep delete folders
+while History is polled. Same family as TD-185 (a reader of runs/ meeting another process's deletion).
+
+**Fix.** `listRuns()` skips a run whose summary throws `ENOENT` and lets the next id take its slot, so the list is still
+"the newest 20". Only `ENOENT` is skipped: every read in `summariseRun` is `existsSync`-guarded or names a folder
+`allRunIds` just saw, so only a folder being deleted can raise it; any other error (a corrupt file) still throws as
+before. `summariseRun` itself is unchanged (the Phase 3 backfill and the run-status hook call it directly). Tests:
+`tests/listRunsRace.test.ts` (a gone folder is skipped, the cap still yields 20, a corrupt run still throws, and no
+error while a second process creates and deletes the folders being read; the three race tests fail without the fix
+with the CI error, `ENOENT ... stat 'runs/…'`).
 
 ### TD-187. Running some tests in a real checkout leaves stub run folders in `runs/` — Low / Accidental — **Open**
 

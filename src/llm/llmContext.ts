@@ -54,12 +54,6 @@ export interface LlmConfig {
   organisationId: string | null;
 }
 
-/** The config used when nothing has been entered: env-driven, exactly as before this existed. */
-export const ENV_LLM_CONFIG: LlmConfig = {
-  pool: null, model: null, modelLite: null,
-  keyFingerprint: "env", organisationId: null,
-};
-
 const configContext = new AsyncLocalStorage<LlmConfig>();
 
 /**

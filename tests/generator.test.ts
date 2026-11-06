@@ -340,4 +340,48 @@ describe("a text check after a record's Details tab scrolls its lazy sections in
     const plain = generateSpec({ meta, steps: [{ id: "s1", action: "assert", target: { text: "Zq" }, assertion: "visible" }] } as unknown as IR);
     expect(plain).not.toContain("sfReveal");
   });
+
+  // Run 2026-11-03T07-53-37-813Z-73f793bc: getByText("SLA") also matched "SLA Expiration Date".
+  it("a field presence check matches the label exactly, after revealing it", () => {
+    const s = generateSpec({ meta, steps: [
+      { id: "s1", action: "assert", target: { field: "Zq SLA" }, assertion: "visible" },
+    ] } as unknown as IR);
+    expect(s).toContain('page.getByText("Zq SLA", { exact: true })');
+    expect(s).toContain('await sfReveal(page, "Zq SLA");');
+  });
+
+  // The click salesforceGuidance inserts (id sf-details) may sit on a page without the tab: it waits
+  // briefly for it and skips when absent. A click the model wrote itself stays a plain click.
+  it("an inserted Details click is skipped when the page has no Details tab", () => {
+    const s = generateSpec({ meta, steps: [
+      { id: "sf-details", action: "click", target: { role: "tab", name: "Details" } },
+    ] } as unknown as IR);
+    expect(s).toContain('page.getByRole("tab", { name: "Details", exact: true }).first()');
+    expect(s).toMatch(/waitFor\(\{ state: "visible", timeout: 5000 \}\)\.then\(\(\) => true, \(\) => false\)\) await tab\.click/);
+  });
+});
+
+// A Lightning picklist is a <button role="combobox"> showing the chosen value as its text. The
+// value branch of assertChoice threw "Not an input element" on it; its visible text is what to
+// compare. Executed in a real browser (D-19), extracted from a generated spec.
+describe("assertChoice on a button-style combobox", () => {
+  it("compares the button's visible text, per mode", async () => {
+    const { chromium, expect: pwExpect } = await import("@playwright/test");
+    const { extractFn } = await import("./fixtures/specHelpers.js");
+    const out = spec([{ id: "s1", action: "assert", target: { role: "combobox", name: "Stage" },
+      assertion: "text_equals", value: "Prospecting" }]);
+    const assertChoice = new Function("expect", `${extractFn(out, "assertChoice")}\nreturn assertChoice;`)(pwExpect);
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage();
+      await page.setContent(`<button type="button" role="combobox" aria-label="Stage" aria-expanded="false"><span>Prospecting</span><span style="display:none">Qualification</span></button>`);
+      const box = page.getByRole("combobox", { name: "Stage" });
+      await assertChoice(box, "Prospecting", "equals");
+      await assertChoice(box, "Prosp", "contains");
+      await expect(assertChoice(box, "Qualification", "equals")).rejects.toThrow(/toHaveText/);
+      await expect(assertChoice(box, "Qualification", "contains")).rejects.toThrow(/toContainText/);
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
 });

@@ -318,30 +318,6 @@ export function recordRunCases(
   })();
 }
 
-/**
- * Which organisation owns each of these runs. Runs with no row are simply absent from the map —
- * the caller decides what that means, and for authorization it must mean "deny", never "allow".
- */
-export async function fetchRunOrgIds(runIds: string[]): Promise<Map<string, string> | null> {
-  if (runIds.length === 0) return new Map();
-  const client = getServiceClient();
-  if (!client) return null;
-  try {
-    const { data, error } = await client
-      .from("runs")
-      .select("id, organisation_id")
-      .in("id", runIds);
-    if (error) {
-      console.error("[db] run ownership lookup failed:", error.message);
-      return null;
-    }
-    return new Map((data ?? []).map((r: { id: string; organisation_id: string }) => [r.id, r.organisation_id]));
-  } catch (err) {
-    console.error("[db] run ownership lookup threw:", (err as Error)?.message ?? err);
-    return null;
-  }
-}
-
 let lastShadowRunMs = 0;
 
 /**

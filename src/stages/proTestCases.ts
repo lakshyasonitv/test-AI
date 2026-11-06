@@ -11,6 +11,9 @@ import {
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { salesforceGuidance } from "./salesforceGuidance.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
+import { currentRunTargetApp } from "../runTarget.js";
+import { orgModelForCases } from "./salesforceOrgModel.js";
+import { screenMapEnabled, loadScreenMap, screensForCases } from "./screenMap.js";
 // The shared PIECES are imported, not copied: the TestCase schema, the compound-login filter and
 // the typed "no usable cases" error. Importing does not edit testCases.ts, keeps the two
 // correctness filters from drifting between the two generators, and keeps the orchestrator's
@@ -240,6 +243,19 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     ? `\nConcepts with NO checklist entry — apply the 5 reasoning dimensions above to these directly, do not just emit one generic case: ${gaps.join(", ")}\n`
     : "";
   const liteModel = toLiteModel(appModel);
+  // Salesforce runs only: the same two blocks toTestCases puts beside the application model —
+  // the screen map (which field is on which screen of a multi-screen form, TD-137) and the org
+  // model read through the org connection (objects, required fields, picklists, record types,
+  // validation rules, D-63). toLiteModel strips `salesforceOrg` precisely because the generator
+  // is expected to add it back as this block; Pro never did, so a Pro Salesforce run wrote its
+  // cases without the org scan. Built by the SAME calls as testCases.ts, so the two cannot
+  // describe the org differently. "" on every other run, so a non-Salesforce Pro prompt and key
+  // are exactly what they were.
+  const isSalesforce = currentRunTargetApp() === "salesforce";
+  const screensBlock = isSalesforce && screenMapEnabled()
+    ? screensForCases(loadScreenMap(appModel.baseUrl, undefined, new Date()))
+    : "";
+  const orgBlock = isSalesforce ? orgModelForCases(appModel.salesforceOrg) : "";
   // The literal prompt is part of the key: two runs whose plans are identical (a rephrased
   // request) must NOT collide on a cached batch, or "customizing" silently returns yesterday's
   // suite. The round's refinement prompt joins too, so a new focus direction in a later gate
@@ -252,6 +268,11 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     (extend?.existingTitles ?? []).join("|"), (extend?.rejectedTitles ?? []).join("|"),
     opts.sourcePrompt ?? "", extend?.latestPrompt ?? "",
     system, cacheModelDimension("main"), llmCacheDimension("main"), llmCacheVersion(),
+    // The Salesforce blocks join exactly as in toTestCases' key (same position, only when
+    // non-empty): they are in the prompt, so a suite cached without the org scan must never be
+    // served to a run that has it (TD-22).
+    ...(screensBlock ? [screensBlock] : []),
+    ...(orgBlock ? [orgBlock] : []),
     // PRO ONLY — the twelfth dimension. The confirmed spec lives in the USER prompt, not in
     // `system`, so hashing `system` alone would let two runs with different documents share one
     // cached suite. Zod-parsed upstream, so its key order is the schema's and the JSON is stable.
@@ -273,7 +294,7 @@ ${extend.latestPrompt}
 
   const user =
     `Plan: ${JSON.stringify(p)}
-Application model: ${JSON.stringify(liteModel)}
+Application model: ${JSON.stringify(liteModel)}${screensBlock}${orgBlock}
 
 Coverage checklist floor (produce one grounded case per applicable item):
 ${strategyList}

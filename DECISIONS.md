@@ -1020,7 +1020,7 @@ entry to revisit, and it should be revisited deliberately rather than by acciden
 **Rejected: hold the last-known stage per phase and patch forward.** Cheaper than a replay, and it
 keeps the live view stable. Rejected because it re-implements a *second*, partial derivation of the
 view that has to stay consistent with `applyEvent` forever — the precise anti-pattern the structural
-rule in `AGENTS.md` warns about, in a different costume.
+rule in `CLAUDE.md` (then mirrored in `AGENTS.md`) warns about, in a different costume.
 
 **The cost, stated rather than discovered.** A full replay re-runs every `applyEvent` side effect,
 so credential prompts and case-selection panels visibly replay on recovery. That is precisely the
@@ -1278,6 +1278,12 @@ redirect can carry a session id (`sid=`).
 indistinguishable, so "no secret supplied" reads `verification-required` and "secret rejected" reads
 `mfa-required`; Salesforce's own verification-page markup has not been seen. The signature is
 unchanged; `totpCode` is an extra export for tests, not part of the contract.
+
+
+**Removed (2026-11-02).** The server never mounted this check, so the module
+(`src/server/salesforceLogin.ts`) and its own tests were deleted in the repo clean-up. Its login
+steps are live code in `hybridDiscovery.ts` and `codeEntryField` lives in `salesforceOrgLogin.ts`;
+the TD-40 tsx guard (`tests/twoScreenLoginUnderTsx.test.ts`) now drives those directly.
 
 ## D-40. Live discovery gives EVERY element a `css`, most stable first, positional path last — verified to match exactly that element
 
@@ -1540,8 +1546,8 @@ write cases the document excludes. Recorded in the event log as `skipped: "pro_s
 
 **Distillation is pinned to Gemini.** Only Gemini takes a PDF inline; production runs
 `LLM_PROVIDER=azure`, whose chat completions take images, not PDFs. This is the first call in the
-codebase that goes to `gemini()` while the provider is azure; `GEMINI_API_KEYS` is already mounted
-in `app.yaml`. PDFs are never parsed on our side. The cache key hashes the instruction TEXT, not a
+codebase that goes to `gemini()` while the provider is azure; `GEMINI_API_KEYS` is already set
+on the Azure app (as the `gemini-keys` secret). PDFs are never parsed on our side. The cache key hashes the instruction TEXT, not a
 version constant (D-10), plus `llmCacheVersion()`; an all-empty answer is the "may be a scan"
 warning and is never cached. Output is capped at 8192 tokens (`SPEC_DISTILL_MAX_OUTPUT_TOKENS`)
 because thinking tokens count against the cap. No run budget covers the call; its usage is logged.
@@ -1582,6 +1588,12 @@ parser's bare 413.
 an out-of-scope item, and filtering on the case's wording would be the regex-over-model-prose
 check CLAUDE.md warns against (TD-01). A structural check needs a structural link first — for
 example cases citing the rule they prove — which is Pro's own logic to add later.
+
+**Salesforce blocks (2026-11-02, TD-183).** The copy had missed the two Salesforce blocks the standard
+generator gained after Pro was written (screen map, org model). Pro now builds them with the same calls
+and keys on them at the same position; `tests/proTestCases.test.ts` pins that parity on a Salesforce run.
+The standard path's Salesforce post-filters are still not applied to Pro, on purpose — they read only the
+typed request, and Pro's request is mostly the document (see TD-183).
 
 **Rejected.** An optional field on `toTestCases` (one edit, but every future Pro change would reopen
 the standard path's file). A JSON upload carrying base64 (the global `express.json()` has a 100 KB
@@ -1731,7 +1743,7 @@ the live-extend replay all pass through) and every screen capture, `src/stages/n
 
 **Why.** Salesforce (and any SPA) fetches a page's data after the DOM looks ready, so a snapshot at the call sites'
 fixed 800 ms models half a page. Copado's open-source QWeb engine targets Lightning with the same idea: its own
-pending-request counter that skips the CometD long-poll (docs/research/.../salesforce_specialists.md §2).
+pending-request counter that skips the CometD long-poll (archive:docs/research/.../salesforce_specialists.md §2).
 
 **Rejected.**
 - `waitForLoadState("networkidle")`: Salesforce holds a CometD long-poll open, so the network never goes idle and
@@ -1950,7 +1962,7 @@ was not built either, because replacing `loginOnPage` would drop the `loginSteps
 steps the generated spec replays so each test logs itself in (D-24). Copying a login routine into
 `generator.ts` instead was considered and rejected for now: it contradicts D-24 (one login, injected
 into the IR once, not duplicated into the generator) and would touch files another stream is
-editing (`docs/handoff/HANDOFF_SCREEN_MAP_AND_LOCATORS.md`). The cases it would cover (a fresh browser
+editing (`archive:docs/handoff/HANDOFF_SCREEN_MAP_AND_LOCATORS.md`). The cases it would cover (a fresh browser
 shown the email-first screen) are unverified; TD-171 records the check to make on the first real-org run.
 
 **Why the slow-form wait is Salesforce-only.** `loginOnPage` decides one-screen vs two-screen with
@@ -2261,6 +2273,93 @@ credential prompt and case gate already require one). A site that changes within
 against the old picture until someone ticks "Explore the site again"; a failure caused by that looks
 like a missing element. Multi-URL runs (`discoverPagesHybrid`) are not shared.
 
+## D-73. A run's suite cases may run several at a time, under one cap for the whole server
+
+**Context.** The deployed app has 4 vCPU / 8 GiB and 4 run slots (D-72), but one run's cases ran one
+after another (`runSuite`'s loop), so a single run with 4 cases used one browser while three slots'
+worth of machine sat idle. The user asked for one job split across 4 browsers.
+
+**Decision.** Behind `SUITE_CASE_CONCURRENCY` (default 1):
+- `runSuite` runs its case body through `forEachInOrder`: at most N cases in flight, STARTED in index
+  order, results written by index (`results[i]`), so the summary, `case-N` and the UI list keep the
+  suite's order. At 1 it is the old sequential loop, and both modes take the same code path (rule 7).
+- Every case holds one slot of a process-wide `Semaphore` (`MAX_PARALLEL_CASES`, default
+  `MAX_CONCURRENT_RUNS`) while it builds, runs, diagnoses and heals. Four runs wanting four cases each
+  therefore share the cap instead of starting 16 browsers. FIFO, so starts stay in order and no run
+  waits forever. With concurrency 1 the default cap can never bind.
+- The whole case runs in parallel, not only the Playwright step: building a case (model calls plus the
+  grounding replay in its own Chromium) is the larger part of a case's time.
+- A case's `llmCalls`/`llmTokens` are counted inside its own async chain (`withCaseUsage`, an
+  `AsyncLocalStorage` that `LlmBudget.record` also writes to). The old before/after difference of the
+  run's shared budget counts every case running beside it.
+- The generated spec's run tokens (`{{uid}}`, `{{phone}}`) are random instead of clock-derived: two
+  cases can start in the same millisecond, and a repeated value trips an org's duplicate rules.
+- Unchanged: the primary case still runs first (later cases are built against the pages its replay
+  found, `updatedAppModel`); the suite-wide heal budget (`healsUsed` is checked and incremented with no
+  `await` between); `app.js`, routes and events (the progress list already tracks rows by `caseId`).
+
+**Measured.** `tests/suiteParallelBrowser.test.ts`, three cases through the real generator and executor
+against a local page that holds each load for 2.5 s: 19.8 s one at a time, 8.2 s three at once.
+
+**Rejected.** *Playwright `--workers` over one batch of specs* — parallelises only execution, not the
+build, shows nothing until every case is built, and undoes the executor's one-process-per-case design
+(per-case `results.json`, scrubbing, kill timer, heal). *Starting the primary case with the others* —
+loses `updatedAppModel` for the later cases; possible later for gate runs, whose case list is final
+before the primary runs. *Splitting a request into several runs* — each run plans and writes its own
+cases again, more model spend and a review screen per run.
+
+**Known limits.** TECH_DEBT.md TD-180.
+
+## D-74. A Pro story becomes the run's request — filled into the prompt box, and read by the planner
+
+**Decision.** Behind `PRO_STORY_PROMPT` (default off), a Pro story reaches the stages that read the request,
+not only the case generator (TD-184). Two parts: the confirmed spec is rendered into a plain request that
+the browser puts in the prompt box, and on a Pro run the planner also reads the story.
+
+**Why the prompt box, not more server plumbing.** The typed prompt feeds the planner, discovery, the
+primary case and the Salesforce filters. Filling the box upgrades all of them at once, with no change to
+any of those stages, and the user SEES the request the run will use and can edit it before paying for it.
+The same mechanism already exists for Jira (D-71).
+
+**Why the server builds the text.** One deterministic function from the confirmed spec's structured
+fields (no model call, free, testable in TypeScript), returned as an OPTIONAL field of the existing confirm
+route (platform rule 1). Flag off, the body is exactly `{ spec }`, so the browser does nothing.
+
+**Never overwrite the user's words.** An empty box, or one still holding exactly our own earlier fill, is
+filled; anything the user typed stays and a button offers the replacement. Silently replacing a prompt
+someone wrote would be the tool deciding what they meant to test.
+
+**Why the planner too.** The box can be emptied or ignored ("test as per the story"). The planner reading
+the story is the server-side safety net. It keys on the block (TD-22); without a story its message and key
+are byte-identical.
+
+**Rejected.** Replacing the typed prompt server-side when it "looks vague" — that is a regex over the
+user's prose deciding intent, and an invisible one. Passing the spec into discovery directly — a larger
+change to a stage with its own caches and shared-discovery keys (D-72); left for a later step.
+
+## D-75. Salesforce deep discovery: read record types, Dynamic Forms rules and calculated fields for the request's objects
+
+**Context.** The org model (fields, picklists, validation rules) could not support cases about behaviour the org
+sets up beyond them: a record type that shows a different form and different picklist values, a field Dynamic Forms
+shows only under a condition ("SLA shows only when Customer Priority = High"), or a roll-up whose value has to be
+checked. Cases about these were written blind. Built and run live on the scratch org on 2026-11-03 (`647d41a`, on
+`cleanup/production-ready`; brought into main on 2026-11-04).
+
+**Decision.** Behind `SALESFORCE_DEEP_DISCOVERY_ENABLED` (default off), `salesforceOrgDeep.ts` reads, for the objects
+the request names (`objectsNamedIn`, matched against the org's own object labels, up to 3 objects and 4 record pages):
+- each record type's create layout and picklist values, where they differ from the default record type (UI API);
+- Dynamic Forms visibility rules from the object's Lightning record page (FlexiPage metadata);
+- what a calculated field computes: a formula, or a roll-up's operation and summed field (Tooling API).
+The facts are added to the org model and given to the case writer; a check on a Dynamic Forms field uses the field's
+exact label and opens the record's Details tab first. Read-only GETs, best effort: a call that fails leaves that fact
+out. The org model is read fresh on every run, so the facts are never served from the saved discovery.
+
+**Live passes recorded with the commit.** Account / Opportunity / Contact "every field", Lead create, the SLA Dynamic
+Forms case and the TB Total Opportunity Amount roll-up, on the scratch org.
+
+**Not covered.** Objects the request does not name by their org label. More than 3 objects per run (a scratch org's
+API allowance is small). Record types, rules and formulas are described to the case writer; nothing checks
+structurally that a case exercised the rule it was told about.
 
 ## D-76. Regression testing follows the "Regression testing in Testbench" design: remember, check, repair safely, approve
 
