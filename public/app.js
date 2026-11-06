@@ -541,7 +541,7 @@ async function initAuth() {
 
   // Switching between the two credential screens goes through showView() like every other view
   // change — applyRoute() reads auth.screen and renders the right one.
-  document.getElementById("goSignup").addEventListener("click", () => {
+  document.getElementById("goSignup")?.addEventListener("click", () => {
     auth.screen = "signup";
     document.getElementById("loginError").classList.add("hidden");
     applyRoute();

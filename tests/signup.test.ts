@@ -77,7 +77,7 @@ const TOUCHED = [
 beforeEach(() => {
   process.env.AUTH_ENABLED = "true";
   process.env.DB_ENABLED = "true";
-  delete process.env.SIGNUP_ENABLED; // default: open
+  process.env.SIGNUP_ENABLED = "true"; // these tests exercise an opened sign-up
   process.env.SUPABASE_URL = "https://fake.supabase.co";
   process.env.SUPABASE_PUBLISHABLE_KEY = "fake-publishable";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "fake-service-role";
@@ -169,10 +169,14 @@ describe("POST /api/auth/signup — refusals", () => {
     expect(createCalls).toHaveLength(0);
   });
 
-  it("is open by default — only the literal string 'false' closes it", async () => {
-    process.env.SIGNUP_ENABLED = "yes";
-    const res = await request(app).post("/api/auth/signup").send({ email: freshEmail(), password: "longenough1" });
-    expect(res.status).toBe(201);
+  it("is closed by default — only the literal string 'true' opens it", async () => {
+    for (const value of [undefined, "yes", "TRUE", ""]) {
+      if (value === undefined) delete process.env.SIGNUP_ENABLED;
+      else process.env.SIGNUP_ENABLED = value;
+      const res = await request(app).post("/api/auth/signup").send({ email: freshEmail(), password: "longenough1" });
+      expect(res.status).toBe(403);
+    }
+    expect(createCalls).toHaveLength(0);
   });
 });
 

@@ -2542,8 +2542,7 @@ export interface InvalidBooleanFlag {
 /**
  * Find every boolean flag that is SET to something other than exactly `"true"` or `"false"`.
  *
- * Why this exists: every one of these flags is read as `x === "true"` (or, for `SIGNUP_ENABLED`,
- * `x !== "false"`). That is a silent coercion — `AUTH_ENABLED=truebro` shipped in a real `.env`
+ * Why this exists: every one of these flags is read as `x === "true"`. That is a silent coercion — `AUTH_ENABLED=truebro` shipped in a real `.env`
  * and read as `false`, so the server booted with authentication off, resolved every visitor as
  * the synthetic local owner, and said nothing. A typo in a security flag must not be survivable.
  *

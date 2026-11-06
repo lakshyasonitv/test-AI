@@ -44,7 +44,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * the port can otherwise create themselves an account.
  */
 export function isSignupEnabled(): boolean {
-  return process.env.SIGNUP_ENABLED !== "false";
+  // D-77: closed by default — accounts come from an admin, not from visitors. Only "true" opens it.
+  return process.env.SIGNUP_ENABLED === "true";
 }
 
 // --------------------------------------------------------------------------
