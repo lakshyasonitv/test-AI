@@ -238,6 +238,79 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
 .toast { border-radius: 14px; box-shadow: var(--shadow-lg); }
 .screenshot-modal-img, .screenshot-tile, .case-screenshot, .case-video { border-radius: 14px; }
 
+/* ---------- sign in / sign up ----------
+   Appearance only. style.css already gives these two views the whole window (sidebar and
+   topbar removed, form centred) via body:has(#view-login.view-active); every rule below
+   is scoped the same way, by the two view IDs, and changes paint, size and spacing only.
+   No field, button, id or behaviour changes; app.js still drives both forms. */
+
+/* soft colour behind the dotted canvas, like the landing page, only while signed out */
+body:has(#view-login.view-active)::before,
+body:has(#view-signup.view-active)::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(38vmax 38vmax at 12% 18%, rgba(69, 200, 255, .30), transparent 70%),
+    radial-gradient(34vmax 34vmax at 88% 30%, rgba(155, 140, 255, .24), transparent 70%),
+    radial-gradient(36vmax 36vmax at 50% 100%, rgba(63, 214, 194, .20), transparent 70%);
+  animation: tb-auth-drift 18s ease-in-out infinite alternate;
+}
+@keyframes tb-auth-drift { to { transform: translate3d(0, -2.5%, 0) scale(1.04); } }
+
+#view-login .col, #view-signup .col { width: 100%; max-width: 420px; gap: 22px; }
+#view-login .page-head, #view-signup .page-head { align-items: center; text-align: center; gap: 6px; }
+/* the Testbench mark: a white tile with the four-dot logo, drawn in CSS */
+#view-login .page-head::before, #view-signup .page-head::before {
+  content: ""; width: 60px; height: 60px; margin-bottom: 14px; border-radius: 18px;
+  background:
+    radial-gradient(circle, #45c8ff 5px, transparent 5.5px) 16px 16px / 14px 14px no-repeat,
+    radial-gradient(circle, #2b2e35 5px, transparent 5.5px) 30px 16px / 14px 14px no-repeat,
+    radial-gradient(circle, #2b2e35 5px, transparent 5.5px) 16px 30px / 14px 14px no-repeat,
+    radial-gradient(circle, #2b2e35 5px, transparent 5.5px) 30px 30px / 14px 14px no-repeat,
+    #fff;
+  box-shadow: var(--shadow), inset 0 -3px 0 #eef0f3;
+}
+#view-login .page-head h1, #view-signup .page-head h1 { font-size: 2.3rem; }
+#view-login .tagline, #view-signup .tagline { font-size: .95rem; }
+
+/* the form as a frosted glass card */
+#view-login .auth-card, #view-signup .auth-card {
+  width: 100%; max-width: 420px; gap: 18px;
+  padding: 30px 28px 24px;
+  background: rgba(255, 255, 255, .7);
+  border: 1px solid rgba(255, 255, 255, .95);
+  border-radius: 24px;
+  box-shadow: 0 30px 60px -28px rgba(17, 24, 39, .35), 0 2px 6px rgba(17, 24, 39, .05), inset 0 1px 0 #fff;
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  backdrop-filter: blur(18px) saturate(170%);
+}
+#view-login .auth-card .field, #view-signup .auth-card .field { gap: 7px; }
+#view-login .auth-card .field-label, #view-signup .auth-card .field-label {
+  font-family: inherit; font-size: .82rem; font-weight: 600; color: var(--text);
+}
+#view-login .auth-card input, #view-signup .auth-card input {
+  height: 48px; padding: 0 15px; border-radius: 13px;
+  font-size: .95rem; background: #fff; border: 1px solid var(--line);
+  transition: border-color .15s, box-shadow .15s;
+}
+#view-login .auth-card input:focus, #view-signup .auth-card input:focus {
+  outline: none; border-color: rgba(var(--accent-rgb), .6);
+  box-shadow: 0 0 0 4px rgba(var(--accent-rgb), .14);
+}
+#view-login .auth-card .run-btn, #view-signup .auth-card .run-btn {
+  height: 50px; width: 100%; margin-top: 4px; border-radius: 14px; font-size: .98rem;
+}
+#view-login .auth-error, #view-signup .auth-error { border-radius: 12px; font-size: .84rem; padding: 10px 14px; }
+#view-login .auth-switch, #view-signup .auth-switch {
+  padding-top: 16px; border-top: 1px solid var(--line-soft); font-size: .86rem;
+}
+#view-login .auth-switch-btn, #view-signup .auth-switch-btn { text-decoration: none; font-weight: 600; }
+#view-login .auth-switch-btn:hover, #view-signup .auth-switch-btn:hover { text-decoration: underline; }
+
+@media (max-width: 600px) {
+  #view-login .page-head h1, #view-signup .page-head h1 { font-size: 1.9rem; }
+  #view-login .auth-card, #view-signup .auth-card { padding: 24px 18px 20px; border-radius: 20px; }
+}
+
 /* ---------- motion ----------
    A view fades up when it becomes active. This is an animation on the class
    showView() already sets; it never changes which view is shown. */
@@ -246,6 +319,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
 
 @media (prefers-reduced-motion: reduce) {
   .view.view-active { animation: none; }
+  body:has(#view-login.view-active)::before, body:has(#view-signup.view-active)::before { animation: none; }
   .run-btn, .new-run, .topbar-btn, .template-btn { transition: none; }
   .run-btn:hover, .new-run:hover, .topbar-btn:hover, .template-btn:hover { transform: none; }
 }
