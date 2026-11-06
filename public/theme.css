@@ -1,0 +1,251 @@
+/* ---------------------------------------------------------------------------
+   Testbench app theme — the landing page's look (public/landing.html) applied to
+   the app, as a layer loaded AFTER style.css.
+
+   What this file is allowed to do, and why it is a separate file:
+     - Override design tokens and the LOOK of classes style.css already defines.
+     - Never rename, remove or add a class that app.js toggles (CLAUDE.md rule 3:
+       .hidden, .view-active, .case-card.open, .history-item.active, .tree-* …).
+     - Never hide or show anything. Every rule here is paint, radius, shadow, type or
+       spacing; no `display` on a view and nothing on .hidden (rule 4: showView() owns
+       which view is visible).
+   Reverting the redesign is one line: delete the <link> to this file in index.html.
+
+   Look: soft dotted grey canvas, white rounded cards with soft shadows, frosted-glass
+   top bar and floating sidebar, bright blue primary, Plus Jakarta Sans headings set
+   bold and tight. Verdict colours (passed/failed/blocked…) are left exactly as
+   style.css defines them: this app exists to report results, and those must not move.
+   --------------------------------------------------------------------------- */
+
+:root {
+  /* palette — same token names, new values */
+  --bg: #f3f4f6;
+  --bg-rgb: 243, 244, 246;
+  --surface: #ffffff;
+  --surface-1: #ffffff;
+  --sidebar: rgba(255, 255, 255, .72);
+  --ink-rgb: 18, 20, 24;
+  --text: #121418;
+  --text-2: rgba(var(--ink-rgb), .70);
+  --muted: rgba(var(--ink-rgb), .64);
+  --faint: rgba(var(--ink-rgb), .60);
+
+  --accent: #1f7bff;
+  --accent-hover: #1468e6;
+  --accent-deep: #0f56c4;
+  --accent-rgb: 31, 123, 255;
+  --running: #1f7bff;
+  --running-rgb: 31, 123, 255;
+  --running-dot: #1f7bff;
+
+  /* hairlines are ink, not blue, in this look */
+  --line: rgba(var(--ink-rgb), .10);
+  --line-soft: rgba(var(--ink-rgb), .06);
+  --line-hover: rgba(var(--ink-rgb), .22);
+  --surface-2: #f6f7f9;
+  --surface-3: #eef0f3;
+  --sunken: #f6f7f9;
+  --inset: #f6f7f9;
+  --surface-hover: rgba(var(--ink-rgb), .045);
+
+  /* shape */
+  --r-sm: 10px; --r-md: 12px; --r: 14px; --r-lg: 20px;
+  --shadow: 0 1px 2px rgba(17, 24, 39, .04), 0 14px 34px -16px rgba(17, 24, 39, .16);
+  --shadow-lg: 0 22px 44px -18px rgba(17, 24, 39, .26);
+  --shadow-modal: 0 30px 70px -24px rgba(17, 24, 39, .45);
+  --ease: cubic-bezier(.2, .7, .2, 1);
+
+  /* type: headings move from the serif to the landing page's geometric sans */
+  --font-display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+
+  --tb-glass: rgba(255, 255, 255, .66);
+  --tb-glass-edge: rgba(255, 255, 255, .9);
+  --tb-dots: radial-gradient(circle at 1px 1px, rgba(var(--ink-rgb), .075) 1px, transparent 0) 0 0 / 16px 16px;
+}
+
+body { background: var(--tb-dots), var(--bg); background-attachment: fixed; }
+.app { background: transparent; }
+
+/* ---------- glass chrome ---------- */
+.topbar {
+  margin: 12px 12px 0;
+  border: 1px solid var(--tb-glass-edge);
+  border-radius: 16px;
+  background: var(--tb-glass);
+  box-shadow: var(--shadow), inset 0 1px 0 #fff;
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
+  top: 12px;
+}
+.crumb-root { background: var(--surface-3); border-radius: 8px; font-weight: 600; color: var(--text); }
+
+/* Full-height glass sidebar on wide screens: top of the window to the bottom, attached to
+   the left edge. Under 900px style.css turns it into a fixed drawer (left:-300px /
+   .sidebar.open) — that geometry is left alone. */
+@media (min-width: 901px) {
+  .sidebar {
+    margin: 0;
+    height: 100vh;
+    top: 0;
+    border: 0;
+    border-right: 1px solid rgba(var(--ink-rgb), .08);
+    border-radius: 0;
+    box-shadow: 8px 0 30px -18px rgba(17, 24, 39, .18), inset -1px 0 0 #fff;
+    -webkit-backdrop-filter: blur(16px) saturate(170%);
+    backdrop-filter: blur(16px) saturate(170%);
+    overflow: hidden;
+  }
+}
+@media (max-width: 900px) {
+  .sidebar { background: #fff; box-shadow: var(--shadow-modal); }
+  .topbar { margin: 8px 8px 0; top: 8px; }
+}
+
+.brand-mark { background: linear-gradient(135deg, #45c8ff, var(--accent)); border-radius: 8px; color: #fff; }
+.brand-name { font-weight: 700; font-size: .9rem; }
+
+.new-run {
+  height: 38px; border-radius: 12px;
+  background: var(--accent); color: #fff; font-weight: 600;
+  box-shadow: 0 8px 20px -8px rgba(var(--accent-rgb), .7);
+  transition: transform .2s var(--ease), box-shadow .2s var(--ease), background .2s var(--ease);
+}
+.new-run:hover { background: var(--accent-hover); transform: translateY(-1px); }
+.sidebar-search { height: 34px; border-radius: 10px; background: var(--surface-2); border-color: transparent; }
+.sidebar-search:focus { background: #fff; border-color: rgba(var(--accent-rgb), .45); outline: none; box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .14); }
+
+/* ---------- headings ---------- */
+.page-head h1 { font-weight: 700; font-size: 2.5rem; line-height: 1.08; letter-spacing: -.035em; }
+.run-title { font-weight: 700; letter-spacing: -.025em; }
+.page-head-title, .cd-title { font-weight: 700; letter-spacing: -.03em; }
+@media (max-width: 600px) {
+  .page-head h1 { font-size: 1.8rem; }
+  .page-head-title, .cd-title { font-size: 1.4rem; }
+}
+.tagline { font-size: .9rem; }
+.eyebrow { color: var(--accent); }
+
+/* ---------- buttons ---------- */
+.run-btn {
+  height: 38px; padding: 0 18px; border-radius: 12px; font-weight: 600;
+  box-shadow: 0 8px 20px -8px rgba(var(--accent-rgb), .7);
+  transition: transform .2s var(--ease), box-shadow .2s var(--ease), background .2s var(--ease);
+}
+.run-btn:hover { transform: translateY(-1px); box-shadow: 0 12px 24px -8px rgba(var(--accent-rgb), .75); }
+.run-btn:disabled { box-shadow: none; transform: none; background: var(--surface-3); }
+.topbar-btn, .composer-save-btn, .dl-btn, .seg {
+  border-radius: 10px;
+}
+.topbar-btn { height: 34px; padding: 0 13px; border-color: var(--line); font-weight: 500; transition: background .15s, border-color .15s, transform .2s var(--ease); }
+.topbar-btn:hover { border-color: var(--line-hover); transform: translateY(-1px); }
+.hdr-menu-btn { border-radius: 10px; }
+.template-btn {
+  border-radius: 999px; background: #fff; border-color: var(--line); font-weight: 500;
+  box-shadow: 0 1px 2px rgba(17, 24, 39, .04);
+  transition: transform .2s var(--ease), border-color .2s, box-shadow .2s;
+}
+.template-btn:hover { background: #fff; border-color: rgba(var(--accent-rgb), .4); color: var(--accent); transform: translateY(-1px); }
+.seg { background: var(--surface-3); }
+.seg-btn { border-radius: 8px; }
+
+/* ---------- cards ---------- */
+.composer, .panel, .case-card, .cd-card, .diag-card, .cred-card, .auth-card, .settings-pop, .hdr-menu {
+  border: 1px solid #ececef;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+}
+.hdr-menu, .settings-pop { border-radius: 16px; }
+.composer:focus-within { border-color: rgba(var(--accent-rgb), .45); box-shadow: var(--shadow), 0 0 0 4px rgba(var(--accent-rgb), .12); }
+
+/* The new-run composer (#runForm) as two zones: a white writing area on top, and a softly
+   tinted tray underneath holding the URL row and the options app.js appends to the form
+   (Salesforce / Pro / Connect org / Scan again). The tray is the FORM's own background
+   showing through, so the inline margins app.js puts on those options never leave white
+   stripes. Nothing here hides or shows an option — app.js still decides that. */
+#runForm.composer { background: #f8f9fb; padding-bottom: 16px; }
+#runForm textarea {
+  display: block; width: 100%;
+  min-height: 132px; resize: vertical;
+  padding: 22px 24px 16px;
+  font-size: 1rem; line-height: 1.6; color: var(--text);
+  background: #fff;
+  border-bottom: 1px solid var(--line-soft);
+}
+#runForm textarea::placeholder { color: rgba(var(--ink-rgb), .38); }
+#runForm .composer-foot { padding: 16px 16px 4px 24px; border-top: 0; gap: 12px; }
+#runForm .field-url {
+  height: 46px; padding: 0 6px 0 6px; gap: 10px;
+  border-radius: 13px; background: #fff; border: 1px solid var(--line);
+  box-shadow: 0 1px 2px rgba(17, 24, 39, .04);
+  transition: border-color .15s, box-shadow .15s;
+}
+#runForm .field-url:focus-within { border-color: rgba(var(--accent-rgb), .55); box-shadow: 0 0 0 4px rgba(var(--accent-rgb), .12); }
+#runForm .field-url .field-label {
+  height: 32px; display: inline-flex; align-items: center;
+  padding: 0 10px; border-radius: 9px;
+  background: var(--surface-3); color: var(--text-2);
+  font-size: .74rem; font-weight: 500; cursor: pointer;
+  transition: background .15s, color .15s;
+}
+#runForm .field-url .field-label:hover { background: rgba(var(--accent-rgb), .12); color: var(--accent); }
+#runForm .field-url input { font-size: .9rem; }
+#runForm .run-btn { height: 46px; padding: 0 22px; border-radius: 13px; font-size: .9rem; }
+#runForm .run-btn:disabled { background: #e7e9ee; color: rgba(var(--ink-rgb), .45); }
+
+/* the appended options */
+#runForm > label, #runForm > div:not(.composer-foot) { padding-left: 24px; padding-right: 24px; }
+#runForm > label { font-size: .86rem; font-weight: 500; color: var(--text-2); font-family: inherit; }
+#runForm > label:hover { color: var(--text); }
+#runForm input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; flex: none; }
+#runForm .dl-btn { height: 30px; padding: 0 12px; border-radius: 9px; background: #fff; border: 1px solid var(--line); font-weight: 600; }
+#runForm .dl-btn:hover { border-color: rgba(var(--accent-rgb), .45); color: var(--accent); }
+#runForm #urlError { margin: 8px 24px 0; }
+@media (max-width: 600px) {
+  #runForm > label:has(> span) { flex-wrap: wrap; }
+  #runForm textarea { min-height: 120px; padding: 18px 16px 12px; }
+  #runForm .composer-foot { padding: 14px 14px 4px; }
+  #runForm > label, #runForm > div:not(.composer-foot) { padding-left: 16px; padding-right: 16px; }
+  /* the "(about 8 minutes …)" note drops to its own line under its checkbox */
+  #runForm > label > span { flex-basis: 100%; padding-left: 24px; }
+}
+
+.composer-save { padding: 12px 22px; }
+.field-url { height: 38px; border-radius: 11px; border-color: transparent; background: var(--surface-2); }
+.field-url:focus-within { background: #fff; border-color: rgba(var(--accent-rgb), .45); }
+.panel h2 { font-size: .82rem; font-weight: 700; padding: 15px 18px; }
+.hrow { padding: 14px 18px; transition: background .15s; }
+.hrow:hover { background: rgba(var(--ink-rgb), .02); }
+.hrow-label { font-weight: 600; }
+.case-card { transition: box-shadow .25s var(--ease), border-color .25s; }
+.case-card:hover { box-shadow: var(--shadow-lg); }
+.case-card.open { border-color: rgba(var(--accent-rgb), .35); }
+
+/* inputs anywhere in the app */
+input[type="text"], input[type="email"], input[type="password"], input[type="url"], input[type="search"], select, textarea {
+  border-radius: 11px;
+}
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), .7); outline-offset: 2px;
+}
+
+/* sidebar rows */
+.tree-row, .history-item { border-radius: 10px; }
+.history-item.active { background: rgba(var(--accent-rgb), .09); }
+.rail-heading { color: var(--faint); }
+
+/* toasts and modals */
+.toast { border-radius: 14px; box-shadow: var(--shadow-lg); }
+.screenshot-modal-img, .screenshot-tile, .case-screenshot, .case-video { border-radius: 14px; }
+
+/* ---------- motion ----------
+   A view fades up when it becomes active. This is an animation on the class
+   showView() already sets; it never changes which view is shown. */
+.view.view-active { animation: tb-view-in .45s var(--ease) both; }
+@keyframes tb-view-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .view.view-active { animation: none; }
+  .run-btn, .new-run, .topbar-btn, .template-btn { transition: none; }
+  .run-btn:hover, .new-run:hover, .topbar-btn:hover, .template-btn:hover { transform: none; }
+}
