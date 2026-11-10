@@ -381,6 +381,25 @@ const namesLabel = (value: string, label: string) => ` ${lineKey(label)} `.inclu
 const mentionsWord = (request: string, label: string) => !!lineKey(label) && ` ${lineKey(request)} `.includes(` ${lineKey(label)} `);
 
 /**
+ * The one field a bare checked value belongs to: a picklist field that offers it (text and value
+ * agree) and that the request names, by its label or by its label without the object's word in
+ * front ("Rating" for "Account Rating", the label the record page shows). The label returned is the
+ * one the request uses. Undefined when no field, or more than one, fits.
+ */
+export function pickedValueField(text: string, value: string, fields: { label: string; picklist?: string[] }[], request: string):
+  { label: string; value: string } | undefined {
+  if (text !== value || !request) return undefined;
+  const hits = new Map<string, { label: string; value: string }>();
+  for (const f of fields) {
+    if (!f.picklist?.includes(value)) continue;
+    const short = f.label.replace(/^\S+\s+/, "");
+    const label = mentionsWord(request, f.label) ? f.label : short !== f.label && mentionsWord(request, short) ? short : undefined;
+    if (label) hits.set(f.label, { label, value });
+  }
+  return hits.size === 1 ? [...hits.values()][0] : undefined;
+}
+
+/**
  * On a record's view page (after a Save lands there with "was created"/"was saved", or after a record
  * this test created is opened again), a check on one of the record's fields is a check on its LABEL
  * on the page's Details tab. The writer grounds it on the create form's input instead
@@ -397,6 +416,7 @@ const mentionsWord = (request: string, label: string) => !!lineKey(label) && ` $
 export function fieldChecksOnRecordView(ir: IRSteps, model: {
   pages: { url: string; elements: { role?: string; name?: string }[] }[];
   salesforceOrg?: { objects: {
+    api?: string;
     fields: { label: string; picklist?: string[] }[]; calculated?: { label: string }[];
     visibilityRules?: { target: string; when: string }[];
   }[] };
@@ -424,8 +444,16 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
   let tabs = 0;
   /** The field whose label the previous check (waits aside) looked for. */
   let lastLabel: string | undefined;
+  /** The object whose record the flow is on, from its create page or a reopened record: a bare
+   *  value belongs to that object's field ("Rating" is a Lead field too, offering "Hot" as well). */
+  let onObject: string | undefined;
+  const fieldsOf = (api?: string) => (model.salesforceOrg?.objects ?? []).find((o) => api && o.api === api)?.fields ?? fields;
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
+    if (s.action === "navigate") {
+      const url = String(s.target?.url ?? "");
+      onObject = /\/lightning\/o\/(\w+)\/new\b/.exec(url)?.[1] ?? recordRefObject(url) ?? onObject;
+    }
     if ((s.action === "assert" && saved && /\bwas (created|saved)\b/.test(s.target?.text ?? ""))
       || (s.action === "navigate" && recordRefObject(s.target?.url))) {
       onView = true; onDetails = false; lastLabel = undefined;
@@ -481,6 +509,14 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       steps[i] = { ...s, target: { field: after }, assertion: "text_contains", value: text };
       notes.push(`"${text}" checked right after the "${after}" label -> checks the "${after}" field shows it`);
       continue;
+    } else if (!s.target?.role && text && pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), request)) {
+      // A bare picklist value of a field the request names: "verify its Rating shows Hot" became
+      // getByText("Hot") on the Related tab (run 2026-11-10T04-32-01-102Z-e4c449e4; a flow set it, on
+      // Details). The value is that field's, read inside it, under the label the request uses: the
+      // org calls it "Account Rating", the record page and the request say "Rating".
+      const { label, value } = pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), request)!;
+      steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value };
+      notes.push(`"${value}" is an option of the "${label}" field the request names -> checks that field shows it`);
     } else continue;
     if (hasDetailsTab && !onDetails) {
       const n = tabs++ ? `-${tabs}` : "";

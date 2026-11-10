@@ -278,6 +278,49 @@ describe("fieldChecksOnRecordView: text checks of org fields", () => {
     const i = ir([nav("/lightning/o/Opportunity/new"), click("Save"), created, textIs("Contacts (1)")]);
     expect(fieldChecksOnRecordView(i, model)).toEqual([]);
   });
+
+  // Run 2026-11-10T04-32-01-102Z-e4c449e4: a flow set Rating = Hot; the case checked getByText("Hot")
+  // on the Related tab. The org's label is "Account Rating"; the page and the request say "Rating".
+  describe("a bare picklist value of a field the request names", () => {
+    const org = { objects: [{ fields: [
+      { label: "Zqacct Zrating", picklist: ["Zhot", "Zwarm"] },
+      { label: "Zq Priority", picklist: ["Zhigh", "Zlow"] },
+      { label: "Zq Mood", picklist: ["Zhot"] },
+    ] }] };
+    const valueIs = (v: string): Step => ({ id: "v", action: "assert", target: { text: v }, value: v, assertion: "text_equals" } as Step);
+    const run = (step: Step, request: string) => {
+      const i = ir([nav("/lightning/o/Account/new"), click("Save"), created, step]);
+      fieldChecksOnRecordView(i, { ...model, salesforceOrg: org }, request);
+      return i.steps;
+    };
+
+    it("is read inside that field, under the label the request uses, on the Details tab", () => {
+      const steps = run(valueIs("Zhot"), "Create an Account with Zq Priority Zhigh and verify its Zrating shows Zhot");
+      expect(steps.slice(-3).map((s) => s.target?.name ?? s.value)).toEqual(["Details", "500", "Zhot"]);
+      expect(steps[steps.length - 1]).toMatchObject({ target: { field: "Zrating" }, assertion: "text_contains", value: "Zhot" });
+    });
+
+    it("a visible check of the value is treated the same way", () => {
+      const steps = run(textIs("Zhot"), "verify the Zqacct Zrating is Zhot");
+      expect(steps[steps.length - 1]).toMatchObject({ target: { field: "Zqacct Zrating" }, value: "Zhot" });
+    });
+
+    it("takes the field from the object the record belongs to when another object has the same label", () => {
+      // The real case: Lead also has a "Rating" field offering "Hot".
+      const two = { objects: [
+        { api: "Zlead", fields: [{ label: "Zrating", picklist: ["Zhot"] }] },
+        { api: "Account", fields: [{ label: "Zqacct Zrating", picklist: ["Zhot"] }] },
+      ] };
+      const i = ir([nav("/lightning/o/Account/new"), click("Save"), created, valueIs("Zhot")]);
+      fieldChecksOnRecordView(i, { ...model, salesforceOrg: two }, "verify its Zrating shows Zhot");
+      expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zrating" }, value: "Zhot" });
+    });
+
+    it("is left alone when the request names no field offering it, or two do", () => {
+      expect(run(valueIs("Zhot"), "verify Zhot is shown").at(-1)!.target).toEqual({ text: "Zhot" });
+      expect(run(valueIs("Zhot"), "verify Zrating and Zq Mood show Zhot").at(-1)!.target).toEqual({ text: "Zhot" });
+    });
+  });
 });
 
 // Phase A (run 2026-10-26T07-23-21-344Z-9cd29004): create an Account, an Opportunity for it, then check
