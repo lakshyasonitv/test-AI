@@ -27,6 +27,7 @@ import { currentRunTargetApp } from "../runTarget.js";
 import { currentFrontdoor, recordRef, recordRefIndex, recordRefObject } from "./salesforceFrontdoor.js";
 import { hasRunToken, lineKey, shownNumber } from "../text.js";
 import { requestedActions } from "./testData.js";
+import { requestValues } from "./requestValues.js";
 import type { IR as IRSteps, Step } from "../schema/ir.js";
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 
@@ -943,4 +944,28 @@ export function inventedRecordLinks(ir: IRSteps): string[] {
     return [`${s.id}: a link to "${name}", which no step typed -> dropped with the ${cut - 1} step(s) after it`];
   }
   return [];
+}
+
+/**
+ * A value the request asks to verify ("... and a Case whose subject starts with TB Onboarding appears")
+ * that no step checks: the case writer left it out on some runs and kept it on others (run
+ * 2026-11-10T17-02-55-715Z-9d0daa6b dropped "TB Onboarding" and was cut as incomplete). Added as a visible check
+ * after the case's last field check on the record (else after its last Save), where
+ * fieldChecksOnRecordView then takes it to the Related tab. Only values of two words or more that are
+ * no object or field name. Returns notes.
+ */
+export function requestedTextChecks(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects"> | undefined, request: string): string[] {
+  const checkPart = request.slice(requestedActions(request).length);
+  if (!checkPart.trim()) return [];
+  const names = new Set((org?.objects ?? []).flatMap((o) => [o.label, o.labelPlural ?? "", ...o.fields.map((f) => f.label)]).map(lineKey));
+  const seen = lineKey(ir.steps.map((s) => [s.value, s.target?.text, s.target?.name, s.target?.field].filter(Boolean).join(" ")).join(" "));
+  const missing = requestValues(checkPart).filter((v) => v.trim().split(/\s+/).length >= 2 && !/['’]s\b/.test(v)
+    && !names.has(lineKey(v)) && !seen.includes(lineKey(v)));
+  if (!missing.length) return [];
+  let at = -1;
+  for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "assert" && ir.steps[i].target?.field) at = i + 1;
+  for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) at = i + 1;
+  if (at < 0) return [];
+  ir.steps.splice(at, 0, ...missing.map((v) => ({ id: `sf-req-${v}`.replace(/\W+/g, "-").slice(0, 60), action: "assert", target: { text: v }, assertion: "visible" } as Step)));
+  return missing.map((v) => `the request verifies "${v}" and no step checked it -> added`);
 }

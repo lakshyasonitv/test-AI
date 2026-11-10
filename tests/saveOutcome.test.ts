@@ -775,3 +775,19 @@ describe("inventedRecordLinks", () => {
     expect(inventedRecordLinks(noCheckYet)).toEqual([]);
   });
 });
+
+describe("requestedTextChecks", () => {
+  const org = { objects: [{ api: "Zacct", label: "Zacct", fields: [{ label: "Ztype", api: "Ztype__c", type: "picklist" }] }] };
+  const fieldCheck = { id: "f", action: "assert", target: { field: "Ztype" }, assertion: "text_contains", value: "Zq Direct" } as Step;
+  it("adds a check for a value the request verifies that no step checks, after the last field check", async () => {
+    const { requestedTextChecks } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), fieldCheck, nav("/lightning/o/Zacct/list")]);
+    expect(requestedTextChecks(i, org as any, "Create a Zacct and verify its Ztype shows Zq Direct and a case Zq Onboarding Item appears")).toHaveLength(1);
+    expect(i.steps[3]).toMatchObject({ action: "assert", target: { text: "Zq Onboarding Item" }, assertion: "visible" });
+  });
+  it("adds nothing when every verified value is checked, or names a field", async () => {
+    const { requestedTextChecks } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), fieldCheck]);
+    expect(requestedTextChecks(i, org as any, "Create a Zacct and verify Ztype shows Zq Direct")).toEqual([]);
+  });
+});
