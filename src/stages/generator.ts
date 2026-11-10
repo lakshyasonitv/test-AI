@@ -359,6 +359,9 @@ async function sfFieldValue(page, label, expected, mode) {
     };
     let blocks = await visible(exact);
     if (blocks.length === 0) blocks = await visible(prefixed);
+    // The other way round: the case says "Account Type", the page says "Type" (run
+    // 2026-11-10T14-58-33-406Z-bf759d61). ponytail: any first word, only when nothing closer is visible.
+    if (blocks.length === 0 && /\\s/.test(label)) blocks = await visible(items.filter({ has: page.getByText(label.replace(/^\\S+\\s+/, ""), { exact: true }) }));
     for (const block of blocks) {
       const lines = ((await block.innerText({ timeout: 1000 }).catch(() => "")) || "").split("\\n");
       if (sfFieldMatch(lines, label, expected, mode)) return;

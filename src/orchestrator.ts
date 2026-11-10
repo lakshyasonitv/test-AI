@@ -16,7 +16,7 @@ import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
 import { cleanupEnabled, cleanupRecords, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
-import { publishRequestedEvents, seedEnabled } from "./stages/salesforceSeed.js";
+import { publishRequestedEvents, seedEnabled, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
 import { apiChecks, apiChecksEnabled, caseRunFacts, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
@@ -421,8 +421,9 @@ export async function runPipeline(
     // the cases are written: today, publishing the event of a platform-event flow the request names. The
     // org model then says what was published, so the cases check its outcome.
     const seedFd = currentFrontdoor();
+    let published: Published[] = [];
     if (seedEnabled() && seedFd?.apiGet && seedFd.apiPost && appModel.salesforceOrg) {
-      const published = await publishRequestedEvents({ apiGet: seedFd.apiGet, apiPost: seedFd.apiPost },
+      published = await publishRequestedEvents({ apiGet: seedFd.apiGet, apiPost: seedFd.apiPost },
         appModel.salesforceOrg, prompt, Math.random().toString(36).slice(2, 8));
       if (published.length) {
         save("03-seed.json", published);
@@ -473,6 +474,9 @@ export async function runPipeline(
       }
       throw err;
     }
+    // Seeding published the event already: a case's own "publish it" step (and the re-check after it)
+    // has nothing to act on (run 2026-11-10T15-02-34-218Z-ccc80600 found the Account, then searched again).
+    if (published.some((p) => !p.error)) cases = withoutPublishSteps(cases);
     console.log("✓ Test cases:", cases.length);
     if (proSpec) insight("pro-spec", () => specModelInsights(proSpec));
     insight("testcases", () => ({ ...caseInsights(cases), gate: gateUsed, pro: !!proSpec }));

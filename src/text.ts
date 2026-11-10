@@ -144,6 +144,11 @@ export function isNamedToggle(t: { role?: string; name?: string; css?: string } 
 
 /** A name the walker made up from an element's id ("input 23", "radio 0 24"), not a label. */
 const MADE_UP_NAME = /^(input|radio|checkbox|select|textarea|combobox|textbox|spinbutton)(\s+\d+)+$/i;
+/** True when a walk still holds a made-up name: a cached screen flow capture from before the names were
+ *  read from the accessibility snapshot (run 2026-11-10T14-50-55-763Z-5a9de324 replayed "input 33"). */
+export function hasMadeUpNames(elements: { name?: string }[]): boolean {
+  return elements.some((e) => MADE_UP_NAME.test(e.name ?? ""));
+}
 
 /**
  * Names elements whose walked name is made up, from Playwright's accessibility snapshot of the page

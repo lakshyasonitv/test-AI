@@ -1,4 +1,4 @@
-import { isNamedToggle, nameFromAriaSnapshot } from "../text.js";
+import { isNamedToggle, nameFromAriaSnapshot, hasMadeUpNames } from "../text.js";
 import { chromium, type Page } from "playwright";
 import { chromiumLaunchOptions, browserContextOptions, localeCacheDimension } from "../browserLaunch.js";
 import { AppModel } from "../schema/appModel.js";
@@ -410,7 +410,8 @@ async function replayAndSnapshot(
   // part — appended ONLY when set, so every existing walk keeps its exact key and cache entry.
   const cacheKey = walkCacheKey(model, prefix, creds, policy, options);
   const cached = options.fresh ? undefined : llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
-  if (cached) {
+  // A cached screen flow capture with made-up names predates the naming: walked again, never served.
+  if (cached && !(/\/flow\//.test(cached.reachedUrl) && hasMadeUpNames(cached.pageModel.elements))) {
     // Phase 4: this walk never expires, so an id proven volatile SINCE it was cached must not be
     // served back as a locator.
     if (volatileIdDetectionEnabled()) dropVolatileIdCss(cached.reachedUrl, cached.pageModel.elements);

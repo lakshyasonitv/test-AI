@@ -55,3 +55,17 @@ describe("flowEffects names a record created from the triggering record", () => 
       .toEqual(["creates a Account with Name = the triggering record's Note__c"]);
   });
 });
+
+describe("withoutPublishSteps", () => {
+  it("cuts a case at its own publish step when it already searched, else drops only that step", async () => {
+    const { withoutPublishSteps } = await import("../src/stages/salesforceSeed.js");
+    const searchedFirst = { steps: ["Go to the home page.", "Type \"TB Event x\" in the search box and press Enter.", "Publish the event with Message = x.", "Search again for x."] };
+    expect(withoutPublishSteps([searchedFirst])[0].steps).toEqual(searchedFirst.steps.slice(0, 2));
+    const publishFirst = { steps: ["Publish the event.", "Search for \"TB Event x\"."] };
+    expect(withoutPublishSteps([publishFirst])[0].steps).toEqual(["Search for \"TB Event x\"."]);
+    const goThenPublish = { steps: ["Go to the home page.", "Publish the event.", "Search for \"TB Event x\"."] };
+    expect(withoutPublishSteps([goThenPublish])[0].steps).toEqual(["Go to the home page.", "Search for \"TB Event x\"."]);
+    const none = { steps: ["Search for x."] };
+    expect(withoutPublishSteps([none])[0]).toBe(none);
+  });
+});

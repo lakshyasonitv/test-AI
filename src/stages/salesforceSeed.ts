@@ -67,3 +67,15 @@ export async function publishRequestedEvents(session: Session, org: SalesforceOr
   }
   return out;
 }
+
+/** A case's steps up to its own "publish the event" step: everything from there on re-does what seeding
+ *  did, then checks again (a second search, on a page whose search box is another one). */
+export function withoutPublishSteps<C extends { steps: string[] }>(cases: C[]): C[] {
+  return cases.map((c) => {
+    const at = c.steps.findIndex((s) => /\bpublish(es|ed|ing)?\b/i.test(s));
+    if (at < 0) return c;
+    // Checked already before it (search, open, look): the rest repeats that check. Else only the publish goes.
+    const checked = c.steps.slice(0, at).some((s) => /\b(search|type|open|look|find|verify|check)\b/i.test(s) && !/^go to\b/i.test(s));
+    return { ...c, steps: checked ? c.steps.slice(0, at) : c.steps.filter((_, i) => i !== at) };
+  });
+}

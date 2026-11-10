@@ -44,3 +44,12 @@ describe("nameFromAriaSnapshot", () => {
     expect(els[0].name).toBe("input 23");
   });
 });
+
+describe("hasMadeUpNames", () => {
+  it("spots a walk that still has made-up names, and passes a named one", async () => {
+    const { hasMadeUpNames } = await import("../src/text.js");
+    expect(hasMadeUpNames([{ name: "Zq Name" }, { name: "input 33" }])).toBe(true);
+    expect(hasMadeUpNames([{ name: "radio 0 24" }])).toBe(true);
+    expect(hasMadeUpNames([{ name: "Zq Name" }, { name: "Next" }])).toBe(false);
+  });
+});
