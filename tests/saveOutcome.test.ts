@@ -793,12 +793,15 @@ describe("requestedTextChecks", () => {
 });
 
 describe("flowEffectChecks: a checkbox the flow ticks", () => {
-  it("is checked as true on that field, not skipped", () => {
-    const org = { objects: [{ api: "Zcase", label: "Zcase", fields: [{ label: "Zpri", api: "Zpri" }, { label: "Zesc", api: "IsZesc" }] }],
+  it("is not checked on screen (a layout may not show it); the API check reads it", async () => {
+    const org = { objects: [{ api: "Zcase", label: "Zcase", fields: [{ label: "Zpri", api: "Zpri", type: "picklist" }, { label: "Zesc", api: "IsZesc", type: "boolean" }] }],
       flows: [{ label: "Zq Esc", object: "Zcase", effects: ["only when Zpri = High", "sets IsZesc = true"] }] };
     const i = ir([nav("/lightning/o/Zcase/new"), { id: "p", action: "select", target: { name: "Zpri" }, value: "High" } as Step, click("Save")]);
     flowEffectChecks(i, org, "high priority cases should be escalated automatically (Zq Esc)");
-    expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zesc" }, value: "true" });
+    expect(i.steps.some((s) => s.target?.field === "Zesc")).toBe(false);
+    const { flowSetChecks, sameValue } = await import("../src/stages/salesforceOracles.js");
+    expect(flowSetChecks(i, org as any)).toEqual([{ object: "Zcase", n: 1, values: [{ label: "Zesc", api: "IsZesc", type: "boolean", value: "true" }] }]);
+    expect(sameValue("boolean", "true", true)).toBe(true);
   });
 });
 

@@ -425,38 +425,12 @@ export function flowEffectChecks(ir: IRSteps, org: {
     if (!o) continue;
     const valueOf = (fieldApi: string) => rec.values.get(fieldApi.toLowerCase());
     for (const fl of org.flows.filter((x) => x.object === o.label || x.object === o.api)) {
-      const lines = fl.effects ?? [];
-      const only = lines.find((l) => l.startsWith("only when "));
-      if (only && whenHolds(only.slice("only when ".length), valueOf) !== true) continue;
-      const branches = lines.filter((l) => l.startsWith("branch "));
-      let effects: string;
-      if (branches.length) {
-        let taken: string | undefined;
-        let unknown = false;
-        for (const b of branches) {
-          const when = /: when (.*?) ->/.exec(b)?.[1];
-          if (!when) { taken ??= b; continue; }        // the default branch: taken when none before holds
-          const h = whenHolds(when, valueOf);
-          if (h === undefined) { unknown = true; break; }
-          if (h) { taken = b; break; }
-        }
-        if (unknown || !taken) continue;
-        effects = taken.slice(taken.indexOf("->") + 2);
-      } else {
-        effects = lines.filter((l) => !l.startsWith("only when ")).join("; ");
-      }
-      // What it does to the record, and the records it creates, as checks.
-      const sets: { label: string; value: string }[] = [];
-      for (const m of effects.matchAll(/\bsets (.+?)(?=;|$)/g)) {
-        if (/ on [A-Z][\w ]*$/.test(m[1])) continue;
-        for (const part of m[1].split(/,\s+(?=\w+ = )/)) {
-          const a = /^(\w+) = (.+)$/.exec(part.trim());
-          const f = a ? o.fields.find((x) => x.api?.toLowerCase() === a[1].toLowerCase()) : undefined;
-          // A checkbox ("IsEscalated = true") is checked as "true"/"false": the spec reads the box (sfFieldValue).
-          if (a && f) sets.push({ label: f.label, value: /^(true|false)$/i.test(a[2].trim()) ? a[2].trim().toLowerCase() : a[2].trim() });
-        }
-      }
-      const creates = [...effects.matchAll(/creates an? \w+ "([^"]+)"/g)].map((m) => m[1]);
+      const outcome = flowOutcome(o, fl.effects ?? [], valueOf);
+      if (!outcome) continue;
+      // A checkbox the flow ticks is checked through the API (salesforceOracles.flowSetChecks): a page
+      // layout may not show it at all (run 2026-11-10T18-12-48-531Z-ba5c15e9: no Escalated box on the Case).
+      const sets = outcome.sets.filter((x) => !/^(true|false)$/.test(x.value));
+      const creates = outcome.creates;
       // Only when the request or case is about this outcome.
       const about = talksAbout(fl.label) || sets.some((x) => talksAbout(x.value) || talksAbout(x.label))
         || creates.some((c) => talksAbout(c)) || (creates.length > 0 && /\b(task|case|record)s?\b/i.test(text));
@@ -464,10 +438,7 @@ export function flowEffectChecks(ir: IRSteps, org: {
       const checked = (v: string) => ir.steps.some((s) => s.action === "assert"
         && [s.value, s.target?.text].some((t) => !!t && lineKey(t).includes(lineKey(v))));
       const add: Step[] = [];
-      // "true" is checked per field: any check containing the word must not count for a checkbox.
-      for (const x of sets) if (/^(true|false)$/.test(x.value)
-        ? !ir.steps.some((s) => s.action === "assert" && s.target?.field === x.label)
-        : !checked(x.value)) add.push({ id: `sf-flow-${x.label}`.replace(/\W+/g, "-"), action: "assert", target: { field: x.label }, assertion: "text_contains", value: x.value } as Step);
+      for (const x of sets) if (!checked(x.value)) add.push({ id: `sf-flow-${x.label}`.replace(/\W+/g, "-"), action: "assert", target: { field: x.label }, assertion: "text_contains", value: x.value } as Step);
       for (const c of creates) if (!checked(c)) add.push({ id: `sf-flow-${c}`.replace(/\W+/g, "-").slice(0, 60), action: "assert", target: { text: c }, assertion: "visible" } as Step);
       if (!add.length) continue;
       // After the last Save; on this record (opened by reference when the flow moved on).
@@ -1028,4 +999,43 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
     notes.push(`${s.id}: "${s.target?.name}" on the path only selects it -> clicks "Mark as Current Stage"`);
   }
   return notes;
+}
+
+/**
+ * What one flow does to a record with these values (by API name), from its effect lines: the fields it
+ * sets and the records it creates by name. Null when it does not run (its "only when" is false) or when
+ * a condition reads a value the case did not type (never guessed). The branch taken is the first whose
+ * "when" holds, else the default one.
+ */
+export function flowOutcome(
+  o: { fields: { label: string; api?: string }[] }, lines: string[], valueOf: (api: string) => string | undefined,
+): { sets: { label: string; api: string; value: string }[]; creates: string[] } | null {
+  const only = lines.find((l) => l.startsWith("only when "));
+  if (only && whenHolds(only.slice("only when ".length), valueOf) !== true) return null;
+  const branches = lines.filter((l) => l.startsWith("branch "));
+  let effects: string;
+  if (branches.length) {
+    let taken: string | undefined;
+    for (const b of branches) {
+      const when = /: when (.*?) ->/.exec(b)?.[1];
+      if (!when) { taken ??= b; continue; }        // the default branch: taken when none before holds
+      const h = whenHolds(when, valueOf);
+      if (h === undefined) return null;
+      if (h) { taken = b; break; }
+    }
+    if (!taken) return null;
+    effects = taken.slice(taken.indexOf("->") + 2);
+  } else {
+    effects = lines.filter((l) => !l.startsWith("only when ")).join("; ");
+  }
+  const sets: { label: string; api: string; value: string }[] = [];
+  for (const m of effects.matchAll(/\bsets (.+?)(?=;|$)/g)) {
+    if (/ on [A-Z][\w ]*$/.test(m[1])) continue;
+    for (const part of m[1].split(/,\s+(?=\w+ = )/)) {
+      const a = /^(\w+) = (.+)$/.exec(part.trim());
+      const f = a ? o.fields.find((x) => x.api?.toLowerCase() === a[1].toLowerCase()) : undefined;
+      if (a && f?.api) sets.push({ label: f.label, api: f.api, value: /^(true|false)$/i.test(a[2].trim()) ? a[2].trim().toLowerCase() : a[2].trim() });
+    }
+  }
+  return { sets, creates: [...effects.matchAll(/creates an? \w+ "([^"]+)"/g)].map((m) => m[1]) };
 }

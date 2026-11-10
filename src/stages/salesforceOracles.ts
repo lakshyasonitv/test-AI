@@ -3,6 +3,7 @@ import path from "node:path";
 import type { IR } from "../schema/ir.js";
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 import { resolveRunTokens, shownNumber, type RunTokenContext } from "../text.js";
+import { flowOutcome } from "./salesforceGuidance.js";
 
 /**
  * Phase D, API checks (SALESFORCE_API_CHECKS_ENABLED, default off): after a case ran, read each record
@@ -185,6 +186,49 @@ export function calculatedChecks(ir: Pick<IR, "steps">, org: Org): Typed[] {
     if (!c || !COMPARED.test(c.type)) continue;
     const entry = out.find((t) => t.object === on!.object && t.n === on!.n) ?? (out.push({ object: on.object, n: on.n, values: [] }), out[out.length - 1]);
     entry.values = entry.values.filter((v) => v.api !== c.api).concat({ label: c.label, api: c.api, type: c.type, value: s.value });
+  }
+  return out;
+}
+
+/**
+ * Phase B through the API: what each record-triggered flow on a saved record should have set, given the
+ * values the form typed (the branch logic of salesforceGuidance.flowOutcome), compared with what the org
+ * stored. This is where a checkbox the flow ticks is checked: a page layout may not show it (run
+ * 2026-11-10T18-12-48-531Z-ba5c15e9: the Case page had no Escalated box). Unknown values = no check.
+ */
+export function flowSetChecks(ir: Pick<IR, "steps">, org: Org): Typed[] {
+  const out: Typed[] = [];
+  const count = new Map<string, number>();
+  let form: string | null = null;
+  let typed = new Map<string, string>();
+  for (const s of ir.steps) {
+    if (s.action === "navigate") {
+      form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null;
+      typed = new Map();
+      continue;
+    }
+    if (!form) continue;
+    const o = org.objects.find((x) => x.api === form);
+    if ((s.action === "fill" || s.action === "select") && s.value !== undefined && o) {
+      const name = (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase();
+      const f = o.fields.find((x) => x.label.toLowerCase() === name || `${o.label} ${x.label}`.toLowerCase() === name);
+      if (f) typed.set(f.api.toLowerCase(), s.value);
+    } else if (s.action === "click" && /^save$/i.test(s.target?.name ?? "")) {
+      const n = (count.get(form) ?? 0) + 1;
+      count.set(form, n);
+      if (o) {
+        const values: Typed["values"] = [];
+        for (const fl of (org.flows ?? []).filter((x) => x.object === o.label || x.object === o.api)) {
+          const r = flowOutcome(o, fl.effects ?? [], (api) => typed.get(api.toLowerCase()));
+          for (const x of r?.sets ?? []) {
+            const type = /^(true|false)$/.test(x.value) ? "boolean" : (o.fields.find((f) => f.api === x.api)?.type ?? "string");
+            values.push({ label: x.label, api: x.api, type, value: x.value });
+          }
+        }
+        if (values.length) out.push({ object: form, n, values });
+      }
+      form = null;
+    }
   }
   return out;
 }
