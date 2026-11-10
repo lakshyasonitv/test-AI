@@ -426,3 +426,16 @@ describe("objectsNamedIn anyCase (record pages discovery opens)", () => {
     expect(objectsNamedIn("check that a high priority zq account gets a hot rating", org)).toEqual([]);
   });
 });
+
+describe("ruleBoundaries", () => {
+  it("gives the edge of simple number and length comparisons, and nothing for patterns", async () => {
+    const { ruleBoundaries } = await import("../src/stages/salesforceOrgModel.js");
+    expect(ruleBoundaries("ZqRevenue < 0")).toEqual(["ZqRevenue = -1 fires the rule, ZqRevenue = 0 does not"]);
+    expect(ruleBoundaries("LEN(ZqCompany) < 3")).toEqual(["ZqCompany with 2 characters fires the rule, ZqCompany with 3 characters does not"]);
+    expect(ruleBoundaries('Country = "United States" && LEN(Phone) <> 10')).toEqual([
+      "Phone with 9 characters fires the rule, Phone with 10 characters does not",
+      "Phone with 11 characters fires the rule, Phone with 10 characters does not"]);
+    expect(ruleBoundaries("ZqAmount >= 1000000")).toEqual(["ZqAmount = 1000000 fires the rule, ZqAmount = 999999 does not"]);
+    expect(ruleBoundaries('REGEX(LOWER(Email), ".*\\.(games)")')).toEqual([]);
+  });
+});

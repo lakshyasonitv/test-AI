@@ -624,7 +624,8 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
       typed.length ? `  field types: ${typed.join(", ")}` : "",
       o.listViews?.length ? `  list views: ${o.listViews.join(", ")}` : "",
       ...(o.validationRules ?? []).map((r) => `  validation rule ${r.name}${r.field ? ` (on ${r.field})` : ""}: "${r.message}"`
-        + (r.condition ? `\n    fires when: ${r.condition}` : "")),
+        + (r.condition ? `\n    fires when: ${r.condition}` : "")
+        + (r.condition && ruleBoundaries(r.condition).length ? `\n    boundary: ${ruleBoundaries(r.condition).join("; ")}` : "")),
     ].filter(Boolean);
     lines.push(parts.join("\n"));
   }
@@ -651,5 +652,30 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
 Salesforce org model (read from the org's own metadata API${org.app ? ` for the app "${org.app}"` : ""} — authoritative):
 ${body}
 The run is already signed in to this org through its connection (no login page exists in the model): write no login, username or password steps.
-Use it: name objects, fields, list views and picklist values exactly as written above; to create a record, open its "create form" path above directly by URL (its fields are in the application model on that page; never route through the App Launcher or the navigation to reach it); a case that creates a record fills every "required on create" field with a realistic value and the fields a validation rule reads, and NO other field unless the request names it (a lookup needs an existing record and is left alone unless required); when the request names several objects, write one create case PER object, never one case that creates them all; a picklist step picks only a value listed for it, and a picklist that "depends on" another is set AFTER its controlling field, to a value offered under the controlling value chosen; a case about one record type opens THAT record type's create form path above (the plain create form opens only the default one), and a case that does not name one uses the plain create form; a case that must SAVE successfully also keeps every validation rule's condition FALSE (a rule that fires when Email and Phone are both blank means the case fills one of them); each validation rule above deserves a negative case whose expected result is its exact message, and that case must make its condition true ("fires when": fill every field the formula reads, e.g. Country as well as Phone) while filling every required field.${org.validationRulesRead ? "" : " (Validation rules could not be read in this org, so their absence above means nothing.)"}`;
+Use it: name objects, fields, list views and picklist values exactly as written above; to create a record, open its "create form" path above directly by URL (its fields are in the application model on that page; never route through the App Launcher or the navigation to reach it); a case that creates a record fills every "required on create" field with a realistic value and the fields a validation rule reads, and NO other field unless the request names it (a lookup needs an existing record and is left alone unless required); when the request names several objects, write one create case PER object, never one case that creates them all; a picklist step picks only a value listed for it, and a picklist that "depends on" another is set AFTER its controlling field, to a value offered under the controlling value chosen; a case about one record type opens THAT record type's create form path above (the plain create form opens only the default one), and a case that does not name one uses the plain create form; a case that must SAVE successfully also keeps every validation rule's condition FALSE (a rule that fires when Email and Phone are both blank means the case fills one of them); each validation rule above deserves a negative case whose expected result is its exact message, and that case must make its condition true ("fires when": fill every field the formula reads, e.g. Country as well as Phone) while filling every required field; a request about boundaries, limits or edge values gets, for each "boundary" line, TWO cases: one at the value that fires the rule (expected: its exact message) and one at the value that does not (expected: the record saves).${org.validationRulesRead ? "" : " (Validation rules could not be read in this org, so their absence above means nothing.)"}`;
+}
+
+/**
+ * Phase A gap "validation boundaries": the edge of each simple comparison in a rule's formula, as plain
+ * words for the case writer: "AnnualRevenue = -1 fires the rule, AnnualRevenue = 0 does not". Read from
+ * `<Field> <op> <number>` and `LEN(<Field>) <op> <number>`; anything else (REGEX, BEGINS, ISBLANK) has no
+ * single edge and gives nothing. `<>` / `!=` give both sides of the one allowed length.
+ */
+export function ruleBoundaries(condition: string): string[] {
+  const out: string[] = [];
+  const re = /(LEN\(\s*)?\b([A-Za-z_][\w.]*)\s*\)?\s*(<=|>=|<>|!=|<|>|=)\s*(-?\d+(?:\.\d+)?)/g;
+  for (const m of condition.matchAll(re)) {
+    const len = !!m[1], field = m[2], op = m[3], n = Number(m[4]);
+    if (/^(LEN|ISBLANK|NOT|AND|OR)$/i.test(field)) continue;
+    const step = len || Number.isInteger(n) ? 1 : 0.01;
+    const say = (v: number) => len ? `${field} with ${v} characters` : `${field} = ${v}`;
+    const pair = (fires: number, ok: number) => out.push(`${say(fires)} fires the rule, ${say(ok)} does not`);
+    if (op === "<") pair(n - step, n);
+    else if (op === "<=") pair(n, n + step);
+    else if (op === ">") pair(n + step, n);
+    else if (op === ">=") pair(n, n - step);
+    else if (op === "<>" || op === "!=") { pair(n - step, n); pair(n + step, n); }
+    else if (op === "=") pair(n, n + step);
+  }
+  return out;
 }
