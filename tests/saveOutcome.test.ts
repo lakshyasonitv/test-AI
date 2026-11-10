@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView, returnToCreatedRecords,
-  requestedFieldChecks,
+  requestedFieldChecks, deleteNamedRecord,
 } from "../src/stages/salesforceGuidance.js";
 import { recordRef } from "../src/stages/salesforceFrontdoor.js";
 import { readFileSync } from "node:fs";
@@ -566,10 +566,24 @@ describe("requestedFieldChecks", () => {
   it("adds a check for each requested picklist value no step checks, under the request's label", () => {
     const i = lead();
     requestedFieldChecks(i, org, "Create a Zlead and verify its Zrating shows Zhot, its Zlead Zstatus shows Zworking - Zcontacted");
-    expect(i.steps.slice(-2)).toEqual([
-      { id: "sf-check-Zrating", action: "assert", target: { field: "Zrating" }, assertion: "text_contains", value: "Zhot" },
+    // Right after the Save is confirmed, before the case's own later checks (the Task).
+    expect(i.steps.slice(-3)).toEqual([
       { id: "sf-check-Zlead-Zstatus", action: "assert", target: { field: "Zlead Zstatus" }, assertion: "text_contains", value: "Zworking - Zcontacted" },
+      { id: "sf-check-Zrating", action: "assert", target: { field: "Zrating" }, assertion: "text_contains", value: "Zhot" },
+      { id: "t", action: "assert", target: { text: "Zcall the zhot lead" }, assertion: "visible" },
     ]);
+  });
+
+  // Run 2026-11-10T07-19-49-819Z-0ddc0b02: the Account's Type was checked before the Opportunity whose
+  // flow sets it was saved, and again on the Opportunity's page.
+  it("moves a requested check made before the last Save, or on another record, to after the last Save on its record", () => {
+    const early = { id: "e", action: "assert", target: { field: "Ztype" }, assertion: "text_contains", value: "Zcustomer - Zdirect" } as Step;
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, early,
+      nav("/lightning/o/Zopp/new"), click("Save"), created, textIs("Zq Onboarding")]);
+    requestedFieldChecks(i, org, "Create a Zacct, then a Zopp for it, and verify the Zacct's Ztype shows Zcustomer - Zdirect and a Zq Onboarding case appears");
+    expect(i.steps.some((s) => s.id === "e")).toBe(false);
+    expect(i.steps.slice(-3).map((s) => s.target?.url ?? s.target?.field ?? s.target?.text))
+      .toEqual(["${record:Zacct:1}", "Ztype", "Zq Onboarding"]);
   });
 
   it("adds nothing for a value already checked, a value that is no option, or a field only set", () => {
@@ -610,5 +624,42 @@ describe("fieldChecksOnRecordView: back to Related for a related record", () => 
     const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, fieldIs, textIs("Zdirect")]);
     fieldChecksOnRecordView(i, model, "verify Ztype shows Zdirect");
     expect(i.steps.some((s) => s.target?.name === "Related")).toBe(false);
+  });
+});
+
+// Run 2026-11-10T06-30-57-251Z-32a03bc8: "create an Account, an Opportunity for it, then delete that
+// Account": the step writer left out going back, and the delete ran on the Opportunity page.
+describe("deleteNamedRecord", () => {
+  const org = { objects: [{ api: "Zacct", label: "Zacct" }, { api: "Zopp", label: "Zopp" }] };
+  const created: Step = { id: "o", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+  const flow = (...tail: Step[]) => ir([nav("/lightning/o/Zacct/new"), click("Save"), created,
+    nav("/lightning/o/Zopp/new"), click("Save"), created, ...tail]);
+  const menu = click("Show more actions");
+  const del = click("Delete");
+
+  it("opens the named record this case created before its actions menu, and the guard then allows it", () => {
+    const i = flow(menu, del, click("Delete"));
+    deleteNamedRecord(i, org, "Create a Zacct, then a Zopp for it, then delete that Zacct and verify the error");
+    expect(i.steps.slice(-4).map((s) => s.target?.url ?? s.target?.name)).toEqual(["${record:Zacct:1}", "Show more actions", "Delete", "Delete"]);
+    expect(deleteOutsideOwnRecord(i)).toBeNull();
+  });
+
+  it("goes back before the menu even with a wait between the menu and Delete", () => {
+    const wait = { id: "w", action: "wait", value: "500" } as Step;
+    const i = flow(menu, wait, del);
+    deleteNamedRecord(i, org, "then delete that Zacct");
+    expect(i.steps.slice(-4).map((s) => s.target?.url ?? s.target?.name ?? s.value)).toEqual(["${record:Zacct:1}", "Show more actions", "500", "Delete"]);
+  });
+
+  it("adds nothing when the flow is already on that record, or the request names no object it saved", () => {
+    const on = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, menu, del]);
+    expect(deleteNamedRecord(on, org, "Create a Zacct and delete it")).toEqual([]);
+    expect(deleteNamedRecord(flow(menu, del), org, "delete that Zthing")).toEqual([]);
+  });
+
+  it("takes the request's wording for the expected message when the model added quotes", () => {
+    const i = flow(menu, del, { id: "e", action: "assert", target: { text: 'Zq: "This Zacct" cannot be deleted' }, assertion: "visible" } as Step);
+    deleteNamedRecord(i, org, "delete that Zacct and verify the error Zq: This Zacct cannot be deleted is shown");
+    expect(i.steps.at(-1)!.target).toEqual({ text: "Zq: This Zacct cannot be deleted" });
   });
 });

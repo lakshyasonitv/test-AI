@@ -38,7 +38,11 @@ const replayTokens = new WeakMap<Page, RunTokenContext>();
  * Neither applies to any other prefix, which replays exactly as before.
  */
 export function prepareReplayPage(page: Page, prefix: Step[]): void {
-  if (prefix.some((s) => s.action === "navigate" && recordRefObject(s.target?.url))) {
+  // On every org-connection run, not only a prefix that already goes back to a record: grounding
+  // replays in stages on one page, and a stage that had no step back yet left the page untracked, so
+  // the later "go back to the Account" found no Account (run 2026-11-10T08-06-20-359Z-aa2ffc07). It
+  // only reads main-frame URLs.
+  if (!replayRecordPages.has(page) && (currentFrontdoor() || prefix.some((s) => s.action === "navigate" && recordRefObject(s.target?.url)))) {
     const pages = recordPages();
     replayRecordPages.set(page, pages);
     page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) pages.visit(frame.url()); });

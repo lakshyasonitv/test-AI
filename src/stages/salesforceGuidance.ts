@@ -53,7 +53,7 @@ const ROUTE = {
 - A case that creates a record ends its name fields (Last Name, Company, Account Name, a record Name) with the token {{uid}}, e.g. "Smith {{uid}}": the run replaces it with a unique code, so the org's duplicate rules never block a repeat run. Never put {{uid}} in a field a validation rule reads (Phone, Email, Country) and never in an expected result.
 - An invalid-FORMAT case only where Salesforce checks a format: Email, Date, Number, Currency and Percent fields, or a field a validation rule reads. A Phone, Text or URL field accepts any text and saves it, so "an invalid phone is rejected" fails against a healthy org (run 2026-10-25T06-38-05-163Z-3a6663ef).
 - A create case fills the required fields and the fields a validation rule reads, and no other field unless the request names it. A lookup field (Account Name on a Contact, Parent Account) needs an existing record: leave it alone unless it is required or the request names it. When the request names several objects, write one create case per object, never one case that creates them all: a failure in one object must not hide the others. (Backed by: the test-data pass drops unrequested optional fields and splits nothing — a combined case stays combined, so write them apart.)`,
-    ir: `- The run is already signed in through its org connection: the sign-in step is supplied; write no login, username or password step. Reach a page with "navigate" to a path that is in the application model: /lightning/o/<Object>/new opens the create form as a modal dialog and its fields are in that page's model. Never click through the App Launcher or the navigation bar to reach an object. (Backed by: the navigate-URL guard, TD-82.)
+    ir: `- The run is already signed in through its org connection: the sign-in step is supplied; write no login, username or password step. Reach a page with "navigate" to a path that is in the application model: /lightning/o/<Object>/new opens the create form as a modal dialog and its fields are in that page's model. Never click through the App Launcher or the navigation bar to reach an object. Create every record, a related one too, through its own create form path, and pick its parent in that form's lookup (an Opportunity "for that Account": /lightning/o/Opportunity/new, Account Name = that Account), never through another record page's actions menu or its "New <Object>" buttons, unless the case says to use that action. (Backed by: the navigate-URL guard, TD-82; run 2026-11-10T06-30-57-251Z-32a03bc8 lost its way in the Account page's "Show more actions" menu.)
 - In a flow that creates a record, the "fill" value of each name field (Last Name, Company, Account Name, a record Name) ends with the token {{uid}}, e.g. "Smith {{uid}}"; the spec and the replay replace it with a unique code, so the org's duplicate rules never block a repeat. Never in a field a validation rule reads, never in an assertion: assert "was created", never the record's name. (Backed by: generator valueCode and runStepLive.)
 - Fill only the required fields, the fields a validation rule reads, and the fields the case names. Never type into a lookup (a record reference such as Account Name on a Contact) unless the case names a record for it. (Backed by: the test-data pass drops other optional fills.)`,
   },
@@ -333,6 +333,60 @@ export function valuesFromRequest(ir: IRSteps, request: string): string[] {
 }
 
 /**
+ * A delete the request aims at one object ("then delete that Account") runs on THAT record. Run
+ * 2026-11-10T06-30-57-251Z-32a03bc8 created an Account and an Opportunity for it, the step writer left out
+ * "go back to the Account", and the delete ran on the Opportunity page. When the flow is on another
+ * record at its delete (the Delete click, or the actions menu right before it), the record of the
+ * named object this case saved last is opened first, by its record reference (which resolves only to
+ * that record; deleteOutsideOwnRecord allows nothing else). Also: the delete's expected message, when
+ * the model added quotes the request does not have, takes the request's wording. Returns notes.
+ */
+export function deleteNamedRecord(ir: IRSteps, org: { objects: { api: string; label: string }[] } | undefined, request = ""): string[] {
+  const notes: string[] = [];
+  const steps = ir.steps;
+  const del = steps.findIndex((s) => s.action === "click" && /^delete\b/i.test(s.target?.name ?? ""));
+  if (del < 0 || !org?.objects.length) return notes;
+  // The object the request deletes: "delete (that|the|this|its)? <label>".
+  const named = [...org.objects].sort((a, b) => b.label.length - a.label.length)
+    .find((o) => new RegExp(`\\bdelet\\w*\\s+(?:that|the|this|its|this same|that same)?\\s*${o.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(request));
+  if (named) {
+    // Records saved before the delete, per object, and the record the flow is on at the delete.
+    const saved = new Map<string, number>();
+    let form: string | null = null;
+    let on: string | null = null;
+    for (let i = 0; i < del; i++) {
+      const s = steps[i];
+      if (s.action === "navigate") {
+        form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null;
+        on = recordRefObject(s.target?.url) ?? (form ? null : on);
+      } else if (s.action === "click" && isSave(s) && form) {
+        saved.set(form, (saved.get(form) ?? 0) + 1); on = form; form = null;
+      }
+    }
+    const n = saved.get(named.api);
+    if (n && on !== named.api) {
+      // Before the actions menu that holds Delete, when it is the click right before it, waits aside: run
+      // 2026-11-10T07-41-34-085Z-f4e0523d opened the menu, waited, and the record was opened in between.
+      let p = del - 1;
+      while (p >= 0 && steps[p].action === "wait") p--;
+      const prev = steps[p];
+      const at = prev?.action === "click" && /more actions|show actions|^actions$/i.test(prev.target?.name ?? "") ? p : del;
+      steps.splice(at, 0, { id: `sf-open-${named.api}`, action: "navigate", target: { url: recordRef(named.api, n) } });
+      notes.push(`the request deletes the ${named.label}, and the flow was on another record -> opens the ${named.label} this case created first`);
+    }
+  }
+  // The expected message as the request writes it: no quotes the model added inside it.
+  const unquote = (t: string) => t.replace(/["“”]/g, "").replace(/\s+/g, " ").trim();
+  for (const s of steps.slice(del)) {
+    const t = s.action === "assert" ? s.target?.text : undefined;
+    if (!t || !/["“”]/.test(t) || request.includes(t)) continue;
+    const plain = unquote(t);
+    if (plain && request.includes(plain)) { s.target!.text = plain; notes.push(`${s.id}: "${t}" -> "${plain}", as the request writes it`); }
+  }
+  return notes;
+}
+
+/**
  * Every field value the request asks to CHECK on a record this case created becomes a check, when the
  * steps have none. Run 2026-11-10T05-05-39-201Z-52ce7aed: "verify its Rating shows Hot, its Lead Status
  * shows Working - Contacted, and a Task ... appears": the case only "looked at" the two fields, so the
@@ -374,7 +428,7 @@ export function requestedFieldChecks(ir: IRSteps, org: {
         const re = new RegExp(`(?:\\b(${esc(o.label)})(?:['’]s)?\\s+)?\\b(${esc(name)})\\s+${VERB}\\s+["']?(${values})(?![\\p{L}\\p{N}])`, "iu");
         const m = re.exec(checks);
         if (!m) continue;
-        hits.push({ obj: o.api, label: m[2], value: f.picklist.find((p) => p.toLowerCase() === m[3].toLowerCase())!, owned: !!m[1], at: m.index });
+        hits.push({ obj: o.api, label: m[2], value: f.picklist.find((p) => p.toLowerCase() === m[3].toLowerCase())!, owned: !!m[1], at: m.index + m[0].indexOf(m[2]) });
         break;
       }
     }
@@ -384,18 +438,56 @@ export function requestedFieldChecks(ir: IRSteps, org: {
   for (const h of hits) byText.set(`${h.at}|${h.label.toLowerCase()}`, [...(byText.get(`${h.at}|${h.label.toLowerCase()}`) ?? []), h]);
   const chosen = [...byText.values()].flatMap((hs) => hs.length === 1 ? hs : hs.filter((h) => h.owned).slice(0, 1))
     .sort((a, b) => a.at - b.at);
+  // The record the flow is on at each step, and the last Save: a requested check counts only after the
+  // flow's last Save, on that object's record. Run 2026-11-10T07-19-49-819Z-0ddc0b02 checked the Account's
+  // Type right after the Account's Save, before the Opportunity whose flow sets it, and then again on
+  // the Opportunity's page: both checks were in the wrong place.
+  const onAt: (string | null)[] = [];
+  let lastSave = -1;
+  {
+    let f: string | null = null;
+    let on: string | null = null;
+    ir.steps.forEach((s, i) => {
+      if (s.action === "navigate") {
+        f = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null;
+        on = recordRefObject(s.target?.url) ?? null;
+      } else if (s.action === "click" && isSave(s)) {
+        lastSave = i;
+        if (f) { on = f; f = null; }
+      } else if (s.action === "click" && s.target?.role !== "tab" && !f) on = null;
+      onAt[i] = on;
+    });
+  }
   for (const h of chosen) {
-    // Already checked: that field showing the value, or the value checked as the whole text. Not a word
+    // A check of it: that field showing the value, or the value checked as the whole text. Not a word
     // inside other text: "TB Call new hot lead" is no check that Rating shows "Hot".
-    const present = ir.steps.some((s) => s.action === "assert" && (
+    const isCheck = (s: Step) => s.action === "assert" && (
       (!!s.target?.field && lineKey(s.target.field) === lineKey(h.label) && lineKey(s.value ?? "").includes(lineKey(h.value)))
-      || [s.value, s.target?.text].some((t) => !!t && lineKey(t) === lineKey(h.value))));
-    if (present) continue;
-    // Opened explicitly when the record is not the last one saved, or the flow moved on after it.
-    const last = [...saved.keys()].at(-1);
-    if (h.obj !== last) ir.steps.push({ id: `sf-open-${h.obj}-${h.label}`.replace(/\W+/g, "-"), action: "navigate", target: { url: recordRef(h.obj, saved.get(h.obj)!) } });
-    ir.steps.push({ id: `sf-check-${h.label}`.replace(/\W+/g, "-"), action: "assert", target: { field: h.label }, assertion: "text_contains", value: h.value } as Step);
-    notes.push(`the request checks "${h.label}" shows "${h.value}" and no step did -> checks it on the ${h.obj} this case created`);
+      || [s.value, s.target?.text].some((t) => !!t && lineKey(t) === lineKey(h.value)));
+    if (ir.steps.some((s, i) => isCheck(s) && i > lastSave && onAt[i] === h.obj)) continue;
+    // Checks of it in the wrong place go: it is checked once, after the last Save, on the right record.
+    for (let i = ir.steps.length - 1; i >= 0; i--) {
+      if (!isCheck(ir.steps[i])) continue;
+      notes.push(`${ir.steps[i].id}: the check of "${h.value}" ran before the last Save or on another record -> moved after the last Save, on the ${h.obj}`);
+      ir.steps.splice(i, 1);
+      onAt.splice(i, 1);
+    }
+    // Right after the last Save is confirmed (its waits and "was created" check), so the request's other
+    // checks that follow (a related Case "on the Account") run on that record too.
+    let at = 0;
+    for (let i = ir.steps.length - 1; i >= 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) { at = i + 1; break; }
+    while (at > 0 && at < ir.steps.length && (ir.steps[at].action === "wait"
+      || (ir.steps[at].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[at].target?.text ?? "")))) at++;
+    if (at === 0) at = ir.steps.length;
+    const added: Step[] = [];
+    // Opened explicitly unless the flow is already on that record there.
+    if (onAt[at - 1] !== h.obj) added.push({ id: `sf-open-${h.obj}-${h.label}`.replace(/\W+/g, "-"), action: "navigate", target: { url: recordRef(h.obj, saved.get(h.obj)!) } });
+    added.push({ id: `sf-check-${h.label}`.replace(/\W+/g, "-"), action: "assert", target: { field: h.label }, assertion: "text_contains", value: h.value } as Step);
+    ir.steps.splice(at, 0, ...added);
+    onAt.splice(at, 0, ...added.map(() => h.obj));
+    // The flow's later steps were on the record it was on before; they are on this one now.
+    for (let i = at + added.length; i < ir.steps.length && ir.steps[i].action !== "navigate"; i++) onAt[i] = h.obj;
+    notes.push(`the request checks "${h.label}" shows "${h.value}" -> checks it on the ${h.obj} this case created, after the last Save`);
   }
   return notes;
 }
@@ -526,7 +618,11 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
   // 2026-10-26T07-23-19-810Z-0d14eb03: the Opportunity page opened on Activity, the field on Details).
   const fields: { label: string; picklist?: string[] }[] = (model.salesforceOrg?.objects ?? [])
     .flatMap((o) => [...o.fields, ...(o.calculated ?? [])]);
-  const fieldLabels = new Set(fields.map((f) => f.label));
+  // The names a record page and a request give a field, not only the org's label: "Lead Status" for
+  // Lead's "Status", "Rating" for Account's "Account Rating" (run 2026-11-10T07-16-08-899Z-c1bf173a
+  // checked text "Lead Status" for a value, and it was not read inside that field).
+  const fieldLabels = new Set((model.salesforceOrg?.objects ?? []).flatMap((o) => [...o.fields, ...(o.calculated ?? [])]
+    .flatMap((f) => [f.label, ...("label" in o && o.label ? [`${o.label} ${f.label}`] : []), f.label.replace(/^\S+\s+/, "")])));
   const notes: string[] = [];
   let saved = false;
   let onView = false;

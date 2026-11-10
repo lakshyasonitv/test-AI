@@ -705,9 +705,12 @@ export function detectBlocked(
       "which an automated test can't read";
   } else if (appOrigin && finalUrl && !isSameSite(finalUrl, appOrigin, relatedHosts)
     // D-70: Salesforce shows its app on a different host from its login (my.salesforce.com ->
-    // lightning.force.com). On a fixed-login Salesforce run, the same org's own app host is not
-    // "leaving the application"; another org or any other site still is.
-    && !(fixedLoginRun() && sameSalesforceApp(finalUrl, appOrigin))) {
+    // lightning.force.com). On a Salesforce run, the same org's own app host is not "leaving the
+    // application"; another org or any other site still is. Also an org-connection run (behind its own
+    // flag): its screen flow ends on the org's own Visualforce host (<org>--c.scratch.vf.force.com), and
+    // its passing test was reported blocked (run 2026-11-10T07-51-03-736Z-780d6aed). Any other run with
+    // the flags off: exactly as before.
+    && !((fixedLoginRun() || !!currentFrontdoor()) && sameSalesforceApp(finalUrl, appOrigin))) {
     try {
       reason = `the flow left the application for ${new URL(finalUrl).host}, an external sign-in ` +
         `provider the test can't complete`;

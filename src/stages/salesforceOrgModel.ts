@@ -243,9 +243,94 @@ export function flowEffects(meta: any): string[] {
       if (ref.startsWith("$Record.")) out.push(`sets ${ref.slice(8)} = ${flowValue(it.value)}`);
     }
   }
-  for (const c of meta?.recordCreates ?? []) out.push(`creates a ${c?.object ?? "record"}`);
-  if ((meta?.decisions ?? []).length) out.push(`branches on ${meta.decisions.length} decision(s): what it does depends on the record's values`);
-  return out.slice(0, 8);
+  for (const c of meta?.recordCreates ?? []) out.push(createdLine(c));
+  for (const e of meta?.customErrors ?? []) {
+    const msg = (Array.isArray(e?.customErrorMessages) ? e.customErrorMessages : [e?.customErrorMessages])
+      .map((m: any) => m?.errorMessage).find((m: any) => typeof m === "string" && m.trim());
+    if (msg) out.push(`can block the save with the error "${msg}"`);
+  }
+  if ((meta?.decisions ?? []).length) {
+    const branches = flowBranches(meta);
+    out.push(...(branches.length ? branches : [`branches on ${meta.decisions.length} decision(s): what it does depends on the record's values`]));
+  }
+  return out.slice(0, 12);
+}
+
+/** "creates a Task "TB Review large deal"": the record's Subject or Name when the flow gives it as text. */
+function createdLine(c: any): string {
+  const named = (c?.inputAssignments ?? []).find((a: any) => /^(Subject|Name)$/.test(a?.field) && a?.value?.stringValue);
+  return `creates a ${c?.object ?? "record"}${named ? ` "${named.value.stringValue}"` : ""}`;
+}
+
+/** A flow condition as plain words: "$Record.AnnualRevenue >= 1000000"; a lookup's null test as found / not found. */
+function conditionText(c: any, lookups: Map<string, any>): string {
+  const left = String(c?.leftValueReference ?? "");
+  const lookup = lookups.get(left.split(".")[0]);
+  if (lookup && c?.operator === "IsNull") {
+    const found = c?.rightValue?.booleanValue === false || c?.rightValue?.booleanValue === "false";
+    const where = (lookup.filters ?? []).map((f: any) => `${f.field} ${FLOW_OPS[f.operator] ?? f.operator} ${flowValue(f.value).replace(/^\$Record\./, "the record's ")}`).join(" and ");
+    return `${found ? "a" : "no"} ${lookup.object ?? "record"}${where ? ` with ${where}` : ""} exists`;
+  }
+  return `${left.replace(/^\$Record\./, "")} ${FLOW_OPS[c?.operator] ?? c?.operator} ${flowValue(c?.rightValue)}`.trim();
+}
+
+/**
+ * Phase B: what each branch of a flow's decisions does, as one line per branch: the branch's conditions,
+ * then the effects on the path it leads to (field updates, records created with their Subject or Name,
+ * the error that blocks the save), up to the next decision. So a case can set the values that take each
+ * branch and check that branch's own outcome, rather than "it depends" (TB Lead Qualification Routing:
+ * Hot, Warm and Cold looked alike). Follows connectors only; screens and loops are walked through once.
+ */
+export function flowBranches(meta: any): string[] {
+  const byName = new Map<string, { kind: string; el: any }>();
+  for (const kind of ["assignments", "recordUpdates", "recordCreates", "recordLookups", "customErrors", "decisions", "loops", "screens", "subflows"]) {
+    for (const el of meta?.[kind] ?? []) if (el?.name) byName.set(el.name, { kind, el });
+  }
+  const lookups = new Map([...byName.values()].filter((n) => n.kind === "recordLookups").map((n) => [n.el.name, n.el] as [string, any]));
+  const nextOf = (el: any): string[] => [el?.connector, el?.nextValueConnector, el?.noMoreValuesConnector]
+    .map((c) => c?.targetReference).filter((t): t is string => typeof t === "string");
+  const effectsFrom = (start: string | undefined): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const queue = start ? [start] : [];
+    while (queue.length && out.length < 6) {
+      const name = queue.shift()!;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const node = byName.get(name);
+      if (!node || node.kind === "decisions") continue;
+      const el = node.el;
+      if (node.kind === "recordUpdates") {
+        const sets = (el.inputAssignments ?? []).map((a: any) => `${a.field} = ${flowValue(a.value)}`);
+        if (sets.length) out.push(`sets ${sets.join(", ")}${el.object && el.inputReference !== "$Record" ? ` on ${el.object}` : ""}`);
+      } else if (node.kind === "assignments") {
+        const sets = (el.assignmentItems ?? []).filter((it: any) => String(it?.assignToReference ?? "").startsWith("$Record."))
+          .map((it: any) => `${String(it.assignToReference).slice(8)} = ${flowValue(it.value)}`);
+        if (sets.length) out.push(`sets ${sets.join(", ")}`);
+      } else if (node.kind === "recordCreates") {
+        out.push(createdLine(el));
+      } else if (node.kind === "customErrors") {
+        const msg = (Array.isArray(el.customErrorMessages) ? el.customErrorMessages : [el.customErrorMessages])
+          .map((m: any) => m?.errorMessage).find((m: any) => typeof m === "string" && m.trim());
+        out.push(msg ? `blocks the save with the error "${msg}"` : "blocks the save with an error");
+      }
+      queue.push(...nextOf(el));
+    }
+    return out;
+  };
+  const lines: string[] = [];
+  for (const d of meta?.decisions ?? []) {
+    if (!(d?.rules ?? []).length) continue;   // nothing to branch on: the caller keeps its generic line
+    for (const r of d?.rules ?? []) {
+      const logic = String(r?.conditionLogic ?? "and").toLowerCase() === "or" ? " or " : " and ";
+      const conds = (r?.conditions ?? []).map((c: any) => conditionText(c, lookups)).join(logic);
+      const effects = effectsFrom(r?.connector?.targetReference);
+      lines.push(`branch "${r?.label ?? r?.name}": when ${conds || "its condition holds"} -> ${effects.join("; ") || "does nothing more"}`);
+    }
+    const otherwise = effectsFrom(d?.defaultConnector?.targetReference);
+    lines.push(`branch "${d?.defaultConnectorLabel ?? "otherwise"}" (none of the above) -> ${otherwise.join("; ") || "does nothing more"}`);
+  }
+  return lines;
 }
 
 const RECORD_TRIGGER: Record<string, string> = { Create: "create", Update: "update", CreateAndUpdate: "create or update", Delete: "delete" };
@@ -484,6 +569,9 @@ export function objectsNamedIn<O extends { api: string; label: string; labelPlur
 }
 
 /** The org model as a compact prompt block for the case writer. "" when there is nothing to say. */
+/** Characters the flows block may take, on top of the objects' ceiling. */
+const MAX_FLOWS_CHARS = 5000;
+
 export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars = 9000): string {
   if (!org?.objects.length) return "";
   const lines: string[] = [];
@@ -535,9 +623,18 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
   const flows = (org.flows ?? []).map((f) => `- flow "${f.label}" (${f.type}${f.object ? ` on ${f.object}` : ""}${f.when ? `, on ${f.when}` : ""})`
     + (f.type === "screen" ? `, runs at /flow/${f.api}` : "")
     + (f.effects?.length ? `: ${f.effects.join("; ")}` : ""));
-  if (flows.length) lines.push(`automation (active flows; a record-triggered flow's effect shows on the record page after the Save):\n${flows.join("\n")}`);
+  // Outside the objects' character ceiling, with its own: the flows came last and the ceiling cut them
+  // off on every org with several objects, so no case ever saw a flow (run 2026-11-10T08-12-42-083Z-1eb7bfea
+  // invented branches the flow does not have). The flows a request names are first in org.flows.
+  let flowsBlock = "";
+  if (flows.length) flowsBlock = (`automation (active flows; a record-triggered flow's effect shows on the record page after the Save):\n${flows.join("\n")}`
+    // Phase B: a request about a flow ("test the TB Lead Qualification Routing flow", "every branch of")
+    // gets a case per branch listed above, each with the values that take THAT branch.
+    + `\nA request that asks to test one of these flows (by its name, or "every branch" / "all paths" of it) gets ONE case per branch listed for it: the case sets the record's values so that branch's "when" holds and no earlier branch's does, saves, and checks that branch's own effects (the field values it sets, the record it creates by its Subject or Name, or, for a branch that blocks the save, its exact error message). A flow with no branches gets one case that meets its "only when" and one that does not (the effect must then be absent).`);
+  if (flowsBlock.length > MAX_FLOWS_CHARS) flowsBlock = flowsBlock.slice(0, MAX_FLOWS_CHARS).replace(/\n[^\n]*$/, "") + "\n- (more flows not shown)";
   let body = lines.join("\n");
   if (body.length > maxChars) body = body.slice(0, maxChars).replace(/\n[^\n]*$/, "") + "\n- (more objects not shown)";
+  if (flowsBlock) body += `\n${flowsBlock}`;
   return `
 
 Salesforce org model (read from the org's own metadata API${org.app ? ` for the app "${org.app}"` : ""} — authoritative):
