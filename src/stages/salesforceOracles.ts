@@ -66,6 +66,12 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
       form = null;
     }
   }
+  // The path moved the stage on after the Save (run 2026-11-10T18-39-39-550Z-d1f269ff): the typed
+  // Stage / Status is no longer the record's, by design.
+  if (ir.steps.some((s) => s.action === "click" && /^mark (as current stage|stage as complete)$/i.test(s.target?.name ?? ""))) {
+    for (const t of out) t.values = t.values.filter((v) => !/^(StageName|Status)$/.test(v.api));
+    return out.filter((t) => t.values.length);
+  }
   return out;
 }
 
