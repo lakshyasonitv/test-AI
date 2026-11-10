@@ -635,6 +635,13 @@ describe("fieldChecksOnRecordView: back to Related for a related record", () => 
       .toEqual(["Details", "500", "Ztype", "Related", "500", "Zq Onboarding case"]);
   });
 
+  it("also clicks Related before a 'contains' check of such text", () => {
+    const contains: Step = { id: "t", action: "assert", target: { text: "Zq Onboarding" }, assertion: "text_contains", value: "Zq Onboarding" } as Step;
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, fieldIs, contains]);
+    fieldChecksOnRecordView(i, model, "verify the Zacct's Ztype shows Zdirect and a case Zq Onboarding appears");
+    expect(i.steps.at(-3)?.target?.name).toBe("Related");
+  });
+
   it("stays on Details for a field's option or a toast", () => {
     const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, fieldIs, textIs("Zdirect")]);
     fieldChecksOnRecordView(i, model, "verify Ztype shows Zdirect");

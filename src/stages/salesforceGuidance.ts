@@ -826,7 +826,8 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
     const text = steps[i].target?.text ?? "";
     // On Details, a visible check of text that is no field of the record (a related record's name, run
     // 2026-11-10T05-56-59-108Z-b85b16e9: the Case "TB Onboarding" on the Account) is on the Related tab.
-    if (onDetails && s.assertion === "visible" && text && !s.target?.role && !s.target?.field
+    // A "contains" check on that text reads the same (run 2026-11-10T15-46-12-893Z-4e645505: "TB Onboarding" text_contains).
+    if (onDetails && (s.assertion === "visible" || valueCheck) && text && !s.target?.role && !s.target?.field
       && !fieldLabels.has(text) && !fields.some((f) => f.picklist?.includes(text)) && !isShownValue(text)
       && !/\bwas (created|saved|deleted)\b/.test(text)) {
       const n = tabs++ ? `-${tabs}` : "";
