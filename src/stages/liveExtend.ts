@@ -1,4 +1,4 @@
-import { isNamedToggle } from "../text.js";
+import { isNamedToggle, nameFromAriaSnapshot } from "../text.js";
 import { chromium, type Page } from "playwright";
 import { chromiumLaunchOptions, browserContextOptions, localeCacheDimension } from "../browserLaunch.js";
 import { AppModel } from "../schema/appModel.js";
@@ -18,7 +18,7 @@ import { cutAtBoundary, pageKey, lineKey, hasRunToken, resolveRunTokens, newRunT
 import { llmCacheDimension } from "../llm/llmContext.js";
 import { mergeScreenInto } from "./screens.js";
 import { currentRunTargetApp } from "../runTarget.js";
-import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForScreenSettle } from "./networkSettle.js";
+import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForRecordPage, waitForScreenSettle } from "./networkSettle.js";
 import { dropVolatileIdCss, volatileIdDetectionEnabled } from "./volatileIds.js";
 import { captureErrorMarkers, errorMarkersOf, lastInteractionIndex, pageAlertTexts, type ErrorMarker } from "./hollowPassGuards.js";
 import {
@@ -485,6 +485,9 @@ async function replayAndSnapshot(
     // above capturePageText and the DOM extraction, it doubles as settle time for an SPA
     // that updates the URL before rendering the page it navigated to.
     const navigatedAway = page.url() !== urlBeforeLastStep;
+    // A Salesforce record page draws its actions late: captured at once it had no actions menu, and a
+    // delete could not ground (networkSettle.ts waitForRecordPage). Org-connection runs only.
+    if (currentFrontdoor()) await waitForRecordPage(page);
     let dialogSeen = false;
     if (navigatedAway) {
       await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
@@ -634,6 +637,13 @@ async function replayAndSnapshot(
     // merge branch only runs when it was already non-null.
     const pageModel = fresh!.pages.find((p) => pageKey(p.url) === pageKey(reachedUrl)) ?? fresh!.pages[0];
     if (!pageModel) throw new Error(`replay reached ${reachedUrl} but produced no page model`);
+    // A screen flow's fields come out of the walk as "input 23" / "radio 0 24": named from the accessibility
+    // snapshot, as discovery does (hybridDiscovery). The live capture of a flow's later screen had none
+    // (run 2026-11-10T09-24-49-788Z-9a7bbeeb).
+    if (/\/flow\//.test(page.url())) {
+      const yaml = await page.locator("body").ariaSnapshot({ timeout: 5000 }).catch(() => "");
+      nameFromAriaSnapshot(pageModel.elements, yaml);
+    }
     // The replay just typed the user's real credentials into this page, and a logged-in page
     // routinely echoes the identifier back. Scrub before anything persists it: this result is
     // cached under runs/_cache and its pageModel ends up inside 04-ir.json, both of which the

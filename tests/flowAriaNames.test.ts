@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nameFromAriaSnapshot } from "../src/stages/hybridDiscovery.js";
+import { nameFromAriaSnapshot } from "../src/text.js";
 
 // Run 2026-11-10T06-11-58-646Z-12cc4157: a screen flow's fields came out of the walk as "input 23",
 // "radio 0 24"; Playwright's accessibility snapshot of the same page has their real labels.

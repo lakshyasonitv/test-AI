@@ -327,13 +327,19 @@ export const SF_FIELD_MATCH_JS = `(lines, label, expected, mode) => {
  */
 const SF_FIELD_HELPER = `const sfFieldMatch = ${SF_FIELD_MATCH_JS};
 async function sfFieldValue(page, label, expected, mode) {
-  const blocks = page.locator("records-record-layout-item, records-highlights-details-item, .slds-form-element")
-    .filter({ has: page.getByText(label, { exact: true }) });
+  const items = page.locator("records-record-layout-item, records-highlights-details-item, .slds-form-element");
+  const exact = items.filter({ has: page.getByText(label, { exact: true }) });
+  // The page may put the object's word in front of the org's label ("Lead Status" for Lead's "Status"):
+  // used only when no field has the label itself, and only when exactly one field reads that way.
+  const esc = label.replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&");
+  const prefixed = items.filter({ has: page.getByText(new RegExp("^\\\\S+ " + esc + "$")) });
   const deadline = Date.now() + ${ASSERT_TIMEOUT_MS};
   let seen = [];
   for (;;) {
     seen = [];
-    const n = await blocks.count().catch(() => 0);
+    let blocks = exact;
+    let n = await exact.count().catch(() => 0);
+    if (n === 0 && (await prefixed.count().catch(() => 0)) === 1) { blocks = prefixed; n = 1; }
     for (let i = 0; i < n; i++) {
       const block = blocks.nth(i);
       if (!(await block.isVisible().catch(() => false))) continue;

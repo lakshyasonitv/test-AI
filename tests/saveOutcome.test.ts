@@ -181,7 +181,10 @@ describe("fieldChecksOnRecordView", () => {
   });
 
   it("is wired into IR generation, with the request", () => {
-    expect(readFileSync("src/stages/ir.ts", "utf8")).toMatch(/fieldChecksOnRecordView\(parsed\.data, currentModel, sourcePrompt\)/);
+    // With the request, and the case's own title and expected result (the bare-value rule reads both).
+    const src = readFileSync("src/stages/ir.ts", "utf8");
+    expect(src).toContain("fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt, `${testCase.title}");
+    expect(src).toContain("${testCase.expected ?? \"\"}`)");
   });
 
   // Run 2026-11-03T07-31-20-798Z-dcc341ef: the record page was captured before its tabs drew, so the
@@ -336,6 +339,12 @@ describe("fieldChecksOnRecordView: text checks of org fields", () => {
       expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zlead Zstatus" }, value: "Zworking" });
     });
 
+    it("also when only the case's own expected result names the field (\"Test every branch of the flow\")", () => {
+      const i = ir([nav("/lightning/o/Account/new"), click("Save"), created, valueIs("Zhot")]);
+      fieldChecksOnRecordView(i, { ...model, salesforceOrg: org }, "Test every branch of the Zq Routing flow", "Zq branch\nthe Zrating shows Zhot");
+      expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zrating" }, value: "Zhot" });
+    });
+
     it("is left alone when the request names no field offering it, or two do", () => {
       expect(run(valueIs("Zhot"), "verify Zhot is shown").at(-1)!.target).toEqual({ text: "Zhot" });
       expect(run(valueIs("Zhot"), "verify Zrating and Zq Mood show Zhot").at(-1)!.target).toEqual({ text: "Zhot" });
@@ -478,7 +487,7 @@ describe("returnToCreatedRecords", () => {
     const src = readFileSync("src/stages/ir.ts", "utf8");
     const back = src.indexOf("returnToCreatedRecords(parsed.data, sourcePrompt)");
     expect(back).toBeGreaterThan(-1);
-    expect(back).toBeLessThan(src.indexOf("fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt)"));
+    expect(back).toBeLessThan(src.indexOf("fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt,"));
   });
 });
 

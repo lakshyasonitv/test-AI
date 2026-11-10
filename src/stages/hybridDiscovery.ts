@@ -33,7 +33,8 @@ import { llmCacheDimension } from "../llm/llmContext.js";
 import {
   salesforceRun, assertTestOrg, blockLoginAds, reachUsernameForm, waitForOneScreenPassword, describeLoginFailure,
 } from "./salesforceOrgLogin.js";
-import { networkSettleEnabled, trackNetwork, waitForDialogFields } from "./networkSettle.js";
+import { networkSettleEnabled, trackNetwork, waitForDialogFields, waitForRecordPage } from "./networkSettle.js";
+import { nameFromAriaSnapshot } from "../text.js";
 import { currentFrontdoor, openFrontdoor } from "./salesforceFrontdoor.js";
 import { readSalesforceOrgModel, createFormUrls, recordPageUrls, screenFlowUrls, orgSetupFingerprint, objectsNamedIn } from "./salesforceOrgModel.js";
 import type { SalesforceOrgModel } from "../schema/appModel.js";
@@ -618,42 +619,6 @@ export const savedDiscoveriesFor = (instanceHost: string): OrgDiscoverySave[] =>
  * (orgSetupFingerprint), and what the request steers. A request naming other objects opens other
  * create forms and record pages (createFormUrls, recordPageUrls), so it is a different crawl.
  */
-/** A name the walker made up from an element's id ("input 23", "radio 0 24"), not a label. */
-const MADE_UP_NAME = /^(input|radio|checkbox|select|textarea|combobox|textbox|spinbutton)(\s+\d+)+$/i;
-
-/**
- * Names elements whose walked name is made up, from Playwright's accessibility snapshot of the page
- * (`- textbox "Company Name"`, `- radio "Technology"`): the k-th made-up element of a role takes the
- * k-th snapshot name of that role, both in document order. Returns how many it named. Pure: the
- * snapshot is passed in.
- */
-export function nameFromAriaSnapshot(elements: { role?: string; name?: string; css?: string }[], yaml: string): number {
-  const byRole = new Map<string, string[]>();
-  for (const line of (yaml || "").split("\n")) {
-    const m = /^\s*-\s+([a-z]+)\s+"((?:[^"\\]|\\.)*)"/.exec(line);
-    if (m && m[2].trim()) byRole.set(m[1], [...(byRole.get(m[1]) ?? []), m[2].replace(/\\"/g, '"').trim()]);
-  }
-  let named = 0;
-  const seen = new Map<string, number>();
-  for (const e of elements) {
-    const role = e.role ?? "";
-    const k = seen.get(role) ?? 0;
-    seen.set(role, k + 1);
-    if (!e.name || MADE_UP_NAME.test(e.name.trim())) {
-      const name = byRole.get(role)?.[k];
-      if (name) {
-        e.name = name;
-        named++;
-        // A positional chain through the flow runtime's shadow roots (">> :scope > … :nth-of-type") did
-        // not resolve in the test (run 2026-11-10T07-56-30-371Z-ef61d8ab, the "Technology" radio); with a
-        // real name the element is found by role and name. A plain selector (input[name="X"]) stays.
-        if (e.css && /\s>>\s|:nth-of-type/.test(e.css)) delete e.css;
-      }
-    }
-  }
-  return named;
-}
-
 export function orgCacheKey(instanceHost: string, url: string, fingerprint: string, org: SalesforceOrgModel, request: string): string {
   const named = objectsNamedIn(request, org).map((o) => o.api).join(",");
   return `sf-org:${instanceHost}|${url}|${fingerprint}|${named}|${createFormUrls("", org, request).join(",")}${screenFlowUrls("", org, request).join(",")}${strategySuffix()}`;
@@ -1464,6 +1429,8 @@ async function discoverSiteHybridInner(
       if (createFormTargets.has(targetUrl) && !(await waitForDialogFields(page))) {
         console.log(`[hybrid] ${targetUrl}: no form field appeared in a dialog — modelling what is there`);
       }
+      // A record page draws its actions late (waitForRecordPage); a frontdoor run's record pages only.
+      if (frontdoor && /\/lightning\/r\//.test(targetUrl)) await waitForRecordPage(page);
       // A screen flow shows "Loading" first and draws its screen seconds later; modelled at once it was
       // two elements, "Loading" (run 2026-11-10T05-46-03-797Z-2c150e65), and the case had nothing to use.
       if (flowPageTargets.has(targetUrl)) {

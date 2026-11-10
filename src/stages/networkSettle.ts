@@ -168,6 +168,20 @@ export async function waitForDialogFields(page: Page, budgetMs = 15_000): Promis
 }
 
 /**
+ * A Salesforce record page (`/lightning/r/...`) draws its actions after the DOM is up. Captured at once it
+ * was 7 elements with no "Edit" and no actions menu, so a delete step could not find the menu that holds
+ * Delete (run 2026-11-10T09-21-16-960Z-78133493). Waits for the record's own Edit or "Show more actions"
+ * button, then a moment for the rest of the panel. Any other URL: returns at once. Best-effort.
+ */
+export async function waitForRecordPage(page: Page, budgetMs = 15_000): Promise<boolean> {
+  if (!/\/lightning\/r\//.test(page.url())) return false;
+  const drawn = await page.getByRole("button", { name: /^(Edit|Show more actions)$/ }).first()
+    .waitFor({ state: "visible", timeout: budgetMs }).then(() => true, () => false);
+  if (drawn) await page.waitForTimeout(500);
+  return drawn;
+}
+
+/**
  * The full Phase 1 wait before a snapshot: the network first (the data that will build the page),
  * then the DOM (the render that follows it). Logs one line, so a live run shows what it cost.
  */

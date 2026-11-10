@@ -602,7 +602,11 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
     fields: { label: string; picklist?: string[] }[]; calculated?: { label: string }[];
     visibilityRules?: { target: string; when: string }[];
   }[] };
-}, request = ""): string[] {
+}, request = "",
+  /** The case's own title and expected result: the field a bare value belongs to may be named there only
+   *  ("Test every branch of the flow" names none; the case expects "Rating = Hot", run
+   *  2026-11-10T09-27-10-390Z-c915327a). Read by the bare-value rule only. */
+  caseText = ""): string[] {
   const steps = ir.steps;
   const recordPages = model.pages.filter((p) => /\/lightning\/r\//.test(p.url));
   // A record page captured before Lightning drew its tabs shows none at all (run
@@ -712,12 +716,14 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       continue;
     } else if (s.target?.field && !text) {
       // Already a field check (added by requestedFieldChecks): it still reads on the Details tab.
-    } else if (!s.target?.role && text && pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), request, labelOf(onObject))) {
+    } else if (!s.target?.role && text && pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), `${request}
+${caseText}`, labelOf(onObject))) {
       // A bare picklist value of a field the request names: "verify its Rating shows Hot" became
       // getByText("Hot") on the Related tab (run 2026-11-10T04-32-01-102Z-e4c449e4; a flow set it, on
       // Details). The value is that field's, read inside it, under the label the request uses: the
       // org calls it "Account Rating", the record page and the request say "Rating".
-      const { label, value } = pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), request, labelOf(onObject))!;
+      const { label, value } = pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), `${request}
+${caseText}`, labelOf(onObject))!;
       steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value };
       notes.push(`"${value}" is an option of the "${label}" field the request names -> checks that field shows it`);
     } else continue;
