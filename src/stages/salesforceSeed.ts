@@ -59,7 +59,9 @@ export async function publishRequestedEvents(session: Session, org: SalesforceOr
     // How to find what it made: run 2026-11-10T13-21-35-459Z-e0311135 wrote a "publish" step and clicked the
     // nav bar's "Accounts List" menu, so the list's search box was never on screen.
     const made = lines.map((l) => /creates an? (\w+) "([^"]+)"/.exec(l)).find(Boolean);
-    const find = made ? ` To check it: open /lightning/o/${made[1]}/list, type "${made[2]}" in the list's "Search this list..." box, press Enter, and assert the link "${made[2]}" is visible.` : "";
+    // Global search: a list opens on "Recently Viewed", which never holds a record nobody opened (run
+    // 2026-11-10T13-35-43-065Z-74193e13 searched it and found "Nothing to see here").
+    const find = made ? ` To check it: click the header's "Search..." box, type "${made[2]}", press Enter, and assert the link "${made[2]}" is visible in the results.` : "";
     lines.unshift(`Testbench ALREADY PUBLISHED this event once before the test, through the API (${event}${sent ? ` with ${sent}` : ""}). The case writes NO publish step; it only checks what the flow did.${find}`);
     flow.effects = lines;
   }
