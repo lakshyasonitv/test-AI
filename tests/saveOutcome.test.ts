@@ -869,3 +869,13 @@ describe("pathStageClicks: the stage the request names", () => {
     expect(open.steps.slice(2).map((s) => s.target?.name ?? s.value)).toEqual(["Zq Two", "Mark as Current Stage", "1500"]);
   });
 });
+
+describe("placeholderMessages", () => {
+  it("checks the whole message with the typed value in place of <Field>", async () => {
+    const { placeholderMessages } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([fill("Zlast", "Doe {{uid}}"), click("Next"), { id: "a", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step]);
+    expect(placeholderMessages(i, "enter a Zlast, click Next, and verify the message Zcontact <Zlast> was created")).toHaveLength(1);
+    expect(i.steps[2]).toMatchObject({ target: { text: "was created" }, assertion: "text_contains", value: "Zcontact Doe {{uid}} was created" });
+    expect(placeholderMessages(i, "verify the message Zcontact <Zother> was created")).toEqual([]);
+  });
+});

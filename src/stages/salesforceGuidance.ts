@@ -1105,3 +1105,31 @@ export function seededLookups(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   }
   return notes;
 }
+
+/**
+ * A message the request spells with a field in angle brackets ("verify the message Contact <Last Name> was
+ * created") is checked whole, with the value the case typed in that field: run
+ * 2026-11-10T19-50-02-464Z-cabd0c06 checked only "was created". The last check on the message's fixed
+ * words keeps its locator and also checks the whole message (run tokens resolve where it runs). Returns notes.
+ */
+export function placeholderMessages(ir: IRSteps, request: string): string[] {
+  const m = /\bmessage\s+["“']?(.+?<[^>]+>.*?)["”']?(?:\s+is\s+(?:shown|displayed|visible)|\s+appears|[.;]|$)/i.exec(request);
+  if (!m) return [];
+  let missing = false;
+  const whole = m[1].trim().replace(/<([^>]+)>/g, (_x, field: string) => {
+    const typed = ir.steps.find((s) => s.action === "fill" && lineKey(s.target?.name ?? s.target?.label ?? "") === lineKey(field));
+    if (!typed?.value) missing = true;
+    return typed?.value ?? "";
+  });
+  if (missing) return [];
+  const fixed = m[1].split(/<[^>]+>/).map((p) => p.trim()).filter(Boolean).sort((a, b) => b.length - a.length);
+  for (let i = ir.steps.length - 1; i >= 0; i--) {
+    const s = ir.steps[i];
+    if (s.action !== "assert" || !s.target?.text) continue;
+    if (!fixed.some((f) => lineKey(f).includes(lineKey(s.target!.text!)) || lineKey(s.target!.text!).includes(lineKey(f)))) continue;
+    if (s.value && lineKey(s.value) === lineKey(whole)) return [];
+    ir.steps[i] = { ...s, assertion: "text_contains", value: whole };
+    return [`${s.id}: "${s.target.text}" -> also checks the whole message "${whole}"`];
+  }
+  return [];
+}

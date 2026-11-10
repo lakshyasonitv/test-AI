@@ -60,9 +60,19 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
         values = values.filter((v) => v.api !== f.api).concat({ label: f.label, api: f.api, type: f.type, value: s.value });
       }
     } else if (s.action === "click" && /^save$/i.test(s.target?.name ?? "")) {
-      const n = (count.get(form) ?? 0) + 1;
-      count.set(form, n);
-      if (values.length) out.push({ object: form, n, values });
+      // Only a save the case confirms ("was created" before it leaves the page): a negative case's
+      // save is refused on purpose, and no record exists to read (run 2026-11-10T20-26-17-929Z-6c3320d0,
+      // the Company "AB" case, reported two "mismatches" against a record that was never made).
+      const i = ir.steps.indexOf(s);
+      let confirmed = false;
+      for (let j = i + 1; j < ir.steps.length && ir.steps[j].action !== "navigate"; j++) {
+        if (ir.steps[j].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[j].target?.text ?? "")) { confirmed = true; break; }
+      }
+      if (confirmed) {
+        const n = (count.get(form) ?? 0) + 1;
+        count.set(form, n);
+        if (values.length) out.push({ object: form, n, values });
+      }
       form = null;
     }
   }

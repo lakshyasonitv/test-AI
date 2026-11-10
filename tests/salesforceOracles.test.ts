@@ -13,11 +13,12 @@ const org = { objects: [{ api: "Zq_Acct__c", label: "Zq Acct", fields: [
 const nav = (url: string) => ({ id: "n", action: "navigate", target: { url } } as Step);
 const fill = (name: string, value: string) => ({ id: "f", action: "fill", target: { name }, value } as Step);
 const save = { id: "s", action: "click", target: { role: "button", name: "Save" } } as Step;
+const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
 
 describe("typedValues", () => {
   it("takes what each saved create form typed, skipping lookups and dates", () => {
     const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "Zq {{uid}}"), fill("Phone", "4155550101"),
-      fill("Parent", "Zq Parent"), fill("Start", "1/2/2026"), save, nav("/lightning/o/Zq_Acct__c/new"), fill("Annual Revenue", "1500000"), save] }, org);
+      fill("Parent", "Zq Parent"), fill("Start", "1/2/2026"), save, created, nav("/lightning/o/Zq_Acct__c/new"), fill("Annual Revenue", "1500000"), save, created] }, org);
     expect(t).toEqual([
       { object: "Zq_Acct__c", n: 1, values: [{ label: "Zq Name", api: "Name", type: "string", value: "Zq {{uid}}" }, { label: "Phone", api: "Phone", type: "phone", value: "4155550101" }] },
       { object: "Zq_Acct__c", n: 2, values: [{ label: "Annual Revenue", api: "AnnualRevenue", type: "currency", value: "1500000" }] },
@@ -26,7 +27,7 @@ describe("typedValues", () => {
 
   it("leaves out a field a flow on the object sets after the save", () => {
     const withFlow = { ...org, flows: [{ label: "Zq f", api: "Zq_f", type: "record-triggered", object: "Zq Acct", effects: ['branch "B": when Name = Zq -> sets Phone = 1, AnnualRevenue = 2'] }] };
-    const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "Zq"), fill("Phone", "4155550101"), save] }, withFlow);
+    const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "Zq"), fill("Phone", "4155550101"), save, created] }, withFlow);
     expect(t[0].values.map((v) => v.api)).toEqual(["Name"]);
   });
 
@@ -78,5 +79,12 @@ describe("calculatedChecks", () => {
       nav("/lightning/o/Other/new"), save, nav("${record:Zq_Acct__c:1}"), check] }, withCalc as any);
     expect(t).toEqual([{ object: "Zq_Acct__c", n: 1, values: [{ label: "Zq Total", api: "Zq_Total__c", type: "Currency", value: "$5,000.00" }] }]);
     expect(sameValue("Currency", "$5,000.00", 5000)).toBe(true);
+  });
+});
+
+describe("typedValues: only confirmed saves", () => {
+  it("skips a form whose save the case expects to be refused", () => {
+    const refused = { id: "e", action: "assert", target: { text: "Zq: too short" }, assertion: "visible" } as Step;
+    expect(typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "AB"), save, refused] }, org)).toEqual([]);
   });
 });
