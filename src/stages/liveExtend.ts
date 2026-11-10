@@ -171,7 +171,11 @@ export async function runStepLive(
       {
         // The spec's own rule (generator.ts): a box drawn over the input retries forced, on that error only.
         const box = await resolveLive(page, step.target!, "check");
-        await box.check({ timeout: 10_000 }).catch((e) => /intercepts pointer events/.test(String(e)) ? box.check({ force: true }) : Promise.reject(e));
+        await box.check({ timeout: 10_000 }).catch(async (e) => {
+          if (!/intercepts pointer events|did not change its state/.test(String(e))) throw e;
+          if (!(await box.isChecked())) await box.evaluate((el) => (el as HTMLElement).click());
+          if (!(await box.isChecked())) throw e;
+        });
         return;
       }
     // No target: the key goes to whatever has focus, exactly as generator.ts emits it.

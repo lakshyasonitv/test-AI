@@ -1117,7 +1117,9 @@ function emitStep(step: Step, baseUrl: string): string {
         ? `  await page.getByRole(${q(step.target!.role!)}, { name: ${q(step.target!.name!)}, exact: true }).first().check({ force: true, timeout: ${ASSERT_TIMEOUT_MS} });`
         // A styled box over the input "intercepts pointer events" (run 2026-11-10T19-37-34-634Z-c2d480b3,
         // the Case form's "Send notification email to contact"): that one error, and only it, retries forced.
-        : `  { const box = ${locator(step.target!, "check")};\n    await box.check({ timeout: ${ASSERT_TIMEOUT_MS} }).catch((e) => /intercepts pointer events/.test(String(e)) ? box.check({ force: true, timeout: ${ASSERT_TIMEOUT_MS} }) : Promise.reject(e)); }`;
+        // Forced, the click still landed on the drawn box and "did not change its state" (run
+        // 2026-11-10T20-48-38-282Z-c4075a7d): the input's own DOM click toggles it, then it must read checked.
+        : `  { const box = ${locator(step.target!, "check")};\n    await box.check({ timeout: ${ASSERT_TIMEOUT_MS} }).catch(async (e) => {\n      if (!/intercepts pointer events|did not change its state/.test(String(e))) throw e;\n      if (!(await box.isChecked())) await box.evaluate((el) => el.click());\n      if (!(await box.isChecked())) throw e;\n    }); }`;
       break;
 
     case "press":

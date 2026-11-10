@@ -861,7 +861,7 @@ describe("pathStageClicks: the stage the request names", () => {
     const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
     const mark = { id: "m", action: "click", target: { role: "button", name: "Mark Stage as Complete" } } as Step;
     const closed = ir([nav("/lightning/o/Zopp/new"), click("Save"), mark]);
-    pathStageClicks(closed, org as any, "use the path to close it as Closed Won");
+    pathStageClicks(closed, org as any, "Create a Zopp with Stage Zq One, then use the path to close it as Closed Won");
     expect(closed.steps.slice(2).map((s) => s.target?.name ?? s.value)).toEqual(["Closed", "Select Closed Stage", "1000", "Stage", "Save", "1500"]);
     expect(closed.steps[5].value).toBe("Closed Won");
     const open = ir([nav("/lightning/o/Zopp/new"), click("Save"), { ...mark }]);

@@ -990,18 +990,23 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
   // the stage, then "Mark as Current Stage"; a closing stage goes through the path's "Closed" stage and
   // its dialog ("Select Closed Stage", pick the stage, Save).
   if (/\bpath\b/i.test(request)) {
-    const target = [...stageValues].sort((a, b) => b.length - a.length).find((v) => mentionsWord(request, v));
+    // The destination: the stage the request names LAST ("with Stage Prospecting ... close it as Closed Won").
+    // The longest name was taken before, and run 2026-11-10T20-53-08-719Z-6f08f37a "moved" to Prospecting.
+    const words = ` ${lineKey(request)} `;
+    const target = stageValues.filter((v) => mentionsWord(request, v))
+      .map((v) => ({ v, at: words.lastIndexOf(` ${lineKey(v)} `) }))
+      .sort((a, b) => b.at - a.at || b.v.length - a.v.length)[0]?.v;
     const mark = ir.steps.findIndex((s) => s.action === "click" && /^mark stage as complete$/i.test(s.target?.name ?? ""));
     if (target && mark >= 0 && !ir.steps.some((s) => s.action === "click" && lineKey(s.target?.name ?? "") === lineKey(target))) {
       const id = ir.steps[mark].id;
       const closing = /^closed\b/i.test(target);
       ir.steps.splice(mark, 1, ...(closing
-        ? [{ id: `${id}-closed`, action: "click", target: { name: "Closed" } },
+        ? [{ id: `${id}-closed`, action: "click", target: { role: "button", name: "Closed" } },
           { id: `${id}-select`, action: "click", target: { role: "button", name: "Select Closed Stage" } },
           { id: `${id}-wait`, action: "wait", value: "1000" },
           { id: `${id}-stage`, action: "select", target: { role: "combobox", name: "Stage" }, value: target },
           { id: `${id}-save`, action: "click", target: { role: "button", name: "Save" } }]
-        : [{ id: `${id}-stage`, action: "click", target: { name: target } },
+        : [{ id: `${id}-stage`, action: "click", target: { role: "button", name: target } },
           { id: `${id}-mark`, action: "click", target: { role: "button", name: "Mark as Current Stage" } }]) as Step[],
         { id: `${id}-wait2`, action: "wait", value: "1500" } as Step);
       notes.push(`${id}: "Mark Stage as Complete" moves one stage -> moves the path to "${target}"${closing ? " through the Closed dialog" : ""}`);
