@@ -89,6 +89,26 @@ describe("cleanup order", () => {
   });
 });
 
+describe("children no page showed", () => {
+  it("are found under the run's own Account (same user, since the run began) and deleted before it", async () => {
+    const OPP = "006zq0000000009AAA";
+    const deleted: string[] = [];
+    const queries: string[] = [];
+    const apiGet = vi.fn(async (p: string) => {
+      if (p === "/chatter/users/me") return { id: ME };
+      const q = decodeURIComponent(p);
+      queries.push(q);
+      if (q.includes("FROM Opportunity WHERE AccountId IN")) return { records: [{ Id: OPP }] };
+      if (q.includes("WHERE AccountId IN") || q.includes("WHERE ContactId IN")) return { records: [] };
+      return { records: [{ Id: OURS }, { Id: OPP }] };
+    });
+    const apiDelete = vi.fn(async (p: string) => { deleted.push(p); });
+    await cleanupRecords({ apiGet, apiDelete }, [{ object: "Account", id: OURS }], new Date());
+    expect(deleted).toEqual([`/sobjects/Opportunity/${OPP}`, `/sobjects/Account/${OURS}`]);
+    expect(queries.find((q) => q.includes("FROM Opportunity WHERE AccountId"))).toContain(`CreatedById = '${ME}'`);
+  });
+});
+
 describe("record pages with no object in the URL", () => {
   it("are named by the create form before them", async () => {
     const { recordPages } = await import("../src/stages/salesforceFrontdoor.js");

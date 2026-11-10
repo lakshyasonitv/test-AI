@@ -3245,7 +3245,7 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       // missingActions above: it rejects and retries, and the IR is kept as a partial so a run is
       // never lost to it.
       if (screenMode && testCase.fromPrompt) {
-        const lost = stepsMissingValues(parsed.data.steps, testCase, requestValues(sourcePrompt));
+        const lost = stepsMissingValues(parsed.data.steps, testCase, requestValues(sourcePrompt, (currentModel.salesforceOrg?.flows ?? []).map((f) => f.label)));
         if (lost.length) {
           const message = `The steps leave out ${lost.map((v) => `"${v}"`).join(", ")}, which the test case ` +
             `uses. Carry out the WHOLE case: each value goes in the step where the case uses it (a value ` +

@@ -65,6 +65,14 @@ export function runRecords(runDir: string): RecordRef[] {
   return [...seen.values()];
 }
 
+/** Children that block or outlive their parent's delete, by lookup field. Tasks and Events go with
+ *  their parent by themselves. ponytail: standard objects only; read childRelationships when a
+ *  custom child shows up. */
+const CHILDREN: Record<string, [string, string][]> = {
+  Account: [["Opportunity", "AccountId"], ["Contact", "AccountId"], ["Case", "AccountId"]],
+  Contact: [["Case", "ContactId"]],
+};
+
 export interface CleanupReport { deleted: RecordRef[]; skipped: RecordRef[]; failed: { ref: RecordRef; error: string }[]; reason?: string }
 
 type ApiSession = Required<Pick<FrontdoorSession, "apiGet" | "apiDelete">>;
@@ -82,6 +90,23 @@ export async function cleanupRecords(session: ApiSession, records: RecordRef[], 
     return { ...report, skipped: records, reason: "the org did not say which user is connected, so nothing was deleted" };
   }
   const sinceIso = since.toISOString().replace(/\.\d{3}Z$/, "Z");
+  // Children no page showed: an Opportunity made from the Account's "New Opportunity" dialog (run
+  // 2026-11-10T14-18-09-285Z-5df7a7ee), a Case a flow made on it (2026-11-10T14-03-50-411Z-95d5ec39). Found under the run's own
+  // parents, by the same rule (this user, since the run began), and added last so they go first.
+  records = [...records];
+  for (const [parent, kids] of Object.entries(CHILDREN)) {
+    const ids = records.filter((r) => r.object === parent).map((r) => `'${r.id}'`).join(",");
+    if (!ids) continue;
+    for (const [child, field] of kids) {
+      try {
+        const q = `SELECT Id FROM ${child} WHERE ${field} IN (${ids}) AND CreatedById = '${me}' AND CreatedDate >= ${sinceIso}`;
+        for (const x of (await session.apiGet(`/query?q=${encodeURIComponent(q)}`))?.records ?? []) {
+          const id = String(x?.Id ?? "");
+          if (/^[A-Za-z0-9]{15,18}$/.test(id) && !records.some((r) => r.id.slice(0, 15) === id.slice(0, 15))) records.push({ object: child, id });
+        }
+      } catch { /* a child the org will not list: the parent's delete then reports why */ }
+    }
+  }
   const byObject = new Map<string, RecordRef[]>();
   for (const r of records) byObject.set(r.object, [...(byObject.get(r.object) ?? []), r]);
   // Children before parents: objects in the reverse of the order the run first reached them (the
