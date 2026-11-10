@@ -834,7 +834,7 @@ describe("pathStageClicks", () => {
 describe("seededLookups", () => {
   it("fills an empty lookup to a seeded object with the seeded record's name", async () => {
     const { seededLookups } = await import("../src/stages/salesforceGuidance.js");
-    const org = { objects: [{ api: "Zcon", label: "Zcon", fields: [{ label: "Zacct Name", api: "AccountId", lookup: "Zacct" }] }],
+    const org = { objects: [{ api: "Zcon", label: "Zcon", fields: [{ label: "Zacct ID", api: "AccountId", lookup: "Zacct" }] }],
       seeded: [{ object: "Zacct", label: "Zacct", name: "TB Seed ab12cd" }] };
     const look = { id: "l", action: "select", target: { role: "combobox", name: "Zacct Name", lookup: true }, value: "" } as Step;
     const i = ir([nav("/lightning/o/Zcon/new"), look, click("Save")]);

@@ -1057,7 +1057,11 @@ export function seededLookups(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
     if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; return; }
     if (!form || s.action !== "select" || !s.target?.lookup) return;
     const o = org.objects.find((x) => x.api === form);
-    const f = o?.fields.find((x) => lineKey(x.label) === lineKey(s.target?.name ?? ""));
+    // The form names a lookup by its target ("Account Name") where the org's label is "Account ID" (run
+    // 2026-11-10T19-26-01-521Z-0028eba6 left it empty for that reason): the lookup to the object the name starts with.
+    const name = lineKey(s.target?.name ?? "");
+    const f = o?.fields.find((x) => lineKey(x.label) === name)
+      ?? o?.fields.find((x) => !!x.lookup && name.startsWith(lineKey(x.lookup)));
     const seed = org.seeded!.find((r) => r.object === f?.lookup);
     if (!seed) return;
     const typedBefore = ir.steps.slice(0, i).some((x) => x.action === "fill" && x.value && s.value && lineKey(x.value) === lineKey(s.value));
