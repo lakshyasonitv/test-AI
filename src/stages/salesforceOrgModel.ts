@@ -259,7 +259,10 @@ export function flowEffects(meta: any): string[] {
 /** "creates a Task "TB Review large deal"": the record's Subject or Name when the flow gives it as text. */
 function createdLine(c: any): string {
   const named = (c?.inputAssignments ?? []).find((a: any) => /^(Subject|Name)$/.test(a?.field) && a?.value?.stringValue);
-  return `creates a ${c?.object ?? "record"}${named ? ` "${named.value.stringValue}"` : ""}`;
+  if (named) return `creates a ${c?.object ?? "record"} "${named.value.stringValue}"`;
+  // Named from the triggering record or event ("Name = $Record.Message__c"): seeding fills it in.
+  const from = (c?.inputAssignments ?? []).find((a: any) => /^(Subject|Name)$/.test(a?.field) && /^\$Record\.\w+$/.test(a?.value?.elementReference ?? ""));
+  return `creates a ${c?.object ?? "record"}${from ? ` with ${from.field} = the triggering record's ${from.value.elementReference.slice(8)}` : ""}`;
 }
 
 /** A flow condition as plain words: "$Record.AnnualRevenue >= 1000000"; a lookup's null test as found / not found. */
@@ -356,6 +359,7 @@ async function readFlows(apiGet: ApiGet, request = ""): Promise<SalesforceOrgMod
       const trigger = String(r?.TriggerType ?? "");
       const type = /^Record(After|Before)(Save|Delete)$/.test(trigger) ? "record-triggered"
         : trigger === "Scheduled" ? "scheduled"
+        : trigger === "PlatformEvent" ? "platform-event"
         : r?.ProcessType === "Flow" ? "screen"
         : r?.ProcessType === "AutoLaunchedFlow" ? "autolaunched" : String(r?.ProcessType ?? "flow").toLowerCase();
       return { r, type };
@@ -367,14 +371,18 @@ async function readFlows(apiGet: ApiGet, request = ""): Promise<SalesforceOrgMod
   for (const { r, type } of rows) {
     if (typeof r?.ApiName !== "string") continue;
     let effects: string[] = [];
+    let event: string | undefined;
     if (typeof r.ActiveVersionId === "string" && /^[a-zA-Z0-9]{15,18}$/.test(r.ActiveVersionId)) {
       const one = await tryGet(apiGet, `/tooling/query?q=${encodeURIComponent(`SELECT Metadata FROM Flow WHERE Id = '${r.ActiveVersionId}'`)}`);
       effects = flowEffects(one?.records?.[0]?.Metadata);
+      const ev = one?.records?.[0]?.Metadata?.start?.object;
+      if (type === "platform-event" && typeof ev === "string" && /^\w+__e$/.test(ev)) event = ev;
     }
     flows.push({
       label: String(r.Label ?? r.ApiName), api: r.ApiName, type,
       ...(type === "record-triggered" && r.TriggerObjectOrEventLabel ? { object: String(r.TriggerObjectOrEventLabel) } : {}),
       ...(RECORD_TRIGGER[r.RecordTriggerType] ? { when: RECORD_TRIGGER[r.RecordTriggerType] } : {}),
+      ...(event ? { event } : {}),
       ...(effects.length ? { effects } : {}),
     });
   }

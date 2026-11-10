@@ -512,6 +512,18 @@ export function frontdoorSessionFor(
       });
       if (!res.ok) throw new Error(`Salesforce API DELETE ${path.split("?")[0]} answered HTTP ${res.status}`);
     },
+    apiPost: async (path: string, body: unknown) => {
+      await refreshIfOld(c, cfg, fetchImpl);
+      const runId = currentRunId();
+      if (runId) rememberRunSecretStrings(runId, [c.accessToken]);
+      const res = await fetchImpl(`${c.instanceUrl}/services/data/${SF_API_VERSION}${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${c.accessToken}`, "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`Salesforce API POST ${path.split("?")[0]} answered HTTP ${res.status}`);
+      return res.json();
+    },
   };
 }
 

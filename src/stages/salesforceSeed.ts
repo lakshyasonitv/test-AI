@@ -1,0 +1,63 @@
+import type { SalesforceOrgModel } from "../schema/appModel.js";
+import type { FrontdoorSession } from "./salesforceFrontdoor.js";
+
+/**
+ * Phase D, seeding (SALESFORCE_SEED_ENABLED, default off): what a test needs that no screen can do,
+ * done through the API before the cases are written.
+ *
+ * Today: a platform-event flow. Nothing in Lightning publishes an event, so a request about one (TB Event
+ * Create Account) could never be tested. When the request names such a flow, its event is published ONCE,
+ * with every text field of the event set to "TB Event <uid>", and the org model the case writer reads says
+ * so, with the value in place of "the triggering record's <Field>". The case then checks the outcome on
+ * screen (the Account the flow created, by that exact name). Both the grounding replay and the spec run
+ * after the publish, so both see the record.
+ *
+ * Not covered: scheduled flows. Salesforce has no API to run a scheduled flow now; they run at their time.
+ */
+export function seedEnabled(): boolean {
+  return process.env.SALESFORCE_SEED_ENABLED === "true";
+}
+
+export interface Published { flow: string; event: string; values: Record<string, string>; id?: string; error?: string }
+
+type Session = Required<Pick<FrontdoorSession, "apiGet" | "apiPost">>;
+type Flow = NonNullable<SalesforceOrgModel["flows"]>[number];
+
+const words = (s: string) => ` ${s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+
+/** The platform-event flows a request is about: named by label or API name, or the only one when the
+ *  request says "platform event". */
+export function requestedEventFlows(org: Pick<SalesforceOrgModel, "flows"> | undefined, request: string): Flow[] {
+  const all = (org?.flows ?? []).filter((f) => f.type === "platform-event" && f.event);
+  const req = words(request);
+  const named = all.filter((f) => [f.label, f.api, f.event!].some((n) => req.includes(words(n.replace(/__e$/, "")))));
+  if (named.length) return named;
+  return all.length === 1 && /\bplatform[- ]event\b/i.test(request) ? all : [];
+}
+
+/** Publish each requested event once and write what was published into the flow's lines (mutates `org`). */
+export async function publishRequestedEvents(session: Session, org: SalesforceOrgModel, request: string, uid: string): Promise<Published[]> {
+  const out: Published[] = [];
+  for (const flow of requestedEventFlows(org, request)) {
+    const event = flow.event!;
+    const values: Record<string, string> = {};
+    try {
+      const d = await session.apiGet(`/sobjects/${event}/describe`);
+      for (const f of d?.fields ?? []) {
+        if (!f?.createable || !/__c$/.test(f?.name ?? "") || !/^(string|textarea)$/.test(f?.type ?? "")) continue;
+        values[f.name] = `TB Event ${uid}`.slice(0, Math.max(1, Number(f.length) || 255));
+      }
+      const res = await session.apiPost(`/sobjects/${event}/`, values);
+      out.push({ flow: flow.label, event, values, ...(typeof res?.id === "string" ? { id: res.id } : {}) });
+    } catch (err) {
+      out.push({ flow: flow.label, event, values, error: (err as Error)?.message ?? String(err) });
+      continue;
+    }
+    const lines = (flow.effects ?? []).map((l) => l.replace(/ with (\w+) = the triggering record's (\w+)/g,
+      (m, _field, from) => values[from] ? ` "${values[from]}"` : m));
+    const sent = Object.entries(values).map(([k, v]) => `${k} = "${v}"`).join(", ");
+    lines.unshift(`Testbench PUBLISHED this event once before the test, through the API (${event}${sent ? ` with ${sent}` : ""}); the test does not publish it, it checks what the flow did`);
+    flow.effects = lines;
+  }
+  return out;
+}

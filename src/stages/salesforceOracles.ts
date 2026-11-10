@@ -18,7 +18,18 @@ export function apiChecksEnabled(): boolean {
   return process.env.SALESFORCE_API_CHECKS_ENABLED === "true";
 }
 
-type Org = Pick<SalesforceOrgModel, "objects">;
+type Org = Pick<SalesforceOrgModel, "objects"> & Partial<Pick<SalesforceOrgModel, "flows">>;
+
+/** API names a flow on this object sets ("sets Rating = Hot, Status = Working"): the stored value is the
+ *  flow's, not the typed one (run 2026-11-10T13-15-37-189Z-a808851f: Lead Status typed Open, flow made it Working). */
+function flowSet(org: Org, o: { api: string; label: string }): Set<string> {
+  const out = new Set<string>();
+  for (const f of org.flows ?? []) {
+    if (f.object !== o.label && f.object !== o.api) continue;
+    for (const line of f.effects ?? []) for (const m of line.matchAll(/(\w+) = /g)) out.add(m[1].toLowerCase());
+  }
+  return out;
+}
 export interface Typed { object: string; n: number; values: { label: string; api: string; type: string; value: string }[] }
 
 const COMPARED = /^(string|textarea|picklist|multipicklist|double|currency|percent|int|long|email|phone|url)$/i;
@@ -40,7 +51,7 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
       const o = org.objects.find((x) => x.api === form);
       const name = (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase();
       const f = o?.fields.find((x) => x.label.toLowerCase() === name || `${o.label} ${x.label}`.toLowerCase() === name);
-      if (f && COMPARED.test(f.type) && !f.lookup) {
+      if (o && f && COMPARED.test(f.type) && !f.lookup && !flowSet(org, o).has(f.api.toLowerCase())) {
         values = values.filter((v) => v.api !== f.api).concat({ label: f.label, api: f.api, type: f.type, value: s.value });
       }
     } else if (s.action === "click" && /^save$/i.test(s.target?.name ?? "")) {

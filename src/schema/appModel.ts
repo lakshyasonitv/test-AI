@@ -435,6 +435,8 @@ export const SalesforceOrgModel = z.object({
     /** Record-triggered: the object's label, and when ("create", "update", "create or update", "delete"). */
     object: z.string().optional(),
     when: z.string().optional(),
+    /** Platform-event flows: the event's API name ("TB_Test_Event__e"), which seeding publishes. */
+    event: z.string().optional(),
     /** Plain lines: "sets Rating = Hot", "creates a Task", "only when Customer Priority = High". */
     effects: z.array(z.string()).optional(),
   })).optional(),

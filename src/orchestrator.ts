@@ -16,6 +16,7 @@ import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
 import { cleanupEnabled, cleanupRecords, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
+import { publishRequestedEvents, seedEnabled } from "./stages/salesforceSeed.js";
 import { apiChecks, apiChecksEnabled, caseRunFacts, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
@@ -414,6 +415,19 @@ export async function runPipeline(
     }
     if (appModel.auth) {
       console.log(`[orchestrator] discovery auth outcome: ${appModel.auth.status}${appModel.auth.detail ? ` — ${appModel.auth.detail}` : ""}`);
+    }
+
+    // Phase D (SALESFORCE_SEED_ENABLED, default off): what no screen can do, done through the API before
+    // the cases are written: today, publishing the event of a platform-event flow the request names. The
+    // org model then says what was published, so the cases check its outcome.
+    const seedFd = currentFrontdoor();
+    if (seedEnabled() && seedFd?.apiGet && seedFd.apiPost && appModel.salesforceOrg) {
+      const published = await publishRequestedEvents({ apiGet: seedFd.apiGet, apiPost: seedFd.apiPost },
+        appModel.salesforceOrg, prompt, Math.random().toString(36).slice(2, 8));
+      if (published.length) {
+        save("03-seed.json", published);
+        for (const p of published) console.log(`[seed] ${p.event}: ${p.error ? `not published (${p.error})` : `published for "${p.flow}"`}`);
+      }
     }
 
     console.log("2. Generating test cases...");

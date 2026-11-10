@@ -40,6 +40,12 @@ export interface FrontdoorSession {
    * the run itself created. Discovery never deletes. Throws a sentence with the HTTP status.
    */
   apiDelete?(path: string): Promise<void>;
+  /**
+   * POST JSON to `<instance>/services/data/v62.0<path>`. Used by Phase D seeding only
+   * (salesforceSeed.ts, SALESFORCE_SEED_ENABLED): publishing a platform event a flow listens to.
+   * Throws a sentence with the HTTP status.
+   */
+  apiPost?(path: string, body: unknown): Promise<any>;
 }
 
 /** The env name the generated spec reads the frontdoor URL from. */
