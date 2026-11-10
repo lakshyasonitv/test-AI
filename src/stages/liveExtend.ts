@@ -1,3 +1,4 @@
+import { isNamedToggle } from "../text.js";
 import { chromium, type Page } from "playwright";
 import { chromiumLaunchOptions, browserContextOptions, localeCacheDimension } from "../browserLaunch.js";
 import { AppModel } from "../schema/appModel.js";
@@ -133,7 +134,21 @@ export async function runStepLive(
         if (await tab.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false)) await tab.click();
         return;
       }
-      await (await resolveLive(page, step.target!)).click(); return;
+      // A click on a named radio or checkbox ticks it, as the spec does (generator.ts isNamedToggle):
+      // Lightning's label "intercepts pointer events" on the input (run 2026-11-10T08-43-46-389Z-e1f1d89b).
+      if (isNamedToggle({ ...step.target, css: undefined })) {
+        await page.getByRole(step.target!.role as "radio" | "checkbox", { name: step.target!.name!, exact: true }).first().check({ force: true });
+        return;
+      }
+      await (await resolveLive(page, step.target!)).click();
+      // The replay skips the "was created" check, which in the spec waits for the save: without it the
+      // replay moved on before Lightning opened the new record, and a later step back to that record
+      // found none (run 2026-11-10T08-52-16-490Z-992e5782). After a Save on an org-connection run,
+      // wait for the page to leave the create form.
+      if (currentFrontdoor() && /^save$/i.test(step.target?.name ?? "") && /\/lightning\/o\/[^/?#]+\/new\b/.test(page.url())) {
+        await page.waitForURL((u) => !/\/lightning\/o\/[^/?#]+\/new\b/.test(u.toString()), { timeout: 10_000 }).catch(() => {});
+      }
+      return;
     // Not a bare selectOption(): that is an EXACT match against an option list that is very often
     // still being fetched, and its failure ("did not find some options") names neither the wanted
     // value nor the available ones. chooseLive shares its matching and its message with the
@@ -147,7 +162,13 @@ export async function runStepLive(
       }
       await chooseLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "");
       return;
-    case "check": await (await resolveLive(page, step.target!, "check")).check(); return;
+    case "check":
+      // The spec's own rule (generator.ts isNamedToggle): a named radio or checkbox by role and name.
+      if (isNamedToggle(step.target)) {
+        await page.getByRole(step.target!.role as "radio" | "checkbox", { name: step.target!.name!, exact: true }).first().check({ force: true });
+        return;
+      }
+      await (await resolveLive(page, step.target!, "check")).check(); return;
     // No target: the key goes to whatever has focus, exactly as generator.ts emits it.
     case "press":
       if (!step.target) { await page.keyboard.press(step.value ?? "Enter"); return; }

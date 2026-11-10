@@ -830,3 +830,39 @@ describe("a create form's section ends at its Save", () => {
     expect(value(r, "s5")).toBe("Zq Other");
   });
 });
+
+// Run 2026-11-10T08-56-13-526Z-86865e92: "Test every branch of the lead routing flow". The fields that pick a
+// branch were dropped as optional (every case took the default branch), and the Hot case set the flow's
+// own result (Lead Status "Working - Contacted") itself.
+describe("fields a flow reads or sets", () => {
+  const withFlow = () => {
+    const o = structuredClone(appModel) as AppModel;
+    o.salesforceOrg!.objects[0].fields.push(
+      { label: "Zq Revenue", api: "Zq_Revenue__c", type: "Currency" } as any,
+      { label: "Zq Mood", api: "Zq_Mood__c", type: "Picklist", picklist: ["Zq Calm", "Zq Glad"] } as any,
+      { label: "Zq Phase", api: "Zq_Phase__c", type: "Picklist", required: true, picklist: ["Zq Start", "Zq Done"] } as any);
+    (o.salesforceOrg as any).flows = [{ label: "Zq Routing", api: "Zq_Routing", type: "record-triggered", object: o.salesforceOrg!.objects[0].label,
+      effects: ['branch "Zhot": when Zq_Revenue__c >= 1000000 -> sets Zq_Mood__c = Zq Glad, Zq_Phase__c = Zq Done'] }];
+    return o;
+  };
+  const run = () => {
+    const r = ir([
+      { id: "s2", action: "fill", target: { role: "spinbutton", name: "Zq Revenue" }, value: "2000000" },
+      { id: "s3", action: "select", target: { role: "combobox", name: "Zq Mood" }, value: "Zq Glad" },
+      { id: "s4", action: "select", target: { role: "combobox", name: "Zq Phase" }, value: "Zq Done" },
+      { id: "s5", action: "click", target: { role: "button", name: "Save" } },
+    ]);
+    applyTestData(r, valid, withFlow(), "Test every branch of the Zq Routing flow");
+    return r;
+  };
+
+  it("keeps a field a flow's branch condition reads, though the request names no field", () => {
+    expect(value(run(), "s2")).toBe("2000000");
+  });
+
+  it("drops an optional field set to the value the flow sets, and starts a required one elsewhere", () => {
+    const r = run();
+    expect(r.steps.find((s) => s.id === "s3")).toBeUndefined();
+    expect(value(r, "s4")).toBe("Zq Start");
+  });
+});

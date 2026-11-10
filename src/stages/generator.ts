@@ -7,7 +7,7 @@ import {
 import { isAuthTriggeringStep } from "./authSettle.js";
 import { isEnvValueRef } from "./credentials.js";
 import { FRONTDOOR_ENV, isFrontdoorRef, recordRefIndex, recordRefObject, SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
-import { hasRunToken, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
+import { hasRunToken, isNamedToggle, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
 
 const q = (s: string) => JSON.stringify(s);
 
@@ -1025,6 +1025,11 @@ function emitStep(step: Step, baseUrl: string): string {
 
     case "click": {
       const t = step.target!;
+      // A click on a named radio or checkbox ticks it (see "check"): its label intercepts a plain click.
+      if (isNamedToggle({ ...t, css: undefined })) {
+        code += `  await page.getByRole(${q(t.role!)}, { name: ${q(t.name!)}, exact: true }).first().check({ force: true, timeout: ${ASSERT_TIMEOUT_MS} });`;
+        break;
+      }
       // safeClick is the role+name path only — it calls getByRole under the hood, and
       // Playwright rejects an empty role outright ("Role must not be empty"). A target
       // carrying only text/label/placeholder/testId is legitimate (dynamic content the
@@ -1068,7 +1073,13 @@ function emitStep(step: Step, baseUrl: string): string {
       break;
 
     case "check":
-      code += `  await ${locator(step.target!, "check")}.check({ timeout: ${ASSERT_TIMEOUT_MS} });`;
+      // A named radio or checkbox with no selector is found by its role and name. The generic field
+      // lookup searched open dialogs near the text, and a screen flow's page (which has a modal-style
+      // container) never matched (run 2026-11-10T08-43-46-389Z-e1f1d89b). force: Lightning draws its
+      // own control over the input, and its label "intercepts pointer events".
+      code += isNamedToggle(step.target)
+        ? `  await page.getByRole(${q(step.target!.role!)}, { name: ${q(step.target!.name!)}, exact: true }).first().check({ force: true, timeout: ${ASSERT_TIMEOUT_MS} });`
+        : `  await ${locator(step.target!, "check")}.check({ timeout: ${ASSERT_TIMEOUT_MS} });`;
       break;
 
     case "press":

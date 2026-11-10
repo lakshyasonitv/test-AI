@@ -85,6 +85,40 @@ export function valueFor(f: OrgField, locale = "en-US"): string | undefined {
 // ---- org model lookups -----------------------------------------------------------------------
 
 const apiRe = (f: OrgField) => new RegExp(`\\b${f.api.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+/** The flows triggered on this object, from the org model (their `effects` lines: conditions, sets, creates). */
+function flowsOn(o: OrgObject, org: SalesforceOrgModel | undefined): { effects?: string[] }[] {
+  return (org?.flows ?? []).filter((fl) => !!fl.object && (fl.object === o.label || fl.object === o.api));
+}
+/**
+ * Phase B: a flow's condition (its "only when", or a branch's "when") reads this field: the policy keeps it,
+ * as it keeps a field a validation rule reads. "Test every branch of the lead routing flow" names no field,
+ * and Industry and Annual Revenue, the fields that pick the branch, were dropped as optional: every case
+ * took the default branch (run 2026-11-10T08-56-13-526Z-86865e92).
+ */
+function flowReads(o: OrgObject, f: OrgField, org: SalesforceOrgModel | undefined): boolean {
+  return flowsOn(o, org).some((fl) => (fl.effects ?? []).some((e) => {
+    const cond = /^only when (.*)$/.exec(e)?.[1] ?? /\bwhen (.*?) ->/.exec(e)?.[1];
+    return !!cond && apiRe(f).test(cond);
+  }));
+}
+/** The values a flow on this object sets this field to, from "sets Rating = Hot, Status = Working - Contacted"
+ *  (not "... on <another object>"): a case must not set them itself, or its check proves nothing. */
+function flowSetValues(o: OrgObject, f: OrgField, org: SalesforceOrgModel | undefined): string[] {
+  const out: string[] = [];
+  for (const fl of flowsOn(o, org)) {
+    for (const e of fl.effects ?? []) {
+      for (const m of e.matchAll(/\bsets (.+?)(?=;|$)/g)) {
+        if (/ on [A-Z][\w ]*$/.test(m[1])) continue;
+        for (const part of m[1].split(/,\s+(?=\w+ = )/)) {
+          const a = /^(\w+) = (.+)$/.exec(part.trim());
+          if (a && a[1].toLowerCase() === f.api.toLowerCase()) out.push(a[2].trim());
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /** True when any validation rule's condition names this field: the policy keeps such a field. */
 function ruleMentions(o: OrgObject, f: OrgField): boolean {
   return (o.validationRules ?? []).some((r) => r.condition && apiRe(f).test(r.condition));
@@ -457,9 +491,14 @@ function applyToSection(
   // "verify" is the expected RESULT. The case set the Account's Type to "Customer - Direct" itself, the
   // value a flow was to set, so the check could prove nothing (run 2026-11-10T05-11-20-593Z-6f9640b8).
   const asks = requestedActions(request);
-  const wanted = (f: OrgField, s: Step) => (everyField && fills(s)) || !!f.required || ruleMentions(o, f) || mentions(asks, f.label)
+  const org = appModel.salesforceOrg;
+  // A value a flow on this object sets the field to, the request not asking for it: the flow's to set.
+  const flowSets = (f: OrgField, s: Step) => !!s.value && !mentions(asks, s.value)
+    && flowSetValues(o, f, org).some((v) => lineKey(v) === lineKey(s.value!));
+  const wanted = (f: OrgField, s: Step) => !(flowSets(f, s) && !f.required) && ((everyField && fills(s)) || !!f.required
+    || ruleMentions(o, f) || flowReads(o, f, org) || mentions(asks, f.label)
     || formNamesOf(f).some((nm) => mentions(asks, nm)) || mentions(asks, nameOf(s))
-    || (!!s.value && !hasRunToken(s.value) && mentions(asks, s.value)) || quoted(s.value);
+    || (!!s.value && !hasRunToken(s.value) && mentions(asks, s.value)) || quoted(s.value));
 
   // THE POLICY: a fill or select on a field that is neither required, nor read by a rule, nor named
   // by the request is dropped. A lookup typed as text is dropped even when named, unless the step
@@ -483,8 +522,13 @@ function applyToSection(
   // Lead Status to "Working - Contacted", so the case starts it on another option, or the check proves
   // nothing (run 2026-11-10T05-51-13-444Z-c5882e76).
   for (const s of positive ? steps() : []) {
-    if (s.action !== "select" || !s.value || !(mentions(checksPart, s.value) && !mentions(requestedActions(request), s.value))) continue;
+    if (s.action !== "select" || !s.value) continue;
     const f = fieldFor(nameOf(s));
+    // Also a value a flow on this object sets it to (the flow-branch case set Lead Status to the Hot
+    // branch's "Working - Contacted" itself, run 2026-11-10T08-56-13-526Z-86865e92).
+    const flowValue = !!f && !mentions(requestedActions(request), s.value)
+      && flowSetValues(o, f, appModel.salesforceOrg).some((v) => lineKey(v) === lineKey(s.value!));
+    if (!(mentions(checksPart, s.value) && !mentions(requestedActions(request), s.value)) && !flowValue) continue;
     const other = f?.required && !f.controlledBy ? f.picklist?.find((p) => lineKey(p) !== lineKey(s.value!)) : undefined;
     if (!other) continue;
     notes.push(`${s.id}: "${nameOf(s)}" starts as "${other}", not "${s.value}", the value the request checks it changes to`);

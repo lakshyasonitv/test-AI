@@ -135,3 +135,9 @@ export const SHOWN_NUMBER_JS = `(s) => {
   return Number.isFinite(n) ? n : null;
 }`;
 export const shownNumber = new Function(`return (${SHOWN_NUMBER_JS});`)() as (s: string) => number | null;
+
+/** A radio or checkbox with a name and no selector: found by role and name, the generated spec and the
+ *  grounding replay alike (generator.ts, liveExtend.ts). */
+export function isNamedToggle(t: { role?: string; name?: string; css?: string } | undefined): boolean {
+  return !!t && (t.role === "radio" || t.role === "checkbox") && !!t.name?.trim() && !t.css;
+}
