@@ -854,3 +854,18 @@ describe("the record tracker counts a Clone as a new record", () => {
     expect(t.made()).toEqual({ Opportunity: ["006zq0000000002AAA"] });
   });
 });
+
+describe("pathStageClicks: the stage the request names", () => {
+  const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Stage", api: "StageName", picklist: ["Zq One", "Zq Two", "Closed Won"] }] }] };
+  it("turns Mark Stage as Complete into the way to the named stage, through the Closed dialog for a closing one", async () => {
+    const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
+    const mark = { id: "m", action: "click", target: { role: "button", name: "Mark Stage as Complete" } } as Step;
+    const closed = ir([nav("/lightning/o/Zopp/new"), click("Save"), mark]);
+    pathStageClicks(closed, org as any, "use the path to close it as Closed Won");
+    expect(closed.steps.slice(2).map((s) => s.target?.name ?? s.value)).toEqual(["Closed", "Select Closed Stage", "1000", "Stage", "Save", "1500"]);
+    expect(closed.steps[5].value).toBe("Closed Won");
+    const open = ir([nav("/lightning/o/Zopp/new"), click("Save"), { ...mark }]);
+    pathStageClicks(open, org as any, "use the path to move it to Zq Two");
+    expect(open.steps.slice(2).map((s) => s.target?.name ?? s.value)).toEqual(["Zq Two", "Mark as Current Stage", "1500"]);
+  });
+});

@@ -1115,7 +1115,9 @@ function emitStep(step: Step, baseUrl: string): string {
       // own control over the input, and its label "intercepts pointer events".
       code += isNamedToggle(step.target)
         ? `  await page.getByRole(${q(step.target!.role!)}, { name: ${q(step.target!.name!)}, exact: true }).first().check({ force: true, timeout: ${ASSERT_TIMEOUT_MS} });`
-        : `  await ${locator(step.target!, "check")}.check({ timeout: ${ASSERT_TIMEOUT_MS} });`;
+        // A styled box over the input "intercepts pointer events" (run 2026-11-10T19-37-34-634Z-c2d480b3,
+        // the Case form's "Send notification email to contact"): that one error, and only it, retries forced.
+        : `  { const box = ${locator(step.target!, "check")};\n    await box.check({ timeout: ${ASSERT_TIMEOUT_MS} }).catch((e) => /intercepts pointer events/.test(String(e)) ? box.check({ force: true, timeout: ${ASSERT_TIMEOUT_MS} }) : Promise.reject(e)); }`;
       break;
 
     case "press":

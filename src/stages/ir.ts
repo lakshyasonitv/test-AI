@@ -2935,7 +2935,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       for (const r of returnToCreatedRecords(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of valuesFromRequest(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of deleteNamedRecord(parsed.data, currentModel.salesforceOrg, `${sourcePrompt}\n${testCase.title}\n${(testCase.steps ?? []).join("\n")}`)) console.log(`[ir] ${r}`);
-      for (const r of pathStageClicks(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${r}`);
+      for (const r of pathStageClicks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of seededLookups(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${r}`);
       for (const r of requestedFieldChecks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of flowEffectChecks(parsed.data, currentModel.salesforceOrg, `${sourcePrompt}

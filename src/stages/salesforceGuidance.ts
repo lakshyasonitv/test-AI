@@ -981,9 +981,32 @@ export function noTokensInRuleFields(ir: IRSteps, org: Pick<SalesforceOrgModel, 
  * "<Field> <value>" right after that value was picked on the form ("Stage Prospecting"): the form shows
  * the value alone, and the pick itself is the check. Returns notes.
  */
-export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects"> | undefined): string[] {
+export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects"> | undefined, request = ""): string[] {
   const notes: string[] = [];
-  const stages = new Set((org?.objects ?? []).flatMap((o) => o.fields.filter((f) => /^(StageName|Status)$/.test(f.api)).flatMap((f) => f.picklist ?? [])).map(lineKey));
+  const stageValues = (org?.objects ?? []).flatMap((o) => o.fields.filter((f) => /^(StageName|Status)$/.test(f.api)).flatMap((f) => f.picklist ?? []));
+  const stages = new Set(stageValues.map(lineKey));
+  // "use the path to move it to <stage>": "Mark Stage as Complete" moves ONE stage (run
+  // 2026-11-10T19-52-39-662Z-c714e22c never reached Closed Won). Its click becomes the way to THAT stage:
+  // the stage, then "Mark as Current Stage"; a closing stage goes through the path's "Closed" stage and
+  // its dialog ("Select Closed Stage", pick the stage, Save).
+  if (/\bpath\b/i.test(request)) {
+    const target = [...stageValues].sort((a, b) => b.length - a.length).find((v) => mentionsWord(request, v));
+    const mark = ir.steps.findIndex((s) => s.action === "click" && /^mark stage as complete$/i.test(s.target?.name ?? ""));
+    if (target && mark >= 0 && !ir.steps.some((s) => s.action === "click" && lineKey(s.target?.name ?? "") === lineKey(target))) {
+      const id = ir.steps[mark].id;
+      const closing = /^closed\b/i.test(target);
+      ir.steps.splice(mark, 1, ...(closing
+        ? [{ id: `${id}-closed`, action: "click", target: { name: "Closed" } },
+          { id: `${id}-select`, action: "click", target: { role: "button", name: "Select Closed Stage" } },
+          { id: `${id}-wait`, action: "wait", value: "1000" },
+          { id: `${id}-stage`, action: "select", target: { role: "combobox", name: "Stage" }, value: target },
+          { id: `${id}-save`, action: "click", target: { role: "button", name: "Save" } }]
+        : [{ id: `${id}-stage`, action: "click", target: { name: target } },
+          { id: `${id}-mark`, action: "click", target: { role: "button", name: "Mark as Current Stage" } }]) as Step[],
+        { id: `${id}-wait2`, action: "wait", value: "1500" } as Step);
+      notes.push(`${id}: "Mark Stage as Complete" moves one stage -> moves the path to "${target}"${closing ? " through the Closed dialog" : ""}`);
+    }
+  }
   for (let i = 0; i < ir.steps.length; i++) {
     const s = ir.steps[i];
     const prev = ir.steps[i - 1];

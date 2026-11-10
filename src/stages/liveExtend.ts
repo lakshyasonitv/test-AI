@@ -168,7 +168,12 @@ export async function runStepLive(
         await page.getByRole(step.target!.role as "radio" | "checkbox", { name: step.target!.name!, exact: true }).first().check({ force: true });
         return;
       }
-      await (await resolveLive(page, step.target!, "check")).check(); return;
+      {
+        // The spec's own rule (generator.ts): a box drawn over the input retries forced, on that error only.
+        const box = await resolveLive(page, step.target!, "check");
+        await box.check({ timeout: 10_000 }).catch((e) => /intercepts pointer events/.test(String(e)) ? box.check({ force: true }) : Promise.reject(e));
+        return;
+      }
     // No target: the key goes to whatever has focus, exactly as generator.ts emits it.
     case "press":
       if (!step.target) { await page.keyboard.press(step.value ?? "Enter"); return; }
