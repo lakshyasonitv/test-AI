@@ -56,7 +56,11 @@ export async function publishRequestedEvents(session: Session, org: SalesforceOr
     const lines = (flow.effects ?? []).map((l) => l.replace(/ with (\w+) = the triggering record's (\w+)/g,
       (m, _field, from) => values[from] ? ` "${values[from]}"` : m));
     const sent = Object.entries(values).map(([k, v]) => `${k} = "${v}"`).join(", ");
-    lines.unshift(`Testbench PUBLISHED this event once before the test, through the API (${event}${sent ? ` with ${sent}` : ""}); the test does not publish it, it checks what the flow did`);
+    // How to find what it made: run 2026-11-10T13-21-35-459Z-e0311135 wrote a "publish" step and clicked the
+    // nav bar's "Accounts List" menu, so the list's search box was never on screen.
+    const made = lines.map((l) => /creates an? (\w+) "([^"]+)"/.exec(l)).find(Boolean);
+    const find = made ? ` To check it: open /lightning/o/${made[1]}/list, type "${made[2]}" in the list's "Search this list..." box, press Enter, and assert the link "${made[2]}" is visible.` : "";
+    lines.unshift(`Testbench ALREADY PUBLISHED this event once before the test, through the API (${event}${sent ? ` with ${sent}` : ""}). The case writes NO publish step; it only checks what the flow did.${find}`);
     flow.effects = lines;
   }
   return out;

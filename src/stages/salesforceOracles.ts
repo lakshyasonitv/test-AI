@@ -26,7 +26,11 @@ function flowSet(org: Org, o: { api: string; label: string }): Set<string> {
   const out = new Set<string>();
   for (const f of org.flows ?? []) {
     if (f.object !== o.label && f.object !== o.api) continue;
-    for (const line of f.effects ?? []) for (const m of line.matchAll(/(\w+) = /g)) out.add(m[1].toLowerCase());
+    // Only what it SETS: "when Industry = Technology" is a condition it reads, not a value it writes.
+    for (const line of f.effects ?? []) for (const set of line.matchAll(/\bsets (.+?)(?=;|$)/g)) {
+      if (/ on [A-Z][\w ]*$/.test(set[1])) continue;
+      for (const m of set[1].matchAll(/(\w+) = /g)) out.add(m[1].toLowerCase());
+    }
   }
   return out;
 }

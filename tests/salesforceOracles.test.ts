@@ -25,7 +25,7 @@ describe("typedValues", () => {
   });
 
   it("leaves out a field a flow on the object sets after the save", () => {
-    const withFlow = { ...org, flows: [{ label: "Zq f", api: "Zq_f", type: "record-triggered", object: "Zq Acct", effects: ["sets Phone = 1, AnnualRevenue = 2"] }] };
+    const withFlow = { ...org, flows: [{ label: "Zq f", api: "Zq_f", type: "record-triggered", object: "Zq Acct", effects: ['branch "B": when Name = Zq -> sets Phone = 1, AnnualRevenue = 2'] }] };
     const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "Zq"), fill("Phone", "4155550101"), save] }, withFlow);
     expect(t[0].values.map((v) => v.api)).toEqual(["Name"]);
   });
