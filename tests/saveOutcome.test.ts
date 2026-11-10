@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView, returnToCreatedRecords,
-  requestedFieldChecks, deleteNamedRecord,
+  requestedFieldChecks, deleteNamedRecord, flowEffectChecks,
 } from "../src/stages/salesforceGuidance.js";
 import { recordRef } from "../src/stages/salesforceFrontdoor.js";
 import { readFileSync } from "node:fs";
@@ -174,10 +174,16 @@ describe("fieldChecksOnRecordView", () => {
     expect(fieldChecksOnRecordView(value, model)).toEqual([]);
     const reopened = ir([...base(), click("Edit Zq Expiry"), fieldIs("textbox", "Zq Expiry")]);
     expect(fieldChecksOnRecordView(reopened, model)).toEqual([]);
-    const noTab = ir([...base(), fieldIs("textbox", "Zq Expiry")]);
-    fieldChecksOnRecordView(noTab, { pages: [model.pages[0]] });
-    expect(noTab.steps.some((s) => s.target?.name === "Details")).toBe(false);
-    expect(noTab.steps[noTab.steps.length - 1].target).toEqual({ text: "Zq Expiry" });
+  });
+
+  // Run 2026-11-10T10-08-27-191Z-4830927e: no record page was modelled ("a high priority account"), so no
+  // Details click, and Rating (on Details) was never found. With no record page known, the click is
+  // inserted; the spec skips it where the page has none (generator.ts, sf-details).
+  it("with no record page modelled at all, still opens Details (the spec skips it if absent)", () => {
+    const noPage = ir([...base(), fieldIs("textbox", "Zq Expiry")]);
+    fieldChecksOnRecordView(noPage, { pages: [model.pages[0]] });
+    expect(noPage.steps.some((s) => s.target?.name === "Details")).toBe(true);
+    expect(noPage.steps[noPage.steps.length - 1].target).toEqual({ text: "Zq Expiry" });
   });
 
   it("is wired into IR generation, with the request", () => {
@@ -670,5 +676,62 @@ describe("deleteNamedRecord", () => {
     const i = flow(menu, del, { id: "e", action: "assert", target: { text: 'Zq: "This Zacct" cannot be deleted' }, assertion: "visible" } as Step);
     deleteNamedRecord(i, org, "delete that Zacct and verify the error Zq: This Zacct cannot be deleted is shown");
     expect(i.steps.at(-1)!.target).toEqual({ text: "Zq: This Zacct cannot be deleted" });
+  });
+});
+
+describe("Enter on a create form", () => {
+  it("becomes the form's Save click; an Enter after a Save stays", () => {
+    const sel = { id: "p", action: "select", target: { name: "Priority" }, value: "High" } as Step;
+    const enter = { id: "e", action: "press", value: "Enter" } as Step;
+    const i = ir([nav("https://x.example/lightning/o/Case/new"), sel, enter, { id: "a", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step]);
+    strengthenSaveOutcome(i);
+    expect(i.steps[2]).toMatchObject({ action: "click", target: { role: "button", name: "Save" } });
+    const j = ir([nav("https://x.example/lightning/o/Case/new"), click("Save"), { ...enter }]);
+    strengthenSaveOutcome(j);
+    expect(j.steps[2].action).toBe("press");
+  });
+});
+
+describe("flowEffectChecks", () => {
+  const org = {
+    objects: [{ api: "Lead", label: "Lead", fields: [
+      { label: "Industry", api: "Industry" }, { label: "Annual Revenue", api: "AnnualRevenue" },
+      { label: "Rating", api: "Rating" }, { label: "Lead Status", api: "Status" }, { label: "Company", api: "Company" },
+    ] }],
+    flows: [{ label: "Zq Routing", object: "Lead", effects: [
+      'branch "Hot": when Industry = Technology and AnnualRevenue >= 1000000 -> sets Rating = Hot, Status = Working; creates a Task "Zq Call now"',
+      'branch "Default Outcome" (none of the above) -> sets Rating = Cold',
+    ] }],
+  };
+  const sel = (name: string, value: string) => ({ id: "s", action: "select", target: { name }, value } as Step);
+  const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+  const lead = () => ir([nav("https://x.example/lightning/o/Lead/new"), fill("Company", "Zq Co"), sel("Industry", "Technology"), fill("Annual Revenue", "1500000"), click("Save"), created]);
+
+  it("checks what the branch the typed values take sets and creates", () => {
+    const i = lead();
+    expect(flowEffectChecks(i, org, "As a rep I want hot tech leads marked hot with a call task")).toHaveLength(1);
+    const added = i.steps.slice(6);
+    expect(added).toEqual(expect.arrayContaining([
+      expect.objectContaining({ target: { field: "Rating" }, value: "Hot" }),
+      expect.objectContaining({ target: { field: "Lead Status" }, value: "Working" }),
+      expect.objectContaining({ target: { text: "Zq Call now" } }),
+    ]));
+  });
+
+  it("takes the default branch when no rule holds, and guesses nothing when a value is unknown", () => {
+    const i = ir([nav("https://x.example/lightning/o/Lead/new"), sel("Industry", "Retail"), fill("Annual Revenue", "10"), click("Save"), created]);
+    flowEffectChecks(i, org, "the lead should be rated cold");
+    expect(i.steps.at(-1)).toMatchObject({ target: { field: "Rating" }, value: "Cold" });
+    const j = ir([nav("https://x.example/lightning/o/Lead/new"), sel("Industry", "Technology"), click("Save"), created]);
+    expect(flowEffectChecks(j, org, "the lead should be rated hot")).toEqual([]);
+  });
+
+  it("adds nothing when the request is not about the outcome, or it is already checked", () => {
+    expect(flowEffectChecks(lead(), org, "create a lead")).toEqual([]);
+    const i = lead();
+    i.steps.push({ id: "x", action: "assert", target: { field: "Rating" }, assertion: "text_contains", value: "Hot" } as Step,
+      { id: "y", action: "assert", target: { field: "Lead Status" }, assertion: "text_contains", value: "Working" } as Step,
+      { id: "z", action: "assert", target: { text: "Zq Call now" }, assertion: "visible" } as Step);
+    expect(flowEffectChecks(i, org, "rated hot")).toEqual([]);
   });
 });

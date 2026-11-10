@@ -415,3 +415,14 @@ describe("active flows: what runs by itself after a save", () => {
       decisions: [{}, {}] })).toEqual(["sets Rating = Warm", "branches on 2 decision(s): what it does depends on the record's values"]);
   });
 });
+
+// Run 2026-11-10T10-08-27-191Z-4830927e: "check that a high priority account gets a hot rating" named
+// "account" in lowercase, and no object matched.
+describe("objectsNamedIn anyCase (record pages discovery opens)", () => {
+  it("finds an object a person writes in lowercase", async () => {
+    const { objectsNamedIn } = await import("../src/stages/salesforceOrgModel.js");
+    const org = { objects: [{ api: "Zq_Account__c", label: "Zq Account", labelPlural: "Zq Accounts" }, { api: "Zq_Lead__c", label: "Zq Lead" }] };
+    expect(objectsNamedIn("check that a high priority zq account gets a hot rating", org, true).map((o) => o.api)).toEqual(["Zq_Account__c"]);
+    expect(objectsNamedIn("check that a high priority zq account gets a hot rating", org)).toEqual([]);
+  });
+});

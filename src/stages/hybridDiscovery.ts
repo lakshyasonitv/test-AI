@@ -620,7 +620,7 @@ export const savedDiscoveriesFor = (instanceHost: string): OrgDiscoverySave[] =>
  * create forms and record pages (createFormUrls, recordPageUrls), so it is a different crawl.
  */
 export function orgCacheKey(instanceHost: string, url: string, fingerprint: string, org: SalesforceOrgModel, request: string): string {
-  const named = objectsNamedIn(request, org).map((o) => o.api).join(",");
+  const named = objectsNamedIn(request, org, true).map((o) => o.api).join(",");
   return `sf-org:${instanceHost}|${url}|${fingerprint}|${named}|${createFormUrls("", org, request).join(",")}${screenFlowUrls("", org, request).join(",")}${strategySuffix()}`;
 }
 

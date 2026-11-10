@@ -52,7 +52,8 @@ const ROUTE = {
 - Stay on the object and the flow the request names: every case is about that object's records (create, its required fields, its validation rules, its picklists). Do not add cases about global search, the App Launcher, the navigation bar, notifications or another object unless the request asks for them; a coverage checklist item that does not fit the requested object is skipped, not stretched to fit.
 - A case that creates a record ends its name fields (Last Name, Company, Account Name, a record Name) with the token {{uid}}, e.g. "Smith {{uid}}": the run replaces it with a unique code, so the org's duplicate rules never block a repeat run. Never put {{uid}} in a field a validation rule reads (Phone, Email, Country) and never in an expected result.
 - An invalid-FORMAT case only where Salesforce checks a format: Email, Date, Number, Currency and Percent fields, or a field a validation rule reads. A Phone, Text or URL field accepts any text and saves it, so "an invalid phone is rejected" fails against a healthy org (run 2026-10-25T06-38-05-163Z-3a6663ef).
-- A create case fills the required fields and the fields a validation rule reads, and no other field unless the request names it. A lookup field (Account Name on a Contact, Parent Account) needs an existing record: leave it alone unless it is required or the request names it. When the request names several objects, write one create case per object, never one case that creates them all: a failure in one object must not hide the others. (Backed by: the test-data pass drops unrequested optional fields and splits nothing — a combined case stays combined, so write them apart.)`,
+- A create case fills the required fields and the fields a validation rule reads, and no other field unless the request names it. A lookup field (Account Name on a Contact, Parent Account) needs an existing record: leave it alone unless it is required or the request names it. When the request names several objects, write one create case per object, never one case that creates them all: a failure in one object must not hide the others. (Backed by: the test-data pass drops unrequested optional fields and splits nothing — a combined case stays combined, so write them apart.)
+- A case never relies on a record already in the org ("an Account known to have open Opportunities"): it creates what it needs, in order, then acts on it. A rule about related records (a delete blocked while open child records exist, a roll-up) creates the parent, then the child from its own create form with the parent picked in its lookup, using values that make it count (an open Opportunity: a stage that is not Closed), then goes back to the parent and acts. This is the one case that creates several objects. (Backed by: deleteOutsideOwnRecord, which refuses a delete of any record the case did not create — run 2026-11-10T10-20-10-752Z-2c9915e1 ended after its first Save.)`,
     ir: `- The run is already signed in through its org connection: the sign-in step is supplied; write no login, username or password step. Reach a page with "navigate" to a path that is in the application model: /lightning/o/<Object>/new opens the create form as a modal dialog and its fields are in that page's model. Never click through the App Launcher or the navigation bar to reach an object. Create every record, a related one too, through its own create form path, and pick its parent in that form's lookup (an Opportunity "for that Account": /lightning/o/Opportunity/new, Account Name = that Account), never through another record page's actions menu or its "New <Object>" buttons, unless the case says to use that action. (Backed by: the navigate-URL guard, TD-82; run 2026-11-10T06-30-57-251Z-32a03bc8 lost its way in the Account page's "Show more actions" menu.)
 - In a flow that creates a record, the "fill" value of each name field (Last Name, Company, Account Name, a record Name) ends with the token {{uid}}, e.g. "Smith {{uid}}"; the spec and the replay replace it with a unique code, so the org's duplicate rules never block a repeat. Never in a field a validation rule reads, never in an assertion: assert "was created", never the record's name. (Backed by: generator valueCode and runStepLive.)
 - Fill only the required fields, the fields a validation rule reads, and the fields the case names. Never type into a lookup (a record reference such as Account Name on a Contact) unless the case names a record for it. (Backed by: the test-data pass drops other optional fills.)`,
@@ -120,6 +121,20 @@ const isSave = (s: Step) => /^save$/i.test(s.target?.name ?? "");
  */
 export function strengthenSaveOutcome(ir: IRSteps): string | null {
   const steps = ir.steps;
+  // "Press Enter" on a create form never saves it: Enter only picks the open picklist's option
+  // (run 2026-11-10T10-17-33-628Z-76c35740 never left the New Case dialog). With no Save click on
+  // that form, the form's own Save button replaces the press.
+  let onForm = false;
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (s.action === "navigate") onForm = /\/lightning\/o\/[^/?#]+\/new\b/.test(s.target?.url ?? "");
+    else if (s.action === "click" && /^(new\b.*|clone|edit\b.*)$/i.test(s.target?.name ?? "")) onForm = true;
+    else if (s.action === "click" && isSave(s)) onForm = false;
+    else if (onForm && s.action === "press" && /^enter$/i.test(s.value ?? "")) {
+      steps[i] = { id: s.id, action: "click", target: { role: "button", name: "Save" } } as Step;
+      onForm = false;
+    }
+  }
   const last = steps[steps.length - 1];
   // A delete ends on its confirm dialog's "Delete"; Salesforce answers '<Object> "<name>" was deleted.'
   let lastClick = -1;
@@ -328,6 +343,134 @@ export function valuesFromRequest(ir: IRSteps, request: string): string[] {
     if (!value) continue;
     s.value = value;
     notes.push(`${s.id}: the check on "${label}" had no value -> "${value}", as the request states it`);
+  }
+  return notes;
+}
+
+/** One flow condition ("AnnualRevenue >= 1000000") against the values a create form typed, by API name.
+ *  Undefined when the field was not filled: unknown, so no expectation is drawn from it. */
+function conditionHolds(cond: string, valueOf: (api: string) => string | undefined): boolean | undefined {
+  const m = /^(\w+)\s+(>=|<=|>|<|=|is not|contains|starts with|is blank)\s*(.*)$/.exec(cond.trim());
+  if (!m) return undefined;
+  const [, api, op, want] = m;
+  const got = valueOf(api);
+  if (op === "is blank") return got === undefined || got.trim() === "";
+  if (got === undefined) return undefined;
+  const num = (s: string) => Number(s.replace(/[$,\s]/g, ""));
+  if (op === ">=" || op === "<=" || op === ">" || op === "<") {
+    const a = num(got), b = num(want);
+    if (Number.isNaN(a) || Number.isNaN(b)) return undefined;
+    return op === ">=" ? a >= b : op === "<=" ? a <= b : op === ">" ? a > b : a < b;
+  }
+  const g = lineKey(got), w = lineKey(want);
+  return op === "=" ? g === w : op === "is not" ? g !== w : op === "contains" ? g.includes(w) : g.startsWith(w);
+}
+
+/** All of "A >= 1 and B = x" (or any, joined by " or "); undefined when a field it reads is unknown. */
+function whenHolds(when: string, valueOf: (api: string) => string | undefined): boolean | undefined {
+  const or = / or /.test(when) && !/ and /.test(when);
+  const results = when.split(or ? / or / : / and /).map((c) => conditionHolds(c, valueOf));
+  if (results.some((r) => r === undefined)) return undefined;
+  return or ? results.some(Boolean) : results.every(Boolean);
+}
+
+/**
+ * Phase B, flow-aware checks: what a record-triggered flow on an object this case created will do, given the
+ * values the case typed, becomes a check when no step checks it. A user story ("I want it marked as a hot lead
+ * and set to working, with a call task") named no field and no value the checks could be read from, and the
+ * case checked only "was created" (run 2026-11-10T10-15-08-973Z-439e90e3).
+ *
+ * Narrow on purpose: only a flow on an object this case saved; only when every condition it reads (its "only
+ * when", the branch's "when") is decided by the values the case typed, so no outcome is ever guessed; the
+ * branch taken is the first whose "when" holds, else the default; and only when the request or case talks
+ * about the outcome (names the flow, or a value it sets, or the record it creates). Checks: the fields it
+ * sets on the record, and a record it creates by its Subject or Name. Placed after the last Save; the record
+ * is opened by reference when the flow is elsewhere. Returns notes.
+ */
+export function flowEffectChecks(ir: IRSteps, org: {
+  objects: { api: string; label: string; fields: { label: string; api?: string }[] }[];
+  flows?: { label: string; object?: string; type?: string; effects?: string[] }[];
+} | undefined, text = ""): string[] {
+  const notes: string[] = [];
+  if (!org?.flows?.length || !text.trim()) return notes;
+  // The values each saved create form typed, by the org's API name; per object, the last saved.
+  const saved = new Map<string, { values: Map<string, string>; n: number }>();
+  let form: string | null = null;
+  let typed = new Map<string, string>();
+  for (const s of ir.steps) {
+    if (s.action === "navigate") {
+      form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null;
+      typed = new Map();
+      continue;
+    }
+    if (!form) continue;
+    if ((s.action === "fill" || s.action === "select") && s.value !== undefined) {
+      const o = org.objects.find((x) => x.api === form);
+      const name = lineKey(s.target?.name ?? s.target?.label ?? "");
+      const f = o?.fields.find((x) => lineKey(x.label) === name || lineKey(`${o.label} ${x.label}`) === name);
+      if (f?.api) typed.set(f.api.toLowerCase(), s.value);
+    } else if (s.action === "click" && isSave(s)) {
+      saved.set(form, { values: typed, n: (saved.get(form)?.n ?? 0) + 1 });
+      form = null;
+    }
+  }
+  const talksAbout = (t: string) => mentionsWord(text, t);
+  for (const [api, rec] of saved) {
+    const o = org.objects.find((x) => x.api === api);
+    if (!o) continue;
+    const valueOf = (fieldApi: string) => rec.values.get(fieldApi.toLowerCase());
+    for (const fl of org.flows.filter((x) => x.object === o.label || x.object === o.api)) {
+      const lines = fl.effects ?? [];
+      const only = lines.find((l) => l.startsWith("only when "));
+      if (only && whenHolds(only.slice("only when ".length), valueOf) !== true) continue;
+      const branches = lines.filter((l) => l.startsWith("branch "));
+      let effects: string;
+      if (branches.length) {
+        let taken: string | undefined;
+        let unknown = false;
+        for (const b of branches) {
+          const when = /: when (.*?) ->/.exec(b)?.[1];
+          if (!when) { taken ??= b; continue; }        // the default branch: taken when none before holds
+          const h = whenHolds(when, valueOf);
+          if (h === undefined) { unknown = true; break; }
+          if (h) { taken = b; break; }
+        }
+        if (unknown || !taken) continue;
+        effects = taken.slice(taken.indexOf("->") + 2);
+      } else {
+        effects = lines.filter((l) => !l.startsWith("only when ")).join("; ");
+      }
+      // What it does to the record, and the records it creates, as checks.
+      const sets: { label: string; value: string }[] = [];
+      for (const m of effects.matchAll(/\bsets (.+?)(?=;|$)/g)) {
+        if (/ on [A-Z][\w ]*$/.test(m[1])) continue;
+        for (const part of m[1].split(/,\s+(?=\w+ = )/)) {
+          const a = /^(\w+) = (.+)$/.exec(part.trim());
+          const f = a ? o.fields.find((x) => x.api?.toLowerCase() === a[1].toLowerCase()) : undefined;
+          // ponytail: a checkbox ("IsEscalated = true") shows as a tick, not text: not checked here.
+          if (a && f && !/^(true|false)$/i.test(a[2].trim())) sets.push({ label: f.label, value: a[2].trim() });
+        }
+      }
+      const creates = [...effects.matchAll(/creates an? \w+ "([^"]+)"/g)].map((m) => m[1]);
+      // Only when the request or case is about this outcome.
+      const about = talksAbout(fl.label) || sets.some((x) => talksAbout(x.value) || talksAbout(x.label))
+        || creates.some((c) => talksAbout(c)) || (creates.length > 0 && /\b(task|case|record)s?\b/i.test(text));
+      if (!about) continue;
+      const checked = (v: string) => ir.steps.some((s) => s.action === "assert"
+        && [s.value, s.target?.text].some((t) => !!t && lineKey(t).includes(lineKey(v))));
+      const add: Step[] = [];
+      for (const x of sets) if (!checked(x.value)) add.push({ id: `sf-flow-${x.label}`.replace(/\W+/g, "-"), action: "assert", target: { field: x.label }, assertion: "text_contains", value: x.value } as Step);
+      for (const c of creates) if (!checked(c)) add.push({ id: `sf-flow-${c}`.replace(/\W+/g, "-").slice(0, 60), action: "assert", target: { text: c }, assertion: "visible" } as Step);
+      if (!add.length) continue;
+      // After the last Save; on this record (opened by reference when the flow moved on).
+      let at = ir.steps.length;
+      for (let i = ir.steps.length - 1; i >= 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) { at = i + 1; break; }
+      while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[at].target?.text ?? "")))) at++;
+      const lastSaved = [...saved.keys()].at(-1);
+      if (lastSaved !== api) add.unshift({ id: `sf-open-${api}-flow`, action: "navigate", target: { url: recordRef(api, rec.n) } });
+      ir.steps.splice(at, 0, ...add);
+      notes.push(`flow "${fl.label}" on the ${o.label} this case created, with the values it typed: checks ${[...sets.map((x) => `${x.label} = ${x.value}`), ...creates.map((c) => `"${c}"`)].join(", ")}`);
+    }
   }
   return notes;
 }
@@ -612,8 +755,11 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
   // A record page captured before Lightning drew its tabs shows none at all (run
   // 2026-11-03T07-31-20-798Z-dcc341ef: the page had Related | Details). Only a captured page WITH tabs
   // and no Details says there is none; the spec's Details click is skipped when the tab is absent.
-  const hasDetailsTab = recordPages.some((p) => p.elements.some((e) => e.role === "tab" && e.name === "Details"))
-    || (recordPages.length > 0 && !recordPages.some((p) => p.elements.some((e) => e.role === "tab")));
+  // No record page modelled at all says nothing either (run 2026-11-10T10-08-27-191Z-4830927e): the click is
+  // inserted, and the spec skips it where the page has no Details tab.
+  const hasDetailsTab = recordPages.length === 0
+    || recordPages.some((p) => p.elements.some((e) => e.role === "tab" && e.name === "Details"))
+    || !recordPages.some((p) => p.elements.some((e) => e.role === "tab"));
   // Phase 1: a Dynamic Forms rule's own field. The request asks about "SLA"; the writer checked
   // "SLA Expiration Date", a different, always-shown field (same run). The org's rule names the field.
   const ruleTargets = (model.salesforceOrg?.objects ?? []).flatMap((o) => o.visibilityRules ?? []).map((v) => v.target)

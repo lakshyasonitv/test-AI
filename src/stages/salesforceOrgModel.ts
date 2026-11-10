@@ -535,7 +535,7 @@ export async function recordPageUrls(
   lightningOrigin: string, org: Pick<SalesforceOrgModel, "objects">, request: string, apiGet: ApiGet,
 ): Promise<string[]> {
   const out: string[] = [];
-  for (const o of objectsNamedIn(request, org).slice(0, MAX_RECORD_PAGES)) {
+  for (const o of objectsNamedIn(request, org, true).slice(0, MAX_RECORD_PAGES)) {
     if (!/^[A-Za-z0-9_]+$/.test(o.api)) continue;
     const q = `SELECT Id FROM ${o.api} ORDER BY LastModifiedDate DESC LIMIT 1`;
     const id = (await tryGet(apiGet, `/query?q=${encodeURIComponent(q)}`))?.records?.[0]?.Id;
@@ -552,10 +552,13 @@ export async function recordPageUrls(
  * first, each match consuming its words: "Broker Lead" names the custom object, not also Lead.
  */
 export function objectsNamedIn<O extends { api: string; label: string; labelPlural?: string }>(
-  request: string, org: { objects: O[] } | undefined,
+  request: string, org: { objects: O[] } | undefined, anyCase = false,
 ): O[] {
   if (!org?.objects.length || !request.trim()) return [];
-  const words = (s: string) => ` ${s.replace(/[^\p{L}\p{N}_]+/gu, " ").trim()} `;
+  // anyCase, for what discovery opens only: people write "a high priority account" (run
+  // 2026-11-10T10-08-27-191Z-4830927e: the capitalised-only match modelled no record page). An extra
+  // page from "test cases" costs one load; dropping cases (testCases) stays case-sensitive.
+  const words = (s: string) => ` ${(anyCase ? s.toLowerCase() : s).replace(/[^\p{L}\p{N}_]+/gu, " ").trim()} `;
   let rest = words(request);
   const names = org.objects.flatMap((o) => [o.label, o.labelPlural, o.api].filter((n): n is string => !!n).map((n) => ({ o, n: words(n) })))
     .sort((a, b) => b.n.length - a.n.length);
