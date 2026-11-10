@@ -68,3 +68,15 @@ describe("apiChecks", () => {
     if (was !== undefined) process.env.SALESFORCE_API_CHECKS_ENABLED = was;
   });
 });
+
+describe("calculatedChecks", () => {
+  it("reads a calculated field the screen checked, on the record the case was on", async () => {
+    const { calculatedChecks } = await import("../src/stages/salesforceOracles.js");
+    const withCalc = { objects: [{ ...org.objects[0], calculated: [{ label: "Zq Total", api: "Zq_Total__c", type: "Currency" }] }] };
+    const check = { id: "a", action: "assert", target: { field: "Zq Total" }, assertion: "text_contains", value: "$5,000.00" } as Step;
+    const t = calculatedChecks({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "x"), save,
+      nav("/lightning/o/Other/new"), save, nav("${record:Zq_Acct__c:1}"), check] }, withCalc as any);
+    expect(t).toEqual([{ object: "Zq_Acct__c", n: 1, values: [{ label: "Zq Total", api: "Zq_Total__c", type: "Currency", value: "$5,000.00" }] }]);
+    expect(sameValue("Currency", "$5,000.00", 5000)).toBe(true);
+  });
+});

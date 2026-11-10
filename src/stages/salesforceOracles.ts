@@ -150,3 +150,41 @@ export function runCases(runDir: string): { caseDir: string; ir: Pick<IR, "steps
   }
   return out;
 }
+
+/**
+ * Phase A gap "formula values": a check of a calculated field on the screen (a formula, a roll-up: "TB
+ * Total Opportunity Amount shows 5,000") is also read through the API, so the value Salesforce computed
+ * and the one the page showed are compared. No formula is evaluated here: the org computes, the page
+ * shows, the two must agree. The record is the one the case was on: the last it saved, or one it opened
+ * again by reference (${record:Obj:n}).
+ */
+export function calculatedChecks(ir: Pick<IR, "steps">, org: Org): Typed[] {
+  const out: Typed[] = [];
+  const count = new Map<string, number>();
+  let form: string | null = null;
+  let on: { object: string; n: number } | null = null;
+  for (const s of ir.steps) {
+    if (s.action === "navigate") {
+      const url = s.target?.url ?? "";
+      form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(url)?.[1] ?? null;
+      const ref = /^\$\{record:([A-Za-z][A-Za-z0-9_]*):(\d+)\}$/.exec(url);
+      if (ref) on = { object: ref[1], n: Number(ref[2]) };
+      continue;
+    }
+    if (s.action === "click" && /^save$/i.test(s.target?.name ?? "") && form) {
+      const n = (count.get(form) ?? 0) + 1;
+      count.set(form, n);
+      on = { object: form, n };
+      form = null;
+      continue;
+    }
+    const label = s.target?.field;
+    if (s.action !== "assert" || !label || !on || !s.value || !/^text_(contains|equals)$/.test(s.assertion ?? "")) continue;
+    const o = org.objects.find((x) => x.api === on!.object);
+    const c = (o as any)?.calculated?.find((x: any) => x.label.toLowerCase() === label.toLowerCase());
+    if (!c || !COMPARED.test(c.type)) continue;
+    const entry = out.find((t) => t.object === on!.object && t.n === on!.n) ?? (out.push({ object: on.object, n: on.n, values: [] }), out[out.length - 1]);
+    entry.values = entry.values.filter((v) => v.api !== c.api).concat({ label: c.label, api: c.api, type: c.type, value: s.value });
+  }
+  return out;
+}
