@@ -23,7 +23,7 @@ import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import {
   salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
-  returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, requestedTextChecks, noTokensInRuleFields, pathStageClicks, seededLookups, placeholderMessages, valuesFromRequest,
+  returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, requestedTextChecks, noTokensInRuleFields, pathStageClicks, seededLookups, placeholderMessages, eventRecordSearch, valuesFromRequest,
 } from "./salesforceGuidance.js";
 import { FRONTDOOR_REF, currentFrontdoor, isFrontdoorRef, recordRefObject } from "./salesforceFrontdoor.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
@@ -2944,6 +2944,7 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       for (const r of checksOnCreatedRecord(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const f of requestedTextChecks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${f}`);
       for (const f of placeholderMessages(parsed.data, sourcePrompt)) console.log(`[ir] ${f}`);
+      for (const f of eventRecordSearch(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
       for (const f of noTokensInRuleFields(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
       for (const f of fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt, `${testCase.title}\n${testCase.expected ?? ""}`)) console.log(`[ir] ${f}`);
       for (const f of recordTabClicks(parsed.data)) console.log(`[ir] ${f}`);

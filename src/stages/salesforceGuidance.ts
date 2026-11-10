@@ -1133,3 +1133,32 @@ export function placeholderMessages(ir: IRSteps, request: string): string[] {
   }
   return [];
 }
+
+/**
+ * A record a published platform event's flow made (seeding wrote 'creates a Account "TB Event <uid>"' into
+ * the flow's lines) is found through the header's global search, whatever the steps did before: the case
+ * writer kept opening the Accounts "Recently Viewed" list, which never holds it (runs
+ * 2026-11-10T13-35-43-065Z-74193e13, 2026-11-10T20-49-59-426Z-28d7a837). The steps are the ones of the
+ * passing run 2026-11-10T15-28-58-549Z-d2677d83. Returns notes.
+ */
+export function eventRecordSearch(ir: IRSteps, org: Pick<SalesforceOrgModel, "flows"> | undefined): string[] {
+  const names = (org?.flows ?? []).filter((f) => f.type === "platform-event")
+    .flatMap((f) => (f.effects ?? []).flatMap((l) => [...l.matchAll(/creates an? \w+ "(TB Event [a-z0-9]+)"/g)].map((m) => m[1])));
+  const notes: string[] = [];
+  for (const name of new Set(names)) {
+    const at = ir.steps.findIndex((s) => s.action === "assert" && lineKey(s.target?.text ?? "") === lineKey(name));
+    if (at < 0) continue;
+    if (ir.steps.slice(0, at).some((s) => s.action === "fill" && lineKey(s.value ?? "") === lineKey(name) && /search/i.test(s.target?.name ?? ""))) continue;
+    const search = { role: "searchbox", name: "Search..." };
+    ir.steps.splice(at, 0, ...[
+      { id: "sf-ev-home", action: "navigate", target: { url: "/lightning/page/home" } },
+      { id: "sf-ev-search", action: "click", target: { role: "button", name: "Search" } },
+      { id: "sf-ev-wait", action: "wait", value: "500" },
+      { id: "sf-ev-type", action: "fill", target: search, value: name },
+      { id: "sf-ev-enter", action: "press", target: search, value: "Enter" },
+      { id: "sf-ev-wait2", action: "wait", value: "1500" },
+    ] as Step[]);
+    notes.push(`"${name}" is found through global search, the way the passing run found it`);
+  }
+  return notes;
+}

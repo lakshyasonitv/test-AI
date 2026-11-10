@@ -879,3 +879,15 @@ describe("placeholderMessages", () => {
     expect(placeholderMessages(i, "verify the message Zcontact <Zother> was created")).toEqual([]);
   });
 });
+
+describe("eventRecordSearch", () => {
+  it("finds a record a published event's flow made through global search, once", async () => {
+    const { eventRecordSearch } = await import("../src/stages/salesforceGuidance.js");
+    const org = { flows: [{ label: "Zq Ev", api: "Zq_Ev", type: "platform-event", effects: ['creates a Account "TB Event ab12cd"'] }] };
+    const check = { id: "a", action: "assert", target: { text: "TB Event ab12cd" }, assertion: "visible" } as Step;
+    const i = ir([click("Zq List"), check]);
+    expect(eventRecordSearch(i, org as any)).toHaveLength(1);
+    expect(i.steps.map((s) => s.id)).toEqual(["c", "sf-ev-home", "sf-ev-search", "sf-ev-wait", "sf-ev-type", "sf-ev-enter", "sf-ev-wait2", "a"]);
+    expect(eventRecordSearch(i, org as any)).toEqual([]);
+  });
+});
