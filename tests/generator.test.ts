@@ -359,6 +359,15 @@ describe("a text check after a record's Details tab scrolls its lazy sections in
     expect(s).toContain('page.getByRole("tab", { name: "Details", exact: true }).first()');
     expect(s).toMatch(/waitFor\(\{ state: "visible", timeout: 5000 \}\)\.then\(\(\) => true, \(\) => false\)\) await tab\.click/);
   });
+
+  it("an inserted Related click opens the record's own Related or Activity tab, whichever is not selected", () => {
+    const s = generateSpec({ meta, steps: [
+      { id: "sf-related-2", action: "click", target: { role: "tab", name: "Related" } },
+    ] } as unknown as IR);
+    expect(s).toContain('for (const name of ["Related", "Activity"])');
+    expect(s).toContain('(await t.getAttribute("aria-selected")) !== "true"');
+    expect(s).not.toContain("safeClick");
+  });
 });
 
 // A Lightning picklist is a <button role="combobox"> showing the chosen value as its text. The

@@ -24,8 +24,9 @@
  * Salesforce names.
  */
 import { currentRunTargetApp } from "../runTarget.js";
-import { currentFrontdoor, recordRef, recordRefObject } from "./salesforceFrontdoor.js";
+import { currentFrontdoor, recordRef, recordRefIndex, recordRefObject } from "./salesforceFrontdoor.js";
 import { hasRunToken, lineKey, shownNumber } from "../text.js";
+import { requestedActions } from "./testData.js";
 import type { IR as IRSteps, Step } from "../schema/ir.js";
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 
@@ -167,16 +168,34 @@ export function deleteOutsideOwnRecord(ir: IRSteps): string | null {
   if (del < 0) return null;
   let saved = -1;
   let opened = false;
+  let form: string | null = null;
+  /** Records this case created, per object: what a record reference (`${record:<Obj>:<n>}`) may open. */
+  const created = new Map<string, number>();
   for (let i = 0; i < del; i++) {
     const s = steps[i];
-    if (s.action === "navigate" && /\/lightning\/o\/[^/?#]+\/new\b/.test(s.target?.url ?? "")) opened = true;
+    if (s.action === "navigate" && /\/lightning\/o\/[^/?#]+\/new\b/.test(s.target?.url ?? "")) {
+      opened = true;
+      form = decodeURIComponent(/\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target!.url!)![1]);
+    }
     if (s.action === "click" && /^(new\b.*|clone)$/i.test(s.target?.name ?? "")) opened = true;
-    if (s.action === "click" && opened && isSave(s)) saved = i;
+    if (s.action === "click" && opened && isSave(s)) {
+      saved = i;
+      if (form) { created.set(form, (created.get(form) ?? 0) + 1); form = null; }
+    }
   }
   if (saved < 0) {
     return `Step ${steps[del].id} deletes a record this case did not create. A case may delete only the record it creates itself: create it (its create form, Save), then delete it from the record page that Save opens.`;
   }
-  const away = steps.slice(saved + 1, del).find((s) => s.action === "navigate" || (s.action === "click" && s.target?.role === "link"));
+  // The one way back allowed: a record reference to a record THIS case created and saved. It resolves
+  // at run time to that record's own id, captured from its Save, so it can never reach another record
+  // ("create an Account, an Opportunity for it, then delete the Account", run 2026-11-10T06-03-48-658Z-ac13a6f8).
+  const ownRecord = (url?: string) => {
+    const obj = recordRefObject(url);
+    const n = recordRefIndex(url);
+    return !!obj && n !== null && n >= 1 && n <= (created.get(obj) ?? 0);
+  };
+  const away = steps.slice(saved + 1, del).find((s) => (s.action === "navigate" && !ownRecord(s.target?.url))
+    || (s.action === "click" && s.target?.role === "link"));
   if (away) {
     return `Step ${away.id} leaves the record this case created before deleting. Delete it from the record page its Save opened (that page's "Delete" or its actions menu), without opening another record.`;
   }
@@ -314,6 +333,74 @@ export function valuesFromRequest(ir: IRSteps, request: string): string[] {
 }
 
 /**
+ * Every field value the request asks to CHECK on a record this case created becomes a check, when the
+ * steps have none. Run 2026-11-10T05-05-39-201Z-52ce7aed: "verify its Rating shows Hot, its Lead Status
+ * shows Working - Contacted, and a Task ... appears": the case only "looked at" the two fields, so the
+ * test checked the Task alone and could have passed without them.
+ *
+ * Narrow on purpose: only picklist fields of an object this case saved, and only a value that is one of
+ * that field's options, written right after the field's name in the check part of the request
+ * ("<field> shows|is|equals|becomes|displays|reads|changes to|is set to <option>"). The label used is the
+ * one the request uses ("Lead Status", the org's "Status"; "Type", the org's "Account Type"). A field
+ * two saved objects share is checked only when the request says whose ("the Account's Type"). The check
+ * goes at the end; checksOnCreatedRecord opens the record and fieldChecksOnRecordView the Details tab.
+ */
+export function requestedFieldChecks(ir: IRSteps, org: {
+  objects: { api: string; label: string; fields: { label: string; picklist?: string[] }[] }[];
+} | undefined, request = ""): string[] {
+  const notes: string[] = [];
+  if (!org?.objects.length || !request.trim()) return notes;
+  const checks = request.slice(requestedActions(request).length);
+  if (!checks.trim()) return notes;
+  // Objects this case saved, in order; the count says which of them recordRef means.
+  const saved = new Map<string, number>();
+  let form: string | null = null;
+  for (const s of ir.steps) {
+    if (s.action === "navigate") form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null;
+    else if (s.action === "click" && isSave(s) && form) { saved.set(form, (saved.get(form) ?? 0) + 1); form = null; }
+  }
+  if (!saved.size) return notes;
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const VERB = "(?:shows|show|is set to|is|equals|becomes|displays|reads|changes to|has changed to|=)";
+  type Hit = { obj: string; label: string; value: string; owned: boolean; at: number };
+  const hits: Hit[] = [];
+  for (const o of org.objects.filter((x) => saved.has(x.api))) {
+    for (const f of o.fields) {
+      if (!f.picklist?.length) continue;
+      const short = f.label.replace(/^\S+\s+/, "");
+      const names = [...new Set([`${o.label} ${f.label}`, f.label, short])].sort((a, b) => b.length - a.length);
+      const values = [...f.picklist].sort((a, b) => b.length - a.length).map(esc).join("|");
+      for (const name of names) {
+        const re = new RegExp(`(?:\\b(${esc(o.label)})(?:['’]s)?\\s+)?\\b(${esc(name)})\\s+${VERB}\\s+["']?(${values})(?![\\p{L}\\p{N}])`, "iu");
+        const m = re.exec(checks);
+        if (!m) continue;
+        hits.push({ obj: o.api, label: m[2], value: f.picklist.find((p) => p.toLowerCase() === m[3].toLowerCase())!, owned: !!m[1], at: m.index });
+        break;
+      }
+    }
+  }
+  // The same words matched for two objects ("Type" on Account and Opportunity): only the one named as its owner.
+  const byText = new Map<string, Hit[]>();
+  for (const h of hits) byText.set(`${h.at}|${h.label.toLowerCase()}`, [...(byText.get(`${h.at}|${h.label.toLowerCase()}`) ?? []), h]);
+  const chosen = [...byText.values()].flatMap((hs) => hs.length === 1 ? hs : hs.filter((h) => h.owned).slice(0, 1))
+    .sort((a, b) => a.at - b.at);
+  for (const h of chosen) {
+    // Already checked: that field showing the value, or the value checked as the whole text. Not a word
+    // inside other text: "TB Call new hot lead" is no check that Rating shows "Hot".
+    const present = ir.steps.some((s) => s.action === "assert" && (
+      (!!s.target?.field && lineKey(s.target.field) === lineKey(h.label) && lineKey(s.value ?? "").includes(lineKey(h.value)))
+      || [s.value, s.target?.text].some((t) => !!t && lineKey(t) === lineKey(h.value))));
+    if (present) continue;
+    // Opened explicitly when the record is not the last one saved, or the flow moved on after it.
+    const last = [...saved.keys()].at(-1);
+    if (h.obj !== last) ir.steps.push({ id: `sf-open-${h.obj}-${h.label}`.replace(/\W+/g, "-"), action: "navigate", target: { url: recordRef(h.obj, saved.get(h.obj)!) } });
+    ir.steps.push({ id: `sf-check-${h.label}`.replace(/\W+/g, "-"), action: "assert", target: { field: h.label }, assertion: "text_contains", value: h.value } as Step);
+    notes.push(`the request checks "${h.label}" shows "${h.value}" and no step did -> checks it on the ${h.obj} this case created`);
+  }
+  return notes;
+}
+
+/**
  * A check of a field of a record THIS case created, made away from that record, opens the record
  * first. Run 2026-11-03T08-18-32-287Z-885b1ba6: after creating an Account and an Opportunity for it,
  * the flow went home, clicked the Accounts tab and looked for "TB Total Opportunity Amount" 5,000 on
@@ -386,14 +473,17 @@ const mentionsWord = (request: string, label: string) => !!lineKey(label) && ` $
  * front ("Rating" for "Account Rating", the label the record page shows). The label returned is the
  * one the request uses. Undefined when no field, or more than one, fits.
  */
-export function pickedValueField(text: string, value: string, fields: { label: string; picklist?: string[] }[], request: string):
-  { label: string; value: string } | undefined {
+export function pickedValueField(text: string, value: string, fields: { label: string; picklist?: string[] }[], request: string,
+  objectLabel = ""): { label: string; value: string } | undefined {
   if (text !== value || !request) return undefined;
   const hits = new Map<string, { label: string; value: string }>();
   for (const f of fields) {
     if (!f.picklist?.includes(value)) continue;
+    // The longest name the request uses: "Lead Status" (the object's word + the org's "Status"), the
+    // label itself, or the label without the object's word ("Rating" for "Account Rating").
     const short = f.label.replace(/^\S+\s+/, "");
-    const label = mentionsWord(request, f.label) ? f.label : short !== f.label && mentionsWord(request, short) ? short : undefined;
+    const label = [objectLabel ? `${objectLabel} ${f.label}` : "", f.label, short !== f.label ? short : ""]
+      .find((n) => !!n && mentionsWord(request, n));
     if (label) hits.set(f.label, { label, value });
   }
   return hits.size === 1 ? [...hits.values()][0] : undefined;
@@ -416,7 +506,7 @@ export function pickedValueField(text: string, value: string, fields: { label: s
 export function fieldChecksOnRecordView(ir: IRSteps, model: {
   pages: { url: string; elements: { role?: string; name?: string }[] }[];
   salesforceOrg?: { objects: {
-    api?: string;
+    api?: string; label?: string;
     fields: { label: string; picklist?: string[] }[]; calculated?: { label: string }[];
     visibilityRules?: { target: string; when: string }[];
   }[] };
@@ -448,6 +538,7 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
    *  value belongs to that object's field ("Rating" is a Lead field too, offering "Hot" as well). */
   let onObject: string | undefined;
   const fieldsOf = (api?: string) => (model.salesforceOrg?.objects ?? []).find((o) => api && o.api === api)?.fields ?? fields;
+  const labelOf = (api?: string) => (model.salesforceOrg?.objects ?? []).find((o) => api && o.api === api)?.label ?? "";
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
     if (s.action === "navigate") {
@@ -486,6 +577,20 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       continue;
     }
     const text = steps[i].target?.text ?? "";
+    // On Details, a visible check of text that is no field of the record (a related record's name, run
+    // 2026-11-10T05-56-59-108Z-b85b16e9: the Case "TB Onboarding" on the Account) is on the Related tab.
+    if (onDetails && s.assertion === "visible" && text && !s.target?.role && !s.target?.field
+      && !fieldLabels.has(text) && !fields.some((f) => f.picklist?.includes(text)) && !isShownValue(text)
+      && !/\bwas (created|saved|deleted)\b/.test(text)) {
+      const n = tabs++ ? `-${tabs}` : "";
+      steps.splice(i, 0,
+        { id: `sf-related${n}`, action: "click", target: { role: "tab", name: "Related" } },
+        { id: `sf-related${n}-wait`, action: "wait", value: "500" });
+      i += 2;
+      onDetails = false;
+      notes.push(`"${text}" is no field of the record -> back to its Related or Activity tab first`);
+      continue;
+    }
     if (FORM_CONTROL.test(s.target?.role ?? "") && s.target?.name) {
       const label = s.target.name.replace(/^\*\s*|\s*\*$/g, "").trim();
       if (valueCheck && namesLabel(s.value!, label)) continue;
@@ -509,12 +614,14 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       steps[i] = { ...s, target: { field: after }, assertion: "text_contains", value: text };
       notes.push(`"${text}" checked right after the "${after}" label -> checks the "${after}" field shows it`);
       continue;
-    } else if (!s.target?.role && text && pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), request)) {
+    } else if (s.target?.field && !text) {
+      // Already a field check (added by requestedFieldChecks): it still reads on the Details tab.
+    } else if (!s.target?.role && text && pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), request, labelOf(onObject))) {
       // A bare picklist value of a field the request names: "verify its Rating shows Hot" became
       // getByText("Hot") on the Related tab (run 2026-11-10T04-32-01-102Z-e4c449e4; a flow set it, on
       // Details). The value is that field's, read inside it, under the label the request uses: the
       // org calls it "Account Rating", the record page and the request say "Rating".
-      const { label, value } = pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), request)!;
+      const { label, value } = pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), request, labelOf(onObject))!;
       steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value };
       notes.push(`"${value}" is an option of the "${label}" field the request names -> checks that field shows it`);
     } else continue;

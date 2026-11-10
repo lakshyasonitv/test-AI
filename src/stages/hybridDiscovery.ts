@@ -35,7 +35,7 @@ import {
 } from "./salesforceOrgLogin.js";
 import { networkSettleEnabled, trackNetwork, waitForDialogFields } from "./networkSettle.js";
 import { currentFrontdoor, openFrontdoor } from "./salesforceFrontdoor.js";
-import { readSalesforceOrgModel, createFormUrls, recordPageUrls, orgSetupFingerprint, objectsNamedIn } from "./salesforceOrgModel.js";
+import { readSalesforceOrgModel, createFormUrls, recordPageUrls, screenFlowUrls, orgSetupFingerprint, objectsNamedIn } from "./salesforceOrgModel.js";
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { volatileIdDetectionEnabled } from "./volatileIds.js";
@@ -620,7 +620,7 @@ export const savedDiscoveriesFor = (instanceHost: string): OrgDiscoverySave[] =>
  */
 export function orgCacheKey(instanceHost: string, url: string, fingerprint: string, org: SalesforceOrgModel, request: string): string {
   const named = objectsNamedIn(request, org).map((o) => o.api).join(",");
-  return `sf-org:${instanceHost}|${url}|${fingerprint}|${named}|${createFormUrls("", org, request).join(",")}${strategySuffix()}`;
+  return `sf-org:${instanceHost}|${url}|${fingerprint}|${named}|${createFormUrls("", org, request).join(",")}${screenFlowUrls("", org, request).join(",")}${strategySuffix()}`;
 }
 
 export const siteCacheKey = (url: string, creds?: Credentials) => {
@@ -1409,6 +1409,8 @@ async function discoverSiteHybridInner(
    */
   /** Create forms queued from the org model (D-63); filled below, read by `snapshot` at call time. */
   const createFormTargets = new Set<string>();
+  /** Screen-flow run pages (Phase B): modelled only once the flow has drawn its first screen. */
+  const flowPageTargets = new Set<string>();
 
   const snapshot = async (
     targetUrl: string, clientRouted = false,
@@ -1425,6 +1427,14 @@ async function discoverSiteHybridInner(
       // A create form's fields arrive after its dialog (run 2026-10-24T13-19-15-522Z-c180fec9).
       if (createFormTargets.has(targetUrl) && !(await waitForDialogFields(page))) {
         console.log(`[hybrid] ${targetUrl}: no form field appeared in a dialog — modelling what is there`);
+      }
+      // A screen flow shows "Loading" first and draws its screen seconds later; modelled at once it was
+      // two elements, "Loading" (run 2026-11-10T05-46-03-797Z-2c150e65), and the case had nothing to use.
+      if (flowPageTargets.has(targetUrl)) {
+        const drawn = await page.locator('input:not([type="hidden"]), textarea, select, button:has-text("Next"), button:has-text("Finish")')
+          .first().waitFor({ state: "visible", timeout: 20_000 }).then(() => true, () => false);
+        if (drawn) await page.waitForTimeout(800);
+        else console.log(`[hybrid] ${targetUrl}: the flow drew no field or Next button in 20 s — modelling what is there`);
       }
       const finalUrl = page.url();
       const appModel = await extractDomModelFromPage(page, finalUrl);
@@ -1735,8 +1745,12 @@ async function discoverSiteHybridInner(
       ? await recordPageUrls(new URL(frontdoorLanding).origin, orgModel, request, frontdoor.apiGet).catch(() => [])
       : [];
     for (const u of recordPages) visited.add(normUrl(u));
-    queue.unshift(...createForms, ...recordPages);
-    const pageBudget = maxPages + createForms.length + recordPages.length;
+    // Phase B: the run page of each screen flow the request names; no link leads a crawl there.
+    const flowPages = frontdoor && frontdoorLanding && orgModel ? screenFlowUrls(new URL(frontdoorLanding).origin, orgModel, request) : [];
+    for (const u of flowPages) { visited.add(normUrl(u)); flowPageTargets.add(u); }
+    queue.unshift(...createForms, ...recordPages, ...flowPages);
+    const pageBudget = maxPages + createForms.length + recordPages.length + flowPages.length;
+    if (flowPages.length) console.log(`[hybrid] ${flowPages.length} screen flow page(s) queued for the flows the request names`);
     if (createForms.length) console.log(`[hybrid] ${createForms.length} create form(s) queued from the org model`);
     if (recordPages.length) console.log(`[hybrid] ${recordPages.length} record page(s) queued for the objects the request names`);
     while (queue.length > 0 && pages.length < pageBudget) {
@@ -1755,7 +1769,10 @@ async function discoverSiteHybridInner(
       const rawPage = snap.appModel.pages[0];
       if (!rawPage || rawPage.elements.length === 0) continue;
       const labeled = await labelPage(rawPage);
-      const page = { ...labeled, url: rawPage.url || snap.finalUrl };
+      // A screen flow's run page redirects to another domain (…--c.scratch.vf.force.com/flow/X); kept under
+      // the URL a test opens (/flow/X on the Lightning origin), or a navigate there was rejected as a
+      // guessed route (run 2026-11-10T05-46-03-797Z-2c150e65).
+      const page = { ...labeled, url: flowPageTargets.has(target) ? target : (rawPage.url || snap.finalUrl) };
       pages.push(page);
 
       if (pages.length < pageBudget) {

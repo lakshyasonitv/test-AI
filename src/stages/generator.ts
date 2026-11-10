@@ -977,8 +977,19 @@ function emitStep(step: Step, baseUrl: string): string {
 
   // The Details tab click salesforceGuidance inserts before a field check: skipped where the record
   // page has no such tab, since it was inserted on a model that did not show the page's tabs.
+  // Leaving Details for the record's own first tab: "Related" on an Account, "Activity" on a Lead or an
+  // Opportunity (run 2026-11-10T06-19-08-130Z-025cfffb: the Lead's Task is under Activity). The side
+  // panel's tabs of those names are already selected, so only the record's own tab is clicked.
+  if (step.action === "click" && /^sf-related/.test(step.id)) {
+    return code + `  for (const name of ["Related", "Activity"]) {\n`
+      + `    const tab = page.getByRole("tab", { name, exact: true });\n`
+      + `    for (let k = 0; k < await tab.count(); k++) {\n`
+      + `      const t = tab.nth(k);\n`
+      + `      if (await t.isVisible() && (await t.getAttribute("aria-selected")) !== "true") await t.click({ timeout: ${ASSERT_TIMEOUT_MS} });\n`
+      + `    }\n  }`;
+  }
   if (step.action === "click" && /^sf-details/.test(step.id)) {
-    return code + `  { const tab = page.getByRole("tab", { name: "Details", exact: true }).first();\n`
+    return code + `  { const tab = page.getByRole("tab", { name: ${q(step.target?.name ?? "Details")}, exact: true }).first();\n`
       + `    if (await tab.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false)) await tab.click({ timeout: ${ASSERT_TIMEOUT_MS} }); }`;
   }
 

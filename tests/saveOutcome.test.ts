@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView, returnToCreatedRecords,
+  requestedFieldChecks,
 } from "../src/stages/salesforceGuidance.js";
 import { recordRef } from "../src/stages/salesforceFrontdoor.js";
 import { readFileSync } from "node:fs";
@@ -120,6 +121,18 @@ describe("deleteOutsideOwnRecord", () => {
     expect(deleteOutsideOwnRecord(ir([nav("/lightning/o/Account/new"), click("Save"), link("Zq Old Co"),
       click("Delete")]))).toMatch(/leaves the record/);
   });
+  // Run 2026-11-10T06-03-48-658Z-ac13a6f8: "create an Account, an Opportunity for it, then delete the
+  // Account" went back to the Account by its record reference and was refused.
+  it("allows going back to a record this case created and saved, by its record reference only", () => {
+    const back = (ref: string) => ir([nav("/lightning/o/Account/new"), click("Save"), nav("/lightning/o/Opportunity/new"), click("Save"),
+      nav(ref), click("Delete"), click("Delete")]);
+    expect(deleteOutsideOwnRecord(back("${record:Account:1}"))).toBeNull();
+    // Never a record it did not create: a second Account it never saved, an object it never created.
+    expect(deleteOutsideOwnRecord(back("${record:Account:2}"))).toMatch(/leaves the record/);
+    expect(deleteOutsideOwnRecord(back("${record:Contact:1}"))).toMatch(/leaves the record/);
+    expect(deleteOutsideOwnRecord(back("/lightning/r/Account/001zq0000000001AAA/view"))).toMatch(/leaves the record/);
+  });
+
   it("runs in toIR before any grounding replay", () => {
     const src = readFileSync(new URL("../src/stages/ir.ts", import.meta.url), "utf8");
     const guard = src.indexOf("deleteOutsideOwnRecord(parsed.data)");
@@ -316,6 +329,13 @@ describe("fieldChecksOnRecordView: text checks of org fields", () => {
       expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zrating" }, value: "Zhot" });
     });
 
+    it("uses the object's word with the label when the request does (\"Lead Status\" for the org's \"Status\")", () => {
+      const lead = { objects: [{ api: "Zlead", label: "Zlead", fields: [{ label: "Zstatus", picklist: ["Zopen", "Zworking"] }] }] };
+      const i = ir([nav("/lightning/o/Zlead/new"), click("Save"), created, valueIs("Zworking")]);
+      fieldChecksOnRecordView(i, { ...model, salesforceOrg: lead }, "verify its Zlead Zstatus shows Zworking");
+      expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zlead Zstatus" }, value: "Zworking" });
+    });
+
     it("is left alone when the request names no field offering it, or two do", () => {
       expect(run(valueIs("Zhot"), "verify Zhot is shown").at(-1)!.target).toEqual({ text: "Zhot" });
       expect(run(valueIs("Zhot"), "verify Zrating and Zq Mood show Zhot").at(-1)!.target).toEqual({ text: "Zhot" });
@@ -442,11 +462,16 @@ describe("returnToCreatedRecords", () => {
     ]);
   });
 
-  it("a delete after going back is still refused (it is not the page the Save opened)", () => {
+  // Was refused until run 2026-11-10T06-03-48-658Z-ac13a6f8 (delete an Account after creating an
+  // Opportunity for it). The way back is a record reference, which resolves only to the record THIS
+  // case's create form saved (SF_RECORD_PAGES_JS: "never one the flow opened"), so it is allowed; the
+  // link it replaced, or any other path to a record, is still refused (deleteOutsideOwnRecord tests).
+  it("a delete after going back by the record reference to its own record is allowed", () => {
     const i = ir([nav("/lightning/o/Zq_Parent__c/new"), fill("Zq Parent Name", "Zq Parent {{uid}}"), click("Save"), created,
       nav("/"), link("back", "Zq Parent {{uid}}"), click("Delete")]);
     returnToCreatedRecords(i);
-    expect(deleteOutsideOwnRecord(i)).toMatch(/leaves the record/);
+    expect(i.steps.some((s) => s.target?.url === "${record:Zq_Parent__c:1}")).toBe(true);
+    expect(deleteOutsideOwnRecord(i)).toBeNull();
   });
 
   it("is wired into IR generation before the field checks", () => {
@@ -522,5 +547,68 @@ describe("fieldChecksOnRecordView: value checks", () => {
     fieldChecksOnRecordView(i, model);
     expect(i.steps.filter((s) => s.target?.field).map((s) => s.value)).toEqual(["$100.00", "$200.00"]);
     expect(i.steps.filter((s) => s.target?.name === "Details").map((s) => s.id)).toEqual(["sf-details", "sf-details-2"]);
+  });
+});
+
+// Run 2026-11-10T05-05-39-201Z-52ce7aed: "verify its Rating shows Hot, its Lead Status shows Working -
+// Contacted, and a Task ... appears": the steps checked only the Task.
+describe("requestedFieldChecks", () => {
+  const org = { objects: [
+    { api: "Zlead", label: "Zlead", fields: [
+      { label: "Zrating", picklist: ["Zhot", "Zcold"] }, { label: "Zstatus", picklist: ["Zopen", "Zworking - Zcontacted"] }, { label: "Zname" }] },
+    { api: "Zacct", label: "Zacct", fields: [{ label: "Zacct Ztype", picklist: ["Zcustomer - Zdirect", "Zprospect"] }] },
+    { api: "Zopp", label: "Zopp", fields: [{ label: "Ztype", picklist: ["Zcustomer - Zdirect"] }] },
+  ] };
+  const created: Step = { id: "o", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+  const textIs = (text: string): Step => ({ id: "t", action: "assert", target: { text }, assertion: "visible" } as Step);
+  const lead = () => ir([nav("/lightning/o/Zlead/new"), click("Save"), created, textIs("Zcall the zhot lead")]);
+
+  it("adds a check for each requested picklist value no step checks, under the request's label", () => {
+    const i = lead();
+    requestedFieldChecks(i, org, "Create a Zlead and verify its Zrating shows Zhot, its Zlead Zstatus shows Zworking - Zcontacted");
+    expect(i.steps.slice(-2)).toEqual([
+      { id: "sf-check-Zrating", action: "assert", target: { field: "Zrating" }, assertion: "text_contains", value: "Zhot" },
+      { id: "sf-check-Zlead-Zstatus", action: "assert", target: { field: "Zlead Zstatus" }, assertion: "text_contains", value: "Zworking - Zcontacted" },
+    ]);
+  });
+
+  it("adds nothing for a value already checked, a value that is no option, or a field only set", () => {
+    const i = ir([nav("/lightning/o/Zlead/new"), click("Save"), created, { id: "v", action: "assert", target: { text: "Zhot" }, assertion: "visible" } as Step]);
+    expect(requestedFieldChecks(i, org, "verify its Zrating shows Zhot")).toEqual([]);
+    expect(requestedFieldChecks(lead(), org, "verify its Zrating shows Zlukewarm")).toEqual([]);
+    expect(requestedFieldChecks(lead(), org, "Create a Zlead with Zrating Zhot and save it")).toEqual([]);
+  });
+
+  it("a field two saved objects share is checked only on the one the request names, which it opens", () => {
+    const both = () => ir([nav("/lightning/o/Zacct/new"), click("Save"), created, nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    const named = both();
+    requestedFieldChecks(named, org, "Create a Zacct and a Zopp, and verify the Zacct's Ztype shows Zcustomer - Zdirect");
+    expect(named.steps.slice(-2).map((s) => s.target)).toEqual([{ url: "${record:Zacct:1}" }, { field: "Ztype" }]);
+    expect(requestedFieldChecks(both(), org, "Create a Zacct and a Zopp, and verify the Ztype shows Zcustomer - Zdirect")).toEqual([]);
+  });
+});
+
+// Run 2026-11-10T05-56-59-108Z-b85b16e9: the Account's Type was checked on Details, then the Case
+// "TB Onboarding" was looked for there; related records show on the Related tab.
+describe("fieldChecksOnRecordView: back to Related for a related record", () => {
+  const model = {
+    pages: [{ url: "https://zq.lightning.force.com/lightning/r/Zacct/001zq0000000001AAA/view", elements: [{ role: "tab", name: "Details" }, { role: "tab", name: "Related" }] }],
+    salesforceOrg: { objects: [{ api: "Zacct", label: "Zacct", fields: [{ label: "Ztype", picklist: ["Zdirect"] }] }] },
+  };
+  const created: Step = { id: "o", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+  const fieldIs: Step = { id: "f", action: "assert", target: { field: "Ztype" }, assertion: "text_contains", value: "Zdirect" } as Step;
+  const textIs = (text: string): Step => ({ id: "t", action: "assert", target: { text }, assertion: "visible" } as Step);
+
+  it("clicks Related before text that is no field of the record, after Details", () => {
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, fieldIs, textIs("Zq Onboarding case")]);
+    fieldChecksOnRecordView(i, model, "verify the Zacct's Ztype shows Zdirect and a case Zq Onboarding case appears");
+    expect(i.steps.map((s) => s.target?.name ?? s.target?.field ?? s.target?.text ?? s.value).slice(-6))
+      .toEqual(["Details", "500", "Ztype", "Related", "500", "Zq Onboarding case"]);
+  });
+
+  it("stays on Details for a field's option or a toast", () => {
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, fieldIs, textIs("Zdirect")]);
+    fieldChecksOnRecordView(i, model, "verify Ztype shows Zdirect");
+    expect(i.steps.some((s) => s.target?.name === "Related")).toBe(false);
   });
 });

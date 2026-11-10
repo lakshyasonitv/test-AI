@@ -681,6 +681,34 @@ describe("vacuousAssertion — assertions that cannot fail", () => {
   });
 });
 
+// Run 2026-11-10T05-24-32-304Z-6d340991: the case deleted an Account with an open Opportunity and
+// expected the flow's error; the IR created both records, skipped the delete and asserted the error.
+describe("missingActions — a delete the case carries out", () => {
+  const deleteCase = tc({
+    title: "Delete a Zq Thing that has an open Zq Child",
+    steps: ["Create a Zq Thing and save it", "Open the Zq Thing record", "Attempt to delete the Zq Thing using its Delete action", "Observe the error"],
+    expected: "An error says it cannot be deleted",
+  });
+  const steps = (...extra: any[]) => ({ meta: {}, steps: [
+    { id: "s1", action: "navigate", target: { url: "/lightning/o/Zq/new" } },
+    { id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq" },
+    { id: "s3", action: "click", target: { role: "button", name: "Save" } },
+    ...extra,
+    { id: "s9", action: "assert", target: { text: "cannot be deleted" }, assertion: "visible" },
+  ] }) as any;
+
+  it("flags an IR with no click on Delete", () => {
+    expect(missingActions(steps(), deleteCase)?.message).toMatch(/never clicks "Delete"/);
+  });
+
+  it("accepts the delete, and ignores a case only about a Delete control being absent", () => {
+    expect(missingActions(steps({ id: "s4", action: "click", target: { role: "button", name: "Delete" } }), deleteCase)?.message ?? "")
+      .not.toMatch(/Delete/);
+    const absent = tc({ title: "t", steps: ["Open the Zq Thing", "Check there is no Delete action for a viewer"], expected: "e" });
+    expect(missingActions(steps(), absent)?.message ?? "").not.toMatch(/Delete/);
+  });
+});
+
 describe("missingActions — the IR must carry out its case", () => {
   const loginCase = tc({
     title: "Log in with valid credentials",

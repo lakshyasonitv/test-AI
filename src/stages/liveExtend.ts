@@ -113,8 +113,19 @@ export async function runStepLive(
     }
     case "click":
       // The spec's own rule (generator.ts): the inserted Details tab click is skipped where there is none.
+      if (/^sf-related/.test(step.id)) {
+        // The spec's own rule (generator.ts): the record's own Related or Activity tab, whichever it has.
+        for (const name of ["Related", "Activity"]) {
+          const tab = page.getByRole("tab", { name, exact: true });
+          for (let k = 0; k < await tab.count(); k++) {
+            const t = tab.nth(k);
+            if (await t.isVisible() && (await t.getAttribute("aria-selected")) !== "true") await t.click();
+          }
+        }
+        return;
+      }
       if (/^sf-details/.test(step.id)) {
-        const tab = page.getByRole("tab", { name: "Details", exact: true }).first();
+        const tab = page.getByRole("tab", { name: step.target?.name ?? "Details", exact: true }).first();
         if (await tab.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false)) await tab.click();
         return;
       }

@@ -22,6 +22,8 @@ import type { SalesforceOrgModel } from "../schema/appModel.js";
 
 /** Objects read per run: the app's own tabs, in nav order. */
 const MAX_OBJECTS = 20; // nav objects + custom objects; the prompt block has its own character ceiling
+/** Values kept per picklist. */
+const MAX_PICKLIST_VALUES = 200;
 /** Fields kept per object (required first, then picklists and lookups, then the rest). */
 const MAX_FIELDS = 40;
 /** Fields every object has and no test is about. */
@@ -84,7 +86,10 @@ async function readObject(apiGet: ApiGet, api: string): Promise<SalesforceOrgMod
       return {
         label: String(f.label ?? f.apiName), api: f.apiName, type: String(f.dataType ?? ""),
         ...(required ? { required: true } : {}),
-        ...(values?.length ? { picklist: values.slice(0, 25) } : {}),
+        // ponytail: 200 values covers every standard picklist (Industry has 30+; 25 cut "Technology" and a
+        // test picked "Biotechnology", run 2026-11-10T05-05-39-201Z-52ce7aed). A huge global value set
+        // would need the prompt to show only the values a request names.
+        ...(values?.length ? { picklist: values.slice(0, MAX_PICKLIST_VALUES) } : {}),
         ...(lookup ? { lookup } : {}),
         ...dependency,
       };
@@ -245,8 +250,18 @@ export function flowEffects(meta: any): string[] {
 
 const RECORD_TRIGGER: Record<string, string> = { Create: "create", Update: "update", CreateAndUpdate: "create or update", Delete: "delete" };
 
-/** Active flows, record-triggered first (what a create or edit case sees happen). Undefined when the org refused. */
-async function readFlows(apiGet: ApiGet): Promise<SalesforceOrgModel["flows"]> {
+/** Whether the request names this flow by its label or API name (whole words). */
+export function flowNamedIn(request: string, r: { Label?: unknown; ApiName?: unknown }): boolean {
+  const words = (s: unknown) => ` ${String(s ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+  const req = words(request);
+  return [r.Label, r.ApiName].some((n) => words(n).trim() !== "" && req.includes(words(n)));
+}
+
+/** Active flows: the ones the request names first (by label or API name), then record-triggered (what a
+ *  create or edit case sees happen). The cap must never drop a flow the request is about: with six
+ *  record-triggered flows in the org, the screen flow a request named was cut and never opened
+ *  (run 2026-11-10T05-00-45-973Z-f92a47fc). Undefined when the org refused. */
+async function readFlows(apiGet: ApiGet, request = ""): Promise<SalesforceOrgModel["flows"]> {
   const q = "SELECT ApiName, Label, ProcessType, TriggerType, RecordTriggerType, TriggerObjectOrEventLabel, ActiveVersionId "
     + "FROM FlowDefinitionView WHERE IsActive = true";
   const res = await tryGet(apiGet, `/query?q=${encodeURIComponent(q)}`);
@@ -260,7 +275,8 @@ async function readFlows(apiGet: ApiGet): Promise<SalesforceOrgModel["flows"]> {
         : r?.ProcessType === "AutoLaunchedFlow" ? "autolaunched" : String(r?.ProcessType ?? "flow").toLowerCase();
       return { r, type };
     })
-    .sort((a: any, b: any) => Number(b.type === "record-triggered") - Number(a.type === "record-triggered"))
+    .sort((a: any, b: any) => Number(flowNamedIn(request, b.r)) - Number(flowNamedIn(request, a.r))
+      || Number(b.type === "record-triggered") - Number(a.type === "record-triggered"))
     .slice(0, MAX_FLOWS);
   const flows: NonNullable<SalesforceOrgModel["flows"]> = [];
   for (const { r, type } of rows) {
@@ -323,7 +339,7 @@ export async function readSalesforceOrgModel(
     if (r?.length) o.validationRules = r;
   }
   const userLocale = await readUserLocale(apiGet);
-  const flows = await readFlows(apiGet);
+  const flows = await readFlows(apiGet, request);
   if (deepDiscoveryEnabled()) {
     const deep = await readDeepFacts(apiGet, { objects, validationRulesRead: rules !== null }, request).catch(() => null);
     if (deep) console.log(`[org model] deep read: ${deep.objects} object(s), ${deep.calls} API call(s), ${(deep.ms / 1000).toFixed(1)} s`);
@@ -387,6 +403,25 @@ export function createFormUrls(lightningOrigin: string, org: Pick<SalesforceOrgM
   const rtForms = ordered.filter((o) => o.createable)
     .flatMap((o) => recordTypesNamedIn(request, o).filter((rt) => !rt.default).map((rt) => recordTypeFormUrl(base(o), rt)));
   return [...rtForms, ...ordered.filter((o) => o.createable).map(base)].slice(0, MAX_CREATE_FORMS);
+}
+
+/** Screen-flow run pages discovery opens per run. */
+const MAX_SCREEN_FLOWS = 2;
+
+/**
+ * Phase B: the run page (`/flow/<ApiName>`) of each screen flow the request names, by its label or
+ * API name. A screen flow has no link or button a crawl follows to it, so without this its screens
+ * were never modelled and the case wrote a plain record create instead of running the flow
+ * (run 2026-11-10T04-44-28-274Z-0142c5f5, "TB New Contact Screen": reported incomplete).
+ */
+export function screenFlowUrls(lightningOrigin: string, org: Pick<SalesforceOrgModel, "flows">, request = ""): string[] {
+  const words = (s: string) => ` ${s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+  const req = words(request);
+  return (org.flows ?? [])
+    .filter((f) => f.type === "screen" && /^\w+$/.test(f.api)
+      && (req.includes(words(f.label)) || req.includes(words(f.api)) || request.includes(`/flow/${f.api}`)))
+    .slice(0, MAX_SCREEN_FLOWS)
+    .map((f) => `${lightningOrigin.replace(/\/$/, "")}/flow/${f.api}`);
 }
 
 /** The create form of one record type: Lightning opens it directly, with no chooser. */
@@ -498,6 +533,7 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
   // Phase B: what runs by itself after a save. A case about it saves the record so the flow's
   // conditions hold, then asserts the effect on the record page (or the record it creates).
   const flows = (org.flows ?? []).map((f) => `- flow "${f.label}" (${f.type}${f.object ? ` on ${f.object}` : ""}${f.when ? `, on ${f.when}` : ""})`
+    + (f.type === "screen" ? `, runs at /flow/${f.api}` : "")
     + (f.effects?.length ? `: ${f.effects.join("; ")}` : ""));
   if (flows.length) lines.push(`automation (active flows; a record-triggered flow's effect shows on the record page after the Save):\n${flows.join("\n")}`);
   let body = lines.join("\n");
