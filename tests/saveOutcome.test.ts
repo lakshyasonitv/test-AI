@@ -659,6 +659,12 @@ describe("deleteNamedRecord", () => {
     expect(deleteOutsideOwnRecord(i)).toBeNull();
   });
 
+  it("reads a casual 'delete an <object>' too (run 2026-11-10T11-00-07-983Z-98a9fe31 deleted the Opportunity)", () => {
+    const i = flow(menu, del, click("Delete"));
+    deleteNamedRecord(i, org, "make sure nobody can delete an Zacct that still has open Zopps");
+    expect(i.steps.at(-4)!.target?.url).toBe("${record:Zacct:1}");
+  });
+
   it("goes back before the menu even with a wait between the menu and Delete", () => {
     const wait = { id: "w", action: "wait", value: "500" } as Step;
     const i = flow(menu, wait, del);

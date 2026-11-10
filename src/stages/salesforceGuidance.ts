@@ -491,7 +491,7 @@ export function deleteNamedRecord(ir: IRSteps, org: { objects: { api: string; la
   if (del < 0 || !org?.objects.length) return notes;
   // The object the request deletes: "delete (that|the|this|its)? <label>".
   const named = [...org.objects].sort((a, b) => b.label.length - a.label.length)
-    .find((o) => new RegExp(`\\bdelet\\w*\\s+(?:that|the|this|its|this same|that same)?\\s*${o.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(request));
+    .find((o) => new RegExp(`\\bdelet\\w*\\s+(?:that|the|this|its|this same|that same|an?)?\\s*${o.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(request));
   if (named) {
     // Records saved before the delete, per object, and the record the flow is on at the delete.
     const saved = new Map<string, number>();

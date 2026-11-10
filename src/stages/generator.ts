@@ -337,12 +337,17 @@ async function sfFieldValue(page, label, expected, mode) {
   let seen = [];
   for (;;) {
     seen = [];
-    let blocks = exact;
-    let n = await exact.count().catch(() => 0);
-    if (n === 0 && (await prefixed.count().catch(() => 0)) === 1) { blocks = prefixed; n = 1; }
-    for (let i = 0; i < n; i++) {
-      const block = blocks.nth(i);
-      if (!(await block.isVisible().catch(() => false))) continue;
+    // Only VISIBLE blocks count: the record page also holds hidden ones (run 2026-11-10T10-49-45-594Z-b4e80721
+    // had a hidden "Status" block, so the visible "Lead Status" was never read).
+    const visible = async (loc) => {
+      const out = [];
+      const n = await loc.count().catch(() => 0);
+      for (let i = 0; i < n; i++) if (await loc.nth(i).isVisible().catch(() => false)) out.push(loc.nth(i));
+      return out;
+    };
+    let blocks = await visible(exact);
+    if (blocks.length === 0) blocks = await visible(prefixed);
+    for (const block of blocks) {
       const lines = ((await block.innerText({ timeout: 1000 }).catch(() => "")) || "").split("\\n");
       if (sfFieldMatch(lines, label, expected, mode)) return;
       seen.push(lines.map((l) => l.trim()).filter(Boolean).join(" / "));
