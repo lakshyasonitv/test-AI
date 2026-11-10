@@ -801,3 +801,29 @@ describe("flowEffectChecks: a checkbox the flow ticks", () => {
     expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zesc" }, value: "true" });
   });
 });
+
+describe("noTokensInRuleFields", () => {
+  it("keeps the unique code out of a field a validation rule reads, and leaves other fields", async () => {
+    const { noTokensInRuleFields } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zlead", label: "Zlead", fields: [{ label: "Zco", api: "Company" }, { label: "Zlast", api: "LastName" }],
+      validationRules: [{ name: "r", message: "m", condition: "LEN(Company) < 3" }] }] };
+    const i = ir([nav("/lightning/o/Zlead/new"), fill("Zco", "AB {{uid}}"), fill("Zlast", "Zq {{uid}}"), click("Save")]);
+    expect(noTokensInRuleFields(i, org as any)).toHaveLength(1);
+    expect(i.steps[1].value).toBe("AB");
+    expect(i.steps[2].value).toBe("Zq {{uid}}");
+  });
+});
+
+describe("pathStageClicks", () => {
+  const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Stage", api: "StageName", picklist: ["Zq One", "Zq Two"] }] }] };
+  it("adds Mark as Current Stage after a path stage click, and requested checks go after it", async () => {
+    const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
+    const pick = { id: "p", action: "select", target: { name: "Stage" }, value: "Zq One" } as Step;
+    const echo = { id: "e", action: "assert", target: { text: "Stage Zq One" }, assertion: "visible" } as Step;
+    const stage = { id: "s9", action: "click", target: { role: "button", name: "Zq Two" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), pick, echo, click("Save"), stage]);
+    expect(pathStageClicks(i, org as any)).toHaveLength(2);
+    expect(i.steps.map((s) => s.target?.name ?? s.value ?? s.id)).toEqual([undefined, "Stage", "Save", "Zq Two", "Mark as Current Stage", "1500"].map((x, k) => k === 0 ? i.steps[0].target?.name ?? i.steps[0].value ?? i.steps[0].id : x));
+    expect(pathStageClicks(i, org as any)).toEqual([]);
+  });
+});

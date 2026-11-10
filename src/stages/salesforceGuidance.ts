@@ -113,6 +113,8 @@ const byStage = (route: Route): Record<GuidanceStage, string> =>
   ({ plan: PLAN(route), cases: CASES(route), ir: IR(route) });
 
 const isSave = (s: Step) => /^save$/i.test(s.target?.name ?? "");
+/** A click that changes the record after its Save: the path's "Mark as Current Stage" / "Mark Stage as Complete". */
+const isRecordChange = (s: Step) => isSave(s) || /^mark (as current stage|stage as complete)$/i.test(s.target?.name ?? "");
 
 /**
  * Backs the two Save rules above. A case that ends on the dialog's Save button alone ("hidden" =
@@ -600,7 +602,7 @@ export function requestedFieldChecks(ir: IRSteps, org: {
       if (s.action === "navigate") {
         f = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null;
         on = recordRefObject(s.target?.url) ?? null;
-      } else if (s.action === "click" && isSave(s)) {
+      } else if (s.action === "click" && isRecordChange(s)) {
         lastSave = i;
         if (f) { on = f; f = null; }
       } else if (s.action === "click" && s.target?.role !== "tab" && !f) on = null;
@@ -624,9 +626,9 @@ export function requestedFieldChecks(ir: IRSteps, org: {
     // Right after the last Save is confirmed (its waits and "was created" check), so the request's other
     // checks that follow (a related Case "on the Account") run on that record too.
     let at = 0;
-    for (let i = ir.steps.length - 1; i >= 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) { at = i + 1; break; }
+    for (let i = ir.steps.length - 1; i >= 0; i--) if (ir.steps[i].action === "click" && isRecordChange(ir.steps[i])) { at = i + 1; break; }
     while (at > 0 && at < ir.steps.length && (ir.steps[at].action === "wait"
-      || (ir.steps[at].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[at].target?.text ?? "")))) at++;
+      || (ir.steps[at].action === "assert" && /\bwas (created|saved)\b|\bstage changed\b/i.test(ir.steps[at].target?.text ?? "")))) at++;
     if (at === 0) at = ir.steps.length;
     const added: Step[] = [];
     // Opened explicitly unless the flow is already on that record there.
@@ -972,4 +974,58 @@ export function requestedTextChecks(ir: IRSteps, org: Pick<SalesforceOrgModel, "
   if (at < 0) return [];
   ir.steps.splice(at, 0, ...missing.map((v) => ({ id: `sf-req-${v}`.replace(/\W+/g, "-").slice(0, 60), action: "assert", target: { text: v }, assertion: "visible" } as Step)));
   return missing.map((v) => `the request verifies "${v}" and no step checked it -> added`);
+}
+
+/**
+ * No run token in a field a validation rule reads: "AB {{uid}}" in Company is 9 characters, so the
+ * "LEN(Company) < 3" case never fired its rule (run 2026-11-10T17-54-37-180Z-5b726e4d). The token makes
+ * a name unique; in a field a rule reads it changes the value the rule judges. Returns notes.
+ */
+export function noTokensInRuleFields(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects"> | undefined): string[] {
+  const notes: string[] = [];
+  let form: string | null = null;
+  for (const s of ir.steps) {
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; continue; }
+    if (!form || s.action !== "fill" || !s.value || !/\{\{uid\}\}/.test(s.value)) continue;
+    const o = org?.objects.find((x) => x.api === form);
+    const name = lineKey(s.target?.name ?? s.target?.label ?? "");
+    const f = o?.fields.find((x) => lineKey(x.label) === name);
+    if (!o || !f) continue;
+    const read = (o.validationRules ?? []).some((r) => r.condition && new RegExp(`\\b${f.api}\\b`).test(r.condition));
+    if (!read) continue;
+    const was = s.value;
+    s.value = s.value.replace(/\s*\{\{uid\}\}\s*/g, " ").trim() || s.value;
+    if (s.value !== was) notes.push(`${s.id}: ${f.label} is read by a validation rule -> no unique code in it ("${s.value}")`);
+  }
+  return notes;
+}
+
+/**
+ * The path, done the way Lightning does it: a click on a stage of the path (a value of the object's
+ * Stage or Status picklist) selects it only; "Mark as Current Stage" moves the record there. Run
+ * 2026-11-10T18-06-01-372Z-8ea242b7 clicked "Proposal/Price Quote" and stopped. Also drops a check of
+ * "<Field> <value>" right after that value was picked on the form ("Stage Prospecting"): the form shows
+ * the value alone, and the pick itself is the check. Returns notes.
+ */
+export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects"> | undefined): string[] {
+  const notes: string[] = [];
+  const stages = new Set((org?.objects ?? []).flatMap((o) => o.fields.filter((f) => /^(StageName|Status)$/.test(f.api)).flatMap((f) => f.picklist ?? [])).map(lineKey));
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    const prev = ir.steps[i - 1];
+    if (s.action === "assert" && s.target?.text && prev && (prev.action === "select" || prev.action === "fill") && prev.value
+      && lineKey(s.target.text) === lineKey(`${prev.target?.name ?? ""} ${prev.value}`)) {
+      notes.push(`${s.id}: "${s.target.text}" repeats the value just picked -> dropped`);
+      ir.steps.splice(i--, 1);
+      continue;
+    }
+    if (s.action !== "click" || !stages.has(lineKey(s.target?.name ?? "")) || !ir.steps.slice(0, i).some((x) => x.action === "click" && isSave(x))) continue;
+    let j = i + 1;
+    while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
+    if (/^mark as current stage$/i.test(ir.steps[j]?.target?.name ?? "")) continue;
+    ir.steps.splice(j, 0, { id: `sf-path-mark-${s.id}`, action: "click", target: { role: "button", name: "Mark as Current Stage" } } as Step,
+      { id: `sf-path-mark-${s.id}-wait`, action: "wait", value: "1500" } as Step);
+    notes.push(`${s.id}: "${s.target?.name}" on the path only selects it -> clicks "Mark as Current Stage"`);
+  }
+  return notes;
 }

@@ -23,7 +23,7 @@ import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import {
   salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
-  returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, requestedTextChecks, valuesFromRequest,
+  returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, requestedTextChecks, noTokensInRuleFields, pathStageClicks, valuesFromRequest,
 } from "./salesforceGuidance.js";
 import { FRONTDOOR_REF, currentFrontdoor, isFrontdoorRef, recordRefObject } from "./salesforceFrontdoor.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
@@ -2935,12 +2935,14 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       for (const r of returnToCreatedRecords(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of valuesFromRequest(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of deleteNamedRecord(parsed.data, currentModel.salesforceOrg, `${sourcePrompt}\n${testCase.title}\n${(testCase.steps ?? []).join("\n")}`)) console.log(`[ir] ${r}`);
+      for (const r of pathStageClicks(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${r}`);
       for (const r of requestedFieldChecks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of flowEffectChecks(parsed.data, currentModel.salesforceOrg, `${sourcePrompt}
 ${testCase.title}
 ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       for (const r of checksOnCreatedRecord(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const f of requestedTextChecks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${f}`);
+      for (const f of noTokensInRuleFields(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
       for (const f of fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt, `${testCase.title}\n${testCase.expected ?? ""}`)) console.log(`[ir] ${f}`);
       for (const f of recordTabClicks(parsed.data)) console.log(`[ir] ${f}`);
       for (const f of inventedRecordLinks(parsed.data)) console.log(`[ir] ${f}`);
