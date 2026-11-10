@@ -311,6 +311,110 @@ body:has(#view-signup.view-active)::before {
   #view-login .auth-card, #view-signup .auth-card { padding: 24px 18px 20px; border-radius: 20px; }
 }
 
+/* ---------- the rest of the app, closer to the landing page ----------
+   Same rules as everything above: paint, size, radius, type only. Every selector here is a
+   class style.css (or app.js markup) already uses; nothing is hidden or shown. */
+
+/* Soft colour behind the whole app, the landing hero's palette at a lower strength. The
+   sign-in screens keep their own stronger version (body:has(#view-login…)::before above,
+   which is more specific and so wins there). */
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(40vmax 40vmax at 8% 0%, rgba(69, 200, 255, .16), transparent 70%),
+    radial-gradient(36vmax 36vmax at 100% 20%, rgba(155, 140, 255, .13), transparent 70%),
+    radial-gradient(38vmax 38vmax at 60% 110%, rgba(63, 214, 194, .11), transparent 70%);
+}
+
+/* Small mono "eyebrow" lines above headings are blue, as on the landing page. */
+.cd-crumb { color: var(--accent); }
+
+/* Status pills: rounded and set in the sans face, like the landing page's chips. The
+   colour classes (.badge-passed, .badge-failed …) are untouched, so a verdict still
+   reads in exactly the same colour. */
+.case-badge, .case-status-icon {
+  font-family: inherit; font-size: .72rem; font-weight: 600; letter-spacing: 0;
+  padding: 4px 11px; border-radius: 999px;
+}
+
+/* Secondary buttons (View, Re-run, Delete, Duplicate, downloads …): white outline buttons
+   like the landing page's "See how it works". */
+.dl-btn, .dl-btn-inline {
+  background: #fff; border: 1px solid var(--line); border-radius: 10px; font-weight: 600;
+  box-shadow: 0 1px 2px rgba(17, 24, 39, .04);
+  transition: border-color .15s, color .15s, transform .2s var(--ease);
+}
+.dl-btn { padding: 8px 13px; }
+.dl-btn-inline { padding: 5px 11px; font-size: .72rem; }
+.dl-btn:hover, .dl-btn-inline:hover {
+  background: #fff; border-color: rgba(var(--accent-rgb), .45); color: var(--accent); transform: translateY(-1px);
+}
+/* a destructive inline button keeps its red text on hover */
+.hrow-del:hover, .history-del:hover { color: var(--failed); border-color: rgba(var(--failed-rgb), .45); }
+/* ...but the tiny Edit / Rename / Delete buttons inside sidebar tree rows keep their own
+   compact size from style.css (the rule above would otherwise win, loading later, and make
+   every project and suite row taller). */
+.tree-project-edit, .tree-project-del, .tree-suite-edit, .tree-suite-del {
+  padding: 1px 6px; font-size: .66rem; box-shadow: none;
+}
+.tree-project-edit:hover, .tree-project-del:hover, .tree-suite-edit:hover, .tree-suite-del:hover { transform: none; }
+.tree-project-del:hover, .tree-suite-del:hover { color: var(--failed); border-color: var(--failed); }
+
+/* History rows: every status pill the same width, so the titles beside them line up. */
+.hrow > .case-badge { min-width: 66px; justify-content: center; }
+
+/* Sidebar "Recent runs": the "n/m tests" count of a suite run had no style of its own and
+   rendered at full body size next to a small label. A small mono chip now. */
+.h-suite {
+  flex: none; font-family: var(--font-mono); font-size: .62rem; color: var(--muted);
+  background: var(--surface-3); border-radius: 999px; padding: 1px 7px;
+}
+.history-item { padding: 4px 6px; transition: background .15s; }
+.history-item:hover { opacity: 1; background: rgba(var(--ink-rgb), .045); }
+
+/* Run page: pipeline stage cards and the verdict banner as landing-style cards. */
+.stages li {
+  border: 1px solid #ececef; border-radius: 16px; padding: 15px 16px;
+  box-shadow: 0 1px 2px rgba(17, 24, 39, .03);
+}
+.stages li.started { box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .08); }
+#verdict { border-radius: 18px; padding: 18px 20px; font-size: 1.02rem; font-weight: 700; }
+#verdict .icon { width: 30px; height: 30px; }
+.test-summary { border-color: #ececef; border-radius: 18px; box-shadow: var(--shadow); }
+
+/* Saved-case editor: steps as clean white fields, the AI "rewrite" button in the brand
+   blue instead of black, and the empty screenshot as the landing page's dotted panel.
+   The verify states (.cd-line.is-ok / .is-bad / .will-verify …) are more specific and
+   still repaint the field, so they keep working. */
+.cd-line-input {
+  height: 38px; border-radius: 11px; background: #fff; font-size: .82rem;
+  transition: border-color .15s, box-shadow .15s;
+}
+.cd-line-input:focus { outline: none; border-color: rgba(var(--accent-rgb), .6); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .13); }
+.cd-ask-btn {
+  height: 40px; border-radius: 12px; background: var(--accent); color: #fff; font-weight: 600;
+  box-shadow: 0 8px 20px -10px rgba(var(--accent-rgb), .8);
+  transition: background .15s, transform .2s var(--ease);
+}
+.cd-ask-btn:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-1px); }
+.cd-add { border-radius: 12px; }
+.cd-add:hover { border-color: rgba(var(--accent-rgb), .5); color: var(--accent); }
+.cd-shot {
+  border-radius: 14px; border-color: var(--line);
+  background: radial-gradient(circle at 1px 1px, rgba(var(--ink-rgb), .09) 1px, transparent 0) 0 0 / 12px 12px, #f6f7f9;
+}
+.cd-shot-img { border-radius: 14px; }
+
+/* Case / suite / project pages: the tab strip (Steps, Script, Runs & versions) as a pill
+   track, with the active tab lifted, like the landing page's chips. */
+.seg { border-radius: 12px; padding: 4px; }
+.seg-btn { border-radius: 9px; font-weight: 500; }
+.seg-btn.active { box-shadow: 0 2px 6px -2px rgba(17, 24, 39, .18); color: var(--text); font-weight: 600; }
+
+/* Cards lift a touch on hover, as the landing page's feature cards do. */
+.panel, .cd-card { transition: box-shadow .25s var(--ease); }
+.cd-card:hover { box-shadow: var(--shadow-lg); }
+
 /* ---------- motion ----------
    A view fades up when it becomes active. This is an animation on the class
    showView() already sets; it never changes which view is shown. */
@@ -320,6 +424,7 @@ body:has(#view-signup.view-active)::before {
 @media (prefers-reduced-motion: reduce) {
   .view.view-active { animation: none; }
   body:has(#view-login.view-active)::before, body:has(#view-signup.view-active)::before { animation: none; }
-  .run-btn, .new-run, .topbar-btn, .template-btn { transition: none; }
-  .run-btn:hover, .new-run:hover, .topbar-btn:hover, .template-btn:hover { transform: none; }
+  .run-btn, .new-run, .topbar-btn, .template-btn, .dl-btn, .dl-btn-inline, .cd-ask-btn { transition: none; }
+  .run-btn:hover, .new-run:hover, .topbar-btn:hover, .template-btn:hover,
+  .dl-btn:hover, .dl-btn-inline:hover, .cd-ask-btn:hover:not(:disabled) { transform: none; }
 }
