@@ -900,3 +900,25 @@ export function salesforceGuidance(stage: GuidanceStage): string {
   if (currentRunTargetApp() !== "salesforce") return "";
   return (currentFrontdoor() ? CONNECTED_GUIDANCE : SALESFORCE_GUIDANCE)[stage];
 }
+
+/**
+ * The record page's own "Related" / "Details" tab, clicked the model's way (by an id such as
+ * "#relatedListTab__item", whose first match can be another page's hidden tab: run
+ * 2026-11-10T15-20-13-222Z-d5d2cd9e timed out there), becomes the record-tab click the passes above
+ * insert, which takes the visible, unselected tab by role and name. Returns notes.
+ */
+export function recordTabClicks(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  for (const s of ir.steps) {
+    if (s.action !== "click" || /^sf-(related|details)/.test(s.id)) continue;
+    const name = (s.target?.name ?? s.target?.text ?? "").trim();
+    const tab = /^(related|details)$/i.exec(name)?.[1].toLowerCase()
+      ?? /#(relatedListsTab|relatedListTab|detailTab)__item/i.exec(s.target?.css ?? "")?.[1].toLowerCase().replace(/^related.*/, "related").replace(/^detail.*/, "details");
+    if (!tab || (s.target?.role && s.target.role !== "tab")) continue;
+    const was = s.id;
+    s.id = `sf-${tab}-${was}`;
+    s.target = { role: "tab", name: tab === "related" ? "Related" : "Details" };
+    notes.push(`${was}: the record's ${s.target.name} tab, by role and name`);
+  }
+  return notes;
+}

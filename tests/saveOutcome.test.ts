@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView, returnToCreatedRecords,
-  requestedFieldChecks, deleteNamedRecord, flowEffectChecks,
+  requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks,
 } from "../src/stages/salesforceGuidance.js";
 import { recordRef } from "../src/stages/salesforceFrontdoor.js";
 import { readFileSync } from "node:fs";
@@ -739,5 +739,16 @@ describe("flowEffectChecks", () => {
       { id: "y", action: "assert", target: { field: "Lead Status" }, assertion: "text_contains", value: "Working" } as Step,
       { id: "z", action: "assert", target: { text: "Zq Call now" }, assertion: "visible" } as Step);
     expect(flowEffectChecks(i, org, "rated hot")).toEqual([]);
+  });
+});
+
+describe("recordTabClicks", () => {
+  it("turns the model's Related/Details tab click into the record-tab click, and leaves other clicks", () => {
+    const i = ir([{ id: "s9", action: "click", target: { css: "#relatedListTab__item" } } as Step,
+      { id: "s10", action: "click", target: { role: "tab", name: "Details" } } as Step, click("Save")]);
+    expect(recordTabClicks(i)).toHaveLength(2);
+    expect(i.steps[0]).toMatchObject({ id: "sf-related-s9", target: { role: "tab", name: "Related" } });
+    expect(i.steps[1]).toMatchObject({ id: "sf-details-s10", target: { role: "tab", name: "Details" } });
+    expect(i.steps[2]).toMatchObject({ id: "c", target: { name: "Save" } });
   });
 });
