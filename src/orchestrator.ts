@@ -15,7 +15,7 @@ import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
-import { cleanupEnabled, cleanupRecords, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
+import { cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
 import { publishRequestedEvents, seedEnabled, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
 import { apiChecks, apiChecksEnabled, caseRunFacts, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
@@ -779,6 +779,10 @@ export async function runPipeline(
     }
     if (cleanupEnabled() && fd?.apiGet && fd.apiDelete && since) {
       const cleanup = await cleanupRecords({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, runRecords(runDir), since);
+      // What a published event's flow made (owned by the Automated Process user), by its run-unique name.
+      const seeded = await cleanupSeeded({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, published.flatMap((p) => p.creates ?? []), since);
+      cleanup.deleted.push(...seeded.deleted);
+      cleanup.failed.push(...seeded.failed);
       save("10-cleanup.json", cleanup);
       console.log(`[cleanup] ${runId}: deleted ${cleanup.deleted.length}, left ${cleanup.skipped.length}, failed ${cleanup.failed.length}`
         + (cleanup.reason ? ` (${cleanup.reason})` : ""));

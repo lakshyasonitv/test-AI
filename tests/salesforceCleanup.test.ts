@@ -155,3 +155,35 @@ describe("the generated spec notes the record pages it reaches (org-connection s
     expect(re.exec("https://zq.lightning.force.com/lightning/o/Account/list")).toBeNull();
   });
 });
+
+describe("custom children and seeded records", () => {
+  it("finds a custom child from the parent's describe and deletes it first", async () => {
+    const KID = "a01zq0000000001AAA";
+    const deleted: string[] = [];
+    const apiGet = vi.fn(async (p: string) => {
+      if (p === "/chatter/users/me") return { id: ME };
+      if (p === "/sobjects/Account/describe") return { childRelationships: [
+        { childSObject: "Zq_Thing__c", field: "Account__c", cascadeDelete: false },
+        { childSObject: "Zq_Gone__c", field: "Account__c", cascadeDelete: true },
+      ] };
+      const q = decodeURIComponent(p);
+      if (q.includes("FROM Zq_Thing__c WHERE Account__c IN")) return { records: [{ Id: KID }] };
+      if (q.includes(" IN (") && !q.includes("WHERE Id IN")) return { records: [] };
+      return { records: [{ Id: OURS }, { Id: KID }] };
+    });
+    await cleanupRecords({ apiGet, apiDelete: vi.fn(async (p: string) => { deleted.push(p); }) }, [{ object: "Account", id: OURS }], new Date());
+    expect(deleted).toEqual([`/sobjects/Zq_Thing__c/${KID}`, `/sobjects/Account/${OURS}`]);
+    expect(apiGet.mock.calls.some(([p]) => decodeURIComponent(String(p)).includes("Zq_Gone__c"))).toBe(false);
+  });
+
+  it("deletes what a published event's flow made, by its run-unique TB Event name only", async () => {
+    const { cleanupSeeded } = await import("../src/stages/salesforceCleanup.js");
+    const deleted: string[] = [];
+    const apiGet = vi.fn(async () => ({ records: [{ Id: OURS }] }));
+    const r = await cleanupSeeded({ apiGet, apiDelete: vi.fn(async (p: string) => { deleted.push(p); }) },
+      [{ object: "Account", name: "TB Event ab12cd" }, { object: "Account", name: "Acme Corp" }], new Date());
+    expect(deleted).toEqual([`/sobjects/Account/${OURS}`]);
+    expect(r.deleted).toHaveLength(1);
+    expect(apiGet).toHaveBeenCalledTimes(1);
+  });
+});

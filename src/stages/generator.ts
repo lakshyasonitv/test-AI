@@ -363,6 +363,16 @@ async function sfFieldValue(page, label, expected, mode) {
     // 2026-11-10T14-58-33-406Z-bf759d61). ponytail: any first word, only when nothing closer is visible.
     if (blocks.length === 0 && /\\s/.test(label)) blocks = await visible(items.filter({ has: page.getByText(label.replace(/^\\S+\\s+/, ""), { exact: true }) }));
     for (const block of blocks) {
+      // A checkbox field shows a tick, no text: "true" / "false" is read from the box itself (a flow's
+      // "sets IsEscalated = true").
+      const box = block.locator('input[type="checkbox"], [role="checkbox"], img[alt="True"], img[alt="False"]').first();
+      if (/^(true|false)$/i.test(expected) && await box.count().catch(() => 0)) {
+        const alt = await box.getAttribute("alt").catch(() => null);
+        const on = alt ? alt === "True" : await box.isChecked().catch(async () => (await box.getAttribute("aria-checked")) === "true");
+        if (String(on) === expected.toLowerCase()) return;
+        seen.push(on ? "ticked" : "not ticked");
+        continue;
+      }
       const lines = ((await block.innerText({ timeout: 1000 }).catch(() => "")) || "").split("\\n");
       if (sfFieldMatch(lines, label, expected, mode)) return;
       seen.push(lines.map((l) => l.trim()).filter(Boolean).join(" / "));

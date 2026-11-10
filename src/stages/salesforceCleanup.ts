@@ -94,9 +94,17 @@ export async function cleanupRecords(session: ApiSession, records: RecordRef[], 
   // 2026-11-10T14-18-09-285Z-5df7a7ee), a Case a flow made on it (2026-11-10T14-03-50-411Z-95d5ec39). Found under the run's own
   // parents, by the same rule (this user, since the run began), and added last so they go first.
   records = [...records];
-  for (const [parent, kids] of Object.entries(CHILDREN)) {
+  for (const parent of [...new Set(records.map((r) => r.object))]) {
     const ids = records.filter((r) => r.object === parent).map((r) => `'${r.id}'`).join(",");
-    if (!ids) continue;
+    if (!ids || !/^[A-Za-z][A-Za-z0-9_]*$/.test(parent)) continue;
+    // The standard children above, plus the parent's CUSTOM children the org does not delete with it
+    // (its describe's childRelationships, cascadeDelete false).
+    const kids: [string, string][] = [...(CHILDREN[parent] ?? [])];
+    try {
+      for (const r of (await session.apiGet(`/sobjects/${parent}/describe`))?.childRelationships ?? []) {
+        if (/__c$/.test(r?.childSObject ?? "") && r?.field && !r.cascadeDelete && !kids.some(([c]) => c === r.childSObject)) kids.push([r.childSObject, r.field]);
+      }
+    } catch { /* no describe: the standard children only */ }
     for (const [child, field] of kids) {
       try {
         const q = `SELECT Id FROM ${child} WHERE ${field} IN (${ids}) AND CreatedById = '${me}' AND CreatedDate >= ${sinceIso}`;
@@ -145,4 +153,31 @@ export function runStartedAt(runId: string): Date | null {
   if (!m) return null;
   const d = new Date(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * What a published platform event's flow made (salesforceSeed.ts): saved by the Automated Process user,
+ * so the "this user created it" rule above never matches it (run 2026-11-10T15-28-58-549Z-d2677d83 left
+ * its "TB Event a8e8ic" Account). Found instead by the run-unique name seeding gave it ("TB Event <uid>"),
+ * created since the run began; nothing without the "TB Event " prefix is ever touched.
+ */
+export async function cleanupSeeded(session: ApiSession, made: { object: string; name: string }[], since: Date): Promise<CleanupReport> {
+  const report: CleanupReport = { deleted: [], skipped: [], failed: [] };
+  const sinceIso = since.toISOString().replace(/\.\d{3}Z$/, "Z");
+  for (const m of made) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(m.object) || !/^TB Event [a-z0-9]{4,12}$/.test(m.name)) continue;
+    let ids: string[] = [];
+    try {
+      const q = `SELECT Id FROM ${m.object} WHERE Name = '${m.name}' AND CreatedDate >= ${sinceIso}`;
+      ids = ((await session.apiGet(`/query?q=${encodeURIComponent(q)}`))?.records ?? []).map((x: any) => String(x?.Id));
+    } catch (err) {
+      report.failed.push({ ref: { object: m.object, id: m.name }, error: (err as Error)?.message ?? String(err) });
+      continue;
+    }
+    for (const id of ids.filter((x) => /^[A-Za-z0-9]{15,18}$/.test(x))) {
+      try { await session.apiDelete(`/sobjects/${m.object}/${id}`); report.deleted.push({ object: m.object, id }); }
+      catch (err) { report.failed.push({ ref: { object: m.object, id }, error: (err as Error)?.message ?? String(err) }); }
+    }
+  }
+  return report;
 }

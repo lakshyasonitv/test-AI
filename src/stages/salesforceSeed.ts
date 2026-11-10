@@ -18,7 +18,11 @@ export function seedEnabled(): boolean {
   return process.env.SALESFORCE_SEED_ENABLED === "true";
 }
 
-export interface Published { flow: string; event: string; values: Record<string, string>; id?: string; error?: string }
+export interface Published {
+  flow: string; event: string; values: Record<string, string>; id?: string; error?: string;
+  /** What the flow makes from it, by its run-unique name: cleanup deletes it (salesforceCleanup.ts). */
+  creates?: { object: string; name: string }[];
+}
 
 type Session = Required<Pick<FrontdoorSession, "apiGet" | "apiPost">>;
 type Flow = NonNullable<SalesforceOrgModel["flows"]>[number];
@@ -64,6 +68,8 @@ export async function publishRequestedEvents(session: Session, org: SalesforceOr
     const find = made ? ` To check it: click the header's "Search..." box, type "${made[2]}", press Enter, and assert the link "${made[2]}" is visible in the results.` : "";
     lines.unshift(`Testbench ALREADY PUBLISHED this event once before the test, through the API (${event}${sent ? ` with ${sent}` : ""}). The case writes NO publish step; it only checks what the flow did.${find}`);
     flow.effects = lines;
+    const all = lines.map((l) => /creates an? (\w+) "([^"]+)"/.exec(l)).filter((m): m is RegExpExecArray => !!m);
+    if (all.length) out[out.length - 1].creates = all.map((m) => ({ object: m[1], name: m[2] }));
   }
   return out;
 }

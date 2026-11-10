@@ -449,8 +449,8 @@ export function flowEffectChecks(ir: IRSteps, org: {
         for (const part of m[1].split(/,\s+(?=\w+ = )/)) {
           const a = /^(\w+) = (.+)$/.exec(part.trim());
           const f = a ? o.fields.find((x) => x.api?.toLowerCase() === a[1].toLowerCase()) : undefined;
-          // ponytail: a checkbox ("IsEscalated = true") shows as a tick, not text: not checked here.
-          if (a && f && !/^(true|false)$/i.test(a[2].trim())) sets.push({ label: f.label, value: a[2].trim() });
+          // A checkbox ("IsEscalated = true") is checked as "true"/"false": the spec reads the box (sfFieldValue).
+          if (a && f) sets.push({ label: f.label, value: /^(true|false)$/i.test(a[2].trim()) ? a[2].trim().toLowerCase() : a[2].trim() });
         }
       }
       const creates = [...effects.matchAll(/creates an? \w+ "([^"]+)"/g)].map((m) => m[1]);
@@ -461,7 +461,10 @@ export function flowEffectChecks(ir: IRSteps, org: {
       const checked = (v: string) => ir.steps.some((s) => s.action === "assert"
         && [s.value, s.target?.text].some((t) => !!t && lineKey(t).includes(lineKey(v))));
       const add: Step[] = [];
-      for (const x of sets) if (!checked(x.value)) add.push({ id: `sf-flow-${x.label}`.replace(/\W+/g, "-"), action: "assert", target: { field: x.label }, assertion: "text_contains", value: x.value } as Step);
+      // "true" is checked per field: any check containing the word must not count for a checkbox.
+      for (const x of sets) if (/^(true|false)$/.test(x.value)
+        ? !ir.steps.some((s) => s.action === "assert" && s.target?.field === x.label)
+        : !checked(x.value)) add.push({ id: `sf-flow-${x.label}`.replace(/\W+/g, "-"), action: "assert", target: { field: x.label }, assertion: "text_contains", value: x.value } as Step);
       for (const c of creates) if (!checked(c)) add.push({ id: `sf-flow-${c}`.replace(/\W+/g, "-").slice(0, 60), action: "assert", target: { text: c }, assertion: "visible" } as Step);
       if (!add.length) continue;
       // After the last Save; on this record (opened by reference when the flow moved on).

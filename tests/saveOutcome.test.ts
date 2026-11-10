@@ -791,3 +791,13 @@ describe("requestedTextChecks", () => {
     expect(requestedTextChecks(i, org as any, "Create a Zacct and verify Ztype shows Zq Direct")).toEqual([]);
   });
 });
+
+describe("flowEffectChecks: a checkbox the flow ticks", () => {
+  it("is checked as true on that field, not skipped", () => {
+    const org = { objects: [{ api: "Zcase", label: "Zcase", fields: [{ label: "Zpri", api: "Zpri" }, { label: "Zesc", api: "IsZesc" }] }],
+      flows: [{ label: "Zq Esc", object: "Zcase", effects: ["only when Zpri = High", "sets IsZesc = true"] }] };
+    const i = ir([nav("/lightning/o/Zcase/new"), { id: "p", action: "select", target: { name: "Zpri" }, value: "High" } as Step, click("Save")]);
+    flowEffectChecks(i, org, "high priority cases should be escalated automatically (Zq Esc)");
+    expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zesc" }, value: "true" });
+  });
+});
