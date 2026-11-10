@@ -376,6 +376,8 @@ export const SalesforceOrgField = z.object({
   required: z.boolean().optional(),
   picklist: z.array(z.string()).optional(),
   lookup: z.string().optional(),
+  /** Phase 1: a lookup filter, as words ("Type = Customer - Direct"): only records that meet it can be picked. */
+  lookupFilter: z.string().optional(),
   /** A dependent picklist: the API name of the picklist (or checkbox) that controls it. */
   controlledBy: z.string().optional(),
   /** Per dependent value, the controlling values (labels) under which it is offered. */

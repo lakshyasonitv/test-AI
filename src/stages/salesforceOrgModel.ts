@@ -600,7 +600,7 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
     const createForm = `/lightning/o/${o.api}/new`;
     const rts = (o.recordTypes ?? []).map((rt) => rt.default
       ? `${rt.name} (default: ${createForm})` : `${rt.name} (${recordTypeFormUrl(createForm, rt)})`);
-    const looks = o.fields.filter((f) => f.lookup).map((f) => `${f.label} -> ${f.lookup}`);
+    const looks = o.fields.filter((f) => f.lookup).map((f) => `${f.label} -> ${f.lookup}${f.lookupFilter ? ` (only records where ${f.lookupFilter})` : ""}`);
     // Session 102 (TEST_DATA_ENABLED): each typed field's type, so values are written for the field
     // ("Phone (Phone)", "Close Date (Date)") rather than guessed from its label.
     const typed = testDataEnabled()

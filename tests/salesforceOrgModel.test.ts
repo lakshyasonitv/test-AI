@@ -439,3 +439,13 @@ describe("ruleBoundaries", () => {
     expect(ruleBoundaries('REGEX(LOWER(Email), ".*\\.(games)")')).toEqual([]);
   });
 });
+
+describe("lookupFilterText", () => {
+  it("reads an active lookup filter as words, and nothing for an inactive one", async () => {
+    const { lookupFilterText } = await import("../src/stages/salesforceOrgDeep.js");
+    expect(lookupFilterText({ lookupFilter: { active: true, filterItems: [{ field: "Account.Type", operation: "equals", value: "Zq Partner" }] } }))
+      .toBe("Account.Type = Zq Partner");
+    expect(lookupFilterText({ lookupFilter: { active: false, filterItems: [{ field: "x", operation: "equals", value: "y" }] } })).toBeUndefined();
+    expect(lookupFilterText({})).toBeUndefined();
+  });
+});
