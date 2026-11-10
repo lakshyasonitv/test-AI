@@ -23,7 +23,7 @@ import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import {
   salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
-  returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, valuesFromRequest,
+  returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, valuesFromRequest,
 } from "./salesforceGuidance.js";
 import { FRONTDOOR_REF, currentFrontdoor, isFrontdoorRef, recordRefObject } from "./salesforceFrontdoor.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
@@ -2942,6 +2942,7 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       for (const r of checksOnCreatedRecord(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const f of fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt, `${testCase.title}\n${testCase.expected ?? ""}`)) console.log(`[ir] ${f}`);
       for (const f of recordTabClicks(parsed.data)) console.log(`[ir] ${f}`);
+      for (const f of inventedRecordLinks(parsed.data)) console.log(`[ir] ${f}`);
     }
     // Data safety, not a flag: grounding replays these steps in the real org, so a delete of a
     // record this case did not create is refused here, before any replay can carry it out.

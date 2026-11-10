@@ -923,3 +923,24 @@ export function recordTabClicks(ir: IRSteps): string[] {
   }
   return notes;
 }
+
+/**
+ * A link to a record the case never typed: its name carries a run token ("TB Onboard Opp for TB Customer
+ * {{uid}}") that no fill or select wrote, so no such record exists and grounding cut the run there (run
+ * 2026-11-10T16-01-17-338Z-d45454da: its checks had all passed). The step and what follows it go, when a check
+ * comes before it; the steps that ran are the case. Returns notes.
+ */
+export function inventedRecordLinks(ir: IRSteps): string[] {
+  const typed = new Set<string>();
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if ((s.action === "fill" || s.action === "select") && s.value) typed.add(s.value.trim());
+    const name = s.target?.name ?? s.target?.text ?? "";
+    if (s.action !== "click" || !/\{\{uid\}\}/.test(name) || typed.has(name.trim())) continue;
+    if (!ir.steps.slice(0, i).some((x) => x.action === "assert")) return [];
+    const cut = ir.steps.length - i;
+    ir.steps.splice(i);
+    return [`${s.id}: a link to "${name}", which no step typed -> dropped with the ${cut - 1} step(s) after it`];
+  }
+  return [];
+}

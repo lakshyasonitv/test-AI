@@ -759,3 +759,19 @@ describe("recordTabClicks", () => {
     expect(i.steps[2]).toMatchObject({ id: "c", target: { name: "Save" } });
   });
 });
+
+describe("inventedRecordLinks", () => {
+  it("drops a link to a record no step typed, and what follows, once a check has run", async () => {
+    const { inventedRecordLinks } = await import("../src/stages/salesforceGuidance.js");
+    const typedName = { id: "f1", action: "fill", target: { name: "Opportunity Name" }, value: "Zq Deal {{uid}}" } as Step;
+    const check = { id: "a1", action: "assert", target: { text: "Zq Onboarding" }, assertion: "visible" } as Step;
+    const invented = { id: "c9", action: "click", target: { role: "link", name: "Zq Other {{uid}}" } } as Step;
+    const i = ir([typedName, click("Save"), check, invented, { ...check, id: "a2" }]);
+    expect(inventedRecordLinks(i)).toHaveLength(1);
+    expect(i.steps.map((s) => s.id)).toEqual(["f1", "c", "a1"]);
+    const typedLink = ir([typedName, check, { ...invented, target: { role: "link", name: "Zq Deal {{uid}}" } }]);
+    expect(inventedRecordLinks(typedLink)).toEqual([]);
+    const noCheckYet = ir([typedName, invented]);
+    expect(inventedRecordLinks(noCheckYet)).toEqual([]);
+  });
+});
