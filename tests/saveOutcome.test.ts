@@ -830,3 +830,27 @@ describe("pathStageClicks", () => {
     expect(pathStageClicks(i, org as any)).toEqual([]);
   });
 });
+
+describe("seededLookups", () => {
+  it("fills an empty lookup to a seeded object with the seeded record's name", async () => {
+    const { seededLookups } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zcon", label: "Zcon", fields: [{ label: "Zacct Name", api: "AccountId", lookup: "Zacct" }] }],
+      seeded: [{ object: "Zacct", label: "Zacct", name: "TB Seed ab12cd" }] };
+    const look = { id: "l", action: "select", target: { role: "combobox", name: "Zacct Name", lookup: true }, value: "" } as Step;
+    const i = ir([nav("/lightning/o/Zcon/new"), look, click("Save")]);
+    expect(seededLookups(i, org as any)).toHaveLength(2);
+    expect(i.steps[1].value).toBe("TB Seed ab12cd");
+    expect(i.steps.at(-1)).toMatchObject({ target: { text: "TB Seed ab12cd" }, assertion: "visible" });
+  });
+});
+
+describe("the record tracker counts a Clone as a new record", () => {
+  it("names the copy by the record it was cloned from", async () => {
+    const { recordPages } = await import("../src/stages/salesforceFrontdoor.js");
+    const t = recordPages();
+    t.visit("https://x.example/lightning/r/Opportunity/006zq0000000001AAA/view");
+    t.visit("https://x.example/lightning/r/Opportunity/006zq0000000001AAA/clone");
+    t.visit("https://x.example/lightning/r/Opportunity/006zq0000000002AAA/view");
+    expect(t.made()).toEqual({ Opportunity: ["006zq0000000002AAA"] });
+  });
+});

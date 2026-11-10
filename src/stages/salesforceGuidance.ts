@@ -1042,3 +1042,39 @@ export function flowOutcome(
   }
   return { sets, creates: [...effects.matchAll(/creates an? \w+ "([^"]+)"/g)].map((m) => m[1]) };
 }
+
+/**
+ * A lookup to an object Testbench seeded (org.seeded, "TB Seed <uid>") picks that record by its exact
+ * name when the step left it empty or named a record the case never typed: run
+ * 2026-11-10T19-01-03-810Z-5876ab5f left "Account Name" empty ("the first suggestion") and passed on
+ * "was created" alone. Returns notes.
+ */
+export function seededLookups(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "seeded"> | undefined): string[] {
+  const notes: string[] = [];
+  if (!org?.seeded?.length) return notes;
+  let form: string | null = null;
+  ir.steps.forEach((s, i) => {
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; return; }
+    if (!form || s.action !== "select" || !s.target?.lookup) return;
+    const o = org.objects.find((x) => x.api === form);
+    const f = o?.fields.find((x) => lineKey(x.label) === lineKey(s.target?.name ?? ""));
+    const seed = org.seeded!.find((r) => r.object === f?.lookup);
+    if (!seed) return;
+    const typedBefore = ir.steps.slice(0, i).some((x) => x.action === "fill" && x.value && s.value && lineKey(x.value) === lineKey(s.value));
+    if (s.value?.trim() && (typedBefore || lineKey(s.value) === lineKey(seed.name))) return;
+    notes.push(`${s.id}: "${s.target.name}" -> the ${seed.label} Testbench seeded, "${seed.name}"`);
+    s.value = seed.name;
+  });
+  // The link is the point: once saved, the new record shows the seeded one's name (a lookup value, on Details).
+  for (const seed of org.seeded) {
+    if (!ir.steps.some((s) => s.action === "select" && s.value === seed.name)) continue;
+    if (ir.steps.some((s) => s.action === "assert" && lineKey(s.target?.text ?? s.value ?? "") === lineKey(seed.name))) continue;
+    let at = -1;
+    for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) at = i + 1;
+    if (at < 0) continue;
+    while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /\bwas created\b/.test(ir.steps[at].target?.text ?? "")))) at++;
+    ir.steps.splice(at, 0, { id: `sf-seed-link`, action: "assert", target: { text: seed.name }, assertion: "visible" } as Step);
+    notes.push(`the new record links the seeded ${seed.label} -> checks "${seed.name}" shows on it`);
+  }
+  return notes;
+}

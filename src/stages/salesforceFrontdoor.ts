@@ -97,7 +97,10 @@ export const SF_RECORD_PAGES_JS = `() => {
   let creating = null;
   return {
     visit: (url) => {
-      const form = /\\/lightning\\/o\\/([A-Za-z][A-Za-z0-9_]*)\\/new\\b/.exec(url);
+      // A create form, or a Clone's (the copy is a new record too; run 2026-11-10T19-03-24-566Z-0071682d
+      // left its "Clone Copy" behind).
+      const form = /\\/lightning\\/o\\/([A-Za-z][A-Za-z0-9_]*)\\/new\\b/.exec(url)
+        || /\\/lightning\\/r\\/([A-Za-z][A-Za-z0-9_]*)\\/[A-Za-z0-9]{15,18}\\/clone\\b/.exec(url);
       if (form) { creating = form[1]; return; }
       const m = /\\/lightning\\/r\\/(?:([A-Za-z][A-Za-z0-9_]*)\\/)?([A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)\\/view\\b/.exec(url);
       if (!m) { creating = null; return; }
