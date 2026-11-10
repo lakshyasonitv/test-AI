@@ -85,3 +85,48 @@ export function withoutPublishSteps<C extends { steps: string[] }>(cases: C[]): 
     return { ...c, steps: checked ? c.steps.slice(0, at) : c.steps.filter((_, i) => i !== at) };
   });
 }
+
+/**
+ * Phase D gap "pre-made records": a request about an EXISTING record ("Create a Contact for an existing
+ * Account") gets that record made through the API before the cases, named "TB Seed <uid>", every required
+ * field filled by its type. It is marked as viewed (SOQL FOR VIEW) so a lookup finds it in Recent Items
+ * before the search index has it. Written into the org model (org.seeded) for the case writer; cleanup
+ * deletes it by that name. A required lookup it cannot fill = not seeded.
+ */
+export async function seedExistingRecords(session: Session, org: SalesforceOrgModel, request: string, uid: string): Promise<{ object: string; name: string; id?: string; error?: string }[]> {
+  const out: { object: string; name: string; id?: string; error?: string }[] = [];
+  const asked = [...request.matchAll(/\b(?:an?\s+)?(?:existing|pre-?existing|already existing)\s+([A-Za-z][\w ]{1,40}?)(?=\b(?:\s+(?:and|with|that|for|then|to|in|on)\b|[.,;]|$))/gi)].map((m) => m[1].trim().toLowerCase());
+  for (const want of new Set(asked)) {
+    const o = org.objects.find((x) => [x.label, x.labelPlural, x.api].some((n) => n?.toLowerCase() === want || n?.toLowerCase() === want.replace(/s$/, "")));
+    if (!o || !/^[A-Za-z][A-Za-z0-9_]*$/.test(o.api) || out.some((r) => r.object === o.api)) continue;
+    const name = `TB Seed ${uid}`;
+    const body: Record<string, unknown> = {};
+    let blocked = "";
+    for (const f of o.fields.filter((x) => x.required)) {
+      if (f.lookup) { blocked = `its required lookup ${f.label}`; break; }
+      body[f.api] = /^(string|textarea)$/i.test(f.type) ? name
+        : /picklist/i.test(f.type) ? f.picklist?.[0]
+        : /email/i.test(f.type) ? `tb+${uid}@example.com`
+        : /phone/i.test(f.type) ? "4155550100"
+        : /^(double|currency|percent|int|long)$/i.test(f.type) ? 1
+        : /^date$/i.test(f.type) ? new Date().toISOString().slice(0, 10)
+        : /boolean/i.test(f.type) ? false : name;
+    }
+    // Name fields the org fills itself (Contact's LastName is required; Account's Name too): one at least.
+    if (!Object.values(body).includes(name)) {
+      const nameField = o.fields.find((x) => /^(Name|LastName|Subject)$/.test(x.api));
+      if (nameField) body[nameField.api] = name;
+    }
+    if (blocked) { out.push({ object: o.api, name, error: `not seeded: ${blocked}` }); continue; }
+    try {
+      const res = await session.apiPost(`/sobjects/${o.api}/`, body);
+      const id = typeof res?.id === "string" ? res.id : undefined;
+      if (id) await session.apiGet(`/query?q=${encodeURIComponent(`SELECT Id FROM ${o.api} WHERE Id = '${id}' FOR VIEW`)}`).catch(() => null);
+      out.push({ object: o.api, name, ...(id ? { id } : {}) });
+      (org.seeded ??= []).push({ object: o.api, label: o.label, name });
+    } catch (err) {
+      out.push({ object: o.api, name, error: (err as Error)?.message ?? String(err) });
+    }
+  }
+  return out;
+}

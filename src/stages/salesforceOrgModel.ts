@@ -647,6 +647,8 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
   let body = lines.join("\n");
   if (body.length > maxChars) body = body.slice(0, maxChars).replace(/\n[^\n]*$/, "") + "\n- (more objects not shown)";
   if (flowsBlock) body += `\n${flowsBlock}`;
+  // Phase D: records made through the API before the test, for a case about an "existing" one.
+  if (org.seeded?.length) body += `\nrecords Testbench ALREADY CREATED for this test, through the API (use them as the "existing" record the request means; pick them in a lookup by this exact name; never create them again): ${org.seeded.map((r) => `${r.label} "${r.name}"`).join(", ")}`;
   return `
 
 Salesforce org model (read from the org's own metadata API${org.app ? ` for the app "${org.app}"` : ""} — authoritative):

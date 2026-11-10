@@ -16,7 +16,7 @@ import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
 import { cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
-import { publishRequestedEvents, seedEnabled, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
+import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
 import { apiChecks, apiChecksEnabled, caseRunFacts, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
@@ -422,12 +422,16 @@ export async function runPipeline(
     // org model then says what was published, so the cases check its outcome.
     const seedFd = currentFrontdoor();
     let published: Published[] = [];
+    let seededRecords: Awaited<ReturnType<typeof seedExistingRecords>> = [];
     if (seedEnabled() && seedFd?.apiGet && seedFd.apiPost && appModel.salesforceOrg) {
       published = await publishRequestedEvents({ apiGet: seedFd.apiGet, apiPost: seedFd.apiPost },
         appModel.salesforceOrg, prompt, Math.random().toString(36).slice(2, 8));
-      if (published.length) {
-        save("03-seed.json", published);
+      seededRecords = await seedExistingRecords({ apiGet: seedFd.apiGet, apiPost: seedFd.apiPost },
+        appModel.salesforceOrg, prompt, Math.random().toString(36).slice(2, 8));
+      if (published.length || seededRecords.length) {
+        save("03-seed.json", { published, records: seededRecords });
         for (const p of published) console.log(`[seed] ${p.event}: ${p.error ? `not published (${p.error})` : `published for "${p.flow}"`}`);
+        for (const r of seededRecords) console.log(`[seed] ${r.object} "${r.name}": ${r.error ?? "created"}`);
       }
     }
 
@@ -778,7 +782,9 @@ export async function runPipeline(
       console.log(`[api-checks] ${runId}: ${all.filter((x) => x.ok).length}/${all.length} field values match the org`);
     }
     if (cleanupEnabled() && fd?.apiGet && fd.apiDelete && since) {
-      const cleanup = await cleanupRecords({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, runRecords(runDir), since);
+      const cleanup = await cleanupRecords({ apiGet: fd.apiGet, apiDelete: fd.apiDelete },
+        // Seeded parents first, so the reverse order deletes them after what the test made under them.
+        [...seededRecords.filter((r) => r.id).map((r) => ({ object: r.object, id: r.id! })), ...runRecords(runDir)], since);
       // What a published event's flow made (owned by the Automated Process user), by its run-unique name.
       const seeded = await cleanupSeeded({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, published.flatMap((p) => p.creates ?? []), since);
       cleanup.deleted.push(...seeded.deleted);

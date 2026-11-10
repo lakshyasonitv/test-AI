@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { requestedEventFlows, publishRequestedEvents, seedEnabled } from "../src/stages/salesforceSeed.js";
+import { requestedEventFlows, publishRequestedEvents, seedEnabled, seedExistingRecords } from "../src/stages/salesforceSeed.js";
 import { flowEffects } from "../src/stages/salesforceOrgModel.js";
 
 // Phase D seeding: a platform-event flow's event, published once through the API. Canary names (Zq).
@@ -68,5 +68,38 @@ describe("withoutPublishSteps", () => {
     expect(withoutPublishSteps([goThenPublish])[0].steps).toEqual(["Go to the home page.", "Search for \"TB Event x\"."]);
     const none = { steps: ["Search for x."] };
     expect(withoutPublishSteps([none])[0]).toBe(none);
+  });
+});
+
+describe("seedExistingRecords", () => {
+  const model = () => ({ objects: [
+    { api: "Zq_Acct__c", label: "Zq Acct", labelPlural: "Zq Accts", fields: [
+      { label: "Zq Name", api: "Name", type: "string", required: true },
+      { label: "Zq Tier", api: "Tier__c", type: "picklist", required: true, picklist: ["Gold", "Silver"] },
+      { label: "Zq Note", api: "Note__c", type: "string" }] },
+    { api: "Zq_Kid__c", label: "Zq Kid", fields: [{ label: "Zq Parent", api: "Parent__c", type: "reference", required: true, lookup: "Zq_Acct__c" }] },
+  ], validationRulesRead: true } as any);
+
+  it("creates the existing record the request means, marks it viewed, and tells the case writer", async () => {
+    const posts: any[] = [];
+    const gets: string[] = [];
+    const org = model();
+    const out = await seedExistingRecords({ apiGet: vi.fn(async (p: string) => { gets.push(decodeURIComponent(p)); return {}; }),
+      apiPost: vi.fn(async (p: string, b: unknown) => { posts.push([p, b]); return { id: "a00zq0000000001AAA" }; }) },
+      org, "Create a Zq Kid for an existing Zq Acct and verify the link", "ab12cd");
+    expect(posts).toEqual([["/sobjects/Zq_Acct__c/", { Name: "TB Seed ab12cd", Tier__c: "Gold" }]]);
+    expect(gets[0]).toContain("FOR VIEW");
+    expect(out).toEqual([{ object: "Zq_Acct__c", name: "TB Seed ab12cd", id: "a00zq0000000001AAA" }]);
+    expect(org.seeded).toEqual([{ object: "Zq_Acct__c", label: "Zq Acct", name: "TB Seed ab12cd" }]);
+    const { orgModelForCases } = await import("../src/stages/salesforceOrgModel.js");
+    expect(orgModelForCases(org)).toContain('ALREADY CREATED for this test, through the API');
+  });
+
+  it("seeds nothing without 'existing', and refuses a record with a required lookup", async () => {
+    const apiPost = vi.fn();
+    expect(await seedExistingRecords({ apiGet: vi.fn(), apiPost }, model(), "Create a Zq Acct", "x")).toEqual([]);
+    const out = await seedExistingRecords({ apiGet: vi.fn(), apiPost }, model(), "Open an existing Zq Kid", "x");
+    expect(out[0].error).toMatch(/required lookup Zq Parent/);
+    expect(apiPost).not.toHaveBeenCalled();
   });
 });
