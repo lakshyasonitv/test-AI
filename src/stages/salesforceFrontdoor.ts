@@ -106,9 +106,10 @@ export const SF_RECORD_PAGES_JS = `() => {
       seen.add(m[2]);
     },
     created: (object, n) => (made[object] || [])[n - 1] || null,
+    made: () => made,
   };
 }`;
-export interface RecordPages { visit(url: string): void; created(object: string, n: number): string | null }
+export interface RecordPages { visit(url: string): void; created(object: string, n: number): string | null; made(): Record<string, string[]> }
 export const recordPages = new Function(`return (${SF_RECORD_PAGES_JS});`)() as () => RecordPages;
 
 const frontdoorContext = new AsyncLocalStorage<FrontdoorSession | null>();

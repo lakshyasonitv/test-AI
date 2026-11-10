@@ -16,6 +16,7 @@ import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
 import { cleanupEnabled, cleanupRecords, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
+import { apiChecks, apiChecksEnabled, caseRunFacts, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -743,6 +744,21 @@ export async function runPipeline(
     // the run: a cleanup that cannot run says why in 10-cleanup.json.
     const fd = currentFrontdoor();
     const since = runStartedAt(runId);
+    // Phase D (SALESFORCE_API_CHECKS_ENABLED, default off): each record a case created, read through
+    // the API and compared with what its form typed. Before cleanup, which deletes those records.
+    const sfOrg = appModel.salesforceOrg;
+    if (apiChecksEnabled() && fd?.apiGet && sfOrg) {
+      const checks: { case: string; checks: ApiCheck[] }[] = [];
+      for (const c of runCases(runDir)) {
+        const facts = caseRunFacts(c.results);
+        const typed = typedValues(c.ir, sfOrg);
+        if (!facts || !typed.length) continue;
+        checks.push({ case: path.basename(c.caseDir), checks: await apiChecks(fd.apiGet, typed, facts.created, facts.ctx) });
+      }
+      save("11-api-checks.json", checks);
+      const all = checks.flatMap((c) => c.checks);
+      console.log(`[api-checks] ${runId}: ${all.filter((x) => x.ok).length}/${all.length} field values match the org`);
+    }
     if (cleanupEnabled() && fd?.apiGet && fd.apiDelete && since) {
       const cleanup = await cleanupRecords({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, runRecords(runDir), since);
       save("10-cleanup.json", cleanup);

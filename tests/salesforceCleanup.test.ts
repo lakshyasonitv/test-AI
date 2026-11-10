@@ -80,6 +80,27 @@ describe("cleanupRecords", () => {
   });
 });
 
+describe("cleanup order", () => {
+  it("deletes children before parents: objects in the reverse of the order the run reached them", async () => {
+    const OPP = "006zq0000000001AAA";
+    const { session, deleted } = fakeOrg({ confirmed: [OURS, OPP] });
+    await cleanupRecords(session, [{ object: "Account", id: OURS }, { object: "Opportunity", id: OPP }], new Date());
+    expect(deleted).toEqual([`/sobjects/Opportunity/${OPP}`, `/sobjects/Account/${OURS}`]);
+  });
+});
+
+describe("record pages with no object in the URL", () => {
+  it("are named by the create form before them", async () => {
+    const { recordPages } = await import("../src/stages/salesforceFrontdoor.js");
+    const t = recordPages();
+    t.visit("https://x.example/lightning/o/Account/new");
+    t.visit("https://x.example/lightning/r/Account/001zq0000000001AAA/view");
+    t.visit("https://x.example/lightning/o/Opportunity/new");
+    t.visit("https://x.example/lightning/r/006zq0000000001AAA/view");
+    expect(t.made()).toEqual({ Account: ["001zq0000000001AAA"], Opportunity: ["006zq0000000001AAA"] });
+  });
+});
+
 describe("the run's start and the flag", () => {
   it("reads the start from the run id", () => {
     expect(runStartedAt("2026-10-26T06-15-41-827Z-23c2fab6")?.toISOString()).toBe("2026-10-26T06:15:41.827Z");

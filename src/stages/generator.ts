@@ -275,15 +275,27 @@ async function assertGone(loc, namedAs) {
 // Record pages reached (Phase D cleanup, org-connection specs only)
 // -----------------------------------------------------------------------------
 
+// After a Save, Lightning often lands on /lightning/r/<Id>/view with no object in the URL: the record
+// tracker names it from the create form before it (run 2026-11-10T12-38-44-987Z-c98c9e72 recorded the
+// Account it went back to and missed the Opportunity it created). Insertion order = creation order,
+// which cleanup reverses so children go before their parents.
 const SF_RECORDS_HELPER = `const SF_RECORDS = new Set();
+let SF_CREATED = {};
 test.beforeEach(({ page }) => {
+  const made = (${SF_RECORD_PAGES_JS})();
+  SF_CREATED = made.made();
   page.on("framenavigated", (frame) => {
     if (frame !== page.mainFrame()) return;
+    made.visit(frame.url());
+    for (const [object, ids] of Object.entries(made.made())) for (const id of ids) SF_RECORDS.add(object + "/" + id);
     const m = /\\/lightning\\/r\\/([A-Za-z][A-Za-z0-9_]*)\\/([A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)\\/view/.exec(frame.url());
     if (m) SF_RECORDS.add(m[1] + "/" + m[2]);
   });
 });
-test.afterEach(() => { test.info().annotations.push({ type: "sf-records", description: JSON.stringify([...SF_RECORDS]) }); });`;
+test.afterEach(() => {
+  test.info().annotations.push({ type: "sf-records", description: JSON.stringify([...SF_RECORDS]) });
+  test.info().annotations.push({ type: "sf-created", description: JSON.stringify(SF_CREATED) });
+});`;
 
 /**
  * Phase A: "go back to the <n>th <Object> record this test created" (recordRef). The records this

@@ -84,7 +84,9 @@ export async function cleanupRecords(session: ApiSession, records: RecordRef[], 
   const sinceIso = since.toISOString().replace(/\.\d{3}Z$/, "Z");
   const byObject = new Map<string, RecordRef[]>();
   for (const r of records) byObject.set(r.object, [...(byObject.get(r.object) ?? []), r]);
-  for (const [object, refs] of byObject) {
+  // Children before parents: objects in the reverse of the order the run first reached them (the
+  // Opportunity made after its Account goes first; TB Account Delete Guard refuses the other order).
+  for (const [object, refs] of [...byObject].reverse()) {
     let confirmed = new Set<string>();
     try {
       const ids = refs.map((r) => `'${r.id}'`).join(",");
