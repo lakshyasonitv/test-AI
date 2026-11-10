@@ -26,7 +26,8 @@ describe("publishRequestedEvents", () => {
     const o = org();
     const out = await publishRequestedEvents({ apiGet, apiPost }, o as any, "test the Zq Event Make Acct flow", "ab12cd");
     expect(apiPost).toHaveBeenCalledWith("/sobjects/Zq_Ping__e/", { Note__c: "TB Event ab12cd" });
-    expect(out).toEqual([{ flow: "Zq Event Make Acct", event: "Zq_Ping__e", values: { Note__c: "TB Event ab12cd" }, id: "e00zq" }]);
+    expect(out).toEqual([{ flow: "Zq Event Make Acct", event: "Zq_Ping__e", values: { Note__c: "TB Event ab12cd" }, id: "e00zq",
+      creates: [{ object: "Account", name: "TB Event ab12cd" }] }]);
     expect(o.flows[0].effects).toEqual([
       expect.stringContaining('ALREADY PUBLISHED this event once before the test, through the API (Zq_Ping__e with Note__c = "TB Event ab12cd"). The case writes NO publish step; it only checks what the flow did. To check it: click the header\'s "Search..." box, type "TB Event ab12cd"'),
       'creates a Account "TB Event ab12cd"',
