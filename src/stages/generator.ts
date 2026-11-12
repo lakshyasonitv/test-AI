@@ -7,7 +7,7 @@ import {
 import { isAuthTriggeringStep } from "./authSettle.js";
 import { isEnvValueRef } from "./credentials.js";
 import { FRONTDOOR_ENV, isFrontdoorRef, recordRefIndex, recordRefObject, SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
-import { hasRunToken, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
+import { hasRunToken, isNamedToggle, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
 
 const q = (s: string) => JSON.stringify(s);
 
@@ -275,15 +275,27 @@ async function assertGone(loc, namedAs) {
 // Record pages reached (Phase D cleanup, org-connection specs only)
 // -----------------------------------------------------------------------------
 
+// After a Save, Lightning often lands on /lightning/r/<Id>/view with no object in the URL: the record
+// tracker names it from the create form before it (run 2026-11-10T12-38-44-987Z-c98c9e72 recorded the
+// Account it went back to and missed the Opportunity it created). Insertion order = creation order,
+// which cleanup reverses so children go before their parents.
 const SF_RECORDS_HELPER = `const SF_RECORDS = new Set();
+let SF_CREATED = {};
 test.beforeEach(({ page }) => {
+  const made = (${SF_RECORD_PAGES_JS})();
+  SF_CREATED = made.made();
   page.on("framenavigated", (frame) => {
     if (frame !== page.mainFrame()) return;
+    made.visit(frame.url());
+    for (const [object, ids] of Object.entries(made.made())) for (const id of ids) SF_RECORDS.add(object + "/" + id);
     const m = /\\/lightning\\/r\\/([A-Za-z][A-Za-z0-9_]*)\\/([A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)\\/view/.exec(frame.url());
     if (m) SF_RECORDS.add(m[1] + "/" + m[2]);
   });
 });
-test.afterEach(() => { test.info().annotations.push({ type: "sf-records", description: JSON.stringify([...SF_RECORDS]) }); });`;
+test.afterEach(() => {
+  test.info().annotations.push({ type: "sf-records", description: JSON.stringify([...SF_RECORDS]) });
+  test.info().annotations.push({ type: "sf-created", description: JSON.stringify(SF_CREATED) });
+});`;
 
 /**
  * Phase A: "go back to the <n>th <Object> record this test created" (recordRef). The records this
@@ -327,16 +339,40 @@ export const SF_FIELD_MATCH_JS = `(lines, label, expected, mode) => {
  */
 const SF_FIELD_HELPER = `const sfFieldMatch = ${SF_FIELD_MATCH_JS};
 async function sfFieldValue(page, label, expected, mode) {
-  const blocks = page.locator("records-record-layout-item, records-highlights-details-item, .slds-form-element")
-    .filter({ has: page.getByText(label, { exact: true }) });
+  const items = page.locator("records-record-layout-item, records-highlights-details-item, .slds-form-element");
+  const exact = items.filter({ has: page.getByText(label, { exact: true }) });
+  // The page may put the object's word in front of the org's label ("Lead Status" for Lead's "Status"):
+  // used only when no field has the label itself, and only when exactly one field reads that way.
+  const esc = label.replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&");
+  const prefixed = items.filter({ has: page.getByText(new RegExp("^\\\\S+ " + esc + "$")) });
   const deadline = Date.now() + ${ASSERT_TIMEOUT_MS};
   let seen = [];
   for (;;) {
     seen = [];
-    const n = await blocks.count().catch(() => 0);
-    for (let i = 0; i < n; i++) {
-      const block = blocks.nth(i);
-      if (!(await block.isVisible().catch(() => false))) continue;
+    // Only VISIBLE blocks count: the record page also holds hidden ones (run 2026-11-10T10-49-45-594Z-b4e80721
+    // had a hidden "Status" block, so the visible "Lead Status" was never read).
+    const visible = async (loc) => {
+      const out = [];
+      const n = await loc.count().catch(() => 0);
+      for (let i = 0; i < n; i++) if (await loc.nth(i).isVisible().catch(() => false)) out.push(loc.nth(i));
+      return out;
+    };
+    let blocks = await visible(exact);
+    if (blocks.length === 0) blocks = await visible(prefixed);
+    // The other way round: the case says "Account Type", the page says "Type" (run
+    // 2026-11-10T14-58-33-406Z-bf759d61). ponytail: any first word, only when nothing closer is visible.
+    if (blocks.length === 0 && /\\s/.test(label)) blocks = await visible(items.filter({ has: page.getByText(label.replace(/^\\S+\\s+/, ""), { exact: true }) }));
+    for (const block of blocks) {
+      // A checkbox field shows a tick, no text: "true" / "false" is read from the box itself (a flow's
+      // "sets IsEscalated = true").
+      const box = block.locator('input[type="checkbox"], [role="checkbox"], img[alt="True"], img[alt="False"]').first();
+      if (/^(true|false)$/i.test(expected) && await box.count().catch(() => 0)) {
+        const alt = await box.getAttribute("alt").catch(() => null);
+        const on = alt ? alt === "True" : await box.isChecked().catch(async () => (await box.getAttribute("aria-checked")) === "true");
+        if (String(on) === expected.toLowerCase()) return;
+        seen.push(on ? "ticked" : "not ticked");
+        continue;
+      }
       const lines = ((await block.innerText({ timeout: 1000 }).catch(() => "")) || "").split("\\n");
       if (sfFieldMatch(lines, label, expected, mode)) return;
       seen.push(lines.map((l) => l.trim()).filter(Boolean).join(" / "));
@@ -977,8 +1013,19 @@ function emitStep(step: Step, baseUrl: string): string {
 
   // The Details tab click salesforceGuidance inserts before a field check: skipped where the record
   // page has no such tab, since it was inserted on a model that did not show the page's tabs.
+  // Leaving Details for the record's own first tab: "Related" on an Account, "Activity" on a Lead or an
+  // Opportunity (run 2026-11-10T06-19-08-130Z-025cfffb: the Lead's Task is under Activity). The side
+  // panel's tabs of those names are already selected, so only the record's own tab is clicked.
+  if (step.action === "click" && /^sf-related/.test(step.id)) {
+    return code + `  for (const name of ["Related", "Activity"]) {\n`
+      + `    const tab = page.getByRole("tab", { name, exact: true });\n`
+      + `    for (let k = 0; k < await tab.count(); k++) {\n`
+      + `      const t = tab.nth(k);\n`
+      + `      if (await t.isVisible() && (await t.getAttribute("aria-selected")) !== "true") await t.click({ timeout: ${ASSERT_TIMEOUT_MS} });\n`
+      + `    }\n  }`;
+  }
   if (step.action === "click" && /^sf-details/.test(step.id)) {
-    return code + `  { const tab = page.getByRole("tab", { name: "Details", exact: true }).first();\n`
+    return code + `  { const tab = page.getByRole("tab", { name: ${q(step.target?.name ?? "Details")}, exact: true }).first();\n`
       + `    if (await tab.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false)) await tab.click({ timeout: ${ASSERT_TIMEOUT_MS} }); }`;
   }
 
@@ -1014,6 +1061,11 @@ function emitStep(step: Step, baseUrl: string): string {
 
     case "click": {
       const t = step.target!;
+      // A click on a named radio or checkbox ticks it (see "check"): its label intercepts a plain click.
+      if (isNamedToggle({ ...t, css: undefined })) {
+        code += `  await page.getByRole(${q(t.role!)}, { name: ${q(t.name!)}, exact: true }).first().check({ force: true, timeout: ${ASSERT_TIMEOUT_MS} });`;
+        break;
+      }
       // safeClick is the role+name path only — it calls getByRole under the hood, and
       // Playwright rejects an empty role outright ("Role must not be empty"). A target
       // carrying only text/label/placeholder/testId is legitimate (dynamic content the
@@ -1057,7 +1109,17 @@ function emitStep(step: Step, baseUrl: string): string {
       break;
 
     case "check":
-      code += `  await ${locator(step.target!, "check")}.check({ timeout: ${ASSERT_TIMEOUT_MS} });`;
+      // A named radio or checkbox with no selector is found by its role and name. The generic field
+      // lookup searched open dialogs near the text, and a screen flow's page (which has a modal-style
+      // container) never matched (run 2026-11-10T08-43-46-389Z-e1f1d89b). force: Lightning draws its
+      // own control over the input, and its label "intercepts pointer events".
+      code += isNamedToggle(step.target)
+        ? `  await page.getByRole(${q(step.target!.role!)}, { name: ${q(step.target!.name!)}, exact: true }).first().check({ force: true, timeout: ${ASSERT_TIMEOUT_MS} });`
+        // A styled box over the input "intercepts pointer events" (run 2026-11-10T19-37-34-634Z-c2d480b3,
+        // the Case form's "Send notification email to contact"): that one error, and only it, retries forced.
+        // Forced, the click still landed on the drawn box and "did not change its state" (run
+        // 2026-11-10T20-48-38-282Z-c4075a7d): the input's own DOM click toggles it, then it must read checked.
+        : `  { const box = ${locator(step.target!, "check")};\n    await box.check({ timeout: ${ASSERT_TIMEOUT_MS} }).catch(async (e) => {\n      if (!/intercepts pointer events|did not change its state/.test(String(e))) throw e;\n      if (!(await box.isChecked())) await box.evaluate((el) => el.click());\n      if (!(await box.isChecked())) throw e;\n    }); }`;
       break;
 
     case "press":

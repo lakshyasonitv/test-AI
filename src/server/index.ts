@@ -2520,6 +2520,10 @@ export const BOOLEAN_ENV_FLAGS = [
   "SALESFORCE_PRODUCTION_ORGS_ENABLED",
   // Phase D (src/stages/salesforceCleanup.ts): delete what a run created in the org. Off: nothing deleted.
   "SALESFORCE_CLEANUP_ENABLED",
+  // Phase D (src/stages/salesforceOracles.ts): read each created record through the API after a case. Off: no reads.
+  "SALESFORCE_API_CHECKS_ENABLED",
+  // Phase D (src/stages/salesforceSeed.ts): publish a requested platform-event flow's event before the cases. Off: nothing published.
+  "SALESFORCE_SEED_ENABLED",
   // src/stages/hybridDiscovery.ts: reuse an org-connection discovery while the org's setup is unchanged.
   "SALESFORCE_DISCOVERY_CACHE_ENABLED",
   // src/stages/salesforceOrgDeep.ts (Phase 1): record-type differences, Dynamic Forms visibility rules

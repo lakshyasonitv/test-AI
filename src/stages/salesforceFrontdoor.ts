@@ -40,6 +40,12 @@ export interface FrontdoorSession {
    * the run itself created. Discovery never deletes. Throws a sentence with the HTTP status.
    */
   apiDelete?(path: string): Promise<void>;
+  /**
+   * POST JSON to `<instance>/services/data/v62.0<path>`. Used by Phase D seeding only
+   * (salesforceSeed.ts, SALESFORCE_SEED_ENABLED): publishing a platform event a flow listens to.
+   * Throws a sentence with the HTTP status.
+   */
+  apiPost?(path: string, body: unknown): Promise<any>;
 }
 
 /** The env name the generated spec reads the frontdoor URL from. */
@@ -91,7 +97,10 @@ export const SF_RECORD_PAGES_JS = `() => {
   let creating = null;
   return {
     visit: (url) => {
-      const form = /\\/lightning\\/o\\/([A-Za-z][A-Za-z0-9_]*)\\/new\\b/.exec(url);
+      // A create form, or a Clone's (the copy is a new record too; run 2026-11-10T19-03-24-566Z-0071682d
+      // left its "Clone Copy" behind).
+      const form = /\\/lightning\\/o\\/([A-Za-z][A-Za-z0-9_]*)\\/new\\b/.exec(url)
+        || /\\/lightning\\/r\\/([A-Za-z][A-Za-z0-9_]*)\\/[A-Za-z0-9]{15,18}\\/clone\\b/.exec(url);
       if (form) { creating = form[1]; return; }
       const m = /\\/lightning\\/r\\/(?:([A-Za-z][A-Za-z0-9_]*)\\/)?([A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?)\\/view\\b/.exec(url);
       if (!m) { creating = null; return; }
@@ -106,9 +115,10 @@ export const SF_RECORD_PAGES_JS = `() => {
       seen.add(m[2]);
     },
     created: (object, n) => (made[object] || [])[n - 1] || null,
+    made: () => made,
   };
 }`;
-export interface RecordPages { visit(url: string): void; created(object: string, n: number): string | null }
+export interface RecordPages { visit(url: string): void; created(object: string, n: number): string | null; made(): Record<string, string[]> }
 export const recordPages = new Function(`return (${SF_RECORD_PAGES_JS});`)() as () => RecordPages;
 
 const frontdoorContext = new AsyncLocalStorage<FrontdoorSession | null>();

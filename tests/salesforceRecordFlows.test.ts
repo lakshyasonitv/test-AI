@@ -298,3 +298,19 @@ describe("sfFieldValue, executed", () => {
     } finally { await page.close(); }
   }, 60_000);
 });
+
+describe("a screen flow opened by its address carries its name", () => {
+  it("does not count the flow's name as left out (run 2026-11-10T13-55-48-526Z-8bdcb95a)", () => {
+    const steps = [{ target: { url: "https://zq.example/flow/Zq_New_Thing_Screen" } }, { target: { name: "Next" } }];
+    const c = { steps: ["Open the Zq New Thing Screen flow", "Click Next"], expected: "done" };
+    expect(stepsMissingValues(steps as any, c, ["Zq New Thing Screen"])).toEqual([]);
+  });
+});
+
+describe("a flow's name is named, never typed", () => {
+  it("is left out of the request's values (run 2026-11-10T14-37-45-689Z-aa1bde79)", async () => {
+    const { requestValues } = await import("../src/stages/requestValues.js");
+    expect(requestValues("Test the Zq Event Make Acct flow with Company Zq Labs", ["Zq Event Make Acct"])).not.toContain("Zq Event Make Acct");
+    expect(requestValues("Test the Zq Event Make Acct flow")).toContain("Zq Event Make Acct");
+  });
+});

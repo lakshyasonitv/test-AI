@@ -359,6 +359,15 @@ describe("a text check after a record's Details tab scrolls its lazy sections in
     expect(s).toContain('page.getByRole("tab", { name: "Details", exact: true }).first()');
     expect(s).toMatch(/waitFor\(\{ state: "visible", timeout: 5000 \}\)\.then\(\(\) => true, \(\) => false\)\) await tab\.click/);
   });
+
+  it("an inserted Related click opens the record's own Related or Activity tab, whichever is not selected", () => {
+    const s = generateSpec({ meta, steps: [
+      { id: "sf-related-2", action: "click", target: { role: "tab", name: "Related" } },
+    ] } as unknown as IR);
+    expect(s).toContain('for (const name of ["Related", "Activity"])');
+    expect(s).toContain('(await t.getAttribute("aria-selected")) !== "true"');
+    expect(s).not.toContain("safeClick");
+  });
 });
 
 // A Lightning picklist is a <button role="combobox"> showing the chosen value as its text. The
@@ -384,4 +393,24 @@ describe("assertChoice on a button-style combobox", () => {
       await browser.close();
     }
   }, 60_000);
+});
+
+// Run 2026-11-10T08-43-46-389Z-e1f1d89b: a screen flow's "Technology" radio, named from the accessibility
+// snapshot and without a selector, was looked for near its text inside a dialog and never found.
+describe("a named radio or checkbox with no selector", () => {
+  const meta = { feature: "Zq", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" };
+  it("is checked by its role and name, forced past the control drawn over it", () => {
+    const s = generateSpec({ meta, steps: [{ id: "s1", action: "check", target: { role: "radio", name: "Zq Tech" } }] } as unknown as IR);
+    expect(s).toContain('page.getByRole("radio", { name: "Zq Tech", exact: true }).first().check({ force: true');
+  });
+  it("a click on a named radio ticks it the same way (its label intercepts a plain click)", () => {
+    const s = generateSpec({ meta, steps: [{ id: "s1", action: "click", target: { role: "radio", name: "Zq Tech", css: "#zq > span:nth-of-type(1) > input" } }] } as unknown as IR);
+    expect(s).toContain('page.getByRole("radio", { name: "Zq Tech", exact: true }).first().check({ force: true');
+    expect(s).not.toContain("safeClick");
+  });
+
+  it("one with a selector keeps the usual lookup", () => {
+    const s = generateSpec({ meta, steps: [{ id: "s1", action: "check", target: { role: "checkbox", name: "Zq Agree", css: "#zq" } }] } as unknown as IR);
+    expect(s).not.toContain('getByRole("checkbox", { name: "Zq Agree", exact: true }).first().check({ force: true');
+  });
 });

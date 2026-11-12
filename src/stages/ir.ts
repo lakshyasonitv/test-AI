@@ -23,7 +23,7 @@ import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import {
   salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
-  returnToCreatedRecords, checksOnCreatedRecord, valuesFromRequest,
+  returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, requestedTextChecks, noTokensInRuleFields, pathStageClicks, seededLookups, placeholderMessages, eventRecordSearch, valuesFromRequest,
 } from "./salesforceGuidance.js";
 import { FRONTDOOR_REF, currentFrontdoor, isFrontdoorRef, recordRefObject } from "./salesforceFrontdoor.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
@@ -1435,7 +1435,7 @@ export function groundingError(
     }
     // The record page's Details tab, added by fieldChecksOnRecordView: the spec clicks it only if it
     // shows, so a capture without it (run 2026-11-03T09-37-18-648Z-47d0b2e9) is no reason to cut the case.
-    if (step.id === "sf-details") continue;
+    if (/^sf-(details|related)(-\d+)?$/.test(step.id)) continue;
     const role = norm(t.role);
     const name = norm(t.name);
 
@@ -1981,6 +1981,15 @@ export function missingActions(ir: IR, testCase: TestCase): { message: string } 
   }
   if (/\b(submit|click|press|tap|sign in|log ?in|continue)\b/.test(text) && !has("click", "press")) {
     missing.push(`the case describes submitting or clicking, but the IR has no "click" or "press" step`);
+  }
+  // A delete the case carries out is the point of the case: an IR without it checks a result nothing
+  // caused. Run 2026-11-10T05-24-32-304Z-6d340991 ("attempt to delete the Account ... observe the error")
+  // created the records, skipped the delete, and asserted the error; the action count still matched.
+  // Step lines only, and not a line about a Delete control being absent or refused.
+  const deletes = steps.map(unquoted).some((l) => /\bdelet(e|es|ing)\b/i.test(l)
+    && !/\b(no|not|never|without|cannot|can't|hidden|absent|missing|disabled)\b/i.test(l));
+  if (deletes && !ir.steps.some((s) => (s.action === "click" || s.action === "press") && /^delete\b/i.test(s.target?.name ?? s.target?.text ?? ""))) {
+    missing.push(`the case deletes a record, but the IR never clicks "Delete" (open the record, click its Delete action, then confirm)`);
   }
 
   // Presence isn't coverage: an IR that fills the login form and stops satisfies both checks
@@ -2925,8 +2934,21 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // Before the field checks: a record opened again is a record page too.
       for (const r of returnToCreatedRecords(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of valuesFromRequest(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
+      for (const r of deleteNamedRecord(parsed.data, currentModel.salesforceOrg, `${sourcePrompt}\n${testCase.title}\n${(testCase.steps ?? []).join("\n")}`)) console.log(`[ir] ${r}`);
+      for (const r of pathStageClicks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
+      for (const r of seededLookups(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${r}`);
+      for (const r of requestedFieldChecks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
+      for (const r of flowEffectChecks(parsed.data, currentModel.salesforceOrg, `${sourcePrompt}
+${testCase.title}
+${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       for (const r of checksOnCreatedRecord(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
-      for (const f of fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt)) console.log(`[ir] ${f}`);
+      for (const f of requestedTextChecks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${f}`);
+      for (const f of placeholderMessages(parsed.data, sourcePrompt)) console.log(`[ir] ${f}`);
+      for (const f of eventRecordSearch(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
+      for (const f of noTokensInRuleFields(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
+      for (const f of fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt, `${testCase.title}\n${testCase.expected ?? ""}`)) console.log(`[ir] ${f}`);
+      for (const f of recordTabClicks(parsed.data)) console.log(`[ir] ${f}`);
+      for (const f of inventedRecordLinks(parsed.data)) console.log(`[ir] ${f}`);
     }
     // Data safety, not a flag: grounding replays these steps in the real org, so a delete of a
     // record this case did not create is refused here, before any replay can carry it out.
@@ -3231,7 +3253,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // missingActions above: it rejects and retries, and the IR is kept as a partial so a run is
       // never lost to it.
       if (screenMode && testCase.fromPrompt) {
-        const lost = stepsMissingValues(parsed.data.steps, testCase, requestValues(sourcePrompt));
+        const lost = stepsMissingValues(parsed.data.steps, testCase, requestValues(sourcePrompt, (currentModel.salesforceOrg?.flows ?? []).map((f) => f.label)));
         if (lost.length) {
           const message = `The steps leave out ${lost.map((v) => `"${v}"`).join(", ")}, which the test case ` +
             `uses. Carry out the WHOLE case: each value goes in the step where the case uses it (a value ` +

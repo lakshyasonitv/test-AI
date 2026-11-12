@@ -85,6 +85,40 @@ export function valueFor(f: OrgField, locale = "en-US"): string | undefined {
 // ---- org model lookups -----------------------------------------------------------------------
 
 const apiRe = (f: OrgField) => new RegExp(`\\b${f.api.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+/** The flows triggered on this object, from the org model (their `effects` lines: conditions, sets, creates). */
+function flowsOn(o: OrgObject, org: SalesforceOrgModel | undefined): { effects?: string[] }[] {
+  return (org?.flows ?? []).filter((fl) => !!fl.object && (fl.object === o.label || fl.object === o.api));
+}
+/**
+ * Phase B: a flow's condition (its "only when", or a branch's "when") reads this field: the policy keeps it,
+ * as it keeps a field a validation rule reads. "Test every branch of the lead routing flow" names no field,
+ * and Industry and Annual Revenue, the fields that pick the branch, were dropped as optional: every case
+ * took the default branch (run 2026-11-10T08-56-13-526Z-86865e92).
+ */
+function flowReads(o: OrgObject, f: OrgField, org: SalesforceOrgModel | undefined): boolean {
+  return flowsOn(o, org).some((fl) => (fl.effects ?? []).some((e) => {
+    const cond = /^only when (.*)$/.exec(e)?.[1] ?? /\bwhen (.*?) ->/.exec(e)?.[1];
+    return !!cond && apiRe(f).test(cond);
+  }));
+}
+/** The values a flow on this object sets this field to, from "sets Rating = Hot, Status = Working - Contacted"
+ *  (not "... on <another object>"): a case must not set them itself, or its check proves nothing. */
+function flowSetValues(o: OrgObject, f: OrgField, org: SalesforceOrgModel | undefined): string[] {
+  const out: string[] = [];
+  for (const fl of flowsOn(o, org)) {
+    for (const e of fl.effects ?? []) {
+      for (const m of e.matchAll(/\bsets (.+?)(?=;|$)/g)) {
+        if (/ on [A-Z][\w ]*$/.test(m[1])) continue;
+        for (const part of m[1].split(/,\s+(?=\w+ = )/)) {
+          const a = /^(\w+) = (.+)$/.exec(part.trim());
+          if (a && a[1].toLowerCase() === f.api.toLowerCase()) out.push(a[2].trim());
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /** True when any validation rule's condition names this field: the policy keeps such a field. */
 function ruleMentions(o: OrgObject, f: OrgField): boolean {
   return (o.validationRules ?? []).some((r) => r.condition && apiRe(f).test(r.condition));
@@ -214,6 +248,15 @@ function createdBefore(ir: IR, before: number, objects: string[]): Set<string> {
   return out;
 }
 
+/**
+ * The part of a request that says what to DO: everything before its first check ("verify", "check that",
+ * "confirm", "ensure", "make sure", "assert", "expect"). A request with no check is all actions.
+ */
+export function requestedActions(request: string): string {
+  const m = /\b(verify|verifies|check that|checks that|check the|check its|confirm|ensure|make sure|assert|expect)\b/i.exec(request);
+  return m ? request.slice(0, m.index) : request;
+}
+
 /** Whole-word, case-insensitive: the request names this field, or carries this value. */
 const mentions = (request: string, s: string) => {
   const k = lineKey(s);
@@ -260,6 +303,14 @@ export function applyTestData(ir: IR, testCase: Pick<TestCase, "category">, appM
     if (sections.length) sections[sections.length - 1].to = i;
     sections.push({ o: org.objects.find((x) => x.api === m[1]), from: i, to: ir.steps.length });
   });
+  // A create form ends at its Save. Steps after it are on the saved record, or in another object's form
+  // opened from there (the Account page's "New Opportunity" action): judged as this form's fields,
+  // "Opportunity Name *" and "Close Date *" were no Account field and were dropped as optional, and the
+  // Opportunity could not save (run 2026-11-10T06-22-41-469Z-3fe92274).
+  for (const sec of sections) {
+    const save = ir.steps.findIndex((s, i) => i > sec.from && i < sec.to && s.action === "click" && /^save$/i.test((s.target?.name ?? "").trim()));
+    if (save > 0) sec.to = save + 1;
+  }
   let n = 0;
   for (const sec of sections.reverse()) {
     if (!sec.o) continue;
@@ -367,6 +418,14 @@ function applyToSection(
     if (s.action !== "select" || !s.value || isEnvValueRef(s.value)) continue;
     const f = fieldFor(nameOf(s));
     const snapped = snapPicklist(o, s.value, f) ?? inventedOption(o, s.value, f, request);
+    // A value the request names may be completed ("Working" -> "Working - Contacted": the option begins
+    // with it), never swapped for another option that only contains it: "Technology" became
+    // "Biotechnology" when the model's option list was cut short (run 2026-11-10T05-05-39-201Z-52ce7aed).
+    if (snapped && mentions(request, s.value) && !mentions(request, snapped)
+      && !`${lineKey(snapped)} `.startsWith(`${lineKey(s.value)} `)) {
+      notes.push(`${s.id}: kept "${s.value}" (the request names it), not the option "${snapped}"`);
+      continue;
+    }
     if (snapped) { notes.push(`${s.id}: "${s.value}" -> "${snapped}" (the org's picklist option)`); s.value = snapped; }
   }
   // Every case but those whose point is a bad or missing value: a lookup holds a RECORD, picked from
@@ -398,7 +457,11 @@ function applyToSection(
   // A value an assertion quotes stays as typed, or the assertion stops matching it.
   const asserted = ir.steps.filter((s) => s.action === "assert")
     .map((s) => `${s.target?.text ?? ""}\n${s.value ?? ""}`).join("\n");
-  const quoted = (v: string | undefined) => !!v?.trim() && asserted.includes(v.trim());
+  // Not a value the request only CHECKS ("verify its Rating shows Hot"): keeping it because the check
+  // quotes it is the test setting the very value it then checks (run 2026-11-10T05-51-13-444Z-c5882e76).
+  const checksPart = request.slice(requestedActions(request).length);
+  const quoted = (v: string | undefined) => !!v?.trim() && asserted.includes(v.trim())
+    && !(mentions(checksPart, v) && !mentions(requestedActions(request), v));
   // "Each and every field": every field the case fills is wanted; values are still fixed below.
   const everyField = asksForEveryField(request);
   // "Each and every field": a check on one of the form's own controls before Save is a field the
@@ -424,9 +487,18 @@ function applyToSection(
   // 2026-11-03T05-36-38-368Z-379eb1ea, which then found no such option).
   const blank = (v: string) => /^(-+\s*)?(none|n\/?a|null|blank|empty)(\s*-+)?$/i.test(v.trim());
   const fills = (s: Step) => s.value?.trim() ? !blank(s.value) : !!s.target?.lookup;
-  const wanted = (f: OrgField, s: Step) => (everyField && fills(s)) || !!f.required || ruleMentions(o, f) || mentions(request, f.label)
-    || formNamesOf(f).some((nm) => mentions(request, nm)) || mentions(request, nameOf(s))
-    || (!!s.value && !hasRunToken(s.value) && mentions(request, s.value)) || quoted(s.value);
+  // What the request asks the test to DO, without what it asks it to check: a field named only after
+  // "verify" is the expected RESULT. The case set the Account's Type to "Customer - Direct" itself, the
+  // value a flow was to set, so the check could prove nothing (run 2026-11-10T05-11-20-593Z-6f9640b8).
+  const asks = requestedActions(request);
+  const org = appModel.salesforceOrg;
+  // A value a flow on this object sets the field to, the request not asking for it: the flow's to set.
+  const flowSets = (f: OrgField, s: Step) => !!s.value && !mentions(asks, s.value)
+    && flowSetValues(o, f, org).some((v) => lineKey(v) === lineKey(s.value!));
+  const wanted = (f: OrgField, s: Step) => !(flowSets(f, s) && !f.required) && ((everyField && fills(s)) || !!f.required
+    || ruleMentions(o, f) || flowReads(o, f, org) || mentions(asks, f.label)
+    || formNamesOf(f).some((nm) => mentions(asks, nm)) || mentions(asks, nameOf(s))
+    || (!!s.value && !hasRunToken(s.value) && mentions(asks, s.value)) || quoted(s.value));
 
   // THE POLICY: a fill or select on a field that is neither required, nor read by a rule, nor named
   // by the request is dropped. A lookup typed as text is dropped even when named, unless the step
@@ -439,13 +511,29 @@ function applyToSection(
     // one: the model keeps the required fields first and only the first 40 (run
     // 2026-10-25T05-01-36-627Z-b0d6a138 kept an unrequested Phone that way).
     const keep = f ? wanted(f, s)
-      : (everyField && fills(s)) || mentions(request, nameOf(s)) || (!!s.value && !hasRunToken(s.value) && mentions(request, s.value)) || quoted(s.value);
+      : (everyField && fills(s)) || mentions(asks, nameOf(s)) || (!!s.value && !hasRunToken(s.value) && mentions(asks, s.value)) || quoted(s.value);
     if (keep) continue;
     notes.push(`${s.id}: dropped "${nameOf(s)}" — optional, no rule reads it and the request does not name it`);
     ir.steps.splice(i, 1);
     to--;
   }
 
+  // A required picklist must be set, but not to the value the request only CHECKS: a flow is to set
+  // Lead Status to "Working - Contacted", so the case starts it on another option, or the check proves
+  // nothing (run 2026-11-10T05-51-13-444Z-c5882e76).
+  for (const s of positive ? steps() : []) {
+    if (s.action !== "select" || !s.value) continue;
+    const f = fieldFor(nameOf(s));
+    // Also a value a flow on this object sets it to (the flow-branch case set Lead Status to the Hot
+    // branch's "Working - Contacted" itself, run 2026-11-10T08-56-13-526Z-86865e92).
+    const flowValue = !!f && !mentions(requestedActions(request), s.value)
+      && flowSetValues(o, f, appModel.salesforceOrg).some((v) => lineKey(v) === lineKey(s.value!));
+    if (!(mentions(checksPart, s.value) && !mentions(requestedActions(request), s.value)) && !flowValue) continue;
+    const other = f?.required && !f.controlledBy ? f.picklist?.find((p) => lineKey(p) !== lineKey(s.value!)) : undefined;
+    if (!other) continue;
+    notes.push(`${s.id}: "${nameOf(s)}" starts as "${other}", not "${s.value}", the value the request checks it changes to`);
+    s.value = other;
+  }
   for (const s of positive ? steps() : []) {
     const name = nameOf(s);
     if (!name || isEnvValueRef(s.value)) continue;

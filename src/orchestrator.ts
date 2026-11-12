@@ -15,7 +15,9 @@ import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
-import { cleanupEnabled, cleanupRecords, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
+import { cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
+import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
+import { apiChecks, apiChecksEnabled, calculatedChecks, caseRunFacts, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -415,6 +417,24 @@ export async function runPipeline(
       console.log(`[orchestrator] discovery auth outcome: ${appModel.auth.status}${appModel.auth.detail ? ` — ${appModel.auth.detail}` : ""}`);
     }
 
+    // Phase D (SALESFORCE_SEED_ENABLED, default off): what no screen can do, done through the API before
+    // the cases are written: today, publishing the event of a platform-event flow the request names. The
+    // org model then says what was published, so the cases check its outcome.
+    const seedFd = currentFrontdoor();
+    let published: Published[] = [];
+    let seededRecords: Awaited<ReturnType<typeof seedExistingRecords>> = [];
+    if (seedEnabled() && seedFd?.apiGet && seedFd.apiPost && appModel.salesforceOrg) {
+      published = await publishRequestedEvents({ apiGet: seedFd.apiGet, apiPost: seedFd.apiPost },
+        appModel.salesforceOrg, prompt, Math.random().toString(36).slice(2, 8));
+      seededRecords = await seedExistingRecords({ apiGet: seedFd.apiGet, apiPost: seedFd.apiPost },
+        appModel.salesforceOrg, prompt, Math.random().toString(36).slice(2, 8));
+      if (published.length || seededRecords.length) {
+        save("03-seed.json", { published, records: seededRecords });
+        for (const p of published) console.log(`[seed] ${p.event}: ${p.error ? `not published (${p.error})` : `published for "${p.flow}"`}`);
+        for (const r of seededRecords) console.log(`[seed] ${r.object} "${r.name}": ${r.error ?? "created"}`);
+      }
+    }
+
     console.log("2. Generating test cases...");
     // Pro document intake: the run's confirmed spec, or undefined for every standard run.
     const proSpec = options?.spec;
@@ -458,6 +478,9 @@ export async function runPipeline(
       }
       throw err;
     }
+    // Seeding published the event already: a case's own "publish it" step (and the re-check after it)
+    // has nothing to act on (run 2026-11-10T15-02-34-218Z-ccc80600 found the Account, then searched again).
+    if (published.some((p) => !p.error)) cases = withoutPublishSteps(cases);
     console.log("✓ Test cases:", cases.length);
     if (proSpec) insight("pro-spec", () => specModelInsights(proSpec));
     insight("testcases", () => ({ ...caseInsights(cases), gate: gateUsed, pro: !!proSpec }));
@@ -743,8 +766,29 @@ export async function runPipeline(
     // the run: a cleanup that cannot run says why in 10-cleanup.json.
     const fd = currentFrontdoor();
     const since = runStartedAt(runId);
+    // Phase D (SALESFORCE_API_CHECKS_ENABLED, default off): each record a case created, read through
+    // the API and compared with what its form typed. Before cleanup, which deletes those records.
+    const sfOrg = appModel.salesforceOrg;
+    if (apiChecksEnabled() && fd?.apiGet && sfOrg) {
+      const checks: { case: string; checks: ApiCheck[] }[] = [];
+      for (const c of runCases(runDir)) {
+        const facts = caseRunFacts(c.results);
+        const typed = [...typedValues(c.ir, sfOrg), ...calculatedChecks(c.ir, sfOrg), ...flowSetChecks(c.ir, sfOrg)];
+        if (!facts || !typed.length) continue;
+        checks.push({ case: path.basename(c.caseDir), checks: await apiChecks(fd.apiGet, typed, facts.created, facts.ctx) });
+      }
+      save("11-api-checks.json", checks);
+      const all = checks.flatMap((c) => c.checks);
+      console.log(`[api-checks] ${runId}: ${all.filter((x) => x.ok).length}/${all.length} field values match the org`);
+    }
     if (cleanupEnabled() && fd?.apiGet && fd.apiDelete && since) {
-      const cleanup = await cleanupRecords({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, runRecords(runDir), since);
+      const cleanup = await cleanupRecords({ apiGet: fd.apiGet, apiDelete: fd.apiDelete },
+        // Seeded parents first, so the reverse order deletes them after what the test made under them.
+        [...seededRecords.filter((r) => r.id).map((r) => ({ object: r.object, id: r.id! })), ...runRecords(runDir)], since);
+      // What a published event's flow made (owned by the Automated Process user), by its run-unique name.
+      const seeded = await cleanupSeeded({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, published.flatMap((p) => p.creates ?? []), since);
+      cleanup.deleted.push(...seeded.deleted);
+      cleanup.failed.push(...seeded.failed);
       save("10-cleanup.json", cleanup);
       console.log(`[cleanup] ${runId}: deleted ${cleanup.deleted.length}, left ${cleanup.skipped.length}, failed ${cleanup.failed.length}`
         + (cleanup.reason ? ` (${cleanup.reason})` : ""));

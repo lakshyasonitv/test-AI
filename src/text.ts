@@ -135,3 +135,50 @@ export const SHOWN_NUMBER_JS = `(s) => {
   return Number.isFinite(n) ? n : null;
 }`;
 export const shownNumber = new Function(`return (${SHOWN_NUMBER_JS});`)() as (s: string) => number | null;
+
+/** A radio or checkbox with a name and no selector: found by role and name, the generated spec and the
+ *  grounding replay alike (generator.ts, liveExtend.ts). */
+export function isNamedToggle(t: { role?: string; name?: string; css?: string } | undefined): boolean {
+  return !!t && (t.role === "radio" || t.role === "checkbox") && !!t.name?.trim() && !t.css;
+}
+
+/** A name the walker made up from an element's id ("input 23", "radio 0 24"), not a label. */
+const MADE_UP_NAME = /^(input|radio|checkbox|select|textarea|combobox|textbox|spinbutton)(\s+\d+)+$/i;
+/** True when a walk still holds a made-up name: a cached screen flow capture from before the names were
+ *  read from the accessibility snapshot (run 2026-11-10T14-50-55-763Z-5a9de324 replayed "input 33"). */
+export function hasMadeUpNames(elements: { name?: string }[]): boolean {
+  return elements.some((e) => MADE_UP_NAME.test(e.name ?? ""));
+}
+
+/**
+ * Names elements whose walked name is made up, from Playwright's accessibility snapshot of the page
+ * (`- textbox "Company Name"`, `- radio "Technology"`): the k-th made-up element of a role takes the
+ * k-th snapshot name of that role, both in document order. Returns how many it named. Pure: the
+ * snapshot is passed in.
+ */
+export function nameFromAriaSnapshot(elements: { role?: string; name?: string; css?: string }[], yaml: string): number {
+  const byRole = new Map<string, string[]>();
+  for (const line of (yaml || "").split("\n")) {
+    const m = /^\s*-\s+([a-z]+)\s+"((?:[^"\\]|\\.)*)"/.exec(line);
+    if (m && m[2].trim()) byRole.set(m[1], [...(byRole.get(m[1]) ?? []), m[2].replace(/\\"/g, '"').trim()]);
+  }
+  let named = 0;
+  const seen = new Map<string, number>();
+  for (const e of elements) {
+    const role = e.role ?? "";
+    const k = seen.get(role) ?? 0;
+    seen.set(role, k + 1);
+    if (!e.name || MADE_UP_NAME.test(e.name.trim())) {
+      const name = byRole.get(role)?.[k];
+      if (name) {
+        e.name = name;
+        named++;
+        // A positional chain through the flow runtime's shadow roots (">> :scope > … :nth-of-type") did
+        // not resolve in the test (run 2026-11-10T07-56-30-371Z-ef61d8ab, the "Technology" radio); with a
+        // real name the element is found by role and name. A plain selector (input[name="X"]) stays.
+        if (e.css && /\s>>\s|:nth-of-type/.test(e.css)) delete e.css;
+      }
+    }
+  }
+  return named;
+}

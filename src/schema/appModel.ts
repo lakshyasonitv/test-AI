@@ -376,6 +376,8 @@ export const SalesforceOrgField = z.object({
   required: z.boolean().optional(),
   picklist: z.array(z.string()).optional(),
   lookup: z.string().optional(),
+  /** Phase 1: a lookup filter, as words ("Type = Customer - Direct"): only records that meet it can be picked. */
+  lookupFilter: z.string().optional(),
   /** A dependent picklist: the API name of the picklist (or checkbox) that controls it. */
   controlledBy: z.string().optional(),
   /** Per dependent value, the controlling values (labels) under which it is offered. */
@@ -427,6 +429,8 @@ export const SalesforceOrgModel = z.object({
   /** The connected user's locale ("en_US"): Lightning parses typed dates in it. Absent when unread. */
   userLocale: z.string().optional(),
   /** Active flows (Phase B): what runs, on what, when, and what it visibly does. Absent when unread. */
+  /** Phase D seeding: records Testbench created through the API before the cases ("an existing Account"). */
+  seeded: z.array(z.object({ object: z.string(), label: z.string(), name: z.string() })).optional(),
   flows: z.array(z.object({
     label: z.string(),
     api: z.string(),
@@ -435,6 +439,8 @@ export const SalesforceOrgModel = z.object({
     /** Record-triggered: the object's label, and when ("create", "update", "create or update", "delete"). */
     object: z.string().optional(),
     when: z.string().optional(),
+    /** Platform-event flows: the event's API name ("TB_Test_Event__e"), which seeding publishes. */
+    event: z.string().optional(),
     /** Plain lines: "sets Rating = Hot", "creates a Task", "only when Customer Priority = High". */
     effects: z.array(z.string()).optional(),
   })).optional(),

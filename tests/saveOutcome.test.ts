@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView, returnToCreatedRecords,
+  requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks,
 } from "../src/stages/salesforceGuidance.js";
 import { recordRef } from "../src/stages/salesforceFrontdoor.js";
 import { readFileSync } from "node:fs";
@@ -120,6 +121,18 @@ describe("deleteOutsideOwnRecord", () => {
     expect(deleteOutsideOwnRecord(ir([nav("/lightning/o/Account/new"), click("Save"), link("Zq Old Co"),
       click("Delete")]))).toMatch(/leaves the record/);
   });
+  // Run 2026-11-10T06-03-48-658Z-ac13a6f8: "create an Account, an Opportunity for it, then delete the
+  // Account" went back to the Account by its record reference and was refused.
+  it("allows going back to a record this case created and saved, by its record reference only", () => {
+    const back = (ref: string) => ir([nav("/lightning/o/Account/new"), click("Save"), nav("/lightning/o/Opportunity/new"), click("Save"),
+      nav(ref), click("Delete"), click("Delete")]);
+    expect(deleteOutsideOwnRecord(back("${record:Account:1}"))).toBeNull();
+    // Never a record it did not create: a second Account it never saved, an object it never created.
+    expect(deleteOutsideOwnRecord(back("${record:Account:2}"))).toMatch(/leaves the record/);
+    expect(deleteOutsideOwnRecord(back("${record:Contact:1}"))).toMatch(/leaves the record/);
+    expect(deleteOutsideOwnRecord(back("/lightning/r/Account/001zq0000000001AAA/view"))).toMatch(/leaves the record/);
+  });
+
   it("runs in toIR before any grounding replay", () => {
     const src = readFileSync(new URL("../src/stages/ir.ts", import.meta.url), "utf8");
     const guard = src.indexOf("deleteOutsideOwnRecord(parsed.data)");
@@ -161,14 +174,23 @@ describe("fieldChecksOnRecordView", () => {
     expect(fieldChecksOnRecordView(value, model)).toEqual([]);
     const reopened = ir([...base(), click("Edit Zq Expiry"), fieldIs("textbox", "Zq Expiry")]);
     expect(fieldChecksOnRecordView(reopened, model)).toEqual([]);
-    const noTab = ir([...base(), fieldIs("textbox", "Zq Expiry")]);
-    fieldChecksOnRecordView(noTab, { pages: [model.pages[0]] });
-    expect(noTab.steps.some((s) => s.target?.name === "Details")).toBe(false);
-    expect(noTab.steps[noTab.steps.length - 1].target).toEqual({ text: "Zq Expiry" });
+  });
+
+  // Run 2026-11-10T10-08-27-191Z-4830927e: no record page was modelled ("a high priority account"), so no
+  // Details click, and Rating (on Details) was never found. With no record page known, the click is
+  // inserted; the spec skips it where the page has none (generator.ts, sf-details).
+  it("with no record page modelled at all, still opens Details (the spec skips it if absent)", () => {
+    const noPage = ir([...base(), fieldIs("textbox", "Zq Expiry")]);
+    fieldChecksOnRecordView(noPage, { pages: [model.pages[0]] });
+    expect(noPage.steps.some((s) => s.target?.name === "Details")).toBe(true);
+    expect(noPage.steps[noPage.steps.length - 1].target).toEqual({ text: "Zq Expiry" });
   });
 
   it("is wired into IR generation, with the request", () => {
-    expect(readFileSync("src/stages/ir.ts", "utf8")).toMatch(/fieldChecksOnRecordView\(parsed\.data, currentModel, sourcePrompt\)/);
+    // With the request, and the case's own title and expected result (the bare-value rule reads both).
+    const src = readFileSync("src/stages/ir.ts", "utf8");
+    expect(src).toContain("fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt, `${testCase.title}");
+    expect(src).toContain("${testCase.expected ?? \"\"}`)");
   });
 
   // Run 2026-11-03T07-31-20-798Z-dcc341ef: the record page was captured before its tabs drew, so the
@@ -316,6 +338,19 @@ describe("fieldChecksOnRecordView: text checks of org fields", () => {
       expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zrating" }, value: "Zhot" });
     });
 
+    it("uses the object's word with the label when the request does (\"Lead Status\" for the org's \"Status\")", () => {
+      const lead = { objects: [{ api: "Zlead", label: "Zlead", fields: [{ label: "Zstatus", picklist: ["Zopen", "Zworking"] }] }] };
+      const i = ir([nav("/lightning/o/Zlead/new"), click("Save"), created, valueIs("Zworking")]);
+      fieldChecksOnRecordView(i, { ...model, salesforceOrg: lead }, "verify its Zlead Zstatus shows Zworking");
+      expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zlead Zstatus" }, value: "Zworking" });
+    });
+
+    it("also when only the case's own expected result names the field (\"Test every branch of the flow\")", () => {
+      const i = ir([nav("/lightning/o/Account/new"), click("Save"), created, valueIs("Zhot")]);
+      fieldChecksOnRecordView(i, { ...model, salesforceOrg: org }, "Test every branch of the Zq Routing flow", "Zq branch\nthe Zrating shows Zhot");
+      expect(i.steps.at(-1)).toMatchObject({ target: { field: "Zrating" }, value: "Zhot" });
+    });
+
     it("is left alone when the request names no field offering it, or two do", () => {
       expect(run(valueIs("Zhot"), "verify Zhot is shown").at(-1)!.target).toEqual({ text: "Zhot" });
       expect(run(valueIs("Zhot"), "verify Zrating and Zq Mood show Zhot").at(-1)!.target).toEqual({ text: "Zhot" });
@@ -442,18 +477,23 @@ describe("returnToCreatedRecords", () => {
     ]);
   });
 
-  it("a delete after going back is still refused (it is not the page the Save opened)", () => {
+  // Was refused until run 2026-11-10T06-03-48-658Z-ac13a6f8 (delete an Account after creating an
+  // Opportunity for it). The way back is a record reference, which resolves only to the record THIS
+  // case's create form saved (SF_RECORD_PAGES_JS: "never one the flow opened"), so it is allowed; the
+  // link it replaced, or any other path to a record, is still refused (deleteOutsideOwnRecord tests).
+  it("a delete after going back by the record reference to its own record is allowed", () => {
     const i = ir([nav("/lightning/o/Zq_Parent__c/new"), fill("Zq Parent Name", "Zq Parent {{uid}}"), click("Save"), created,
       nav("/"), link("back", "Zq Parent {{uid}}"), click("Delete")]);
     returnToCreatedRecords(i);
-    expect(deleteOutsideOwnRecord(i)).toMatch(/leaves the record/);
+    expect(i.steps.some((s) => s.target?.url === "${record:Zq_Parent__c:1}")).toBe(true);
+    expect(deleteOutsideOwnRecord(i)).toBeNull();
   });
 
   it("is wired into IR generation before the field checks", () => {
     const src = readFileSync("src/stages/ir.ts", "utf8");
     const back = src.indexOf("returnToCreatedRecords(parsed.data, sourcePrompt)");
     expect(back).toBeGreaterThan(-1);
-    expect(back).toBeLessThan(src.indexOf("fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt)"));
+    expect(back).toBeLessThan(src.indexOf("fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt,"));
   });
 });
 
@@ -522,5 +562,332 @@ describe("fieldChecksOnRecordView: value checks", () => {
     fieldChecksOnRecordView(i, model);
     expect(i.steps.filter((s) => s.target?.field).map((s) => s.value)).toEqual(["$100.00", "$200.00"]);
     expect(i.steps.filter((s) => s.target?.name === "Details").map((s) => s.id)).toEqual(["sf-details", "sf-details-2"]);
+  });
+});
+
+// Run 2026-11-10T05-05-39-201Z-52ce7aed: "verify its Rating shows Hot, its Lead Status shows Working -
+// Contacted, and a Task ... appears": the steps checked only the Task.
+describe("requestedFieldChecks", () => {
+  const org = { objects: [
+    { api: "Zlead", label: "Zlead", fields: [
+      { label: "Zrating", picklist: ["Zhot", "Zcold"] }, { label: "Zstatus", picklist: ["Zopen", "Zworking - Zcontacted"] }, { label: "Zname" }] },
+    { api: "Zacct", label: "Zacct", fields: [{ label: "Zacct Ztype", picklist: ["Zcustomer - Zdirect", "Zprospect"] }] },
+    { api: "Zopp", label: "Zopp", fields: [{ label: "Ztype", picklist: ["Zcustomer - Zdirect"] }] },
+  ] };
+  const created: Step = { id: "o", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+  const textIs = (text: string): Step => ({ id: "t", action: "assert", target: { text }, assertion: "visible" } as Step);
+  const lead = () => ir([nav("/lightning/o/Zlead/new"), click("Save"), created, textIs("Zcall the zhot lead")]);
+
+  it("adds a check for each requested picklist value no step checks, under the request's label", () => {
+    const i = lead();
+    requestedFieldChecks(i, org, "Create a Zlead and verify its Zrating shows Zhot, its Zlead Zstatus shows Zworking - Zcontacted");
+    // Right after the Save is confirmed, before the case's own later checks (the Task).
+    expect(i.steps.slice(-3)).toEqual([
+      { id: "sf-check-Zlead-Zstatus", action: "assert", target: { field: "Zlead Zstatus" }, assertion: "text_contains", value: "Zworking - Zcontacted" },
+      { id: "sf-check-Zrating", action: "assert", target: { field: "Zrating" }, assertion: "text_contains", value: "Zhot" },
+      { id: "t", action: "assert", target: { text: "Zcall the zhot lead" }, assertion: "visible" },
+    ]);
+  });
+
+  // Run 2026-11-10T07-19-49-819Z-0ddc0b02: the Account's Type was checked before the Opportunity whose
+  // flow sets it was saved, and again on the Opportunity's page.
+  it("moves a requested check made before the last Save, or on another record, to after the last Save on its record", () => {
+    const early = { id: "e", action: "assert", target: { field: "Ztype" }, assertion: "text_contains", value: "Zcustomer - Zdirect" } as Step;
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, early,
+      nav("/lightning/o/Zopp/new"), click("Save"), created, textIs("Zq Onboarding")]);
+    requestedFieldChecks(i, org, "Create a Zacct, then a Zopp for it, and verify the Zacct's Ztype shows Zcustomer - Zdirect and a Zq Onboarding case appears");
+    expect(i.steps.some((s) => s.id === "e")).toBe(false);
+    expect(i.steps.slice(-3).map((s) => s.target?.url ?? s.target?.field ?? s.target?.text))
+      .toEqual(["${record:Zacct:1}", "Ztype", "Zq Onboarding"]);
+  });
+
+  it("adds nothing for a value already checked, a value that is no option, or a field only set", () => {
+    const i = ir([nav("/lightning/o/Zlead/new"), click("Save"), created, { id: "v", action: "assert", target: { text: "Zhot" }, assertion: "visible" } as Step]);
+    expect(requestedFieldChecks(i, org, "verify its Zrating shows Zhot")).toEqual([]);
+    expect(requestedFieldChecks(lead(), org, "verify its Zrating shows Zlukewarm")).toEqual([]);
+    expect(requestedFieldChecks(lead(), org, "Create a Zlead with Zrating Zhot and save it")).toEqual([]);
+  });
+
+  it("a field two saved objects share is checked only on the one the request names, which it opens", () => {
+    const both = () => ir([nav("/lightning/o/Zacct/new"), click("Save"), created, nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    const named = both();
+    requestedFieldChecks(named, org, "Create a Zacct and a Zopp, and verify the Zacct's Ztype shows Zcustomer - Zdirect");
+    expect(named.steps.slice(-2).map((s) => s.target)).toEqual([{ url: "${record:Zacct:1}" }, { field: "Ztype" }]);
+    expect(requestedFieldChecks(both(), org, "Create a Zacct and a Zopp, and verify the Ztype shows Zcustomer - Zdirect")).toEqual([]);
+  });
+});
+
+// Run 2026-11-10T05-56-59-108Z-b85b16e9: the Account's Type was checked on Details, then the Case
+// "TB Onboarding" was looked for there; related records show on the Related tab.
+describe("fieldChecksOnRecordView: back to Related for a related record", () => {
+  const model = {
+    pages: [{ url: "https://zq.lightning.force.com/lightning/r/Zacct/001zq0000000001AAA/view", elements: [{ role: "tab", name: "Details" }, { role: "tab", name: "Related" }] }],
+    salesforceOrg: { objects: [{ api: "Zacct", label: "Zacct", fields: [{ label: "Ztype", picklist: ["Zdirect"] }] }] },
+  };
+  const created: Step = { id: "o", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+  const fieldIs: Step = { id: "f", action: "assert", target: { field: "Ztype" }, assertion: "text_contains", value: "Zdirect" } as Step;
+  const textIs = (text: string): Step => ({ id: "t", action: "assert", target: { text }, assertion: "visible" } as Step);
+
+  it("clicks Related before text that is no field of the record, after Details", () => {
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, fieldIs, textIs("Zq Onboarding case")]);
+    fieldChecksOnRecordView(i, model, "verify the Zacct's Ztype shows Zdirect and a case Zq Onboarding case appears");
+    expect(i.steps.map((s) => s.target?.name ?? s.target?.field ?? s.target?.text ?? s.value).slice(-6))
+      .toEqual(["Details", "500", "Ztype", "Related", "500", "Zq Onboarding case"]);
+  });
+
+  it("also clicks Related before a 'contains' check of such text", () => {
+    const contains: Step = { id: "t", action: "assert", target: { text: "Zq Onboarding" }, assertion: "text_contains", value: "Zq Onboarding" } as Step;
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, fieldIs, contains]);
+    fieldChecksOnRecordView(i, model, "verify the Zacct's Ztype shows Zdirect and a case Zq Onboarding appears");
+    expect(i.steps.at(-3)?.target?.name).toBe("Related");
+  });
+
+  it("stays on Details for a field's option or a toast", () => {
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, fieldIs, textIs("Zdirect")]);
+    fieldChecksOnRecordView(i, model, "verify Ztype shows Zdirect");
+    expect(i.steps.some((s) => s.target?.name === "Related")).toBe(false);
+  });
+});
+
+// Run 2026-11-10T06-30-57-251Z-32a03bc8: "create an Account, an Opportunity for it, then delete that
+// Account": the step writer left out going back, and the delete ran on the Opportunity page.
+describe("deleteNamedRecord", () => {
+  const org = { objects: [{ api: "Zacct", label: "Zacct" }, { api: "Zopp", label: "Zopp" }] };
+  const created: Step = { id: "o", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+  const flow = (...tail: Step[]) => ir([nav("/lightning/o/Zacct/new"), click("Save"), created,
+    nav("/lightning/o/Zopp/new"), click("Save"), created, ...tail]);
+  const menu = click("Show more actions");
+  const del = click("Delete");
+
+  it("opens the named record this case created before its actions menu, and the guard then allows it", () => {
+    const i = flow(menu, del, click("Delete"));
+    deleteNamedRecord(i, org, "Create a Zacct, then a Zopp for it, then delete that Zacct and verify the error");
+    expect(i.steps.slice(-4).map((s) => s.target?.url ?? s.target?.name)).toEqual(["${record:Zacct:1}", "Show more actions", "Delete", "Delete"]);
+    expect(deleteOutsideOwnRecord(i)).toBeNull();
+  });
+
+  it("reads a casual 'delete an <object>' too (run 2026-11-10T11-00-07-983Z-98a9fe31 deleted the Opportunity)", () => {
+    const i = flow(menu, del, click("Delete"));
+    deleteNamedRecord(i, org, "make sure nobody can delete an Zacct that still has open Zopps");
+    expect(i.steps.at(-4)!.target?.url).toBe("${record:Zacct:1}");
+  });
+
+  it("goes back before the menu even with a wait between the menu and Delete", () => {
+    const wait = { id: "w", action: "wait", value: "500" } as Step;
+    const i = flow(menu, wait, del);
+    deleteNamedRecord(i, org, "then delete that Zacct");
+    expect(i.steps.slice(-4).map((s) => s.target?.url ?? s.target?.name ?? s.value)).toEqual(["${record:Zacct:1}", "Show more actions", "500", "Delete"]);
+  });
+
+  it("adds nothing when the flow is already on that record, or the request names no object it saved", () => {
+    const on = ir([nav("/lightning/o/Zacct/new"), click("Save"), created, menu, del]);
+    expect(deleteNamedRecord(on, org, "Create a Zacct and delete it")).toEqual([]);
+    expect(deleteNamedRecord(flow(menu, del), org, "delete that Zthing")).toEqual([]);
+  });
+
+  it("takes the request's wording for the expected message when the model added quotes", () => {
+    const i = flow(menu, del, { id: "e", action: "assert", target: { text: 'Zq: "This Zacct" cannot be deleted' }, assertion: "visible" } as Step);
+    deleteNamedRecord(i, org, "delete that Zacct and verify the error Zq: This Zacct cannot be deleted is shown");
+    expect(i.steps.at(-1)!.target).toEqual({ text: "Zq: This Zacct cannot be deleted" });
+  });
+});
+
+describe("Enter on a create form", () => {
+  it("becomes the form's Save click; an Enter after a Save stays", () => {
+    const sel = { id: "p", action: "select", target: { name: "Priority" }, value: "High" } as Step;
+    const enter = { id: "e", action: "press", value: "Enter" } as Step;
+    const i = ir([nav("https://x.example/lightning/o/Case/new"), sel, enter, { id: "a", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step]);
+    strengthenSaveOutcome(i);
+    expect(i.steps[2]).toMatchObject({ action: "click", target: { role: "button", name: "Save" } });
+    const j = ir([nav("https://x.example/lightning/o/Case/new"), click("Save"), { ...enter }]);
+    strengthenSaveOutcome(j);
+    expect(j.steps[2].action).toBe("press");
+  });
+});
+
+describe("flowEffectChecks", () => {
+  const org = {
+    objects: [{ api: "Lead", label: "Lead", fields: [
+      { label: "Industry", api: "Industry" }, { label: "Annual Revenue", api: "AnnualRevenue" },
+      { label: "Rating", api: "Rating" }, { label: "Lead Status", api: "Status" }, { label: "Company", api: "Company" },
+    ] }],
+    flows: [{ label: "Zq Routing", object: "Lead", effects: [
+      'branch "Hot": when Industry = Technology and AnnualRevenue >= 1000000 -> sets Rating = Hot, Status = Working; creates a Task "Zq Call now"',
+      'branch "Default Outcome" (none of the above) -> sets Rating = Cold',
+    ] }],
+  };
+  const sel = (name: string, value: string) => ({ id: "s", action: "select", target: { name }, value } as Step);
+  const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+  const lead = () => ir([nav("https://x.example/lightning/o/Lead/new"), fill("Company", "Zq Co"), sel("Industry", "Technology"), fill("Annual Revenue", "1500000"), click("Save"), created]);
+
+  it("checks what the branch the typed values take sets and creates", () => {
+    const i = lead();
+    expect(flowEffectChecks(i, org, "As a rep I want hot tech leads marked hot with a call task")).toHaveLength(1);
+    const added = i.steps.slice(6);
+    expect(added).toEqual(expect.arrayContaining([
+      expect.objectContaining({ target: { field: "Rating" }, value: "Hot" }),
+      expect.objectContaining({ target: { field: "Lead Status" }, value: "Working" }),
+      expect.objectContaining({ target: { text: "Zq Call now" } }),
+    ]));
+  });
+
+  it("takes the default branch when no rule holds, and guesses nothing when a value is unknown", () => {
+    const i = ir([nav("https://x.example/lightning/o/Lead/new"), sel("Industry", "Retail"), fill("Annual Revenue", "10"), click("Save"), created]);
+    flowEffectChecks(i, org, "the lead should be rated cold");
+    expect(i.steps.at(-1)).toMatchObject({ target: { field: "Rating" }, value: "Cold" });
+    const j = ir([nav("https://x.example/lightning/o/Lead/new"), sel("Industry", "Technology"), click("Save"), created]);
+    expect(flowEffectChecks(j, org, "the lead should be rated hot")).toEqual([]);
+  });
+
+  it("adds nothing when the request is not about the outcome, or it is already checked", () => {
+    expect(flowEffectChecks(lead(), org, "create a lead")).toEqual([]);
+    const i = lead();
+    i.steps.push({ id: "x", action: "assert", target: { field: "Rating" }, assertion: "text_contains", value: "Hot" } as Step,
+      { id: "y", action: "assert", target: { field: "Lead Status" }, assertion: "text_contains", value: "Working" } as Step,
+      { id: "z", action: "assert", target: { text: "Zq Call now" }, assertion: "visible" } as Step);
+    expect(flowEffectChecks(i, org, "rated hot")).toEqual([]);
+  });
+});
+
+describe("recordTabClicks", () => {
+  it("turns the model's Related/Details tab click into the record-tab click, and leaves other clicks", () => {
+    const i = ir([{ id: "s9", action: "click", target: { css: "#relatedListTab__item" } } as Step,
+      { id: "s10", action: "click", target: { role: "tab", name: "Details" } } as Step, click("Save")]);
+    expect(recordTabClicks(i)).toHaveLength(2);
+    expect(i.steps[0]).toMatchObject({ id: "sf-related-s9", target: { role: "tab", name: "Related" } });
+    expect(i.steps[1]).toMatchObject({ id: "sf-details-s10", target: { role: "tab", name: "Details" } });
+    expect(i.steps[2]).toMatchObject({ id: "c", target: { name: "Save" } });
+  });
+});
+
+describe("inventedRecordLinks", () => {
+  it("drops a link to a record no step typed, and what follows, once a check has run", async () => {
+    const { inventedRecordLinks } = await import("../src/stages/salesforceGuidance.js");
+    const typedName = { id: "f1", action: "fill", target: { name: "Opportunity Name" }, value: "Zq Deal {{uid}}" } as Step;
+    const check = { id: "a1", action: "assert", target: { text: "Zq Onboarding" }, assertion: "visible" } as Step;
+    const invented = { id: "c9", action: "click", target: { role: "link", name: "Zq Other {{uid}}" } } as Step;
+    const i = ir([typedName, click("Save"), check, invented, { ...check, id: "a2" }]);
+    expect(inventedRecordLinks(i)).toHaveLength(1);
+    expect(i.steps.map((s) => s.id)).toEqual(["f1", "c", "a1"]);
+    const typedLink = ir([typedName, check, { ...invented, target: { role: "link", name: "Zq Deal {{uid}}" } }]);
+    expect(inventedRecordLinks(typedLink)).toEqual([]);
+    const noCheckYet = ir([typedName, invented]);
+    expect(inventedRecordLinks(noCheckYet)).toEqual([]);
+  });
+});
+
+describe("requestedTextChecks", () => {
+  const org = { objects: [{ api: "Zacct", label: "Zacct", fields: [{ label: "Ztype", api: "Ztype__c", type: "picklist" }] }] };
+  const fieldCheck = { id: "f", action: "assert", target: { field: "Ztype" }, assertion: "text_contains", value: "Zq Direct" } as Step;
+  it("adds a check for a value the request verifies that no step checks, after the last field check", async () => {
+    const { requestedTextChecks } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), fieldCheck, nav("/lightning/o/Zacct/list")]);
+    expect(requestedTextChecks(i, org as any, "Create a Zacct and verify its Ztype shows Zq Direct and a case Zq Onboarding Item appears")).toHaveLength(1);
+    expect(i.steps[3]).toMatchObject({ action: "assert", target: { text: "Zq Onboarding Item" }, assertion: "visible" });
+  });
+  it("adds nothing when every verified value is checked, or names a field", async () => {
+    const { requestedTextChecks } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), fieldCheck]);
+    expect(requestedTextChecks(i, org as any, "Create a Zacct and verify Ztype shows Zq Direct")).toEqual([]);
+  });
+});
+
+describe("flowEffectChecks: a checkbox the flow ticks", () => {
+  it("is not checked on screen (a layout may not show it); the API check reads it", async () => {
+    const org = { objects: [{ api: "Zcase", label: "Zcase", fields: [{ label: "Zpri", api: "Zpri", type: "picklist" }, { label: "Zesc", api: "IsZesc", type: "boolean" }] }],
+      flows: [{ label: "Zq Esc", object: "Zcase", effects: ["only when Zpri = High", "sets IsZesc = true"] }] };
+    const i = ir([nav("/lightning/o/Zcase/new"), { id: "p", action: "select", target: { name: "Zpri" }, value: "High" } as Step, click("Save")]);
+    flowEffectChecks(i, org, "high priority cases should be escalated automatically (Zq Esc)");
+    expect(i.steps.some((s) => s.target?.field === "Zesc")).toBe(false);
+    const { flowSetChecks, sameValue } = await import("../src/stages/salesforceOracles.js");
+    expect(flowSetChecks(i, org as any)).toEqual([{ object: "Zcase", n: 1, values: [{ label: "Zesc", api: "IsZesc", type: "boolean", value: "true" }] }]);
+    expect(sameValue("boolean", "true", true)).toBe(true);
+  });
+});
+
+describe("noTokensInRuleFields", () => {
+  it("keeps the unique code out of a field a validation rule reads, and leaves other fields", async () => {
+    const { noTokensInRuleFields } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zlead", label: "Zlead", fields: [{ label: "Zco", api: "Company" }, { label: "Zlast", api: "LastName" }],
+      validationRules: [{ name: "r", message: "m", condition: "LEN(Company) < 3" }] }] };
+    const i = ir([nav("/lightning/o/Zlead/new"), fill("Zco", "AB {{uid}}"), fill("Zlast", "Zq {{uid}}"), click("Save")]);
+    expect(noTokensInRuleFields(i, org as any)).toHaveLength(1);
+    expect(i.steps[1].value).toBe("AB");
+    expect(i.steps[2].value).toBe("Zq {{uid}}");
+  });
+});
+
+describe("pathStageClicks", () => {
+  const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Stage", api: "StageName", picklist: ["Zq One", "Zq Two"] }] }] };
+  it("adds Mark as Current Stage after a path stage click, and requested checks go after it", async () => {
+    const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
+    const pick = { id: "p", action: "select", target: { name: "Stage" }, value: "Zq One" } as Step;
+    const echo = { id: "e", action: "assert", target: { text: "Stage Zq One" }, assertion: "visible" } as Step;
+    const stage = { id: "s9", action: "click", target: { role: "button", name: "Zq Two" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), pick, echo, click("Save"), stage]);
+    expect(pathStageClicks(i, org as any)).toHaveLength(2);
+    expect(i.steps.map((s) => s.target?.name ?? s.value ?? s.id)).toEqual([undefined, "Stage", "Save", "Zq Two", "Mark as Current Stage", "1500"].map((x, k) => k === 0 ? i.steps[0].target?.name ?? i.steps[0].value ?? i.steps[0].id : x));
+    expect(pathStageClicks(i, org as any)).toEqual([]);
+  });
+});
+
+describe("seededLookups", () => {
+  it("fills an empty lookup to a seeded object with the seeded record's name", async () => {
+    const { seededLookups } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zcon", label: "Zcon", fields: [{ label: "Zacct ID", api: "AccountId", lookup: "Zacct" }] }],
+      seeded: [{ object: "Zacct", label: "Zacct", name: "TB Seed ab12cd" }] };
+    const look = { id: "l", action: "select", target: { role: "combobox", name: "Zacct Name", lookup: true }, value: "" } as Step;
+    const i = ir([nav("/lightning/o/Zcon/new"), look, click("Save")]);
+    expect(seededLookups(i, org as any)).toHaveLength(2);
+    expect(i.steps[1].value).toBe("TB Seed ab12cd");
+    expect(i.steps.at(-1)).toMatchObject({ target: { text: "TB Seed ab12cd" }, assertion: "visible" });
+  });
+});
+
+describe("the record tracker counts a Clone as a new record", () => {
+  it("names the copy by the record it was cloned from", async () => {
+    const { recordPages } = await import("../src/stages/salesforceFrontdoor.js");
+    const t = recordPages();
+    t.visit("https://x.example/lightning/r/Opportunity/006zq0000000001AAA/view");
+    t.visit("https://x.example/lightning/r/Opportunity/006zq0000000001AAA/clone");
+    t.visit("https://x.example/lightning/r/Opportunity/006zq0000000002AAA/view");
+    expect(t.made()).toEqual({ Opportunity: ["006zq0000000002AAA"] });
+  });
+});
+
+describe("pathStageClicks: the stage the request names", () => {
+  const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Stage", api: "StageName", picklist: ["Zq One", "Zq Two", "Closed Won"] }] }] };
+  it("turns Mark Stage as Complete into the way to the named stage, through the Closed dialog for a closing one", async () => {
+    const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
+    const mark = { id: "m", action: "click", target: { role: "button", name: "Mark Stage as Complete" } } as Step;
+    const closed = ir([nav("/lightning/o/Zopp/new"), click("Save"), mark]);
+    pathStageClicks(closed, org as any, "Create a Zopp with Stage Zq One, then use the path to close it as Closed Won");
+    expect(closed.steps.slice(2).map((s) => s.target?.name ?? s.value)).toEqual(["Closed", "Select Closed Stage", "1000", "Stage", "Save", "1500"]);
+    expect(closed.steps[5].value).toBe("Closed Won");
+    const open = ir([nav("/lightning/o/Zopp/new"), click("Save"), { ...mark }]);
+    pathStageClicks(open, org as any, "use the path to move it to Zq Two");
+    expect(open.steps.slice(2).map((s) => s.target?.name ?? s.value)).toEqual(["Zq Two", "Mark as Current Stage", "1500"]);
+  });
+});
+
+describe("placeholderMessages", () => {
+  it("checks the whole message with the typed value in place of <Field>", async () => {
+    const { placeholderMessages } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([fill("Zlast", "Doe {{uid}}"), click("Next"), { id: "a", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step]);
+    expect(placeholderMessages(i, "enter a Zlast, click Next, and verify the message Zcontact <Zlast> was created")).toHaveLength(1);
+    expect(i.steps[2]).toMatchObject({ target: { text: "was created" }, assertion: "text_contains", value: "Zcontact Doe {{uid}} was created" });
+    expect(placeholderMessages(i, "verify the message Zcontact <Zother> was created")).toEqual([]);
+  });
+});
+
+describe("eventRecordSearch", () => {
+  it("finds a record a published event's flow made through global search, once", async () => {
+    const { eventRecordSearch } = await import("../src/stages/salesforceGuidance.js");
+    const org = { flows: [{ label: "Zq Ev", api: "Zq_Ev", type: "platform-event", effects: ['creates a Account "TB Event ab12cd"'] }] };
+    const check = { id: "a", action: "assert", target: { text: "TB Event ab12cd" }, assertion: "visible" } as Step;
+    const i = ir([click("Zq List"), check]);
+    expect(eventRecordSearch(i, org as any)).toHaveLength(1);
+    expect(i.steps.map((s) => s.id)).toEqual(["c", "sf-ev-home", "sf-ev-search", "sf-ev-wait", "sf-ev-type", "sf-ev-enter", "sf-ev-wait2", "a"]);
+    expect(eventRecordSearch(i, org as any)).toEqual([]);
   });
 });

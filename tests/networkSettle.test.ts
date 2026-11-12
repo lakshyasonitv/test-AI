@@ -195,3 +195,13 @@ describe("a create form is snapshotted only once its fields are in the dialog", 
     } finally { await page.close(); }
   });
 });
+
+describe("waitForRecordPage", () => {
+  it("returns at once, waiting for nothing, on a page that is no Salesforce record page", async () => {
+    const { waitForRecordPage } = await import("../src/stages/networkSettle.js");
+    let asked = false;
+    const page = { url: () => "https://zq.lightning.force.com/lightning/o/Account/new", getByRole: () => { asked = true; throw new Error("not called"); } } as any;
+    expect(await waitForRecordPage(page)).toBe(false);
+    expect(asked).toBe(false);
+  });
+});

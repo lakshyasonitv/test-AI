@@ -65,6 +65,14 @@ export function runRecords(runDir: string): RecordRef[] {
   return [...seen.values()];
 }
 
+/** Children that block or outlive their parent's delete, by lookup field. Tasks and Events go with
+ *  their parent by themselves. ponytail: standard objects only; read childRelationships when a
+ *  custom child shows up. */
+const CHILDREN: Record<string, [string, string][]> = {
+  Account: [["Opportunity", "AccountId"], ["Contact", "AccountId"], ["Case", "AccountId"]],
+  Contact: [["Case", "ContactId"]],
+};
+
 export interface CleanupReport { deleted: RecordRef[]; skipped: RecordRef[]; failed: { ref: RecordRef; error: string }[]; reason?: string }
 
 type ApiSession = Required<Pick<FrontdoorSession, "apiGet" | "apiDelete">>;
@@ -82,9 +90,36 @@ export async function cleanupRecords(session: ApiSession, records: RecordRef[], 
     return { ...report, skipped: records, reason: "the org did not say which user is connected, so nothing was deleted" };
   }
   const sinceIso = since.toISOString().replace(/\.\d{3}Z$/, "Z");
+  // Children no page showed: an Opportunity made from the Account's "New Opportunity" dialog (run
+  // 2026-11-10T14-18-09-285Z-5df7a7ee), a Case a flow made on it (2026-11-10T14-03-50-411Z-95d5ec39). Found under the run's own
+  // parents, by the same rule (this user, since the run began), and added last so they go first.
+  records = [...records];
+  for (const parent of [...new Set(records.map((r) => r.object))]) {
+    const ids = records.filter((r) => r.object === parent).map((r) => `'${r.id}'`).join(",");
+    if (!ids || !/^[A-Za-z][A-Za-z0-9_]*$/.test(parent)) continue;
+    // The standard children above, plus the parent's CUSTOM children the org does not delete with it
+    // (its describe's childRelationships, cascadeDelete false).
+    const kids: [string, string][] = [...(CHILDREN[parent] ?? [])];
+    try {
+      for (const r of (await session.apiGet(`/sobjects/${parent}/describe`))?.childRelationships ?? []) {
+        if (/__c$/.test(r?.childSObject ?? "") && r?.field && !r.cascadeDelete && !kids.some(([c]) => c === r.childSObject)) kids.push([r.childSObject, r.field]);
+      }
+    } catch { /* no describe: the standard children only */ }
+    for (const [child, field] of kids) {
+      try {
+        const q = `SELECT Id FROM ${child} WHERE ${field} IN (${ids}) AND CreatedById = '${me}' AND CreatedDate >= ${sinceIso}`;
+        for (const x of (await session.apiGet(`/query?q=${encodeURIComponent(q)}`))?.records ?? []) {
+          const id = String(x?.Id ?? "");
+          if (/^[A-Za-z0-9]{15,18}$/.test(id) && !records.some((r) => r.id.slice(0, 15) === id.slice(0, 15))) records.push({ object: child, id });
+        }
+      } catch { /* a child the org will not list: the parent's delete then reports why */ }
+    }
+  }
   const byObject = new Map<string, RecordRef[]>();
   for (const r of records) byObject.set(r.object, [...(byObject.get(r.object) ?? []), r]);
-  for (const [object, refs] of byObject) {
+  // Children before parents: objects in the reverse of the order the run first reached them (the
+  // Opportunity made after its Account goes first; TB Account Delete Guard refuses the other order).
+  for (const [object, refs] of [...byObject].reverse()) {
     let confirmed = new Set<string>();
     try {
       const ids = refs.map((r) => `'${r.id}'`).join(",");
@@ -118,4 +153,31 @@ export function runStartedAt(runId: string): Date | null {
   if (!m) return null;
   const d = new Date(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * What a published platform event's flow made (salesforceSeed.ts): saved by the Automated Process user,
+ * so the "this user created it" rule above never matches it (run 2026-11-10T15-28-58-549Z-d2677d83 left
+ * its "TB Event a8e8ic" Account). Found instead by the run-unique name seeding gave it ("TB Event <uid>"),
+ * created since the run began; nothing without the "TB Event " prefix is ever touched.
+ */
+export async function cleanupSeeded(session: ApiSession, made: { object: string; name: string }[], since: Date): Promise<CleanupReport> {
+  const report: CleanupReport = { deleted: [], skipped: [], failed: [] };
+  const sinceIso = since.toISOString().replace(/\.\d{3}Z$/, "Z");
+  for (const m of made) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(m.object) || !/^TB Event [a-z0-9]{4,12}$/.test(m.name)) continue;
+    let ids: string[] = [];
+    try {
+      const q = `SELECT Id FROM ${m.object} WHERE Name = '${m.name}' AND CreatedDate >= ${sinceIso}`;
+      ids = ((await session.apiGet(`/query?q=${encodeURIComponent(q)}`))?.records ?? []).map((x: any) => String(x?.Id));
+    } catch (err) {
+      report.failed.push({ ref: { object: m.object, id: m.name }, error: (err as Error)?.message ?? String(err) });
+      continue;
+    }
+    for (const id of ids.filter((x) => /^[A-Za-z0-9]{15,18}$/.test(x))) {
+      try { await session.apiDelete(`/sobjects/${m.object}/${id}`); report.deleted.push({ object: m.object, id }); }
+      catch (err) { report.failed.push({ ref: { object: m.object, id }, error: (err as Error)?.message ?? String(err) }); }
+    }
+  }
+  return report;
 }

@@ -22,6 +22,8 @@ import type { SalesforceOrgModel } from "../schema/appModel.js";
 
 /** Objects read per run: the app's own tabs, in nav order. */
 const MAX_OBJECTS = 20; // nav objects + custom objects; the prompt block has its own character ceiling
+/** Values kept per picklist. */
+const MAX_PICKLIST_VALUES = 200;
 /** Fields kept per object (required first, then picklists and lookups, then the rest). */
 const MAX_FIELDS = 40;
 /** Fields every object has and no test is about. */
@@ -84,7 +86,10 @@ async function readObject(apiGet: ApiGet, api: string): Promise<SalesforceOrgMod
       return {
         label: String(f.label ?? f.apiName), api: f.apiName, type: String(f.dataType ?? ""),
         ...(required ? { required: true } : {}),
-        ...(values?.length ? { picklist: values.slice(0, 25) } : {}),
+        // ponytail: 200 values covers every standard picklist (Industry has 30+; 25 cut "Technology" and a
+        // test picked "Biotechnology", run 2026-11-10T05-05-39-201Z-52ce7aed). A huge global value set
+        // would need the prompt to show only the values a request names.
+        ...(values?.length ? { picklist: values.slice(0, MAX_PICKLIST_VALUES) } : {}),
         ...(lookup ? { lookup } : {}),
         ...dependency,
       };
@@ -238,15 +243,113 @@ export function flowEffects(meta: any): string[] {
       if (ref.startsWith("$Record.")) out.push(`sets ${ref.slice(8)} = ${flowValue(it.value)}`);
     }
   }
-  for (const c of meta?.recordCreates ?? []) out.push(`creates a ${c?.object ?? "record"}`);
-  if ((meta?.decisions ?? []).length) out.push(`branches on ${meta.decisions.length} decision(s): what it does depends on the record's values`);
-  return out.slice(0, 8);
+  for (const c of meta?.recordCreates ?? []) out.push(createdLine(c));
+  for (const e of meta?.customErrors ?? []) {
+    const msg = (Array.isArray(e?.customErrorMessages) ? e.customErrorMessages : [e?.customErrorMessages])
+      .map((m: any) => m?.errorMessage).find((m: any) => typeof m === "string" && m.trim());
+    if (msg) out.push(`can block the save with the error "${msg}"`);
+  }
+  if ((meta?.decisions ?? []).length) {
+    const branches = flowBranches(meta);
+    out.push(...(branches.length ? branches : [`branches on ${meta.decisions.length} decision(s): what it does depends on the record's values`]));
+  }
+  return out.slice(0, 12);
+}
+
+/** "creates a Task "TB Review large deal"": the record's Subject or Name when the flow gives it as text. */
+function createdLine(c: any): string {
+  const named = (c?.inputAssignments ?? []).find((a: any) => /^(Subject|Name)$/.test(a?.field) && a?.value?.stringValue);
+  if (named) return `creates a ${c?.object ?? "record"} "${named.value.stringValue}"`;
+  // Named from the triggering record or event ("Name = $Record.Message__c"): seeding fills it in.
+  const from = (c?.inputAssignments ?? []).find((a: any) => /^(Subject|Name)$/.test(a?.field) && /^\$Record\.\w+$/.test(a?.value?.elementReference ?? ""));
+  return `creates a ${c?.object ?? "record"}${from ? ` with ${from.field} = the triggering record's ${from.value.elementReference.slice(8)}` : ""}`;
+}
+
+/** A flow condition as plain words: "$Record.AnnualRevenue >= 1000000"; a lookup's null test as found / not found. */
+function conditionText(c: any, lookups: Map<string, any>): string {
+  const left = String(c?.leftValueReference ?? "");
+  const lookup = lookups.get(left.split(".")[0]);
+  if (lookup && c?.operator === "IsNull") {
+    const found = c?.rightValue?.booleanValue === false || c?.rightValue?.booleanValue === "false";
+    const where = (lookup.filters ?? []).map((f: any) => `${f.field} ${FLOW_OPS[f.operator] ?? f.operator} ${flowValue(f.value).replace(/^\$Record\./, "the record's ")}`).join(" and ");
+    return `${found ? "a" : "no"} ${lookup.object ?? "record"}${where ? ` with ${where}` : ""} exists`;
+  }
+  return `${left.replace(/^\$Record\./, "")} ${FLOW_OPS[c?.operator] ?? c?.operator} ${flowValue(c?.rightValue)}`.trim();
+}
+
+/**
+ * Phase B: what each branch of a flow's decisions does, as one line per branch: the branch's conditions,
+ * then the effects on the path it leads to (field updates, records created with their Subject or Name,
+ * the error that blocks the save), up to the next decision. So a case can set the values that take each
+ * branch and check that branch's own outcome, rather than "it depends" (TB Lead Qualification Routing:
+ * Hot, Warm and Cold looked alike). Follows connectors only; screens and loops are walked through once.
+ */
+export function flowBranches(meta: any): string[] {
+  const byName = new Map<string, { kind: string; el: any }>();
+  for (const kind of ["assignments", "recordUpdates", "recordCreates", "recordLookups", "customErrors", "decisions", "loops", "screens", "subflows"]) {
+    for (const el of meta?.[kind] ?? []) if (el?.name) byName.set(el.name, { kind, el });
+  }
+  const lookups = new Map([...byName.values()].filter((n) => n.kind === "recordLookups").map((n) => [n.el.name, n.el] as [string, any]));
+  const nextOf = (el: any): string[] => [el?.connector, el?.nextValueConnector, el?.noMoreValuesConnector]
+    .map((c) => c?.targetReference).filter((t): t is string => typeof t === "string");
+  const effectsFrom = (start: string | undefined): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const queue = start ? [start] : [];
+    while (queue.length && out.length < 6) {
+      const name = queue.shift()!;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const node = byName.get(name);
+      if (!node || node.kind === "decisions") continue;
+      const el = node.el;
+      if (node.kind === "recordUpdates") {
+        const sets = (el.inputAssignments ?? []).map((a: any) => `${a.field} = ${flowValue(a.value)}`);
+        if (sets.length) out.push(`sets ${sets.join(", ")}${el.object && el.inputReference !== "$Record" ? ` on ${el.object}` : ""}`);
+      } else if (node.kind === "assignments") {
+        const sets = (el.assignmentItems ?? []).filter((it: any) => String(it?.assignToReference ?? "").startsWith("$Record."))
+          .map((it: any) => `${String(it.assignToReference).slice(8)} = ${flowValue(it.value)}`);
+        if (sets.length) out.push(`sets ${sets.join(", ")}`);
+      } else if (node.kind === "recordCreates") {
+        out.push(createdLine(el));
+      } else if (node.kind === "customErrors") {
+        const msg = (Array.isArray(el.customErrorMessages) ? el.customErrorMessages : [el.customErrorMessages])
+          .map((m: any) => m?.errorMessage).find((m: any) => typeof m === "string" && m.trim());
+        out.push(msg ? `blocks the save with the error "${msg}"` : "blocks the save with an error");
+      }
+      queue.push(...nextOf(el));
+    }
+    return out;
+  };
+  const lines: string[] = [];
+  for (const d of meta?.decisions ?? []) {
+    if (!(d?.rules ?? []).length) continue;   // nothing to branch on: the caller keeps its generic line
+    for (const r of d?.rules ?? []) {
+      const logic = String(r?.conditionLogic ?? "and").toLowerCase() === "or" ? " or " : " and ";
+      const conds = (r?.conditions ?? []).map((c: any) => conditionText(c, lookups)).join(logic);
+      const effects = effectsFrom(r?.connector?.targetReference);
+      lines.push(`branch "${r?.label ?? r?.name}": when ${conds || "its condition holds"} -> ${effects.join("; ") || "does nothing more"}`);
+    }
+    const otherwise = effectsFrom(d?.defaultConnector?.targetReference);
+    lines.push(`branch "${d?.defaultConnectorLabel ?? "otherwise"}" (none of the above) -> ${otherwise.join("; ") || "does nothing more"}`);
+  }
+  return lines;
 }
 
 const RECORD_TRIGGER: Record<string, string> = { Create: "create", Update: "update", CreateAndUpdate: "create or update", Delete: "delete" };
 
-/** Active flows, record-triggered first (what a create or edit case sees happen). Undefined when the org refused. */
-async function readFlows(apiGet: ApiGet): Promise<SalesforceOrgModel["flows"]> {
+/** Whether the request names this flow by its label or API name (whole words). */
+export function flowNamedIn(request: string, r: { Label?: unknown; ApiName?: unknown }): boolean {
+  const words = (s: unknown) => ` ${String(s ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+  const req = words(request);
+  return [r.Label, r.ApiName].some((n) => words(n).trim() !== "" && req.includes(words(n)));
+}
+
+/** Active flows: the ones the request names first (by label or API name), then record-triggered (what a
+ *  create or edit case sees happen). The cap must never drop a flow the request is about: with six
+ *  record-triggered flows in the org, the screen flow a request named was cut and never opened
+ *  (run 2026-11-10T05-00-45-973Z-f92a47fc). Undefined when the org refused. */
+async function readFlows(apiGet: ApiGet, request = ""): Promise<SalesforceOrgModel["flows"]> {
   const q = "SELECT ApiName, Label, ProcessType, TriggerType, RecordTriggerType, TriggerObjectOrEventLabel, ActiveVersionId "
     + "FROM FlowDefinitionView WHERE IsActive = true";
   const res = await tryGet(apiGet, `/query?q=${encodeURIComponent(q)}`);
@@ -256,24 +359,30 @@ async function readFlows(apiGet: ApiGet): Promise<SalesforceOrgModel["flows"]> {
       const trigger = String(r?.TriggerType ?? "");
       const type = /^Record(After|Before)(Save|Delete)$/.test(trigger) ? "record-triggered"
         : trigger === "Scheduled" ? "scheduled"
+        : trigger === "PlatformEvent" ? "platform-event"
         : r?.ProcessType === "Flow" ? "screen"
         : r?.ProcessType === "AutoLaunchedFlow" ? "autolaunched" : String(r?.ProcessType ?? "flow").toLowerCase();
       return { r, type };
     })
-    .sort((a: any, b: any) => Number(b.type === "record-triggered") - Number(a.type === "record-triggered"))
+    .sort((a: any, b: any) => Number(flowNamedIn(request, b.r)) - Number(flowNamedIn(request, a.r))
+      || Number(b.type === "record-triggered") - Number(a.type === "record-triggered"))
     .slice(0, MAX_FLOWS);
   const flows: NonNullable<SalesforceOrgModel["flows"]> = [];
   for (const { r, type } of rows) {
     if (typeof r?.ApiName !== "string") continue;
     let effects: string[] = [];
+    let event: string | undefined;
     if (typeof r.ActiveVersionId === "string" && /^[a-zA-Z0-9]{15,18}$/.test(r.ActiveVersionId)) {
       const one = await tryGet(apiGet, `/tooling/query?q=${encodeURIComponent(`SELECT Metadata FROM Flow WHERE Id = '${r.ActiveVersionId}'`)}`);
       effects = flowEffects(one?.records?.[0]?.Metadata);
+      const ev = one?.records?.[0]?.Metadata?.start?.object;
+      if (type === "platform-event" && typeof ev === "string" && /^\w+__e$/.test(ev)) event = ev;
     }
     flows.push({
       label: String(r.Label ?? r.ApiName), api: r.ApiName, type,
       ...(type === "record-triggered" && r.TriggerObjectOrEventLabel ? { object: String(r.TriggerObjectOrEventLabel) } : {}),
       ...(RECORD_TRIGGER[r.RecordTriggerType] ? { when: RECORD_TRIGGER[r.RecordTriggerType] } : {}),
+      ...(event ? { event } : {}),
       ...(effects.length ? { effects } : {}),
     });
   }
@@ -323,7 +432,7 @@ export async function readSalesforceOrgModel(
     if (r?.length) o.validationRules = r;
   }
   const userLocale = await readUserLocale(apiGet);
-  const flows = await readFlows(apiGet);
+  const flows = await readFlows(apiGet, request);
   if (deepDiscoveryEnabled()) {
     const deep = await readDeepFacts(apiGet, { objects, validationRulesRead: rules !== null }, request).catch(() => null);
     if (deep) console.log(`[org model] deep read: ${deep.objects} object(s), ${deep.calls} API call(s), ${(deep.ms / 1000).toFixed(1)} s`);
@@ -389,6 +498,25 @@ export function createFormUrls(lightningOrigin: string, org: Pick<SalesforceOrgM
   return [...rtForms, ...ordered.filter((o) => o.createable).map(base)].slice(0, MAX_CREATE_FORMS);
 }
 
+/** Screen-flow run pages discovery opens per run. */
+const MAX_SCREEN_FLOWS = 2;
+
+/**
+ * Phase B: the run page (`/flow/<ApiName>`) of each screen flow the request names, by its label or
+ * API name. A screen flow has no link or button a crawl follows to it, so without this its screens
+ * were never modelled and the case wrote a plain record create instead of running the flow
+ * (run 2026-11-10T04-44-28-274Z-0142c5f5, "TB New Contact Screen": reported incomplete).
+ */
+export function screenFlowUrls(lightningOrigin: string, org: Pick<SalesforceOrgModel, "flows">, request = ""): string[] {
+  const words = (s: string) => ` ${s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+  const req = words(request);
+  return (org.flows ?? [])
+    .filter((f) => f.type === "screen" && /^\w+$/.test(f.api)
+      && (req.includes(words(f.label)) || req.includes(words(f.api)) || request.includes(`/flow/${f.api}`)))
+    .slice(0, MAX_SCREEN_FLOWS)
+    .map((f) => `${lightningOrigin.replace(/\/$/, "")}/flow/${f.api}`);
+}
+
 /** The create form of one record type: Lightning opens it directly, with no chooser. */
 export function recordTypeFormUrl(createForm: string, rt: { id: string }): string {
   return `${createForm}?recordTypeId=${encodeURIComponent(rt.id)}`;
@@ -415,7 +543,7 @@ export async function recordPageUrls(
   lightningOrigin: string, org: Pick<SalesforceOrgModel, "objects">, request: string, apiGet: ApiGet,
 ): Promise<string[]> {
   const out: string[] = [];
-  for (const o of objectsNamedIn(request, org).slice(0, MAX_RECORD_PAGES)) {
+  for (const o of objectsNamedIn(request, org, true).slice(0, MAX_RECORD_PAGES)) {
     if (!/^[A-Za-z0-9_]+$/.test(o.api)) continue;
     const q = `SELECT Id FROM ${o.api} ORDER BY LastModifiedDate DESC LIMIT 1`;
     const id = (await tryGet(apiGet, `/query?q=${encodeURIComponent(q)}`))?.records?.[0]?.Id;
@@ -432,10 +560,13 @@ export async function recordPageUrls(
  * first, each match consuming its words: "Broker Lead" names the custom object, not also Lead.
  */
 export function objectsNamedIn<O extends { api: string; label: string; labelPlural?: string }>(
-  request: string, org: { objects: O[] } | undefined,
+  request: string, org: { objects: O[] } | undefined, anyCase = false,
 ): O[] {
   if (!org?.objects.length || !request.trim()) return [];
-  const words = (s: string) => ` ${s.replace(/[^\p{L}\p{N}_]+/gu, " ").trim()} `;
+  // anyCase, for what discovery opens only: people write "a high priority account" (run
+  // 2026-11-10T10-08-27-191Z-4830927e: the capitalised-only match modelled no record page). An extra
+  // page from "test cases" costs one load; dropping cases (testCases) stays case-sensitive.
+  const words = (s: string) => ` ${(anyCase ? s.toLowerCase() : s).replace(/[^\p{L}\p{N}_]+/gu, " ").trim()} `;
   let rest = words(request);
   const names = org.objects.flatMap((o) => [o.label, o.labelPlural, o.api].filter((n): n is string => !!n).map((n) => ({ o, n: words(n) })))
     .sort((a, b) => b.n.length - a.n.length);
@@ -449,6 +580,9 @@ export function objectsNamedIn<O extends { api: string; label: string; labelPlur
 }
 
 /** The org model as a compact prompt block for the case writer. "" when there is nothing to say. */
+/** Characters the flows block may take, on top of the objects' ceiling. */
+const MAX_FLOWS_CHARS = 5000;
+
 export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars = 9000): string {
   if (!org?.objects.length) return "";
   const lines: string[] = [];
@@ -466,7 +600,7 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
     const createForm = `/lightning/o/${o.api}/new`;
     const rts = (o.recordTypes ?? []).map((rt) => rt.default
       ? `${rt.name} (default: ${createForm})` : `${rt.name} (${recordTypeFormUrl(createForm, rt)})`);
-    const looks = o.fields.filter((f) => f.lookup).map((f) => `${f.label} -> ${f.lookup}`);
+    const looks = o.fields.filter((f) => f.lookup).map((f) => `${f.label} -> ${f.lookup}${f.lookupFilter ? ` (only records where ${f.lookupFilter})` : ""}`);
     // Session 102 (TEST_DATA_ENABLED): each typed field's type, so values are written for the field
     // ("Phone (Phone)", "Close Date (Date)") rather than guessed from its label.
     const typed = testDataEnabled()
@@ -490,7 +624,8 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
       typed.length ? `  field types: ${typed.join(", ")}` : "",
       o.listViews?.length ? `  list views: ${o.listViews.join(", ")}` : "",
       ...(o.validationRules ?? []).map((r) => `  validation rule ${r.name}${r.field ? ` (on ${r.field})` : ""}: "${r.message}"`
-        + (r.condition ? `\n    fires when: ${r.condition}` : "")),
+        + (r.condition ? `\n    fires when: ${r.condition}` : "")
+        + (r.condition && ruleBoundaries(r.condition).length ? `\n    boundary: ${ruleBoundaries(r.condition).join("; ")}` : "")),
     ].filter(Boolean);
     lines.push(parts.join("\n"));
   }
@@ -498,14 +633,51 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
   // Phase B: what runs by itself after a save. A case about it saves the record so the flow's
   // conditions hold, then asserts the effect on the record page (or the record it creates).
   const flows = (org.flows ?? []).map((f) => `- flow "${f.label}" (${f.type}${f.object ? ` on ${f.object}` : ""}${f.when ? `, on ${f.when}` : ""})`
+    + (f.type === "screen" ? `, runs at /flow/${f.api}` : "")
     + (f.effects?.length ? `: ${f.effects.join("; ")}` : ""));
-  if (flows.length) lines.push(`automation (active flows; a record-triggered flow's effect shows on the record page after the Save):\n${flows.join("\n")}`);
+  // Outside the objects' character ceiling, with its own: the flows came last and the ceiling cut them
+  // off on every org with several objects, so no case ever saw a flow (run 2026-11-10T08-12-42-083Z-1eb7bfea
+  // invented branches the flow does not have). The flows a request names are first in org.flows.
+  let flowsBlock = "";
+  if (flows.length) flowsBlock = (`automation (active flows; a record-triggered flow's effect shows on the record page after the Save):\n${flows.join("\n")}`
+    // Phase B: a request about a flow ("test the TB Lead Qualification Routing flow", "every branch of")
+    // gets a case per branch listed above, each with the values that take THAT branch.
+    + `\nA request that asks to test one of these flows (by its name, or "every branch" / "all paths" of it) gets ONE case per branch listed for it: the case sets the record's values so that branch's "when" holds and no earlier branch's does, saves, and checks that branch's own effects (the field values it sets, the record it creates by its Subject or Name, or, for a branch that blocks the save, its exact error message). A flow with no branches gets one case that meets its "only when" and one that does not (the effect must then be absent).`);
+  if (flowsBlock.length > MAX_FLOWS_CHARS) flowsBlock = flowsBlock.slice(0, MAX_FLOWS_CHARS).replace(/\n[^\n]*$/, "") + "\n- (more flows not shown)";
   let body = lines.join("\n");
   if (body.length > maxChars) body = body.slice(0, maxChars).replace(/\n[^\n]*$/, "") + "\n- (more objects not shown)";
+  if (flowsBlock) body += `\n${flowsBlock}`;
+  // Phase D: records made through the API before the test, for a case about an "existing" one.
+  if (org.seeded?.length) body += `\nrecords Testbench ALREADY CREATED for this test, through the API (use them as the "existing" record the request means; pick them in a lookup by this exact name; never create them again): ${org.seeded.map((r) => `${r.label} "${r.name}"`).join(", ")}`;
   return `
 
 Salesforce org model (read from the org's own metadata API${org.app ? ` for the app "${org.app}"` : ""} — authoritative):
 ${body}
 The run is already signed in to this org through its connection (no login page exists in the model): write no login, username or password steps.
-Use it: name objects, fields, list views and picklist values exactly as written above; to create a record, open its "create form" path above directly by URL (its fields are in the application model on that page; never route through the App Launcher or the navigation to reach it); a case that creates a record fills every "required on create" field with a realistic value and the fields a validation rule reads, and NO other field unless the request names it (a lookup needs an existing record and is left alone unless required); when the request names several objects, write one create case PER object, never one case that creates them all; a picklist step picks only a value listed for it, and a picklist that "depends on" another is set AFTER its controlling field, to a value offered under the controlling value chosen; a case about one record type opens THAT record type's create form path above (the plain create form opens only the default one), and a case that does not name one uses the plain create form; a case that must SAVE successfully also keeps every validation rule's condition FALSE (a rule that fires when Email and Phone are both blank means the case fills one of them); each validation rule above deserves a negative case whose expected result is its exact message, and that case must make its condition true ("fires when": fill every field the formula reads, e.g. Country as well as Phone) while filling every required field.${org.validationRulesRead ? "" : " (Validation rules could not be read in this org, so their absence above means nothing.)"}`;
+Use it: name objects, fields, list views and picklist values exactly as written above; to create a record, open its "create form" path above directly by URL (its fields are in the application model on that page; never route through the App Launcher or the navigation to reach it); a case that creates a record fills every "required on create" field with a realistic value and the fields a validation rule reads, and NO other field unless the request names it (a lookup needs an existing record and is left alone unless required); when the request names several objects, write one create case PER object, never one case that creates them all; a picklist step picks only a value listed for it, and a picklist that "depends on" another is set AFTER its controlling field, to a value offered under the controlling value chosen; a case about one record type opens THAT record type's create form path above (the plain create form opens only the default one), and a case that does not name one uses the plain create form; a case that must SAVE successfully also keeps every validation rule's condition FALSE (a rule that fires when Email and Phone are both blank means the case fills one of them); each validation rule above deserves a negative case whose expected result is its exact message, and that case must make its condition true ("fires when": fill every field the formula reads, e.g. Country as well as Phone) while filling every required field; a request about boundaries, limits or edge values gets, for each "boundary" line, TWO cases: one at the value that fires the rule (expected: its exact message) and one at the value that does not (expected: the record saves).${org.validationRulesRead ? "" : " (Validation rules could not be read in this org, so their absence above means nothing.)"}`;
+}
+
+/**
+ * Phase A gap "validation boundaries": the edge of each simple comparison in a rule's formula, as plain
+ * words for the case writer: "AnnualRevenue = -1 fires the rule, AnnualRevenue = 0 does not". Read from
+ * `<Field> <op> <number>` and `LEN(<Field>) <op> <number>`; anything else (REGEX, BEGINS, ISBLANK) has no
+ * single edge and gives nothing. `<>` / `!=` give both sides of the one allowed length.
+ */
+export function ruleBoundaries(condition: string): string[] {
+  const out: string[] = [];
+  const re = /(LEN\(\s*)?\b([A-Za-z_][\w.]*)\s*\)?\s*(<=|>=|<>|!=|<|>|=)\s*(-?\d+(?:\.\d+)?)/g;
+  for (const m of condition.matchAll(re)) {
+    const len = !!m[1], field = m[2], op = m[3], n = Number(m[4]);
+    if (/^(LEN|ISBLANK|NOT|AND|OR)$/i.test(field)) continue;
+    const step = len || Number.isInteger(n) ? 1 : 0.01;
+    const say = (v: number) => len ? `${field} with ${v} characters` : `${field} = ${v}`;
+    const pair = (fires: number, ok: number) => out.push(`${say(fires)} fires the rule, ${say(ok)} does not`);
+    if (op === "<") pair(n - step, n);
+    else if (op === "<=") pair(n, n + step);
+    else if (op === ">") pair(n + step, n);
+    else if (op === ">=") pair(n, n - step);
+    else if (op === "<>" || op === "!=") { pair(n - step, n); pair(n + step, n); }
+    else if (op === "=") pair(n, n + step);
+  }
+  return out;
 }

@@ -595,7 +595,7 @@ exactly one case (the plan's own literal ask) carries "fromPrompt": true:
     const named = withRequestNames(cases);
     if (currentRunTargetApp() !== "salesforce") return named;
     const request = [opts.sourcePrompt ?? "", extend?.latestPrompt ?? ""].join("\n");
-    return (await restoreDroppedValues(named, request, screensBlock)).cases;
+    return (await restoreDroppedValues(named, request, screensBlock, (appModel.salesforceOrg?.flows ?? []).map((f) => f.label))).cases;
   };
   const cachedCases = llmCacheGet<TestCase[]>(cacheKey);
   if (cachedCases) return withRequestValues(cachedCases);

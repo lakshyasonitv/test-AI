@@ -138,6 +138,20 @@ describe("applyTestData", () => {
     }
   });
 
+  // Run 2026-11-10T05-05-39-201Z-52ce7aed: the request said Industry "Technology"; the model's option
+  // list was cut short, and the step was swapped to "Biotechnology", so the flow's branch never ran.
+  it("never swaps a value the request names for an option that only contains it", () => {
+    const org = structuredClone(appModel) as AppModel;
+    org.salesforceOrg!.objects[0].fields.push({ label: "Zq Sector", api: "Zq_Sector__c", type: "Picklist", required: true, picklist: ["Zqbiotech", "Zq Retail"] } as any);
+    const r = ir([{ id: "s2", action: "select", target: { role: "combobox", name: "Zq Sector" }, value: "tech" }]);
+    applyTestData(r, valid, org, "Create a Zq Thing with Zq Sector tech");
+    expect(value(r, "s2")).toBe("tech");
+    // Not named by the request: the option is still taken.
+    const unnamed = ir([{ id: "s2", action: "select", target: { role: "combobox", name: "Zq Sector" }, value: "tech" }]);
+    applyTestData(unnamed, valid, org, "Create a Zq Thing");
+    expect(value(unnamed, "s2")).toBe("Zqbiotech");
+  });
+
   it("does nothing without an org model or a create-form navigate", () => {
     const r = ir([{ id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq Sample" }]);
     applyTestData(r, valid, { ...appModel, salesforceOrg: undefined } as AppModel);
@@ -744,5 +758,111 @@ describe("every field: a check on a form control before Save is a field to fill"
     expect(r.steps.find((s) => s.id === "s2")?.action).toBe("check");
     expect(r.steps.some((s) => s.id === "s3")).toBe(false);
     expect(r.steps.some((s) => s.id === "s10")).toBe(true);
+  });
+});
+
+// Run 2026-11-10T05-11-20-593Z-6f9640b8: "... and verify the Account's Type shows Customer - Direct" (a flow
+// sets it). The case set Type itself on create, so the check proved nothing.
+describe("a field the request only checks is not filled", () => {
+  it("requestedActions keeps what to do and drops what to check", async () => {
+    const { requestedActions } = await import("../src/stages/testData.js");
+    expect(requestedActions("Create a Zq Thing with Zq Stage Zq Open, save it, and verify its Zq Kind shows Zq Big"))
+      .toBe("Create a Zq Thing with Zq Stage Zq Open, save it, and ");
+    expect(requestedActions("Create a Zq Thing")).toBe("Create a Zq Thing");
+    expect(requestedActions("Create a Zq Thing and checkout")).toBe("Create a Zq Thing and checkout");
+  });
+
+  it("drops an optional field named only in the check, keeps one named in the action", () => {
+    const org = structuredClone(appModel) as AppModel;
+    org.salesforceOrg!.objects[0].fields.push({ label: "Zq Kind", api: "Zq_Kind__c", type: "Picklist", picklist: ["Zq Big", "Zq Small"] } as any);
+    const steps = () => ir([{ id: "s2", action: "select", target: { role: "combobox", name: "Zq Kind" }, value: "Zq Big" }]);
+    const checked = steps();
+    applyTestData(checked, valid, org, "Create a Zq Thing, save it, and verify its Zq Kind shows Zq Big");
+    expect(checked.steps.find((s) => s.id === "s2")).toBeUndefined();
+    const asked = steps();
+    applyTestData(asked, valid, org, "Create a Zq Thing with Zq Kind Zq Big, save it, and verify its Zq Kind shows Zq Big");
+    expect(value(asked, "s2")).toBe("Zq Big");
+  });
+});
+
+// Run 2026-11-10T05-51-13-444Z-c5882e76: "verify its Rating shows Hot, its Lead Status shows Working -
+// Contacted": the case set both itself; Rating stayed because a later check quoted "Hot".
+describe("a value the request only checks is not set by the test", () => {
+  const org = () => {
+    const o = structuredClone(appModel) as AppModel;
+    o.salesforceOrg!.objects[0].fields.push(
+      { label: "Zq Mood", api: "Zq_Mood__c", type: "Picklist", picklist: ["Zq Calm", "Zq Glad"] } as any,
+      { label: "Zq Phase", api: "Zq_Phase__c", type: "Picklist", required: true, picklist: ["Zq Start", "Zq Done"] } as any);
+    return o;
+  };
+  const run = () => {
+    const r = ir([
+      { id: "s2", action: "select", target: { role: "combobox", name: "Zq Mood" }, value: "Zq Glad" },
+      { id: "s3", action: "select", target: { role: "combobox", name: "Zq Phase" }, value: "Zq Done" },
+      { id: "s4", action: "click", target: { role: "button", name: "Save" } },
+      { id: "s5", action: "assert", target: { field: "Zq Mood" }, assertion: "text_contains", value: "Zq Glad" },
+      { id: "s6", action: "assert", target: { field: "Zq Phase" }, assertion: "text_contains", value: "Zq Done" },
+    ]);
+    applyTestData(r, valid, org(), "Create a Zq Thing, save it, and verify its Zq Mood shows Zq Glad and its Zq Phase shows Zq Done");
+    return r;
+  };
+
+  it("drops an optional one even though a later check quotes it", () => {
+    expect(run().steps.find((s) => s.id === "s2")).toBeUndefined();
+  });
+
+  it("starts a required one on another option", () => {
+    expect(value(run(), "s3")).toBe("Zq Start");
+  });
+});
+
+// Run 2026-11-10T06-22-41-469Z-3fe92274: after the Account's Save, the flow created an Opportunity from
+// the Account page's action; its required "Opportunity Name *" was judged as an Account field and dropped.
+describe("a create form's section ends at its Save", () => {
+  it("leaves the steps after the Save alone", () => {
+    const r = ir([
+      { id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq {{uid}}" },
+      { id: "s3", action: "click", target: { role: "button", name: "Save" } },
+      { id: "s4", action: "click", target: { role: "button", name: "Zq Other Action" } },
+      { id: "s5", action: "fill", target: { role: "textbox", name: "Zq Other Name *" }, value: "Zq Other" },
+    ]);
+    applyTestData(r, valid, appModel, "Create a Zq Thing, then a Zq Other from its page");
+    expect(value(r, "s5")).toBe("Zq Other");
+  });
+});
+
+// Run 2026-11-10T08-56-13-526Z-86865e92: "Test every branch of the lead routing flow". The fields that pick a
+// branch were dropped as optional (every case took the default branch), and the Hot case set the flow's
+// own result (Lead Status "Working - Contacted") itself.
+describe("fields a flow reads or sets", () => {
+  const withFlow = () => {
+    const o = structuredClone(appModel) as AppModel;
+    o.salesforceOrg!.objects[0].fields.push(
+      { label: "Zq Revenue", api: "Zq_Revenue__c", type: "Currency" } as any,
+      { label: "Zq Mood", api: "Zq_Mood__c", type: "Picklist", picklist: ["Zq Calm", "Zq Glad"] } as any,
+      { label: "Zq Phase", api: "Zq_Phase__c", type: "Picklist", required: true, picklist: ["Zq Start", "Zq Done"] } as any);
+    (o.salesforceOrg as any).flows = [{ label: "Zq Routing", api: "Zq_Routing", type: "record-triggered", object: o.salesforceOrg!.objects[0].label,
+      effects: ['branch "Zhot": when Zq_Revenue__c >= 1000000 -> sets Zq_Mood__c = Zq Glad, Zq_Phase__c = Zq Done'] }];
+    return o;
+  };
+  const run = () => {
+    const r = ir([
+      { id: "s2", action: "fill", target: { role: "spinbutton", name: "Zq Revenue" }, value: "2000000" },
+      { id: "s3", action: "select", target: { role: "combobox", name: "Zq Mood" }, value: "Zq Glad" },
+      { id: "s4", action: "select", target: { role: "combobox", name: "Zq Phase" }, value: "Zq Done" },
+      { id: "s5", action: "click", target: { role: "button", name: "Save" } },
+    ]);
+    applyTestData(r, valid, withFlow(), "Test every branch of the Zq Routing flow");
+    return r;
+  };
+
+  it("keeps a field a flow's branch condition reads, though the request names no field", () => {
+    expect(value(run(), "s2")).toBe("2000000");
+  });
+
+  it("drops an optional field set to the value the flow sets, and starts a required one elsewhere", () => {
+    const r = run();
+    expect(r.steps.find((s) => s.id === "s3")).toBeUndefined();
+    expect(value(r, "s4")).toBe("Zq Start");
   });
 });

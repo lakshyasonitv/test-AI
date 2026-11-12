@@ -32,7 +32,10 @@ const LEADING_VERBS = new Set([
 const norm = (s: string) => s.toLowerCase().replace(/[‘’“”"']/g, "").replace(/\s+/g, " ").trim();
 
 /** The values and names a request commits the primary case to, exact text kept, longest first. */
-export function requestValues(request: string): string[] {
+/** `names` = things the request NAMES rather than types: a Salesforce flow's label ("Test the TB Event
+ *  Create Account flow"). Never a value to type: run 2026-11-10T14-37-45-689Z-aa1bde79 searched for the
+ *  flow's name instead of the record the flow made, because the repair put the name in "verbatim". */
+export function requestValues(request: string, names: string[] = []): string[] {
   const out = new Set<string>();
   for (const name of extractControlNames(request)) {
     // A Capitalised run can cross a sentence end ("Express Interest. Fill"): split it there.
@@ -47,7 +50,8 @@ export function requestValues(request: string): string[] {
       if (v.length >= 2 && (words.length > 1 || standalone)) out.add(v);
     }
   }
-  return [...out].sort((a, b) => b.length - a.length);
+  const named = new Set(names.map(loose));
+  return [...out].filter((v) => !named.has(loose(v))).sort((a, b) => b.length - a.length);
 }
 
 /** The values a case does not mention anywhere in its steps or expected outcome. */
@@ -60,7 +64,7 @@ export function missingValues(c: Pick<TestCase, "steps" | "expected">, values: s
 const loose = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
 /** A compiled step, reduced to the fields a request value can land in. */
-type StepText = { value?: string; target?: { name?: string; text?: string; label?: string; placeholder?: string; field?: string } };
+type StepText = { value?: string; target?: { name?: string; text?: string; label?: string; placeholder?: string; field?: string; url?: string } };
 
 /**
  * TD-139: the request values the CASE carries that the compiled steps lost.
@@ -76,7 +80,10 @@ export function stepsMissingValues(steps: StepText[], c: Pick<TestCase, "steps" 
   // A request names a field and its value together ("TB Region South"); the step holds them apart
   // (name "TB Region", value "South"), so the pair is also matched as one (run
   // 2026-10-25T15-42-33-903Z-d11ab7a2 was truncated over exactly this).
+  // A screen flow is opened by its address: "TB New Contact Screen" is /flow/TB_New_Contact_Screen (run
+  // 2026-11-10T13-55-48-526Z-8bdcb95a was cut as leaving the flow's name out).
   const hay = steps.flatMap((s) => [s.value, s.target?.name, s.target?.text, s.target?.label, s.target?.placeholder, s.target?.field,
+    /\/flow\/\w+/.exec(s.target?.url ?? "")?.[0],
     s.value && (s.target?.name ?? s.target?.label ?? s.target?.field) ? `${s.target?.name ?? s.target?.label ?? s.target?.field} ${s.value}` : undefined])
     .filter((x): x is string => typeof x === "string" && x.length > 0).map(loose).join("|");
   // "Account's TB Total Opportunity Amount" is checked as the field "TB Total Opportunity Amount"
@@ -99,9 +106,9 @@ Rules, follow exactly:
  * the ones changed) and how many were fixed. Never throws: a failed repair keeps the original case.
  */
 export async function restoreDroppedValues(
-  cases: TestCase[], request: string, screens = "",
+  cases: TestCase[], request: string, screens = "", names: string[] = [],
 ): Promise<{ cases: TestCase[]; fixed: number }> {
-  const values = requestValues(request);
+  const values = requestValues(request, names);
   if (!values.length) return { cases, fixed: 0 };
   let fixed = 0;
   const out: TestCase[] = [];

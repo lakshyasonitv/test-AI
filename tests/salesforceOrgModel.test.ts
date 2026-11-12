@@ -415,3 +415,37 @@ describe("active flows: what runs by itself after a save", () => {
       decisions: [{}, {}] })).toEqual(["sets Rating = Warm", "branches on 2 decision(s): what it does depends on the record's values"]);
   });
 });
+
+// Run 2026-11-10T10-08-27-191Z-4830927e: "check that a high priority account gets a hot rating" named
+// "account" in lowercase, and no object matched.
+describe("objectsNamedIn anyCase (record pages discovery opens)", () => {
+  it("finds an object a person writes in lowercase", async () => {
+    const { objectsNamedIn } = await import("../src/stages/salesforceOrgModel.js");
+    const org = { objects: [{ api: "Zq_Account__c", label: "Zq Account", labelPlural: "Zq Accounts" }, { api: "Zq_Lead__c", label: "Zq Lead" }] };
+    expect(objectsNamedIn("check that a high priority zq account gets a hot rating", org, true).map((o) => o.api)).toEqual(["Zq_Account__c"]);
+    expect(objectsNamedIn("check that a high priority zq account gets a hot rating", org)).toEqual([]);
+  });
+});
+
+describe("ruleBoundaries", () => {
+  it("gives the edge of simple number and length comparisons, and nothing for patterns", async () => {
+    const { ruleBoundaries } = await import("../src/stages/salesforceOrgModel.js");
+    expect(ruleBoundaries("ZqRevenue < 0")).toEqual(["ZqRevenue = -1 fires the rule, ZqRevenue = 0 does not"]);
+    expect(ruleBoundaries("LEN(ZqCompany) < 3")).toEqual(["ZqCompany with 2 characters fires the rule, ZqCompany with 3 characters does not"]);
+    expect(ruleBoundaries('Country = "United States" && LEN(Phone) <> 10')).toEqual([
+      "Phone with 9 characters fires the rule, Phone with 10 characters does not",
+      "Phone with 11 characters fires the rule, Phone with 10 characters does not"]);
+    expect(ruleBoundaries("ZqAmount >= 1000000")).toEqual(["ZqAmount = 1000000 fires the rule, ZqAmount = 999999 does not"]);
+    expect(ruleBoundaries('REGEX(LOWER(Email), ".*\\.(games)")')).toEqual([]);
+  });
+});
+
+describe("lookupFilterText", () => {
+  it("reads an active lookup filter as words, and nothing for an inactive one", async () => {
+    const { lookupFilterText } = await import("../src/stages/salesforceOrgDeep.js");
+    expect(lookupFilterText({ lookupFilter: { active: true, filterItems: [{ field: "Account.Type", operation: "equals", value: "Zq Partner" }] } }))
+      .toBe("Account.Type = Zq Partner");
+    expect(lookupFilterText({ lookupFilter: { active: false, filterItems: [{ field: "x", operation: "equals", value: "y" }] } })).toBeUndefined();
+    expect(lookupFilterText({})).toBeUndefined();
+  });
+});

@@ -167,6 +167,34 @@ async function readCalculatedDefinitions(apiGet: ApiGet, o: OrgObject): Promise<
   }
 }
 
+/** Lookup filter operations (FilterOperation) as words. */
+const FILTER_OPS: Record<string, string> = {
+  equals: "=", notEqual: "is not", lessThan: "<", greaterThan: ">", lessOrEqual: "<=", greaterOrEqual: ">=",
+  contains: "contains", notContain: "does not contain", startsWith: "starts with", includes: "includes", excludes: "excludes",
+};
+
+/** A lookup filter from a custom lookup field's metadata, as words: "Type = Customer - Direct and ...". */
+export function lookupFilterText(meta: any): string | undefined {
+  const lf = meta?.lookupFilter;
+  if (!lf || lf.active === false) return undefined;
+  const items = (lf.filterItems ?? []).map((f: any) => `${String(f.field ?? "").replace(/^\$Source\./, "this record's ")} ${FILTER_OPS[String(f.operation ?? "")] ?? f.operation} ${f.value ?? String(f.valueField ?? "").replace(/^\$Source\./, "this record's ")}`.trim());
+  if (!items.length) return undefined;
+  return `${items.join(lf.booleanFilter ? ` (${lf.booleanFilter}) ` : " and ")}${lf.isOptional ? " (a suggestion only)" : ""}`;
+}
+
+/** Lookup filters of the object's custom lookup fields: what a case may pick in them. */
+async function readLookupFilters(apiGet: ApiGet, o: OrgObject): Promise<void> {
+  for (const f of o.fields.filter((x) => x.lookup && /__c$/.test(x.api)).slice(0, 5)) {
+    const dev = f.api.replace(/__c$/, "").replace(/^[A-Za-z0-9]+__/, "");
+    if (!safeName(dev)) continue;
+    const rows: any[] = (await tooling(apiGet, `SELECT Id, TableEnumOrId FROM CustomField WHERE DeveloperName = '${dev}'`))?.records ?? [];
+    const row = rows.find((r) => r?.TableEnumOrId === o.api) ?? (rows.length === 1 ? rows[0] : undefined);
+    if (!row || !safeName(String(row.Id))) continue;
+    const text = lookupFilterText((await tooling(apiGet, `SELECT Metadata FROM CustomField WHERE Id = '${row.Id}'`))?.records?.[0]?.Metadata);
+    if (text) f.lookupFilter = text;
+  }
+}
+
 /**
  * Add the deep facts to the request's objects in `org` (mutated). Returns how many API calls and
  * milliseconds it took, for the log: the budget on a scratch org is real.
@@ -179,6 +207,7 @@ export async function readDeepFacts(apiGet: ApiGet, org: SalesforceOrgModel, req
   for (const o of objects) {
     await readRecordTypeDifferences(counted, o);
     await readCalculatedDefinitions(counted, o);
+    await readLookupFilters(counted, o);
   }
   if (objects.length) await readVisibilityRules(counted, objects);
   return { objects: objects.length, calls, ms: Date.now() - started };

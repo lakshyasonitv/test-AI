@@ -1,3 +1,4 @@
+import { isNamedToggle, nameFromAriaSnapshot, hasMadeUpNames } from "../text.js";
 import { chromium, type Page } from "playwright";
 import { chromiumLaunchOptions, browserContextOptions, localeCacheDimension } from "../browserLaunch.js";
 import { AppModel } from "../schema/appModel.js";
@@ -17,7 +18,7 @@ import { cutAtBoundary, pageKey, lineKey, hasRunToken, resolveRunTokens, newRunT
 import { llmCacheDimension } from "../llm/llmContext.js";
 import { mergeScreenInto } from "./screens.js";
 import { currentRunTargetApp } from "../runTarget.js";
-import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForScreenSettle } from "./networkSettle.js";
+import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForRecordPage, waitForScreenSettle } from "./networkSettle.js";
 import { dropVolatileIdCss, volatileIdDetectionEnabled } from "./volatileIds.js";
 import { captureErrorMarkers, errorMarkersOf, lastInteractionIndex, pageAlertTexts, type ErrorMarker } from "./hollowPassGuards.js";
 import {
@@ -38,7 +39,11 @@ const replayTokens = new WeakMap<Page, RunTokenContext>();
  * Neither applies to any other prefix, which replays exactly as before.
  */
 export function prepareReplayPage(page: Page, prefix: Step[]): void {
-  if (prefix.some((s) => s.action === "navigate" && recordRefObject(s.target?.url))) {
+  // On every org-connection run, not only a prefix that already goes back to a record: grounding
+  // replays in stages on one page, and a stage that had no step back yet left the page untracked, so
+  // the later "go back to the Account" found no Account (run 2026-11-10T08-06-20-359Z-aa2ffc07). It
+  // only reads main-frame URLs.
+  if (!replayRecordPages.has(page) && (currentFrontdoor() || prefix.some((s) => s.action === "navigate" && recordRefObject(s.target?.url)))) {
     const pages = recordPages();
     replayRecordPages.set(page, pages);
     page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) pages.visit(frame.url()); });
@@ -113,12 +118,37 @@ export async function runStepLive(
     }
     case "click":
       // The spec's own rule (generator.ts): the inserted Details tab click is skipped where there is none.
+      if (/^sf-related/.test(step.id)) {
+        // The spec's own rule (generator.ts): the record's own Related or Activity tab, whichever it has.
+        for (const name of ["Related", "Activity"]) {
+          const tab = page.getByRole("tab", { name, exact: true });
+          for (let k = 0; k < await tab.count(); k++) {
+            const t = tab.nth(k);
+            if (await t.isVisible() && (await t.getAttribute("aria-selected")) !== "true") await t.click();
+          }
+        }
+        return;
+      }
       if (/^sf-details/.test(step.id)) {
-        const tab = page.getByRole("tab", { name: "Details", exact: true }).first();
+        const tab = page.getByRole("tab", { name: step.target?.name ?? "Details", exact: true }).first();
         if (await tab.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false)) await tab.click();
         return;
       }
-      await (await resolveLive(page, step.target!)).click(); return;
+      // A click on a named radio or checkbox ticks it, as the spec does (generator.ts isNamedToggle):
+      // Lightning's label "intercepts pointer events" on the input (run 2026-11-10T08-43-46-389Z-e1f1d89b).
+      if (isNamedToggle({ ...step.target, css: undefined })) {
+        await page.getByRole(step.target!.role as "radio" | "checkbox", { name: step.target!.name!, exact: true }).first().check({ force: true });
+        return;
+      }
+      await (await resolveLive(page, step.target!)).click();
+      // The replay skips the "was created" check, which in the spec waits for the save: without it the
+      // replay moved on before Lightning opened the new record, and a later step back to that record
+      // found none (run 2026-11-10T08-52-16-490Z-992e5782). After a Save on an org-connection run,
+      // wait for the page to leave the create form.
+      if (currentFrontdoor() && /^save$/i.test(step.target?.name ?? "") && /\/lightning\/o\/[^/?#]+\/new\b/.test(page.url())) {
+        await page.waitForURL((u) => !/\/lightning\/o\/[^/?#]+\/new\b/.test(u.toString()), { timeout: 10_000 }).catch(() => {});
+      }
+      return;
     // Not a bare selectOption(): that is an EXACT match against an option list that is very often
     // still being fetched, and its failure ("did not find some options") names neither the wanted
     // value nor the available ones. chooseLive shares its matching and its message with the
@@ -132,7 +162,22 @@ export async function runStepLive(
       }
       await chooseLive(page, await resolveLive(page, step.target!, "select"), step.value ?? "");
       return;
-    case "check": await (await resolveLive(page, step.target!, "check")).check(); return;
+    case "check":
+      // The spec's own rule (generator.ts isNamedToggle): a named radio or checkbox by role and name.
+      if (isNamedToggle(step.target)) {
+        await page.getByRole(step.target!.role as "radio" | "checkbox", { name: step.target!.name!, exact: true }).first().check({ force: true });
+        return;
+      }
+      {
+        // The spec's own rule (generator.ts): a box drawn over the input retries forced, on that error only.
+        const box = await resolveLive(page, step.target!, "check");
+        await box.check({ timeout: 10_000 }).catch(async (e) => {
+          if (!/intercepts pointer events|did not change its state/.test(String(e))) throw e;
+          if (!(await box.isChecked())) await box.evaluate((el) => (el as HTMLElement).click());
+          if (!(await box.isChecked())) throw e;
+        });
+        return;
+      }
     // No target: the key goes to whatever has focus, exactly as generator.ts emits it.
     case "press":
       if (!step.target) { await page.keyboard.press(step.value ?? "Enter"); return; }
@@ -374,7 +419,8 @@ async function replayAndSnapshot(
   // part — appended ONLY when set, so every existing walk keeps its exact key and cache entry.
   const cacheKey = walkCacheKey(model, prefix, creds, policy, options);
   const cached = options.fresh ? undefined : llmCacheGet<ReplayResult>(cacheKey, WALK_CACHE_NS);
-  if (cached) {
+  // A cached screen flow capture with made-up names predates the naming: walked again, never served.
+  if (cached && !(/\/flow\//.test(cached.reachedUrl) && hasMadeUpNames(cached.pageModel.elements))) {
     // Phase 4: this walk never expires, so an id proven volatile SINCE it was cached must not be
     // served back as a locator.
     if (volatileIdDetectionEnabled()) dropVolatileIdCss(cached.reachedUrl, cached.pageModel.elements);
@@ -449,6 +495,9 @@ async function replayAndSnapshot(
     // above capturePageText and the DOM extraction, it doubles as settle time for an SPA
     // that updates the URL before rendering the page it navigated to.
     const navigatedAway = page.url() !== urlBeforeLastStep;
+    // A Salesforce record page draws its actions late: captured at once it had no actions menu, and a
+    // delete could not ground (networkSettle.ts waitForRecordPage). Org-connection runs only.
+    if (currentFrontdoor()) await waitForRecordPage(page);
     let dialogSeen = false;
     if (navigatedAway) {
       await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
@@ -598,6 +647,13 @@ async function replayAndSnapshot(
     // merge branch only runs when it was already non-null.
     const pageModel = fresh!.pages.find((p) => pageKey(p.url) === pageKey(reachedUrl)) ?? fresh!.pages[0];
     if (!pageModel) throw new Error(`replay reached ${reachedUrl} but produced no page model`);
+    // A screen flow's fields come out of the walk as "input 23" / "radio 0 24": named from the accessibility
+    // snapshot, as discovery does (hybridDiscovery). The live capture of a flow's later screen had none
+    // (run 2026-11-10T09-24-49-788Z-9a7bbeeb).
+    if (/\/flow\//.test(page.url())) {
+      const yaml = await page.locator("body").ariaSnapshot({ timeout: 5000 }).catch(() => "");
+      nameFromAriaSnapshot(pageModel.elements, yaml);
+    }
     // The replay just typed the user's real credentials into this page, and a logged-in page
     // routinely echoes the identifier back. Scrub before anything persists it: this result is
     // cached under runs/_cache and its pageModel ends up inside 04-ir.json, both of which the
