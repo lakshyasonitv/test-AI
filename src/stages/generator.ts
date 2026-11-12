@@ -6,7 +6,7 @@ import {
 } from "./targetResolver.js";
 import { isAuthTriggeringStep } from "./authSettle.js";
 import { isEnvValueRef } from "./credentials.js";
-import { FRONTDOOR_ENV, isFrontdoorRef, recordRefIndex, recordRefObject, SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
+import { FRONTDOOR_ENV, SECOND_USER_ENV, isFrontdoorRef, isSecondUserRef, recordRefIndex, recordRefObject, SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
 import { hasRunToken, isNamedToggle, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
 
 const q = (s: string) => JSON.stringify(s);
@@ -1049,6 +1049,13 @@ function emitStep(step: Step, baseUrl: string): string {
   switch (step.action) {
     case "navigate": {
       const u = step.target?.url ?? "/";
+      // Phase C: the same browser signs in as the run's second user (the approver), from the env only.
+      if (isSecondUserRef(u)) {
+        code += `  if (!process.env.${SECOND_USER_ENV}) throw new Error("${SECOND_USER_ENV} is not set: this test acts as a second user of the org (connect that user and run again).");\n`;
+        code += `  await page.goto(process.env.${SECOND_USER_ENV}, { waitUntil: "domcontentloaded", timeout: 60000 });\n`;
+        code += `  await page.waitForURL((u) => !u.pathname.toLowerCase().includes("frontdoor.jsp"), { timeout: 60000 }).catch(() => {});\n`;
+        break;
+      }
       if (isFrontdoorRef(u)) {
         // D-63: sign in through a Salesforce org connection. The URL carries an access token, so the
         // spec holds only the env name; executor.ts gives the child a fresh one. Outside Testbench
@@ -1183,6 +1190,7 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
     case "navigate": {
       const u = t?.url ?? "/";
       if (isFrontdoorRef(u)) return "Sign in through the Salesforce org connection";
+      if (isSecondUserRef(u)) return "Sign in as the second user (the approver)";
       if (recordRefObject(u)) {
         const n = recordRefIndex(u)!;
         return `Go back to the ${recordRefObject(u)} record this test created${n > 1 ? `, number ${n}` : ""}`;

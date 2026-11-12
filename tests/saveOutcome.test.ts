@@ -986,3 +986,17 @@ describe("leadConvertSteps: other wordings of the conversion", () => {
     expect(i.steps.filter((s) => s.action === "assert").map((s) => s.target?.text)).toEqual(["Your lead has been converted"]);
   });
 });
+
+describe("approvalSteps with an approver", () => {
+  it("signs in as the approver before the decision", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const { SECOND_USER_REF } = await import("../src/stages/salesforceFrontdoor.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [] }], approvals: [{ label: "Zq Big Deal", api: "Zq_Big_Deal", object: "Zopp" }] };
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step]);
+    approvalSteps(i, org as any, "submit it for approval, then approve it", SECOND_USER_REF);
+    const ids = i.steps.map((s) => s.id);
+    expect(ids.indexOf("sf-ap-as-approver")).toBeGreaterThan(ids.indexOf("sf-ap-sent"));
+    expect(ids.indexOf("sf-ap-as-approver")).toBeLessThan(ids.indexOf("sf-ap-decide"));
+    expect(i.steps.find((s) => s.id === "sf-ap-as-approver")?.target?.url).toBe(SECOND_USER_REF);
+  });
+});

@@ -25,7 +25,7 @@ import {
   salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
   returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, requestedTextChecks, noTokensInRuleFields, pathStageClicks, seededLookups, placeholderMessages, eventRecordSearch, leadConvertSteps, calculatedFieldReads, approvalSteps, valuesFromRequest,
 } from "./salesforceGuidance.js";
-import { FRONTDOOR_REF, currentFrontdoor, isFrontdoorRef, recordRefObject } from "./salesforceFrontdoor.js";
+import { FRONTDOOR_REF, SECOND_USER_REF, currentFrontdoor, isFrontdoorRef, isSecondUserRef, recordRefObject } from "./salesforceFrontdoor.js";
 import { extractPromptSelectors, verifyAgainstModel, promptSelectorHint } from "./promptSelectors.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 // The generator's OWN rule for when a step becomes `field(page, hint, …)` and which slot supplies
@@ -1320,7 +1320,7 @@ export function groundingError(
     }
     // Step 0's navigate is the entry URL the pipeline itself supplied, never a guess. Nor is a record
     // this test created (recordRef): code writes it, and it is resolved where the step runs.
-    if (index > 0 && step.action === "navigate" && t?.url && !recordRefObject(t.url) && !navUrlAllowed(t.url)) {
+    if (index > 0 && step.action === "navigate" && t?.url && !recordRefObject(t.url) && !isSecondUserRef(t.url) && !navUrlAllowed(t.url)) {
       return {
         index,
         kind: "navigate-url",
@@ -2938,7 +2938,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       for (const r of pathStageClicks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of seededLookups(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${r}`);
       for (const r of leadConvertSteps(parsed.data)) console.log(`[ir] ${r}`);
-      for (const r of approvalSteps(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
+      for (const r of approvalSteps(parsed.data, currentModel.salesforceOrg, sourcePrompt, currentFrontdoor()?.second ? SECOND_USER_REF : undefined)) console.log(`[ir] ${r}`);
       for (const r of requestedFieldChecks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of flowEffectChecks(parsed.data, currentModel.salesforceOrg, `${sourcePrompt}
 ${testCase.title}

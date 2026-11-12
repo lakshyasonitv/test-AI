@@ -22,7 +22,7 @@ import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForRecord
 import { dropVolatileIdCss, volatileIdDetectionEnabled } from "./volatileIds.js";
 import { captureErrorMarkers, errorMarkersOf, lastInteractionIndex, pageAlertTexts, type ErrorMarker } from "./hollowPassGuards.js";
 import {
-  currentFrontdoor, isFrontdoorRef, openFrontdoor, recordPages, recordRefIndex, recordRefObject, type RecordPages,
+  currentFrontdoor, isFrontdoorRef, isSecondUserRef, openFrontdoor, recordPages, recordRefIndex, recordRefObject, type RecordPages,
   SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING,
 } from "./salesforceFrontdoor.js";
 import type { RunTokenContext } from "../text.js";
@@ -85,6 +85,8 @@ export async function runStepLive(
       // an env reference, never the URL (it holds the access token); resolve it here, for this run.
       // Appending it to baseUrl, as below, is the same bug TD-84 records for `${env:TEST_USERNAME}`.
       if (isFrontdoorRef(u)) { await openFrontdoor(page); return; }
+      // Phase C: the same browser signs in as the run's second user (the approver).
+      if (isSecondUserRef(u)) { await openFrontdoor(page, currentFrontdoor()?.second ?? null); return; }
       // Phase A: the record this flow created, as the spec's sfOpenRecord finds it.
       const object = recordRefObject(u);
       if (object) {

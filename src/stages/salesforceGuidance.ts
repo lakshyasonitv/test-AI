@@ -1279,7 +1279,7 @@ export function calculatedFieldReads(ir: IRSteps, org: Pick<SalesforceOrgModel, 
  * "Reject", a comment, the dialog's button); then the field the request names, checked on the record.
  * Nothing is added when a step already submits. Returns notes.
  */
-export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "approvals"> | undefined, request: string): string[] {
+export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "approvals"> | undefined, request: string, approverSignIn?: string): string[] {
   const approval = org?.approvals?.[0] && /\bsubmit\w*\b[^.]*\bapproval\b/i.test(request) ? org.approvals : undefined;
   if (!approval || ir.steps.some((s) => s.action === "click" && /^submit for approval$/i.test(s.target?.name ?? ""))) return [];
   // The record: the last one the case saved on an object with an approval process.
@@ -1318,6 +1318,9 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   const decision = /\breject\w*\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Reject"
     : /\bapprov(e|es|ed|ing)\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Approve" : null;
   if (decision) {
+    // Phase C, two users: the approver decides. The same browser signs in as them (approverSignIn is the
+    // run's second user, SECOND_USER_REF) and opens the record the first user created.
+    if (approverSignIn) steps.push({ id: "sf-ap-as-approver", action: "navigate", target: { url: approverSignIn } } as Step);
     steps.push(
       { id: "sf-ap-open", action: "navigate", target: { url: recordRef(object, n) } } as Step,
       { id: "sf-ap-related", action: "click", target: { role: "tab", name: "Related" } } as Step,

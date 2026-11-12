@@ -89,6 +89,7 @@ import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepT
 import { enterWithLlmConfig, resolvedProvider } from "../llm/llmContext.js";
 import { LLM_PROVIDERS } from "../llm/client.js";
 import { orgWarning } from "../stages/salesforceOrgLogin.js";
+import { approvalsEnabled } from "../stages/salesforceOrgModel.js";
 import { extendedLoggingEnabled } from "../logging.js";
 import { insight } from "../insights.js";
 import { withRunId } from "../runContext.js";
@@ -310,6 +311,17 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
       return res.status(400).json({ error: "The run's URL is not an address of the connected org. Connect the org this URL belongs to." });
     }
     sfFrontdoor = frontdoorSessionFor(conn);
+    // Phase C (SALESFORCE_APPROVALS_ENABLED): a second connection, the approver, a user of the SAME org.
+    // Checked like the first; anything else is refused rather than ignored, since the test would act as
+    // the wrong person.
+    const rawApprover = options && typeof options === "object" ? options.sfApproverConnectionId : undefined;
+    if (approvalsEnabled() && typeof rawApprover === "string" && rawApprover) {
+      const second = await restoreConnection(rawApprover, req.organisationId ?? null);
+      if (!second || new URL(second.instanceUrl).hostname !== new URL(conn.instanceUrl).hostname) {
+        return res.status(400).json({ error: "The approver's org connection is unknown, expired, or for another org. Connect the approver to the same org." });
+      }
+      sfFrontdoor = { ...sfFrontdoor, second: frontdoorSessionFor(second) };
+    }
   }
 
   // Only the known keys are forwarded — the body is untrusted input, and

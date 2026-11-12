@@ -46,6 +46,8 @@ export interface FrontdoorSession {
    * Throws a sentence with the HTTP status.
    */
   apiPost?(path: string, body: unknown): Promise<any>;
+  /** Phase C: a second user of the same org (the approver), signed in by SECOND_USER_REF. */
+  second?: FrontdoorSession;
 }
 
 /** The env name the generated spec reads the frontdoor URL from. */
@@ -55,6 +57,18 @@ export const FRONTDOOR_REF = "${env:SF_FRONTDOOR_URL}";
 
 export function isFrontdoorRef(u: unknown): boolean {
   return u === FRONTDOOR_REF;
+}
+
+/**
+ * Phase C, a second user in the same test (the approver): a run started with an approver connection
+ * carries it as `session.second`. A step navigating to SECOND_USER_REF signs the SAME browser in as that
+ * user (frontdoor.jsp replaces the session), so the test goes on as them. The spec reads it from
+ * SECOND_USER_ENV, minted per run like the first; neither URL is ever written anywhere.
+ */
+export const SECOND_USER_ENV = "SF_FRONTDOOR_URL_2";
+export const SECOND_USER_REF = "${env:SF_FRONTDOOR_URL_2}";
+export function isSecondUserRef(u: unknown): boolean {
+  return u === SECOND_USER_REF;
 }
 
 /**

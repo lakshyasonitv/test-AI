@@ -324,3 +324,14 @@ describe("generated read of a calculated field", () => {
     expect(code).toContain("async function sfFieldShown(page, label)");
   });
 });
+
+describe("signing in as the second user", () => {
+  it("reads the approver's sign-in from its own env, never from the IR", async () => {
+    const { generateSpec } = await import("../src/stages/generator.js");
+    const { SECOND_USER_REF, FRONTDOOR_REF } = await import("../src/stages/salesforceFrontdoor.js");
+    const code = generateSpec({ meta: { feature: "Zq", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [{ id: "a", action: "navigate", target: { url: FRONTDOOR_REF } }, { id: "b", action: "navigate", target: { url: SECOND_USER_REF } }] } as any);
+    expect(code).toContain("await page.goto(process.env.SF_FRONTDOOR_URL_2");
+    expect(code).toContain("Sign in as the second user (the approver)");
+  });
+});
