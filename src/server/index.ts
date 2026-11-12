@@ -2524,6 +2524,8 @@ export const BOOLEAN_ENV_FLAGS = [
   "SALESFORCE_API_CHECKS_ENABLED",
   // Phase D (src/stages/salesforceSeed.ts): publish a requested platform-event flow's event before the cases. Off: nothing published.
   "SALESFORCE_SEED_ENABLED",
+  // Phase C (src/stages/salesforceOrgModel.ts approvals, salesforceOracles.ts approvalChecks). Off: no approval reads.
+  "SALESFORCE_APPROVALS_ENABLED",
   // src/stages/hybridDiscovery.ts: reuse an org-connection discovery while the org's setup is unchanged.
   "SALESFORCE_DISCOVERY_CACHE_ENABLED",
   // src/stages/salesforceOrgDeep.ts (Phase 1): record-type differences, Dynamic Forms visibility rules

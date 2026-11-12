@@ -124,3 +124,21 @@ describe("flowRecordChecks", () => {
     expect(out).toEqual([expect.objectContaining({ expected: "none", actual: "0", ok: true })]);
   });
 });
+
+describe("approvalChecks", () => {
+  const approvals = [{ label: "Zq Big Deal", object: "Zq_Opp__c" }];
+  const click = (name: string) => ({ id: name, action: "click", target: { role: "button", name } } as Step);
+  it("expects Approved after Submit then Approve, and reads ProcessInstance", async () => {
+    const { approvalChecks } = await import("../src/stages/salesforceOracles.js");
+    const apiGet = vi.fn(async () => ({ records: [{ Status: "Approved" }] }));
+    const out = await approvalChecks(apiGet, { steps: [click("Submit for Approval"), click("Submit"), click("Approve")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] });
+    expect(out).toEqual([expect.objectContaining({ expected: "Approved", actual: "Approved", ok: true })]);
+    expect(decodeURIComponent(String(apiGet.mock.calls[0][0]))).toContain("FROM ProcessInstance WHERE TargetObjectId = 'a01zq0000000001AAA'");
+  });
+  it("expects Pending after Submit alone, and checks nothing without a submit", async () => {
+    const { approvalChecks } = await import("../src/stages/salesforceOracles.js");
+    const out = await approvalChecks(vi.fn(async () => ({ records: [{ Status: "Pending" }] })), { steps: [click("Submit for Approval")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] });
+    expect(out[0]).toMatchObject({ expected: "Pending", ok: true });
+    expect(await approvalChecks(vi.fn(), { steps: [click("Save")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] })).toEqual([]);
+  });
+});

@@ -455,6 +455,8 @@ export async function readSalesforceOrgModel(
   }
   const userLocale = await readUserLocale(apiGet);
   const flows = await readFlows(apiGet, request);
+  // Phase C (SALESFORCE_APPROVALS_ENABLED, default off): the active approval processes, by object.
+  const approvals = approvalsEnabled() ? await readApprovals(apiGet) : undefined;
   if (deepDiscoveryEnabled()) {
     const deep = await readDeepFacts(apiGet, { objects, validationRulesRead: rules !== null }, request).catch(() => null);
     if (deep) console.log(`[org model] deep read: ${deep.objects} object(s), ${deep.calls} API call(s), ${(deep.ms / 1000).toFixed(1)} s`);
@@ -465,7 +467,21 @@ export async function readSalesforceOrgModel(
     objects, validationRulesRead: rules !== null,
     ...(userLocale ? { userLocale } : {}),
     ...(flows?.length ? { flows } : {}),
+    ...(approvals?.length ? { approvals } : {}),
   };
+}
+
+/** Phase C: approvals in the org model and the API checks of them. Off unless asked for. */
+export function approvalsEnabled(): boolean {
+  return process.env.SALESFORCE_APPROVALS_ENABLED === "true";
+}
+
+/** The active approval processes (ProcessDefinition, a plain SOQL object): label, API name, object. */
+async function readApprovals(apiGet: ApiGet): Promise<NonNullable<SalesforceOrgModel["approvals"]>> {
+  const q = "SELECT Name, DeveloperName, TableEnumOrId FROM ProcessDefinition WHERE Type = 'Approval' AND State = 'Active' LIMIT 20";
+  const res = await tryGet(apiGet, `/query?q=${encodeURIComponent(q)}`);
+  return (res?.records ?? []).filter((r: any) => typeof r?.Name === "string" && typeof r?.TableEnumOrId === "string")
+    .map((r: any) => ({ label: String(r.Name), api: String(r.DeveloperName ?? r.Name), object: String(r.TableEnumOrId) }));
 }
 
 /**
@@ -669,6 +685,15 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
   let body = lines.join("\n");
   if (body.length > maxChars) body = body.slice(0, maxChars).replace(/\n[^\n]*$/, "") + "\n- (more objects not shown)";
   if (flowsBlock) body += `\n${flowsBlock}`;
+  // Phase C: approval processes, and how Lightning drives one, for a case about an approval.
+  if (org.approvals?.length) {
+    body += `\napproval processes (active): ${org.approvals.map((a) => `"${a.label}" on ${a.object}`).join(", ")}.`
+      + ` A case about one: create a record that meets its entry criteria (the request's values) and save it; on the record page`
+      + ` click "Submit for Approval" (in the header or under "Show more actions"), type a comment, click "Submit"; Salesforce`
+      + ` shows "was submitted for approval" and the record is locked. To decide it, open the record's Related tab, the`
+      + ` "Approval History" list, click "Approve" or "Reject", type a comment, and click the dialog's "Approve" or "Reject".`
+      + ` Then check what the approval changes on the record (its final field update) on the Details tab.`;
+  }
   // Phase D: records made through the API before the test, for a case about an "existing" one.
   if (org.seeded?.length) body += `\nrecords Testbench ALREADY CREATED for this test, through the API (use them as the "existing" record the request means; pick them in a lookup by this exact name; never create them again): ${org.seeded.map((r) => `${r.label} "${r.name}"`).join(", ")}`;
   return `

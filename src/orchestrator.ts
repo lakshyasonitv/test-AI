@@ -17,7 +17,7 @@ import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
 import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
 import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
-import { apiChecks, apiChecksEnabled, calculatedChecks, caseRunFacts, flowRecordChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
+import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, flowRecordChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -779,6 +779,8 @@ export async function runPipeline(
           ...(typed.length ? await apiChecks(fd.apiGet, typed, facts.created, facts.ctx) : []),
           // What a flow made on the record (and must not have made on this branch).
           ...await flowRecordChecks(fd.apiGet, c.ir, sfOrg, facts.created, facts.ctx.now),
+          // Phase C: where the approval the case drove stands in the org.
+          ...await approvalChecks(fd.apiGet, c.ir, sfOrg.approvals, facts.created),
         ];
         if (all.length) checks.push({ case: path.basename(c.caseDir), checks: all });
       }

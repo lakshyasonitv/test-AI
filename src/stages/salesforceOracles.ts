@@ -314,3 +314,38 @@ export async function flowRecordChecks(
   }
   return out;
 }
+
+/**
+ * Phase C, through the API: the approval a case drove, read from ProcessInstance on the record it created on
+ * an object with an approval process, compared with what its steps did (Submit for Approval only = Pending;
+ * then Approve = Approved, Reject = Rejected). The screen shows a toast; the org says where the approval is.
+ */
+export async function approvalChecks(
+  apiGet: (p: string) => Promise<any>, ir: Pick<IR, "steps">, approvals: { label: string; object: string }[] | undefined,
+  created: Record<string, string[]>,
+): Promise<ApiCheck[]> {
+  const out: ApiCheck[] = [];
+  const clicked = (re: RegExp) => ir.steps.some((s) => s.action === "click" && re.test(s.target?.name ?? ""));
+  if (!approvals?.length || !clicked(/^submit for approval$/i)) return out;
+  // The decision is the last of the approval's own buttons the case clicked.
+  let expected = "Pending";
+  for (const s of ir.steps) {
+    if (s.action !== "click") continue;
+    if (/^approve$/i.test(s.target?.name ?? "")) expected = "Approved";
+    else if (/^reject$/i.test(s.target?.name ?? "")) expected = "Rejected";
+  }
+  for (const a of approvals) {
+    if (!/^\w+$/.test(a.object)) continue;
+    for (const id of created[a.object] ?? []) {
+      if (!/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
+      try {
+        const q = `SELECT Status FROM ProcessInstance WHERE TargetObjectId = '${id}' ORDER BY CreatedDate DESC LIMIT 1`;
+        const status = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0]?.Status;
+        out.push({ object: a.object, id, field: `${a.label}: approval status`, expected, actual: status ?? "not submitted", ok: status === expected });
+      } catch (err) {
+        out.push({ object: a.object, id, field: `${a.label}: approval status`, expected, ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
+      }
+    }
+  }
+  return out;
+}
