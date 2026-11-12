@@ -114,7 +114,7 @@ const byStage = (route: Route): Record<GuidanceStage, string> =>
 
 const isSave = (s: Step) => /^save$/i.test(s.target?.name ?? "");
 /** A click that changes the record after its Save: the path's "Mark as Current Stage" / "Mark Stage as Complete". */
-const isRecordChange = (s: Step) => isSave(s) || /^mark (as current stage|stage as complete)$/i.test(s.target?.name ?? "");
+const isRecordChange = (s: Step) => isSave(s) || /^(mark (as current stage|stage as complete)|submit|approve|reject)$/i.test(s.target?.name ?? "");
 
 /**
  * Backs the two Save rules above. A case that ends on the dialog's Save button alone ("hidden" =
@@ -1228,9 +1228,18 @@ export function leadConvertSteps(ir: IRSteps): string[] {
   }
   for (let i = at + 1; i < ir.steps.length; i++) {
     const s = ir.steps[i];
-    if (s.action !== "assert" || !/^converted$/i.test((s.target?.text ?? "").trim())) continue;
+    if (s.action !== "assert") continue;
+    // "was created" after the dialog is the Lead's own earlier toast (run 2026-11-12T09-57-37-571Z-94237239
+    // "passed" on it with nothing converted); "Converted" is also a path stage.
+    if (/\bwas created\b/i.test(s.target?.text ?? "")) { ir.steps.splice(i--, 1); notes.push(`${s.id}: "was created" after Convert is the Lead's earlier toast -> dropped`); continue; }
+    if (!/^converted$/i.test((s.target?.text ?? "").trim())) continue;
     ir.steps[i] = { ...s, target: { text: "Your lead has been converted" }, assertion: "visible" };
     notes.push(`${s.id}: "Converted" is also a path stage -> checks "Your lead has been converted"`);
+  }
+  if (!ir.steps.slice(at + 1).some((s) => s.action === "assert" && /your lead has been converted/i.test(s.target?.text ?? ""))) {
+    ir.steps.splice(at + 1, 0, { id: "sf-convert-wait", action: "wait", value: "3000" } as Step,
+      { id: "sf-convert-done", action: "assert", target: { text: "Your lead has been converted" }, assertion: "visible" } as Step);
+    notes.push(`the conversion is checked by Salesforce's own "Your lead has been converted"`);
   }
   return notes;
 }
@@ -1256,4 +1265,72 @@ export function calculatedFieldReads(ir: IRSteps, org: Pick<SalesforceOrgModel, 
     notes.push(`${s.id}: "${c.label}" is calculated -> reads the value it shows, for the API check`);
   });
   return notes;
+}
+
+/**
+ * Phase C, an approval done the way Lightning does it, when the request asks for one ("submit it for
+ * approval, then approve it and verify its Description shows TB Approved") on an object with an approval
+ * process: the case writer left the approval steps out in runs 2026-11-12T09-57-07-371Z-96fab553 and
+ * 2026-11-12T10-04-34-678Z-eff2eb27. Added after the record's confirmed Save: Submit for Approval (from the
+ * actions menu) with a comment; then, when asked, the decision from the record's Related tab ("Approve" or
+ * "Reject", a comment, the dialog's button); then the field the request names, checked on the record.
+ * Nothing is added when a step already submits. Returns notes.
+ */
+export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "approvals"> | undefined, request: string): string[] {
+  const approval = org?.approvals?.[0] && /\bsubmit\w*\b[^.]*\bapproval\b/i.test(request) ? org.approvals : undefined;
+  if (!approval || ir.steps.some((s) => s.action === "click" && /^submit for approval$/i.test(s.target?.name ?? ""))) return [];
+  // The record: the last one the case saved on an object with an approval process.
+  let form: string | null = null;
+  let saved: { object: string; at: number; n: number } | null = null;
+  const count = new Map<string, number>();
+  ir.steps.forEach((s, i) => {
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; return; }
+    if (s.action === "click" && isSave(s) && form) {
+      const n = (count.get(form) ?? 0) + 1;
+      count.set(form, n);
+      if (approval.some((a) => a.object === form)) saved = { object: form, at: i, n };
+      form = null;
+    }
+  });
+  if (!saved) return [];
+  const { object, n } = saved as { object: string; at: number; n: number };
+  let at = (saved as { at: number }).at + 1;
+  while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /\bwas created\b/.test(ir.steps[at].target?.text ?? "")))) at++;
+  // What the case wrote after the Save is not the approval (a text check of the outcome, a click elsewhere):
+  // it would run before the record is even submitted. The request's own check is added at the end instead.
+  const dropped = ir.steps.length - at;
+  ir.steps.splice(at);
+  const dialog = (name: string) => ({ role: "button", name, css: `role=dialog >> role=button[name="${name}"s]` });
+  const steps: Step[] = [
+    { id: "sf-ap-menu", action: "click", target: { role: "button", name: "Show more actions" } },
+    { id: "sf-ap-submit", action: "click", target: { role: "menuitem", name: "Submit for Approval" } },
+    { id: "sf-ap-wait", action: "wait", value: "1500" },
+    { id: "sf-ap-comment", action: "fill", target: { role: "textbox", name: "Comments" }, value: "Testbench approval test" },
+    { id: "sf-ap-send", action: "click", target: dialog("Submit") },
+    { id: "sf-ap-sent", action: "assert", target: { text: "submitted for approval" }, assertion: "visible" },
+  ] as Step[];
+  const decision = /\breject\w*\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Reject"
+    : /\bapprov(e|es|ed|ing)\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Approve" : null;
+  if (decision) {
+    steps.push(
+      { id: "sf-ap-open", action: "navigate", target: { url: recordRef(object, n) } } as Step,
+      { id: "sf-ap-related", action: "click", target: { role: "tab", name: "Related" } } as Step,
+      { id: "sf-ap-wait2", action: "wait", value: "1500" } as Step,
+      { id: "sf-ap-decide", action: "click", target: { role: "button", name: decision } } as Step,
+      { id: "sf-ap-wait3", action: "wait", value: "1500" } as Step,
+      { id: "sf-ap-comment2", action: "fill", target: { role: "textbox", name: "Comments" }, value: `Testbench ${decision.toLowerCase()} test` } as Step,
+      { id: "sf-ap-confirm", action: "click", target: dialog(decision) } as Step,
+      { id: "sf-ap-wait4", action: "wait", value: "2500" } as Step,
+    );
+  }
+  // The field the request names ("its Description shows TB Approved"), on the record after the decision.
+  const o = org!.objects.find((x) => x.api === object);
+  const m = /\b(?:its\s+|the\s+)?([A-Z][\w ]*?)\s+(?:shows|is|says|reads)\s+["“]?([^".,;”]+?)["”]?\s*(?:$|[.,;])/.exec(request);
+  const f = m && o?.fields.find((x) => lineKey(x.label) === lineKey(m[1]));
+  if (m && f) {
+    steps.push({ id: "sf-ap-reopen", action: "navigate", target: { url: recordRef(object, n) } } as Step,
+      { id: `sf-ap-check-${f.api}`, action: "assert", target: { field: f.label }, assertion: "text_contains", value: m[2].trim() } as Step);
+  }
+  ir.steps.push(...steps);
+  return [`the request ${decision ? `submits and ${decision === "Approve" ? "approves" : "rejects"}` : "submits"} the ${o?.label ?? object} for approval -> the approval steps${dropped ? ` (replacing ${dropped} step(s) after the Save)` : ""}${m && f ? `, then checks ${f.label} shows "${m[2].trim()}"` : ""}`];
 }

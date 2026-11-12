@@ -788,6 +788,26 @@ export async function runPipeline(
       save("11-api-checks.json", checks);
       const all = checks.flatMap((c) => c.checks);
       console.log(`[api-checks] ${runId}: ${all.filter((x) => x.ok).length}/${all.length} field values match the org`);
+      // A case the org contradicts did not pass, whatever the screen showed (run
+      // 2026-11-12T09-57-37-571Z-94237239 "passed" with its Lead not converted). Its status and the totals
+      // follow; the first mismatch is its error.
+      const s = suite as { cases?: any[]; [k: string]: any } | undefined;
+      let changed = false;
+      for (const c of checks) {
+        const bad = c.checks.find((x) => !x.ok);
+        const row = s?.cases?.find((x: any) => x?.caseId === c.case);
+        if (!bad || !row || row.status !== "passed") continue;
+        row.status = "failed";
+        row.error = `API check: ${bad.object} ${bad.field} expected "${bad.expected}", the org has "${bad.actual ?? bad.note ?? "nothing"}"`;
+        row.failedStepTitle = "API check";
+        changed = true;
+      }
+      if (s && changed) {
+        s.passed = (s.cases ?? []).filter((x: any) => x?.status === "passed").length;
+        s.failed = (s.cases ?? []).filter((x: any) => x?.status === "failed").length;
+        writeFileSync(summaryPath, JSON.stringify(s, null, 2));
+        if (s.passed === 0) finalResult = { ...finalResult, passed: false };
+      }
     }
     if (cleanupEnabled() && fd?.apiGet && fd.apiDelete && since) {
       const cleanup = await cleanupRecords({ apiGet: fd.apiGet, apiDelete: fd.apiDelete },

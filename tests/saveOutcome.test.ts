@@ -939,3 +939,40 @@ describe("calculatedFieldReads", () => {
     expect(i.steps[2]).toMatchObject({ id: "sf-calc-s9", target: { field: "Zq Expected" }, assertion: "visible" });
   });
 });
+
+describe("approvalSteps", () => {
+  const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Description", api: "Description" }] }],
+    approvals: [{ label: "Zq Big Deal", api: "Zq_Big_Deal", object: "Zopp" }] };
+  const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+  it("adds submit, the decision and the requested check after the confirmed Save, replacing what followed", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const junk = { id: "j", action: "assert", target: { text: "Zq Approved" }, assertion: "visible" } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), created, junk]);
+    expect(approvalSteps(i, org as any, "Create a Zopp, submit it for approval, then approve it and verify its Description shows Zq Approved")).toHaveLength(1);
+    const ids = i.steps.map((s) => s.id);
+    expect(ids).not.toContain("j");
+    expect(ids).toEqual(expect.arrayContaining(["sf-ap-submit", "sf-ap-send", "sf-ap-decide", "sf-ap-confirm", "sf-ap-check-Description"]));
+    expect(i.steps.find((s) => s.id === "sf-ap-decide")?.target?.name).toBe("Approve");
+    expect(i.steps.at(-1)).toMatchObject({ target: { field: "Description" }, value: "Zq Approved" });
+  });
+  it("rejects when asked, submits only when no decision is asked, and adds nothing without a submit", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const r = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(r, org as any, "submit it for approval, then reject it");
+    expect(r.steps.find((s) => s.id === "sf-ap-decide")?.target?.name).toBe("Reject");
+    const p = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(p, org as any, "submit it for approval and verify it was submitted");
+    expect(p.steps.some((s) => s.id === "sf-ap-decide")).toBe(false);
+    expect(approvalSteps(ir([nav("/lightning/o/Zopp/new"), click("Save")]), org as any, "create a Zopp")).toEqual([]);
+  });
+});
+
+describe("leadConvertSteps: the model's was-created check", () => {
+  it("drops 'was created' after the dialog's Convert and adds the converted check", async () => {
+    const { leadConvertSteps } = await import("../src/stages/salesforceGuidance.js");
+    const conv = (id: string) => ({ id, action: "click", target: { role: "button", name: "Convert" } } as Step);
+    const i = ir([conv("a"), conv("b"), { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step]);
+    leadConvertSteps(i);
+    expect(i.steps.map((s) => s.id)).toEqual(["a", "b", "sf-convert-wait", "sf-convert-done"]);
+  });
+});
