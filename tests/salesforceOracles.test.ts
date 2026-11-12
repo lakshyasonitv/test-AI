@@ -88,3 +88,15 @@ describe("typedValues: only confirmed saves", () => {
     expect(typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "AB"), save, refused] }, org)).toEqual([]);
   });
 });
+
+describe("caseRunFacts without run tokens", () => {
+  it("still returns the created records when the spec typed no token", async () => {
+    const { caseRunFacts } = await import("../src/stages/salesforceOracles.js");
+    const { writeFileSync, mkdtempSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const f = join(mkdtempSync(join(tmpdir(), "zq-")), "results.json");
+    writeFileSync(f, JSON.stringify({ suites: [{ specs: [{ tests: [{ annotations: [{ type: "sf-created", description: JSON.stringify({ Case: ["500zq0000000001AAA"] }) }] }] }] }] }));
+    expect(caseRunFacts(f)).toEqual({ ctx: { uid: "", phone: "" }, created: { Case: ["500zq0000000001AAA"] } });
+  });
+});

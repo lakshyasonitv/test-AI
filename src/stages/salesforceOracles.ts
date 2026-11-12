@@ -149,7 +149,9 @@ export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; creat
     for (const c of s?.suites ?? []) visit(c);
   };
   try { for (const s of JSON.parse(readFileSync(resultsPath, "utf8"))?.suites ?? []) visit(s); } catch { return null; }
-  return ctx ? { ctx, created } : null;
+  // A spec that types no run token writes no "run-tokens" annotation (run 2026-11-12T07-16-11-742Z-c2ab98b6
+  // picked only picklist values and got no API check at all): nothing to resolve, so an empty context.
+  return ctx || Object.keys(created).length ? { ctx: ctx ?? { uid: "", phone: "" }, created } : null;
 }
 
 /** Every case of a run: its IR and its results.json (case 0's results sit at the run's root). */
