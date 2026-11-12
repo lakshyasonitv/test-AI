@@ -73,6 +73,11 @@ function emitAssert(step: Step): string {
   }
   // A record field's PRESENCE (Target.field, visible): its label EXACTLY. getByText("SLA") also
   // matches the always-shown "SLA Expiration Date", which made a Dynamic Forms check pass hollow.
+  // A calculated field (formula, roll-up) the request asks to verify: the value it SHOWS is read and recorded,
+  // and the API check compares it with the value Salesforce computed (salesforceOracles.calculatedChecks).
+  if (t?.field && step.assertion === "visible" && /^sf-calc-/.test(step.id)) {
+    return `  await sfFieldShown(page, ${q(t.field)});`;
+  }
   if (t?.field && step.assertion === "visible") {
     return `  await expect(page.getByText(${q(t.field)}, { exact: true }).and(page.locator(':visible')).first()).toBeVisible({ timeout: ${ASSERT_TIMEOUT_MS} });`;
   }
@@ -382,6 +387,18 @@ async function sfFieldValue(page, label, expected, mode) {
   }
   throw new Error('The "' + label + '" field does not show "' + expected + '": ' + (seen.length
     ? "it shows " + seen.map((s) => '"' + s + '"').join(", ") : 'no visible field labelled "' + label + '" is on the page') + ".");
+}`;
+
+/** A calculated field's shown value, read from its own block on the record page and recorded as the
+ *  "sf-shown" annotation; the API check compares it with the value Salesforce computed. The field must
+ *  be on the page: no block = the check fails here. */
+const SF_FIELD_SHOWN_HELPER = `async function sfFieldShown(page, label) {
+  const items = page.locator("records-record-layout-item, records-highlights-details-item, .slds-form-element");
+  const block = items.filter({ has: page.getByText(label, { exact: true }) }).and(page.locator(':visible')).first();
+  await expect(block).toBeVisible({ timeout: ${ASSERT_TIMEOUT_MS} });
+  const lines = ((await block.innerText({ timeout: 1000 }).catch(() => "")) || "").split("\\n").map((l) => l.trim()).filter(Boolean);
+  const shown = lines.filter((l) => l !== label && !/^Edit /.test(l)).join(" ");
+  test.info().annotations.push({ type: "sf-shown", description: JSON.stringify({ label, shown }) });
 }`;
 
 /** Scrolls down a screen at a time until `text` shows or the page ends, so a lazily drawn section
@@ -1416,6 +1433,7 @@ test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", descr
     // org confirms this user created during the run (salesforceCleanup.ts).
     body.includes(`process.env.${FRONTDOOR_ENV}`) ? SF_RECORDS_HELPER : "",
     body.includes("await sfReveal(") ? SF_REVEAL_HELPER : "",
+    body.includes("await sfFieldShown(") ? SF_FIELD_SHOWN_HELPER : "",
     body.includes("await sfDismissDuplicates(") ? SF_DISMISS_DUPLICATES_HELPER : "",
     body.includes("await sfOpenRecord(") ? SF_OPEN_RECORD_HELPER : "",
     body.includes("await sfFieldValue(") ? SF_FIELD_HELPER : "",

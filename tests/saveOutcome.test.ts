@@ -917,3 +917,25 @@ describe("pathStageClicks: no path step at all", () => {
       [undefined, "Save", "was created", "Closed", "Select Closed Stage", "1000", "Stage", "Save", "1500", "Stage"]);
   });
 });
+
+describe("leadConvertSteps", () => {
+  it("scopes the second Convert to the dialog and checks Salesforce's converted message", async () => {
+    const { leadConvertSteps } = await import("../src/stages/salesforceGuidance.js");
+    const conv = (id: string) => ({ id, action: "click", target: { role: "button", name: "Convert" } } as Step);
+    const i = ir([conv("a"), conv("b"), { id: "x", action: "assert", target: { text: "Converted" }, assertion: "visible" } as Step]);
+    expect(leadConvertSteps(i)).toHaveLength(2);
+    expect(i.steps[1].target?.css).toContain("role=dialog");
+    expect(i.steps[2].target?.text).toBe("Your lead has been converted");
+    expect(leadConvertSteps(ir([conv("a")]))).toEqual([]);
+  });
+});
+
+describe("calculatedFieldReads", () => {
+  it("turns a check of a calculated field's label into a read of its value", async () => {
+    const { calculatedFieldReads } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [], calculated: [{ label: "Zq Expected", api: "Zq_Exp__c", type: "Currency" }] }] };
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), { id: "s9", action: "assert", target: { text: "Zq Expected" }, assertion: "visible" } as Step]);
+    expect(calculatedFieldReads(i, org as any)).toHaveLength(1);
+    expect(i.steps[2]).toMatchObject({ id: "sf-calc-s9", target: { field: "Zq Expected" }, assertion: "visible" });
+  });
+});

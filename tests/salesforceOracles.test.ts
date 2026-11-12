@@ -97,7 +97,7 @@ describe("caseRunFacts without run tokens", () => {
     const { tmpdir } = await import("node:os");
     const f = join(mkdtempSync(join(tmpdir(), "zq-")), "results.json");
     writeFileSync(f, JSON.stringify({ suites: [{ specs: [{ tests: [{ annotations: [{ type: "sf-created", description: JSON.stringify({ Case: ["500zq0000000001AAA"] }) }] }] }] }] }));
-    expect(caseRunFacts(f)).toEqual({ ctx: { uid: "", phone: "" }, created: { Case: ["500zq0000000001AAA"] } });
+    expect(caseRunFacts(f)).toEqual({ ctx: { uid: "", phone: "" }, created: { Case: ["500zq0000000001AAA"] }, shown: {} });
   });
 });
 
@@ -140,5 +140,15 @@ describe("approvalChecks", () => {
     const out = await approvalChecks(vi.fn(async () => ({ records: [{ Status: "Pending" }] })), { steps: [click("Submit for Approval")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] });
     expect(out[0]).toMatchObject({ expected: "Pending", ok: true });
     expect(await approvalChecks(vi.fn(), { steps: [click("Save")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] })).toEqual([]);
+  });
+});
+
+describe("calculatedChecks with a shown value", () => {
+  it("uses the value the spec read off the page for an sf-calc read", async () => {
+    const { calculatedChecks } = await import("../src/stages/salesforceOracles.js");
+    const withCalc = { objects: [{ ...org.objects[0], calculated: [{ label: "Zq Exp", api: "Zq_Exp__c", type: "Currency" }] }] };
+    const read = { id: "sf-calc-a", action: "assert", target: { field: "Zq Exp" }, assertion: "visible" } as Step;
+    expect(calculatedChecks({ steps: [nav("/lightning/o/Zq_Acct__c/new"), save, read] }, withCalc as any, { "Zq Exp": "$20,000.00" }))
+      .toEqual([{ object: "Zq_Acct__c", n: 1, values: [{ label: "Zq Exp", api: "Zq_Exp__c", type: "Currency", value: "$20,000.00" }] }]);
   });
 });

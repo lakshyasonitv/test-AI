@@ -17,7 +17,7 @@ import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
 import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
 import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
-import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, flowRecordChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
+import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, flowRecordChecks, leadConvertChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -773,7 +773,7 @@ export async function runPipeline(
       const checks: { case: string; checks: ApiCheck[] }[] = [];
       for (const c of runCases(runDir)) {
         const facts = caseRunFacts(c.results);
-        const typed = [...typedValues(c.ir, sfOrg), ...calculatedChecks(c.ir, sfOrg), ...flowSetChecks(c.ir, sfOrg)];
+        const typed = [...typedValues(c.ir, sfOrg), ...calculatedChecks(c.ir, sfOrg, facts?.shown), ...flowSetChecks(c.ir, sfOrg)];
         if (!facts) continue;
         const all = [
           ...(typed.length ? await apiChecks(fd.apiGet, typed, facts.created, facts.ctx) : []),
@@ -781,6 +781,7 @@ export async function runPipeline(
           ...await flowRecordChecks(fd.apiGet, c.ir, sfOrg, facts.created, facts.ctx.now),
           // Phase C: where the approval the case drove stands in the org.
           ...await approvalChecks(fd.apiGet, c.ir, sfOrg.approvals, facts.created),
+          ...await leadConvertChecks(fd.apiGet, c.ir, facts.created),
         ];
         if (all.length) checks.push({ case: path.basename(c.caseDir), checks: all });
       }

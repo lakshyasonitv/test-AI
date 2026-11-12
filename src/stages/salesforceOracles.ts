@@ -133,16 +133,18 @@ export async function apiChecks(
 }
 
 /** One case's annotations from its results.json: the run tokens and the records it created. */
-export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; created: Record<string, string[]> } | null {
+export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; created: Record<string, string[]>; shown: Record<string, string> } | null {
   if (!existsSync(resultsPath)) return null;
   let ctx: RunTokenContext | null = null;
   let created: Record<string, string[]> = {};
+  const shown: Record<string, string> = {};
   const visit = (s: any) => {
     for (const sp of s?.specs ?? []) for (const t of sp.tests ?? []) {
       for (const a of [...(t.annotations ?? []), ...(t.results ?? []).flatMap((r: any) => r.annotations ?? [])]) {
         try {
           if (a?.type === "run-tokens") ctx = JSON.parse(a.description);
           if (a?.type === "sf-created") created = JSON.parse(a.description);
+          if (a?.type === "sf-shown") { const v = JSON.parse(a.description); if (typeof v?.label === "string") shown[v.label] = String(v.shown ?? ""); }
         } catch { /* a broken annotation reads as absent */ }
       }
     }
@@ -151,7 +153,7 @@ export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; creat
   try { for (const s of JSON.parse(readFileSync(resultsPath, "utf8"))?.suites ?? []) visit(s); } catch { return null; }
   // A spec that types no run token writes no "run-tokens" annotation (run 2026-11-12T07-16-11-742Z-c2ab98b6
   // picked only picklist values and got no API check at all): nothing to resolve, so an empty context.
-  return ctx || Object.keys(created).length ? { ctx: ctx ?? { uid: "", phone: "" }, created } : null;
+  return ctx || Object.keys(created).length ? { ctx: ctx ?? { uid: "", phone: "" }, created, shown } : null;
 }
 
 /** Every case of a run: its IR and its results.json (case 0's results sit at the run's root). */
@@ -177,7 +179,7 @@ export function runCases(runDir: string): { caseDir: string; ir: Pick<IR, "steps
  * shows, the two must agree. The record is the one the case was on: the last it saved, or one it opened
  * again by reference (${record:Obj:n}).
  */
-export function calculatedChecks(ir: Pick<IR, "steps">, org: Org): Typed[] {
+export function calculatedChecks(ir: Pick<IR, "steps">, org: Org, shown: Record<string, string> = {}): Typed[] {
   const out: Typed[] = [];
   const count = new Map<string, number>();
   let form: string | null = null;
@@ -198,12 +200,14 @@ export function calculatedChecks(ir: Pick<IR, "steps">, org: Org): Typed[] {
       continue;
     }
     const label = s.target?.field;
-    if (s.action !== "assert" || !label || !on || !s.value || !/^text_(contains|equals)$/.test(s.assertion ?? "")) continue;
+    // A value the spec READ off the page (sf-calc-: sfFieldShown) stands in for one written in the step.
+    const value = /^sf-calc-/.test(s.id) ? shown[label ?? ""] : s.value;
+    if (s.action !== "assert" || !label || !on || !value || !(/^sf-calc-/.test(s.id) || /^text_(contains|equals)$/.test(s.assertion ?? ""))) continue;
     const o = org.objects.find((x) => x.api === on!.object);
     const c = (o as any)?.calculated?.find((x: any) => x.label.toLowerCase() === label.toLowerCase());
     if (!c || !COMPARED.test(c.type)) continue;
     const entry = out.find((t) => t.object === on!.object && t.n === on!.n) ?? (out.push({ object: on.object, n: on.n, values: [] }), out[out.length - 1]);
-    entry.values = entry.values.filter((v) => v.api !== c.api).concat({ label: c.label, api: c.api, type: c.type, value: s.value });
+    entry.values = entry.values.filter((v) => v.api !== c.api).concat({ label: c.label, api: c.api, type: c.type, value });
   }
   return out;
 }
@@ -345,6 +349,22 @@ export async function approvalChecks(
       } catch (err) {
         out.push({ object: a.object, id, field: `${a.label}: approval status`, expected, ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
       }
+    }
+  }
+  return out;
+}
+
+/** A Lead the case converted (two "Convert" clicks), through the API: IsConverted is true. */
+export async function leadConvertChecks(apiGet: (p: string) => Promise<any>, ir: Pick<IR, "steps">, created: Record<string, string[]>): Promise<ApiCheck[]> {
+  if (ir.steps.filter((s) => s.action === "click" && /^convert$/i.test(s.target?.name ?? "")).length < 2) return [];
+  const out: ApiCheck[] = [];
+  for (const id of created.Lead ?? []) {
+    if (!/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
+    try {
+      const r = (await apiGet(`/query?q=${encodeURIComponent(`SELECT IsConverted FROM Lead WHERE Id = '${id}'`)}`))?.records?.[0];
+      out.push({ object: "Lead", id, field: "converted", expected: "true", actual: String(r?.IsConverted ?? "not found"), ok: r?.IsConverted === true });
+    } catch (err) {
+      out.push({ object: "Lead", id, field: "converted", expected: "true", ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
     }
   }
   return out;

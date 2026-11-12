@@ -1209,3 +1209,51 @@ export function eventRecordSearch(ir: IRSteps, org: Pick<SalesforceOrgModel, "fl
   }
   return notes;
 }
+
+/**
+ * Lead convert, done the way Lightning does it: the header's "Convert" opens the dialog, and the dialog's own
+ * "Convert" converts. Run 2026-11-12T09-31-35-264Z-96ce8e8e clicked a page-wide "Convert" twice (the second
+ * matched the header again), the dialog stayed open, and its "Converted" check matched the Lead's path. The
+ * second click is scoped to the dialog, and the check is Salesforce's own "Your lead has been converted".
+ * Returns notes.
+ */
+export function leadConvertSteps(ir: IRSteps): string[] {
+  const clicks = ir.steps.map((s, i) => [s, i] as const).filter(([s]) => s.action === "click" && /^convert$/i.test(s.target?.name ?? ""));
+  if (clicks.length < 2) return [];
+  const notes: string[] = [];
+  const [dialogClick, at] = clicks[1];
+  if (!/role=dialog/.test(dialogClick.target?.css ?? "")) {
+    ir.steps[at] = { ...dialogClick, target: { role: "button", name: "Convert", css: 'role=dialog >> role=button[name="Convert"s]' } };
+    notes.push(`${dialogClick.id}: the dialog's own "Convert"`);
+  }
+  for (let i = at + 1; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action !== "assert" || !/^converted$/i.test((s.target?.text ?? "").trim())) continue;
+    ir.steps[i] = { ...s, target: { text: "Your lead has been converted" }, assertion: "visible" };
+    notes.push(`${s.id}: "Converted" is also a path stage -> checks "Your lead has been converted"`);
+  }
+  return notes;
+}
+
+/**
+ * A check that a calculated field's LABEL is visible ("Expected Revenue") checks nothing about its value
+ * (run 2026-11-12T09-37-44-530Z-ffcf8ece). On a record the case saved, it becomes a read of the value the
+ * page shows for that field (generator sfFieldShown), which the API check compares with the value
+ * Salesforce computed. Returns notes.
+ */
+export function calculatedFieldReads(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects"> | undefined): string[] {
+  const notes: string[] = [];
+  let form: string | null = null;
+  let on: string | null = null;
+  ir.steps.forEach((s, i) => {
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; on = recordRefObject(s.target?.url) ?? (form ? null : on); return; }
+    if (s.action === "click" && isSave(s) && form) { on = form; form = null; return; }
+    if (s.action !== "assert" || s.assertion !== "visible" || !s.target?.text || !on) return;
+    const o = org?.objects.find((x) => x.api === on);
+    const c = o?.calculated?.find((x) => lineKey(x.label) === lineKey(s.target!.text!));
+    if (!c) return;
+    ir.steps[i] = { id: `sf-calc-${s.id}`, action: "assert", target: { field: c.label }, assertion: "visible" } as Step;
+    notes.push(`${s.id}: "${c.label}" is calculated -> reads the value it shows, for the API check`);
+  });
+  return notes;
+}
