@@ -976,3 +976,13 @@ describe("leadConvertSteps: the model's was-created check", () => {
     expect(i.steps.map((s) => s.id)).toEqual(["a", "b", "sf-convert-wait", "sf-convert-done"]);
   });
 });
+
+describe("leadConvertSteps: other wordings of the conversion", () => {
+  it("turns 'was converted' into Salesforce's message", async () => {
+    const { leadConvertSteps } = await import("../src/stages/salesforceGuidance.js");
+    const conv = (id: string) => ({ id, action: "click", target: { role: "button", name: "Convert" } } as Step);
+    const i = ir([conv("a"), conv("b"), { id: "x", action: "assert", target: { text: "was converted" }, assertion: "visible" } as Step]);
+    leadConvertSteps(i);
+    expect(i.steps.filter((s) => s.action === "assert").map((s) => s.target?.text)).toEqual(["Your lead has been converted"]);
+  });
+});

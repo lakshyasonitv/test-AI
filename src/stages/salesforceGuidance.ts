@@ -1232,9 +1232,12 @@ export function leadConvertSteps(ir: IRSteps): string[] {
     // "was created" after the dialog is the Lead's own earlier toast (run 2026-11-12T09-57-37-571Z-94237239
     // "passed" on it with nothing converted); "Converted" is also a path stage.
     if (/\bwas created\b/i.test(s.target?.text ?? "")) { ir.steps.splice(i--, 1); notes.push(`${s.id}: "was created" after Convert is the Lead's earlier toast -> dropped`); continue; }
-    if (!/^converted$/i.test((s.target?.text ?? "").trim())) continue;
+    const text = (s.target?.text ?? "").trim();
+    if (!/\bconvert/i.test(text) || /your lead has been converted/i.test(text)) continue;
+    // Any other wording of it ("Converted" is also a path stage; "was converted" is never shown: run
+    // 2026-11-12T12-38-55-246Z-2a2e742f converted the Lead and failed on it) is Salesforce's own message.
     ir.steps[i] = { ...s, target: { text: "Your lead has been converted" }, assertion: "visible" };
-    notes.push(`${s.id}: "Converted" is also a path stage -> checks "Your lead has been converted"`);
+    notes.push(`${s.id}: "${text}" -> checks "Your lead has been converted"`);
   }
   if (!ir.steps.slice(at + 1).some((s) => s.action === "assert" && /your lead has been converted/i.test(s.target?.text ?? ""))) {
     ir.steps.splice(at + 1, 0, { id: "sf-convert-wait", action: "wait", value: "3000" } as Step,
