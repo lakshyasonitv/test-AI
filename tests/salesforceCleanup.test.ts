@@ -187,3 +187,30 @@ describe("custom children and seeded records", () => {
     expect(apiGet).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("what a screen flow made", () => {
+  it("is named by the values the case typed with the run's code, in the object the flow creates", async () => {
+    const { screenFlowMade } = await import("../src/stages/salesforceCleanup.js");
+    const flows = [{ api: "Zq_Screen", type: "screen", effects: ["creates a Contact"] }, { api: "Zq_Other", type: "record-triggered", effects: ["creates a Task"] }];
+    const steps = [{ action: "navigate", target: { url: "https://x.example/flow/Zq_Screen" } },
+      { action: "fill", target: { name: "First" }, value: "Zq First" },
+      { action: "fill", target: { name: "Last" }, value: "ZqLast {{uid}}" }];
+    expect(screenFlowMade(steps, flows, { uid: "ab12cd" })).toEqual([{ object: "Contact", name: "ZqLast ab12cd" }]);
+    expect(screenFlowMade([{ action: "fill", value: "ZqLast {{uid}}" }], flows, { uid: "x" })).toEqual([]);
+  });
+
+  it("deletes only this user's records made since the run began, by that name", async () => {
+    const { cleanupByTypedName } = await import("../src/stages/salesforceCleanup.js");
+    const queries: string[] = [];
+    const deleted: string[] = [];
+    const apiGet = vi.fn(async (p: string) => {
+      if (p === "/chatter/users/me") return { id: ME };
+      queries.push(decodeURIComponent(p));
+      return { records: [{ Id: "003zq0000000001AAA" }] };
+    });
+    const r = await cleanupByTypedName({ apiGet, apiDelete: vi.fn(async (p: string) => { deleted.push(p); }) }, [{ object: "Contact", name: "ZqLast ab12cd" }], new Date());
+    expect(r.deleted).toHaveLength(1);
+    expect(queries[0]).toContain("Name LIKE '%ZqLast ab12cd%'");
+    expect(queries[0]).toContain(`CreatedById = '${ME}'`);
+  });
+});

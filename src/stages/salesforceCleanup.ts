@@ -181,3 +181,58 @@ export async function cleanupSeeded(session: ApiSession, made: { object: string;
   }
   return report;
 }
+
+/**
+ * What a SCREEN flow made: the test never opens that record's page, so it is in no "sf-records" list (run
+ * 2026-11-10T20-48-38-298Z-86ccdda4, TB New Contact Screen, left its Contact). Found by a value the case
+ * typed on the flow's screens with the run's unique code in it ("TestLast ab12cd"), in the object the flow
+ * creates, made by this user since the run began. A value without the code is never searched for.
+ */
+export function screenFlowMade(
+  irSteps: { action: string; target?: { url?: string; name?: string }; value?: string }[],
+  flows: { api: string; type: string; effects?: string[] }[] | undefined,
+  ctx: { uid: string },
+): { object: string; name: string }[] {
+  const out: { object: string; name: string }[] = [];
+  let flow: { api: string; type: string; effects?: string[] } | undefined;
+  for (const s of irSteps) {
+    if (s.action === "navigate") {
+      const api = /\/flow\/(\w+)/.exec(s.target?.url ?? "")?.[1];
+      flow = api ? (flows ?? []).find((f) => f.api === api && f.type === "screen") : undefined;
+      continue;
+    }
+    if (!flow || s.action !== "fill" || !s.value?.includes("{{uid}}")) continue;
+    const name = s.value.replace(/\{\{uid\}\}/g, ctx.uid).trim();
+    for (const l of flow.effects ?? []) {
+      const m = /^creates an? (\w+)/.exec(l);
+      if (m && !out.some((o) => o.object === m[1] && o.name === name)) out.push({ object: m[1], name });
+    }
+  }
+  return out;
+}
+
+/** Delete records named like `made` (a typed value with the run's code), this user's, since `since`. */
+export async function cleanupByTypedName(session: ApiSession, made: { object: string; name: string }[], since: Date): Promise<CleanupReport> {
+  const report: CleanupReport = { deleted: [], skipped: [], failed: [] };
+  if (!made.length) return report;
+  let me: string | undefined;
+  try { me = (await session.apiGet("/chatter/users/me"))?.id; } catch { /* below */ }
+  if (typeof me !== "string" || !/^005[A-Za-z0-9]{12,15}$/.test(me)) return { ...report, reason: "the org did not say which user is connected, so nothing was deleted" };
+  const sinceIso = since.toISOString().replace(/\.\d{3}Z$/, "Z");
+  for (const m of made) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(m.object) || !/^[\w .'-]{4,80}$/.test(m.name)) continue;
+    const like = m.name.replace(/'/g, "\'").replace(/[%_]/g, "\$&");
+    try {
+      const q = `SELECT Id FROM ${m.object} WHERE Name LIKE '%${like}%' AND CreatedById = '${me}' AND CreatedDate >= ${sinceIso}`;
+      for (const x of (await session.apiGet(`/query?q=${encodeURIComponent(q)}`))?.records ?? []) {
+        const id = String(x?.Id ?? "");
+        if (!/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
+        try { await session.apiDelete(`/sobjects/${m.object}/${id}`); report.deleted.push({ object: m.object, id }); }
+        catch (err) { report.failed.push({ ref: { object: m.object, id }, error: (err as Error)?.message ?? String(err) }); }
+      }
+    } catch (err) {
+      report.failed.push({ ref: { object: m.object, id: m.name }, error: (err as Error)?.message ?? String(err) });
+    }
+  }
+  return report;
+}

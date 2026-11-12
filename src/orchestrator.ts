@@ -15,7 +15,7 @@ import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
-import { cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
+import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
 import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
 import { apiChecks, apiChecksEnabled, calculatedChecks, caseRunFacts, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
@@ -789,6 +789,14 @@ export async function runPipeline(
       const seeded = await cleanupSeeded({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, published.flatMap((p) => p.creates ?? []), since);
       cleanup.deleted.push(...seeded.deleted);
       cleanup.failed.push(...seeded.failed);
+      // What a screen flow made, by the value the case typed with the run's unique code.
+      const flowMade = runCases(runDir).flatMap((c) => {
+        const facts = caseRunFacts(c.results);
+        return facts ? screenFlowMade(c.ir.steps, appModel.salesforceOrg?.flows, facts.ctx) : [];
+      });
+      const byFlow = await cleanupByTypedName({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, flowMade, since);
+      cleanup.deleted.push(...byFlow.deleted);
+      cleanup.failed.push(...byFlow.failed);
       save("10-cleanup.json", cleanup);
       console.log(`[cleanup] ${runId}: deleted ${cleanup.deleted.length}, left ${cleanup.skipped.length}, failed ${cleanup.failed.length}`
         + (cleanup.reason ? ` (${cleanup.reason})` : ""));
