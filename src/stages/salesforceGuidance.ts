@@ -1302,8 +1302,11 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   ir.steps.splice(at);
   const dialog = (name: string) => ({ role: "button", name, css: `role=dialog >> role=button[name="${name}"s]` });
   const steps: Step[] = [
-    { id: "sf-ap-menu", action: "click", target: { role: "button", name: "Show more actions" } },
-    { id: "sf-ap-submit", action: "click", target: { role: "menuitem", name: "Submit for Approval" } },
+    // The Approval History list on the record's Related tab carries "Submit for Approval" (the Opportunity
+    // layout's actions menu has none: run 2026-11-12T10-08-18-575Z-29afdb07).
+    { id: "sf-ap-related0", action: "click", target: { role: "tab", name: "Related" } },
+    { id: "sf-ap-wait0", action: "wait", value: "1500" },
+    { id: "sf-ap-submit", action: "click", target: { role: "button", name: "Submit for Approval" } },
     { id: "sf-ap-wait", action: "wait", value: "1500" },
     { id: "sf-ap-comment", action: "fill", target: { role: "textbox", name: "Comments" }, value: "Testbench approval test" },
     { id: "sf-ap-send", action: "click", target: dialog("Submit") },
