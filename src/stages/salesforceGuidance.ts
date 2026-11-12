@@ -1067,7 +1067,7 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
  */
 export function flowOutcome(
   o: { fields: { label: string; api?: string }[] }, lines: string[], valueOf: (api: string) => string | undefined,
-): { sets: { label: string; api: string; value: string }[]; creates: string[] } | null {
+): { sets: { label: string; api: string; value: string }[]; creates: string[]; made: CreatedByFlow[]; notMade: CreatedByFlow[] } | null {
   const only = lines.find((l) => l.startsWith("only when "));
   if (only && whenHolds(only.slice("only when ".length), valueOf) !== true) return null;
   const branches = lines.filter((l) => l.startsWith("branch "));
@@ -1095,7 +1095,22 @@ export function flowOutcome(
       if (a && f?.api) sets.push({ label: f.label, api: f.api, value: /^(true|false)$/i.test(a[2].trim()) ? a[2].trim().toLowerCase() : a[2].trim() });
     }
   }
-  return { sets, creates: [...effects.matchAll(/creates an? \w+ "([^"]+)"/g)].map((m) => m[1]) };
+  // The records it makes on THIS record, and those other branches make and this one must not (Warm/Cold: no
+  // call task), with the due date and the link the org model read (createdLine).
+  const made = createdByFlow(effects);
+  const notMade = createdByFlow(branches.join("; ")).filter((x) => !made.some((m) => m.object === x.object && m.name === x.name));
+  return { sets, creates: [...effects.matchAll(/creates an? \w+ "([^"]+)"/g)].map((m) => m[1]), made, notMade };
+}
+
+export interface CreatedByFlow { object: string; name: string; dueDays?: number; link?: string }
+/** 'creates a Task "X" due today + 1, linked to the record by WhoId' as data. */
+export function createdByFlow(text: string): CreatedByFlow[] {
+  const out: CreatedByFlow[] = [];
+  for (const m of text.matchAll(/creates an? (\w+) "([^"]+)"( due today(?: ([+-]) (\d+))?)?(?:, linked to the record by (\w+))?/g)) {
+    if (out.some((x) => x.object === m[1] && x.name === m[2])) continue;
+    out.push({ object: m[1], name: m[2], ...(m[3] ? { dueDays: m[5] ? (m[4] === "-" ? -1 : 1) * Number(m[5]) : 0 } : {}), ...(m[6] ? { link: m[6] } : {}) });
+  }
+  return out;
 }
 
 /**

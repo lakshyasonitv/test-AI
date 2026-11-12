@@ -94,6 +94,20 @@ export async function cleanupRecords(session: ApiSession, records: RecordRef[], 
   // 2026-11-10T14-18-09-285Z-5df7a7ee), a Case a flow made on it (2026-11-10T14-03-50-411Z-95d5ec39). Found under the run's own
   // parents, by the same rule (this user, since the run began), and added last so they go first.
   records = [...records];
+  // A converted Lead became an Account, a Contact and maybe an Opportunity (run
+  // 2026-11-10T19-47-57-184Z-b4313d16 deleted only the Lead). Added Account first so the reverse order deletes
+  // the Opportunity, then the Contact, then the Account; each is still confirmed below like any other.
+  const leads = records.filter((r) => r.object === "Lead" && /^[A-Za-z0-9]{15,18}$/.test(r.id)).map((r) => `'${r.id}'`).join(",");
+  if (leads) {
+    try {
+      const q = `SELECT ConvertedAccountId, ConvertedContactId, ConvertedOpportunityId FROM Lead WHERE Id IN (${leads}) AND IsConverted = true`;
+      for (const row of (await session.apiGet(`/query?q=${encodeURIComponent(q)}`))?.records ?? []) {
+        for (const [object, id] of [["Account", row?.ConvertedAccountId], ["Contact", row?.ConvertedContactId], ["Opportunity", row?.ConvertedOpportunityId]] as const) {
+          if (typeof id === "string" && /^[A-Za-z0-9]{15,18}$/.test(id) && !records.some((r) => r.id.slice(0, 15) === id.slice(0, 15))) records.push({ object, id });
+        }
+      }
+    } catch { /* the org will not say: the converted records stay, reported nowhere */ }
+  }
   for (const parent of [...new Set(records.map((r) => r.object))]) {
     const ids = records.filter((r) => r.object === parent).map((r) => `'${r.id}'`).join(",");
     if (!ids || !/^[A-Za-z][A-Za-z0-9_]*$/.test(parent)) continue;

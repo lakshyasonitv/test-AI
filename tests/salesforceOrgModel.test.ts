@@ -456,3 +456,13 @@ describe("flowEffects names the subflows a flow runs", () => {
     expect(flowEffects({ subflows: [{ flowName: "Zq_Make_Contact" }] })).toEqual(["runs the flow Zq_Make_Contact"]);
   });
 });
+
+describe("a created record's due date and link", () => {
+  it("reads TODAY() + N and the $Record link into the line", async () => {
+    const { flowEffects } = await import("../src/stages/salesforceOrgModel.js");
+    expect(flowEffects({ formulas: [{ name: "Zq_Tomorrow", expression: "TODAY() + 1" }], recordCreates: [{ object: "Task", inputAssignments: [
+      { field: "Subject", value: { stringValue: "Zq Call" } }, { field: "ActivityDate", value: { elementReference: "Zq_Tomorrow" } },
+      { field: "WhoId", value: { elementReference: "$Record.Id" } }] }] }))
+      .toEqual(['creates a Task "Zq Call" due today + 1, linked to the record by WhoId']);
+  });
+});

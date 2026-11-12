@@ -250,3 +250,67 @@ export function flowSetChecks(ir: Pick<IR, "steps">, org: Org): Typed[] {
   }
   return out;
 }
+
+/**
+ * What a record-triggered flow made on a saved record, through the API (Phase B gaps): the task the branch
+ * taken creates exists ON that record with its due date ("due today + 1": run 2026-11-10T20-52-16-029Z-1228df7d
+ * never checked it), and the records other branches create do NOT (Warm/Cold: no call task; nothing checked
+ * that). Only records the flow links to the record (WhoId/WhatId = $Record.Id), found by name. The due date
+ * is compared with the run's day, one day either way (the org's user may sit in another time zone).
+ */
+export async function flowRecordChecks(
+  apiGet: (p: string) => Promise<any>, ir: Pick<IR, "steps">, org: Org, created: Record<string, string[]>, now = Date.now(),
+): Promise<ApiCheck[]> {
+  const out: ApiCheck[] = [];
+  const count = new Map<string, number>();
+  let form: string | null = null;
+  let typed = new Map<string, string>();
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; typed = new Map(); continue; }
+    if (!form) continue;
+    const o = org.objects.find((x) => x.api === form);
+    if ((s.action === "fill" || s.action === "select") && s.value !== undefined && o) {
+      const name = (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase();
+      const f = o.fields.find((x) => x.label.toLowerCase() === name || `${o.label} ${x.label}`.toLowerCase() === name);
+      if (f) typed.set(f.api.toLowerCase(), s.value);
+      continue;
+    }
+    if (s.action !== "click" || !/^save$/i.test(s.target?.name ?? "")) continue;
+    let confirmed = false;
+    for (let j = i + 1; j < ir.steps.length && ir.steps[j].action !== "navigate"; j++) {
+      if (ir.steps[j].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[j].target?.text ?? "")) { confirmed = true; break; }
+    }
+    const thisForm = form;
+    form = null;
+    if (!confirmed || !o) continue;
+    const n = (count.get(thisForm) ?? 0) + 1;
+    count.set(thisForm, n);
+    const id = created[thisForm]?.[n - 1];
+    if (!id || !/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
+    for (const fl of (org.flows ?? []).filter((x) => x.object === o.label || x.object === o.api)) {
+      const r = flowOutcome(o, fl.effects ?? [], (api) => typed.get(api.toLowerCase()));
+      if (!r) continue;
+      for (const [rec, want] of [...r.made.map((x) => [x, true] as const), ...r.notMade.map((x) => [x, false] as const)]) {
+        if (!rec.link || !/^\w+$/.test(rec.object) || !/^\w+$/.test(rec.link) || /'/.test(rec.name)) continue;
+        const nameField = rec.object === "Task" || rec.object === "Event" ? "Subject" : "Name";
+        const label = `${fl.label}: ${rec.object} "${rec.name}"${want ? "" : " (not on this branch)"}`;
+        try {
+          const q = `SELECT Id${rec.dueDays !== undefined ? ", ActivityDate" : ""} FROM ${rec.object} WHERE ${nameField} = '${rec.name}' AND ${rec.link} = '${id}'`;
+          const rows: any[] = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records ?? [];
+          if (!want) { out.push({ object: o.api, id, field: label, expected: "none", actual: String(rows.length), ok: rows.length === 0 }); continue; }
+          out.push({ object: o.api, id, field: label, expected: "exists", actual: rows.length ? "exists" : "missing", ok: rows.length > 0 });
+          if (rows.length && rec.dueDays !== undefined) {
+            const day = (d: number) => new Date(now + d * 86400000).toISOString().slice(0, 10);
+            const got = String(rows[0]?.ActivityDate ?? "");
+            out.push({ object: o.api, id, field: `${label} due date`, expected: day(rec.dueDays), actual: got,
+              ok: [-1, 0, 1].some((k) => day(rec.dueDays! + k) === got) });
+          }
+        } catch (err) {
+          out.push({ object: o.api, id, field: label, expected: want ? "exists" : "none", ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
+        }
+      }
+    }
+  }
+  return out;
+}

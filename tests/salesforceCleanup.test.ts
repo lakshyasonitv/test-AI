@@ -214,3 +214,19 @@ describe("what a screen flow made", () => {
     expect(queries[0]).toContain(`CreatedById = '${ME}'`);
   });
 });
+
+describe("a converted Lead", () => {
+  it("also deletes the Opportunity, Contact and Account it became, before the Lead", async () => {
+    const LEAD = "00Qzq0000000001AAA", ACC = "001zq0000000009AAA", CON = "003zq0000000009AAA", OPP = "006zq0000000009AAA";
+    const deleted: string[] = [];
+    const apiGet = vi.fn(async (p: string) => {
+      if (p === "/chatter/users/me") return { id: ME };
+      const q = decodeURIComponent(p);
+      if (q.includes("ConvertedAccountId")) return { records: [{ ConvertedAccountId: ACC, ConvertedContactId: CON, ConvertedOpportunityId: OPP }] };
+      if (q.includes("WHERE Id IN")) return { records: [{ Id: LEAD }, { Id: ACC }, { Id: CON }, { Id: OPP }] };
+      return { records: [] };
+    });
+    await cleanupRecords({ apiGet, apiDelete: vi.fn(async (p: string) => { deleted.push(p); }) }, [{ object: "Lead", id: LEAD }], new Date());
+    expect(deleted).toEqual([`/sobjects/Opportunity/${OPP}`, `/sobjects/Contact/${CON}`, `/sobjects/Account/${ACC}`, `/sobjects/Lead/${LEAD}`]);
+  });
+});

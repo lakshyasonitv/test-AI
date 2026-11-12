@@ -243,7 +243,7 @@ export function flowEffects(meta: any): string[] {
       if (ref.startsWith("$Record.")) out.push(`sets ${ref.slice(8)} = ${flowValue(it.value)}`);
     }
   }
-  for (const c of meta?.recordCreates ?? []) out.push(createdLine(c));
+  for (const c of meta?.recordCreates ?? []) out.push(createdLine(c, meta));
   // A subflow does the work of the screen that calls it (TB New Contact Screen creates its Contact through
   // TB Create Contact); readFlows adds what that flow creates.
   for (const s of meta?.subflows ?? []) if (typeof s?.flowName === "string") out.push(`runs the flow ${s.flowName}`);
@@ -260,9 +260,19 @@ export function flowEffects(meta: any): string[] {
 }
 
 /** "creates a Task "TB Review large deal"": the record's Subject or Name when the flow gives it as text. */
-function createdLine(c: any): string {
+function createdLine(c: any, meta?: any): string {
   const named = (c?.inputAssignments ?? []).find((a: any) => /^(Subject|Name)$/.test(a?.field) && a?.value?.stringValue);
-  if (named) return `creates a ${c?.object ?? "record"} "${named.value.stringValue}"`;
+  if (named) {
+    // Its due date ("ActivityDate = Tomorrow", a formula "TODAY() + 1") and its link to the record that ran the
+    // flow ("WhoId = $Record.Id"): what the API check confirms (salesforceOracles.createdChecks), H3's due date.
+    const due = (c.inputAssignments ?? []).find((a: any) => a?.field === "ActivityDate");
+    const ref = due?.value?.elementReference;
+    const expr = ref ? (meta?.formulas ?? []).find((f: any) => f?.name === ref)?.expression : undefined;
+    const days = /^\s*TODAY\(\)\s*(?:([+-])\s*(\d+))?\s*$/i.exec(String(expr ?? ""));
+    const dueText = days ? ` due today${days[2] ? ` ${days[1]} ${days[2]}` : ""}` : "";
+    const link = (c.inputAssignments ?? []).find((a: any) => /^(WhoId|WhatId|ParentId|AccountId)$/.test(a?.field) && a?.value?.elementReference === "$Record.Id");
+    return `creates a ${c?.object ?? "record"} "${named.value.stringValue}"${dueText}${link ? `, linked to the record by ${link.field}` : ""}`;
+  }
   // Named from the triggering record or event ("Name = $Record.Message__c"): seeding fills it in.
   const from = (c?.inputAssignments ?? []).find((a: any) => /^(Subject|Name)$/.test(a?.field) && /^\$Record\.\w+$/.test(a?.value?.elementReference ?? ""));
   return `creates a ${c?.object ?? "record"}${from ? ` with ${from.field} = the triggering record's ${from.value.elementReference.slice(8)}` : ""}`;
@@ -314,7 +324,7 @@ export function flowBranches(meta: any): string[] {
           .map((it: any) => `${String(it.assignToReference).slice(8)} = ${flowValue(it.value)}`);
         if (sets.length) out.push(`sets ${sets.join(", ")}`);
       } else if (node.kind === "recordCreates") {
-        out.push(createdLine(el));
+        out.push(createdLine(el, meta));
       } else if (node.kind === "customErrors") {
         const msg = (Array.isArray(el.customErrorMessages) ? el.customErrorMessages : [el.customErrorMessages])
           .map((m: any) => m?.errorMessage).find((m: any) => typeof m === "string" && m.trim());

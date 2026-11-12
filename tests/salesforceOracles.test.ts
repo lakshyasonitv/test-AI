@@ -100,3 +100,27 @@ describe("caseRunFacts without run tokens", () => {
     expect(caseRunFacts(f)).toEqual({ ctx: { uid: "", phone: "" }, created: { Case: ["500zq0000000001AAA"] } });
   });
 });
+
+describe("flowRecordChecks", () => {
+  const org2 = { objects: [{ api: "Zlead", label: "Zlead", fields: [{ label: "Zind", api: "Industry", type: "picklist" }] }],
+    flows: [{ label: "Zq Route", api: "Zq_Route", type: "record-triggered", object: "Zlead", effects: [
+      'branch "Hot": when Industry = Tech -> creates a Task "Zq Call" due today + 1, linked to the record by WhoId',
+      'branch "Default" (none of the above) -> sets Rating = Cold'] }] };
+  const sel = (v: string) => ({ id: "i", action: "select", target: { name: "Zind" }, value: v } as Step);
+  const steps = (v: string) => ({ steps: [nav("/lightning/o/Zlead/new"), sel(v), save, created] });
+  const now = Date.UTC(2026, 10, 12);
+
+  it("confirms the task on the Hot branch with its due date", async () => {
+    const { flowRecordChecks } = await import("../src/stages/salesforceOracles.js");
+    const apiGet = vi.fn(async () => ({ records: [{ Id: "00Tzq", ActivityDate: "2026-11-13" }] }));
+    const out = await flowRecordChecks(apiGet, steps("Tech"), org2 as any, { Zlead: ["00Qzq0000000001AAA"] }, now);
+    expect(out.map((c) => [c.expected, c.actual, c.ok])).toEqual([["exists", "exists", true], ["2026-11-13", "2026-11-13", true]]);
+    expect(decodeURIComponent(String(apiGet.mock.calls[0][0]))).toContain("WHERE Subject = 'Zq Call' AND WhoId = '00Qzq0000000001AAA'");
+  });
+
+  it("confirms no task on the other branch", async () => {
+    const { flowRecordChecks } = await import("../src/stages/salesforceOracles.js");
+    const out = await flowRecordChecks(vi.fn(async () => ({ records: [] })), steps("Retail"), org2 as any, { Zlead: ["00Qzq0000000001AAA"] }, now);
+    expect(out).toEqual([expect.objectContaining({ expected: "none", actual: "0", ok: true })]);
+  });
+});
