@@ -997,10 +997,20 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
       .map((v) => ({ v, at: words.lastIndexOf(` ${lineKey(v)} `) }))
       .sort((a, b) => b.at - a.at || b.v.length - a.v.length)[0]?.v;
     const mark = ir.steps.findIndex((s) => s.action === "click" && /^mark stage as complete$/i.test(s.target?.name ?? ""));
-    if (target && mark >= 0 && !ir.steps.some((s) => s.action === "click" && lineKey(s.target?.name ?? "") === lineKey(target))) {
-      const id = ir.steps[mark].id;
+    // No path step at all (run 2026-11-12T07-04-54-099Z-74db9cd3 saved Prospecting and went straight to
+    // checking Closed Won): the path steps go right after the Save is confirmed.
+    const pathy = (s: Step) => s.action === "click" && /^(closed|select closed stage|mark as current stage|mark stage as complete)$/i.test(s.target?.name ?? "");
+    let at = mark, remove = 1;
+    if (mark < 0 && !ir.steps.some(pathy)) {
+      for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) at = i + 1;
+      while (at > 0 && at < ir.steps.length && (ir.steps[at].action === "wait"
+        || (ir.steps[at].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[at].target?.text ?? "")))) at++;
+      remove = 0;
+    }
+    if (target && at >= 0 && !ir.steps.some((s) => s.action === "click" && lineKey(s.target?.name ?? "") === lineKey(target))) {
+      const id = mark >= 0 ? ir.steps[mark].id : "sf-path";
       const closing = /^closed\b/i.test(target);
-      ir.steps.splice(mark, 1, ...(closing
+      ir.steps.splice(at, remove, ...(closing
         ? [{ id: `${id}-closed`, action: "click", target: { role: "button", name: "Closed" } },
           { id: `${id}-select`, action: "click", target: { role: "button", name: "Select Closed Stage" } },
           { id: `${id}-wait`, action: "wait", value: "1000" },
@@ -1009,7 +1019,7 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
         : [{ id: `${id}-stage`, action: "click", target: { role: "button", name: target } },
           { id: `${id}-mark`, action: "click", target: { role: "button", name: "Mark as Current Stage" } }]) as Step[],
         { id: `${id}-wait2`, action: "wait", value: "1500" } as Step);
-      notes.push(`${id}: "Mark Stage as Complete" moves one stage -> moves the path to "${target}"${closing ? " through the Closed dialog" : ""}`);
+      notes.push(`${id}: ${mark >= 0 ? `"Mark Stage as Complete" moves one stage` : "no step used the path"} -> moves the path to "${target}"${closing ? " through the Closed dialog" : ""}`);
     }
   }
   for (let i = 0; i < ir.steps.length; i++) {

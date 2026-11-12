@@ -904,3 +904,16 @@ describe("pathStageClicks: a direct click on a closing stage", () => {
     expect(i.steps[5].value).toBe("Closed Won");
   });
 });
+
+describe("pathStageClicks: no path step at all", () => {
+  it("adds the path steps right after the confirmed Save", async () => {
+    const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Stage", api: "StageName", picklist: ["Zq One", "Closed Won"] }] }] };
+    const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+    const check = { id: "k", action: "assert", target: { field: "Stage" }, assertion: "text_contains", value: "Closed Won" } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), created, check]);
+    pathStageClicks(i, org as any, "Create a Zopp with Stage Zq One, then use the path to close it as Closed Won");
+    expect(i.steps.map((s) => s.target?.name ?? s.target?.field ?? s.target?.text ?? s.value)).toEqual(
+      [undefined, "Save", "was created", "Closed", "Select Closed Stage", "1000", "Stage", "Save", "1500", "Stage"]);
+  });
+});
