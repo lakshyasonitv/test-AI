@@ -244,6 +244,9 @@ export function flowEffects(meta: any): string[] {
     }
   }
   for (const c of meta?.recordCreates ?? []) out.push(createdLine(c));
+  // A subflow does the work of the screen that calls it (TB New Contact Screen creates its Contact through
+  // TB Create Contact); readFlows adds what that flow creates.
+  for (const s of meta?.subflows ?? []) if (typeof s?.flowName === "string") out.push(`runs the flow ${s.flowName}`);
   for (const e of meta?.customErrors ?? []) {
     const msg = (Array.isArray(e?.customErrorMessages) ? e.customErrorMessages : [e?.customErrorMessages])
       .map((m: any) => m?.errorMessage).find((m: any) => typeof m === "string" && m.trim());
@@ -385,6 +388,15 @@ async function readFlows(apiGet: ApiGet, request = ""): Promise<SalesforceOrgMod
       ...(event ? { event } : {}),
       ...(effects.length ? { effects } : {}),
     });
+  }
+  // A flow that runs another one also does what that one creates (run 2026-11-12T07-29-43-159Z-23244d2a:
+  // the screen flow's Contact was made by its subflow, so nothing said the screen flow creates one).
+  for (const f of flows) {
+    for (const l of f.effects ?? []) {
+      const sub = /^runs the flow (\w+)$/.exec(l)?.[1];
+      const made = sub ? flows.find((x) => x.api === sub)?.effects?.filter((e) => e.startsWith("creates ")) ?? [] : [];
+      for (const m of made) if (!f.effects!.includes(m)) f.effects!.push(m);
+    }
   }
   return flows;
 }

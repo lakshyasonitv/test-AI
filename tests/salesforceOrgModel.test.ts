@@ -449,3 +449,10 @@ describe("lookupFilterText", () => {
     expect(lookupFilterText({})).toBeUndefined();
   });
 });
+
+describe("flowEffects names the subflows a flow runs", () => {
+  it("adds 'runs the flow X' for each subflow", async () => {
+    const { flowEffects } = await import("../src/stages/salesforceOrgModel.js");
+    expect(flowEffects({ subflows: [{ flowName: "Zq_Make_Contact" }] })).toEqual(["runs the flow Zq_Make_Contact"]);
+  });
+});
