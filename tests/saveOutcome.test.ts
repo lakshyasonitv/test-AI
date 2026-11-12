@@ -891,3 +891,16 @@ describe("eventRecordSearch", () => {
     expect(eventRecordSearch(i, org as any)).toEqual([]);
   });
 });
+
+describe("pathStageClicks: a direct click on a closing stage", () => {
+  it("goes through the Closed dialog instead of Mark as Current Stage", async () => {
+    const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Stage", api: "StageName", picklist: ["Zq One", "Closed Won"] }] }] };
+    const won = { id: "s13", action: "click", target: { role: "button", name: "Closed Won" } } as Step;
+    const markIt = { id: "m", action: "click", target: { role: "button", name: "Mark as Current Stage" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), won, markIt]);
+    pathStageClicks(i, org as any, "");
+    expect(i.steps.slice(2).map((s) => s.target?.name ?? s.value)).toEqual(["Closed", "Select Closed Stage", "1000", "Stage", "Save", "1500"]);
+    expect(i.steps[5].value).toBe("Closed Won");
+  });
+});

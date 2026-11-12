@@ -1022,6 +1022,23 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
       continue;
     }
     if (s.action !== "click" || !stages.has(lineKey(s.target?.name ?? "")) || !ir.steps.slice(0, i).some((x) => x.action === "click" && isSave(x))) continue;
+    // A closing stage is no stage of the path: the path shows one "Closed", whose dialog picks Won or Lost
+    // (run 2026-11-10T21-35-47-447Z-6d016a28 clicked "Closed Won" and was given "Mark as Current Stage").
+    if (/^closed\b/i.test(s.target?.name ?? "") && lineKey(s.target?.name ?? "") !== "closed") {
+      const target = s.target!.name!;
+      let j = i + 1;
+      while (j < ir.steps.length && (ir.steps[j].action === "wait" || /^mark as current stage$/i.test(ir.steps[j].target?.name ?? ""))) j++;
+      ir.steps.splice(i, j - i,
+        { id: `${s.id}-closed`, action: "click", target: { role: "button", name: "Closed" } } as Step,
+        { id: `${s.id}-select`, action: "click", target: { role: "button", name: "Select Closed Stage" } } as Step,
+        { id: `${s.id}-wait`, action: "wait", value: "1000" } as Step,
+        { id: `${s.id}-stage`, action: "select", target: { role: "combobox", name: "Stage" }, value: target } as Step,
+        { id: `${s.id}-save`, action: "click", target: { role: "button", name: "Save" } } as Step,
+        { id: `${s.id}-wait2`, action: "wait", value: "1500" } as Step);
+      notes.push(`${s.id}: "${target}" is set through the path's Closed dialog`);
+      i += 5;
+      continue;
+    }
     let j = i + 1;
     while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
     if (/^mark as current stage$/i.test(ir.steps[j]?.target?.name ?? "")) continue;
