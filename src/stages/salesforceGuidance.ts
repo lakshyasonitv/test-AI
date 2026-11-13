@@ -678,6 +678,16 @@ const FORM_CONTROL = /^(textbox|combobox|spinbutton|checkbox|searchbox|listbox|r
 const isShownValue = (text: string) => shownNumber(text) !== null || /^(?:\d{1,4}([./-])\d{1,2}\1\d{1,4}\b|\{\{date:)/.test(text.trim());
 /** The field's label (or words of it) written as its value: a check that the label shows, not a value. */
 const namesLabel = (value: string, label: string) => ` ${lineKey(label)} `.includes(` ${lineKey(value)} `);
+/** The one field label the request gives this value ("Expected Revenue is $100.00"), or undefined. */
+function valueNamedField(request: string, labels: Iterable<string>, value: string): string | undefined {
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const hits = [...new Set(labels)].filter((l) => l && new RegExp(
+    `\\b${esc(l)}\\s+(?:is|shows|equals|reads|=|should be|of)\\s+["'“]?${esc(value.trim())}(?![\\p{N}])`, "iu").test(request));
+  // The longest wins when one label holds another ("Revenue" inside "Expected Revenue").
+  const longest = hits.sort((a, b) => b.length - a.length)[0];
+  return longest && hits.every((h) => h === longest || longest.toLowerCase().includes(h.toLowerCase())) ? longest : undefined;
+}
+
 /** The request names this label as whole words ("verify the SLA field" names "SLA"). */
 const mentionsWord = (request: string, label: string) => !!lineKey(label) && ` ${lineKey(request)} `.includes(` ${lineKey(label)} `);
 
@@ -843,6 +853,14 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       steps[i] = { ...s, target: { field: after }, assertion: "text_contains", value: text };
       notes.push(`"${text}" checked right after the "${after}" label -> checks the "${after}" field shows it`);
       continue;
+    } else if (!s.target?.role && text && isShownValue(valueCheck ? s.value! : text)
+      && valueNamedField(`${request}\n${caseText}`, fieldLabels, valueCheck ? s.value! : text)) {
+      // A bare number the request gives a field ("verify Expected Revenue is $100.00"): getByText("$100.00")
+      // could be any field's (run 2026-11-13T07-31-06-677Z-c4484063), so it is read inside that field.
+      const v = valueCheck ? s.value! : text;
+      const label = valueNamedField(`${request}\n${caseText}`, fieldLabels, v)!;
+      steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
+      notes.push(`the request says "${label}" is "${v}" -> checks that field shows it`);
     } else if (s.target?.field && !text) {
       // Already a field check (added by requestedFieldChecks): it still reads on the Details tab.
     } else if (!s.target?.role && text && pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), `${request}
@@ -937,7 +955,9 @@ export function inventedRecordLinks(ir: IRSteps): string[] {
 export function requestedTextChecks(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects"> | undefined, request: string): string[] {
   const checkPart = request.slice(requestedActions(request).length);
   if (!checkPart.trim()) return [];
-  const names = new Set((org?.objects ?? []).flatMap((o) => [o.label, o.labelPlural ?? "", ...o.fields.map((f) => f.label)]).map(lineKey));
+  // Calculated fields too: "Expected Revenue" is a field, not a missing value (run
+  // 2026-11-13T07-31-06-677Z-c4484063 checked its label as text before the record existed).
+  const names = new Set((org?.objects ?? []).flatMap((o) => [o.label, o.labelPlural ?? "", ...o.fields.map((f) => f.label), ...(o.calculated ?? []).map((f) => f.label)]).map(lineKey));
   const seen = lineKey(ir.steps.map((s) => [s.value, s.target?.text, s.target?.name, s.target?.field].filter(Boolean).join(" ")).join(" "));
   const missing = requestValues(checkPart).filter((v) => v.trim().split(/\s+/).length >= 2 && !/['’]s\b/.test(v)
     && !names.has(lineKey(v)) && !seen.includes(lineKey(v)));
@@ -946,6 +966,9 @@ export function requestedTextChecks(ir: IRSteps, org: Pick<SalesforceOrgModel, "
   for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "assert" && ir.steps[i].target?.field) at = i + 1;
   for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) at = i + 1;
   if (at < 0) return [];
+  // Never ahead of the Save's own confirmation: the record page is not there yet.
+  while (at < ir.steps.length && (ir.steps[at].action === "wait"
+    || (ir.steps[at].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[at].target?.text ?? "")))) at++;
   ir.steps.splice(at, 0, ...missing.map((v) => ({ id: `sf-req-${v}`.replace(/\W+/g, "-").slice(0, 60), action: "assert", target: { text: v }, assertion: "visible" } as Step)));
   return missing.map((v) => `the request verifies "${v}" and no step checked it -> added`);
 }

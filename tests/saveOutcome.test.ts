@@ -509,6 +509,17 @@ describe("fieldChecksOnRecordView: value checks", () => {
   const check = (target: any, assertion: string, value?: string): Step => ({ id: "x", action: "assert", target, assertion, value } as Step);
   const last = (i: IR) => i.steps[i.steps.length - 1];
 
+  it("a bare number the request gives a field becomes a check of that field (run 2026-11-13T07-31-06-677Z-c4484063)", () => {
+    const i = ir([...base(), check({ text: "$100.00" }, "text_contains", "$100.00")]);
+    fieldChecksOnRecordView(i, model, "Create a Zq Deal with Amount 1000 and verify Zq Expected is $100.00");
+    expect(last(i)).toMatchObject({ target: { field: "Zq Expected" }, assertion: "text_contains", value: "$100.00" });
+    expect(i.steps.some((s) => s.target?.name === "Details")).toBe(true);
+    // Not named by the request: left alone.
+    const j = ir([...base(), check({ text: "$100.00" }, "text_contains", "$100.00")]);
+    fieldChecksOnRecordView(j, model, "Create a Zq Deal with Amount 1000");
+    expect(last(j).target).toEqual({ text: "$100.00" });
+  });
+
   it("a value check on a field's label or on its form control becomes a check of that field", () => {
     const byText = ir([...base(), check({ text: "Zq Expected" }, "text_contains", "$100.00")]);
     fieldChecksOnRecordView(byText, model);
@@ -784,6 +795,16 @@ describe("requestedTextChecks", () => {
     const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), fieldCheck, nav("/lightning/o/Zacct/list")]);
     expect(requestedTextChecks(i, org as any, "Create a Zacct and verify its Ztype shows Zq Direct and a case Zq Onboarding Item appears")).toHaveLength(1);
     expect(i.steps[3]).toMatchObject({ action: "assert", target: { text: "Zq Onboarding Item" }, assertion: "visible" });
+  });
+  it("never adds a calculated field's name, and never ahead of the Save's confirmation", async () => {
+    const { requestedTextChecks } = await import("../src/stages/salesforceGuidance.js");
+    const calc = { objects: [{ ...org.objects[0], calculated: [{ label: "Zq Expected Gain" }] }] };
+    const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created]);
+    expect(requestedTextChecks(i, calc as any, "Create a Zacct and verify Zq Expected Gain is $100.00")).toEqual([]);
+    const k = ir([nav("/lightning/o/Zacct/new"), click("Save"), { id: "wt", action: "wait", value: "500" } as Step, created]);
+    requestedTextChecks(k, org as any, "Create a Zacct and verify a case Zq Onboarding Item appears");
+    expect(k.steps.map((s) => s.id)).toEqual(["n", "c", "wt", "w", "sf-req-Zq-Onboarding-Item"]);
   });
   it("adds nothing when every verified value is checked, or names a field", async () => {
     const { requestedTextChecks } = await import("../src/stages/salesforceGuidance.js");
