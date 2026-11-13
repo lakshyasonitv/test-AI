@@ -181,7 +181,13 @@ function emitAssert(step: Step): string {
       return [
         `  {`,
         `    const asked = [];`,
-        `    const onRequest = (r) => { if (r.isNavigationRequest()) asked.push(r.url()); };`,
+        // Salesforce sends a custom link through its own redirect page (servlet.ExternalRedirect?url=<the
+        // link's address, encoded>; run 2026-11-13T08-06-12-676Z-f25337ed): that address counts too.
+        `    const onRequest = (r) => {`,
+        `      if (!r.isNavigationRequest()) return;`,
+        `      asked.push(r.url());`,
+        `      try { const u = new URL(r.url()); if (/ExternalRedirect/i.test(u.pathname) && u.searchParams.get("url")) asked.push(u.searchParams.get("url")); } catch { /* not a URL */ }`,
+        `    };`,
         `    page.context().on("request", onRequest);`,
         `    const [opened] = await Promise.all([`,
         `      page.context().waitForEvent("page", { timeout: 15000 }).catch(() => null),`,

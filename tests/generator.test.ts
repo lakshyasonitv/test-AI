@@ -423,6 +423,8 @@ describe("generateSpec — opens_url_contains", () => {
     const s = spec([{ id: "a", action: "assert", target: { role: "link", name: "Zq Delivery" }, assertion: "opens_url_contains", value: "http://zq.example/track?n=1" }]);
     expect(s).toContain('page.context().waitForEvent("page"');
     expect(s).toContain("r.isNavigationRequest()");
+    // Salesforce's redirect page carries the link's own address in ?url=.
+    expect(s).toContain('u.searchParams.get("url")');
     expect(s).toContain(String.raw`new RegExp("http://zq\\.example/track\\?n=1")`);
     expect(() => spec([{ id: "b", action: "assert", target: { role: "link", name: "Zq" }, assertion: "opens_url_contains", value: "" }])).toThrow();
   });
