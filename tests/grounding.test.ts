@@ -1384,3 +1384,23 @@ describe("groundingError: a later round of a multi-step approval", () => {
     expect(groundingError(ir([{ id: "sf-ap-decide-2", action: "click", target: { role: "menuitem", name: "Zq Missing" } }]), m)).not.toBeNull();
   });
 });
+
+describe("missingActions — an object named '... Type' is no typing (run 2026-11-13T18-24-32-852Z-709dbe87)", () => {
+  const ir = { meta: {}, steps: [
+    { id: "s1", action: "navigate", target: { url: "/lightning/o/ZqKind/new" } },
+    { id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq" },
+    { id: "s3", action: "fill", target: { role: "textbox", name: "Zq Hours" }, value: "2" },
+    { id: "s4", action: "select", target: { role: "combobox", name: "Zq Unit" }, value: "Hours" },
+    { id: "s5", action: "click", target: { role: "button", name: "Save" } },
+    { id: "s6", action: "assert", target: { text: "was created" }, assertion: "visible" },
+  ] } as any;
+  it("does not count 'the created Zq Work Type record' as an action, but still counts a real Type line", () => {
+    const c = tc({ title: "Create a Zq Work Type", expected: "created", steps: [
+      "Type 'Zq' into the 'Zq Name' field.", "Type '2' into 'Zq Hours'.", "Select 'Hours' in 'Zq Unit'.", "Click 'Save'.",
+      "Open the created Zq Work Type record and view its details.", "On the Zq Work Type record page, check the values.",
+    ] });
+    expect(missingActions(ir, c)).toBeNull();
+    const more = tc({ ...c, steps: [...c.steps, "Type 'x' into 'Zq A'.", "Type 'y' into 'Zq B'."] });
+    expect(missingActions(ir, more)?.message).toMatch(/action steps/);
+  });
+});

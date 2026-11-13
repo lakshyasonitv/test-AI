@@ -82,7 +82,8 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
         out[out.length - 1].deleted = true;
         continue;
       }
-      if (s.action === "click" && /^edit$/i.test((s.target?.name ?? "").trim()) && out.length) editing = { of: out[out.length - 1], values: [] };
+      // "Edit", or an inline field's pencil "Edit Status" (run 2026-11-13T18-24-42-379Z-c78076e2).
+      if (s.action === "click" && /^edit\b/i.test((s.target?.name ?? "").trim()) && out.length) editing = { of: out[out.length - 1], values: [] };
       else if (editing && (s.action === "fill" || s.action === "select") && s.value !== undefined) {
         const f = fieldOf(editing.of.object, s);
         if (f) editing.values = editing.values.filter((v) => v.api !== f.api).concat({ label: f.label, api: f.api, type: f.type, value: s.value });
@@ -90,7 +91,8 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
         const i = at;
         let confirmed = false;
         for (let j = i + 1; j < ir.steps.length && ir.steps[j].action !== "navigate"; j++) {
-          if (ir.steps[j].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[j].target?.text ?? "")) { confirmed = true; break; }
+          // An inline edit has no toast: its check that the field shows the new value confirms it.
+          if (ir.steps[j].action === "assert" && (/\bwas (created|saved)\b/.test(ir.steps[j].target?.text ?? "") || /^sf-inline-/.test(ir.steps[j].id))) { confirmed = true; break; }
         }
         if (confirmed) for (const v of editing.values) editing.of.values = editing.of.values.filter((x) => x.api !== v.api).concat(v);
         editing = null;

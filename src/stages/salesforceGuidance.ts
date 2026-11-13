@@ -285,14 +285,33 @@ export function activitySubjectTyped(ir: IRSteps): string[] {
 export function editSaveConfirmed(ir: IRSteps): string[] {
   const notes: string[] = [];
   let editing = false;
+  // An inline pencil ("Edit Status") saves with no toast at all (run 2026-11-13T18-24-42-379Z-c78076e2 waited
+  // for "was saved" on a Work Order whose Status had saved): its field showing the new value is the proof.
+  let inline: { field: string; value?: string } | null = null;
   for (let i = 0; i < ir.steps.length; i++) {
     const s = ir.steps[i];
-    if (s.action === "navigate") { editing = false; continue; }
-    if (s.action === "click" && /^edit\b/i.test((s.target?.name ?? "").trim())) { editing = true; continue; }
+    if (s.action === "navigate") { editing = false; inline = null; continue; }
+    if (s.action === "click" && /^edit\b/i.test((s.target?.name ?? "").trim())) {
+      editing = true;
+      const field = /^edit\s+(.+)$/i.exec((s.target?.name ?? "").trim())?.[1];
+      inline = field ? { field } : null;
+      continue;
+    }
+    if (inline && (s.action === "fill" || s.action === "select") && s.value !== undefined
+      && (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase() === inline.field.toLowerCase()) inline.value = s.value;
     if (!editing || s.action !== "click" || !isSave(s)) continue;
     editing = false;
     let j = i + 1;
     while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
+    if (inline?.value !== undefined) {
+      const check = { id: `sf-inline-${s.id}`, action: "assert", target: { field: inline.field }, value: inline.value, assertion: "text_contains" } as Step;
+      if (j < ir.steps.length && ir.steps[j].action === "assert" && /\bwas saved\b/i.test(ir.steps[j].target?.text ?? "")) ir.steps[j] = check;
+      else ir.steps.splice(i + 1, 0, check);
+      notes.push(`${s.id}: an inline edit's Save shows no toast -> checks "${inline.field}" shows "${inline.value}"`);
+      inline = null;
+      continue;
+    }
+    inline = null;
     if (j < ir.steps.length && ir.steps[j].action === "assert" && /\bwas saved\b|\bwe hit a snag\b|\breview the (following|errors)\b/i.test(ir.steps[j].target?.text ?? "")) continue;
     ir.steps.splice(i + 1, 0, { id: `sf-saved-${s.id}`, action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step);
     notes.push(`${s.id}: the edit's Save -> checks Salesforce's "was saved" first`);

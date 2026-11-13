@@ -1179,6 +1179,14 @@ describe("editSaveConfirmed (run 2026-11-13T14-13-29-358Z-ac7a1e04)", () => {
     const j = ir([nav("/lightning/o/Zq_Deal__c/new"), click("Save"), click("Edit"), click("Save"), { id: "y", action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step]);
     expect(editSaveConfirmed(j)).toEqual([]);
   });
+  it("an inline pencil's Save shows no toast: its field showing the new value is checked instead (run 2026-11-13T18-24-42-379Z-c78076e2)", async () => {
+    const { editSaveConfirmed } = await import("../src/stages/salesforceGuidance.js");
+    const sel = { id: "st", action: "select", target: { role: "combobox", name: "Zq Status" }, value: "Zq Busy" } as Step;
+    const i = ir([nav("/lightning/o/Zq_Job__c/new"), click("Save"), click("Edit Zq Status"), sel, click("Save"), { id: "y", action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step]);
+    expect(editSaveConfirmed(i)).toHaveLength(1);
+    expect(i.steps[5]).toMatchObject({ action: "assert", target: { field: "Zq Status" }, value: "Zq Busy" });
+    expect(i.steps.some((x) => x.target?.text === "was saved")).toBe(false);
+  });
 });
 
 describe("bug hunt round 3", () => {

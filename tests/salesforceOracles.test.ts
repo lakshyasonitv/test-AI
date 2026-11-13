@@ -41,6 +41,13 @@ describe("typedValues", () => {
     expect(u[0].values.find((v) => v.api === "Phone")?.value).toBe("4155550101");
   });
 
+  it("an inline pencil's edit counts once its field check confirms it (run 2026-11-13T18-24-42-379Z-c78076e2)", () => {
+    const pencil = { id: "e", action: "click", target: { role: "button", name: "Edit Phone" } } as Step;
+    const shown = { id: "sf-inline-s2", action: "assert", target: { field: "Phone" }, value: "4155550199", assertion: "text_contains" } as Step;
+    const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Phone", "4155550101"), save, created, pencil, fill("Phone", "4155550199"), save, shown] }, org);
+    expect(t[0].values.find((v) => v.api === "Phone")?.value).toBe("4155550199");
+  });
+
   it("a clone is checked as its own record: the original's values, then what the clone form typed", () => {
     const clone = { id: "cl", action: "click", target: { role: "menuitem", name: "Clone" } } as Step;
     const save2 = { id: "s2", action: "click", target: { role: "button", name: "Save" } } as Step;

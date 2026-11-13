@@ -2015,8 +2015,10 @@ export function missingActions(ir: IR, testCase: TestCase): { message: string } 
   // whose IR carried out login, then stopped — 2 fills and a click can't cover 5 named steps.
   // Same quote-stripping as above, and for the same reason: a step whose quoted VALUE contains
   // "click" is not a step that clicks.
+  // "Type" after a capitalised word is a name, not the verb: "the created Work Type record" counted as a
+  // typing action (run 2026-11-13T18-24-32-852Z-709dbe87, 6 "actions" for 4), so do "Record Type", "Duration Type".
   const caseActionLines = steps
-    .map(unquoted)
+    .map((s) => unquoted(s).replace(/\b([A-Z][a-z]+) Types?\b/g, "$1"))
     .filter(s => CASE_ACTION_LINE.test(s) || CHECK_ACTION_LINE.test(s)).length;
   const irActionSteps = ir.steps.filter(s => IR_ACTION_KINDS.has(s.action)).length;
   if (caseActionLines >= 2 && irActionSteps < caseActionLines - 1) {
