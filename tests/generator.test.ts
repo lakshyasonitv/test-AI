@@ -334,6 +334,9 @@ describe("a text check after a record's Details tab scrolls its lazy sections in
     expect(spec).toContain('await sfReveal(page, "Zq Expiry");');
     expect(spec).not.toContain('sfReveal(page, "was created")');
     expect(spec).toContain("async function sfReveal(page, text)");
+    // Lightning scrolls an inner region: the window never moves, so the reveal must use the wheel.
+    expect(spec).toContain("page.mouse.wheel(");
+    expect(spec).not.toContain("window.scrollBy");
   });
 
   it("adds nothing to a spec with no Details tab", () => {

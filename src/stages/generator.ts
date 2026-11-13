@@ -401,15 +401,16 @@ const SF_FIELD_SHOWN_HELPER = `async function sfFieldShown(page, label) {
   test.info().annotations.push({ type: "sf-shown", description: JSON.stringify({ label, shown }) });
 }`;
 
-/** Scrolls down a screen at a time until `text` shows or the page ends, so a lazily drawn section
- *  exists before it is checked (and a "hidden" check has really looked everywhere). */
+/** Scrolls down a screen at a time until `text` shows, so a lazily drawn section exists before it is
+ *  checked (and a "hidden" check has really looked everywhere). A mouse wheel, not window.scrollBy:
+ *  Lightning record pages often scroll an inner region, where the window never moves. */
 const SF_REVEAL_HELPER = `async function sfReveal(page, text) {
   const wanted = page.getByText(text).first();
-  for (let i = 0; i < 15; i++) {
+  const view = page.viewportSize() || { width: 1280, height: 720 };
+  await page.mouse.move(view.width / 2, view.height * 0.7).catch(() => {});
+  for (let i = 0; i < 12; i++) {
     if (await wanted.isVisible().catch(() => false)) return;
-    const atBottom = await page.evaluate(() => window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2).catch(() => true);
-    if (atBottom) return;
-    await page.evaluate(() => window.scrollBy(0, window.innerHeight)).catch(() => {});
+    await page.mouse.wheel(0, view.height * 0.8).catch(() => {});
     await page.waitForTimeout(300);
   }
 }`;
