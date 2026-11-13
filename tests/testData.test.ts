@@ -152,6 +152,20 @@ describe("applyTestData", () => {
     expect(value(unnamed, "s2")).toBe("Zqbiotech");
   });
 
+  // Run 2026-11-13T22-11-33-599Z-55da10c9: "Pacific Standard Time" sits in two time zones, so nothing
+  // snapped and the FIRST option, "(GMT+14:00) Line Islands Time", was picked; "GMT" the same.
+  it("a value in several options picks the one holding it most often, then the shortest, not the first", () => {
+    const org = structuredClone(appModel) as AppModel;
+    org.salesforceOrg!.objects[0].fields.push({ label: "Zq Zone", api: "Zq_Zone__c", type: "Picklist", required: true, picklist: [
+      "(GMT+14:00) Zq Line Time (Zq/Kiri)", "(GMT+00:00) Zq Mean Time (GMT)",
+      "(GMT-08:00) Zq Pacific Standard Time (Zq/Tijuana)", "(GMT-08:00) Zq Pacific Standard Time (Zq/LA)"] } as any);
+    for (const [v, want] of [["Zq Pacific Standard Time", "(GMT-08:00) Zq Pacific Standard Time (Zq/LA)"], ["GMT", "(GMT+00:00) Zq Mean Time (GMT)"]]) {
+      const r = ir([{ id: "s2", action: "select", target: { role: "combobox", name: "Zq Zone" }, value: v }]);
+      applyTestData(r, valid, org, "Create a Zq Thing");
+      expect(value(r, "s2"), v).toBe(want);
+    }
+  });
+
   it("does nothing without an org model or a create-form navigate", () => {
     const r = ir([{ id: "s2", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq Sample" }]);
     applyTestData(r, valid, { ...appModel, salesforceOrg: undefined } as AppModel);

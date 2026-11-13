@@ -2814,6 +2814,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
    * (measured across every run in `runs/`), each further attempt buys nothing.
    */
   const seenRejections = new Set<string>();
+  // Fields a form was shown, twice, not to have, which the request never names: left out of later attempts.
+  const leaveOut = new Set<string>();
   const rejectionKey = (u: NonNullable<ReturnType<typeof groundingError>>, ir: IR): string => {
     const t = ir.steps[u.index]?.target ?? {};
     return JSON.stringify({
@@ -2947,6 +2949,12 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     parsed.data.meta.baseUrl = origin;
     // D-65: only this function decides whether the spec runs the fixed Salesforce login.
     delete parsed.data.meta.fixedLogin;
+    // A field the form does not have and the request does not name (see where leaveOut is filled).
+    if (leaveOut.size) parsed.data.steps = parsed.data.steps.filter((st) => {
+      const out = (st.action === "fill" || st.action === "select") && leaveOut.has(lineKey(st.target?.name ?? ""));
+      if (out) console.log(`[ir] step ${st.id}: left out "${st.target?.name}": the form has no such field`);
+      return !out;
+    });
 
     // Before grounding: the grounding replays type these values too (Session 102). The model's own
     // steps are kept aside first: the fill policy removes optional fields ON PURPOSE, and coverage
@@ -3519,6 +3527,18 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       }
       rejectedReach.set(key, reach(prefix));
       for (const s of prefix) if (s.target) groundedTargets.add(targetKey(s.target));
+      // Rejected twice, absent from the form, and a field the request never names: the form does not have
+      // it (Contact's "New Case" quick action has no Case Origin; run 2026-11-13T22-20-23-861Z-c00631c3 was
+      // cut short there). The next attempt leaves it out and the form's default stands.
+      const miss = parsed.data.steps[ungrounded.index];
+      const field = miss?.target?.name ?? "";
+      if (repeated && currentRunTargetApp() === "salesforce" && (miss?.action === "fill" || miss?.action === "select")
+        && /\bnot present\b/.test(ungrounded.message) && field && !leaveOut.has(lineKey(field))
+        && !` ${lineKey(sourcePrompt)} `.includes(` ${lineKey(field)} `)) {
+        leaveOut.add(lineKey(field));
+        repeated = false;
+        console.log(`[ir] "${field}" is not on the form and the request does not name it -> the next attempt leaves it out`);
+      }
     }
 
     if (prefix.length && attempt < attemptCap - 1 && !repeated) {

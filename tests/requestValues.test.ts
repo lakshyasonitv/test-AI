@@ -112,3 +112,11 @@ describe("toTestCases restores dropped values on a Salesforce run only", () => {
     expect(cases[0].steps).toEqual(DROPPED.steps);
   });
 });
+
+describe("a name typed over two fields is carried (run 2026-11-13T22-20-23-861Z-c00631c3)", () => {
+  it("'Zq Ivan Zq Petrov' as First Name + Last Name is not missing; a value with a word absent still is", () => {
+    const c = { steps: ["Type Zq Ivan into the 'First Name' field.", "Type Zq Petrov {{uid}} into the 'Last Name' field."], expected: "Saved" };
+    expect(missingValues(c, ["Zq Ivan Zq Petrov"])).toEqual([]);
+    expect(missingValues(c, ["Zq Ivan Zq Smirnov"])).toEqual(["Zq Ivan Zq Smirnov"]);
+  });
+});

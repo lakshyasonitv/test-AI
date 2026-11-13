@@ -57,7 +57,14 @@ export function requestValues(request: string, names: string[] = []): string[] {
 /** The values a case does not mention anywhere in its steps or expected outcome. */
 export function missingValues(c: Pick<TestCase, "steps" | "expected">, values: string[]): string[] {
   const text = norm([...c.steps, c.expected ?? ""].join("\n"));
-  return values.filter((v) => !text.includes(norm(v)));
+  // A name typed over two fields ("Ivan" in First Name, "Petrov {{uid}}" in Last Name) is carried: the
+  // rewrite put "Ivan Petrov" INTO Last Name (run 2026-11-13T22-20-23-861Z-c00631c3).
+  const words = ` ${text.replace(/[^\p{L}\p{N}]+/gu, " ")} `;
+  const spread = (v: string) => {
+    const ws = norm(v).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    return ws.length >= 2 && ws.every((w) => words.includes(` ${w} `));
+  };
+  return values.filter((v) => !text.includes(norm(v)) && !spread(v));
 }
 
 /** Letters and digits only: a page label "Preferred Area(s)" still carries the request's "Preferred Areas". */

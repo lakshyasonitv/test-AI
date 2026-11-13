@@ -389,6 +389,14 @@ function snapPicklist(o: OrgObject, value: string, field?: OrgField): string | u
   if (starts.length === 1) return starts[0];
   const contains = [...new Set(options.filter((p) => lineKey(p).includes(v)))];
   if (contains.length === 1) return contains[0];
+  // Several hold it whole ("Pacific Standard Time" in two time zones): the one holding it most often
+  // ("GMT" in "(GMT+00:00) Greenwich Mean Time (GMT)"), then the shortest. Not the field's FIRST option,
+  // which was "(GMT+14:00) Line Islands Time" (run 2026-11-13T22-11-33-599Z-55da10c9).
+  const whole = contains.filter((p) => ` ${lineKey(p)} `.includes(` ${v} `));
+  if (whole.length > 1) {
+    const times = (p: string) => ` ${lineKey(p)} `.split(` ${v} `).length - 1;
+    return whole.sort((a, b) => times(b) - times(a) || a.length - b.length)[0];
+  }
   // The value holds one option as whole words ("Region South" for "South"): the longest, if alone.
   const inside = options.filter((p) => lineKey(p) && ` ${v} `.includes(` ${lineKey(p)} `))
     .sort((a, b) => lineKey(b).length - lineKey(a).length);

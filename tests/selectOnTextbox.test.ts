@@ -350,3 +350,16 @@ describe("retries keep the best attempt and reuse captured screens (Salesforce r
     }
   }, 180_000);
 });
+
+describe("a field the form does not have and the request does not name (run 2026-11-13T22-20-23-861Z-c00631c3)", () => {
+  it("is left out once its captured screen shows it is missing; the rest grounds and runs", async () => {
+    const model = await discover("/budget");
+    geminiMock.mockImplementation(answer(BUDGET_IR("/budget", [choose("s8", "Zq Origin", "Zq Mail")])));
+    const { ir } = await withTargetApp("salesforce", () => toIR(testCase("absent"), model, unique(), base + "/budget"));
+
+    expect(ir.meta.truncated ?? false).toBe(false);
+    expect(step(ir, "s8")).toBeUndefined();
+    expect(step(ir, "s9")).toMatchObject({ action: "click", target: { name: "Submit" } });
+    expect(await execute(ir)).toContain("min=40");
+  }, 120_000);
+});
