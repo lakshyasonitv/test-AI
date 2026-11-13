@@ -992,6 +992,8 @@ describe("approvalSteps", () => {
     const m = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
     approvalSteps(m, two as any, "Create a Zopp, submit it for approval, then approve both steps");
     expect(m.steps.filter((s) => /^sf-ap-decide/.test(s.id)).map((s) => s.id)).toEqual(["sf-ap-decide", "sf-ap-decide-2"]);
+    // Every round's Comments box is the dialog's own.
+    for (const c of m.steps.filter((s) => /^sf-ap-comment2/.test(s.id))) expect(c.target?.css).toBe('role=dialog >> role=textbox[name="Comments"s]');
     const one = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
     approvalSteps(one, two as any, "Create a Zopp, submit it for approval, then approve it");
     expect(one.steps.filter((s) => /^sf-ap-decide/.test(s.id))).toHaveLength(1);

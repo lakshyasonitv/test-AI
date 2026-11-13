@@ -1411,6 +1411,9 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
     : /\breject\w*\b/i.test(after) ? "Reject"
     : /\bapprov(e|es|ed|ing)\b/i.test(after) ? "Approve" : null;
   const dialog = (name: string) => ({ role: "button", name, css: `role=dialog >> role=button[name="${name}"s]` });
+  // The dialog's own Comments box: the generic "a field near Comments in the last open modal" lookup found
+  // a part of the dialog's footer instead in round 2 (run 2026-11-13T09-41-55-553Z-49dcdab1, the dialog open).
+  const comments = { role: "textbox", name: "Comments", css: 'role=dialog >> role=textbox[name="Comments"s]' };
   // The case's own submission (runs 2026-11-12T13-02-29-047Z-33e9cc1b and -13-03-30-475Z-d74a26c5 submitted
   // correctly, then wandered: an "Approval History(0)" link, a task's menu, never the approver) is kept up
   // to its confirmation; everything after it is this pass's. Without one, the submission is added too.
@@ -1443,7 +1446,7 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
       { id: "sf-ap-menu", action: "click", target: { role: "button", name: "Show more actions" } } as Step,
       { id: "sf-ap-submit", action: "click", target: { role: "menuitem", name: "Submit for Approval" } } as Step,
       { id: "sf-ap-wait", action: "wait", value: "1500" } as Step,
-      { id: "sf-ap-comment", action: "fill", target: { role: "textbox", name: "Comments" }, value: "Testbench approval test" } as Step,
+      { id: "sf-ap-comment", action: "fill", target: comments, value: "Testbench approval test" } as Step,
       { id: "sf-ap-send", action: "click", target: dialog("Submit") } as Step,
       { id: "sf-ap-sent", action: "assert", target: { text: "submitted for approval" }, assertion: "visible" } as Step,
     );
@@ -1474,7 +1477,7 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
         { id: `sf-ap-wait-menu${x}`, action: "wait", value: "800" } as Step,
         { id: `sf-ap-decide${x}`, action: "click", target: { role: "menuitem", name: decision } } as Step,
         { id: `sf-ap-wait3${x}`, action: "wait", value: "1500" } as Step,
-        { id: `sf-ap-comment2${x}`, action: "fill", target: { role: "textbox", name: "Comments" }, value: `Testbench ${decision.toLowerCase()} test${x ? ` (step ${k + 1})` : ""}` } as Step,
+        { id: `sf-ap-comment2${x}`, action: "fill", target: comments, value: `Testbench ${decision.toLowerCase()} test${x ? ` (step ${k + 1})` : ""}` } as Step,
         { id: `sf-ap-confirm${x}`, action: "click", target: dialog(decision) } as Step,
         { id: `sf-ap-wait4${x}`, action: "wait", value: "2500" } as Step,
       );
