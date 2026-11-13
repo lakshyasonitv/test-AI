@@ -119,6 +119,14 @@ export async function runStepLive(
       return;
     }
     case "click":
+      // The spec's own rule (generator.ts): a related list's menu is scrolled into being first (lazy lists).
+      if (/^Show actions for .+/.test(step.target?.name ?? "")) {
+        const list = page.getByText(step.target!.name!.replace(/^Show actions for /, "")).first();
+        for (let k = 0; k < 15 && !(await list.isVisible().catch(() => false)); k++) {
+          await page.evaluate(() => window.scrollBy(0, window.innerHeight)).catch(() => {});
+          await page.waitForTimeout(300);
+        }
+      }
       // The spec's own rule (generator.ts): the inserted Details tab click is skipped where there is none.
       if (/^sf-related/.test(step.id)) {
         // The spec's own rule (generator.ts): the record's own Related or Activity tab, whichever it has.

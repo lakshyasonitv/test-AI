@@ -335,3 +335,13 @@ describe("signing in as the second user", () => {
     expect(code).toContain("Sign in as the second user (the approver)");
   });
 });
+
+describe("a related list's actions menu", () => {
+  it("is scrolled into being before the click", async () => {
+    const { generateSpec } = await import("../src/stages/generator.js");
+    const { FRONTDOOR_REF } = await import("../src/stages/salesforceFrontdoor.js");
+    const code = generateSpec({ meta: { feature: "Zq", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [{ id: "a", action: "navigate", target: { url: FRONTDOOR_REF } }, { id: "b", action: "click", target: { role: "button", name: "Show actions for Zq History" } }] } as any);
+    expect(code).toContain('await sfReveal(page, "Zq History");');
+  });
+});

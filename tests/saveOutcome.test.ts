@@ -1019,3 +1019,17 @@ describe("approvalSteps after the case's own submission", () => {
     expect(i.steps.find((s) => s.id === "sf-ap-decide")?.target?.name).toBe("Reject");
   });
 });
+
+describe("approvalSteps after a half-done submission", () => {
+  it("replaces it with the whole submission", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [] }], approvals: [{ label: "Zq Big Deal", api: "Zq_Big_Deal", object: "Zopp" }] };
+    const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+    const half = { id: "s14", action: "click", target: { role: "menuitem", name: "Submit for Approval" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), created, click("Show more actions"), half]);
+    expect(approvalSteps(i, org as any, "submit it for approval, then approve it")).toHaveLength(1);
+    const ids = i.steps.map((s) => s.id);
+    expect(ids).not.toContain("s14");
+    expect(ids).toEqual(expect.arrayContaining(["sf-ap-submit", "sf-ap-send", "sf-ap-decide"]));
+  });
+});

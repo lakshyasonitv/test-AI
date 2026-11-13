@@ -1306,9 +1306,10 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   const submitAt = ir.steps.findIndex((s) => s.action === "click" && /^submit for approval$/i.test(s.target?.name ?? ""));
   let at: number;
   const steps: Step[] = [];
-  if (submitAt >= 0) {
-    const send = ir.steps.findIndex((s, i) => i > submitAt && s.action === "click" && /^submit$/i.test(s.target?.name ?? ""));
-    if (send < 0) return [];
+  // A submission the case left half done (run 2026-11-13T04-55-33-374Z-b71d138e opened "Submit for Approval"
+  // and stopped) is replaced by the whole one below.
+  const send = submitAt < 0 ? -1 : ir.steps.findIndex((s, i) => i > submitAt && s.action === "click" && /^submit$/i.test(s.target?.name ?? ""));
+  if (submitAt >= 0 && send >= 0) {
     at = send + 1;
     while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /submitted/i.test(ir.steps[at].target?.text ?? "")))) at++;
     if (!decision && !ir.steps.slice(at).some((s) => s.action !== "wait")) return [];

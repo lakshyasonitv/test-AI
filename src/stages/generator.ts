@@ -1374,7 +1374,11 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
         ? `await sfReveal(page, ${q(step.target.field)});\n`
         : detailsAt >= 0 && i > detailsAt && step.action === "assert" && step.target?.text
         && (step.assertion === "visible" || step.assertion === "hidden")
-        ? `await sfReveal(page, ${q(step.target.text)});\n` : "";
+        ? `await sfReveal(page, ${q(step.target.text)});\n`
+        // A related list's own menu ("Show actions for Approval History"): Lightning draws a related list only
+        // once it is scrolled to (run 2026-11-13T05-00-05-164Z-7f9fd73a timed out with it below the fold).
+        : orgConnection && step.action === "click" && /^Show actions for .+/.test(step.target?.name ?? "")
+        ? `await sfReveal(page, ${q(step.target!.name!.replace(/^Show actions for /, ""))});\n` : "";
       const dismiss = orgConnection && (step.action === "fill" || step.action === "select" || step.action === "click")
         ? "await sfDismissDuplicates(page);\n" : "";
       const code = dismiss + reveal + emitStep(step, ir.meta.baseUrl);
