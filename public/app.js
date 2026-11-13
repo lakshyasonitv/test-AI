@@ -1312,6 +1312,15 @@ async function loadCaseDetails(card) {
     // would say the same thing twice in two voices.
     if (NARRATIVE_LEAD_IN[status] && c) renderCaseNarrative(narrativeEl, c, ir, status, runTokensOf(results, ir?.meta?.title));
     if (status === "failed") renderCaseDiagnosisBlock(diagEl, diagnosis);
+    // D-81: the step trail, new layout only. The case's own report first (05-result.json `raw`,
+    // which every case has, the cut-short ones included), else the results.json read above.
+    if (dashboardOn) {
+      // An older run keeps its first case's result at the run's root: a report that is not the
+      // case's own is only used for the test whose title matches (strict).
+      const own = await getJson(`${caseDir}/05-result.json`);
+      const raw = own?.raw ?? (await getJson(`/runs/${runId}/05-result.json`))?.raw ?? results;
+      renderStepTrail(card, c, ir, status, raw, runTokensOf(results, ir?.meta?.title), !own?.raw);
+    }
   } catch {
     // Details stay as "Loading..." — non-critical
   }
@@ -1908,6 +1917,83 @@ function renderCaseNarrative(container, c, ir, status = "passed", tokens = null)
     <p class="case-narrative-line"><b>What happened:</b> ${escapeHtml(whatHappened)}</p>
     ${whatImage ? `<p class="case-narrative-line"><b>What the image shows:</b> ${escapeHtml(whatImage)}</p>` : ""}`;
   container.classList.remove("hidden");
+}
+
+/**
+ * The step trail (D-81): every step of the case in plain English, green up to where the run got,
+ * red from the step that failed on. Read from Playwright's own report, never from a model:
+ * generateSpec emits exactly one test.step() per IR step in order (extractFailureDetail in
+ * executor.ts relies on the same fact), so step i of the report is step i of the IR. A step the
+ * report holds without an error ran; the one with the error failed; a step past the end of the
+ * report never ran. Part of the new layout: with DASHBOARD_ENABLED off nothing here runs.
+ */
+function reportStepsOf(raw, title, strict = false) {
+  const tests = [];
+  const visit = (suite) => {
+    for (const child of suite?.suites ?? []) visit(child);
+    for (const spec of suite?.specs ?? []) for (const t of spec?.tests ?? []) tests.push({ title: spec.title, t });
+  };
+  for (const s of raw?.suites ?? []) visit(s);
+  if (!tests.length) return null;
+  const hit = tests.find((x) => title && x.title === title) ?? (tests.length === 1 && !strict ? tests[0] : null);
+  const results = hit?.t?.results ?? [];
+  // A retried test keeps every attempt; the last one is the outcome the card reports.
+  return results.length ? (results[results.length - 1].steps ?? []) : null;
+}
+
+/** "ok" | "failed" | "skipped" per IR step, or null when nothing says how far the run got. */
+function stepOutcomes(irSteps, reportSteps, c, status) {
+  if (reportSteps) {
+    let failedAt = reportSteps.findIndex((s) => s?.error);
+    // A test that timed out between steps leaves no step error: the next step is where it stopped.
+    if (failedAt < 0 && (status === "failed" || status === "blocked") && reportSteps.length < irSteps.length) failedAt = reportSteps.length;
+    return irSteps.map((_, i) => failedAt >= 0
+      ? (i < failedAt ? "ok" : i === failedAt ? "failed" : "skipped")
+      : (i < reportSteps.length ? "ok" : status === "passed" ? "ok" : "skipped"));
+  }
+  if (status === "passed") return irSteps.map(() => "ok");
+  if (typeof c?.failedStep === "number") {
+    const f = c.failedStep - 1;
+    return irSteps.map((_, i) => (i < f ? "ok" : i === f ? "failed" : "skipped"));
+  }
+  return null;
+}
+
+const STEP_TRAIL_NOTE = { ok: "Done", failed: "Failed here", skipped: "Not reached" };
+
+function renderStepTrail(card, c, ir, status, raw, tokens, strict = false) {
+  card.querySelector("[data-step-trail]")?.remove();
+  const steps = ir?.steps;
+  if (!steps?.length) return;
+  const reportSteps = reportStepsOf(raw, ir?.meta?.title, strict);
+  const outcomes = stepOutcomes(steps, reportSteps, c, status);
+  if (!outcomes) return;
+  const failedIdx = outcomes.indexOf("failed");
+  const errLine = failedIdx >= 0
+    ? String(reportSteps?.[failedIdx]?.error?.message ?? c?.error ?? "").replace(/\u001b\[[0-9;]*m/g, "").split("\n").map((l) => l.trim()).filter(Boolean)[0] ?? ""
+    : "";
+  // A partial case's plan was cut before it ran (ir.meta.truncationNote): the cut is the red end.
+  const cut = (status === "truncated" || status === "truncated_no_assertion") && failedIdx < 0;
+  const rows = steps.map((s, i) => `
+      <li data-step="${outcomes[i]}">
+        <span data-step-n>${i + 1}</span>
+        <span data-step-text>${escapeHtml(readableStep(s, tokens))}${outcomes[i] === "failed" && errLine ? `<small>${escapeHtml(errLine)}</small>` : ""}</span>
+        <span data-step-note>${STEP_TRAIL_NOTE[outcomes[i]]}</span>
+      </li>`).join("");
+  const cutRow = cut ? `
+      <li data-step="failed">
+        <span data-step-n>${steps.length + 1}</span>
+        <span data-step-text>The rest of the test could not be built, so it never ran${ir?.meta?.truncationNote ? `<small>${escapeHtml(ir.meta.truncationNote)}</small>` : ""}</span>
+        <span data-step-note>Stopped here</span>
+      </li>` : "";
+  const ran = outcomes.filter((o) => o === "ok").length;
+  const wrap = document.createElement("div");
+  wrap.dataset.stepTrail = "";
+  wrap.innerHTML = `
+    <p data-step-head><b>Steps</b> <span>${ran} of ${steps.length} done${failedIdx >= 0 ? `, failed at step ${failedIdx + 1}` : cut ? ", then stopped" : ""}</span></p>
+    <ol>${rows}${cutRow}</ol>`;
+  const body = card.querySelector(".case-card-body");
+  body?.insertBefore(wrap, body.querySelector(".case-narrative") ?? body.firstChild);
 }
 
 /**

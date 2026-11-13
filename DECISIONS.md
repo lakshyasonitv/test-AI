@@ -2480,3 +2480,35 @@ Projects page: the same tree in two places is the duplicate the user asked to re
 **Not covered.** The project page's "Recent runs" lists only the newest runs (History's list) whose address matches
 the project, and says so; the card's run count is the server's full figure. Pinned by `tests/dashboard.test.ts`
 (the "D-80" block) and `tests/appJsNewRunBtn.test.ts`.
+
+## D-81. A result card lists every step, green up to where the run got and red from where it failed
+
+**Context.** After a Salesforce run (2026-11-13T10-40-05-865Z-3cb6d6f7) the user asked to see, in every run's
+results, the case's steps in plain English: green as far as the test got, red from the step it failed on. The card
+had a "Where it stopped" box (TD-80) and, for non-failed cases, a one-sentence narrative, but no list a person could
+follow step by step.
+
+**Decision.** Part of the new layout (tied to `DASHBOARD_ENABLED`, like D-80; off draws the old card exactly). When a
+card opens, `loadCaseDetails` also reads the case's own `05-result.json` and `renderStepTrail` draws one row per IR
+step with `readableStep` (the same sentences the report and the step editor use):
+
+- **Green "Done"**: the step is in Playwright's report with no error.
+- **Red "Failed here"**: the step that carries the error, with the error's first line under it.
+- **Faded red "Not reached"**: every step after it.
+- **A cut-short case** (`truncated` / `truncated_no_assertion`): its steps that ran are green, then one red row
+  says the rest could not be built, with `ir.meta.truncationNote`.
+
+Step i of the report is step i of the IR because `generateSpec` emits exactly one `test.step()` per IR step in order;
+`extractFailureDetail` (executor.ts) already relies on this to number the failing step. A retried test shows its
+last attempt. A test that timed out between steps (no step error) is red from the next step. No report on disk: a
+passed case is all green, a failed one uses the summary's `failedStep`, anything else draws no list. A report that
+is not the case's own (an older run keeps its first case's result at the run's root) is used only when its test
+title matches the case's.
+
+No server change, no route change (rule 1). Styled through `data-step*` attributes in theme.css with the existing
+`--done` / `--failed` verdict colours, no style.css class (rule 3). Pinned by `tests/stepTrail.test.ts`.
+
+**Rejected.** Live colouring while a case runs: the UI polls (it never streams), and a case's per-step results exist
+only once Playwright has written its report, so the list appears when the case finishes, not during it. Matching
+report steps to IR steps by title: the titles are generator wording ("Fill 'Company' with 'BigCo'") and some repeat
+("Wait 500ms"); position is the contract the executor already depends on.

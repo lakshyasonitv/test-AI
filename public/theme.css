@@ -665,3 +665,37 @@ body[data-shell="top"] #view-home .templates-row { justify-content: center; }
   .run-btn:hover, .new-run:hover, .topbar-btn:hover, .template-btn:hover,
   .dl-btn:hover, .dl-btn-inline:hover, .cd-ask-btn:hover:not(:disabled) { transform: none; }
 }
+
+/* ── the step trail on a result card (D-81) ──────────────────────────────────────────────────
+   Every step of the case, green up to where the run got, red from the step it failed on and
+   every step after it. Data attributes, not classes (style.css's class contract is untouched);
+   the colours are the verdict tokens .badge-passed / .badge-failed already use, so dark mode
+   follows. app.js only draws it with the new layout on (DASHBOARD_ENABLED). */
+[data-step-trail] { margin: 4px 0 14px; }
+[data-step-head] { margin: 0 0 8px; font-size: .8rem; color: var(--text-2); }
+[data-step-head] b { color: var(--text); font-weight: 600; margin-right: 6px; }
+[data-step-trail] ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+[data-step-trail] li {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: start; gap: 10px;
+  padding: 7px 10px; border-radius: var(--r-sm); border-left: 3px solid transparent;
+  font-size: .8rem; line-height: 1.5;
+}
+[data-step-trail] li[data-step="ok"] { background: var(--done-bg); border-left-color: var(--done); color: var(--text); }
+[data-step-trail] li[data-step="failed"] { background: var(--failed-bg); border-left-color: var(--failed); color: var(--text); font-weight: 500; }
+[data-step-trail] li[data-step="skipped"] { background: rgba(var(--failed-rgb), .05); border-left-color: rgba(var(--failed-rgb), .45); color: var(--muted); }
+[data-step-n] {
+  display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+  font-size: .7rem; font-weight: 600; color: #fff;
+}
+[data-step="ok"] [data-step-n] { background: var(--done); }
+[data-step="failed"] [data-step-n] { background: var(--failed); }
+[data-step="skipped"] [data-step-n] { background: rgba(var(--failed-rgb), .55); }
+[data-step-text] { min-width: 0; overflow-wrap: anywhere; padding-top: 2px; }
+[data-step-text] small { display: block; margin-top: 3px; font-weight: 400; color: var(--failed); font-size: .74rem; }
+[data-step-note] { padding-top: 3px; font-size: .7rem; font-weight: 600; white-space: nowrap; }
+[data-step="ok"] [data-step-note] { color: var(--done); }
+[data-step="failed"] [data-step-note], [data-step="skipped"] [data-step-note] { color: var(--failed); }
+@media (max-width: 560px) {
+  [data-step-trail] li { grid-template-columns: 22px minmax(0, 1fr); }
+  [data-step-note] { grid-column: 2; padding-top: 0; }
+}
