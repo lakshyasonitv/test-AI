@@ -17,3 +17,4 @@ env-backup-*.json
 
 # Local state (sealed Salesforce connections when the database cannot hold them)
 .testbench/
+agent-status/

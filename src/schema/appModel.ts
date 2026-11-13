@@ -429,6 +429,8 @@ export const SalesforceOrgModel = z.object({
   /** The connected user's locale ("en_US"): Lightning parses typed dates in it. Absent when unread. */
   userLocale: z.string().optional(),
   /** Active flows (Phase B): what runs, on what, when, and what it visibly does. Absent when unread. */
+  /** Phase C (SALESFORCE_APPROVALS_ENABLED): the active approval processes and the object each runs on. */
+  approvals: z.array(z.object({ label: z.string(), api: z.string(), object: z.string() })).optional(),
   /** Phase D seeding: records Testbench created through the API before the cases ("an existing Account"). */
   seeded: z.array(z.object({ object: z.string(), label: z.string(), name: z.string() })).optional(),
   flows: z.array(z.object({

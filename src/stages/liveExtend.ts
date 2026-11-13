@@ -22,7 +22,7 @@ import { networkSettleEnabled, settleBeforeSnapshot, trackNetwork, waitForRecord
 import { dropVolatileIdCss, volatileIdDetectionEnabled } from "./volatileIds.js";
 import { captureErrorMarkers, errorMarkersOf, lastInteractionIndex, pageAlertTexts, type ErrorMarker } from "./hollowPassGuards.js";
 import {
-  currentFrontdoor, isFrontdoorRef, openFrontdoor, recordPages, recordRefIndex, recordRefObject, type RecordPages,
+  currentFrontdoor, isFrontdoorRef, isSecondUserRef, openFrontdoor, recordPages, recordRefIndex, recordRefObject, type RecordPages,
   SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING,
 } from "./salesforceFrontdoor.js";
 import type { RunTokenContext } from "../text.js";
@@ -85,6 +85,8 @@ export async function runStepLive(
       // an env reference, never the URL (it holds the access token); resolve it here, for this run.
       // Appending it to baseUrl, as below, is the same bug TD-84 records for `${env:TEST_USERNAME}`.
       if (isFrontdoorRef(u)) { await openFrontdoor(page); return; }
+      // Phase C: the same browser signs in as the run's second user (the approver).
+      if (isSecondUserRef(u)) { await openFrontdoor(page, currentFrontdoor()?.second ?? null); return; }
       // Phase A: the record this flow created, as the spec's sfOpenRecord finds it.
       const object = recordRefObject(u);
       if (object) {
@@ -117,6 +119,14 @@ export async function runStepLive(
       return;
     }
     case "click":
+      // The spec's own rule (generator.ts): a related list's menu is scrolled into being first (lazy lists).
+      if (/^Show actions for .+/.test(step.target?.name ?? "")) {
+        const list = page.getByText(step.target!.name!.replace(/^Show actions for /, "")).first();
+        for (let k = 0; k < 15 && !(await list.isVisible().catch(() => false)); k++) {
+          await page.evaluate(() => window.scrollBy(0, window.innerHeight)).catch(() => {});
+          await page.waitForTimeout(300);
+        }
+      }
       // The spec's own rule (generator.ts): the inserted Details tab click is skipped where there is none.
       if (/^sf-related/.test(step.id)) {
         // The spec's own rule (generator.ts): the record's own Related or Activity tab, whichever it has.

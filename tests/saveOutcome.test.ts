@@ -891,3 +891,145 @@ describe("eventRecordSearch", () => {
     expect(eventRecordSearch(i, org as any)).toEqual([]);
   });
 });
+
+describe("pathStageClicks: a direct click on a closing stage", () => {
+  it("goes through the Closed dialog instead of Mark as Current Stage", async () => {
+    const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Stage", api: "StageName", picklist: ["Zq One", "Closed Won"] }] }] };
+    const won = { id: "s13", action: "click", target: { role: "button", name: "Closed Won" } } as Step;
+    const markIt = { id: "m", action: "click", target: { role: "button", name: "Mark as Current Stage" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), won, markIt]);
+    pathStageClicks(i, org as any, "");
+    expect(i.steps.slice(2).map((s) => s.target?.name ?? s.value)).toEqual(["Closed", "Select Closed Stage", "1000", "Stage", "Save", "1500"]);
+    expect(i.steps[5].value).toBe("Closed Won");
+  });
+});
+
+describe("pathStageClicks: no path step at all", () => {
+  it("adds the path steps right after the confirmed Save", async () => {
+    const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Stage", api: "StageName", picklist: ["Zq One", "Closed Won"] }] }] };
+    const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+    const check = { id: "k", action: "assert", target: { field: "Stage" }, assertion: "text_contains", value: "Closed Won" } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), created, check]);
+    pathStageClicks(i, org as any, "Create a Zopp with Stage Zq One, then use the path to close it as Closed Won");
+    expect(i.steps.map((s) => s.target?.name ?? s.target?.field ?? s.target?.text ?? s.value)).toEqual(
+      [undefined, "Save", "was created", "Closed", "Select Closed Stage", "1000", "Stage", "Save", "1500", "Stage"]);
+  });
+});
+
+describe("leadConvertSteps", () => {
+  it("scopes the second Convert to the dialog and checks Salesforce's converted message", async () => {
+    const { leadConvertSteps } = await import("../src/stages/salesforceGuidance.js");
+    const conv = (id: string) => ({ id, action: "click", target: { role: "button", name: "Convert" } } as Step);
+    const i = ir([conv("a"), conv("b"), { id: "x", action: "assert", target: { text: "Converted" }, assertion: "visible" } as Step]);
+    expect(leadConvertSteps(i)).toHaveLength(2);
+    expect(i.steps[1].target?.css).toContain("role=dialog");
+    expect(i.steps[2].target?.text).toBe("Your lead has been converted");
+    expect(leadConvertSteps(ir([conv("a")]))).toEqual([]);
+  });
+});
+
+describe("calculatedFieldReads", () => {
+  it("turns a check of a calculated field's label into a read of its value", async () => {
+    const { calculatedFieldReads } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [], calculated: [{ label: "Zq Expected", api: "Zq_Exp__c", type: "Currency" }] }] };
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), { id: "s9", action: "assert", target: { text: "Zq Expected" }, assertion: "visible" } as Step]);
+    expect(calculatedFieldReads(i, org as any)).toHaveLength(1);
+    expect(i.steps[2]).toMatchObject({ id: "sf-calc-s9", target: { field: "Zq Expected" }, assertion: "visible" });
+  });
+});
+
+describe("approvalSteps", () => {
+  const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Description", api: "Description" }] }],
+    approvals: [{ label: "Zq Big Deal", api: "Zq_Big_Deal", object: "Zopp" }] };
+  const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+  it("adds submit, the decision and the requested check after the confirmed Save, replacing what followed", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const junk = { id: "j", action: "assert", target: { text: "Zq Approved" }, assertion: "visible" } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), created, junk]);
+    expect(approvalSteps(i, org as any, "Create a Zopp, submit it for approval, then approve it and verify its Description shows Zq Approved")).toHaveLength(1);
+    const ids = i.steps.map((s) => s.id);
+    expect(ids).not.toContain("j");
+    expect(ids).toEqual(expect.arrayContaining(["sf-ap-submit", "sf-ap-send", "sf-ap-decide", "sf-ap-confirm", "sf-ap-check-Description"]));
+    expect(i.steps.find((s) => s.id === "sf-ap-decide")?.target?.name).toBe("Approve");
+    expect(i.steps.at(-1)).toMatchObject({ target: { field: "Description" }, value: "Zq Approved" });
+  });
+  it("rejects when asked, submits only when no decision is asked, and adds nothing without a submit", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const r = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(r, org as any, "submit it for approval, then reject it");
+    expect(r.steps.find((s) => s.id === "sf-ap-decide")?.target?.name).toBe("Reject");
+    const p = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(p, org as any, "submit it for approval and verify it was submitted");
+    expect(p.steps.some((s) => s.id === "sf-ap-decide")).toBe(false);
+    expect(approvalSteps(ir([nav("/lightning/o/Zopp/new"), click("Save")]), org as any, "create a Zopp")).toEqual([]);
+  });
+});
+
+describe("leadConvertSteps: the model's was-created check", () => {
+  it("drops 'was created' after the dialog's Convert and adds the converted check", async () => {
+    const { leadConvertSteps } = await import("../src/stages/salesforceGuidance.js");
+    const conv = (id: string) => ({ id, action: "click", target: { role: "button", name: "Convert" } } as Step);
+    const i = ir([conv("a"), conv("b"), { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step]);
+    leadConvertSteps(i);
+    expect(i.steps.map((s) => s.id)).toEqual(["a", "b", "sf-convert-wait", "sf-convert-done"]);
+  });
+});
+
+describe("leadConvertSteps: other wordings of the conversion", () => {
+  it("turns 'was converted' into Salesforce's message", async () => {
+    const { leadConvertSteps } = await import("../src/stages/salesforceGuidance.js");
+    const conv = (id: string) => ({ id, action: "click", target: { role: "button", name: "Convert" } } as Step);
+    const i = ir([conv("a"), conv("b"), { id: "x", action: "assert", target: { text: "was converted" }, assertion: "visible" } as Step]);
+    leadConvertSteps(i);
+    expect(i.steps.filter((s) => s.action === "assert").map((s) => s.target?.text)).toEqual(["Your lead has been converted"]);
+  });
+});
+
+describe("approvalSteps with an approver", () => {
+  it("signs in as the approver before the decision", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const { SECOND_USER_REF } = await import("../src/stages/salesforceFrontdoor.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [] }], approvals: [{ label: "Zq Big Deal", api: "Zq_Big_Deal", object: "Zopp" }] };
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step]);
+    approvalSteps(i, org as any, "submit it for approval, then approve it", SECOND_USER_REF);
+    const ids = i.steps.map((s) => s.id);
+    expect(ids.indexOf("sf-ap-as-approver")).toBeGreaterThan(ids.indexOf("sf-ap-sent"));
+    expect(ids.indexOf("sf-ap-as-approver")).toBeLessThan(ids.indexOf("sf-ap-decide"));
+    expect(i.steps.find((s) => s.id === "sf-ap-as-approver")?.target?.url).toBe(SECOND_USER_REF);
+  });
+});
+
+describe("approvalSteps after the case's own submission", () => {
+  it("keeps the submission and replaces what follows with the approver's decision", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const { SECOND_USER_REF } = await import("../src/stages/salesforceFrontdoor.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Description", api: "Description" }] }], approvals: [{ label: "Zq Big Deal", api: "Zq_Big_Deal", object: "Zopp" }] };
+    const sub = { id: "s11", action: "click", target: { role: "menuitem", name: "Submit for Approval" } } as Step;
+    const send = { id: "s14", action: "click", target: { role: "button", name: "Submit" } } as Step;
+    const sent = { id: "s16", action: "assert", target: { text: "was submitted for approval" }, assertion: "visible" } as Step;
+    const wander = { id: "s17", action: "click", target: { role: "link", name: "Approval History(0)" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), sub, send, sent, wander]);
+    approvalSteps(i, org as any, "submit it for approval, then reject it and verify its Description shows Zq Rejected", SECOND_USER_REF);
+    const ids = i.steps.map((s) => s.id);
+    expect(ids.slice(0, 5)).toEqual(["n", "c", "s11", "s14", "s16"]);
+    expect(ids).not.toContain("s17");
+    expect(ids).toEqual(expect.arrayContaining(["sf-ap-as-approver", "sf-ap-decide", "sf-ap-check-Description"]));
+    expect(i.steps.find((s) => s.id === "sf-ap-decide")?.target?.name).toBe("Reject");
+  });
+});
+
+describe("approvalSteps after a half-done submission", () => {
+  it("replaces it with the whole submission", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [] }], approvals: [{ label: "Zq Big Deal", api: "Zq_Big_Deal", object: "Zopp" }] };
+    const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+    const half = { id: "s14", action: "click", target: { role: "menuitem", name: "Submit for Approval" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), created, click("Show more actions"), half]);
+    expect(approvalSteps(i, org as any, "submit it for approval, then approve it")).toHaveLength(1);
+    const ids = i.steps.map((s) => s.id);
+    expect(ids).not.toContain("s14");
+    expect(ids).toEqual(expect.arrayContaining(["sf-ap-submit", "sf-ap-send", "sf-ap-decide"]));
+  });
+});

@@ -449,3 +449,37 @@ describe("lookupFilterText", () => {
     expect(lookupFilterText({})).toBeUndefined();
   });
 });
+
+describe("flowEffects names the subflows a flow runs", () => {
+  it("adds 'runs the flow X' for each subflow", async () => {
+    const { flowEffects } = await import("../src/stages/salesforceOrgModel.js");
+    expect(flowEffects({ subflows: [{ flowName: "Zq_Make_Contact" }] })).toEqual(["runs the flow Zq_Make_Contact"]);
+  });
+});
+
+describe("a created record's due date and link", () => {
+  it("reads TODAY() + N and the $Record link into the line", async () => {
+    const { flowEffects } = await import("../src/stages/salesforceOrgModel.js");
+    expect(flowEffects({ formulas: [{ name: "Zq_Tomorrow", expression: "TODAY() + 1" }], recordCreates: [{ object: "Task", inputAssignments: [
+      { field: "Subject", value: { stringValue: "Zq Call" } }, { field: "ActivityDate", value: { elementReference: "Zq_Tomorrow" } },
+      { field: "WhoId", value: { elementReference: "$Record.Id" } }] }] }))
+      .toEqual(['creates a Task "Zq Call" due today + 1, linked to the record by WhoId']);
+  });
+});
+
+describe("approvals in the org model text", () => {
+  it("names each approval process and how to drive it", async () => {
+    const { orgModelForCases } = await import("../src/stages/salesforceOrgModel.js");
+    const text = orgModelForCases({ objects: [{ api: "Zq_Opp__c", label: "Zq Opp", fields: [] }], validationRulesRead: true,
+      approvals: [{ label: "Zq Big Deal", api: "Zq_Big_Deal", object: "Zq_Opp__c" }] } as any);
+    expect(text).toContain('approval processes (active): "Zq Big Deal" on Zq_Opp__c');
+    expect(text).toContain('"Submit for Approval"');
+  });
+  it("is off unless asked for", async () => {
+    const { approvalsEnabled } = await import("../src/stages/salesforceOrgModel.js");
+    const was = process.env.SALESFORCE_APPROVALS_ENABLED;
+    delete process.env.SALESFORCE_APPROVALS_ENABLED;
+    expect(approvalsEnabled()).toBe(false);
+    if (was !== undefined) process.env.SALESFORCE_APPROVALS_ENABLED = was;
+  });
+});

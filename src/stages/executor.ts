@@ -6,7 +6,7 @@ import { redactCredentials, type Credentials } from "./credentials.js";
 import { siteHost } from "../text.js";
 import { browserContextOptions } from "../browserLaunch.js";
 import { currentRunId } from "../runContext.js";
-import { FRONTDOOR_ENV, currentFrontdoor, withoutFrontdoorSecret } from "./salesforceFrontdoor.js";
+import { FRONTDOOR_ENV, SECOND_USER_ENV, currentFrontdoor, withoutFrontdoorSecret } from "./salesforceFrontdoor.js";
 
 /**
  * `RUN_LOCALE` / `RUN_TIMEZONE` for the Playwright child, or nothing when pinning is off.
@@ -352,6 +352,10 @@ export async function runSpec(
   const frontdoor = currentFrontdoor();
   if (frontdoor && specCode.includes(`process.env.${FRONTDOOR_ENV}`)) {
     secretEnv = { ...secretEnv, [FRONTDOOR_ENV]: await frontdoor.mint() };
+  }
+  // Phase C: the second user's (the approver's) sign-in, minted the same way, only when the spec uses it.
+  if (frontdoor?.second && specCode.includes(`process.env.${SECOND_USER_ENV}`)) {
+    secretEnv = { ...secretEnv, [SECOND_USER_ENV]: await frontdoor.second.mint() };
   }
 
   for (let attempt = 1; attempt <= CONFIG.RETRIES; attempt++) {

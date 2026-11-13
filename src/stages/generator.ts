@@ -6,7 +6,7 @@ import {
 } from "./targetResolver.js";
 import { isAuthTriggeringStep } from "./authSettle.js";
 import { isEnvValueRef } from "./credentials.js";
-import { FRONTDOOR_ENV, isFrontdoorRef, recordRefIndex, recordRefObject, SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
+import { FRONTDOOR_ENV, SECOND_USER_ENV, isFrontdoorRef, isSecondUserRef, recordRefIndex, recordRefObject, SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
 import { hasRunToken, isNamedToggle, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
 
 const q = (s: string) => JSON.stringify(s);
@@ -73,6 +73,11 @@ function emitAssert(step: Step): string {
   }
   // A record field's PRESENCE (Target.field, visible): its label EXACTLY. getByText("SLA") also
   // matches the always-shown "SLA Expiration Date", which made a Dynamic Forms check pass hollow.
+  // A calculated field (formula, roll-up) the request asks to verify: the value it SHOWS is read and recorded,
+  // and the API check compares it with the value Salesforce computed (salesforceOracles.calculatedChecks).
+  if (t?.field && step.assertion === "visible" && /^sf-calc-/.test(step.id)) {
+    return `  await sfFieldShown(page, ${q(t.field)});`;
+  }
   if (t?.field && step.assertion === "visible") {
     return `  await expect(page.getByText(${q(t.field)}, { exact: true }).and(page.locator(':visible')).first()).toBeVisible({ timeout: ${ASSERT_TIMEOUT_MS} });`;
   }
@@ -382,6 +387,18 @@ async function sfFieldValue(page, label, expected, mode) {
   }
   throw new Error('The "' + label + '" field does not show "' + expected + '": ' + (seen.length
     ? "it shows " + seen.map((s) => '"' + s + '"').join(", ") : 'no visible field labelled "' + label + '" is on the page') + ".");
+}`;
+
+/** A calculated field's shown value, read from its own block on the record page and recorded as the
+ *  "sf-shown" annotation; the API check compares it with the value Salesforce computed. The field must
+ *  be on the page: no block = the check fails here. */
+const SF_FIELD_SHOWN_HELPER = `async function sfFieldShown(page, label) {
+  const items = page.locator("records-record-layout-item, records-highlights-details-item, .slds-form-element");
+  const block = items.filter({ has: page.getByText(label, { exact: true }) }).and(page.locator(':visible')).first();
+  await expect(block).toBeVisible({ timeout: ${ASSERT_TIMEOUT_MS} });
+  const lines = ((await block.innerText({ timeout: 1000 }).catch(() => "")) || "").split("\\n").map((l) => l.trim()).filter(Boolean);
+  const shown = lines.filter((l) => l !== label && !/^Edit /.test(l)).join(" ");
+  test.info().annotations.push({ type: "sf-shown", description: JSON.stringify({ label, shown }) });
 }`;
 
 /** Scrolls down a screen at a time until `text` shows or the page ends, so a lazily drawn section
@@ -1032,6 +1049,13 @@ function emitStep(step: Step, baseUrl: string): string {
   switch (step.action) {
     case "navigate": {
       const u = step.target?.url ?? "/";
+      // Phase C: the same browser signs in as the run's second user (the approver), from the env only.
+      if (isSecondUserRef(u)) {
+        code += `  if (!process.env.${SECOND_USER_ENV}) throw new Error("${SECOND_USER_ENV} is not set: this test acts as a second user of the org (connect that user and run again).");\n`;
+        code += `  await page.goto(process.env.${SECOND_USER_ENV}, { waitUntil: "domcontentloaded", timeout: 60000 });\n`;
+        code += `  await page.waitForURL((u) => !u.pathname.toLowerCase().includes("frontdoor.jsp"), { timeout: 60000 }).catch(() => {});\n`;
+        break;
+      }
       if (isFrontdoorRef(u)) {
         // D-63: sign in through a Salesforce org connection. The URL carries an access token, so the
         // spec holds only the env name; executor.ts gives the child a fresh one. Outside Testbench
@@ -1166,6 +1190,7 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
     case "navigate": {
       const u = t?.url ?? "/";
       if (isFrontdoorRef(u)) return "Sign in through the Salesforce org connection";
+      if (isSecondUserRef(u)) return "Sign in as the second user (the approver)";
       if (recordRefObject(u)) {
         const n = recordRefIndex(u)!;
         return `Go back to the ${recordRefObject(u)} record this test created${n > 1 ? `, number ${n}` : ""}`;
@@ -1349,7 +1374,11 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
         ? `await sfReveal(page, ${q(step.target.field)});\n`
         : detailsAt >= 0 && i > detailsAt && step.action === "assert" && step.target?.text
         && (step.assertion === "visible" || step.assertion === "hidden")
-        ? `await sfReveal(page, ${q(step.target.text)});\n` : "";
+        ? `await sfReveal(page, ${q(step.target.text)});\n`
+        // A related list's own menu ("Show actions for Approval History"): Lightning draws a related list only
+        // once it is scrolled to (run 2026-11-13T05-00-05-164Z-7f9fd73a timed out with it below the fold).
+        : orgConnection && step.action === "click" && /^Show actions for .+/.test(step.target?.name ?? "")
+        ? `await sfReveal(page, ${q(step.target!.name!.replace(/^Show actions for /, ""))});\n` : "";
       const dismiss = orgConnection && (step.action === "fill" || step.action === "select" || step.action === "click")
         ? "await sfDismissDuplicates(page);\n" : "";
       const code = dismiss + reveal + emitStep(step, ir.meta.baseUrl);
@@ -1416,6 +1445,7 @@ test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", descr
     // org confirms this user created during the run (salesforceCleanup.ts).
     body.includes(`process.env.${FRONTDOOR_ENV}`) ? SF_RECORDS_HELPER : "",
     body.includes("await sfReveal(") ? SF_REVEAL_HELPER : "",
+    body.includes("await sfFieldShown(") ? SF_FIELD_SHOWN_HELPER : "",
     body.includes("await sfDismissDuplicates(") ? SF_DISMISS_DUPLICATES_HELPER : "",
     body.includes("await sfOpenRecord(") ? SF_OPEN_RECORD_HELPER : "",
     body.includes("await sfFieldValue(") ? SF_FIELD_HELPER : "",

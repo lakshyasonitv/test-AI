@@ -114,7 +114,7 @@ const byStage = (route: Route): Record<GuidanceStage, string> =>
 
 const isSave = (s: Step) => /^save$/i.test(s.target?.name ?? "");
 /** A click that changes the record after its Save: the path's "Mark as Current Stage" / "Mark Stage as Complete". */
-const isRecordChange = (s: Step) => isSave(s) || /^mark (as current stage|stage as complete)$/i.test(s.target?.name ?? "");
+const isRecordChange = (s: Step) => isSave(s) || /^(mark (as current stage|stage as complete)|submit|approve|reject)$/i.test(s.target?.name ?? "");
 
 /**
  * Backs the two Save rules above. A case that ends on the dialog's Save button alone ("hidden" =
@@ -997,10 +997,20 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
       .map((v) => ({ v, at: words.lastIndexOf(` ${lineKey(v)} `) }))
       .sort((a, b) => b.at - a.at || b.v.length - a.v.length)[0]?.v;
     const mark = ir.steps.findIndex((s) => s.action === "click" && /^mark stage as complete$/i.test(s.target?.name ?? ""));
-    if (target && mark >= 0 && !ir.steps.some((s) => s.action === "click" && lineKey(s.target?.name ?? "") === lineKey(target))) {
-      const id = ir.steps[mark].id;
+    // No path step at all (run 2026-11-12T07-04-54-099Z-74db9cd3 saved Prospecting and went straight to
+    // checking Closed Won): the path steps go right after the Save is confirmed.
+    const pathy = (s: Step) => s.action === "click" && /^(closed|select closed stage|mark as current stage|mark stage as complete)$/i.test(s.target?.name ?? "");
+    let at = mark, remove = 1;
+    if (mark < 0 && !ir.steps.some(pathy)) {
+      for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) at = i + 1;
+      while (at > 0 && at < ir.steps.length && (ir.steps[at].action === "wait"
+        || (ir.steps[at].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[at].target?.text ?? "")))) at++;
+      remove = 0;
+    }
+    if (target && at >= 0 && !ir.steps.some((s) => s.action === "click" && lineKey(s.target?.name ?? "") === lineKey(target))) {
+      const id = mark >= 0 ? ir.steps[mark].id : "sf-path";
       const closing = /^closed\b/i.test(target);
-      ir.steps.splice(mark, 1, ...(closing
+      ir.steps.splice(at, remove, ...(closing
         ? [{ id: `${id}-closed`, action: "click", target: { role: "button", name: "Closed" } },
           { id: `${id}-select`, action: "click", target: { role: "button", name: "Select Closed Stage" } },
           { id: `${id}-wait`, action: "wait", value: "1000" },
@@ -1009,7 +1019,7 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
         : [{ id: `${id}-stage`, action: "click", target: { role: "button", name: target } },
           { id: `${id}-mark`, action: "click", target: { role: "button", name: "Mark as Current Stage" } }]) as Step[],
         { id: `${id}-wait2`, action: "wait", value: "1500" } as Step);
-      notes.push(`${id}: "Mark Stage as Complete" moves one stage -> moves the path to "${target}"${closing ? " through the Closed dialog" : ""}`);
+      notes.push(`${id}: ${mark >= 0 ? `"Mark Stage as Complete" moves one stage` : "no step used the path"} -> moves the path to "${target}"${closing ? " through the Closed dialog" : ""}`);
     }
   }
   for (let i = 0; i < ir.steps.length; i++) {
@@ -1022,6 +1032,23 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
       continue;
     }
     if (s.action !== "click" || !stages.has(lineKey(s.target?.name ?? "")) || !ir.steps.slice(0, i).some((x) => x.action === "click" && isSave(x))) continue;
+    // A closing stage is no stage of the path: the path shows one "Closed", whose dialog picks Won or Lost
+    // (run 2026-11-10T21-35-47-447Z-6d016a28 clicked "Closed Won" and was given "Mark as Current Stage").
+    if (/^closed\b/i.test(s.target?.name ?? "") && lineKey(s.target?.name ?? "") !== "closed") {
+      const target = s.target!.name!;
+      let j = i + 1;
+      while (j < ir.steps.length && (ir.steps[j].action === "wait" || /^mark as current stage$/i.test(ir.steps[j].target?.name ?? ""))) j++;
+      ir.steps.splice(i, j - i,
+        { id: `${s.id}-closed`, action: "click", target: { role: "button", name: "Closed" } } as Step,
+        { id: `${s.id}-select`, action: "click", target: { role: "button", name: "Select Closed Stage" } } as Step,
+        { id: `${s.id}-wait`, action: "wait", value: "1000" } as Step,
+        { id: `${s.id}-stage`, action: "select", target: { role: "combobox", name: "Stage" }, value: target } as Step,
+        { id: `${s.id}-save`, action: "click", target: { role: "button", name: "Save" } } as Step,
+        { id: `${s.id}-wait2`, action: "wait", value: "1500" } as Step);
+      notes.push(`${s.id}: "${target}" is set through the path's Closed dialog`);
+      i += 5;
+      continue;
+    }
     let j = i + 1;
     while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
     if (/^mark as current stage$/i.test(ir.steps[j]?.target?.name ?? "")) continue;
@@ -1040,7 +1067,7 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
  */
 export function flowOutcome(
   o: { fields: { label: string; api?: string }[] }, lines: string[], valueOf: (api: string) => string | undefined,
-): { sets: { label: string; api: string; value: string }[]; creates: string[] } | null {
+): { sets: { label: string; api: string; value: string }[]; creates: string[]; made: CreatedByFlow[]; notMade: CreatedByFlow[] } | null {
   const only = lines.find((l) => l.startsWith("only when "));
   if (only && whenHolds(only.slice("only when ".length), valueOf) !== true) return null;
   const branches = lines.filter((l) => l.startsWith("branch "));
@@ -1068,7 +1095,22 @@ export function flowOutcome(
       if (a && f?.api) sets.push({ label: f.label, api: f.api, value: /^(true|false)$/i.test(a[2].trim()) ? a[2].trim().toLowerCase() : a[2].trim() });
     }
   }
-  return { sets, creates: [...effects.matchAll(/creates an? \w+ "([^"]+)"/g)].map((m) => m[1]) };
+  // The records it makes on THIS record, and those other branches make and this one must not (Warm/Cold: no
+  // call task), with the due date and the link the org model read (createdLine).
+  const made = createdByFlow(effects);
+  const notMade = createdByFlow(branches.join("; ")).filter((x) => !made.some((m) => m.object === x.object && m.name === x.name));
+  return { sets, creates: [...effects.matchAll(/creates an? \w+ "([^"]+)"/g)].map((m) => m[1]), made, notMade };
+}
+
+export interface CreatedByFlow { object: string; name: string; dueDays?: number; link?: string }
+/** 'creates a Task "X" due today + 1, linked to the record by WhoId' as data. */
+export function createdByFlow(text: string): CreatedByFlow[] {
+  const out: CreatedByFlow[] = [];
+  for (const m of text.matchAll(/creates an? (\w+) "([^"]+)"( due today(?: ([+-]) (\d+))?)?(?:, linked to the record by (\w+))?/g)) {
+    if (out.some((x) => x.object === m[1] && x.name === m[2])) continue;
+    out.push({ object: m[1], name: m[2], ...(m[3] ? { dueDays: m[5] ? (m[4] === "-" ? -1 : 1) * Number(m[5]) : 0 } : {}), ...(m[6] ? { link: m[6] } : {}) });
+  }
+  return out;
 }
 
 /**
@@ -1166,4 +1208,156 @@ export function eventRecordSearch(ir: IRSteps, org: Pick<SalesforceOrgModel, "fl
     notes.push(`"${name}" is found through global search, the way the passing run found it`);
   }
   return notes;
+}
+
+/**
+ * Lead convert, done the way Lightning does it: the header's "Convert" opens the dialog, and the dialog's own
+ * "Convert" converts. Run 2026-11-12T09-31-35-264Z-96ce8e8e clicked a page-wide "Convert" twice (the second
+ * matched the header again), the dialog stayed open, and its "Converted" check matched the Lead's path. The
+ * second click is scoped to the dialog, and the check is Salesforce's own "Your lead has been converted".
+ * Returns notes.
+ */
+export function leadConvertSteps(ir: IRSteps): string[] {
+  const clicks = ir.steps.map((s, i) => [s, i] as const).filter(([s]) => s.action === "click" && /^convert$/i.test(s.target?.name ?? ""));
+  if (clicks.length < 2) return [];
+  const notes: string[] = [];
+  const [dialogClick, at] = clicks[1];
+  if (!/role=dialog/.test(dialogClick.target?.css ?? "")) {
+    ir.steps[at] = { ...dialogClick, target: { role: "button", name: "Convert", css: 'role=dialog >> role=button[name="Convert"s]' } };
+    notes.push(`${dialogClick.id}: the dialog's own "Convert"`);
+  }
+  for (let i = at + 1; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action !== "assert") continue;
+    // "was created" after the dialog is the Lead's own earlier toast (run 2026-11-12T09-57-37-571Z-94237239
+    // "passed" on it with nothing converted); "Converted" is also a path stage.
+    if (/\bwas created\b/i.test(s.target?.text ?? "")) { ir.steps.splice(i--, 1); notes.push(`${s.id}: "was created" after Convert is the Lead's earlier toast -> dropped`); continue; }
+    const text = (s.target?.text ?? "").trim();
+    if (!/\bconvert/i.test(text) || /your lead has been converted/i.test(text)) continue;
+    // Any other wording of it ("Converted" is also a path stage; "was converted" is never shown: run
+    // 2026-11-12T12-38-55-246Z-2a2e742f converted the Lead and failed on it) is Salesforce's own message.
+    ir.steps[i] = { ...s, target: { text: "Your lead has been converted" }, assertion: "visible" };
+    notes.push(`${s.id}: "${text}" -> checks "Your lead has been converted"`);
+  }
+  if (!ir.steps.slice(at + 1).some((s) => s.action === "assert" && /your lead has been converted/i.test(s.target?.text ?? ""))) {
+    ir.steps.splice(at + 1, 0, { id: "sf-convert-wait", action: "wait", value: "3000" } as Step,
+      { id: "sf-convert-done", action: "assert", target: { text: "Your lead has been converted" }, assertion: "visible" } as Step);
+    notes.push(`the conversion is checked by Salesforce's own "Your lead has been converted"`);
+  }
+  return notes;
+}
+
+/**
+ * A check that a calculated field's LABEL is visible ("Expected Revenue") checks nothing about its value
+ * (run 2026-11-12T09-37-44-530Z-ffcf8ece). On a record the case saved, it becomes a read of the value the
+ * page shows for that field (generator sfFieldShown), which the API check compares with the value
+ * Salesforce computed. Returns notes.
+ */
+export function calculatedFieldReads(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects"> | undefined): string[] {
+  const notes: string[] = [];
+  let form: string | null = null;
+  let on: string | null = null;
+  ir.steps.forEach((s, i) => {
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; on = recordRefObject(s.target?.url) ?? (form ? null : on); return; }
+    if (s.action === "click" && isSave(s) && form) { on = form; form = null; return; }
+    if (s.action !== "assert" || s.assertion !== "visible" || !s.target?.text || !on) return;
+    const o = org?.objects.find((x) => x.api === on);
+    const c = o?.calculated?.find((x) => lineKey(x.label) === lineKey(s.target!.text!));
+    if (!c) return;
+    ir.steps[i] = { id: `sf-calc-${s.id}`, action: "assert", target: { field: c.label }, assertion: "visible" } as Step;
+    notes.push(`${s.id}: "${c.label}" is calculated -> reads the value it shows, for the API check`);
+  });
+  return notes;
+}
+
+/**
+ * Phase C, an approval done the way Lightning does it, when the request asks for one ("submit it for
+ * approval, then approve it and verify its Description shows TB Approved") on an object with an approval
+ * process: the case writer left the approval steps out in runs 2026-11-12T09-57-07-371Z-96fab553 and
+ * 2026-11-12T10-04-34-678Z-eff2eb27. Added after the record's confirmed Save: Submit for Approval (from the
+ * actions menu) with a comment; then, when asked, the decision from the record's Related tab ("Approve" or
+ * "Reject", a comment, the dialog's button); then the field the request names, checked on the record.
+ * Nothing is added when a step already submits. Returns notes.
+ */
+export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "approvals"> | undefined, request: string, approverSignIn?: string): string[] {
+  const approval = org?.approvals?.[0] && /\bsubmit\w*\b[^.]*\bapproval\b/i.test(request) ? org.approvals : undefined;
+  if (!approval) return [];
+  // The record: the last one the case saved on an object with an approval process.
+  let form: string | null = null;
+  let saved: { object: string; at: number; n: number } | null = null;
+  const count = new Map<string, number>();
+  ir.steps.forEach((s, i) => {
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; return; }
+    if (s.action === "click" && isSave(s) && form) {
+      const n = (count.get(form) ?? 0) + 1;
+      count.set(form, n);
+      if (approval.some((a) => a.object === form)) saved = { object: form, at: i, n };
+      form = null;
+    }
+  });
+  if (!saved) return [];
+  const { object, n } = saved as { object: string; at: number; n: number };
+  const decision = /\breject\w*\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Reject"
+    : /\bapprov(e|es|ed|ing)\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Approve" : null;
+  const dialog = (name: string) => ({ role: "button", name, css: `role=dialog >> role=button[name="${name}"s]` });
+  // The case's own submission (runs 2026-11-12T13-02-29-047Z-33e9cc1b and -13-03-30-475Z-d74a26c5 submitted
+  // correctly, then wandered: an "Approval History(0)" link, a task's menu, never the approver) is kept up
+  // to its confirmation; everything after it is this pass's. Without one, the submission is added too.
+  const submitAt = ir.steps.findIndex((s) => s.action === "click" && /^submit for approval$/i.test(s.target?.name ?? ""));
+  let at: number;
+  const steps: Step[] = [];
+  // A submission the case left half done (run 2026-11-13T04-55-33-374Z-b71d138e opened "Submit for Approval"
+  // and stopped) is replaced by the whole one below.
+  const send = submitAt < 0 ? -1 : ir.steps.findIndex((s, i) => i > submitAt && s.action === "click" && /^submit$/i.test(s.target?.name ?? ""));
+  if (submitAt >= 0 && send >= 0) {
+    at = send + 1;
+    while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /submitted/i.test(ir.steps[at].target?.text ?? "")))) at++;
+    if (!decision && !ir.steps.slice(at).some((s) => s.action !== "wait")) return [];
+    if (!ir.steps.slice(send, at).some((s) => s.action === "assert")) steps.push({ id: "sf-ap-sent", action: "assert", target: { text: "submitted for approval" }, assertion: "visible" } as Step);
+  } else {
+    at = (saved as { at: number }).at + 1;
+    while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /\bwas created\b/.test(ir.steps[at].target?.text ?? "")))) at++;
+    // "Submit for Approval" is in the record's actions menu (run 2026-11-12T12-27-14-303Z-faacdd52 submitted there).
+    steps.push(
+      { id: "sf-ap-menu", action: "click", target: { role: "button", name: "Show more actions" } } as Step,
+      { id: "sf-ap-submit", action: "click", target: { role: "menuitem", name: "Submit for Approval" } } as Step,
+      { id: "sf-ap-wait", action: "wait", value: "1500" } as Step,
+      { id: "sf-ap-comment", action: "fill", target: { role: "textbox", name: "Comments" }, value: "Testbench approval test" } as Step,
+      { id: "sf-ap-send", action: "click", target: dialog("Submit") } as Step,
+      { id: "sf-ap-sent", action: "assert", target: { text: "submitted for approval" }, assertion: "visible" } as Step,
+    );
+  }
+  // What the case wrote after that is not the approval (a check of the outcome before the decision, a click
+  // elsewhere). The request's own check is added at the end instead.
+  const dropped = ir.steps.length - at;
+  ir.steps.splice(at);
+  if (decision) {
+    // Phase C, two users: the approver decides. The same browser signs in as them (approverSignIn is the
+    // run's second user, SECOND_USER_REF) and opens the record the first user created.
+    if (approverSignIn) steps.push({ id: "sf-ap-as-approver", action: "navigate", target: { url: approverSignIn } } as Step);
+    steps.push(
+      { id: "sf-ap-open", action: "navigate", target: { url: recordRef(object, n) } } as Step,
+      { id: "sf-ap-related", action: "click", target: { role: "tab", name: "Related" } } as Step,
+      { id: "sf-ap-wait2", action: "wait", value: "1500" } as Step,
+      // The Approval History list keeps Approve / Reject behind its own actions menu (run
+      // 2026-11-12T13-02-29-047Z-33e9cc1b: "Show actions for Approval History", no Approve button on the page).
+      { id: "sf-ap-actions", action: "click", target: { role: "button", name: "Show actions for Approval History" } } as Step,
+      { id: "sf-ap-wait-menu", action: "wait", value: "800" } as Step,
+      { id: "sf-ap-decide", action: "click", target: { role: "menuitem", name: decision } } as Step,
+      { id: "sf-ap-wait3", action: "wait", value: "1500" } as Step,
+      { id: "sf-ap-comment2", action: "fill", target: { role: "textbox", name: "Comments" }, value: `Testbench ${decision.toLowerCase()} test` } as Step,
+      { id: "sf-ap-confirm", action: "click", target: dialog(decision) } as Step,
+      { id: "sf-ap-wait4", action: "wait", value: "2500" } as Step,
+    );
+  }
+  // The field the request names ("its Description shows TB Approved"), on the record after the decision.
+  const o = org!.objects.find((x) => x.api === object);
+  const m = /\b(?:its\s+|the\s+)?([A-Z][\w ]*?)\s+(?:shows|is|says|reads)\s+["“]?([^".,;”]+?)["”]?\s*(?:$|[.,;])/.exec(request);
+  const f = m && o?.fields.find((x) => lineKey(x.label) === lineKey(m[1]));
+  if (m && f) {
+    steps.push({ id: "sf-ap-reopen", action: "navigate", target: { url: recordRef(object, n) } } as Step,
+      { id: `sf-ap-check-${f.api}`, action: "assert", target: { field: f.label }, assertion: "text_contains", value: m[2].trim() } as Step);
+  }
+  ir.steps.push(...steps);
+  return [`the request ${decision ? `submits and ${decision === "Approve" ? "approves" : "rejects"}` : "submits"} the ${o?.label ?? object} for approval -> the approval steps${dropped ? ` (replacing ${dropped} step(s) after the Save)` : ""}${m && f ? `, then checks ${f.label} shows "${m[2].trim()}"` : ""}`];
 }

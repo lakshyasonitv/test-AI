@@ -88,3 +88,67 @@ describe("typedValues: only confirmed saves", () => {
     expect(typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "AB"), save, refused] }, org)).toEqual([]);
   });
 });
+
+describe("caseRunFacts without run tokens", () => {
+  it("still returns the created records when the spec typed no token", async () => {
+    const { caseRunFacts } = await import("../src/stages/salesforceOracles.js");
+    const { writeFileSync, mkdtempSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const f = join(mkdtempSync(join(tmpdir(), "zq-")), "results.json");
+    writeFileSync(f, JSON.stringify({ suites: [{ specs: [{ tests: [{ annotations: [{ type: "sf-created", description: JSON.stringify({ Case: ["500zq0000000001AAA"] }) }] }] }] }] }));
+    expect(caseRunFacts(f)).toEqual({ ctx: { uid: "", phone: "" }, created: { Case: ["500zq0000000001AAA"] }, shown: {} });
+  });
+});
+
+describe("flowRecordChecks", () => {
+  const org2 = { objects: [{ api: "Zlead", label: "Zlead", fields: [{ label: "Zind", api: "Industry", type: "picklist" }] }],
+    flows: [{ label: "Zq Route", api: "Zq_Route", type: "record-triggered", object: "Zlead", effects: [
+      'branch "Hot": when Industry = Tech -> creates a Task "Zq Call" due today + 1, linked to the record by WhoId',
+      'branch "Default" (none of the above) -> sets Rating = Cold'] }] };
+  const sel = (v: string) => ({ id: "i", action: "select", target: { name: "Zind" }, value: v } as Step);
+  const steps = (v: string) => ({ steps: [nav("/lightning/o/Zlead/new"), sel(v), save, created] });
+  const now = Date.UTC(2026, 10, 12);
+
+  it("confirms the task on the Hot branch with its due date", async () => {
+    const { flowRecordChecks } = await import("../src/stages/salesforceOracles.js");
+    const apiGet = vi.fn(async () => ({ records: [{ Id: "00Tzq", ActivityDate: "2026-11-13" }] }));
+    const out = await flowRecordChecks(apiGet, steps("Tech"), org2 as any, { Zlead: ["00Qzq0000000001AAA"] }, now);
+    expect(out.map((c) => [c.expected, c.actual, c.ok])).toEqual([["exists", "exists", true], ["2026-11-13", "2026-11-13", true]]);
+    expect(decodeURIComponent(String(apiGet.mock.calls[0][0]))).toContain("WHERE Subject = 'Zq Call' AND WhoId = '00Qzq0000000001AAA'");
+  });
+
+  it("confirms no task on the other branch", async () => {
+    const { flowRecordChecks } = await import("../src/stages/salesforceOracles.js");
+    const out = await flowRecordChecks(vi.fn(async () => ({ records: [] })), steps("Retail"), org2 as any, { Zlead: ["00Qzq0000000001AAA"] }, now);
+    expect(out).toEqual([expect.objectContaining({ expected: "none", actual: "0", ok: true })]);
+  });
+});
+
+describe("approvalChecks", () => {
+  const approvals = [{ label: "Zq Big Deal", object: "Zq_Opp__c" }];
+  const click = (name: string) => ({ id: name, action: "click", target: { role: "button", name } } as Step);
+  it("expects Approved after Submit then Approve, and reads ProcessInstance", async () => {
+    const { approvalChecks } = await import("../src/stages/salesforceOracles.js");
+    const apiGet = vi.fn(async () => ({ records: [{ Status: "Approved" }] }));
+    const out = await approvalChecks(apiGet, { steps: [click("Submit for Approval"), click("Submit"), click("Approve")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] });
+    expect(out).toEqual([expect.objectContaining({ expected: "Approved", actual: "Approved", ok: true })]);
+    expect(decodeURIComponent(String(apiGet.mock.calls[0][0]))).toContain("FROM ProcessInstance WHERE TargetObjectId = 'a01zq0000000001AAA'");
+  });
+  it("expects Pending after Submit alone, and checks nothing without a submit", async () => {
+    const { approvalChecks } = await import("../src/stages/salesforceOracles.js");
+    const out = await approvalChecks(vi.fn(async () => ({ records: [{ Status: "Pending" }] })), { steps: [click("Submit for Approval")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] });
+    expect(out[0]).toMatchObject({ expected: "Pending", ok: true });
+    expect(await approvalChecks(vi.fn(), { steps: [click("Save")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] })).toEqual([]);
+  });
+});
+
+describe("calculatedChecks with a shown value", () => {
+  it("uses the value the spec read off the page for an sf-calc read", async () => {
+    const { calculatedChecks } = await import("../src/stages/salesforceOracles.js");
+    const withCalc = { objects: [{ ...org.objects[0], calculated: [{ label: "Zq Exp", api: "Zq_Exp__c", type: "Currency" }] }] };
+    const read = { id: "sf-calc-a", action: "assert", target: { field: "Zq Exp" }, assertion: "visible" } as Step;
+    expect(calculatedChecks({ steps: [nav("/lightning/o/Zq_Acct__c/new"), save, read] }, withCalc as any, { "Zq Exp": "$20,000.00" }))
+      .toEqual([{ object: "Zq_Acct__c", n: 1, values: [{ label: "Zq Exp", api: "Zq_Exp__c", type: "Currency", value: "$20,000.00" }] }]);
+  });
+});

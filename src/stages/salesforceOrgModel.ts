@@ -243,7 +243,10 @@ export function flowEffects(meta: any): string[] {
       if (ref.startsWith("$Record.")) out.push(`sets ${ref.slice(8)} = ${flowValue(it.value)}`);
     }
   }
-  for (const c of meta?.recordCreates ?? []) out.push(createdLine(c));
+  for (const c of meta?.recordCreates ?? []) out.push(createdLine(c, meta));
+  // A subflow does the work of the screen that calls it (TB New Contact Screen creates its Contact through
+  // TB Create Contact); readFlows adds what that flow creates.
+  for (const s of meta?.subflows ?? []) if (typeof s?.flowName === "string") out.push(`runs the flow ${s.flowName}`);
   for (const e of meta?.customErrors ?? []) {
     const msg = (Array.isArray(e?.customErrorMessages) ? e.customErrorMessages : [e?.customErrorMessages])
       .map((m: any) => m?.errorMessage).find((m: any) => typeof m === "string" && m.trim());
@@ -257,9 +260,19 @@ export function flowEffects(meta: any): string[] {
 }
 
 /** "creates a Task "TB Review large deal"": the record's Subject or Name when the flow gives it as text. */
-function createdLine(c: any): string {
+function createdLine(c: any, meta?: any): string {
   const named = (c?.inputAssignments ?? []).find((a: any) => /^(Subject|Name)$/.test(a?.field) && a?.value?.stringValue);
-  if (named) return `creates a ${c?.object ?? "record"} "${named.value.stringValue}"`;
+  if (named) {
+    // Its due date ("ActivityDate = Tomorrow", a formula "TODAY() + 1") and its link to the record that ran the
+    // flow ("WhoId = $Record.Id"): what the API check confirms (salesforceOracles.createdChecks), H3's due date.
+    const due = (c.inputAssignments ?? []).find((a: any) => a?.field === "ActivityDate");
+    const ref = due?.value?.elementReference;
+    const expr = ref ? (meta?.formulas ?? []).find((f: any) => f?.name === ref)?.expression : undefined;
+    const days = /^\s*TODAY\(\)\s*(?:([+-])\s*(\d+))?\s*$/i.exec(String(expr ?? ""));
+    const dueText = days ? ` due today${days[2] ? ` ${days[1]} ${days[2]}` : ""}` : "";
+    const link = (c.inputAssignments ?? []).find((a: any) => /^(WhoId|WhatId|ParentId|AccountId)$/.test(a?.field) && a?.value?.elementReference === "$Record.Id");
+    return `creates a ${c?.object ?? "record"} "${named.value.stringValue}"${dueText}${link ? `, linked to the record by ${link.field}` : ""}`;
+  }
   // Named from the triggering record or event ("Name = $Record.Message__c"): seeding fills it in.
   const from = (c?.inputAssignments ?? []).find((a: any) => /^(Subject|Name)$/.test(a?.field) && /^\$Record\.\w+$/.test(a?.value?.elementReference ?? ""));
   return `creates a ${c?.object ?? "record"}${from ? ` with ${from.field} = the triggering record's ${from.value.elementReference.slice(8)}` : ""}`;
@@ -311,7 +324,7 @@ export function flowBranches(meta: any): string[] {
           .map((it: any) => `${String(it.assignToReference).slice(8)} = ${flowValue(it.value)}`);
         if (sets.length) out.push(`sets ${sets.join(", ")}`);
       } else if (node.kind === "recordCreates") {
-        out.push(createdLine(el));
+        out.push(createdLine(el, meta));
       } else if (node.kind === "customErrors") {
         const msg = (Array.isArray(el.customErrorMessages) ? el.customErrorMessages : [el.customErrorMessages])
           .map((m: any) => m?.errorMessage).find((m: any) => typeof m === "string" && m.trim());
@@ -386,6 +399,15 @@ async function readFlows(apiGet: ApiGet, request = ""): Promise<SalesforceOrgMod
       ...(effects.length ? { effects } : {}),
     });
   }
+  // A flow that runs another one also does what that one creates (run 2026-11-12T07-29-43-159Z-23244d2a:
+  // the screen flow's Contact was made by its subflow, so nothing said the screen flow creates one).
+  for (const f of flows) {
+    for (const l of f.effects ?? []) {
+      const sub = /^runs the flow (\w+)$/.exec(l)?.[1];
+      const made = sub ? flows.find((x) => x.api === sub)?.effects?.filter((e) => e.startsWith("creates ")) ?? [] : [];
+      for (const m of made) if (!f.effects!.includes(m)) f.effects!.push(m);
+    }
+  }
   return flows;
 }
 
@@ -433,6 +455,8 @@ export async function readSalesforceOrgModel(
   }
   const userLocale = await readUserLocale(apiGet);
   const flows = await readFlows(apiGet, request);
+  // Phase C (SALESFORCE_APPROVALS_ENABLED, default off): the active approval processes, by object.
+  const approvals = approvalsEnabled() ? await readApprovals(apiGet) : undefined;
   if (deepDiscoveryEnabled()) {
     const deep = await readDeepFacts(apiGet, { objects, validationRulesRead: rules !== null }, request).catch(() => null);
     if (deep) console.log(`[org model] deep read: ${deep.objects} object(s), ${deep.calls} API call(s), ${(deep.ms / 1000).toFixed(1)} s`);
@@ -443,7 +467,21 @@ export async function readSalesforceOrgModel(
     objects, validationRulesRead: rules !== null,
     ...(userLocale ? { userLocale } : {}),
     ...(flows?.length ? { flows } : {}),
+    ...(approvals?.length ? { approvals } : {}),
   };
+}
+
+/** Phase C: approvals in the org model and the API checks of them. Off unless asked for. */
+export function approvalsEnabled(): boolean {
+  return process.env.SALESFORCE_APPROVALS_ENABLED === "true";
+}
+
+/** The active approval processes (ProcessDefinition, a plain SOQL object): label, API name, object. */
+async function readApprovals(apiGet: ApiGet): Promise<NonNullable<SalesforceOrgModel["approvals"]>> {
+  const q = "SELECT Name, DeveloperName, TableEnumOrId FROM ProcessDefinition WHERE Type = 'Approval' AND State = 'Active' LIMIT 20";
+  const res = await tryGet(apiGet, `/query?q=${encodeURIComponent(q)}`);
+  return (res?.records ?? []).filter((r: any) => typeof r?.Name === "string" && typeof r?.TableEnumOrId === "string")
+    .map((r: any) => ({ label: String(r.Name), api: String(r.DeveloperName ?? r.Name), object: String(r.TableEnumOrId) }));
 }
 
 /**
@@ -647,6 +685,15 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
   let body = lines.join("\n");
   if (body.length > maxChars) body = body.slice(0, maxChars).replace(/\n[^\n]*$/, "") + "\n- (more objects not shown)";
   if (flowsBlock) body += `\n${flowsBlock}`;
+  // Phase C: approval processes, and how Lightning drives one, for a case about an approval.
+  if (org.approvals?.length) {
+    body += `\napproval processes (active): ${org.approvals.map((a) => `"${a.label}" on ${a.object}`).join(", ")}.`
+      + ` A case about one: create a record that meets its entry criteria (the request's values) and save it; on the record page`
+      + ` click "Submit for Approval" (in the header or under "Show more actions"), type a comment, click "Submit"; Salesforce`
+      + ` shows "was submitted for approval" and the record is locked. To decide it, open the record's Related tab, the`
+      + ` "Approval History" list, click "Approve" or "Reject", type a comment, and click the dialog's "Approve" or "Reject".`
+      + ` Then check what the approval changes on the record (its final field update) on the Details tab.`;
+  }
   // Phase D: records made through the API before the test, for a case about an "existing" one.
   if (org.seeded?.length) body += `\nrecords Testbench ALREADY CREATED for this test, through the API (use them as the "existing" record the request means; pick them in a lookup by this exact name; never create them again): ${org.seeded.map((r) => `${r.label} "${r.name}"`).join(", ")}`;
   return `

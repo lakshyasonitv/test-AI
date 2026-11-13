@@ -133,23 +133,27 @@ export async function apiChecks(
 }
 
 /** One case's annotations from its results.json: the run tokens and the records it created. */
-export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; created: Record<string, string[]> } | null {
+export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; created: Record<string, string[]>; shown: Record<string, string> } | null {
   if (!existsSync(resultsPath)) return null;
   let ctx: RunTokenContext | null = null;
   let created: Record<string, string[]> = {};
+  const shown: Record<string, string> = {};
   const visit = (s: any) => {
     for (const sp of s?.specs ?? []) for (const t of sp.tests ?? []) {
       for (const a of [...(t.annotations ?? []), ...(t.results ?? []).flatMap((r: any) => r.annotations ?? [])]) {
         try {
           if (a?.type === "run-tokens") ctx = JSON.parse(a.description);
           if (a?.type === "sf-created") created = JSON.parse(a.description);
+          if (a?.type === "sf-shown") { const v = JSON.parse(a.description); if (typeof v?.label === "string") shown[v.label] = String(v.shown ?? ""); }
         } catch { /* a broken annotation reads as absent */ }
       }
     }
     for (const c of s?.suites ?? []) visit(c);
   };
   try { for (const s of JSON.parse(readFileSync(resultsPath, "utf8"))?.suites ?? []) visit(s); } catch { return null; }
-  return ctx ? { ctx, created } : null;
+  // A spec that types no run token writes no "run-tokens" annotation (run 2026-11-12T07-16-11-742Z-c2ab98b6
+  // picked only picklist values and got no API check at all): nothing to resolve, so an empty context.
+  return ctx || Object.keys(created).length ? { ctx: ctx ?? { uid: "", phone: "" }, created, shown } : null;
 }
 
 /** Every case of a run: its IR and its results.json (case 0's results sit at the run's root). */
@@ -175,7 +179,7 @@ export function runCases(runDir: string): { caseDir: string; ir: Pick<IR, "steps
  * shows, the two must agree. The record is the one the case was on: the last it saved, or one it opened
  * again by reference (${record:Obj:n}).
  */
-export function calculatedChecks(ir: Pick<IR, "steps">, org: Org): Typed[] {
+export function calculatedChecks(ir: Pick<IR, "steps">, org: Org, shown: Record<string, string> = {}): Typed[] {
   const out: Typed[] = [];
   const count = new Map<string, number>();
   let form: string | null = null;
@@ -196,12 +200,14 @@ export function calculatedChecks(ir: Pick<IR, "steps">, org: Org): Typed[] {
       continue;
     }
     const label = s.target?.field;
-    if (s.action !== "assert" || !label || !on || !s.value || !/^text_(contains|equals)$/.test(s.assertion ?? "")) continue;
+    // A value the spec READ off the page (sf-calc-: sfFieldShown) stands in for one written in the step.
+    const value = /^sf-calc-/.test(s.id) ? shown[label ?? ""] : s.value;
+    if (s.action !== "assert" || !label || !on || !value || !(/^sf-calc-/.test(s.id) || /^text_(contains|equals)$/.test(s.assertion ?? ""))) continue;
     const o = org.objects.find((x) => x.api === on!.object);
     const c = (o as any)?.calculated?.find((x: any) => x.label.toLowerCase() === label.toLowerCase());
     if (!c || !COMPARED.test(c.type)) continue;
     const entry = out.find((t) => t.object === on!.object && t.n === on!.n) ?? (out.push({ object: on.object, n: on.n, values: [] }), out[out.length - 1]);
-    entry.values = entry.values.filter((v) => v.api !== c.api).concat({ label: c.label, api: c.api, type: c.type, value: s.value });
+    entry.values = entry.values.filter((v) => v.api !== c.api).concat({ label: c.label, api: c.api, type: c.type, value });
   }
   return out;
 }
@@ -244,6 +250,121 @@ export function flowSetChecks(ir: Pick<IR, "steps">, org: Org): Typed[] {
         if (values.length) out.push({ object: form, n, values });
       }
       form = null;
+    }
+  }
+  return out;
+}
+
+/**
+ * What a record-triggered flow made on a saved record, through the API (Phase B gaps): the task the branch
+ * taken creates exists ON that record with its due date ("due today + 1": run 2026-11-10T20-52-16-029Z-1228df7d
+ * never checked it), and the records other branches create do NOT (Warm/Cold: no call task; nothing checked
+ * that). Only records the flow links to the record (WhoId/WhatId = $Record.Id), found by name. The due date
+ * is compared with the run's day, one day either way (the org's user may sit in another time zone).
+ */
+export async function flowRecordChecks(
+  apiGet: (p: string) => Promise<any>, ir: Pick<IR, "steps">, org: Org, created: Record<string, string[]>, now = Date.now(),
+): Promise<ApiCheck[]> {
+  const out: ApiCheck[] = [];
+  const count = new Map<string, number>();
+  let form: string | null = null;
+  let typed = new Map<string, string>();
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; typed = new Map(); continue; }
+    if (!form) continue;
+    const o = org.objects.find((x) => x.api === form);
+    if ((s.action === "fill" || s.action === "select") && s.value !== undefined && o) {
+      const name = (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase();
+      const f = o.fields.find((x) => x.label.toLowerCase() === name || `${o.label} ${x.label}`.toLowerCase() === name);
+      if (f) typed.set(f.api.toLowerCase(), s.value);
+      continue;
+    }
+    if (s.action !== "click" || !/^save$/i.test(s.target?.name ?? "")) continue;
+    let confirmed = false;
+    for (let j = i + 1; j < ir.steps.length && ir.steps[j].action !== "navigate"; j++) {
+      if (ir.steps[j].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[j].target?.text ?? "")) { confirmed = true; break; }
+    }
+    const thisForm = form;
+    form = null;
+    if (!confirmed || !o) continue;
+    const n = (count.get(thisForm) ?? 0) + 1;
+    count.set(thisForm, n);
+    const id = created[thisForm]?.[n - 1];
+    if (!id || !/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
+    for (const fl of (org.flows ?? []).filter((x) => x.object === o.label || x.object === o.api)) {
+      const r = flowOutcome(o, fl.effects ?? [], (api) => typed.get(api.toLowerCase()));
+      if (!r) continue;
+      for (const [rec, want] of [...r.made.map((x) => [x, true] as const), ...r.notMade.map((x) => [x, false] as const)]) {
+        if (!rec.link || !/^\w+$/.test(rec.object) || !/^\w+$/.test(rec.link) || /'/.test(rec.name)) continue;
+        const nameField = rec.object === "Task" || rec.object === "Event" ? "Subject" : "Name";
+        const label = `${fl.label}: ${rec.object} "${rec.name}"${want ? "" : " (not on this branch)"}`;
+        try {
+          const q = `SELECT Id${rec.dueDays !== undefined ? ", ActivityDate" : ""} FROM ${rec.object} WHERE ${nameField} = '${rec.name}' AND ${rec.link} = '${id}'`;
+          const rows: any[] = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records ?? [];
+          if (!want) { out.push({ object: o.api, id, field: label, expected: "none", actual: String(rows.length), ok: rows.length === 0 }); continue; }
+          out.push({ object: o.api, id, field: label, expected: "exists", actual: rows.length ? "exists" : "missing", ok: rows.length > 0 });
+          if (rows.length && rec.dueDays !== undefined) {
+            const day = (d: number) => new Date(now + d * 86400000).toISOString().slice(0, 10);
+            const got = String(rows[0]?.ActivityDate ?? "");
+            out.push({ object: o.api, id, field: `${label} due date`, expected: day(rec.dueDays), actual: got,
+              ok: [-1, 0, 1].some((k) => day(rec.dueDays! + k) === got) });
+          }
+        } catch (err) {
+          out.push({ object: o.api, id, field: label, expected: want ? "exists" : "none", ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Phase C, through the API: the approval a case drove, read from ProcessInstance on the record it created on
+ * an object with an approval process, compared with what its steps did (Submit for Approval only = Pending;
+ * then Approve = Approved, Reject = Rejected). The screen shows a toast; the org says where the approval is.
+ */
+export async function approvalChecks(
+  apiGet: (p: string) => Promise<any>, ir: Pick<IR, "steps">, approvals: { label: string; object: string }[] | undefined,
+  created: Record<string, string[]>,
+): Promise<ApiCheck[]> {
+  const out: ApiCheck[] = [];
+  const clicked = (re: RegExp) => ir.steps.some((s) => s.action === "click" && re.test(s.target?.name ?? ""));
+  if (!approvals?.length || !clicked(/^submit for approval$/i)) return out;
+  // The decision is the last of the approval's own buttons the case clicked.
+  let expected = "Pending";
+  for (const s of ir.steps) {
+    if (s.action !== "click") continue;
+    if (/^approve$/i.test(s.target?.name ?? "")) expected = "Approved";
+    else if (/^reject$/i.test(s.target?.name ?? "")) expected = "Rejected";
+  }
+  for (const a of approvals) {
+    if (!/^\w+$/.test(a.object)) continue;
+    for (const id of created[a.object] ?? []) {
+      if (!/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
+      try {
+        const q = `SELECT Status FROM ProcessInstance WHERE TargetObjectId = '${id}' ORDER BY CreatedDate DESC LIMIT 1`;
+        const status = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0]?.Status;
+        out.push({ object: a.object, id, field: `${a.label}: approval status`, expected, actual: status ?? "not submitted", ok: status === expected });
+      } catch (err) {
+        out.push({ object: a.object, id, field: `${a.label}: approval status`, expected, ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
+      }
+    }
+  }
+  return out;
+}
+
+/** A Lead the case converted (two "Convert" clicks), through the API: IsConverted is true. */
+export async function leadConvertChecks(apiGet: (p: string) => Promise<any>, ir: Pick<IR, "steps">, created: Record<string, string[]>): Promise<ApiCheck[]> {
+  if (ir.steps.filter((s) => s.action === "click" && /^convert$/i.test(s.target?.name ?? "")).length < 2) return [];
+  const out: ApiCheck[] = [];
+  for (const id of created.Lead ?? []) {
+    if (!/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
+    try {
+      const r = (await apiGet(`/query?q=${encodeURIComponent(`SELECT IsConverted FROM Lead WHERE Id = '${id}'`)}`))?.records?.[0];
+      out.push({ object: "Lead", id, field: "converted", expected: "true", actual: String(r?.IsConverted ?? "not found"), ok: r?.IsConverted === true });
+    } catch (err) {
+      out.push({ object: "Lead", id, field: "converted", expected: "true", ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
     }
   }
   return out;

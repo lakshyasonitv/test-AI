@@ -15,9 +15,9 @@ import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
-import { cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt } from "./stages/salesforceCleanup.js";
+import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
 import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
-import { apiChecks, apiChecksEnabled, calculatedChecks, caseRunFacts, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
+import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, flowRecordChecks, leadConvertChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -773,13 +773,41 @@ export async function runPipeline(
       const checks: { case: string; checks: ApiCheck[] }[] = [];
       for (const c of runCases(runDir)) {
         const facts = caseRunFacts(c.results);
-        const typed = [...typedValues(c.ir, sfOrg), ...calculatedChecks(c.ir, sfOrg), ...flowSetChecks(c.ir, sfOrg)];
-        if (!facts || !typed.length) continue;
-        checks.push({ case: path.basename(c.caseDir), checks: await apiChecks(fd.apiGet, typed, facts.created, facts.ctx) });
+        const typed = [...typedValues(c.ir, sfOrg), ...calculatedChecks(c.ir, sfOrg, facts?.shown), ...flowSetChecks(c.ir, sfOrg)];
+        if (!facts) continue;
+        const all = [
+          ...(typed.length ? await apiChecks(fd.apiGet, typed, facts.created, facts.ctx) : []),
+          // What a flow made on the record (and must not have made on this branch).
+          ...await flowRecordChecks(fd.apiGet, c.ir, sfOrg, facts.created, facts.ctx.now),
+          // Phase C: where the approval the case drove stands in the org.
+          ...await approvalChecks(fd.apiGet, c.ir, sfOrg.approvals, facts.created),
+          ...await leadConvertChecks(fd.apiGet, c.ir, facts.created),
+        ];
+        if (all.length) checks.push({ case: path.basename(c.caseDir), checks: all });
       }
       save("11-api-checks.json", checks);
       const all = checks.flatMap((c) => c.checks);
       console.log(`[api-checks] ${runId}: ${all.filter((x) => x.ok).length}/${all.length} field values match the org`);
+      // A case the org contradicts did not pass, whatever the screen showed (run
+      // 2026-11-12T09-57-37-571Z-94237239 "passed" with its Lead not converted). Its status and the totals
+      // follow; the first mismatch is its error.
+      const s = suite as { cases?: any[]; [k: string]: any } | undefined;
+      let changed = false;
+      for (const c of checks) {
+        const bad = c.checks.find((x) => !x.ok);
+        const row = s?.cases?.find((x: any) => x?.caseId === c.case);
+        if (!bad || !row || row.status !== "passed") continue;
+        row.status = "failed";
+        row.error = `API check: ${bad.object} ${bad.field} expected "${bad.expected}", the org has "${bad.actual ?? bad.note ?? "nothing"}"`;
+        row.failedStepTitle = "API check";
+        changed = true;
+      }
+      if (s && changed) {
+        s.passed = (s.cases ?? []).filter((x: any) => x?.status === "passed").length;
+        s.failed = (s.cases ?? []).filter((x: any) => x?.status === "failed").length;
+        writeFileSync(summaryPath, JSON.stringify(s, null, 2));
+        if (s.passed === 0) finalResult = { ...finalResult, passed: false };
+      }
     }
     if (cleanupEnabled() && fd?.apiGet && fd.apiDelete && since) {
       const cleanup = await cleanupRecords({ apiGet: fd.apiGet, apiDelete: fd.apiDelete },
@@ -789,6 +817,14 @@ export async function runPipeline(
       const seeded = await cleanupSeeded({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, published.flatMap((p) => p.creates ?? []), since);
       cleanup.deleted.push(...seeded.deleted);
       cleanup.failed.push(...seeded.failed);
+      // What a screen flow made, by the value the case typed with the run's unique code.
+      const flowMade = runCases(runDir).flatMap((c) => {
+        const facts = caseRunFacts(c.results);
+        return facts ? screenFlowMade(c.ir.steps, appModel.salesforceOrg?.flows, facts.ctx) : [];
+      });
+      const byFlow = await cleanupByTypedName({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, flowMade, since);
+      cleanup.deleted.push(...byFlow.deleted);
+      cleanup.failed.push(...byFlow.failed);
       save("10-cleanup.json", cleanup);
       console.log(`[cleanup] ${runId}: deleted ${cleanup.deleted.length}, left ${cleanup.skipped.length}, failed ${cleanup.failed.length}`
         + (cleanup.reason ? ` (${cleanup.reason})` : ""));

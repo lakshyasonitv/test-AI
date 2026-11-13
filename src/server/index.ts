@@ -89,6 +89,7 @@ import { estimateRegrounding, formatIrStep, parseIrSteps } from "../stages/stepT
 import { enterWithLlmConfig, resolvedProvider } from "../llm/llmContext.js";
 import { LLM_PROVIDERS } from "../llm/client.js";
 import { orgWarning } from "../stages/salesforceOrgLogin.js";
+import { approvalsEnabled } from "../stages/salesforceOrgModel.js";
 import { extendedLoggingEnabled } from "../logging.js";
 import { insight } from "../insights.js";
 import { withRunId } from "../runContext.js";
@@ -111,7 +112,7 @@ import { isAllowedEntryUrl, orgDiscoveryCacheEnabled, savedDiscoveriesFor } from
 import { isTargetApp, salesforceEnabled, TARGET_APPS, withTargetApp, type TargetApp } from "../runTarget.js";
 import {
   salesforceOAuthEnabled, startAuthorization, completeAuthorization, connectionMatchesUrl,
-  frontdoorSessionFor, appOrigin, replaySessionFor, restoreConnection,
+  frontdoorSessionFor, appOrigin, replaySessionFor, restoreConnection, listConnections, forgetConnection, identifyConnection,
 } from "./salesforceOAuth.js";
 import { withFrontdoor } from "../stages/salesforceFrontdoor.js";
 import {
@@ -311,6 +312,17 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
       return res.status(400).json({ error: "The run's URL is not an address of the connected org. Connect the org this URL belongs to." });
     }
     sfFrontdoor = frontdoorSessionFor(conn);
+    // Phase C (SALESFORCE_APPROVALS_ENABLED): a second connection, the approver, a user of the SAME org.
+    // Checked like the first; anything else is refused rather than ignored, since the test would act as
+    // the wrong person.
+    const rawApprover = options && typeof options === "object" ? options.sfApproverConnectionId : undefined;
+    if (approvalsEnabled() && typeof rawApprover === "string" && rawApprover) {
+      const second = await restoreConnection(rawApprover, req.organisationId ?? null);
+      if (!second || new URL(second.instanceUrl).hostname !== new URL(conn.instanceUrl).hostname) {
+        return res.status(400).json({ error: "The approver's org connection is unknown, expired, or for another org. Connect the approver to the same org." });
+      }
+      sfFrontdoor = { ...sfFrontdoor, second: frontdoorSessionFor(second) };
+    }
   }
 
   // Only the known keys are forwarded — the body is untrusted input, and
@@ -899,6 +911,8 @@ app.get("/api/health", (_req, res) => {
     ...(salesforceEnabled() && salesforceOAuthEnabled() ? { salesforceOAuth: true } : {}),
     // Present ONLY when the org discovery cache is on too: the run screen offers "Fresh discovery" then.
     ...(salesforceEnabled() && salesforceOAuthEnabled() && orgDiscoveryCacheEnabled() ? { sfDiscoveryCache: true } : {}),
+    // Phase C: the run screen offers a "Second user (approver)" connection only when approvals are on.
+    ...(salesforceEnabled() && salesforceOAuthEnabled() && approvalsEnabled() ? { sfApprovals: true } : {}),
     // ADDITIVE, present ONLY when PROJECT_DISCOVERY_SHARING is on (D-72): the home view then offers
     // "Explore the site again". Off: the body is unchanged.
     ...(projectDiscoveryEnabled() ? { projectDiscovery: true } : {}),
@@ -932,6 +946,28 @@ app.post("/api/salesforce/oauth/start", requireRole("tester"), (req, res) => {
   res.json(started);
 });
 
+/** The caller's organisation's saved org connections, with who each signs in as (no tokens). */
+app.get("/api/salesforce/connections", requireRole("tester"), async (req, res) => {
+  if (!salesforceEnabled() || !salesforceOAuthEnabled()) return salesforceOAuthOff(res);
+  res.json({ connections: await listConnections(req.organisationId ?? null) });
+});
+
+/** Who a saved connection signs in as, looked up once (the list's older connections have no name yet). */
+app.post("/api/salesforce/connections/:id/identify", requireRole("tester"), async (req, res) => {
+  if (!salesforceEnabled() || !salesforceOAuthEnabled()) return salesforceOAuthOff(res);
+  const who = await identifyConnection(req.params.id, req.organisationId ?? null);
+  if (!who) return res.status(404).json({ code: "sf-connection-expired", error: "That Salesforce org connection is unknown or has expired." });
+  res.json(who);
+});
+
+/** Forget one of the organisation's connections: revoked at Salesforce, removed here. */
+app.delete("/api/salesforce/connections/:id", requireRole("tester"), async (req, res) => {
+  if (!salesforceEnabled() || !salesforceOAuthEnabled()) return salesforceOAuthOff(res);
+  const done = await forgetConnection(req.params.id, req.organisationId ?? null);
+  if (!done) return res.status(404).json({ error: "No such connection for your organisation." });
+  res.json({ ok: true });
+});
+
 /** The saved discoveries of a connected org (SALESFORCE_DISCOVERY_CACHE_ENABLED), for the run screen. */
 app.get("/api/salesforce/discovery-cache", requireRole("tester"), async (req, res) => {
   if (!salesforceEnabled() || !salesforceOAuthEnabled()) return salesforceOAuthOff(res);
@@ -961,7 +997,7 @@ app.get("/api/salesforce/callback", async (req, res) => {
       throw new Error(`Salesforce did not authorise the connection: ${String(q.error_description ?? q.error).slice(0, 200)}`);
     }
     const done = await completeAuthorization(String(q.code ?? ""), String(q.state ?? ""));
-    payload = { type: "sf-oauth", connectionId: done.connectionId, host: done.host, kind: done.kind };
+    payload = { type: "sf-oauth", connectionId: done.connectionId, host: done.host, kind: done.kind, ...(done.username ? { username: done.username, name: done.name } : {}) };
     console.log(`[salesforce] org connected: ${done.host} (${done.kind})`);
   } catch (err) {
     payload = { type: "sf-oauth", error: (err as Error)?.message ?? String(err) };
@@ -2535,6 +2571,8 @@ export const BOOLEAN_ENV_FLAGS = [
   "SALESFORCE_API_CHECKS_ENABLED",
   // Phase D (src/stages/salesforceSeed.ts): publish a requested platform-event flow's event before the cases. Off: nothing published.
   "SALESFORCE_SEED_ENABLED",
+  // Phase C (src/stages/salesforceOrgModel.ts approvals, salesforceOracles.ts approvalChecks). Off: no approval reads.
+  "SALESFORCE_APPROVALS_ENABLED",
   // src/stages/hybridDiscovery.ts: reuse an org-connection discovery while the org's setup is unchanged.
   "SALESFORCE_DISCOVERY_CACHE_ENABLED",
   // src/stages/salesforceOrgDeep.ts (Phase 1): record-type differences, Dynamic Forms visibility rules
