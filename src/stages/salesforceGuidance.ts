@@ -815,7 +815,7 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
     // On Details, a visible check of text that is no field of the record (a related record's name, run
     // 2026-11-10T05-56-59-108Z-b85b16e9: the Case "TB Onboarding" on the Account) is on the Related tab.
     // A "contains" check on that text reads the same (run 2026-11-10T15-46-12-893Z-4e645505: "TB Onboarding" text_contains).
-    // customLinkSteps' own "Custom Links" section check is on Details by design (run
+    // customLinkSteps' own check of the link's text is on Details by design (run
     // 2026-11-13T07-54-34-011Z-9a55e65c was sent to Related, where there is none).
     if (onDetails && !s.id.startsWith("sf-cl-") && (s.assertion === "visible" || valueCheck) && text && !s.target?.role && !s.target?.field
       && !fieldLabels.has(text) && !fields.some((f) => f.picklist?.includes(text)) && !isShownValue(text)
@@ -1352,7 +1352,9 @@ export function customLinkSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
       { id: `sf-cl-open-${notes.length}`, action: "navigate", target: { url: recordRef(link.object, saved.n) } } as Step,
       { id: `sf-cl-details-${notes.length}`, action: "click", target: { role: "tab", name: "Details" } } as Step,
       { id: `sf-cl-wait-${notes.length}`, action: "wait", value: "1500" } as Step,
-      { id: `sf-cl-section-${notes.length}`, action: "assert", target: { text: "Custom Links" }, assertion: "visible" } as Step,
+      // The link's own text, which scrolls it into view: Lightning draws the section without its "Custom
+      // Links" heading (run 2026-11-13T08-00-06-682Z-51e74c8b: "Delivery Status" shown, no heading).
+      { id: `sf-cl-shown-${notes.length}`, action: "assert", target: { text: link.label }, assertion: "visible" } as Step,
       { id: `sf-cl-check-${notes.length}`, action: "assert", target: { role: "link", name: link.label }, assertion: "opens_url_contains", value: expected } as Step,
     );
     notes.push(`the ${o?.label ?? link.object}'s custom link "${link.label}" -> checks it opens "${expected}"${before > ir.steps.length - 5 ? ` (replacing ${before - (ir.steps.length - 5)} step(s) of the case's)` : ""}`);

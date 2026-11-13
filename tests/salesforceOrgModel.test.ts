@@ -489,6 +489,6 @@ describe("orgModelForCases: custom links", () => {
     const text = orgModelForCases({ objects: [{ api: "Zopp", label: "Zopp", fields: [] }], validationRulesRead: true,
       customLinks: [{ object: "Zopp", label: "Zq Delivery", url: "http://zq.example/t?n={!Zopp_Zq_N}", kind: "link", newWindow: true }] } as any);
     expect(text).toContain('Zopp link "Zq Delivery" opens http://zq.example/t?n={!Zopp_Zq_N} in a new tab');
-    expect(text).toContain('"Custom Links" section');
+    expect(text).toContain("a link sits at the bottom of the Details tab");
   });
 });

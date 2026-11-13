@@ -716,7 +716,7 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
       + ` Then check what the approval changes on the record (its final field update) on the Details tab.`;
   }
   if (org.customLinks?.length) {
-    body += `\ncustom links and buttons (on a record page; a link sits in the Details tab's "Custom Links" section, a button in the header or under "Show more actions"): `
+    body += `\ncustom links and buttons (on a record page; a link sits at the bottom of the Details tab, a button in the header or under "Show more actions"): `
       + org.customLinks.map((l) => `${l.object} ${l.kind} "${l.label}" opens ${l.url}${l.newWindow ? " in a new tab" : ""}`).join("; ")
       + `. The {!…} parts are filled from the record's own fields. A case about one: create the record with those fields set, save, open the record, and check where the ${org.customLinks.some((l) => l.kind === "link") ? "link" : "button"} goes.`;
   }

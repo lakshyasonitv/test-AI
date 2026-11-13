@@ -1083,12 +1083,14 @@ describe("customLinkSteps", () => {
     expect(check).toMatchObject({ assertion: "opens_url_contains", target: { role: "link", name: "Zq Delivery" }, value: "http://zq.example/track?n=Zq%2042&lang=en" });
     expect(i.steps.find((s) => s.id === "sf-cl-open-0")?.target?.url).toBe("${record:Zopp:1}");
   });
-  it("stays on the Details tab: the record-view pass leaves the Custom Links check there", async () => {
+  it("stays on the Details tab: the record-view pass leaves the link check there", async () => {
     const { customLinkSteps, fieldChecksOnRecordView } = await import("../src/stages/salesforceGuidance.js");
     const i = ir([nav("/lightning/o/Zopp/new"), fill("Zq Tracking Number", "Zq 42"), click("Save")]);
     customLinkSteps(i, org as any, "check the Zq Delivery link of a new Zopp");
     fieldChecksOnRecordView(i, { pages: [], salesforceOrg: org as any }, "check the Zq Delivery link of a new Zopp");
     expect(i.steps.some((s) => s.target?.name === "Related")).toBe(false);
+    // The link's own text, not a "Custom Links" heading Lightning does not draw.
+    expect(i.steps.find((s) => s.id === "sf-cl-shown-0")?.target).toEqual({ text: "Zq Delivery" });
   });
   it("checks only the part before a merge field the case did not type, and nothing when the link is not asked for", async () => {
     const { customLinkSteps } = await import("../src/stages/salesforceGuidance.js");
