@@ -382,6 +382,12 @@ export const SalesforceOrgField = z.object({
   controlledBy: z.string().optional(),
   /** Per dependent value, the controlling values (labels) under which it is offered. */
   validFor: z.record(z.array(z.string())).optional(),
+  /** Test data limits, from object-info: a text field's maximum characters, a number's total digits and
+   *  decimals, and whether the org refuses a value another record already has (unique / external ID). */
+  length: z.number().optional(),
+  precision: z.number().optional(),
+  scale: z.number().optional(),
+  unique: z.boolean().optional(),
 });
 export const SalesforceOrgObject = z.object({
   api: z.string(),

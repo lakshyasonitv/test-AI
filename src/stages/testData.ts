@@ -53,16 +53,73 @@ const pick = <T,>(arr: T[], seed: string) => arr[hash(seed) % arr.length];
 /** A realistic value for a field, by its label first and its Salesforce type second. Undefined when
  *  nothing can be typed (a lookup, a checkbox, a date-time's split inputs). */
 export function valueFor(f: OrgField, locale = "en-US"): string | undefined {
+  const v = rawValueFor(f, locale);
+  return v === undefined ? undefined : fitToField(v, f, locale);
+}
+
+/** How long a run token is once typed ({{uid}} is a 6-character code, {{phone}} 10 digits). */
+const typedLength = (v: string) => v.replace(/\{\{uid\}\}/g, "xxxxxx").replace(/\{\{phone\}\}/g, "0000000000").replace(/\{\{date:[^}]*\}\}/g, "00/00/0000").length;
+
+/**
+ * A value made to fit its field, as the org would accept it: no longer than the field's maximum (Opportunity's
+ * Tracking Number takes 12 characters; "Test Tracking Number <code>" would not save), a number within its
+ * digits and decimals, written with the user's decimal mark (Lightning reads "25000,50" in German), and a
+ * run code on a unique field so a second run does not collide. The run code is kept whole when shortening:
+ * it is what makes the value unique.
+ */
+export function fitToField(value: string, f: Pick<OrgField, "type" | "length" | "precision" | "scale" | "unique">, locale = "en-US"): string {
+  let v = value;
+  if (/^(Currency|Double|Percent|Int)$/.test(f.type) && /^-?\d+([.,]\d+)?$/.test(v.trim())) {
+    let [whole, dec = ""] = v.trim().replace(",", ".").split(".");
+    const scale = f.type === "Int" ? 0 : f.scale ?? (dec ? dec.length : 0);
+    const digits = f.precision ? Math.max(1, f.precision - scale) : undefined;
+    const neg = whole.startsWith("-");
+    whole = whole.replace("-", "");
+    if (digits && whole.length > digits) whole = "9".repeat(digits);
+    if (f.type === "Percent" && Number(whole) > 100) whole = "100";
+    dec = dec.slice(0, scale);
+    v = (neg ? "-" : "") + whole + (dec ? decimalMark(locale) + dec : "");
+  }
+  if (f.unique && /^(String|TextArea)$/.test(f.type) && !v.includes(UNIQUE_TOKEN)) v = `${v} ${UNIQUE_TOKEN}`;
+  if (f.length && typedLength(v) > f.length) {
+    const hasCode = v.includes(UNIQUE_TOKEN);
+    const room = f.length - (hasCode ? 6 : 0);
+    const text = v.replace(UNIQUE_TOKEN, "").replace(/\s+/g, " ").trim();
+    // Only the run code, when nothing else fits beside it (a 6- or 8-character field).
+    v = room < 3 ? (hasCode ? UNIQUE_TOKEN : text.slice(0, f.length))
+      : hasCode ? `${text.slice(0, room - 1).trim()} ${UNIQUE_TOKEN}`.replace(/^ /, "") : text.slice(0, f.length).trim();
+  }
+  return v;
+}
+
+/** The decimal mark the user's locale writes ("." in en-US, "," in de-DE). */
+function decimalMark(locale: string): string {
+  try { return new Intl.NumberFormat(locale.replace("_", "-")).format(1.5).replace(/\d/g, "") || "."; } catch { return "."; }
+}
+
+function rawValueFor(f: OrgField, locale: string): string | undefined {
   const l = f.label.toLowerCase();
-  if (f.lookup || f.type === "Reference" || f.type === "Boolean" || f.type === "DateTime") return undefined;
+  // A multi-select picklist is a dual list box, a geolocation two number boxes, a date-time two inputs:
+  // none takes one typed value.
+  if (f.lookup || f.type === "Reference" || f.type === "Boolean" || f.type === "DateTime" || f.type === "MultiPicklist" || f.type === "Location") return undefined;
   if (f.type === "Picklist") return f.picklist?.[0];
   if (f.type === "Email") return `${pick(FIRST, l).toLowerCase()}.${pick(LAST, l + "x").toLowerCase()}+${UNIQUE_TOKEN}@example.com`;
   if (f.type === "Phone") return PHONE_TOKEN;
   if (f.type === "Url") return `https://${pick(FIRM, l).toLowerCase()}.example.com`;
   if (f.type === "Date") return dateToken(30, locale);
-  if (f.type === "Currency" || f.type === "Double" || f.type === "Int") return /revenue|amount|budget|cost|value|price/.test(l) ? "25000" : "12";
+  if (f.type === "Time") {
+    // A fixed working-hours time, written the way the user's locale writes one ("10:30 AM", "10:30").
+    try { return new Intl.DateTimeFormat(locale.replace("_", "-"), { hour: "numeric", minute: "2-digit" }).format(new Date(2000, 0, 1, 10, 30)); } catch { return "10:30 AM"; }
+  }
+  if (f.type === "Currency" || f.type === "Double" || f.type === "Int") {
+    const big = /revenue|amount|budget|cost|value|price/.test(l);
+    // A currency with decimals gets some (".50"): a value with none never tests the decimals at all.
+    return f.type === "Currency" && (f.scale ?? 0) >= 2 ? (big ? "25000.50" : "12.50") : big ? "25000" : "12";
+  }
   if (f.type === "Percent") return "10";
   if (f.type === "TextArea") return `Created by an automated test ${UNIQUE_TOKEN}.`;
+  // A short code-like field (a tracking or order number, a SKU, 12 characters or fewer): digits and the run code.
+  if (f.length && f.length <= 20 && /number|code|id\b|sku|no\b|#/.test(l)) return f.length >= 8 ? `TB${UNIQUE_TOKEN}` : UNIQUE_TOKEN;
   // Strings, by what the label says the field is.
   if (/first ?name/.test(l)) return pick(FIRST, l);
   if (/last ?name|surname/.test(l)) return `${pick(LAST, l)} ${UNIQUE_TOKEN}`;
@@ -301,7 +358,7 @@ export function applyTestData(ir: IR, testCase: Pick<TestCase, "category">, appM
     const m = s.action === "navigate" ? /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "") : null;
     if (!m) return;
     if (sections.length) sections[sections.length - 1].to = i;
-    sections.push({ o: org.objects.find((x) => x.api === m[1]), from: i, to: ir.steps.length });
+    sections.push({ o: forRecordType(org.objects.find((x) => x.api === m[1]), s.target?.url ?? ""), from: i, to: ir.steps.length });
   });
   // A create form ends at its Save. Steps after it are on the saved record, or in another object's form
   // opened from there (the Account page's "New Opportunity" action): judged as this form's fields,
@@ -322,6 +379,19 @@ export function applyTestData(ir: IR, testCase: Pick<TestCase, "category">, appM
     }
   }
   return notes;
+}
+
+/**
+ * The object as a record type's form shows it: a form opened with ?recordTypeId= offers that record
+ * type's picklist values (deep discovery reads them per record type), not the default one's. A value
+ * snapped to the default's options could be absent from this form.
+ */
+function forRecordType(o: OrgObject | undefined, url: string): OrgObject | undefined {
+  const id = /[?&]recordTypeId=([A-Za-z0-9]{15,18})/.exec(url)?.[1];
+  const rt = id ? o?.recordTypes?.find((r) => r.id === id || r.id.slice(0, 15) === id.slice(0, 15)) : undefined;
+  if (!o || !rt?.picklists) return o;
+  const own = rt.picklists;
+  return { ...o, fields: o.fields.map((f) => own[f.label]?.length ? { ...f, picklist: own[f.label] } : f) };
 }
 
 /**
@@ -565,6 +635,12 @@ function applyToSection(
     } else if (f.required && f.type === "String" && !hasRunToken(s.value)) {
       notes.push(`${s.id}: "${f.label}" made unique per run`);
       s.value = `${s.value} ${UNIQUE_TOKEN}`;
+    }
+    // Whatever the value now is, it must fit the field (length, digits, decimals, decimal mark, unique). A
+    // value the request gives is left as written: an over-long one is then the test.
+    if (s.value && !mentions(request, s.value.replace(/\s*\{\{uid\}\}/g, ""))) {
+      const fitted = fitToField(s.value, f, locale);
+      if (fitted !== s.value) { notes.push(`${s.id}: "${f.label}" fitted to the field: "${s.value}" -> "${fitted}"`); s.value = fitted; }
     }
   }
 

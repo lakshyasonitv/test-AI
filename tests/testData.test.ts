@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { applyTestData, asksForEveryField, testDataEnabled, valueFor } from "../src/stages/testData.js";
+import { applyTestData, asksForEveryField, fitToField, testDataEnabled, valueFor } from "../src/stages/testData.js";
 import { UNIQUE_TOKEN } from "../src/text.js";
 import type { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -864,5 +864,51 @@ describe("fields a flow reads or sets", () => {
     const r = run();
     expect(r.steps.find((s) => s.id === "s3")).toBeUndefined();
     expect(value(r, "s4")).toBe("Zq Start");
+  });
+});
+
+describe("test data fitted to each field (field limits from object-info)", () => {
+  const f = (o: any) => ({ label: "Zq Field", api: "Zq__c", type: "String", ...o } as any);
+  it("never longer than the field: the run code stays whole when shortening", () => {
+    // Opportunity's Tracking Number takes 12 characters: "Test Tracking Number <code>" would not save.
+    const v = valueFor(f({ label: "Zq Tracking Number", length: 12 }))!;
+    expect(v.replace("{{uid}}", "xxxxxx").length).toBeLessThanOrEqual(12);
+    expect(v).toContain("{{uid}}");
+    expect(fitToField("Zq a very long company name {{uid}}", f({ length: 15 })).replace("{{uid}}", "xxxxxx").length).toBeLessThanOrEqual(15);
+    expect(fitToField("Zq short", f({ length: 40 }))).toBe("Zq short");
+  });
+  it("numbers within their digits and decimals, with the locale's decimal mark", () => {
+    expect(fitToField("25000.555", f({ type: "Currency", precision: 18, scale: 2 }))).toBe("25000.55");
+    expect(fitToField("25000.50", f({ type: "Currency", precision: 18, scale: 2 }), "de-DE")).toBe("25000,50");
+    expect(fitToField("123456", f({ type: "Double", precision: 5, scale: 2 }))).toBe("999");
+    expect(fitToField("12.7", f({ type: "Int" }))).toBe("12");
+    expect(fitToField("150", f({ type: "Percent", precision: 3, scale: 0 }))).toBe("100");
+    expect(valueFor(f({ label: "Zq Amount", type: "Currency", precision: 18, scale: 2 }))).toBe("25000.50");
+  });
+  it("a unique field gets the run code; types that take no single typed value get none", () => {
+    expect(valueFor(f({ label: "Zq Ext Ref", unique: true, length: 255 }))).toContain("{{uid}}");
+    expect(valueFor(f({ type: "MultiPicklist", picklist: ["Zq A", "Zq B"] }))).toBeUndefined();
+    expect(valueFor(f({ type: "Location" }))).toBeUndefined();
+    expect(valueFor(f({ type: "Time" }), "en-US")).toMatch(/^10:30\s?AM$/);
+    expect(valueFor(f({ type: "Time" }), "de-DE")).toBe("10:30");
+  });
+  it("a value the case typed is fitted; one the request gives is left as the test", () => {
+    const m = structuredClone(appModel) as AppModel;
+    m.salesforceOrg!.objects[0].fields.find((x) => x.api === "Zq_Code__c")!.length = 6;
+    m.salesforceOrg!.objects[0].validationRules = [];
+    const typed = ir([{ id: "c", action: "fill", target: { role: "textbox", name: "Zq Code" }, value: "Zq LONG CODE VALUE" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }]);
+    applyTestData(typed, valid, m, "Create a Zq Thing");
+    expect(value(typed, "c")!.replace("{{uid}}", "xxxxxx").length).toBeLessThanOrEqual(6);
+    const asked = ir([{ id: "c", action: "fill", target: { role: "textbox", name: "Zq Code" }, value: "Zq LONG CODE VALUE" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }]);
+    applyTestData(asked, valid, m, "Create a Zq Thing with Zq Code Zq LONG CODE VALUE");
+    expect(value(asked, "c")).toContain("Zq LONG CODE VALUE");   // not shortened (the run code a required text gets stays)
+  });
+  it("a record type's own picklist values on its form", () => {
+    const m = structuredClone(appModel) as AppModel;
+    m.salesforceOrg!.objects[0].recordTypes = [{ name: "Zq Partner", id: "012zq0000000001AAA", picklists: { "Zq Stage": ["Zq Partner Open"] } }] as any;
+    const r = { meta: {}, steps: [{ id: "s1", action: "navigate", target: { url: "/lightning/o/Zq_Thing__c/new?recordTypeId=012zq0000000001AAA" } },
+      { id: "p", action: "select", target: { role: "combobox", name: "Zq Stage" }, value: "Open" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }] } as unknown as IR;
+    applyTestData(r, valid, m, "Create a Zq Partner Zq Thing");
+    expect(value(r, "p")).toBe("Zq Partner Open");
   });
 });

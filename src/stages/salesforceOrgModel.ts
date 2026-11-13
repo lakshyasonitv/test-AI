@@ -92,6 +92,10 @@ async function readObject(apiGet: ApiGet, api: string): Promise<SalesforceOrgMod
         ...(values?.length ? { picklist: values.slice(0, MAX_PICKLIST_VALUES) } : {}),
         ...(lookup ? { lookup } : {}),
         ...dependency,
+        // What a typed value must fit (testData.fitToField): Opportunity's Tracking Number takes 12 characters.
+        ...(f.length > 0 && /^(String|TextArea|Email|Phone|Url|EncryptedString)$/.test(f.dataType) ? { length: f.length } : {}),
+        ...(f.precision > 0 && /^(Currency|Double|Percent|Int)$/.test(f.dataType) ? { precision: f.precision, scale: f.scale ?? 0 } : {}),
+        ...(f.unique || f.externalId ? { unique: true } : {}),
       };
     })
     // Required first (in the org's own order), then picklists and lookups (what a form step needs to
