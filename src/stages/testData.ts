@@ -140,11 +140,82 @@ function decimalMark(locale: string): string {
   try { return new Intl.NumberFormat(locale.replace("_", "-")).format(1.5).replace(/\d/g, "") || "."; } catch { return "."; }
 }
 
+/** A time of day the way the user's locale writes one ("10:30 AM", "10:30"). */
+function localTime(locale: string, h = 10, m = 30): string {
+  try { return new Intl.DateTimeFormat(locale.replace("_", "-"), { hour: "numeric", minute: "2-digit" }).format(new Date(2000, 0, 1, h, m)); }
+  catch { return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`; }
+}
+
+/** Days from the run a phrase names: today/tomorrow/yesterday, "in 3 days", "3 days from now", "+3 days", "next week". */
+function daysAhead(text: string): number | undefined {
+  const t = text.trim().replace(/^\{\{\s*|\s*\}\}$/g, "").toLowerCase();
+  const rel = relativeDay(t);
+  if (rel !== undefined) return rel;
+  let r = /^(?:in\s+|\+\s*)?(\d{1,3})\s+days?(?:\s+from\s+(?:now|today))?$/.exec(t);
+  if (r) return +r[1];
+  if ((r = /^(?:in\s+)?(?:a|one|1)\s+week(?:\s+from\s+(?:now|today))?$|^next\s+week$/.exec(t))) return 7;
+  return undefined;
+}
+
+/**
+ * A date-time value: "<date> <time>", each in the user's format, the date relative to the run unless the request
+ * names that exact day. `asked` is what the request says for this field ("tomorrow", "in 3 days"), if anything.
+ * Due/end fields default a little later than start fields, so a pair is never back to front.
+ */
+export function dateTimeValue(raw: string, label: string, locale: string, request = "", asked?: string): string {
+  const v = raw.trim();
+  const tm = /(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap])?\.?\s*m?\.?/i.exec(v.replace(/^\d{4}-\d{2}-\d{2}T/, "x "));
+  let h = tm ? +tm[1] : 10;
+  if (tm?.[3]) h = (h % 12) + (/p/i.test(tm[3]) ? 12 : 0);
+  const time = localTime(locale, h, tm ? +tm[2] : 30);
+  const dayText = v.replace(/T?\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s*[ap]\.?m\.?)?(?:Z|[+-]\d{2}:?\d{2})?$/i, "").trim();
+  const token = /^\{\{date:[+-]?\d+:[^}]+\}\}$/.test(dayText) ? dayText : undefined;
+  const ahead = (asked !== undefined ? daysAhead(asked) : undefined) ?? daysAhead(dayText);
+  const day = parseDay(dayText);
+  const date = ahead !== undefined ? dateToken(ahead, locale)
+    : token ? token
+    : day && requestDays(request).includes(day.getTime()) ? localeDate(dayText, locale)!
+    : dateToken(/\b(due|end|finish|close|expir)/i.test(label) ? 3 : 1, locale);
+  return `${date} ${time}`;
+}
+
+/**
+ * A date-time field is two boxes, "Date" and "Time", and a form has several (a Service Appointment's
+ * Earliest Start Permitted and Due Date): a step naming the field, or a box named just "Date", could not be
+ * found (runs 2026-11-13T18-30-28-619Z-653368f1, 18-35-51-793Z-df1af5e4). Each fill of a DateTime field on a
+ * create form becomes one "sf-dt-" step naming the field, with "<date> <time>" (dateTimeValue); the spec and the
+ * replay fill its boxes (generator.ts sfDateTime). Returns notes.
+ */
+export function dateTimeFills(ir: IR, org: AppModel["salesforceOrg"], request = ""): string[] {
+  const notes: string[] = [];
+  if (!org) return notes;
+  const locale = (org.userLocale ?? "en-US").replace("_", "-");
+  let o: OrgObject | undefined;
+  for (const s of ir.steps) {
+    const m = s.action === "navigate" ? /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "") : null;
+    if (m) { o = org.objects.find((x) => x.api === m[1]); continue; }
+    if (!o || (s.action !== "fill" && s.action !== "select") || s.id.startsWith("sf-dt-")) continue;
+    const name = (s.target?.name ?? s.target?.label ?? "").split("*").join("").trim().toLowerCase();
+    const f = o.fields.find((x) => x.type === "DateTime" && x.label.toLowerCase() === name);
+    if (!f) continue;
+    const esc = f.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const asked = new RegExp(`\\b${esc}\\b\\s*(?:of|on|at|as|to|=|:)?\\s*((?:in\\s+)?\\d{1,3}\\s+days?(?:\\s+from\\s+(?:now|today))?|today|tomorrow|yesterday|next\\s+week)`, "i").exec(request)?.[1];
+    const was = s.value ?? "";
+    s.id = `sf-dt-${s.id}`;
+    s.action = "fill";
+    s.target = { role: "group", name: f.label };
+    s.value = dateTimeValue(was, f.label, locale, request, asked);
+    notes.push(`${s.id}: date-time "${f.label}" "${was}" -> "${s.value}", typed into its Date and Time boxes`);
+  }
+  return notes;
+}
+
 function rawValueFor(f: OrgField, locale: string): string | undefined {
   const l = f.label.toLowerCase();
-  // A multi-select picklist is a dual list box, a geolocation two number boxes, a date-time two inputs:
-  // none takes one typed value.
-  if (f.lookup || f.type === "Reference" || f.type === "Boolean" || f.type === "DateTime" || f.type === "MultiPicklist" || f.type === "Location") return undefined;
+  // A required date-time: the field's Date and Time boxes (dateTimeFills marks the step).
+  if (f.type === "DateTime") return dateTimeValue("", f.label, locale);
+  // A multi-select picklist is a dual list box, a geolocation two number boxes: neither takes one typed value.
+  if (f.lookup || f.type === "Reference" || f.type === "Boolean" || f.type === "MultiPicklist" || f.type === "Location") return undefined;
   if (f.type === "Picklist") return f.picklist?.[0];
   if (f.type === "Email") return `${pick(FIRST, l).toLowerCase()}.${pick(LAST, l + "x").toLowerCase()}+${UNIQUE_TOKEN}@example.com`;
   if (f.type === "Phone") return PHONE_TOKEN;

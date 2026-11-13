@@ -1308,3 +1308,15 @@ describe("a lookup picks the record this run made (run 2026-11-13T18-17-16-000Z-
     expect(i.steps.map((s) => s.value)).toEqual(["Zq Pump {{uid}}", "Zq Pump {{uid}}", "Zq Other"]);
   });
 });
+
+describe("a date-time step in the spec (run 2026-11-13T18-30-28-619Z-653368f1)", () => {
+  it("fills the field's own Date and Time boxes through sfDateTime, with its helper", async () => {
+    const { generateSpec } = await import("../src/stages/generator.js");
+    const i = ir([{ id: "sf-dt-a", action: "fill", target: { role: "group", name: "Zq Earliest" }, value: "{{date:+1:en-US}} 10:30 AM" } as Step]);
+    i.meta = { ...i.meta, feature: "Zq" } as IR["meta"];
+    const spec = generateSpec(i);
+    expect(spec).toContain('await sfDateTime(page, "Zq Earliest", resolveRunTokens("{{date:+1:en-US}} 10:30 AM", RUN_CTX));');
+    expect(spec).toContain("async function sfDateTime(page, label, value)");
+    expect(spec).toContain(String.raw`replace(/\s+/g, " ")`);
+  });
+});

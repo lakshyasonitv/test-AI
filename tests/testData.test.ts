@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { applyTestData, asksForEveryField, fitToField, localeDate, testDataEnabled, valueFor } from "../src/stages/testData.js";
+import { applyTestData, asksForEveryField, dateTimeFills, dateTimeValue, fitToField, localeDate, testDataEnabled, valueFor } from "../src/stages/testData.js";
 import { UNIQUE_TOKEN } from "../src/text.js";
 import type { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -1043,5 +1043,33 @@ describe("bug hunt round 3: a value holding its own field label (run 2026-11-13T
     const k = ir([{ id: "c", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq Name Zqsato" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }]);
     applyTestData(k, valid, m, "Create a Zq Thing named Zq Name Zqsato");
     expect(value(k, "c")).toContain("Zq Name Zqsato");
+  });
+});
+
+describe("date-time fields (runs 2026-11-13T18-30-28-619Z-653368f1, 18-35-51-793Z-df1af5e4)", () => {
+  it("writes '<day> <time>' in the user's format, the day relative to the run", () => {
+    expect(dateTimeValue("tomorrow 9:00 AM", "Zq Start", "en-US")).toBe("{{date:+1:en-US}} 9:00 AM");
+    expect(dateTimeValue("in 3 days 2:15 PM", "Zq Start", "en-US")).toBe("{{date:+3:en-US}} 2:15 PM");
+    expect(dateTimeValue("2026-11-16T14:00:00Z", "Zq Start", "en-US", "", "tomorrow")).toBe("{{date:+1:en-US}} 2:00 PM");
+    expect(dateTimeValue("15 March 2030 10:00", "Zq Start", "en-US", "start on 15 March 2030")).toBe("3/15/2030 10:00 AM");
+    expect(dateTimeValue("2026-11-16", "Zq Due Date", "en-US")).toBe("{{date:+3:en-US}} 10:30 AM");
+    expect(dateTimeValue("", "Zq Start", "de-DE")).toBe("{{date:+1:de-DE}} 10:30");
+  });
+  it("turns a fill of a DateTime field into one sf-dt- step naming the field, and leaves other fields", () => {
+    const org = { userLocale: "en_US", objects: [{ api: "ZqAppt", label: "Zq Appt", fields: [
+      { label: "Zq Earliest", api: "ZqEarliest__c", type: "DateTime", required: true },
+      { label: "Zq Due", api: "ZqDue__c", type: "DateTime", required: true },
+      { label: "Zq Subject", api: "Subject", type: "String" },
+    ] }] } as any;
+    const ir = { meta: {}, steps: [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { id: "a", action: "fill", target: { role: "textbox", name: "Zq Earliest" }, value: "2026-11-16" },
+      { id: "b", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "2026-11-18 4:00 PM" },
+      { id: "c", action: "fill", target: { role: "textbox", name: "Zq Subject" }, value: "Zq" },
+    ] } as unknown as IR;
+    expect(dateTimeFills(ir, org, "Zq Earliest tomorrow and Zq Due in 3 days")).toHaveLength(2);
+    expect(ir.steps[1]).toMatchObject({ id: "sf-dt-a", target: { role: "group", name: "Zq Earliest" }, value: "{{date:+1:en-US}} 10:30 AM" });
+    expect(ir.steps[2]).toMatchObject({ id: "sf-dt-b", value: "{{date:+3:en-US}} 4:00 PM" });
+    expect(ir.steps[3].id).toBe("c");
   });
 });

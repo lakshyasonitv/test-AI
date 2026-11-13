@@ -228,11 +228,16 @@ export function screenFlowMade(
 /**
  * The records the grounding replays saved: every value a create form typed with the run's code ("Ruiz
  * {{uid}}"), with each code a replay used in its place ("Ruiz uqzh6b"), on that form's object. Only
- * objects whose records have a Name (Case and Task are named by Subject). cleanupByTypedName then deletes
+ * objects whose records have a Name (Case and Task are named by Subject). An object with no Name field is found
+ * by the field the code was typed in (a Work Order by its Subject: the Name query failed with HTTP 400 and
+ * left 14 replay Work Orders, run 2026-11-13T18-30-28-619Z-653368f1). cleanupByTypedName then deletes
  * exactly those, this user's, made since the run began.
  */
-export function replayMade(steps: { action: string; value?: string; target?: { url?: string } }[], codes: string[]): { object: string; name: string }[] {
-  const out: { object: string; name: string }[] = [];
+export function replayMade(
+  steps: { action: string; value?: string; target?: { url?: string; name?: string } }[], codes: string[],
+  org?: { objects: { api: string; fields: { label: string; api: string }[] }[] },
+): { object: string; name: string; field?: string }[] {
+  const out: { object: string; name: string; field?: string }[] = [];
   let form: string | null = null;
   for (const s of steps) {
     if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; continue; }
@@ -240,14 +245,21 @@ export function replayMade(steps: { action: string; value?: string; target?: { u
     for (const code of codes) {
       if (!/^[a-z0-9]{4,12}$/.test(code)) continue;
       const name = s.value.replace(/\{\{uid\}\}/g, code).replace(/\{\{[^}]*\}\}/g, "").trim();
-      if (name && !out.some((o) => o.object === form && o.name === name)) out.push({ object: form, name });
+      const o = org?.objects.find((x) => x.api === form);
+      const api = o?.fields.find((f) => f.label.toLowerCase() === (s.target?.name ?? "").trim().toLowerCase())?.api;
+      const field = o && !o.fields.some((f) => f.api === "Name") && api ? api : undefined;
+      if (name && !out.some((x) => x.object === form && x.name === name)) out.push({ object: form, name, ...(field ? { field } : {}) });
     }
   }
   return out;
 }
 
+/** A value inside a SOQL LIKE '%...%': backslash, quote, % and _ escaped (O'Brien, Zq_1). The old
+ *  replace(/'/g, "\'") was a no-op ("\'" is "'"), so a name with a quote broke the query. */
+export const soqlLike = (v: string) => v.replace(/[\\'%_]/g, (c) => "\\" + c);
+
 /** Delete records named like `made` (a typed value with the run's code), this user's, since `since`. */
-export async function cleanupByTypedName(session: ApiSession, made: { object: string; name: string }[], since: Date): Promise<CleanupReport> {
+export async function cleanupByTypedName(session: ApiSession, made: { object: string; name: string; field?: string }[], since: Date): Promise<CleanupReport> {
   const report: CleanupReport = { deleted: [], skipped: [], failed: [] };
   if (!made.length) return report;
   let me: string | undefined;
@@ -255,10 +267,11 @@ export async function cleanupByTypedName(session: ApiSession, made: { object: st
   if (typeof me !== "string" || !/^005[A-Za-z0-9]{12,15}$/.test(me)) return { ...report, reason: "the org did not say which user is connected, so nothing was deleted" };
   const sinceIso = since.toISOString().replace(/\.\d{3}Z$/, "Z");
   for (const m of made) {
-    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(m.object) || !/^[\w .'-]{4,80}$/.test(m.name)) continue;
-    const like = m.name.replace(/'/g, "\'").replace(/[%_]/g, "\$&");
+    const field = m.field ?? "Name";
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(m.object) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(field) || !/^[\w .'-]{4,80}$/.test(m.name)) continue;
+    const like = soqlLike(m.name);
     try {
-      const q = `SELECT Id FROM ${m.object} WHERE Name LIKE '%${like}%' AND CreatedById = '${me}' AND CreatedDate >= ${sinceIso}`;
+      const q = `SELECT Id FROM ${m.object} WHERE ${field} LIKE '%${like}%' AND CreatedById = '${me}' AND CreatedDate >= ${sinceIso}`;
       for (const x of (await session.apiGet(`/query?q=${encodeURIComponent(q)}`))?.records ?? []) {
         const id = String(x?.Id ?? "");
         if (!/^[A-Za-z0-9]{15,18}$/.test(id)) continue;

@@ -826,7 +826,7 @@ export async function runPipeline(
       // What the grounding replays saved, by the exact codes they used (run 2026-11-13T16-00-53-324Z-9f8e022d
       // left two Contacts, and its own Save then met the duplicate rule).
       const codes = takeReplayCodes(runId);
-      for (const c of runCases(runDir)) flowMade.push(...replayMade(c.ir.steps, codes));
+      for (const c of runCases(runDir)) flowMade.push(...replayMade(c.ir.steps, codes, appModel.salesforceOrg));
       const byFlow = await cleanupByTypedName({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, flowMade, since);
       cleanup.deleted.push(...byFlow.deleted);
       cleanup.failed.push(...byFlow.failed);

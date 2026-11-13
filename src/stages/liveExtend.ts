@@ -62,6 +62,32 @@ export async function dismissDuplicateWarning(page: Page): Promise<void> {
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
  *  check state, they don't advance it, and a strict assertion shouldn't abort the replay. */
+/** A date-time field: the Date and Time boxes of the lightning-datetimepicker whose legend is `label`; `value`
+ *  is "<date> <time>". The spec's sfDateTime (generator.ts SF_DATETIME_HELPER) does the same. */
+export async function sfDateTimeLive(page: Page, label: string, value: string): Promise<void> {
+  const v = value.trim();
+  const at = v.indexOf(" ");
+  const date = at < 0 ? v : v.slice(0, at);
+  const time = at < 0 ? "" : v.slice(at + 1).trim();
+  const want = label.split("*").join("").trim().toLowerCase();
+  const pickers = page.locator("lightning-datetimepicker");
+  await pickers.first().waitFor({ timeout: 10000 });
+  let box;
+  for (let i = (await pickers.count()) - 1; i >= 0 && !box; i--) {
+    const legend = (await pickers.nth(i).locator("legend").first().textContent({ timeout: 2000 }).catch(() => "")) ?? "";
+    if (legend.split("*").join("").replace(/\s+/g, " ").trim().toLowerCase() === want) box = pickers.nth(i);
+  }
+  if (!box) throw new Error(`No date-time field "${label}" on the page`);
+  const d = box.locator("lightning-datepicker input").first();
+  await d.focus({ timeout: 10000 });
+  await d.fill(date, { timeout: 10000 });
+  if (time) {
+    const t = box.locator("lightning-timepicker input").first();
+    await t.fill(time, { timeout: 10000 });
+    await t.press("Tab").catch(() => {});
+  }
+}
+
 export async function runStepLive(
   page: Page, step: Step, baseUrl: string, creds?: Credentials,
   /** Same DOM-derived field map the IR uses. Without it the replay can't tell which box is
@@ -113,6 +139,8 @@ export async function runStepLive(
       // created, prepareReplayPage). A replay that clicks Save creates a real record too, and must not
       // collide with the run's own name or another replay's (duplicate rules).
       const val = hasRunToken(raw) ? resolveRunTokens(raw, replayTokens.get(page) ?? replayContext()) : raw;
+      // A date-time field's own Date and Time boxes (generator.ts SF_DATETIME_HELPER, the same logic).
+      if (step.id.startsWith("sf-dt-") && step.target?.name) { await sfDateTimeLive(page, step.target.name, val); return; }
       // Focus first, as the spec's fill step does: a prefilled field that redraws on focus would
       // otherwise get the value appended ("10" into "10%" gave "1010").
       const el = await resolveLive(page, step.target!, "fill");

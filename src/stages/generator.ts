@@ -470,6 +470,34 @@ const SF_REVEAL_HELPER = `async function sfReveal(page, text, ready) {
  *  and covers the fields under it; typing into one then waits until the run is killed (run
  *  2026-11-03T05-07-28-369Z-388aa153, Billing Zip). It is a warning, not a block: closed before each
  *  step of an org-connection test, the Save still goes through. Same names as liveExtend's replay. */
+/** A date-time field is a Date box and a Time box inside a lightning-datetimepicker whose legend is the field's
+ *  label; a form has several (Service Appointment: Earliest Start Permitted, Due Date), every box named just
+ *  "Date" or "Time" (runs 2026-11-13T18-30-28-619Z-653368f1, 18-35-51-793Z-df1af5e4). The value is
+ *  "<date> <time>", each in the user's format. Same logic as liveExtend's sfDateTimeLive. */
+const SF_DATETIME_HELPER = `async function sfDateTime(page, label, value) {
+  const v = String(value).trim();
+  const at = v.indexOf(" ");
+  const date = at < 0 ? v : v.slice(0, at);
+  const time = at < 0 ? "" : v.slice(at + 1).trim();
+  const want = label.split("*").join("").trim().toLowerCase();
+  const pickers = page.locator("lightning-datetimepicker");
+  await pickers.first().waitFor({ timeout: 10000 });
+  let box;
+  for (let i = (await pickers.count()) - 1; i >= 0 && !box; i--) {
+    const legend = ((await pickers.nth(i).locator("legend").first().textContent({ timeout: 2000 }).catch(() => "")) || "");
+    if (legend.split("*").join("").replace(/\\s+/g, " ").trim().toLowerCase() === want) box = pickers.nth(i);
+  }
+  if (!box) throw new Error('No date-time field "' + label + '" on the page');
+  const d = box.locator("lightning-datepicker input").first();
+  await d.focus({ timeout: 10000 });
+  await d.fill(date, { timeout: 10000 });
+  if (time) {
+    const t = box.locator("lightning-timepicker input").first();
+    await t.fill(time, { timeout: 10000 });
+    await t.press("Tab").catch(() => {});
+  }
+}`;
+
 const SF_DISMISS_DUPLICATES_HELPER = `async function sfDismissDuplicates(page) {
   if (!(await page.getByText(${JSON.stringify(SF_DUPLICATE_WARNING)}, { exact: true }).first().isVisible().catch(() => false))) return;
   await page.getByRole("button", { name: ${JSON.stringify(SF_DUPLICATE_CLOSE)} }).first().click({ timeout: 2000 }).catch(() => {});
@@ -1196,6 +1224,12 @@ function emitStep(step: Step, baseUrl: string): string {
     }
 
     case "fill":
+      // A date-time field (testData.dateTimeFills marks it "sf-dt-"): its own Date and Time boxes, found by the
+      // field's label (a form has several boxes named just "Date"). Mirrored by liveExtend's sfDateTimeLive.
+      if (step.id.startsWith("sf-dt-") && step.target?.name) {
+        code += `  await sfDateTime(page, ${q(step.target.name)}, ${valueCode(step.value)});`;
+        break;
+      }
       // Focus, then the one fill. A field holding a value that redraws on focus (Lightning shows a
       // percent as "10%", the raw "10" when focused) drops the selection fill() made, so the text
       // was added to the old value: "1010" (run 2026-11-02T17-24-47-449Z-ab0328f3). Mirrored by
@@ -1540,6 +1574,7 @@ test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", descr
     body.includes("await sfDismissDuplicates(") ? SF_DISMISS_DUPLICATES_HELPER : "",
     body.includes("await sfOpenRecord(") ? SF_OPEN_RECORD_HELPER : "",
     body.includes("await sfFieldValue(") ? SF_FIELD_HELPER : "",
+    body.includes("await sfDateTime(") ? SF_DATETIME_HELPER : "",
   ]
     .filter(Boolean)
     .join("\n\n");

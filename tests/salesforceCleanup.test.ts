@@ -247,3 +247,24 @@ describe("replayMade: what the grounding replays saved (run 2026-11-13T16-00-53-
     expect(replayMade(steps, ["x'; DROP"])).toEqual([]);
   });
 });
+
+describe("an object with no Name field is cleaned up by the field its code was typed in (run 2026-11-13T18-30-28-619Z-653368f1)", () => {
+  it("finds a replay Zq Job by its Subject, and escapes a quote and an underscore", async () => {
+    const { replayMade, cleanupByTypedName, soqlLike } = await import("../src/stages/salesforceCleanup.js");
+    const org = { objects: [{ api: "ZqJob", fields: [{ label: "Subject", api: "Subject" }] }, { api: "ZqAcct", fields: [{ label: "Zq Name", api: "Name" }] }] };
+    const steps = [
+      { action: "navigate", target: { url: "/lightning/o/ZqJob/new" } },
+      { action: "fill", target: { name: "Subject" }, value: "Zq meter {{uid}}" },
+      { action: "navigate", target: { url: "/lightning/o/ZqAcct/new" } },
+      { action: "fill", target: { name: "Zq Name" }, value: "Zq Acme {{uid}}" },
+    ];
+    const made = replayMade(steps, ["ab12cd"], org);
+    expect(made).toEqual([{ object: "ZqJob", name: "Zq meter ab12cd", field: "Subject" }, { object: "ZqAcct", name: "Zq Acme ab12cd" }]);
+    const queries: string[] = [];
+    const apiGet = vi.fn(async (p: string) => { if (p === "/chatter/users/me") return { id: ME }; queries.push(decodeURIComponent(p)); return { records: [] }; });
+    await cleanupByTypedName({ apiGet, apiDelete: vi.fn() }, made, new Date());
+    expect(queries[0]).toContain("FROM ZqJob WHERE Subject LIKE '%Zq meter ab12cd%'");
+    expect(queries[1]).toContain("FROM ZqAcct WHERE Name LIKE");
+    expect(soqlLike("O'Brien Zq_1 50%")).toBe(String.raw`O\'Brien Zq\_1 50\%`);
+  });
+});

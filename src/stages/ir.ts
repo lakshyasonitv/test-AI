@@ -15,7 +15,7 @@ import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap
 import { currentRunTargetApp } from "../runTarget.js";
 import { requestValues, stepsMissingValues } from "./requestValues.js";
 import { hollowPassGuardsEnabled, isPositiveCase, describeMarkers } from "./hollowPassGuards.js";
-import { applyTestData, testDataEnabled } from "./testData.js";
+import { applyTestData, dateTimeFills, testDataEnabled } from "./testData.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
@@ -1249,6 +1249,9 @@ export function groundingError(
     // result is there yet depends on Salesforce's indexing, so no screen can be captured for it in advance.
     // The spec searches again until it shows (generator.ts).
     if (step.id.startsWith("sf-search-open-")) continue;
+    // A date-time field (testData.dateTimeFills): its boxes are all named "Date" and "Time", so none names the
+    // field; the spec and the replay find them by the field's label (generator.ts sfDateTime).
+    if (step.id.startsWith("sf-dt-")) continue;
     // A later round of a multi-step approval (salesforceGuidance approvalSteps: "sf-ap-decide-2") repeats
     // round 1's step on the same record, and round 1 was grounded. Its live capture cannot reproduce
     // the second step's pending request (run 2026-11-13T09-03-00-638Z-80eeb68e dropped the whole approval
@@ -2953,6 +2956,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // The model reads names off screens a replay captured, and copies a replay record's code into a step
       // ("Quasar Robotics za3lt6"): back to {{uid}} before the passes below read the steps.
       for (const r of restoreReplayCodes(parsed.data.steps, peekReplayCodes(currentRunId() ?? ""))) console.log(`[ir] ${r}`);
+      for (const r of dateTimeFills(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       const note = strengthenSaveOutcome(parsed.data);
       if (note) console.log(`[ir] ${note}`);
       for (const r of editSaveConfirmed(parsed.data)) console.log(`[ir] ${r}`);
