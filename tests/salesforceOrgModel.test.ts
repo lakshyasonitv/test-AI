@@ -36,7 +36,8 @@ function fakeApi(opts: { toolingRefused?: boolean } = {}) {
     // Company in run 2026-10-25T05-01-36-627Z-b0d6a138: "Review the following fields: Company").
     "/ui-api/layout/Lead?layoutType=Full&mode=Create&recordTypeId=012000000000000AAA": { sections: [{ layoutRows: [
       { layoutItems: [{ required: true, layoutComponents: [{ componentType: "Field", apiName: "Email" }] }] },
-      { layoutItems: [{ required: false, layoutComponents: [{ componentType: "Field", apiName: "Partner__c" }] }] },
+      // The form's own label for a field (Service Territory's "Operating Hours", object-info "Operating Hour ID").
+      { layoutItems: [{ required: false, label: "Zq Partner Shown", layoutComponents: [{ componentType: "Field", apiName: "Partner__c" }] }] },
       // A compound item (Lead's Name: Salutation, First Name, Last Name) is "required" as a whole:
       // only its parts object-info requires are (run 2026-10-25T06-38-05-099Z-07e036cc filled Salutation).
       { layoutItems: [{ required: true, layoutComponents: [
@@ -65,6 +66,8 @@ describe("readSalesforceOrgModel", () => {
     const lead = (await readSalesforceOrgModel({ apiGet }))!.objects.find((o) => o.api === "Lead")!;
     expect(lead.fields.find((f) => f.api === "Email")?.required).toBe(true);
     expect(lead.fields.find((f) => f.api === "Partner__c")?.required).toBeUndefined();
+    expect(lead.fields.find((f) => f.api === "Partner__c")?.label).toBe("Zq Partner Shown");
+    expect(lead.fields.find((f) => f.api === "Email")?.label).toBe("Email");
     expect(lead.fields.find((f) => f.api === "FirstName")?.required).toBeUndefined();
     expect(lead.fields.find((f) => f.api === "LastName")?.required).toBe(true);
   });
@@ -180,7 +183,7 @@ describe("orgModelForCases and the lite model", () => {
     expect(block).toContain("- Leads (object Lead)");
     expect(block).toContain("required on create: Last Name, Company, Lead Status");
     expect(block).toContain("Lead Status = Open - Not Contacted | Working - Contacted");
-    expect(block).toContain("Partner -> Account");
+    expect(block).toContain("Zq Partner Shown -> Account");
     expect(block).toContain('validation rule Phone_Required (on Phone): "Phone is required for a hot lead"');
     expect(orgModelForCases(undefined)).toBe("");
   });

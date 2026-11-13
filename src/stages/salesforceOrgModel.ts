@@ -73,12 +73,17 @@ async function readObject(apiGet: ApiGet, api: string, request = ""): Promise<Sa
     ? await tryGet(apiGet, `/ui-api/layout/${encodeURIComponent(api)}?layoutType=Full&mode=Create&recordTypeId=${info.defaultRecordTypeId}`)
     : null;
   const layoutRequired = new Set<string>();
+  const formLabel = new Map<string, string>();
   for (const sec of layout?.sections ?? []) for (const row of sec?.layoutRows ?? []) for (const item of row?.layoutItems ?? []) {
     // One field per item only: a compound item (Lead's Name = Salutation + First + Last) is required
     // as a whole, and object-info already says which of its parts are (run
     // 2026-10-25T06-38-05-099Z-07e036cc filled an unrequested Salutation and First Name).
     const parts = (item?.layoutComponents ?? []).filter((c: any) => c?.componentType === "Field" && c.apiName);
     if (item?.required && parts.length === 1) layoutRequired.add(parts[0].apiName);
+    // What the FORM calls the field: object-info says "Operating Hour ID" for the Service Territory field the
+    // form labels "Operating Hours", so no step naming it matched, and test data added a second one under a
+    // third name (run 2026-11-13T18-45-09-236Z-e01f6e2d).
+    if (parts.length === 1 && typeof item?.label === "string" && item.label.trim()) formLabel.set(parts[0].apiName, item.label.trim());
   }
 
   const fields = Object.values<any>(info.fields)
@@ -90,7 +95,7 @@ async function readObject(apiGet: ApiGet, api: string, request = ""): Promise<Sa
       const lookup = (f.referenceToInfos ?? []).map((r: any) => r?.apiName).filter(Boolean).join("/") || undefined;
       const dependency = dependencyOf(f, picklists);
       return {
-        label: String(f.label ?? f.apiName), api: f.apiName, type: String(f.dataType ?? ""),
+        label: formLabel.get(f.apiName) ?? String(f.label ?? f.apiName), api: f.apiName, type: String(f.dataType ?? ""),
         ...(required ? { required: true } : {}),
         // ponytail: 200 values covers every standard picklist (Industry has 30+; 25 cut "Technology" and a
         // test picked "Biotechnology", run 2026-11-10T05-05-39-201Z-52ce7aed). A huge global value set

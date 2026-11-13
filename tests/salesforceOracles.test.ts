@@ -83,6 +83,13 @@ describe("apiChecks", () => {
     expect(out).toEqual([{ object: "Zq_Acct__c", id: "a00zq0000000001AAA", field: "Zq Name", expected: "Zq ab12cd", actual: "Zq ab12cd", ok: true }]);
     expect(decodeURIComponent(String(apiGet.mock.calls[0][0]))).toContain("SELECT Name FROM Zq_Acct__c WHERE Id = 'a00zq0000000001AAA'");
   });
+  it("reads a picklist as its label, the text the case picked (run 2026-11-13T18-45-09-236Z-e01f6e2d)", async () => {
+    const tz = [{ object: "Zq_Hours__c", n: 1, values: [{ label: "Zq Zone", api: "Zq_Zone__c", type: "Picklist", value: "(GMT-08:00) Zq Pacific" }] }];
+    const apiGet = vi.fn(async () => ({ records: [{ Zq_Zone__c: "(GMT-08:00) Zq Pacific" }] }));
+    const out = await apiChecks(apiGet, tz, { Zq_Hours__c: ["a00zq0000000001AAA"] }, { uid: "a", phone: "1" });
+    expect(out[0].ok).toBe(true);
+    expect(decodeURIComponent(String(apiGet.mock.calls[0][0]))).toContain("SELECT toLabel(Zq_Zone__c) FROM Zq_Hours__c");
+  });
 
   it("fails, with a reason, when the case never reached its record; never queries a bad id", async () => {
     const apiGet = vi.fn();

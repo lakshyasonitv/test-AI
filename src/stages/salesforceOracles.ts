@@ -172,7 +172,9 @@ export async function apiChecks(
     }
     let rec: any;
     try {
-      const q = `SELECT ${t.values.map((v) => v.api).join(", ")} FROM ${t.object} WHERE Id = '${id}'`;
+      // A picklist read as its label, the text the case picked: Time Zone stores "America/Los_Angeles" for
+      // "(GMT-08:00) Pacific Standard Time (America/Los_Angeles)" (run 2026-11-13T18-45-09-236Z-e01f6e2d).
+      const q = `SELECT ${t.values.map((v) => /picklist/i.test(v.type) ? `toLabel(${v.api})` : v.api).join(", ")} FROM ${t.object} WHERE Id = '${id}'`;
       rec = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0];
     } catch (err) {
       for (const v of t.values) out.push({ object: t.object, id, field: v.label, expected: v.value, ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
