@@ -1271,6 +1271,71 @@ export function calculatedFieldReads(ir: IRSteps, org: Pick<SalesforceOrgModel, 
 }
 
 /**
+ * A custom link the request names ("…then check its Delivery Status link opens the FedEx tracking page"),
+ * on a record the case saved: the record is opened again, its Details tab (where the "Custom Links"
+ * section is), and the link is checked by the address it opens. That address is the link's URL with its
+ * {!merge} fields filled from what the case typed; past the first one the case did not type, only the
+ * part before it is checked. The case's own steps on the link after the Save (a click that opens a new
+ * tab, a check of an address) are replaced. Links only: a custom button's place in Lightning varies.
+ */
+export function customLinkSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "customLinks"> | undefined, request: string): string[] {
+  const asked = (org?.customLinks ?? []).filter((l) => l.kind === "link" && lineKey(request).includes(lineKey(l.label)));
+  if (!asked.length) return [];
+  // The records the case saved, by object, in order (recordRef numbers them the same way).
+  let form: string | null = null;
+  const saves: { object: string; at: number; n: number }[] = [];
+  ir.steps.forEach((s, i) => {
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; return; }
+    if (s.action === "click" && isSave(s) && form) {
+      saves.push({ object: form, at: i, n: saves.filter((x) => x.object === form).length + 1 });
+      form = null;
+    }
+  });
+  const notes: string[] = [];
+  for (const link of asked) {
+    const saved = saves.filter((x) => x.object === link.object).at(-1);
+    if (!saved) continue;
+    const o = org!.objects.find((x) => x.api === link.object);
+    // What the case typed, by field label, before that Save.
+    const typed = new Map<string, string>();
+    for (const s of ir.steps.slice(0, saved.at)) {
+      const label = s.target?.field ?? s.target?.name;
+      if ((s.action === "fill" || s.action === "select") && label && typeof s.value === "string") typed.set(lineKey(label), s.value);
+    }
+    let expected = "";
+    let rest = link.url;
+    for (let m = /\{!\s*([^}]+?)\s*\}/.exec(rest); m; m = /\{!\s*([^}]+?)\s*\}/.exec(rest)) {
+      // {!Opportunity_Tracking_Number} or {!Opportunity.TrackingNumber__c}: the field after the object.
+      const name = m[1].replace(new RegExp(`^(${link.object}|${(o?.label ?? link.object).replace(/\W+/g, "_")})[._]`, "i"), "");
+      const f = o?.fields.find((x) => x.api.toLowerCase() === name.toLowerCase() || lineKey(x.label) === lineKey(name.replace(/_/g, " ")));
+      const value = f ? typed.get(lineKey(f.label)) : undefined;
+      if (value === undefined || hasRunToken(value)) { expected += rest.slice(0, m.index); rest = ""; break; }
+      expected += rest.slice(0, m.index) + encodeURIComponent(value);
+      rest = rest.slice(m.index + m[0].length);
+    }
+    expected += rest;
+    // The record's own Name merge ({!Account_Name}) is cut above unless typed; an address cut to nothing
+    // proves nothing.
+    if (!/^(https?:\/\/[^/?#]+|\/[^?#]+)/.test(expected)) continue;
+    // The case's own steps on this link, or on an opened address, after the Save.
+    const before = ir.steps.length;
+    ir.steps = ir.steps.filter((s, i) => i <= saved.at || !(
+      (s.target?.name && lineKey(s.target.name) === lineKey(link.label))
+      || (s.target?.text && lineKey(s.target.text) === lineKey(link.label))
+      || (s.action === "assert" && s.assertion === "url_contains")));
+    ir.steps.push(
+      { id: `sf-cl-open-${notes.length}`, action: "navigate", target: { url: recordRef(link.object, saved.n) } } as Step,
+      { id: `sf-cl-details-${notes.length}`, action: "click", target: { role: "tab", name: "Details" } } as Step,
+      { id: `sf-cl-wait-${notes.length}`, action: "wait", value: "1500" } as Step,
+      { id: `sf-cl-section-${notes.length}`, action: "assert", target: { text: "Custom Links" }, assertion: "visible" } as Step,
+      { id: `sf-cl-check-${notes.length}`, action: "assert", target: { role: "link", name: link.label }, assertion: "opens_url_contains", value: expected } as Step,
+    );
+    notes.push(`the ${o?.label ?? link.object}'s custom link "${link.label}" -> checks it opens "${expected}"${before > ir.steps.length - 5 ? ` (replacing ${before - (ir.steps.length - 5)} step(s) of the case's)` : ""}`);
+  }
+  return notes;
+}
+
+/**
  * Phase C, an approval done the way Lightning does it, when the request asks for one ("submit it for
  * approval, then approve it and verify its Description shows TB Approved") on an object with an approval
  * process: the case writer left the approval steps out in runs 2026-11-12T09-57-07-371Z-96fab553 and

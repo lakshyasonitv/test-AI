@@ -57,7 +57,7 @@ function emitAssert(step: Step): string {
   // the user has no reason to doubt. Fail loudly instead of lying quietly.
   if (step.assertion === "url_contains" || step.assertion === "text_contains" ||
       step.assertion === "text_equals" || step.assertion === "title_contains" ||
-      step.assertion === "title_equals") {
+      step.assertion === "title_equals" || step.assertion === "opens_url_contains") {
     if (!comparisonValue(step).trim()) {
       throw new Error(
         `Step ${step.id}: "${step.assertion}" has no comparison value, which would assert ` +
@@ -173,6 +173,30 @@ function emitAssert(step: Step): string {
 
     case "title_equals":
       return `  await expect(page).toHaveTitle(${q(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
+
+    // Clicks the link and reads the addresses it opens: in a new tab (a custom link's "new window") or
+    // this page. Every page request is kept, redirects included, so the link's own address counts even
+    // when the far site forwards elsewhere, or never answers.
+    case "opens_url_contains":
+      return [
+        `  {`,
+        `    const asked = [];`,
+        `    const onRequest = (r) => { if (r.isNavigationRequest()) asked.push(r.url()); };`,
+        `    page.context().on("request", onRequest);`,
+        `    const [opened] = await Promise.all([`,
+        `      page.context().waitForEvent("page", { timeout: 15000 }).catch(() => null),`,
+        `      ${locator(t)}.click({ timeout: ${ASSERT_TIMEOUT_MS} }),`,
+        `    ]);`,
+        `    const where = opened ?? page;`,
+        `    try {`,
+        `      await expect.poll(() => [...asked, where.url()].join("\\n"), { timeout: 20000 }).toMatch(new RegExp(${q(escapeRe(comparisonValue(step)))}));`,
+        `    } finally {`,
+        `      page.context().off("request", onRequest);`,
+        `      test.info().annotations.push({ type: "opened-url", description: [...asked, where.url()].join(" -> ").slice(0, 1000) });`,
+        `      if (opened) await opened.close().catch(() => {});`,
+        `    }`,
+        `  }`,
+      ].join("\n");
 
     default:
       throw new Error(`Unknown assertion: ${step.assertion}`);
@@ -1214,6 +1238,7 @@ function stepLabel(step: Step, index: number, baseUrl: string): string {
       if (assertion === "url_contains") return `Assert URL contains${val}`;
       if (assertion === "title_contains") return `Assert page title contains${val}`;
       if (assertion === "title_equals") return `Assert page title is${val}`;
+      if (assertion === "opens_url_contains") return `Assert${name} opens an address containing${val}`;
       return `Assert${name} is ${assertion}`;
     }
     default: return `Step ${index + 1}: ${step.action}`;

@@ -1045,3 +1045,29 @@ describe("approvalSteps after a half-done submission", () => {
     expect(ids).toEqual(expect.arrayContaining(["sf-ap-submit", "sf-ap-send", "sf-ap-decide"]));
   });
 });
+
+describe("customLinkSteps", () => {
+  const org = {
+    objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Zq Tracking Number", api: "ZqTracking__c" }, { label: "Zopp Name", api: "Name" }] }],
+    customLinks: [{ object: "Zopp", label: "Zq Delivery", url: "http://zq.example/track?n={!Zopp_Zq_Tracking_Number}&lang=en", kind: "link", newWindow: true }],
+  };
+  const fill = (name: string, value: string) => ({ id: `f-${name}`, action: "fill", target: { role: "textbox", name }, value } as Step);
+  it("opens the record's Details and checks the address with the typed merge value, replacing the case's own link steps", async () => {
+    const { customLinkSteps } = await import("../src/stages/salesforceGuidance.js");
+    const own = { id: "own", action: "click", target: { role: "link", name: "Zq Delivery" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), fill("Zq Tracking Number", "Zq 42"), click("Save"), own]);
+    expect(customLinkSteps(i, org as any, "Create a Zopp with tracking number Zq 42 and check its Zq Delivery link")).toHaveLength(1);
+    expect(i.steps.map((s) => s.id)).not.toContain("own");
+    const check = i.steps.at(-1)!;
+    expect(check).toMatchObject({ assertion: "opens_url_contains", target: { role: "link", name: "Zq Delivery" }, value: "http://zq.example/track?n=Zq%2042&lang=en" });
+    expect(i.steps.find((s) => s.id === "sf-cl-open-0")?.target?.url).toBe("${record:Zopp:1}");
+  });
+  it("checks only the part before a merge field the case did not type, and nothing when the link is not asked for", async () => {
+    const { customLinkSteps } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([nav("/lightning/o/Zopp/new"), fill("Zopp Name", "Zq {{uid}}"), click("Save")]);
+    customLinkSteps(i, org as any, "check the Zq Delivery link of a new Zopp");
+    expect(i.steps.at(-1)?.value).toBe("http://zq.example/track?n=");
+    const j = ir([nav("/lightning/o/Zopp/new"), click("Save")]);
+    expect(customLinkSteps(j, org as any, "create a Zopp")).toEqual([]);
+  });
+});

@@ -417,3 +417,13 @@ describe("a named radio or checkbox with no selector", () => {
     expect(s).not.toContain('getByRole("checkbox", { name: "Zq Agree", exact: true }).first().check({ force: true');
   });
 });
+
+describe("generateSpec — opens_url_contains", () => {
+  it("clicks the link and matches every address it asked for, a new tab's included", () => {
+    const s = spec([{ id: "a", action: "assert", target: { role: "link", name: "Zq Delivery" }, assertion: "opens_url_contains", value: "http://zq.example/track?n=1" }]);
+    expect(s).toContain('page.context().waitForEvent("page"');
+    expect(s).toContain("r.isNavigationRequest()");
+    expect(s).toContain(String.raw`new RegExp("http://zq\\.example/track\\?n=1")`);
+    expect(() => spec([{ id: "b", action: "assert", target: { role: "link", name: "Zq" }, assertion: "opens_url_contains", value: "" }])).toThrow();
+  });
+});

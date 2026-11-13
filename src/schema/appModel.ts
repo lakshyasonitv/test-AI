@@ -431,6 +431,11 @@ export const SalesforceOrgModel = z.object({
   /** Active flows (Phase B): what runs, on what, when, and what it visibly does. Absent when unread. */
   /** Phase C (SALESFORCE_APPROVALS_ENABLED): the active approval processes and the object each runs on. */
   approvals: z.array(z.object({ label: z.string(), api: z.string(), object: z.string() })).optional(),
+  /** Custom links and buttons (SALESFORCE_CUSTOM_LINKS_ENABLED): the URL ones, with the address each opens.
+   *  `url` keeps Salesforce's {!merge} fields; `newWindow` = it opens a new tab. */
+  customLinks: z.array(z.object({
+    object: z.string(), label: z.string(), url: z.string(), kind: z.enum(["link", "button"]), newWindow: z.boolean(),
+  })).optional(),
   /** Phase D seeding: records Testbench created through the API before the cases ("an existing Account"). */
   seeded: z.array(z.object({ object: z.string(), label: z.string(), name: z.string() })).optional(),
   flows: z.array(z.object({

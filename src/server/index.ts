@@ -2562,6 +2562,8 @@ export const BOOLEAN_ENV_FLAGS = [
   "SALESFORCE_SEED_ENABLED",
   // Phase C (src/stages/salesforceOrgModel.ts approvals, salesforceOracles.ts approvalChecks). Off: no approval reads.
   "SALESFORCE_APPROVALS_ENABLED",
+  // src/stages/salesforceOrgModel.ts customLinks, salesforceGuidance.ts customLinkSteps. Off: no custom link reads.
+  "SALESFORCE_CUSTOM_LINKS_ENABLED",
   // src/stages/hybridDiscovery.ts: reuse an org-connection discovery while the org's setup is unchanged.
   "SALESFORCE_DISCOVERY_CACHE_ENABLED",
   // src/stages/salesforceOrgDeep.ts (Phase 1): record-type differences, Dynamic Forms visibility rules
