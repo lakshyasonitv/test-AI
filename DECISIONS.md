@@ -2382,3 +2382,27 @@ then only work on a host that reads `.htaccess`.
 **Not covered.** The app's address appears in two places in `landing/` (`index.html` and `.htaccess`); changing it is a
 search-and-replace there, not a setting. A custom domain for the app (`app.yourdomain.com`) is documented in
 `landing/README.md` but not set up.
+
+## D-77. The downloaded report says why each case stopped, in one plain sentence (report only)
+
+**Context.** The downloaded report (`htmlReport.ts`) showed Playwright's raw error as "Where it stopped". The real
+reason was often buried in the call log. On a real Salesforce run (2026-11-02 `c64582ea`) two Search cases failed
+because the search box's own dropdown lay over the Search button ("... intercepts pointer events"), and the report
+said only "the step exceeded its timeout". Blocked and "unconfirmed" (`truncated_no_assertion`) cases gave no reason
+at all, although `blockedBy` and the IR's `truncationNote` were saved.
+
+**Decision.** A new pure function, `stopReason.ts`, turns what is already saved into one sentence, and the report
+shows it in each non-passing case and in a summary table at the top. It matches only Playwright's own fixed error
+phrases (not model or page text, per CLAUDE.md's central rule); the truncation note is shown as-is, never matched.
+"SetupOpens in a new tab" is shown as "Setup" (a screen-reader hint Salesforce appends). On by default, at the user's
+request: it changes only the downloaded HTML file, no route's JSON shape, no UI class. Every new piece sits in a
+try/catch that falls back to showing nothing, so a surprise in a saved file leaves the report as it was before.
+The report route passes the suite summary's `blockedBy` (an optional `ReportCase` field).
+
+**Rejected.** Adding an "element covered" category to `classify.ts`: that vocabulary also drives self-heal
+(`isHealable`) and the app's diagnosis, and the user asked for a report-only change. Labelling the existing
+"What happened" text as AI: `06-diagnosis.json` does not record whether the classifier or the model wrote it.
+
+**Not covered.** The app's case cards still show the old text. The existing "What happened" line (from `classify.ts`)
+can still say "exceeded its timeout" next to the new, more precise sentence. Making the covered-button tests
+themselves pass (press Enter, close the dropdown) is a separate change.

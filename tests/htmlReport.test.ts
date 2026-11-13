@@ -159,3 +159,48 @@ describe("buildRunReportHtml", () => {
     expect(html).toContain("No per-step record");
   });
 });
+
+describe("buildRunReportHtml — why it stopped", () => {
+  const covered = `TimeoutError: locator.click: Timeout 10000ms exceeded.
+Call log:
+  - locator resolved to <button aria-label="Search">…</button>
+  - <input type="search" placeholder="Search..."/> from <div>…</div> subtree intercepts pointer events
+    at C:\\Users\\Some One\\test-AI\\runs\\r\\generated\\test.spec.ts:109:67`;
+
+  it("adds a plain reason to a failed case and a summary table at the top", () => {
+    const html = buildRunReportHtml({ runId: "r", cases: [
+      aCase({ caseId: "case-0", title: "Search works", status: "failed",
+        saved: { passed: false, raw: raw([step("Navigate to /"), step("Click 'Search'", 10, covered)], [{ message: covered }]) },
+        ir: { steps: [{ id: "s1", action: "navigate", target: { url: "/" } },
+                      { id: "s2", action: "click", target: { role: "button", name: "Search" } }] } as any }),
+      aCase({ caseId: "case-1", title: "Checkout works", status: "passed" }),
+    ] });
+    const reason = `The &quot;Search&quot; button was on the page, but the &quot;Search...&quot; box was on top of it`;
+    expect(html).toContain("Why it stopped:");
+    expect(html).toContain(reason);
+    expect(html).toContain(`<table class="summary">`);
+    expect(html).toContain("Step 2 — Click &#39;Search&#39;");
+    // Still there: today's box and the full error, now without the user's folder path.
+    expect(html).toContain("Where it stopped");
+    expect(html).toContain("Full error");
+    expect(html).toContain("at test.spec.ts:109:67");
+    expect(html).not.toContain("Some One");
+  });
+
+  it("gives blocked and cut-short cases their saved reason", () => {
+    const html = buildRunReportHtml({ runId: "r", cases: [
+      aCase({ title: "Login", status: "blocked", blockedBy: "a code was sent by email" }),
+      aCase({ title: "New list view", status: "truncated_no_assertion",
+        ir: { meta: { truncationNote: "no element named New" }, steps: [{ id: "s1", action: "navigate", target: { url: "/" } }] } as any }),
+    ] });
+    expect(html).toContain("Couldn&#39;t finish: a code was sent by email.");
+    expect(html).toContain("Nothing was checked");
+    expect(html).toContain("Recorded reason: no element named New");
+  });
+
+  it("a passed case gets no reason, and its section is unchanged", () => {
+    const html = buildRunReportHtml({ runId: "r", cases: [aCase()] });
+    expect(html).not.toContain("Why it stopped");
+    expect(html).not.toContain(`class="whybox"`);
+  });
+});

@@ -629,6 +629,8 @@ app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => 
       status: e.status ?? "failed",
       whyItMatters: e.whyItMatters,
       expected: e.expected,
+      // Why a blocked case couldn't finish, for the report's "Why it stopped" line.
+      blockedBy: e.blockedBy ?? rd("05-result.json")?.blockedBy,
       saved: rd("05-result.json") ?? {},
       ir: irRaw?.ir ?? irRaw ?? null,
       diagnosis: rd("06-diagnosis.json"),

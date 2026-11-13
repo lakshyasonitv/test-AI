@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { IR } from "../schema/ir.js";
 import { extractFailureDetail } from "./executor.js";
+import { stopReason, cleanName } from "./stopReason.js";
 
 /**
  * A readable report for a WHOLE RUN — every case, in one self-contained file.
@@ -50,6 +51,8 @@ export interface ReportCase {
   saved: any;
   ir?: IR | null;
   diagnosis?: any | null;
+  /** From the suite summary: why a blocked case couldn't finish. Optional; absent = not shown. */
+  blockedBy?: string;
   /** Absolute path to this case's `artifacts/` dir, for reading screenshots. */
   artifactsDir?: string;
   artifactFiles?: string[];
@@ -107,6 +110,15 @@ const STYLE = `
   .failbox { background: #fffafa; border: 1px solid #f2c4c4; border-left-width: 4px;
              border-radius: 10px; padding: 14px 16px; margin: 16px 0 0; }
   .failbox h3 { margin: 0 0 8px; font-size: 14px; color: #8a1b1b; }
+  .why { margin: 0 0 10px; font-size: 15px; }
+  .whybox { background: #f7f8fa; border: 1px solid #dfe2e8; border-left-width: 4px;
+            border-radius: 10px; padding: 14px 16px; margin: 16px 0 0; }
+  .whybox h3 { margin: 0 0 8px; font-size: 14px; color: #414750; }
+  table.summary { width: 100%; border-collapse: collapse; margin: 18px 0 0; font-size: 13px; }
+  table.summary th { text-align: left; color: #5a5f68; font-weight: 600; font-size: 12px;
+                     text-transform: uppercase; letter-spacing: .04em; padding: 6px 8px;
+                     border-bottom: 1px solid #dfe2e8; }
+  table.summary td { padding: 8px; border-bottom: 1px solid #eceff3; vertical-align: top; }
   .err { background: #f6f7f9; border: 1px solid #e2e5ea; border-radius: 8px; padding: 10px 12px;
          font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
          white-space: pre-wrap; word-break: break-word; margin-top: 8px; }
@@ -140,6 +152,48 @@ function inlineImage(dir: string | undefined, file: string, budget: { left: numb
     budget.left -= buf.length;
     return `data:image/png;base64,${buf.toString("base64")}`;
   } catch { return null; }
+}
+
+/**
+ * The plain "Why it stopped" sentence for one case (stopReason.ts). Wrapped so that ANY surprise
+ * in a saved file just means no sentence: the report then looks exactly as it did before.
+ */
+function whyItStopped(c: ReportCase, detail: ReturnType<typeof extractFailureDetail>, stepCount: number): string | null {
+  try {
+    const step = typeof detail.failedStep === "number" ? c.ir?.steps?.[detail.failedStep - 1] : undefined;
+    return stopReason({
+      status: c.status || "failed",
+      blockedBy: c.blockedBy,
+      truncationNote: c.ir?.meta?.truncationNote,
+      errorText: detail.errorDetail ?? detail.error,
+      failedStepTitle: detail.failedStepTitle,
+      target: step?.target ?? null,
+      stepCount: c.ir?.steps?.length || stepCount || undefined,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Full paths in a stack line ("at C:\Users\name\...\test.spec.ts:238") become just the file name. */
+function shortenPaths(text: string): string {
+  // Only after "at " or "(", as in a stack line. Folder names may contain spaces.
+  return text.replace(/(\bat |\()(?:[A-Za-z]:\\|\/)[^\n()]*?[\\/]([^\\/\n()]+\.ts)/g, "$1$2");
+}
+
+/** Number of Playwright steps recorded for a case. */
+function countSteps(c: ReportCase): number {
+  let n = 0;
+  const visit = (suite: any): void => {
+    for (const child of suite?.suites ?? []) visit(child);
+    for (const spec of suite?.specs ?? []) {
+      for (const t of spec?.tests ?? []) {
+        for (const r of t?.results ?? []) if (!n && Array.isArray(r?.steps)) n = r.steps.length;
+      }
+    }
+  };
+  for (const s of c.saved?.raw?.suites ?? []) visit(s);
+  return n;
 }
 
 function renderCase(c: ReportCase, budget: { left: number }): string {
@@ -188,15 +242,23 @@ function renderCase(c: ReportCase, budget: { left: number }): string {
   }).join("")}</ol>`
     : `<p class="note">No per-step record — the run ended before Playwright wrote one.</p>`;
 
-  const failHtml = !isFail || !detail.error ? "" : `
+  const why = whyItStopped(c, detail, steps.length);
+  const whyHtml = why ? `<p class="why"><b>Why it stopped:</b> ${esc(why)}</p>` : "";
+
+  const failHtml = !isFail || !detail.error ? (status !== "passed" && why ? `
+    <div class="whybox">
+      <h3>Why it stopped</h3>
+      <p style="margin:0">${esc(why)}</p>
+    </div>` : "") : `
     <div class="failbox">
       <h3>Where it stopped</h3>
+      ${whyHtml}
       ${detail.failedStep
         ? `<p style="margin:0"><b>Step ${detail.failedStep}</b>${
             detail.failedStepTitle ? ` — ${esc(detail.failedStepTitle)}` : ""}</p>` : ""}
       <div class="err">${esc(detail.error)}</div>
       ${detail.errorDetail && detail.errorDetail !== detail.error
-        ? `<details><summary>Full error</summary><div class="err">${esc(detail.errorDetail)}</div></details>` : ""}
+        ? `<details><summary>Full error</summary><div class="err">${esc(shortenPaths(detail.errorDetail))}</div></details>` : ""}
       ${c.diagnosis?.explanation ? `<p style="margin:12px 0 0"><b>What happened.</b> ${esc(c.diagnosis.explanation)}</p>` : ""}
       ${c.diagnosis?.suggestedFix ? `<p style="margin:6px 0 0"><b>What you can do.</b> ${esc(c.diagnosis.suggestedFix)}</p>` : ""}
       ${c.diagnosis?.verifiedText
@@ -229,6 +291,7 @@ export function buildRunReportHtml(input: RunReportInput): string {
 
   const when = input.startedAt ? new Date(input.startedAt).toLocaleString() : "";
   const casesHtml = input.cases.map((c) => renderCase(c, budget)).join("");
+  const summaryHtml = summaryTable(input.cases);
 
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
@@ -251,10 +314,36 @@ export function buildRunReportHtml(input: RunReportInput): string {
       ${input.llmCalls ? `<li><b>${input.llmCalls}</b> AI calls</li>` : ""}
       ${input.llmTokens ? `<li><b>${Math.round(input.llmTokens / 1000)}k</b> tokens</li>` : ""}
     </ul>
+    ${summaryHtml}
   </header>${input.orgWarning ? `
   <div class="failbox"><h3>Not a test org</h3>${esc(input.orgWarning)}</div>` : ""}
   ${casesHtml || `<section class="case"><p class="note">This run recorded no cases.</p></section>`}
   <footer>Generated from this run's own artifacts — no AI call. Screenshots are embedded, so this
   file works offline and can be sent as-is.</footer>
 </div></body></html>`;
+}
+
+/**
+ * One row per case at the top of the report: result, the step it stopped at, and why. Built in
+ * its own try so a surprise here leaves the header exactly as before rather than breaking the page.
+ */
+function summaryTable(cases: ReportCase[]): string {
+  try {
+    if (!cases.length) return "";
+    const rows = cases.map((c, i) => {
+      const status = (c.status || "failed").toLowerCase();
+      const detail = extractFailureDetail(c.saved?.raw ?? c.saved);
+      const why = status === "passed" ? "" : whyItStopped(c, detail, countSteps(c)) ?? "";
+      const step = status === "failed" && detail.failedStep
+        ? `Step ${detail.failedStep}${detail.failedStepTitle
+          ? ` — ${detail.failedStepTitle.replace(/'([^']+)'/g, (_m, n) => `'${cleanName(n)}'`)}` : ""}`
+        : "";
+      return `<tr><td>${i + 1}</td><td>${esc(c.title)}</td><td>${esc(status.replace(/_/g, " "))}</td>` +
+        `<td>${esc(step)}</td><td>${esc(why)}</td></tr>`;
+    }).join("");
+    return `<table class="summary"><thead><tr><th>#</th><th>Case</th><th>Result</th>` +
+      `<th>Stopped at</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch {
+    return "";
+  }
 }

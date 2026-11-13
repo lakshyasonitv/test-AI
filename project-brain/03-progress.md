@@ -1,5 +1,9 @@
 # Progress — where we are
 
+*Last updated: 2026-11-13. Branch `pro/salesforce-org-context`, NOT committed: the downloaded report says why each
+case stopped (D-77, `stopReason.ts`, report only, on by default). Baseline in this container: 2578 passed / 40 failed
+(all real-browser, chromium version mismatch) / 398 skipped, 230 files. See journal/2026-11-13.md.*
+
 *Last updated: 2026-11-06. Branch `redesign/app-ui` (3 commits ahead of main: landing page, top-bar link, theme.css
 re-theme). On top of it, NOT committed: the landing page moved out of the app into `landing/` for Hostinger, linked
 both ways (buttons → Azure app; `LANDING_URL` → "Landing page" link in the app, off when unset), D-76. Uncommitted
