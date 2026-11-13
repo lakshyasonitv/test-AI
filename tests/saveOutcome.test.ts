@@ -1225,6 +1225,17 @@ describe("bug hunt round 4, second pass", () => {
     expect(spec).toContain("for (let i = 0; i < 8 && !(await result.isVisible()");
     expect(spec).toContain('box.press("Enter")');
   });
+  it("names the search box by its real name, and opens the made record even when the link was written without its code", async () => {
+    const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
+    const made = { id: "m", action: "fill", target: { role: "textbox", name: "Account Name" }, value: "Zq Quasar {{uid}}" } as Step;
+    const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search Salesforce" }, value: "Zq Quasar" } as Step;
+    const enter = { id: "e", action: "press", target: { role: "searchbox", name: "Search Salesforce" }, value: "Enter" } as Step;
+    const open = { id: "o", action: "click", target: { role: "link", name: "Zq Quasar" } } as Step;
+    const i = ir([made, click("Save"), click("Search"), typed, enter, open]);
+    globalSearchSubmit(i);
+    expect(i.steps[3].target).toEqual({ role: "searchbox", name: "Search..." });
+    expect(i.steps[5]).toMatchObject({ id: "sf-search-open-o", target: { role: "link", name: "Zq Quasar {{uid}}" } });
+  });
   it("a hidden check of the deleted record's name right after the delete goes (run 2026-11-13T16-32-07-872Z-36eef730)", async () => {
     const { deletedNameNotChecked } = await import("../src/stages/salesforceGuidance.js");
     const i = ir([fill("Zq Opp Name", "Zq Delete Me {{uid}}"), click("Save"), click("Delete"), click("Delete"),

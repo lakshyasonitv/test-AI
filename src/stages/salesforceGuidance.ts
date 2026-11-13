@@ -131,6 +131,14 @@ const isRecordChange = (s: Step) => isSave(s) || /^(mark (as current stage|stage
  */
 export function globalSearchSubmit(ir: IRSteps): string[] {
   const notes: string[] = [];
+  // The global search box is "Search..." once opened; the model also calls it "Search Salesforce" (run
+  // 2026-11-13T16-45-27-540Z-72773d0c could not type into it).
+  for (const s of ir.steps) {
+    if ((s.action !== "fill" && s.action !== "press") || !/^search\b/i.test((s.target?.name ?? "").trim()) || s.target?.name === "Search...") continue;
+    if (s.target?.role && !/^(searchbox|textbox|combobox)$/.test(s.target.role)) continue;
+    notes.push(`${s.id}: the global search box is "Search...", not "${s.target!.name}"`);
+    s.target = { role: "searchbox", name: "Search..." };
+  }
   for (let i = 1; i < ir.steps.length; i++) {
     const s = ir.steps[i];
     if (s.action !== "click" || !/^search$/i.test((s.target?.name ?? "").trim())) continue;
@@ -147,7 +155,7 @@ export function globalSearchSubmit(ir: IRSteps): string[] {
   // results screen ahead of time.
   for (let i = 1; i < ir.steps.length; i++) {
     const s = ir.steps[i];
-    if (s.action !== "click" || !s.target?.name?.includes("{{uid}}")) continue;
+    if (s.action !== "click" || !s.target?.name) continue;
     let j = i - 1;
     while (j >= 0 && ir.steps[j].action === "wait") j--;
     const prev = ir.steps[j];
@@ -155,7 +163,13 @@ export function globalSearchSubmit(ir: IRSteps): string[] {
     let k = j - 1;
     while (k >= 0 && ir.steps[k].action === "wait") k--;
     const typed = ir.steps[k]?.action === "fill" ? ir.steps[k].value : undefined;
-    ir.steps[i] = { ...s, id: `sf-search-open-${s.id}`, target: { role: "link", name: s.target.name }, ...(typed ? { value: typed } : {}) } as Step;
+    // The record the test made, by the name it was given ("Quasar Robotics {{uid}}"), however the model wrote
+    // the link: without its run code it could be an older record of the same name.
+    const made = ir.steps.slice(0, k).filter((x) => x.action === "fill" && x.value?.includes("{{uid}}")).map((x) => x.value!)
+      .find((v) => lineKey(v.replace(/\{\{uid\}\}/g, "")) === lineKey(s.target!.name!.replace(/\{\{uid\}\}/g, "")));
+    const name = s.target.name.includes("{{uid}}") ? s.target.name : made;
+    if (!name) continue;
+    ir.steps[i] = { ...s, id: `sf-search-open-${s.id}`, target: { role: "link", name }, ...(typed ? { value: typed } : {}) } as Step;
     notes.push(`${s.id}: opens the new record from the search results, searching again until Salesforce has indexed it`);
   }
   return notes;
