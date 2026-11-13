@@ -1421,6 +1421,16 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   // and stopped) is replaced by the whole one below.
   const send = submitAt < 0 ? -1 : ir.steps.findIndex((s, i) => i > submitAt && s.action === "click" && /^submit$/i.test(s.target?.name ?? ""));
   if (submitAt >= 0 && send >= 0) {
+    // The case's menu click before "Submit for Approval" is the RECORD's "Show more actions", by its exact
+    // name: run 2026-11-13T09-29-33-938Z-d995d351 had it grounded to a task row's "Show more actions - TB
+    // Review large deal" (by a CSS path into the activity list) and the whole approval was cut.
+    for (let i = submitAt - 1; i >= 0 && i >= submitAt - 3; i--) {
+      const s = ir.steps[i];
+      if (s.action === "click" && /^show more actions\b/i.test(s.target?.name ?? "")) {
+        ir.steps[i] = { ...s, target: { role: "button", name: "Show more actions" } };
+        break;
+      }
+    }
     at = send + 1;
     while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /submitted/i.test(ir.steps[at].target?.text ?? "")))) at++;
     if (!decision && !ir.steps.slice(at).some((s) => s.action !== "wait")) return [];
