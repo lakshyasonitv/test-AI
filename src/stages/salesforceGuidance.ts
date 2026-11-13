@@ -1297,8 +1297,13 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   });
   if (!saved) return [];
   const { object, n } = saved as { object: string; at: number; n: number };
-  const decision = /\breject\w*\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Reject"
-    : /\bapprov(e|es|ed|ing)\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Approve" : null;
+  // Lazy: "submit it for approval, then recall the approval request" keeps "then recall …".
+  const after = request.replace(/\bsubmit\w*\b[^.]*?\bapproval\b/i, "");
+  // Recall: the submitter pulls the request back (same Approval History menu, a "Recall Approval Request"
+  // dialog; checked live 2026-11-13, the API then says Removed).
+  const decision = /\b(recall\w*|withdr[ae]w\w*)\b/i.test(after) ? "Recall"
+    : /\breject\w*\b/i.test(after) ? "Reject"
+    : /\bapprov(e|es|ed|ing)\b/i.test(after) ? "Approve" : null;
   const dialog = (name: string) => ({ role: "button", name, css: `role=dialog >> role=button[name="${name}"s]` });
   // The case's own submission (runs 2026-11-12T13-02-29-047Z-33e9cc1b and -13-03-30-475Z-d74a26c5 submitted
   // correctly, then wandered: an "Approval History(0)" link, a task's menu, never the approver) is kept up
@@ -1334,7 +1339,8 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   if (decision) {
     // Phase C, two users: the approver decides. The same browser signs in as them (approverSignIn is the
     // run's second user, SECOND_USER_REF) and opens the record the first user created.
-    if (approverSignIn) steps.push({ id: "sf-ap-as-approver", action: "navigate", target: { url: approverSignIn } } as Step);
+    // A recall is the submitter's own action: no switch to the approver.
+    if (approverSignIn && decision !== "Recall") steps.push({ id: "sf-ap-as-approver", action: "navigate", target: { url: approverSignIn } } as Step);
     steps.push(
       { id: "sf-ap-open", action: "navigate", target: { url: recordRef(object, n) } } as Step,
       { id: "sf-ap-related", action: "click", target: { role: "tab", name: "Related" } } as Step,
@@ -1359,5 +1365,5 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
       { id: `sf-ap-check-${f.api}`, action: "assert", target: { field: f.label }, assertion: "text_contains", value: m[2].trim() } as Step);
   }
   ir.steps.push(...steps);
-  return [`the request ${decision ? `submits and ${decision === "Approve" ? "approves" : "rejects"}` : "submits"} the ${o?.label ?? object} for approval -> the approval steps${dropped ? ` (replacing ${dropped} step(s) after the Save)` : ""}${m && f ? `, then checks ${f.label} shows "${m[2].trim()}"` : ""}`];
+  return [`the request ${decision ? `submits and ${decision === "Approve" ? "approves" : decision === "Reject" ? "rejects" : "recalls"}` : "submits"} the ${o?.label ?? object} for approval -> the approval steps${dropped ? ` (replacing ${dropped} step(s) after the Save)` : ""}${m && f ? `, then checks ${f.label} shows "${m[2].trim()}"` : ""}`];
 }

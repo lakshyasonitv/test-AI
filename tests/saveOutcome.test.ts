@@ -965,6 +965,18 @@ describe("approvalSteps", () => {
     expect(p.steps.some((s) => s.id === "sf-ap-decide")).toBe(false);
     expect(approvalSteps(ir([nav("/lightning/o/Zopp/new"), click("Save")]), org as any, "create a Zopp")).toEqual([]);
   });
+  it("recalls as the submitter: the Recall menu item and dialog button, and no switch to the approver", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const r = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(r, org as any, "Create a Zopp, submit it for approval, then recall the approval request", "${env:ZQ_SECOND}");
+    expect(r.steps.find((s) => s.id === "sf-ap-decide")?.target?.name).toBe("Recall");
+    expect(r.steps.find((s) => s.id === "sf-ap-confirm")?.target?.name).toBe("Recall");
+    expect(r.steps.some((s) => s.id === "sf-ap-as-approver")).toBe(false);
+    // Approve still switches to the approver.
+    const a = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(a, org as any, "submit it for approval, then approve it", "${env:ZQ_SECOND}");
+    expect(a.steps.some((s) => s.id === "sf-ap-as-approver")).toBe(true);
+  });
 });
 
 describe("leadConvertSteps: the model's was-created check", () => {

@@ -337,6 +337,8 @@ export async function approvalChecks(
     if (s.action !== "click") continue;
     if (/^approve$/i.test(s.target?.name ?? "")) expected = "Approved";
     else if (/^reject$/i.test(s.target?.name ?? "")) expected = "Rejected";
+    // A recalled request: ProcessInstance.Status is "Removed" (checked live 2026-11-13).
+    else if (/^recall$/i.test(s.target?.name ?? "")) expected = "Removed";
   }
   for (const a of approvals) {
     if (!/^\w+$/.test(a.object)) continue;

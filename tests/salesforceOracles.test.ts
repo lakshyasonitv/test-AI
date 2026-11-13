@@ -141,6 +141,11 @@ describe("approvalChecks", () => {
     expect(out[0]).toMatchObject({ expected: "Pending", ok: true });
     expect(await approvalChecks(vi.fn(), { steps: [click("Save")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] })).toEqual([]);
   });
+  it("expects Removed after a Recall", async () => {
+    const { approvalChecks } = await import("../src/stages/salesforceOracles.js");
+    const out = await approvalChecks(vi.fn(async () => ({ records: [{ Status: "Removed" }] })), { steps: [click("Submit for Approval"), click("Submit"), click("Recall"), click("Recall")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] });
+    expect(out[0]).toMatchObject({ expected: "Removed", actual: "Removed", ok: true });
+  });
 });
 
 describe("calculatedChecks with a shown value", () => {
