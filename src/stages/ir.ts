@@ -7,6 +7,8 @@ import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary, siteHost, pageKey, lineKey } from "../text.js";
 import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion, finalScreenErrors } from "./liveExtend.js";
+import { peekReplayCodes, restoreReplayCodes } from "./replayCodes.js";
+import { currentRunId } from "../runContext.js";
 import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
 import { networkSettleEnabled } from "./networkSettle.js";
 import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, edgeForCapture, routeToControl, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
@@ -2660,6 +2662,11 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // just relocate the "system overrides what I asked for" bug to a different field.
   const finalize = (ir: IR): IR => {
     ir.meta.baseUrl = origin;
+    // A step grounding pinned to a record a REPLAY made ("Quasar Robotics za3lt6"): the run makes its own
+    // record with its own code, and cleanup deletes the replay's, so that name can never be there (run
+    // 2026-11-13T16-58-36-613Z-a34e9804 clicked it and failed). The code goes back to {{uid}}, and a
+    // position-only selector found on the replay's page goes with it.
+    for (const note of restoreReplayCodes(ir.steps, peekReplayCodes(currentRunId() ?? ""))) console.log(`[ir] ${note}`);
     ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
     // TD-156 follow-up: a "none"-policy case (most negative cases) has no `creds`, so the literal ->
     // ${env:} pre-pass inside applyCredentials never ran, and a password the model read off a login
@@ -2941,6 +2948,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
     // Also before grounding, so the added outcome is the terminal assertion the live replay checks.
     if (sfOutcome) {
+      // The model reads names off screens a replay captured, and copies a replay record's code into a step
+      // ("Quasar Robotics za3lt6"): back to {{uid}} before the passes below read the steps.
+      for (const r of restoreReplayCodes(parsed.data.steps, peekReplayCodes(currentRunId() ?? ""))) console.log(`[ir] ${r}`);
       const note = strengthenSaveOutcome(parsed.data);
       if (note) console.log(`[ir] ${note}`);
       for (const r of editSaveConfirmed(parsed.data)) console.log(`[ir] ${r}`);

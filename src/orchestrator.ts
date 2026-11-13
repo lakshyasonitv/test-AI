@@ -16,7 +16,7 @@ import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
 import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, replayMade, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
-import { takeReplayCodes } from "./stages/liveExtend.js";
+import { takeReplayCodes } from "./stages/replayCodes.js";
 import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
 import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, flowRecordChecks, leadConvertChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
