@@ -189,6 +189,9 @@ export function startAuthorization(
     state,
     code_challenge: challenge,
     code_challenge_method: "S256",
+    // Always Salesforce's login page, never the session the browser already has: connecting a second
+    // user (an approver) used to need a private window, or it silently connected the admin again.
+    prompt: "login",
   });
   return { authorizeUrl: `${where.origin}/services/oauth2/authorize?${q.toString()}` };
 }
@@ -234,7 +237,7 @@ export async function completeAuthorization(
   cfg: OAuthConfig | null = oauthConfig(),
   fetchImpl: FetchLike = fetch as unknown as FetchLike,
   deps: PersistenceDeps = {},
-): Promise<{ connectionId: string; host: string; kind: TestOrgKind; orgId: string | null }> {
+): Promise<{ connectionId: string; host: string; kind: TestOrgKind; orgId: string | null; username?: string; name?: string }> {
   const p = pending.get(state);
   pending.delete(state);
   if (!p || Date.now() - p.createdAt > PENDING_TTL_MS) {
@@ -262,7 +265,9 @@ export async function completeAuthorization(
   };
   connections.set(id, c);
   await persistConnection(c, deps);
-  return { connectionId: id, host: inst.hostname, kind, orgId: p.orgId };
+  // Who signed in (their username and name, never a token), for the connections list. Best effort.
+  const who = await identify(c, fetchImpl).catch(() => null);
+  return { connectionId: id, host: inst.hostname, kind, orgId: p.orgId, ...(who ? { username: who.username, name: who.name } : {}) };
 }
 
 /** What a restart must not forget: the storage and the key that seals the refresh token. Both are
@@ -540,4 +545,92 @@ export function resetSalesforceOAuthForTests(): void {
   pending.clear();
   connections.clear();
   restoring.clear();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The connections list (run screen): every saved connection of the caller's organisation, with who
+// signed in, so a person picks "Run as" and a second user (an approver) instead of reconnecting.
+// Who it is (username, display name) is not a secret; it is kept beside the sealed rows in a small
+// local file (no database change), read once when the person connects or when the list first asks.
+// ---------------------------------------------------------------------------------------------
+
+export interface ConnectionLabel { username: string; name: string }
+
+function labelsFile(): string {
+  return process.env.SALESFORCE_CONNECTION_LABELS_FILE?.trim() || path.join(".testbench", "sf-connection-labels.json");
+}
+function readLabels(): Record<string, ConnectionLabel> {
+  try { return JSON.parse(readFileSync(labelsFile(), "utf8")) as Record<string, ConnectionLabel>; } catch { return {}; }
+}
+function writeLabel(id: string, label: ConnectionLabel | null): void {
+  try {
+    const all = readLabels();
+    if (label) all[id] = label; else delete all[id];
+    mkdirSync(path.dirname(labelsFile()), { recursive: true });
+    writeFileSync(labelsFile(), JSON.stringify(all, null, 2));
+  } catch { /* a label is a convenience: the list shows the host instead */ }
+}
+
+/** Who a connection signs in as, from Salesforce's own userinfo endpoint; stored as its label. */
+async function identify(c: Connection, fetchImpl: FetchLike = fetch as unknown as FetchLike): Promise<ConnectionLabel | null> {
+  const res = await fetchImpl(`${c.instanceUrl}/services/oauth2/userinfo`, { headers: { authorization: `Bearer ${c.accessToken}`, accept: "application/json" } });
+  if (!res.ok) return null;
+  const j = await res.json();
+  if (typeof j?.preferred_username !== "string") return null;
+  const label = { username: String(j.preferred_username), name: String(j.name ?? j.preferred_username) };
+  writeLabel(c.id, label);
+  return label;
+}
+
+/** Look a saved connection's user up (restores it once), for one the list does not know yet. */
+export async function identifyConnection(id: unknown, orgId: string | null): Promise<ConnectionLabel | null> {
+  const known = typeof id === "string" ? readLabels()[id] : undefined;
+  if (known) return known;
+  const c = await restoreConnection(id, orgId);
+  return c ? identify(c).catch(() => null) : null;
+}
+
+export interface ConnectionSummary { id: string; host: string; kind: string; createdAt?: string; username?: string; name?: string }
+
+/** The caller's organisation's saved connections (database rows, else the local file), newest first. */
+export async function listConnections(orgId: string | null, deps: PersistenceDeps = {}): Promise<ConnectionSummary[]> {
+  const client = deps.client === undefined ? getServiceClient() : deps.client;
+  const file = connectionsFile(deps);
+  const rows: { id: string; instance_url: string; kind: string; created_at?: string; organisation_id: string | null }[] = [];
+  if (client) {
+    const q = client.from("salesforce_connections").select("id, instance_url, kind, created_at, organisation_id");
+    const { data } = orgId === null ? await q.is("organisation_id", null) : await q.eq("organisation_id", orgId);
+    rows.push(...((data ?? []) as typeof rows));
+  }
+  if (file) for (const r of Object.values(readFileRows(file))) if (r.organisation_id === orgId && !rows.some((x) => x.id === r.id)) rows.push(r);
+  for (const c of connections.values()) {
+    if (c.orgId === orgId && !rows.some((x) => x.id === c.id)) rows.push({ id: c.id, instance_url: c.instanceUrl, kind: c.kind, organisation_id: c.orgId, created_at: new Date(c.createdAt).toISOString() });
+  }
+  const labels = readLabels();
+  return rows
+    .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
+    .map((r) => ({ id: r.id, host: new URL(r.instance_url).hostname, kind: r.kind, ...(r.created_at ? { createdAt: r.created_at } : {}), ...(labels[r.id] ?? {}) }));
+}
+
+/** Forget a connection of the caller's organisation: revoked at Salesforce (best effort), then removed
+ *  from memory, the database, the local file and the labels. False when it is not theirs. */
+export async function forgetConnection(id: unknown, orgId: string | null, deps: PersistenceDeps & { fetchImpl?: FetchLike } = {}): Promise<boolean> {
+  if (typeof id !== "string" || !id) return false;
+  const mine = (await listConnections(orgId, deps)).some((c) => c.id === id);
+  if (!mine) return false;
+  const c = connections.get(id) ?? await restoreConnection(id, orgId, deps).catch(() => null);
+  if (c?.refreshToken) {
+    const fetchImpl = deps.fetchImpl ?? (fetch as unknown as FetchLike);
+    await fetchImpl(`${c.loginOrigin}/services/oauth2/revoke`, {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: c.refreshToken }).toString(),
+    }).catch(() => null);
+  }
+  connections.delete(id);
+  const client = deps.client === undefined ? getServiceClient() : deps.client;
+  if (client) await client.from("salesforce_connections").delete().eq("id", id);
+  const file = connectionsFile(deps);
+  if (file) { const rows = readFileRows(file); delete rows[id]; writeFileRows(file, rows); }
+  writeLabel(id, null);
+  return true;
 }

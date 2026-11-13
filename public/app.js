@@ -3775,6 +3775,8 @@ form.addEventListener("submit", async (e) => {
       ? {
         ...runOptions, targetApp: "salesforce",
         ...(sfConnection ? { sfConnectionId: sfConnection.connectionId } : {}),
+        // Phase C: a second user (the approver), only when approvals are on and one is picked.
+        ...(sfConnection && sfApprovalsOn && sfApproverId && sfApproverId !== sfConnection.connectionId ? { sfApproverConnectionId: sfApproverId } : {}),
         ...(sfConnection && freshDiscoveryBoxEl ? { freshDiscovery: freshDiscoveryBoxEl.checked } : {}),
       }
       : runOptions;
@@ -3795,8 +3797,8 @@ form.addEventListener("submit", async (e) => {
       // TD-166: the server forgot the org connection (it restarted), so stop showing "Connected".
       if (body?.code === "sf-connection-expired" && sfConnectStatusEl) {
         sfConnection = null;
-        try { sessionStorage.removeItem("sfConnection"); } catch { /* ignore */ }
-        sfConnectStatusEl.textContent = "Not connected: the server no longer has this org's connection. Click Connect org.";
+        sfConnectStatusEl.textContent = "That user's connection has expired: connect the user again, or pick another.";
+        loadSfConnections();
       }
       throw new Error(body?.error || `Server responded with HTTP ${res.status}`);
     }
@@ -4007,8 +4009,8 @@ async function startReplay(selection, label) {
     // TD-166: the server no longer holds the org connection this page remembers.
     if (err.code === "sf-connection-expired" && sfConnectStatusEl) {
       sfConnection = null;
-      try { sessionStorage.removeItem("sfConnection"); } catch { /* ignore */ }
-      sfConnectStatusEl.textContent = "Not connected: the server no longer has this org's connection. Click Connect org.";
+      sfConnectStatusEl.textContent = "That user's connection has expired: connect the user again, or pick another.";
+      loadSfConnections();
     }
     toast(err.message);
   }
@@ -5825,28 +5827,143 @@ function renderSalesforceConnect() {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "dl-btn dl-btn-inline";
-  btn.textContent = "Connect org";
-  btn.title = "Sign in to this Salesforce org on Salesforce's own page, so runs never type a password";
   const status = document.createElement("span");
   status.style.cssText = "font-size:12px;opacity:.8";
   status.textContent = "Not connected: the run will ask for a username and password.";
+  btn.textContent = "Connect a user";
+  btn.title = "Sign in to this Salesforce org on Salesforce's own login page (it always asks who), so runs never type a password";
   row.append(btn, status);
   targetAppBoxEl.closest("label").insertAdjacentElement("afterend", row);
   sfConnectStatusEl = status;
   btn.addEventListener("click", connectSalesforceOrg);
-  // A reload must not forget the connection: the id (opaque, never a token) lives for this tab. If the
-  // server has since restarted and forgotten it, the run request says so.
-  try {
-    const saved = JSON.parse(sessionStorage.getItem("sfConnection") || "null");
-    if (saved && saved.connectionId) showSalesforceConnected(saved);
-  } catch { /* storage unavailable: connect again */ }
+  // The saved connections of this organisation, kept by the server across restarts: pick who the run
+  // signs in as (and, with approvals on, a second user). Only opaque ids live in the browser.
+  sfConnListEl = document.createElement("div");
+  sfConnListEl.style.cssText = "margin:6px 0 0 26px;display:flex;flex-direction:column;gap:4px;font-size:13px";
+  row.insertAdjacentElement("afterend", sfConnListEl);
+  urlEl?.addEventListener("change", () => paintSfConnections());
+  loadSfConnections();
 }
 
 function showSalesforceConnected(c) {
   sfConnection = { connectionId: c.connectionId, host: c.host, kind: c.kind };
-  sfConnectStatusEl.textContent = `Connected: ${c.host} (${c.kind}). Runs on this org sign in without a password.`;
+  const who = c.name || c.username ? `${c.name || c.username}${c.username && c.name ? ` (${c.username})` : ""}` : c.host;
+  sfConnectStatusEl.textContent = `Runs sign in as ${who} on ${c.host}, without a password.`;
   if (targetAppBoxEl && !targetAppBoxEl.checked) targetAppBoxEl.checked = true;
+  try { localStorage.setItem("sfRunAs", c.connectionId); } catch { /* ignore */ }
   refreshSavedDiscovery();
+}
+
+// ---- The connections list -------------------------------------------------------------------
+let sfConnections = [];
+let sfConnListEl = null;
+let sfApprovalsOn = false;   // /api/health `sfApprovals`: offer a second user (the approver)
+let sfApproverId = null;
+try { sfApproverId = localStorage.getItem("sfApprover") || null; } catch { /* ignore */ }
+
+/** The org part of a Salesforce host ("acme--uat" of acme--uat.sandbox.my.salesforce.com). */
+function sfOrgKey(host) {
+  return String(host || "").toLowerCase().split(".")[0].replace(/--c$/, "");
+}
+
+async function loadSfConnections(selectId) {
+  try {
+    const r = await fetch("/api/salesforce/connections");
+    const body = await r.json();
+    sfConnections = Array.isArray(body.connections) ? body.connections : [];
+  } catch { sfConnections = []; }
+  let want = selectId || sfConnection?.connectionId;
+  try { want = want || localStorage.getItem("sfRunAs"); } catch { /* ignore */ }
+  const chosen = sfConnections.find((c) => c.id === want);
+  if (chosen) showSalesforceConnected({ connectionId: chosen.id, host: chosen.host, kind: chosen.kind, username: chosen.username, name: chosen.name });
+  else if (!sfConnections.length) { sfConnection = null; sfConnectStatusEl.textContent = "No user connected: the run will ask for a username and password."; }
+  else sfConnectStatusEl.textContent = "Pick who the run signs in as.";
+  if (sfApproverId && !sfConnections.some((c) => c.id === sfApproverId)) sfApproverId = null;
+  paintSfConnections();
+  // Older connections have no name yet: look each up once (the server keeps the answer).
+  for (const c of sfConnections.filter((x) => !x.username)) {
+    try {
+      const r = await fetch(`/api/salesforce/connections/${encodeURIComponent(c.id)}/identify`, { method: "POST" });
+      if (r.ok) { Object.assign(c, await r.json()); paintSfConnections(); }
+      else { c.expired = true; paintSfConnections(); }
+    } catch { /* stays unnamed */ }
+  }
+}
+
+function paintSfConnections() {
+  if (!sfConnListEl) return;
+  sfConnListEl.textContent = "";
+  let host = "";
+  try { host = new URL(absoluteUrl()).hostname; } catch { /* no URL typed yet */ }
+  const shown = sfConnections.filter((c) => !host || sfOrgKey(c.host) === sfOrgKey(host));
+  if (!shown.length) return;
+  const head = document.createElement("div");
+  head.style.cssText = "opacity:.75";
+  head.textContent = "Connected users of this org (sign in as):";
+  sfConnListEl.append(head);
+  for (const c of shown) {
+    const line = document.createElement("div");
+    line.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap";
+    const label = document.createElement("label");
+    label.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "sfRunAs";
+    radio.checked = sfConnection?.connectionId === c.id;
+    radio.disabled = !!c.expired;
+    radio.addEventListener("change", () => {
+      showSalesforceConnected({ connectionId: c.id, host: c.host, kind: c.kind, username: c.username, name: c.name });
+      if (sfApproverId === c.id) { sfApproverId = null; try { localStorage.removeItem("sfApprover"); } catch { /* ignore */ } }
+      paintSfConnections();
+    });
+    const who = document.createElement("span");
+    who.textContent = c.username ? `${c.name || c.username} · ${c.username}` : `${c.host} (looking up who…)`;
+    label.append(radio, who);
+    const meta = document.createElement("span");
+    meta.style.cssText = "opacity:.6;font-size:12px";
+    meta.textContent = c.expired ? "expired: connect this user again" : c.kind;
+    const forget = document.createElement("button");
+    forget.type = "button";
+    forget.className = "dl-btn dl-btn-inline";
+    forget.textContent = "Forget";
+    forget.title = "Remove this connection here and revoke its access at Salesforce";
+    forget.addEventListener("click", async () => {
+      if (!confirm(`Forget ${c.username || c.host}? Runs will no longer sign in as this user until it is connected again.`)) return;
+      await fetch(`/api/salesforce/connections/${encodeURIComponent(c.id)}`, { method: "DELETE" }).catch(() => null);
+      if (sfConnection?.connectionId === c.id) { sfConnection = null; try { localStorage.removeItem("sfRunAs"); } catch { /* ignore */ } }
+      if (sfApproverId === c.id) { sfApproverId = null; try { localStorage.removeItem("sfApprover"); } catch { /* ignore */ } }
+      loadSfConnections();
+    });
+    line.append(label, meta, forget);
+    sfConnListEl.append(line);
+  }
+  // Phase C: a second user in the same run (the approver), any other connected user of this org.
+  const others = shown.filter((c) => c.id !== sfConnection?.connectionId && !c.expired);
+  if (sfApprovalsOn && sfConnection && others.length) {
+    const line = document.createElement("label");
+    line.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:4px";
+    const text = document.createElement("span");
+    text.textContent = "Second user (approver):";
+    const select = document.createElement("select");
+    select.className = "field-select";
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "None";
+    select.append(none);
+    for (const c of others) {
+      const o = document.createElement("option");
+      o.value = c.id;
+      o.textContent = c.username ? `${c.name || c.username} · ${c.username}` : c.host;
+      select.append(o);
+    }
+    select.value = others.some((c) => c.id === sfApproverId) ? sfApproverId : "";
+    select.addEventListener("change", () => {
+      sfApproverId = select.value || null;
+      try { if (sfApproverId) localStorage.setItem("sfApprover", sfApproverId); else localStorage.removeItem("sfApprover"); } catch { /* ignore */ }
+    });
+    line.append(text, select);
+    sfConnListEl.append(line);
+  }
 }
 
 /**
@@ -5950,13 +6067,12 @@ window.addEventListener("message", (ev) => {
   const d = ev.data;
   if (!d || d.type !== "sf-oauth" || !sfConnectStatusEl) return;
   if (d.error) {
-    sfConnection = null;
-    try { sessionStorage.removeItem("sfConnection"); } catch { /* ignore */ }
     sfConnectStatusEl.textContent = d.error;
     return;
   }
-  showSalesforceConnected(d);
-  try { sessionStorage.setItem("sfConnection", JSON.stringify(sfConnection)); } catch { /* ignore */ }
+  // The new user joins the list. The run keeps signing in as whoever it signed in as; with nobody
+  // chosen yet, the new user is.
+  loadSfConnections(sfConnection ? undefined : d.connectionId);
 });
 
 /**
@@ -6146,6 +6262,7 @@ fetch("/api/health")
   .then((r) => r.json())
   .then((h) => {
     if (h && Array.isArray(h.targetApps) && h.targetApps.includes("salesforce")) renderTargetAppBox();
+    if (h && h.sfApprovals === true) sfApprovalsOn = true;
     if (h && h.salesforceOAuth === true) renderSalesforceConnect();
     if (h && h.sfDiscoveryCache === true) renderFreshDiscovery();
     if (h && h.specIntake === true) renderProToggle();
