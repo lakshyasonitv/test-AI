@@ -5921,46 +5921,62 @@ function renderTargetAppBox() {
  */
 let sfConnection = null;
 let sfConnectStatusEl = null;
+let sfPanelEl = null;      // the one card that holds everything Salesforce: users, approver, scan
+let sfConnListEl = null;
+let sfConnections = [];
+let sfApprovalsOn = false;   // /api/health `sfApprovals`: offer a second user (the approver)
+let sfApproverId = null;
+try { sfApproverId = localStorage.getItem("sfApprover") || null; } catch { /* ignore */ }
+
+/** Inline styles from the app's own tokens: rule 3 forbids minting classes. */
+function sfEl(tag, css, text) {
+  const el = document.createElement(tag);
+  if (css) el.style.cssText = css;
+  if (text != null) el.textContent = text;
+  return el;
+}
+const SF_SECTION = "font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)";
+
 function renderSalesforceConnect() {
   if (sfConnectStatusEl || !targetAppBoxEl) return;
-  const row = document.createElement("div");
-  row.style.cssText = "display:flex;align-items:center;gap:10px;margin-top:6px;margin-left:26px;flex-wrap:wrap";
-  const btn = document.createElement("button");
+  const card = sfEl("div", "margin:10px 0 0 26px;padding:14px 16px;border:1px solid var(--line);border-radius:var(--r-lg);"
+    + "background:var(--surface);display:flex;flex-direction:column;gap:10px;font-size:13px;color:var(--text)");
+  const head = sfEl("div", "display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap");
+  const intro = sfEl("div", "display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 240px");
+  intro.append(
+    sfEl("div", SF_SECTION, "Sign in as"),
+    sfEl("div", "color:var(--text-2);font-size:12px;line-height:1.45",
+      "Pick the Salesforce user this run logs in as. Users connect once on Salesforce's own login page, so no password is ever typed."),
+  );
+  const btn = sfEl("button", "white-space:nowrap", "+ Connect a user");
   btn.type = "button";
   btn.className = "dl-btn dl-btn-inline";
-  const status = document.createElement("span");
-  status.style.cssText = "font-size:12px;opacity:.8";
-  status.textContent = "Not connected: the run will ask for a username and password.";
-  btn.textContent = "Connect a user";
-  btn.title = "Sign in to this Salesforce org on Salesforce's own login page (it always asks who), so runs never type a password";
-  row.append(btn, status);
-  targetAppBoxEl.closest("label").insertAdjacentElement("afterend", row);
-  sfConnectStatusEl = status;
+  btn.title = "Opens Salesforce's login page for the org in the URL box. Sign in as the user to add";
   btn.addEventListener("click", connectSalesforceOrg);
-  // The saved connections of this organisation, kept by the server across restarts: pick who the run
-  // signs in as (and, with approvals on, a second user). Only opaque ids live in the browser.
-  sfConnListEl = document.createElement("div");
-  sfConnListEl.style.cssText = "margin:6px 0 0 26px;display:flex;flex-direction:column;gap:4px;font-size:13px";
-  row.insertAdjacentElement("afterend", sfConnListEl);
-  urlEl?.addEventListener("change", () => paintSfConnections());
+  head.append(intro, btn);
+  // Messages from connecting (opening sign-in, errors). Empty = takes no space.
+  const status = sfEl("div", "font-size:12px;color:var(--text-2);line-height:1.45");
+  sfConnListEl = sfEl("div", "display:flex;flex-direction:column;gap:6px");
+  card.append(head, status, sfConnListEl);
+  targetAppBoxEl.closest("label").insertAdjacentElement("afterend", card);
+  sfPanelEl = card;
+  sfConnectStatusEl = status;
+  // The card belongs to a Salesforce run: shown only while the box is ticked.
+  const syncShown = () => { card.style.display = targetAppBoxEl.checked ? "flex" : "none"; };
+  targetAppBoxEl.addEventListener("change", syncShown);
+  syncShown();
+  // `input` only: a `change` fires as focus leaves the URL box, i.e. on the mousedown of a click on a
+  // user row, and the repaint would swallow that click.
+  urlEl?.addEventListener("input", () => paintSfConnections());
   loadSfConnections();
 }
 
 function showSalesforceConnected(c) {
+  const changed = sfConnection?.connectionId !== c.connectionId;
   sfConnection = { connectionId: c.connectionId, host: c.host, kind: c.kind };
-  const who = c.name || c.username ? `${c.name || c.username}${c.username && c.name ? ` (${c.username})` : ""}` : c.host;
-  sfConnectStatusEl.textContent = `Runs sign in as ${who} on ${c.host}, without a password.`;
-  if (targetAppBoxEl && !targetAppBoxEl.checked) targetAppBoxEl.checked = true;
   try { localStorage.setItem("sfRunAs", c.connectionId); } catch { /* ignore */ }
-  refreshSavedDiscovery();
+  if (changed) refreshSavedDiscovery();
 }
-
-// ---- The connections list -------------------------------------------------------------------
-let sfConnections = [];
-let sfConnListEl = null;
-let sfApprovalsOn = false;   // /api/health `sfApprovals`: offer a second user (the approver)
-let sfApproverId = null;
-try { sfApproverId = localStorage.getItem("sfApprover") || null; } catch { /* ignore */ }
 
 /** The org part of a Salesforce host ("acme--uat" of acme--uat.sandbox.my.salesforce.com). */
 function sfOrgKey(host) {
@@ -5973,97 +5989,158 @@ async function loadSfConnections(selectId) {
     const body = await r.json();
     sfConnections = Array.isArray(body.connections) ? body.connections : [];
   } catch { sfConnections = []; }
-  let want = selectId || sfConnection?.connectionId;
-  try { want = want || localStorage.getItem("sfRunAs"); } catch { /* ignore */ }
-  const chosen = sfConnections.find((c) => c.id === want);
-  if (chosen) showSalesforceConnected({ connectionId: chosen.id, host: chosen.host, kind: chosen.kind, username: chosen.username, name: chosen.name });
-  else if (!sfConnections.length) { sfConnection = null; sfConnectStatusEl.textContent = "No user connected: the run will ask for a username and password."; }
-  else sfConnectStatusEl.textContent = "Pick who the run signs in as.";
+  if (selectId) { try { localStorage.setItem("sfRunAs", selectId); } catch { /* ignore */ } sfConnection = null; }
   if (sfApproverId && !sfConnections.some((c) => c.id === sfApproverId)) sfApproverId = null;
   paintSfConnections();
   // Older connections have no name yet: look each up once (the server keeps the answer).
-  for (const c of sfConnections.filter((x) => !x.username)) {
+  for (const c of sfConnections.filter((x) => !x.username && !x.expired)) {
     try {
       const r = await fetch(`/api/salesforce/connections/${encodeURIComponent(c.id)}/identify`, { method: "POST" });
-      if (r.ok) { Object.assign(c, await r.json()); paintSfConnections(); }
-      else { c.expired = true; paintSfConnections(); }
-    } catch { /* stays unnamed */ }
+      if (r.ok) Object.assign(c, await r.json());
+      else c.expired = true;
+    } catch { c.expired = true; }
+    paintSfConnections();
   }
+}
+
+/** This org's connections, split: one usable row per user (the newest), and everything else
+ *  (expired, unidentifiable, or an older duplicate of a listed user) as clean-up candidates. */
+function sfSplitConnections() {
+  let host = "";
+  try { host = stripScheme(urlEl.value).trim() ? new URL(absoluteUrl()).hostname : ""; } catch { /* half-typed URL */ }
+  if (!host) return { host, users: [], stale: [], pending: 0 };
+  const mine = sfConnections.filter((c) => sfOrgKey(c.host) === sfOrgKey(host));
+  const users = [], stale = [];
+  let pending = 0;
+  for (const c of mine) {   // newest first (the server sorts)
+    if (c.expired) stale.push(c);
+    else if (!c.username) pending++;
+    else if (users.some((u) => u.username === c.username)) stale.push(c);
+    else users.push(c);
+  }
+  return { host, users, stale, pending };
+}
+
+function sfInitials(c) {
+  const words = String(c.name || c.username || "?").replace(/@.*/, "").split(/[\s._-]+/).filter(Boolean);
+  return ((words[0]?.[0] ?? "?") + (words[1]?.[0] ?? "")).toUpperCase();
+}
+
+function sfSetApprover(id) {
+  sfApproverId = id || null;
+  try { if (sfApproverId) localStorage.setItem("sfApprover", sfApproverId); else localStorage.removeItem("sfApprover"); } catch { /* ignore */ }
+}
+
+async function sfForget(list, question) {
+  if (!confirm(question)) return;
+  for (const c of list) {
+    await fetch(`/api/salesforce/connections/${encodeURIComponent(c.id)}`, { method: "DELETE" }).catch(() => null);
+    if (sfConnection?.connectionId === c.id) { sfConnection = null; try { localStorage.removeItem("sfRunAs"); } catch { /* ignore */ } }
+    if (sfApproverId === c.id) sfSetApprover(null);
+  }
+  loadSfConnections();
 }
 
 function paintSfConnections() {
   if (!sfConnListEl) return;
   sfConnListEl.textContent = "";
-  let host = "";
-  try { host = new URL(absoluteUrl()).hostname; } catch { /* no URL typed yet */ }
-  const shown = sfConnections.filter((c) => !host || sfOrgKey(c.host) === sfOrgKey(host));
-  if (!shown.length) return;
-  const head = document.createElement("div");
-  head.style.cssText = "opacity:.75";
-  head.textContent = "Connected users of this org (sign in as):";
-  sfConnListEl.append(head);
-  for (const c of shown) {
-    const line = document.createElement("div");
-    line.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap";
-    const label = document.createElement("label");
-    label.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer";
-    const radio = document.createElement("input");
-    radio.type = "radio";
-    radio.name = "sfRunAs";
-    radio.checked = sfConnection?.connectionId === c.id;
-    radio.disabled = !!c.expired;
-    radio.addEventListener("change", () => {
-      showSalesforceConnected({ connectionId: c.id, host: c.host, kind: c.kind, username: c.username, name: c.name });
-      if (sfApproverId === c.id) { sfApproverId = null; try { localStorage.removeItem("sfApprover"); } catch { /* ignore */ } }
-      paintSfConnections();
-    });
-    const who = document.createElement("span");
-    who.textContent = c.username ? `${c.name || c.username} · ${c.username}` : `${c.host} (looking up who…)`;
-    label.append(radio, who);
-    const meta = document.createElement("span");
-    meta.style.cssText = "opacity:.6;font-size:12px";
-    meta.textContent = c.expired ? "expired: connect this user again" : c.kind;
-    const forget = document.createElement("button");
-    forget.type = "button";
-    forget.className = "dl-btn dl-btn-inline";
-    forget.textContent = "Forget";
-    forget.title = "Remove this connection here and revoke its access at Salesforce";
-    forget.addEventListener("click", async () => {
-      if (!confirm(`Forget ${c.username || c.host}? Runs will no longer sign in as this user until it is connected again.`)) return;
-      await fetch(`/api/salesforce/connections/${encodeURIComponent(c.id)}`, { method: "DELETE" }).catch(() => null);
-      if (sfConnection?.connectionId === c.id) { sfConnection = null; try { localStorage.removeItem("sfRunAs"); } catch { /* ignore */ } }
-      if (sfApproverId === c.id) { sfApproverId = null; try { localStorage.removeItem("sfApprover"); } catch { /* ignore */ } }
-      loadSfConnections();
-    });
-    line.append(label, meta, forget);
-    sfConnListEl.append(line);
+  const { host, users, stale, pending } = sfSplitConnections();
+
+  // Who the run signs in as: the remembered choice when it belongs to this org, else the newest user.
+  let want = sfConnection?.connectionId;
+  try { want = want || localStorage.getItem("sfRunAs"); } catch { /* ignore */ }
+  const chosen = users.find((c) => c.id === want) ?? users[0] ?? null;
+  if (chosen) {
+    showSalesforceConnected({ connectionId: chosen.id, host: chosen.host, kind: chosen.kind });
+    if (targetAppBoxEl && !targetAppBoxEl.checked) { targetAppBoxEl.checked = true; targetAppBoxEl.dispatchEvent(new Event("change")); }
+  } else if (sfConnection) { sfConnection = null; refreshSavedDiscovery(); }
+  if (sfApproverId === sfConnection?.connectionId) sfSetApprover(null);
+
+  const note = (text) => sfConnListEl.append(sfEl("div", "padding:12px;border:1px dashed var(--line);border-radius:var(--r-md);"
+    + "color:var(--text-2);font-size:12px;text-align:center;line-height:1.45", text));
+  if (!host) { note("Type the org's URL above to see the users connected to it."); return; }
+  if (!users.length) {
+    note(pending ? "Checking the saved connections…"
+      : "No user is connected to this org yet. Click “+ Connect a user” and sign in on Salesforce's page. "
+        + "Without one, the run asks for a username and password.");
   }
-  // Phase C: a second user in the same run (the approver), any other connected user of this org.
-  const others = shown.filter((c) => c.id !== sfConnection?.connectionId && !c.expired);
-  if (sfApprovalsOn && sfConnection && others.length) {
-    const line = document.createElement("label");
-    line.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:4px";
-    const text = document.createElement("span");
-    text.textContent = "Second user (approver):";
-    const select = document.createElement("select");
-    select.className = "field-select";
-    const none = document.createElement("option");
-    none.value = "";
-    none.textContent = "None";
-    select.append(none);
-    for (const c of others) {
-      const o = document.createElement("option");
-      o.value = c.id;
-      o.textContent = c.username ? `${c.name || c.username} · ${c.username}` : c.host;
-      select.append(o);
-    }
-    select.value = others.some((c) => c.id === sfApproverId) ? sfApproverId : "";
-    select.addEventListener("change", () => {
-      sfApproverId = select.value || null;
-      try { if (sfApproverId) localStorage.setItem("sfApprover", sfApproverId); else localStorage.removeItem("sfApprover"); } catch { /* ignore */ }
+
+  for (const c of users) {
+    const on = c.id === sfConnection?.connectionId;
+    const isApprover = sfApprovalsOn && c.id === sfApproverId;
+    const row = sfEl("div", "display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--r-md);cursor:pointer;"
+      + `border:1px solid ${on ? "var(--accent)" : "var(--line-soft)"};background:${on ? "var(--surface-2)" : "var(--surface)"}`);
+    row.setAttribute("role", "radio");
+    row.setAttribute("aria-checked", String(on));
+    row.tabIndex = 0;
+    row.title = on ? "The run signs in as this user" : "Click to make the run sign in as this user";
+    const dot = sfEl("span", "flex:none;width:14px;height:14px;border-radius:50%;box-sizing:border-box;"
+      + (on ? "border:4px solid var(--accent)" : "border:1.5px solid var(--line)"));
+    const avatar = sfEl("span", "flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;"
+      + "font-size:11px;font-weight:600;background:var(--surface-3);color:var(--accent-deep)", sfInitials(c));
+    const who = sfEl("div", "display:flex;flex-direction:column;min-width:0;flex:1");
+    who.append(
+      sfEl("span", "font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap", c.name || c.username),
+      sfEl("span", "font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap", c.username),
+    );
+    row.append(dot, avatar, who);
+    const badge = (text, strong) => row.append(sfEl("span", "flex:none;font-size:11px;font-weight:600;padding:2px 8px;border-radius:var(--r-pill);"
+      + (strong ? "background:var(--accent);color:#fff" : "background:var(--surface-3);color:var(--accent-deep)"), text));
+    if (on) badge("Runs as", true);
+    if (isApprover) badge("Approver", false);
+    const remove = sfEl("button", "flex:none;background:none;border:0;padding:4px 6px;font-size:12px;color:var(--muted);cursor:pointer;text-decoration:underline", "Remove");
+    remove.type = "button";
+    remove.title = "Remove this user's connection here and revoke its access at Salesforce";
+    remove.addEventListener("click", (e) => {
+      e.stopPropagation();
+      sfForget([c], `Remove ${c.name || c.username}? Runs can no longer sign in as this user until it is connected again.`);
     });
-    line.append(text, select);
-    sfConnListEl.append(line);
+    row.append(remove);
+    const pick = () => {
+      if (on) return;
+      showSalesforceConnected({ connectionId: c.id, host: c.host, kind: c.kind });
+      paintSfConnections();
+    };
+    row.addEventListener("click", pick);
+    row.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); pick(); } });
+    sfConnListEl.append(row);
+  }
+
+  // Phase C: a second user in the same run (the approver), any other connected user of this org.
+  const others = users.filter((c) => c.id !== sfConnection?.connectionId);
+  if (sfApprovalsOn && sfConnection) {
+    const box = sfEl("div", "display:flex;flex-direction:column;gap:4px;margin-top:6px;padding-top:10px;border-top:1px solid var(--line-soft)");
+    box.append(sfEl("div", SF_SECTION, "Approver (second user)"));
+    if (!others.length) {
+      box.append(sfEl("div", "font-size:12px;color:var(--text-2);line-height:1.45",
+        "For approval tests, connect a second user (the one who approves). The run switches to them partway through."));
+    } else {
+      const line = sfEl("label", "display:flex;align-items:center;gap:10px;flex-wrap:wrap");
+      const select = document.createElement("select");
+      select.className = "field-select";
+      select.style.cssText = "max-width:100%";
+      select.append(new Option("Nobody: the run uses one user", ""));
+      for (const c of others) select.append(new Option(`${c.name || c.username} (${c.username})`, c.id));
+      select.value = others.some((c) => c.id === sfApproverId) ? sfApproverId : "";
+      select.addEventListener("change", () => { sfSetApprover(select.value); paintSfConnections(); });
+      line.append(select, sfEl("span", "font-size:12px;color:var(--text-2)", "Approves or rejects when the test asks for it."));
+      box.append(line);
+    }
+    sfConnListEl.append(box);
+  }
+
+  if (stale.length || (pending && users.length)) {
+    const foot = sfEl("div", "display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)");
+    if (pending && users.length) foot.append(sfEl("span", "", "Checking other saved connections…"));
+    if (stale.length) {
+      foot.append(sfEl("span", "", `${stale.length} old or expired connection${stale.length === 1 ? "" : "s"} hidden.`));
+      const clean = sfEl("button", "background:none;border:0;padding:0;font-size:12px;color:var(--accent);cursor:pointer;text-decoration:underline", "Clean up");
+      clean.type = "button";
+      clean.addEventListener("click", () => sfForget(stale,
+        `Remove ${stale.length} old or expired connection${stale.length === 1 ? "" : "s"} for this org? The users listed above stay connected.`));
+      foot.append(clean);
+    }
+    sfConnListEl.append(foot);
   }
 }
 
@@ -6076,15 +6153,15 @@ function paintSfConnections() {
 let freshDiscoveryBoxEl = null;
 let sfCacheStatusEl = null;
 function renderFreshDiscovery() {
-  if (freshDiscoveryBoxEl || !sfConnectStatusEl) return;
-  const label = document.createElement("label");
-  label.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:6px;margin-left:26px;cursor:pointer;font-size:13px";
+  if (freshDiscoveryBoxEl || !sfPanelEl) return;
+  const box = sfEl("div", "display:flex;flex-direction:column;gap:6px;padding-top:10px;border-top:1px solid var(--line-soft)");
+  box.append(sfEl("div", SF_SECTION, "Org scan"));
+  const label = sfEl("label", "display:flex;align-items:center;gap:8px;cursor:pointer");
   label.innerHTML = `<input type="checkbox" class="lib-check" id="sfFreshDiscovery" /> Scan the org again`
-    + `<span style="opacity:.7">(about 8 minutes. Untick to reuse the last scan and start in seconds)</span>`;
-  const status = document.createElement("div");
-  status.style.cssText = "font-size:12px;opacity:.8;margin-left:52px;margin-top:2px";
-  sfConnectStatusEl.parentElement.insertAdjacentElement("afterend", label);
-  label.insertAdjacentElement("afterend", status);
+    + `<span style="color:var(--muted);font-size:12px">about 8 minutes</span>`;
+  const status = sfEl("div", "font-size:12px;color:var(--text-2);line-height:1.45;margin-left:26px");
+  box.append(label, status);
+  sfPanelEl.append(box);
   freshDiscoveryBoxEl = label.querySelector("input");
   sfCacheStatusEl = status;
   let saved = null;
@@ -6129,14 +6206,13 @@ function paintSavedDiscovery() {
   const list = sfSavedScans
     .map((s) => `${s.objects.length ? s.objects.join(" + ") : "general"} (${agoText(s.savedAt)})`).join(", ");
   sfCacheStatusEl.textContent = freshDiscoveryBoxEl?.checked
-    ? `✓ Saved scan available: ${list}. Not used now, because "Scan the org again" is ticked.`
-    : `✓ Saved scan available: ${list}. It is used when your request is about the same objects `
-      + "and nothing in the org's setup (fields, rules, layouts, pages) has changed. Otherwise the run scans again.";
+    ? `Saved scans: ${list}. Ticked, so this run scans afresh. Untick to reuse a saved scan and start in seconds.`
+    : `Saved scans: ${list}. This run reuses one when it covers the same objects and the org's setup hasn't changed; otherwise it scans again.`;
 }
 
 async function connectSalesforceOrg() {
   const url = stripScheme(urlEl.value).trim() ? absoluteUrl() : "";
-  if (!url) { sfConnectStatusEl.textContent = "Type the org's URL first."; return; }
+  if (!url) { sfConnectStatusEl.textContent = "Type the org's URL in the box above first."; return; }
   // Opened synchronously, inside the click, so a popup blocker lets it through; pointed at
   // Salesforce once the server has built the authorise URL.
   const popup = window.open("about:blank", "sfConnect", "width=520,height=720");
@@ -6151,11 +6227,11 @@ async function connectSalesforceOrg() {
     if (!res.ok || !body.authorizeUrl) throw new Error(body.error || `Server responded with HTTP ${res.status}`);
     const win = popup && !popup.closed ? popup : window.open(body.authorizeUrl, "sfConnect", "width=520,height=720");
     if (!win) {
-      sfConnectStatusEl.textContent = "The sign-in window was blocked. Allow pop-ups for this site, then click Connect org again.";
+      sfConnectStatusEl.textContent = "The sign-in window was blocked. Allow pop-ups for this site, then click “+ Connect a user” again.";
       return;
     }
     if (win === popup) popup.location.href = body.authorizeUrl;
-    sfConnectStatusEl.textContent = "Sign in to the org in the window that opened…";
+    sfConnectStatusEl.textContent = "Sign in as the user to add, in the Salesforce window that opened…";
   } catch (err) {
     if (popup && !popup.closed) popup.close();
     sfConnectStatusEl.textContent = err.message;
@@ -6570,7 +6646,7 @@ function renderProToggle() {
   label.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer";
   label.innerHTML = `<input type="checkbox" class="lib-check" id="proToggle" /> Pro &mdash; steer the tests with a requirements document`;
   // After the Salesforce box when it exists, so the two controls keep a stable order.
-  (targetAppBoxEl?.closest("label") || foot).insertAdjacentElement("afterend", label);
+  (sfPanelEl || targetAppBoxEl?.closest("label") || foot).insertAdjacentElement("afterend", label);
   pro.toggleEl = label.querySelector("input");
   pro.toggleEl.addEventListener("change", () => {
     pro.on = pro.toggleEl.checked;
