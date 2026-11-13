@@ -1083,6 +1083,19 @@ describe("customLinkSteps", () => {
     expect(check).toMatchObject({ assertion: "opens_url_contains", target: { role: "link", name: "Zq Delivery" }, value: "http://zq.example/track?n=Zq%2042&lang=en" });
     expect(i.steps.find((s) => s.id === "sf-cl-open-0")?.target?.url).toBe("${record:Zopp:1}");
   });
+  it("a button is checked from the record header; the longer of two nested labels is the one named", async () => {
+    const { customLinkSteps } = await import("../src/stages/salesforceGuidance.js");
+    const both = { ...org, customLinks: [...org.customLinks,
+      { object: "Zopp", label: "Zq TB Delivery", url: "http://zq.example/tb?n={!Zopp.ZqTracking__c}", kind: "link", newWindow: true },
+      { object: "Zopp", label: "Zq Search", url: "https://zq.example/s?q={!Zopp.Name}", kind: "button", newWindow: true }] };
+    const i = ir([nav("/lightning/o/Zopp/new"), fill("Zq Tracking Number", "Zq42"), click("Save")]);
+    expect(customLinkSteps(i, both as any, "check the Zq TB Delivery link of a new Zopp")).toHaveLength(1);
+    expect(i.steps.at(-1)?.value).toBe("http://zq.example/tb?n=Zq42");
+    const j = ir([nav("/lightning/o/Zopp/new"), fill("Zopp Name", "Zq Deal"), click("Save")]);
+    customLinkSteps(j, both as any, "click the Zq Search button of a new Zopp");
+    expect(j.steps.at(-1)).toMatchObject({ target: { role: "button", name: "Zq Search" }, value: "https://zq.example/s?q=Zq%20Deal" });
+    expect(j.steps.some((s) => s.target?.name === "Details")).toBe(false);
+  });
   it("stays on the Details tab: the record-view pass leaves the link check there", async () => {
     const { customLinkSteps, fieldChecksOnRecordView } = await import("../src/stages/salesforceGuidance.js");
     const i = ir([nav("/lightning/o/Zopp/new"), fill("Zq Tracking Number", "Zq 42"), click("Save")]);

@@ -427,5 +427,9 @@ describe("generateSpec — opens_url_contains", () => {
     expect(s).toContain('u.searchParams.get("url")');
     expect(s).toContain(String.raw`new RegExp("http://zq\\.example/track\\?n=1")`);
     expect(() => spec([{ id: "b", action: "assert", target: { role: "link", name: "Zq" }, assertion: "opens_url_contains", value: "" }])).toThrow();
+    // A link never looks in the actions menu; a button does, when the header lacks it.
+    expect(s).not.toContain("Show more actions");
+    const b = spec([{ id: "c", action: "assert", target: { role: "button", name: "Zq Search" }, assertion: "opens_url_contains", value: "https://zq.example/s" }]);
+    expect(b).toContain('page.getByRole("menuitem", { name: "Zq Search", exact: true })');
   });
 });

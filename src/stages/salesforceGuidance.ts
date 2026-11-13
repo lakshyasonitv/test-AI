@@ -1301,10 +1301,13 @@ export function calculatedFieldReads(ir: IRSteps, org: Pick<SalesforceOrgModel, 
  * section is), and the link is checked by the address it opens. That address is the link's URL with its
  * {!merge} fields filled from what the case typed; past the first one the case did not type, only the
  * part before it is checked. The case's own steps on the link after the Save (a click that opens a new
- * tab, a check of an address) are replaced. Links only: a custom button's place in Lightning varies.
+ * tab, a check of an address) are replaced. A custom button is checked the same way, from the record header.
  */
 export function customLinkSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "customLinks"> | undefined, request: string): string[] {
-  const asked = (org?.customLinks ?? []).filter((l) => l.kind === "link" && lineKey(request).includes(lineKey(l.label)));
+  const named = (org?.customLinks ?? []).filter((l) => ` ${lineKey(request)} `.includes(` ${lineKey(l.label)} `));
+  // "TB Delivery Status" names that link, not also the "Delivery Status" inside its words.
+  const asked = named.filter((l) => !named.some((m) => m !== l && m.object === l.object && lineKey(m.label).length > lineKey(l.label).length
+    && ` ${lineKey(m.label)} `.includes(` ${lineKey(l.label)} `)));
   if (!asked.length) return [];
   // The records the case saved, by object, in order (recordRef numbers them the same way).
   let form: string | null = null;
@@ -1348,7 +1351,7 @@ export function customLinkSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
       (s.target?.name && lineKey(s.target.name) === lineKey(link.label))
       || (s.target?.text && lineKey(s.target.text) === lineKey(link.label))
       || (s.action === "assert" && s.assertion === "url_contains")));
-    ir.steps.push(
+    const added: Step[] = link.kind === "link" ? [
       { id: `sf-cl-open-${notes.length}`, action: "navigate", target: { url: recordRef(link.object, saved.n) } } as Step,
       { id: `sf-cl-details-${notes.length}`, action: "click", target: { role: "tab", name: "Details" } } as Step,
       { id: `sf-cl-wait-${notes.length}`, action: "wait", value: "1500" } as Step,
@@ -1356,8 +1359,15 @@ export function customLinkSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
       // Links" heading (run 2026-11-13T08-00-06-682Z-51e74c8b: "Delivery Status" shown, no heading).
       { id: `sf-cl-shown-${notes.length}`, action: "assert", target: { text: link.label }, assertion: "visible" } as Step,
       { id: `sf-cl-check-${notes.length}`, action: "assert", target: { role: "link", name: link.label }, assertion: "opens_url_contains", value: expected } as Step,
-    );
-    notes.push(`the ${o?.label ?? link.object}'s custom link "${link.label}" -> checks it opens "${expected}"${before > ir.steps.length - 5 ? ` (replacing ${before - (ir.steps.length - 5)} step(s) of the case's)` : ""}`);
+    ] : [
+      // A button is in the record's header, or under its "Show more actions" menu (the spec looks there
+      // when the header has no such button).
+      { id: `sf-cl-open-${notes.length}`, action: "navigate", target: { url: recordRef(link.object, saved.n) } } as Step,
+      { id: `sf-cl-wait-${notes.length}`, action: "wait", value: "2000" } as Step,
+      { id: `sf-cl-check-${notes.length}`, action: "assert", target: { role: "button", name: link.label }, assertion: "opens_url_contains", value: expected } as Step,
+    ];
+    ir.steps.push(...added);
+    notes.push(`the ${o?.label ?? link.object}'s custom ${link.kind} "${link.label}" -> checks it opens "${expected}"${before > ir.steps.length - added.length ? ` (replacing ${before - (ir.steps.length - added.length)} step(s) of the case's)` : ""}`);
   }
   return notes;
 }

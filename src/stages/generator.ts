@@ -189,9 +189,21 @@ function emitAssert(step: Step): string {
         `      try { const u = new URL(r.url()); if (/ExternalRedirect/i.test(u.pathname) && u.searchParams.get("url")) asked.push(u.searchParams.get("url")); } catch { /* not a URL */ }`,
         `    };`,
         `    page.context().on("request", onRequest);`,
+        `    let clickable = ${locator(t)};`,
+        // A record's button that is not in its header is under "Show more actions" (Lightning shows the
+        // first few only), as a menu item of the same name.
+        ...(t.role === "button" && t.name ? [
+          `    if (!(await clickable.isVisible().catch(() => false))) {`,
+          `      const more = page.getByRole("button", { name: "Show more actions", exact: true }).first();`,
+          `      if (await more.isVisible().catch(() => false)) {`,
+          `        await more.click();`,
+          `        clickable = page.getByRole("menuitem", { name: ${q(t.name)}, exact: true }).first();`,
+          `      }`,
+          `    }`,
+        ] : []),
         `    const [opened] = await Promise.all([`,
         `      page.context().waitForEvent("page", { timeout: 15000 }).catch(() => null),`,
-        `      ${locator(t)}.click({ timeout: ${ASSERT_TIMEOUT_MS} }),`,
+        `      clickable.click({ timeout: ${ASSERT_TIMEOUT_MS} }),`,
         `    ]);`,
         `    const where = opened ?? page;`,
         `    try {`,
