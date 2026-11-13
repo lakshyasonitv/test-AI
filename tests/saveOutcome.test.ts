@@ -992,9 +992,20 @@ describe("approvalSteps", () => {
     const m = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
     approvalSteps(m, two as any, "Create a Zopp, submit it for approval, then approve both steps");
     expect(m.steps.filter((s) => /^sf-ap-decide/.test(s.id)).map((s) => s.id)).toEqual(["sf-ap-decide", "sf-ap-decide-2"]);
+    // Every round's Comments box is the dialog's own.
+    for (const c of m.steps.filter((s) => /^sf-ap-comment2/.test(s.id))) expect(c.target?.css).toBe('role=dialog >> role=textbox[name="Comments"s]');
     const one = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
     approvalSteps(one, two as any, "Create a Zopp, submit it for approval, then approve it");
     expect(one.steps.filter((s) => /^sf-ap-decide/.test(s.id))).toHaveLength(1);
+  });
+  it("pins the case's own menu click before Submit for Approval to the record's Show more actions", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const taskMenu = { id: "m", action: "click", target: { role: "button", name: "Show more actions - Zq Review task", css: "#upcoming-activities-section-zq > a" } } as Step;
+    const submit = { id: "sub", action: "click", target: { role: "menuitem", name: "Submit for Approval" } } as Step;
+    const send = { id: "send", action: "click", target: { role: "button", name: "Submit" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), created, taskMenu, submit, send]);
+    approvalSteps(i, org as any, "Create a Zopp, submit it for approval, then approve it");
+    expect(i.steps.find((s) => s.id === "m")?.target).toEqual({ role: "button", name: "Show more actions" });
   });
   it("recalls as the submitter: the Recall menu item and dialog button, and no switch to the approver", async () => {
     const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");

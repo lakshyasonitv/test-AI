@@ -1243,6 +1243,15 @@ export function groundingError(
     // unverified enters the case through this door. The fresh-run compile path passes no scope
     // and still checks every step.
     if (onlySet && !onlySet.has(index)) continue;
+    // A later round of a multi-step approval (salesforceGuidance approvalSteps: "sf-ap-decide-2") repeats
+    // round 1's step on the same record, and round 1 was grounded. Its live capture cannot reproduce
+    // the second step's pending request (run 2026-11-13T09-03-00-638Z-80eeb68e dropped the whole approval
+    // over it; checked live: the approver's menu offers Approve again at step 2).
+    if (/^sf-ap-.+-\d+$/.test(step.id)) {
+      const first = ir.steps.find((s) => s.id === step.id.replace(/-\d+$/, ""));
+      if (first && first.action === step.action && first.target?.role === t?.role && first.target?.name === t?.name
+        && first.target?.url === t?.url) continue;
+    }
     // The DOM may have changed under this step (a click on a button, not a link) and that screen
     // has not been captured yet. Before the selector skip below: a selector known from ANOTHER
     // screen of the same URL would otherwise wave the step through. D-52.
