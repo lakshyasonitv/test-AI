@@ -289,3 +289,16 @@ describe("a record another one uses is deleted after it (run 2026-11-13T19-05-44
     expect(r.failed).toEqual([]);
   });
 });
+
+describe("a lookup's typed text names no record of this form (run 2026-11-13T19-16-31-705Z-1c10477d)", () => {
+  it("is not searched for", async () => {
+    const { replayMade } = await import("../src/stages/salesforceCleanup.js");
+    const org = { objects: [{ api: "ZqAppt", fields: [{ label: "Zq Parent", api: "ZqParentId", type: "Reference", lookup: "Account" }, { label: "Subject", api: "Subject", type: "String" }] }] };
+    const steps = [
+      { action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { action: "fill", target: { name: "Zq Parent" }, value: "Zq Acme {{uid}}" },
+      { action: "fill", target: { name: "Subject" }, value: "Zq visit {{uid}}" },
+    ];
+    expect(replayMade(steps, ["ab12cd"], org)).toEqual([{ object: "ZqAppt", name: "Zq visit ab12cd", field: "Subject" }]);
+  });
+});

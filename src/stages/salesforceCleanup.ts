@@ -234,8 +234,8 @@ export function screenFlowMade(
  * exactly those, this user's, made since the run began.
  */
 export function replayMade(
-  steps: { action: string; value?: string; target?: { url?: string; name?: string } }[], codes: string[],
-  org?: { objects: { api: string; fields: { label: string; api: string }[] }[] },
+  steps: { action: string; value?: string; target?: { url?: string; name?: string; lookup?: boolean } }[], codes: string[],
+  org?: { objects: { api: string; fields: { label: string; api: string; type?: string; lookup?: string }[] }[] },
 ): { object: string; name: string; field?: string }[] {
   const out: { object: string; name: string; field?: string }[] = [];
   let form: string | null = null;
@@ -246,7 +246,11 @@ export function replayMade(
       if (!/^[a-z0-9]{4,12}$/.test(code)) continue;
       const name = s.value.replace(/\{\{uid\}\}/g, code).replace(/\{\{[^}]*\}\}/g, "").trim();
       const o = org?.objects.find((x) => x.api === form);
-      const api = o?.fields.find((f) => f.label.toLowerCase() === (s.target?.name ?? "").trim().toLowerCase())?.api;
+      const typedIn = o?.fields.find((f) => f.label.toLowerCase() === (s.target?.name ?? "").trim().toLowerCase());
+      // A lookup's typed text names another record, never this one (run 2026-11-13T19-16-31-705Z-1c10477d
+      // queried Service Appointments by "Parent Record" 9 times, HTTP 400): only a text field is searched.
+      if (s.target?.lookup || typedIn?.lookup || (typedIn?.type && !/^(String|Email|Phone|Url)$/i.test(typedIn.type))) continue;
+      const api = typedIn?.api;
       const field = o && !o.fields.some((f) => f.api === "Name") && api ? api : undefined;
       if (name && !out.some((x) => x.object === form && x.name === name)) out.push({ object: form, name, ...(field ? { field } : {}) });
     }
