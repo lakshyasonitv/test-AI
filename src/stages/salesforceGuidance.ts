@@ -192,6 +192,37 @@ export function globalSearchSubmit(ir: IRSteps): string[] {
 }
 
 /**
+ * A lookup that can hold several objects (a Service Appointment's Parent Record: Account, Work Order, Asset...)
+ * searches one object at a time, Account first: the Work Order the case made was never offered (run
+ * 2026-11-13T19-05-25-624Z-90c95d42 "Available: Quasar Robotics ..."). When the record it names was made earlier
+ * in the case, on object X, the field's "Choose an object" menu picks X first. Returns notes.
+ */
+export function polymorphicLookupObject(ir: IRSteps, org: SalesforceOrgModel | undefined): string[] {
+  const notes: string[] = [];
+  if (!org) return notes;
+  let form: string | null = null;
+  const made = new Map<string, string>();   // a typed name -> the object whose form typed it
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action === "navigate") { form = /\/lightning\/o\/(\w+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; continue; }
+    if (!form) continue;
+    if (s.action === "fill" && s.value?.includes("{{uid}}") && !s.target?.lookup) { made.set(lineKey(s.value), form); continue; }
+    if (s.action !== "select" || !s.target?.lookup || !s.value) continue;
+    const label = (s.target.name ?? "").trim().toLowerCase();
+    const targets = org.objects.find((o) => o.api === form)?.fields.find((f) => f.label.toLowerCase() === label)?.lookup?.split("/") ?? [];
+    const of = made.get(lineKey(s.value));
+    if (targets.length < 2 || !of || !targets.includes(of)) continue;
+    const prev = ir.steps[i - 1];
+    if (prev?.action === "select" && /^choose an object$/i.test(prev.target?.name ?? "")) continue;
+    const objLabel = org.objects.find((o) => o.api === of)?.label ?? of.replace(/([a-z])([A-Z])/g, "$1 $2");
+    ir.steps.splice(i, 0, { id: `sf-poly-${s.id}`, action: "select", target: { role: "combobox", name: "Choose an object" }, value: objLabel } as Step);
+    notes.push(`${s.id}: "${s.target.name}" can hold several objects -> picks "${objLabel}" in its object menu first`);
+    i++;
+  }
+  return notes;
+}
+
+/**
  * A lookup that picks a record the case made, written without its run code ("Pump X200" for the Asset typed
  * as "Pump X200 {{uid}}", run 2026-11-13T18-17-16-000Z-b895ffda): Salesforce offers every "Pump X200 ..."
  * (other runs', the grounding replays'), so it gets the code back and picks this run's record. Returns notes.

@@ -1073,3 +1073,22 @@ describe("date-time fields (runs 2026-11-13T18-30-28-619Z-653368f1, 18-35-51-793
     expect(ir.steps[3].id).toBe("c");
   });
 });
+
+describe("date-time boxes named just Date or Time (run 2026-11-13T19-05-25-624Z-90c95d42)", () => {
+  it("drops them, and gives each date-time field the request sets its own step before Save", () => {
+    const org = { userLocale: "en_US", objects: [{ api: "ZqAppt", label: "Zq Appt", fields: [
+      { label: "Zq Earliest", api: "ZqEarliest__c", type: "DateTime" },
+      { label: "Zq Due", api: "ZqDue__c", type: "DateTime" },
+    ] }] } as any;
+    const ir = { meta: {}, steps: [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { id: "a", action: "fill", target: { role: "textbox", name: "Date" }, value: "tomorrow" },
+      { id: "b", action: "fill", target: { role: "textbox", name: "Date" }, value: "in 3 days" },
+      { id: "s", action: "click", target: { role: "button", name: "Save" } },
+    ] } as unknown as IR;
+    dateTimeFills(ir, org, "Create a Zq Appt with Zq Earliest tomorrow and Zq Due in 3 days");
+    expect(ir.steps.map((s) => s.id)).toEqual(["n", "sf-dt-req-ZqEarliest__c", "sf-dt-req-ZqDue__c", "s"]);
+    expect(ir.steps[1].value).toBe("{{date:+1:en-US}} 10:30 AM");
+    expect(ir.steps[2].value).toBe("{{date:+3:en-US}} 10:30 AM");
+  });
+});

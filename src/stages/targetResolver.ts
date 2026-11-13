@@ -370,12 +370,18 @@ export const OPTION_PROBE_JS = `(el, wanted) => {
     if (val.length > 0 || (label.length > 0 && i > 0)) populated = true;
     if (label.toLowerCase() === want || val.toLowerCase() === want) return { index: i, populated: true };
   }
+  // The closest option holding the value: the shortest one that contains it ("Work Orders", not "Work Order
+  // Line Items"; run 2026-11-13T19-05-44-514Z-52f348c0 took the first holding "GMT"), else the longest the
+  // value contains.
+  let best = -1, bestLen = 0, inner = -1, innerLen = 0;
   for (let i = 0; i < opts.length; i++) {
     const label = (opts[i].label || opts[i].textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    if (label.length > 0 && (label.indexOf(want) !== -1 || want.indexOf(label) !== -1)) {
-      return { index: i, populated: true };
-    }
+    if (!label.length) continue;
+    if (label.indexOf(want) !== -1 && (best < 0 || label.length < bestLen)) { best = i; bestLen = label.length; }
+    else if (want.indexOf(label) !== -1 && label.length > innerLen) { inner = i; innerLen = label.length; }
   }
+  if (best >= 0) return { index: best, populated: true };
+  if (inner >= 0) return { index: inner, populated: true };
   return { index: -1, populated: populated };
 }`;
 export const optionProbeFn = new Function(`return (${OPTION_PROBE_JS});`)() as
@@ -387,11 +393,14 @@ export const MATCH_OPTION_INDEX_JS = `(texts, wanted) => {
   for (let i = 0; i < texts.length; i++) {
     if (String(texts[i]).replace(/\\s+/g, " ").trim().toLowerCase() === want) return i;
   }
+  let best = -1, bestLen = 0, inner = -1, innerLen = 0;
   for (let i = 0; i < texts.length; i++) {
     const t = String(texts[i]).replace(/\\s+/g, " ").trim().toLowerCase();
-    if (t.length > 0 && (t.indexOf(want) !== -1 || want.indexOf(t) !== -1)) return i;
+    if (!t.length) continue;
+    if (t.indexOf(want) !== -1 && (best < 0 || t.length < bestLen)) { best = i; bestLen = t.length; }
+    else if (want.indexOf(t) !== -1 && t.length > innerLen) { inner = i; innerLen = t.length; }
   }
-  return -1;
+  return best >= 0 ? best : inner;
 }`;
 export const matchOptionIndexFn = new Function(`return (${MATCH_OPTION_INDEX_JS});`)() as
   (texts: string[], wanted: string) => number;

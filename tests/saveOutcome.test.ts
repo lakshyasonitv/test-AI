@@ -1320,3 +1320,23 @@ describe("a date-time step in the spec (run 2026-11-13T18-30-28-619Z-653368f1)",
     expect(spec).toContain(String.raw`replace(/\s+/g, " ")`);
   });
 });
+
+describe("a lookup that holds several objects (run 2026-11-13T19-05-25-624Z-90c95d42)", () => {
+  it("picks the made record's object in the field's object menu first", async () => {
+    const { polymorphicLookupObject } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [
+      { api: "ZqJob", label: "Zq Job", fields: [] },
+      { api: "ZqAppt", label: "Zq Appt", fields: [{ label: "Zq Parent", api: "ZqParent", type: "Reference", lookup: "Account/ZqJob" }, { label: "Zq Acct", api: "ZqAcct", type: "Reference", lookup: "Account" }] },
+    ] } as any;
+    const i = ir([
+      { id: "n1", action: "navigate", target: { url: "/lightning/o/ZqJob/new" } },
+      { id: "f", action: "fill", target: { role: "textbox", name: "Subject" }, value: "Zq meter {{uid}}" },
+      { id: "n2", action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { id: "p", action: "select", target: { role: "combobox", name: "Zq Parent", lookup: true }, value: "Zq meter {{uid}}" },
+      { id: "q", action: "select", target: { role: "combobox", name: "Zq Acct", lookup: true }, value: "Zq meter {{uid}}" },
+    ] as Step[]);
+    expect(polymorphicLookupObject(i, org)).toHaveLength(1);
+    expect(i.steps.map((s) => s.id)).toEqual(["n1", "f", "n2", "sf-poly-p", "p", "q"]);
+    expect(i.steps[3]).toMatchObject({ action: "select", target: { name: "Choose an object" }, value: "Zq Job" });
+  });
+});

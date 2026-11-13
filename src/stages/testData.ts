@@ -190,21 +190,48 @@ export function dateTimeFills(ir: IR, org: AppModel["salesforceOrg"], request = 
   const notes: string[] = [];
   if (!org) return notes;
   const locale = (org.userLocale ?? "en-US").replace("_", "-");
+  const askedFor = (label: string) => {
+    const esc = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${esc}\\b\\s*(?:of|on|at|as|to|=|:)?\\s*((?:in\\s+)?\\d{1,3}\\s+days?(?:\\s+from\\s+(?:now|today))?|today|tomorrow|yesterday|next\\s+week)`, "i").exec(request)?.[1];
+  };
   let o: OrgObject | undefined;
-  for (const s of ir.steps) {
+  let done = new Set<string>();
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
     const m = s.action === "navigate" ? /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "") : null;
-    if (m) { o = org.objects.find((x) => x.api === m[1]); continue; }
-    if (!o || (s.action !== "fill" && s.action !== "select") || s.id.startsWith("sf-dt-")) continue;
+    if (m) { o = org.objects.find((x) => x.api === m[1]); done = new Set(); continue; }
+    if (!o || !o.fields.some((x) => x.type === "DateTime")) continue;
+    // The form's Save: each date-time field the request names gets its step first, if none wrote it.
+    if (s.action === "click" && /^save$/i.test((s.target?.name ?? "").trim())) {
+      for (const f of o.fields.filter((x) => x.type === "DateTime" && !done.has(x.api) && askedFor(x.label) !== undefined)) {
+        const step = { id: `sf-dt-req-${f.api}`, action: "fill", target: { role: "group", name: f.label }, value: dateTimeValue("", f.label, locale, request, askedFor(f.label)) } as IR["steps"][number];
+        ir.steps.splice(i, 0, step);
+        i++;
+        done.add(f.api);
+        notes.push(`${step.id}: the request sets date-time "${f.label}" -> "${step.value}"`);
+      }
+      continue;
+    }
+    if (s.action !== "fill" && s.action !== "select") continue;
     const name = (s.target?.name ?? s.target?.label ?? "").split("*").join("").trim().toLowerCase();
+    // A box named just "Date" or "Time" on a form with date-time fields names none of them (the first such box
+    // on the page took both "tomorrow" and "in 3 days", run 2026-11-13T19-05-25-624Z-90c95d42): the field's own
+    // step does it.
+    if (/^(date|time)$/.test(name) && !o.fields.some((x) => x.label.toLowerCase() === name)) {
+      notes.push(`${s.id}: a box named "${s.target?.name}" names no date-time field -> dropped (each field's own step fills it)`);
+      ir.steps.splice(i, 1);
+      i--;
+      continue;
+    }
+    if (s.id.startsWith("sf-dt-")) { const f = o.fields.find((x) => x.label === s.target?.name); if (f) done.add(f.api); continue; }
     const f = o.fields.find((x) => x.type === "DateTime" && x.label.toLowerCase() === name);
     if (!f) continue;
-    const esc = f.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const asked = new RegExp(`\\b${esc}\\b\\s*(?:of|on|at|as|to|=|:)?\\s*((?:in\\s+)?\\d{1,3}\\s+days?(?:\\s+from\\s+(?:now|today))?|today|tomorrow|yesterday|next\\s+week)`, "i").exec(request)?.[1];
     const was = s.value ?? "";
     s.id = `sf-dt-${s.id}`;
     s.action = "fill";
     s.target = { role: "group", name: f.label };
-    s.value = dateTimeValue(was, f.label, locale, request, asked);
+    s.value = dateTimeValue(was, f.label, locale, request, askedFor(f.label));
+    done.add(f.api);
     notes.push(`${s.id}: date-time "${f.label}" "${was}" -> "${s.value}", typed into its Date and Time boxes`);
   }
   return notes;

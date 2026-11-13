@@ -24,7 +24,7 @@ import {
 import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import {
-  salesforceGuidance, strengthenSaveOutcome, editSaveConfirmed, activitySubjectTyped, globalSearchSubmit, deletedNameNotChecked, autoNumberLinkNotChecked, madeRecordLookups, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
+  salesforceGuidance, strengthenSaveOutcome, editSaveConfirmed, activitySubjectTyped, globalSearchSubmit, deletedNameNotChecked, autoNumberLinkNotChecked, madeRecordLookups, polymorphicLookupObject, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
   returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, requestedTextChecks, noTokensInRuleFields, pathStageClicks, seededLookups, placeholderMessages, eventRecordSearch, leadConvertSteps, calculatedFieldReads, approvalSteps, customLinkSteps, valuesFromRequest,
 } from "./salesforceGuidance.js";
 import { FRONTDOOR_REF, SECOND_USER_REF, currentFrontdoor, isFrontdoorRef, isSecondUserRef, recordRefObject } from "./salesforceFrontdoor.js";
@@ -2971,6 +2971,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       for (const r of deleteNamedRecord(parsed.data, currentModel.salesforceOrg, `${sourcePrompt}\n${testCase.title}\n${(testCase.steps ?? []).join("\n")}`)) console.log(`[ir] ${r}`);
       for (const r of pathStageClicks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of seededLookups(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${r}`);
+      for (const r of polymorphicLookupObject(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${r}`);
       for (const r of leadConvertSteps(parsed.data)) console.log(`[ir] ${r}`);
       for (const r of approvalSteps(parsed.data, currentModel.salesforceOrg, sourcePrompt, currentFrontdoor()?.second ? SECOND_USER_REF : undefined)) console.log(`[ir] ${r}`);
       for (const r of customLinkSteps(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
