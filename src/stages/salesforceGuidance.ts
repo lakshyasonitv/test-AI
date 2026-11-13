@@ -815,7 +815,9 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
     // On Details, a visible check of text that is no field of the record (a related record's name, run
     // 2026-11-10T05-56-59-108Z-b85b16e9: the Case "TB Onboarding" on the Account) is on the Related tab.
     // A "contains" check on that text reads the same (run 2026-11-10T15-46-12-893Z-4e645505: "TB Onboarding" text_contains).
-    if (onDetails && (s.assertion === "visible" || valueCheck) && text && !s.target?.role && !s.target?.field
+    // customLinkSteps' own "Custom Links" section check is on Details by design (run
+    // 2026-11-13T07-54-34-011Z-9a55e65c was sent to Related, where there is none).
+    if (onDetails && !s.id.startsWith("sf-cl-") && (s.assertion === "visible" || valueCheck) && text && !s.target?.role && !s.target?.field
       && !fieldLabels.has(text) && !fields.some((f) => f.picklist?.includes(text)) && !isShownValue(text)
       && !/\bwas (created|saved|deleted)\b/.test(text)
       // A value the case typed or picked (a lookup's record name) is that field's value, on Details (run
