@@ -95,11 +95,22 @@ describe("seedExistingRecords", () => {
     expect(orgModelForCases(org)).toContain('ALREADY CREATED for this test, through the API');
   });
 
-  it("seeds nothing without 'existing', and refuses a record with a required lookup", async () => {
+  it("seeds nothing without 'existing'; a record with a required lookup gets its parent made first", async () => {
     const apiPost = vi.fn();
     expect(await seedExistingRecords({ apiGet: vi.fn(), apiPost }, model(), "Create a Zq Acct", "x")).toEqual([]);
-    const out = await seedExistingRecords({ apiGet: vi.fn(), apiPost }, model(), "Open an existing Zq Kid", "x");
-    expect(out[0].error).toMatch(/required lookup Zq Parent/);
-    expect(apiPost).not.toHaveBeenCalled();
+    const posts: any[] = [];
+    let n = 0;
+    const out = await seedExistingRecords({ apiGet: vi.fn(async () => ({})), apiPost: vi.fn(async (p: string, b: unknown) => { posts.push([p, b]); return { id: `a0${++n}zq000000001AAA` }; }) },
+      model(), "Open an existing Zq Kid", "x");
+    expect(posts.map((p) => p[0])).toEqual(["/sobjects/Zq_Acct__c/", "/sobjects/Zq_Kid__c/"]);
+    expect(posts[1][1]).toMatchObject({ Parent__c: "a01zq000000001AAA" });
+    // Parent first in the list: cleanup deletes in reverse, so the child goes first.
+    expect(out.map((r) => r.object)).toEqual(["Zq_Acct__c", "Zq_Kid__c"]);
+  });
+
+  it("refuses when the parent cannot be made, naming why", async () => {
+    const out = await seedExistingRecords({ apiGet: vi.fn(async () => ({})), apiPost: vi.fn(async () => { throw new Error("Zq refused"); }) },
+      model(), "Open an existing Zq Kid", "x");
+    expect(out[0].error).toMatch(/required lookup Zq Parent \(Zq refused\)/);
   });
 });

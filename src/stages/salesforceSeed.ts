@@ -1,5 +1,6 @@
 import type { SalesforceOrgModel } from "../schema/appModel.js";
 import type { FrontdoorSession } from "./salesforceFrontdoor.js";
+import { fitToField } from "./testData.js";
 
 /**
  * Phase D, seeding (SALESFORCE_SEED_ENABLED, default off): what a test needs that no screen can do,
@@ -96,15 +97,29 @@ export function withoutPublishSteps<C extends { steps: string[] }>(cases: C[]): 
 export async function seedExistingRecords(session: Session, org: SalesforceOrgModel, request: string, uid: string): Promise<{ object: string; name: string; id?: string; error?: string }[]> {
   const out: { object: string; name: string; id?: string; error?: string }[] = [];
   const asked = [...request.matchAll(/\b(?:an?\s+)?(?:existing|pre-?existing|already existing)\s+([A-Za-z][\w ]{1,40}?)(?=\b(?:\s+(?:and|with|that|for|then|to|in|on)\b|[.,;]|$))/gi)].map((m) => m[1].trim().toLowerCase());
-  for (const want of new Set(asked)) {
-    const o = org.objects.find((x) => [x.label, x.labelPlural, x.api].some((n) => n?.toLowerCase() === want || n?.toLowerCase() === want.replace(/s$/, "")));
-    if (!o || !/^[A-Za-z][A-Za-z0-9_]*$/.test(o.api) || out.some((r) => r.object === o.api)) continue;
-    const name = `TB Seed ${uid}`;
+  const name = `TB Seed ${uid}`;
+  /**
+   * One record of `api`, its required fields filled by type. A required lookup (a master-detail parent, a
+   * custom object that must belong to an Account) is a parent made first, the same way, up to two levels:
+   * such a record used to be refused ("not seeded: its required lookup"). Parents go into `out` BEFORE the
+   * child, so cleanup (which deletes in reverse) removes the child first. Returns the new id, or an error.
+   */
+  const seedOne = async (api: string, depth: number): Promise<{ id?: string; error?: string }> => {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(api)) return { error: `bad object name ${api}` };
+    const done = out.find((r) => r.object === api && r.id);
+    if (done) return { id: done.id };
+    const o = org.objects.find((x) => x.api === api);
     const body: Record<string, unknown> = {};
-    let blocked = "";
-    for (const f of o.fields.filter((x) => x.required)) {
-      if (f.lookup) { blocked = `its required lookup ${f.label}`; break; }
-      body[f.api] = /^(string|textarea)$/i.test(f.type) ? name
+    for (const f of (o?.fields ?? []).filter((x) => x.required)) {
+      if (f.lookup) {
+        const parent = f.lookup.split("/")[0];
+        if (depth >= 2 || !parent) return { error: `its required lookup ${f.label}` };
+        const p = await seedOne(parent, depth + 1);
+        if (!p.id) return { error: `its required lookup ${f.label} (${p.error ?? "parent not made"})` };
+        body[f.api] = p.id;
+        continue;
+      }
+      body[f.api] = /^(string|textarea)$/i.test(f.type) ? fitToField(name, f)
         : /picklist/i.test(f.type) ? f.picklist?.[0]
         : /email/i.test(f.type) ? `tb+${uid}@example.com`
         : /phone/i.test(f.type) ? "4155550100"
@@ -112,21 +127,28 @@ export async function seedExistingRecords(session: Session, org: SalesforceOrgMo
         : /^date$/i.test(f.type) ? new Date().toISOString().slice(0, 10)
         : /boolean/i.test(f.type) ? false : name;
     }
-    // Name fields the org fills itself (Contact's LastName is required; Account's Name too): one at least.
+    // Name fields the org fills itself (Contact's LastName is required; Account's Name too): one at least. A
+    // parent outside the org model gets just its name.
     if (!Object.values(body).includes(name)) {
-      const nameField = o.fields.find((x) => /^(Name|LastName|Subject)$/.test(x.api));
-      if (nameField) body[nameField.api] = name;
+      const nameField = o?.fields.find((x) => /^(Name|LastName|Subject)$/.test(x.api))?.api ?? (o ? undefined : (api === "Contact" || api === "Lead" ? "LastName" : "Name"));
+      if (nameField) body[nameField] = name;
     }
-    if (blocked) { out.push({ object: o.api, name, error: `not seeded: ${blocked}` }); continue; }
     try {
-      const res = await session.apiPost(`/sobjects/${o.api}/`, body);
+      const res = await session.apiPost(`/sobjects/${api}/`, body);
       const id = typeof res?.id === "string" ? res.id : undefined;
-      if (id) await session.apiGet(`/query?q=${encodeURIComponent(`SELECT Id FROM ${o.api} WHERE Id = '${id}' FOR VIEW`)}`).catch(() => null);
-      out.push({ object: o.api, name, ...(id ? { id } : {}) });
-      (org.seeded ??= []).push({ object: o.api, label: o.label, name });
+      if (id) await session.apiGet(`/query?q=${encodeURIComponent(`SELECT Id FROM ${api} WHERE Id = '${id}' FOR VIEW`)}`).catch(() => null);
+      out.push({ object: api, name, ...(id ? { id } : {}) });
+      (org.seeded ??= []).push({ object: api, label: o?.label ?? api, name });
+      return id ? { id } : { error: "the API returned no id" };
     } catch (err) {
-      out.push({ object: o.api, name, error: (err as Error)?.message ?? String(err) });
+      return { error: (err as Error)?.message ?? String(err) };
     }
+  };
+  for (const want of new Set(asked)) {
+    const o = org.objects.find((x) => [x.label, x.labelPlural, x.api].some((n) => n?.toLowerCase() === want || n?.toLowerCase() === want.replace(/s$/, "")));
+    if (!o || !/^[A-Za-z][A-Za-z0-9_]*$/.test(o.api) || out.some((r) => r.object === o.api)) continue;
+    const r = await seedOne(o.api, 0);
+    if (r.error) out.push({ object: o.api, name, error: `not seeded: ${r.error}` });
   }
   return out;
 }
