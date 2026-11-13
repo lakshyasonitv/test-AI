@@ -25,6 +25,7 @@ import type { TestCase } from "./testCases.js";
 import { isPositiveCase } from "./hollowPassGuards.js";
 import { isEnvValueRef } from "./credentials.js";
 import { UNIQUE_TOKEN, PHONE_TOKEN, dateToken, hasRunToken, lineKey } from "../text.js";
+import { recordRefObject } from "./salesforceFrontdoor.js";
 
 export function testDataEnabled(): boolean {
   return process.env.TEST_DATA_ENABLED === "true";
@@ -409,6 +410,39 @@ export function applyTestData(ir: IR, testCase: Pick<TestCase, "category">, appM
   for (const sec of sections) {
     const save = ir.steps.findIndex((s, i) => i > sec.from && i < sec.to && s.action === "click" && /^save$/i.test((s.target?.name ?? "").trim()));
     if (save > 0) sec.to = save + 1;
+  }
+  // Edit forms too: a date typed on an existing record's Edit form ("31 December 2026", run
+  // 2026-11-13T13-59-40-225Z-73d6d7c6) was typed as words and the save was refused. Only dates are fixed
+  // there: the fill policy is about what a NEW record needs, an edit types what it was asked to.
+  if (isPositiveCase(testCase)) {
+    const locale = (org.userLocale ?? "en-US").replace("_", "-");
+    let object: OrgObject | undefined;
+    let inCreate = false;
+    for (const s of ir.steps) {
+      if (s.action === "navigate") {
+        const m = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "");
+        inCreate = !!m;
+        const api = m?.[1] ?? recordRefObject(s.target?.url);
+        if (api) object = org.objects.find((x) => x.api === api);
+        continue;
+      }
+      if (inCreate) { if (s.action === "click" && /^save$/i.test((s.target?.name ?? "").trim())) inCreate = false; continue; }
+      if (s.action !== "fill" || !s.value || !object) continue;
+      const f = fieldOf(object, s.target?.name ?? s.target?.label ?? "");
+      if (f?.type !== "Date") continue;
+      const rel = relativeDay(s.value);
+      const v = rel !== undefined ? dateToken(rel, locale) : localeDate(s.value, locale);
+      if (!v || v === s.value) continue;
+      const was = s.value;
+      const day = parseDay(was)?.getTime();
+      s.value = v;
+      for (const a of ir.steps) {
+        if (a.action !== "assert") continue;
+        if (a.value === was || (day !== undefined && a.value && parseDay(a.value)?.getTime() === day)) a.value = v;
+        if (a.target?.text === was || (day !== undefined && a.target?.text && parseDay(a.target.text)?.getTime() === day)) a.target = { ...a.target, text: v };
+      }
+      notes.push(`${s.id}: "${f.label}" on the edit form "${was}" -> "${v}", the user's date format`);
+    }
   }
   let n = 0;
   for (const sec of sections.reverse()) {

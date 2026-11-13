@@ -45,13 +45,39 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
   const count = new Map<string, number>();
   let form: string | null = null;
   let values: Typed["values"] = [];
-  for (const s of ir.steps) {
+  // An edit of the record just created (its Edit button, then a confirmed "was saved"): the values it types
+  // are the record's now. Run 2026-11-13T14-02-56-990Z-6fa8cd30 edited Priority Low -> High and the check
+  // still expected Low.
+  let editing: { of: Typed; values: Typed["values"] } | null = null;
+  const fieldOf = (object: string, s: IR["steps"][number]) => {
+    const o = org.objects.find((x) => x.api === object);
+    const name = (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase();
+    const f = o?.fields.find((x) => x.label.toLowerCase() === name || `${o.label} ${x.label}`.toLowerCase() === name);
+    return o && f && COMPARED.test(f.type) && !f.lookup && !flowSet(org, o).has(f.api.toLowerCase()) ? f : undefined;
+  };
+  for (const [at, s] of ir.steps.entries()) {
     if (s.action === "navigate") {
       form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null;
       values = [];
+      editing = null;
       continue;
     }
-    if (!form) continue;
+    if (!form) {
+      if (s.action === "click" && /^edit$/i.test((s.target?.name ?? "").trim()) && out.length) editing = { of: out[out.length - 1], values: [] };
+      else if (editing && (s.action === "fill" || s.action === "select") && s.value !== undefined) {
+        const f = fieldOf(editing.of.object, s);
+        if (f) editing.values = editing.values.filter((v) => v.api !== f.api).concat({ label: f.label, api: f.api, type: f.type, value: s.value });
+      } else if (editing && s.action === "click" && /^save$/i.test(s.target?.name ?? "")) {
+        const i = at;
+        let confirmed = false;
+        for (let j = i + 1; j < ir.steps.length && ir.steps[j].action !== "navigate"; j++) {
+          if (ir.steps[j].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[j].target?.text ?? "")) { confirmed = true; break; }
+        }
+        if (confirmed) for (const v of editing.values) editing.of.values = editing.of.values.filter((x) => x.api !== v.api).concat(v);
+        editing = null;
+      }
+      continue;
+    }
     if ((s.action === "fill" || s.action === "select") && s.value !== undefined) {
       const o = org.objects.find((x) => x.api === form);
       const name = (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase();
@@ -63,7 +89,7 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
       // Only a save the case confirms ("was created" before it leaves the page): a negative case's
       // save is refused on purpose, and no record exists to read (run 2026-11-10T20-26-17-929Z-6c3320d0,
       // the Company "AB" case, reported two "mismatches" against a record that was never made).
-      const i = ir.steps.indexOf(s);
+      const i = at;
       let confirmed = false;
       for (let j = i + 1; j < ir.steps.length && ir.steps[j].action !== "navigate"; j++) {
         if (ir.steps[j].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[j].target?.text ?? "")) { confirmed = true; break; }

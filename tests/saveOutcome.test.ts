@@ -517,6 +517,12 @@ describe("fieldChecksOnRecordView: value checks", () => {
     fieldChecksOnRecordView(h, model, "Create a Zq Deal");
     expect(last(h).target).toEqual({ text: "Zq Heat Information" });
   });
+  it("a label-and-value text after the Details click stays on Details as that field's check (run 2026-11-13T13-50-37-642Z-f2f97e6d)", () => {
+    const i = ir([...base(), { id: "dt", action: "click", target: { role: "tab", name: "Details" } } as Step, check({ text: "Zq Heat Zq Hot" }, "visible")]);
+    fieldChecksOnRecordView(i, model, "Create a Zq Deal with heat Zq Hot");
+    expect(i.steps.some((s) => s.target?.name === "Related")).toBe(false);
+    expect(last(i)).toMatchObject({ target: { field: "Zq Heat" }, value: "Zq Hot" });
+  });
   it("a value typed into an address part is checked inside the compound address (run 2026-11-13T12-58-06-198Z-0bdc663a)", () => {
     const i = ir([nav("/lightning/o/Zq_Deal__c/new"), fill("Billing Country", "Zqland"), click("Save"), created, check({ text: "Zqland" }, "text_equals", "Zqland")]);
     fieldChecksOnRecordView(i, model, "Create a Zq Deal billed in Zqland");

@@ -31,6 +31,16 @@ describe("typedValues", () => {
     expect(t[0].values.map((v) => v.api)).toEqual(["Name"]);
   });
 
+  it("an edit of the record after its create counts: the last value saved is the expected one", () => {
+    const edit = { id: "e", action: "click", target: { role: "button", name: "Edit" } } as Step;
+    const saved = { id: "w2", action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step;
+    const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Phone", "4155550101"), save, created, edit, fill("Phone", "4155550199"), save, saved] }, org);
+    expect(t[0].values.find((v) => v.api === "Phone")?.value).toBe("4155550199");
+    // An edit whose save was not confirmed changes nothing.
+    const u = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Phone", "4155550101"), save, created, edit, fill("Phone", "4155550199"), save] }, org);
+    expect(u[0].values.find((v) => v.api === "Phone")?.value).toBe("4155550101");
+  });
+
   it("a form never saved checks nothing", () => {
     expect(typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "x")] }, org)).toEqual([]);
   });

@@ -992,3 +992,21 @@ describe("bug hunt 13 Nov: dates in words and full names", () => {
     expect(value(r, "f")).toBe("Zqana");
   });
 });
+
+describe("bug hunt round 2: dates typed on an edit form (run 2026-11-13T13-59-40-225Z-73d6d7c6)", () => {
+  it("a date in words on the Edit form is typed in the user's format, with its checks", () => {
+    const m = structuredClone(appModel) as AppModel;
+    m.salesforceOrg!.objects[0].validationRules = [];
+    const r = ir([
+      { id: "n", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq {{uid}}" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "ed", action: "click", target: { role: "button", name: "Edit" } },
+      { id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "31 December 2026" },
+      { id: "sv2", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { field: "Zq Due" }, assertion: "text_equals", value: "31 December 2026" },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing, then edit its Zq Due to 31 December 2026");
+    expect(value(r, "d")).toBe("12/31/2026");
+    expect(r.steps.find((s) => s.id === "a")!.value).toBe("12/31/2026");
+  });
+});

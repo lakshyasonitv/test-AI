@@ -843,7 +843,15 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
     // A "contains" check on that text reads the same (run 2026-11-10T15-46-12-893Z-4e645505: "TB Onboarding" text_contains).
     // customLinkSteps' own check of the link's text is on Details by design (run
     // 2026-11-13T07-54-34-011Z-9a55e65c was sent to Related, where there is none).
-    if (onDetails && !s.id.startsWith("sf-cl-") && (s.assertion === "visible" || valueCheck) && text && !s.target?.role && !s.target?.field
+    // A field's label and its value as one text ("Customer Priority Medium") is that field's check, on
+    // Details: run 2026-11-13T13-50-37-642Z-f2f97e6d sent it to the Related tab first.
+    const labelValue = !!text && !s.target?.role && !!labelThenValue(text, fieldLabels) && (() => {
+      const [label, v] = labelThenValue(text, fieldLabels)!;
+      return fields.some((f) => f.label === label && f.picklist?.some((p) => lineKey(p) === lineKey(v)))
+        || steps.slice(0, i).some((x) => (x.action === "fill" || x.action === "select") && lineKey(x.value ?? "") === lineKey(v))
+        || isShownValue(v);
+    })();
+    if (onDetails && !labelValue && !s.id.startsWith("sf-cl-") && (s.assertion === "visible" || valueCheck) && text && !s.target?.role && !s.target?.field
       && !fieldLabels.has(text) && !fields.some((f) => f.picklist?.includes(text)) && !isShownValue(text)
       && !/\bwas (created|saved|deleted)\b/.test(text)
       // A value the case typed or picked (a lookup's record name) is that field's value, on Details (run
@@ -899,14 +907,9 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       const label = addressPartTyped(steps.slice(0, i), v)!;
       steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
       notes.push(`"${v}" was typed into an address part -> checks the "${label}" field shows it`);
-    } else if (!s.target?.role && text && labelThenValue(text, fieldLabels) && (() => {
-      // Only a real value of that field: an option it offers, a value the case typed, a number or a date.
-      // "Description Information" is a section heading, not Description's value.
-      const [label, v] = labelThenValue(text, fieldLabels)!;
-      return fields.some((f) => f.label === label && f.picklist?.some((p) => lineKey(p) === lineKey(v)))
-        || steps.slice(0, i).some((x) => (x.action === "fill" || x.action === "select") && lineKey(x.value ?? "") === lineKey(v))
-        || isShownValue(v);
-    })()) {
+    } else if (labelValue) {
+      // Only a real value of that field (labelValue): an option it offers, a value the case typed, a number
+      // or a date. "Description Information" is a section heading, not Description's value.
       // A field's label and its value as one text ("Stage Closed Lost", run 2026-11-13T12-23-59-973Z-80c3f152):
       // the page never shows them as one string. The value is that field's, read inside it.
       const [label, v] = labelThenValue(text, fieldLabels)!;
