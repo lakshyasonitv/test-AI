@@ -554,7 +554,11 @@ export function resetSalesforceOAuthForTests(): void {
 // local file (no database change), read once when the person connects or when the list first asks.
 // ---------------------------------------------------------------------------------------------
 
-export interface ConnectionLabel { username: string; name: string }
+/** `expiredAt`: when the connection last could not be restored (dead refresh token), so the list
+ *  skips looking it up on every page load. Re-checked after a day, in case it was a passing fault. */
+export interface ConnectionLabel { username: string; name: string; expiredAt?: string }
+const EXPIRED_RECHECK_MS = 24 * 60 * 60 * 1000;
+const stillExpired = (l: ConnectionLabel | undefined) => !!l?.expiredAt && Date.now() - Date.parse(l.expiredAt) < EXPIRED_RECHECK_MS;
 
 function labelsFile(): string {
   return process.env.SALESFORCE_CONNECTION_LABELS_FILE?.trim() || path.join(".testbench", "sf-connection-labels.json");
@@ -585,12 +589,16 @@ async function identify(c: Connection, fetchImpl: FetchLike = fetch as unknown a
 /** Look a saved connection's user up (restores it once), for one the list does not know yet. */
 export async function identifyConnection(id: unknown, orgId: string | null): Promise<ConnectionLabel | null> {
   const known = typeof id === "string" ? readLabels()[id] : undefined;
-  if (known) return known;
+  if (stillExpired(known)) return null;
+  if (known && !known.expiredAt) return known;
   const c = await restoreConnection(id, orgId);
+  // Only a connection that cannot be restored at all is remembered as expired; a failed lookup on a
+  // live one (a network blip) is simply asked again next time.
+  if (!c && typeof id === "string" && (await listConnections(orgId)).some((x) => x.id === id)) writeLabel(id, { username: "", name: "", expiredAt: new Date().toISOString() });
   return c ? identify(c).catch(() => null) : null;
 }
 
-export interface ConnectionSummary { id: string; host: string; kind: string; createdAt?: string; username?: string; name?: string }
+export interface ConnectionSummary { id: string; host: string; kind: string; createdAt?: string; username?: string; name?: string; expired?: boolean }
 
 /** The caller's organisation's saved connections (database rows, else the local file), newest first. */
 export async function listConnections(orgId: string | null, deps: PersistenceDeps = {}): Promise<ConnectionSummary[]> {
@@ -609,7 +617,11 @@ export async function listConnections(orgId: string | null, deps: PersistenceDep
   const labels = readLabels();
   return rows
     .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
-    .map((r) => ({ id: r.id, host: new URL(r.instance_url).hostname, kind: r.kind, ...(r.created_at ? { createdAt: r.created_at } : {}), ...(labels[r.id] ?? {}) }));
+    .map((r) => {
+      const l = labels[r.id];
+      const label = !l ? {} : l.expiredAt ? (stillExpired(l) ? { expired: true } : {}) : { username: l.username, name: l.name };
+      return { id: r.id, host: new URL(r.instance_url).hostname, kind: r.kind, ...(r.created_at ? { createdAt: r.created_at } : {}), ...label };
+    });
 }
 
 /** Forget a connection of the caller's organisation: revoked at Salesforce (best effort), then removed

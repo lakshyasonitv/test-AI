@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -45,5 +45,19 @@ describe("the connections list", () => {
     expect(await oauth.forgetConnection(b.done.connectionId, "org-b", noStore)).toBe(false);
     expect(await oauth.forgetConnection(b.done.connectionId, "org-a", { ...noStore, fetchImpl: vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) })) as any })).toBe(true);
     expect((await oauth.listConnections("org-a", noStore)).map((c) => c.username)).toEqual(["zq.main@example.com"]);
+  });
+
+  it("remembers an expired connection for a day, so the page does not look it up on every load", async () => {
+    const a = await connect("org-c", "zq.gone@example.com");
+    const id = a.done.connectionId;
+    const file = process.env.SALESFORCE_CONNECTION_LABELS_FILE!;
+    const mark = (ms: number) => writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), [id]: { username: "", name: "", expiredAt: new Date(Date.now() - ms).toISOString() } }));
+    mark(60_000);
+    const [listed] = await oauth.listConnections("org-c", noStore);
+    expect(listed.expired).toBe(true);
+    expect(listed.username).toBeUndefined();
+    expect(await oauth.identifyConnection(id, "org-c")).toBeNull();
+    mark(2 * 24 * 60 * 60 * 1000);   // a day on: asked again
+    expect((await oauth.listConnections("org-c", noStore))[0].expired).toBeUndefined();
   });
 });
