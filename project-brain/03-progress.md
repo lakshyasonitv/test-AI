@@ -5,7 +5,9 @@ the top-nav layout (D-80) — one nav row on every page (Dashboard · New test �
 Projects and Settings as pages, the sidebar and ☰ menu folded away; `DASHBOARD_ENABLED=false` gives the old app.
 Live Azure is still `main` 88a4b27 (no dashboard). The Hostinger zip on the Desktop predates the landing's
 `#/dashboard` links; rebuild it before uploading. Also uncommitted: refine at the case-review gate now confirms
-in the panel (TD-187, fixed); TD-188 (a case that logs in after its first click runs signed out) is diagnosed, open.
+in the panel (TD-187, fixed). UPDATE later 2026-11-13: that work is committed locally (03b52cc, not pushed) and
+origin/main e9bae35 is merged in (the branch had been 16 Salesforce commits behind — the "made it worse" report).
+TD-188 (a case that logs in after its first click ran signed out) fixed in ir.ts, uncommitted, not yet live-run.
 See journal/2026-11-13.md.*
 
 *Last updated: 2026-11-12. Branch `ui/dashboard` = `ui/app-like-landing` (theme.css restyle, pushed for review) +

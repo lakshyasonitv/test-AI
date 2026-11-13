@@ -6320,7 +6320,7 @@ disarm; the second press posts `not_satisfied`). Test: `tests/refineConfirm.test
 still cancels itself silently in an embedded browser. That fails safe — nothing is deleted or discarded — but those
 buttons look dead there.
 
-### TD-188. A case that clicks before it signs in runs signed out: its own late login suppresses the login prefix — High / Accidental — **Open**
+### TD-188. A case that clicks before it signs in runs signed out: its own late login suppresses the login prefix — High / Accidental — **Fixed (2026-11-13)**
 
 **Found** in run 2026-11-13T05-24-54-516Z-24c61a3d (learnvibes, "go to the admin panel and try to add the user…
 assign manager to vaibhav parmar"). Discovery signed in fine (its pages show "Admin" and "Vaibhav Parmar · admin").
@@ -6338,7 +6338,44 @@ its first credential fill comes before any click / select / non-credential fill;
 and drop the case's own later login block (the same slice `swapInRecordedLogin()` already identifies). Confirm by
 artifact replay of this run's `02-appmodel.json` + case before any live run.
 
-**Workaround.** The user's request did not mention signing in; the case writer added the late login itself. Until
+**Fix.** `irLogsInTooLate()` (ir.ts): the IR's own login counts only if no click / select / check / press before
+its first password fill targets an element discovery saw on a signed-in page and not on the login page (structure, not
+wording). `irAlreadyLogsIn()` is false in that case, so `buildLoginPrefix()` is prepended, and `dropLateLogin()` removes
+the case's own late login: the steps around that password fill whose targets are only on the login page, plus a
+navigate to the login page right before them. A "Sign in" link clicked before logging in is not an element of the
+signed-in app, so that shape keeps its own login. Artifact replay: this run's IR becomes recorded login + `navigate /` +
+`click Admin`; the 2026-11-06 sign-in-first case is unchanged; a sweep of all 38 saved IRs from signed-in runs changes
+the decision only for this run's case. Tests: `tests/loginPrefix.test.ts` (6 new). Not yet confirmed by a live run.
+
+**Before the fix (workaround).** The user's request did not mention signing in; the case writer added the late login itself. Until
 the fix: at the case-review gate, use "Edit steps" on the case and delete its login lines (with no password fill in
 the case, the recorded login is prepended automatically), or say "sign in first, then open Admin > Users and…" in
 the request.
+
+### TD-189. The grounding walk did not wait for the recorded login when its submit had no name, so pages behind the login were never captured — High / Accidental — **Fixed (2026-11-13)**
+
+**Found** in run 2026-11-13T06-48-25-868Z-a3842ef7 (learnvibes, the re-run of TD-188's case, with TD-188 fixed). Every
+case now signed in first, and the executed spec reached `/admin` (`final-page.txt` shows "Users", "Add New"), but both
+admin cases were truncated right after "click Admin": the case writer's "User Management" / "Add User" could not be
+corrected to the page's real "Users" / "Add New" because `extendAppModel` never captured `/admin`. Its replay
+(`replayAndSnapshot`, liveExtend.ts) skips every `assert` step, including the login prefix's own settle step ("the
+password box is gone"), and its other wait, `isAuthTriggeringStep`, needs a NAMED login button — this site's recorded
+submit is `button[type="submit"]`. The walk navigated on while the sign-in was in flight, bounced to `/login`, and the
+next click timed out (the run's log shows the same 30 s click timeout for a Learning case, whose spec passed). The
+failure was swallowed into `lastErr` without a log line, so the run only showed "calling extendAppModel..." twice.
+
+**Fix.** In the replay loop, the prefix's settle step (`auth-N`, `assertion: "hidden"`, css target) is waited on —
+`locator.waitFor({ state: "hidden", timeout: 10000 })`, the spec's own wait and bound — instead of skipped. Every other
+assert is still skipped. Verified in a real Chromium against a synthetic site whose sign-in takes 1.5 s: with the wait
+the walk reaches `/admin` and models "Users" / "Add New"; without it the click times out exactly as in the run. Test:
+`tests/replayLoginSettle.test.ts`. Not yet confirmed by a live re-run of the learnvibes case.
+
+**Confirmed live** in run 2026-11-13T07-11-28-467Z-efa2882d: `extendAppModel returned, 6 pages ... (/admin)`; the admin-navigation
+case passed. **Second gap found in that run, fixed:** `similarElementsHint()` (ir.ts) scored by shared words, and
+"users" != "user", so every button scored 0 for "User Management", the list fell back to page order, and the 10-item cut
+left only /dashboard's buttons: the newly captured /admin "Users" was never offered and the compile gave up. A plural
+and its singular now count as the same word (trailing "s", not "ss"). Replayed on that run's saved model: "Users on
+/admin" ranks first for "User Management", "Add New on /admin" in the top two for "Add User". Test:
+`tests/stableLoop.test.ts`. Not yet confirmed by a live re-run.
+
+**Not fixed.** `lastErr` from a failed `extendAppModel` is still not logged on its own line.

@@ -520,7 +520,12 @@ export function similarElementsHint(pages: { url: string; elements: Element[] }[
     const e = norm(r);
     return e === role || (clickable.has(role) && clickable.has(e)) || (FIELD_ROLE_GROUP.has(role) && FIELD_ROLE_GROUP.has(e));
   };
-  const words = (s: string) => new Set(s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1));
+  // A plural and its singular are the same word here ("Users" / "User Management"). Without this,
+  // run 2026-11-13T07-11-28 (learnvibes) scored every button 0 for "User Management", fell back to
+  // page order, and the 10-item cut left only /dashboard's buttons — the freshly captured /admin's
+  // "Users" was never offered, so the model kept its invented name until the compile gave up.
+  const stem = (w: string) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w);
+  const words = (s: string) => new Set(s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1).map(stem));
   const want = words(name);
   // Which page the flow is on is unknown when more than one page is given: then each element says
   // where it is, so a field of an undiscovered page is never swapped for a same-kind field elsewhere
@@ -682,18 +687,96 @@ export function needsLoginPrefix(testCase: TestCase, auth: AuthOutcome | undefin
   return pageKey(testCase.targetUrl ?? "") !== pageKey(auth.loginUrl);
 }
 
+/** Index of the IR's first password fill (the recorded password box, or any field the credential
+ *  map calls a password), or -1. */
+function firstPasswordFill(steps: Step[], auth: AuthOutcome | undefined, model: AppModel): number {
+  const pwCss = auth?.loginSteps?.find((s) => s.credential === "password")?.css?.toLowerCase();
+  const fieldMap = credentialFieldMap(model);
+  return steps.findIndex((s) =>
+    s.action === "fill"
+    && ((!!pwCss && s.target?.css?.toLowerCase() === pwCss)
+      || credentialKindForTarget(s.target, fieldMap) === "password"));
+}
+
+/**
+ * Where discovery saw the element a step targets: on the login page, on some other page, both or
+ * neither. Matched on the model's own elements (role + name, or the recorded css / test id) — the
+ * structure discovery captured, never the step's wording (CLAUDE.md, TD-01).
+ */
+function targetSeenOn(step: Step, auth: AuthOutcome | undefined, model: AppModel): { login: boolean; app: boolean } {
+  const t = step.target;
+  const seen = { login: false, app: false };
+  if (!t || !auth?.loginUrl) return seen;
+  const loginKey = pageKey(auth.loginUrl);
+  const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
+  for (const page of model.pages ?? []) {
+    const hit = (page.elements ?? []).some((e) =>
+      (!!t.name && !!e.name && norm(e.name) === norm(t.name) && (!t.role || norm(e.role) === norm(t.role)))
+      || (!!t.css && !!e.css && norm(e.css) === norm(t.css))
+      || (!!t.testId && !!e.testId && e.testId === t.testId));
+    if (!hit) continue;
+    if (pageKey(page.url) === loginKey) seen.login = true;
+    else seen.app = true;
+  }
+  return seen;
+}
+
+/**
+ * TD-188. The IR has its own login, but only AFTER it has already acted in the signed-in app:
+ * a click / select / check / press before its first password fill, on an element discovery found
+ * on a page other than the login page and not on the login page itself. Run 2026-11-13T05-24-54
+ * (learnvibes): "navigate /, click Admin, fill email, fill password, click Sign In". "Admin" is on
+ * the signed-in pages only; in a fresh browser "/" is the login form, so the click waited for a
+ * button that is not there. A "Sign in" link clicked before logging in is NOT such a step — it is
+ * not an element of the signed-in app — so that shape keeps its own login exactly as before.
+ */
+export function irLogsInTooLate(ir: IR, auth: AuthOutcome | undefined, model: AppModel): boolean {
+  if (auth?.status !== "authenticated" || auth.frontdoor || !auth.loginUrl) return false;
+  const pw = firstPasswordFill(ir.steps, auth, model);
+  if (pw < 0) return false;
+  return ir.steps.slice(0, pw).some((s) => {
+    if (!["click", "select", "check", "press"].includes(s.action)) return false;
+    const seen = targetSeenOn(s, auth, model);
+    return seen.app && !seen.login;
+  });
+}
+
 /** True if the IR already signs in on its own, so the prefix would log in twice. The login page
- *  is back in the AppModel, so the model can and does write these steps itself for login cases. */
+ *  is back in the AppModel, so the model can and does write these steps itself for login cases.
+ *  A login that comes only after the case has acted in the app does not count (TD-188). */
 export function irAlreadyLogsIn(ir: IR, auth: AuthOutcome | undefined, model: AppModel): boolean {
   // D-63: on a frontdoor run a password fill the model wrote cannot sign in (there is no login form
   // in the model to ground it against); the frontdoor prefix is always the login.
   if (auth?.frontdoor) return false;
-  const pwCss = auth?.loginSteps?.find((s) => s.credential === "password")?.css?.toLowerCase();
-  const fieldMap = credentialFieldMap(model);
-  return ir.steps.some((s) =>
-    s.action === "fill"
-    && ((pwCss && s.target?.css?.toLowerCase() === pwCss)
-      || credentialKindForTarget(s.target, fieldMap) === "password"));
+  if (firstPasswordFill(ir.steps, auth, model) < 0) return false;
+  return !irLogsInTooLate(ir, auth, model);
+}
+
+/**
+ * TD-188, second half. When the recorded login is prepended because the case's own login came too
+ * late, that late login has to go: once signed in, its email / password / Sign In steps act on a
+ * form that is no longer on screen. Removed: the run of steps around the first password fill whose
+ * targets discovery saw ONLY on the login page (the fields, the submit, an "is hidden" check on
+ * them), plus a navigate to the login page right before them. Nothing else is touched. Returns the
+ * removed step ids (empty when there is no late login).
+ */
+export function dropLateLogin(ir: IR, auth: AuthOutcome | undefined, model: AppModel): string[] {
+  if (!irLogsInTooLate(ir, auth, model)) return [];
+  const steps = ir.steps;
+  const pw = firstPasswordFill(steps, auth, model);
+  const loginOnly = (s: Step) => {
+    const seen = targetSeenOn(s, auth, model);
+    return seen.login && !seen.app;
+  };
+  let start = pw;
+  while (start > 0 && steps[start - 1].action !== "navigate" && loginOnly(steps[start - 1])) start--;
+  if (start > 0 && steps[start - 1].action === "navigate" && steps[start - 1].target?.url
+    && pageKey(new URL(steps[start - 1].target!.url!, auth!.loginUrl).href) === pageKey(auth!.loginUrl!)) start--;
+  let end = pw;
+  while (end + 1 < steps.length && steps[end + 1].action !== "navigate" && loginOnly(steps[end + 1])) end++;
+  const removed = steps.slice(start, end + 1).map((s) => s.id);
+  ir.steps = [...steps.slice(0, start), ...steps.slice(end + 1)];
+  return removed;
 }
 
 /**
@@ -2971,6 +3054,9 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       && !irAlreadyLogsIn(parsed.data, currentModel.auth, currentModel)) {
       const prefix = buildLoginPrefix(currentModel.auth);
       if (prefix.length) {
+        // TD-188: a login the case wrote AFTER acting in the app is replaced by the prefix.
+        const dropped = dropLateLogin(parsed.data, currentModel.auth, currentModel);
+        if (dropped.length) console.log(`[ir] the case signed in only after acting in the app; its own login (${dropped.join(", ")}) is replaced by the recorded one`);
         parsed.data.steps = [...prefix, ...parsed.data.steps];
         if (fixedLoginRun()) parsed.data.meta.fixedLogin = "salesforce";
         console.log(`[ir] prepended ${prefix.length} login step(s) — the test signs in before its own steps`);

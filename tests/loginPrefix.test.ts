@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildLoginPrefix, irAlreadyLogsIn, needsLoginPrefix } from "../src/stages/ir.js";
+import { buildLoginPrefix, irAlreadyLogsIn, needsLoginPrefix, irLogsInTooLate, dropLateLogin } from "../src/stages/ir.js";
 import { selectCases } from "../src/stages/testCases.js";
 import { isEnvValueRef } from "../src/stages/credentials.js";
 import type { AppModel, AuthOutcome } from "../src/schema/appModel.js";
@@ -148,6 +148,86 @@ describe("irAlreadyLogsIn", () => {
       { id: "s2", action: "click", target: { role: "button", name: "Admin" } },
     ]);
     expect(irAlreadyLogsIn(plain, auth, model(auth))).toBe(false);
+  });
+});
+
+/**
+ * TD-188. Run 2026-11-13T05-24-54 (learnvibes): the case wrote its own login AFTER clicking
+ * "Admin", irAlreadyLogsIn() saw the password fill and skipped the prefix, and the test clicked
+ * "Admin" on the login form in a fresh browser. Decided only from where discovery saw each target.
+ */
+describe("a login the case writes after acting in the app (TD-188)", () => {
+  const siteModel = (): AppModel => ({
+    baseUrl: "https://app.example",
+    auth,
+    pages: [
+      { url: LOGIN_URL, concepts: [], elements: [
+        { role: "textbox", name: "you@example.com", css: "#email" },
+        { role: "textbox", name: "Password", css: 'input[type="password"]' },
+        { role: "button", name: "Sign In", css: "#go" },
+        { role: "link", name: "Help" },
+      ] },
+      { url: "https://app.example/dashboard", concepts: [], elements: [
+        { role: "button", name: "Admin" },
+        { role: "link", name: "Help" },
+      ] },
+    ],
+  }) as AppModel;
+  const late = () => ir([
+    { id: "s1", action: "navigate", target: { url: "/" } },
+    { id: "s2", action: "click", target: { role: "button", name: "Admin" } },
+    { id: "s3", action: "fill", target: { role: "textbox", name: "you@example.com" }, value: "${env:TEST_USERNAME}" },
+    { id: "s4", action: "fill", target: { css: 'input[type="password"]' }, value: "${env:TEST_PASSWORD}" },
+    { id: "s5", action: "click", target: { role: "button", name: "Sign In" } },
+    { id: "s6", action: "assert", target: { role: "button", name: "Sign In" }, assertion: "hidden" },
+    { id: "s7", action: "click", target: { role: "button", name: "Users" } },
+  ]);
+
+  it("does not count as already signed in, so the recorded login is prepended", () => {
+    expect(irLogsInTooLate(late(), auth, siteModel())).toBe(true);
+    expect(irAlreadyLogsIn(late(), auth, siteModel())).toBe(false);
+  });
+
+  it("drops the case's own late login and keeps every other step", () => {
+    const x = late();
+    expect(dropLateLogin(x, auth, siteModel())).toEqual(["s3", "s4", "s5", "s6"]);
+    expect(x.steps.map((s) => s.id)).toEqual(["s1", "s2", "s7"]);
+  });
+
+  it("leaves a case that signs in FIRST exactly as it was", () => {
+    const first = ir([
+      { id: "s1", action: "navigate", target: { url: "/login" } },
+      { id: "s2", action: "fill", target: { css: "#email" }, value: "${env:TEST_USERNAME}" },
+      { id: "s3", action: "fill", target: { css: 'input[type="password"]' }, value: "${env:TEST_PASSWORD}" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+      { id: "s5", action: "click", target: { role: "button", name: "Admin" } },
+    ]);
+    expect(irAlreadyLogsIn(first, auth, siteModel())).toBe(true);
+    expect(dropLateLogin(first, auth, siteModel())).toEqual([]);
+    expect(first.steps).toHaveLength(5);
+  });
+
+  it("a click on something that is not part of the signed-in app (a 'Sign in' link) keeps the case's own login", () => {
+    const viaLink = ir([
+      { id: "s1", action: "navigate", target: { url: "/" } },
+      { id: "s2", action: "click", target: { role: "link", name: "Sign in" } },
+      { id: "s3", action: "fill", target: { css: 'input[type="password"]' }, value: "${env:TEST_PASSWORD}" },
+      { id: "s4", action: "click", target: { role: "button", name: "Sign In" } },
+    ]);
+    expect(irAlreadyLogsIn(viaLink, auth, siteModel())).toBe(true);
+  });
+
+  it("an element on the login page AND in the app (a shared 'Help' link) is not acting in the app", () => {
+    const viaHelp = ir([
+      { id: "s1", action: "click", target: { role: "link", name: "Help" } },
+      { id: "s2", action: "fill", target: { css: 'input[type="password"]' }, value: "${env:TEST_PASSWORD}" },
+    ]);
+    expect(irAlreadyLogsIn(viaHelp, auth, siteModel())).toBe(true);
+  });
+
+  it("never applies without a recorded login, or on a frontdoor (Salesforce connection) run", () => {
+    expect(irLogsInTooLate(late(), undefined, siteModel())).toBe(false);
+    expect(irLogsInTooLate(late(), { ...auth, frontdoor: true } as AuthOutcome, siteModel())).toBe(false);
   });
 });
 

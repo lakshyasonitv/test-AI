@@ -483,6 +483,17 @@ async function replayAndSnapshot(
       if (isAuthTriggeringStep(step)) {
         await waitForAuthSettle(page);
       }
+      // The recorded login prefix's own settle step (buildLoginPrefix: "the password box is gone").
+      // Every other assert is skipped above, and isAuthTriggeringStep only knows a NAMED login
+      // button — a submit recorded as `button[type="submit"]` has no name. So the replay went
+      // straight on to the case's next navigate while the sign-in request was still in flight,
+      // bounced to the login page, and every later step looked "absent" (run
+      // 2026-11-13T06-48-25-868Z-a3842ef7, learnvibes: /admin was never captured although the
+      // spec, which does wait here, reached it). Same wait as the spec, same bound; a login that
+      // never lands simply continues, exactly as before.
+      if (step.action === "assert" && step.assertion === "hidden" && /^auth-\d+$/.test(step.id) && step.target?.css) {
+        await page.locator(step.target.css).first().waitFor({ state: "hidden", timeout: 10000 }).catch(() => {});
+      }
     }
     // Let navigation triggered by the last step settle before snapshotting, else we'd
     // capture the pre-navigation page. Bounded so a site with long-lived connections
