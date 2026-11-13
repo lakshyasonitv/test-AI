@@ -1533,8 +1533,13 @@ export function groundingError(
     // meant is a guess, so the step is rejected naming them (TD-126).
     if (!matched && screenPage && step.action === "select" && step.value) {
       const want = norm(step.value);
+      // An open dialog is the screen: the page behind it is not pressable. "Case Origin: Email" became a
+      // click on the record page's "Email" activity button behind Contact's New Case quick action, which
+      // has no Case Origin (run 2026-11-13T21-38-27).
+      const inDialog = (e: typeof elements[number]) => e.containerRole === "dialog";
+      const modal = elements.some((e) => inDialog(e) && e.visible !== false);
       const pressable = elements.filter((e) => (norm(e.role) === "button" || norm(e.role) === "radio")
-        && e.visible !== false && e.enabled !== false && norm(e.name));
+        && e.visible !== false && e.enabled !== false && norm(e.name) && (!modal || inDialog(e)));
       const exact = pressable.filter((e) => norm(e.name) === want);
       const options = exact.length ? exact
         : pressable.filter((e) => hasWholeWords(norm(e.name), want) || hasWholeWords(want, norm(e.name)));

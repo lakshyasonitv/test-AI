@@ -561,6 +561,35 @@ describe("lookups in every case (run 2026-10-25T06-38-05-138Z-dfdd0d4f, a Contac
     expect(invented.steps.find((s) => s.id === "s3")!.value).toBe("");
   });
 
+  // Run 2026-11-13T20-51-11-629Z-44da5f13: "a Case for that contact" picked "Rahul Mehta {{uid}}", the
+  // Contact typed as "Rahul" + "Mehta {{uid}}"; it was blanked, then dropped as unrequested, so the Case
+  // was never linked to the Contact.
+  it("a lookup to the person this case made (First + Last) is kept, with that name", () => {
+    const m = { baseUrl: "https://zq.example", pages: [], salesforceOrg: { validationRulesRead: true, objects: [
+      { api: "Zq_Who__c", label: "Zq Who", createable: true, fields: [
+        { label: "First Name", api: "FirstName", type: "String" },
+        { label: "Last Name", api: "LastName", type: "String", required: true }] },
+      { api: "Zq_Ticket__c", label: "Zq Ticket", createable: true, fields: [
+        { label: "Zq Topic", api: "Zq_Topic__c", type: "String", required: true },
+        { label: "Zq Asker ID", api: "Zq_Asker__c", type: "Reference", lookup: "Zq_Who__c" }] },
+    ] } } as unknown as AppModel;
+    const pick = `Zq Rahul Zq Mehta ${UNIQUE_TOKEN}`;
+    const r = { meta: {}, steps: [
+      { id: "p1", action: "navigate", target: { url: "/lightning/o/Zq_Who__c/new" } },
+      { id: "p2", action: "fill", target: { role: "textbox", name: "First Name" }, value: "Zq Rahul" },
+      { id: "p3", action: "fill", target: { role: "textbox", name: "Last Name" }, value: `Zq Mehta ${UNIQUE_TOKEN}` },
+      { id: "p4", action: "click", target: { role: "button", name: "Save" } },
+      { id: "t1", action: "navigate", target: { url: "/lightning/o/Zq_Ticket__c/new" } },
+      { id: "t2", action: "select", target: { role: "combobox", name: "Zq Asker Name" }, value: pick },
+      { id: "t3", action: "fill", target: { role: "textbox", name: "Zq Topic" }, value: "Zq Login" },
+      { id: "t4", action: "click", target: { role: "button", name: "Save" } },
+    ] } as unknown as IR;
+    applyTestData(r, valid, m, "Create a Zq Who named Zq Rahul Zq Mehta, then create a Zq Ticket for that person with Zq Topic 'Zq Login'");
+    const t2 = r.steps.find((s) => s.id === "t2");
+    expect(t2?.target?.lookup).toBe(true);
+    expect(t2?.value).toBe(pick);
+  });
+
   it("a security case picks a record too, so its save can happen (case-3); invalid-input and empty cases are left alone", () => {
     const sec = flow({ action: "fill", target: { role: "textbox", name: "Zq Firm Name" }, value: "Existing Zq Firm" });
     applyTestData(sec, { category: "security-xss" } as any, org, req);

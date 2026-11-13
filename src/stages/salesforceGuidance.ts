@@ -253,8 +253,15 @@ export function valueClickedAsButton(ir: IRSteps, caseText: string): string[] {
 export function madeRecordLookups(ir: IRSteps): string[] {
   const notes: string[] = [];
   const made: string[] = [];
+  let first = "";
   for (const s of ir.steps) {
-    if (s.action === "fill" && s.value?.includes("{{uid}}") && !s.target?.lookup) made.push(s.value);
+    if (s.action === "navigate") first = "";
+    if (s.action === "fill" && /^first name$/i.test(s.target?.name ?? "")) first = s.value?.trim() ?? "";
+    if (s.action === "fill" && s.value?.includes("{{uid}}") && !s.target?.lookup) {
+      made.push(s.value);
+      // A person is named First + Last: the Contact "Rahul" "Mehta {{uid}}" is picked as "Rahul Mehta".
+      if (first && /^last name$/i.test(s.target?.name ?? "")) made.push(`${first} ${s.value}`);
+    }
     if (s.action !== "select" || !s.target?.lookup || !s.value || hasRunToken(s.value)) continue;
     const name = made.find((v) => lineKey(v.replace(/\{\{uid\}\}/g, "")) === lineKey(s.value!));
     if (!name) continue;
@@ -280,7 +287,9 @@ export function autoNumberLinkNotChecked(ir: IRSteps, org: SalesforceOrgModel | 
     const label = s.target.field.trim().toLowerCase();
     const link = org.objects.find((o) => o.api === form)?.fields.find((f) => f.label.toLowerCase() === label)?.lookup;
     const target = link && org.objects.find((o) => o.api === link);
-    if (!target || target.fields.some((f) => f.api === "Name")) return true;
+    // A person (Contact, Lead) has no createable Name, but its link shows First + Last: kept (run
+    // 2026-11-13T21-40-23-740Z-7ea523fc dropped the Case's "Contact Name" check that way).
+    if (!target || target.fields.some((f) => f.api === "Name" || f.api === "LastName")) return true;
     if (/^\d+$/.test(s.value.trim())) return true;
     notes.push(`${s.id}: the "${s.target.field}" link shows the ${target.label}'s number, never "${s.value}" -> check dropped (the API checks the saved record)`);
     return false;

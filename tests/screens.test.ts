@@ -193,3 +193,30 @@ describe("groundingError — a step is grounded against its own screen", () => {
     expect(ir.steps[4].target.css).toBe("#n1");
   });
 });
+
+describe("a select on a value that is a button on the screen (run 2026-11-13T21-38-27)", () => {
+  const dlg = { containerRole: "dialog", containerName: "Zq New Case" };
+  const irOf = () => ({
+    meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://org.example" },
+    steps: [
+      { id: "s1", action: "navigate", target: { url: "/lightning/o/Account/new" } },
+      { id: "s2", action: "select", target: { role: "combobox", name: "Zq Origin" }, value: "Zq Mail" },
+    ],
+  }) as any;
+  const mail = { role: "button", name: "Zq Mail", visible: true, css: "#mail" };
+
+  it("presses the button of that name (a group of buttons)", () => {
+    const m = mergeScreenInto(model(), page([heading("Zq New"), field("Zq Subject", { css: "#s" }), mail]));
+    const ir = irOf();
+    expect(groundingError(ir, m.model, { screenAt: [{ at: 1, key: m.key }] })).toBeNull();
+    expect(ir.steps[1].action).toBe("click");
+  });
+
+  it("not a button behind an open dialog: the dialog is the screen", () => {
+    const m = mergeScreenInto(model(), page([field("Zq Subject", { css: "#s", ...dlg }),
+      { role: "button", name: "Save", visible: true, css: "#save", ...dlg }, mail]));
+    const ir = irOf();
+    expect(groundingError(ir, m.model, { screenAt: [{ at: 1, key: m.key }] })?.index).toBe(1);
+    expect(ir.steps[1].action).toBe("select");
+  });
+});

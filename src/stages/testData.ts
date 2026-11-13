@@ -464,10 +464,16 @@ function namesARecord(value: string, f: OrgField): boolean {
 function createdBefore(ir: IR, before: number, objects: string[]): Set<string> {
   const out = new Set<string>();
   let form: string | undefined;
+  let first = "";
   for (const s of ir.steps.slice(0, before)) {
     const m = s.action === "navigate" ? /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "") : null;
-    if (m) form = m[1];
-    else if (s.action === "fill" && form && objects.includes(form) && hasRunToken(s.value)) out.add(s.value!);
+    if (m) { form = m[1]; first = ""; }
+    else if (s.action === "fill" && /^first name$/i.test(s.target?.name ?? "")) first = s.value?.trim() ?? "";
+    else if (s.action === "fill" && form && objects.includes(form) && hasRunToken(s.value)) {
+      out.add(s.value!);
+      // A person's record is named First + Last: "Rahul Mehta {{uid}}" (run 2026-11-13T20-51-11-629Z-44da5f13).
+      if (first && /^last name$/i.test(s.target?.name ?? "")) out.add(`${first} ${s.value}`);
+    }
   }
   return out;
 }
@@ -801,7 +807,9 @@ function applyToSection(
     // 2026-10-25T05-01-36-627Z-b0d6a138 kept an unrequested Phone that way).
     const keep = f ? wanted(f, s)
       : (everyField && fills(s)) || mentions(asks, nameOf(s)) || (!!s.value && !hasRunToken(s.value) && mentions(asks, s.value)) || quoted(s.value);
-    if (keep) continue;
+    // A lookup to the record this case made ("a Case for that contact") links the two: that IS the test.
+    const ownPick = !!f?.lookup && !!s.value && hasRunToken(s.value) && createdBefore(ir, i, f.lookup.split("/")).has(s.value);
+    if (keep || ownPick) continue;
     notes.push(`${s.id}: dropped "${nameOf(s)}" — optional, no rule reads it and the request does not name it`);
     ir.steps.splice(i, 1);
     to--;

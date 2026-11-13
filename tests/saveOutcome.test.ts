@@ -1278,7 +1278,8 @@ describe("bug hunt round 4, second pass", () => {
 
 describe("a link to an auto-numbered record is not checked by the parent's subject (run 2026-11-13T18-17-05-636Z-f22dc0b7)", () => {
   const org = { objects: [
-    { api: "ZqLine", label: "Zq Line", fields: [{ label: "Zq Job", api: "ZqJob__c", type: "Reference", lookup: "ZqJob" }, { label: "Zq Acct", api: "ZqAcct__c", type: "Reference", lookup: "ZqAcct" }] },
+    { api: "ZqLine", label: "Zq Line", fields: [{ label: "Zq Job", api: "ZqJob__c", type: "Reference", lookup: "ZqJob" }, { label: "Zq Acct", api: "ZqAcct__c", type: "Reference", lookup: "ZqAcct" }, { label: "Zq Who", api: "ZqWho__c", type: "Reference", lookup: "ZqWho" }] },
+    { api: "ZqWho", label: "Zq Who", fields: [{ label: "Last Name", api: "LastName", type: "String" }] },
     { api: "ZqJob", label: "Zq Job", fields: [{ label: "Subject", api: "Subject", type: "String" }] },
     { api: "ZqAcct", label: "Zq Acct", fields: [{ label: "Name", api: "Name", type: "String" }] },
   ] } as any;
@@ -1289,10 +1290,12 @@ describe("a link to an auto-numbered record is not checked by the parent's subje
       { id: "a", action: "assert", target: { field: "Zq Job" }, value: "Site survey", assertion: "text_contains" },
       { id: "b", action: "assert", target: { field: "Zq Job" }, value: "00000005", assertion: "text_contains" },
       { id: "c", action: "assert", target: { field: "Zq Acct" }, value: "Zq Acme", assertion: "text_contains" },
+      { id: "w", action: "assert", target: { field: "Zq Who" }, value: "Zq Rahul Zq Mehta", assertion: "text_contains" },
     ] as Step[];
     const i = ir(steps);
     expect(autoNumberLinkNotChecked(i, org)).toHaveLength(1);
-    expect(i.steps.map((s) => s.id)).toEqual(["n", "b", "c"]);
+    // A person (Last Name, no createable Name) shows its name: run 2026-11-13T21-40-23-740Z-7ea523fc.
+    expect(i.steps.map((s) => s.id)).toEqual(["n", "b", "c", "w"]);
   });
 });
 
@@ -1306,6 +1309,17 @@ describe("a lookup picks the record this run made (run 2026-11-13T18-17-16-000Z-
     ] as Step[]);
     expect(madeRecordLookups(i)).toHaveLength(1);
     expect(i.steps.map((s) => s.value)).toEqual(["Zq Pump {{uid}}", "Zq Pump {{uid}}", "Zq Other"]);
+  });
+
+  it("a person made as First + Last is picked by the full name (run 2026-11-13T20-51-11-629Z-44da5f13)", async () => {
+    const { madeRecordLookups } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([
+      { id: "f", action: "fill", target: { role: "textbox", name: "First Name" }, value: "Zq Rahul" },
+      { id: "g", action: "fill", target: { role: "textbox", name: "Last Name" }, value: "Zq Mehta {{uid}}" },
+      { id: "l", action: "select", target: { role: "combobox", name: "Zq Contact", lookup: true }, value: "Zq Rahul Zq Mehta" },
+    ] as Step[]);
+    expect(madeRecordLookups(i)).toHaveLength(1);
+    expect(i.steps[2].value).toBe("Zq Rahul Zq Mehta {{uid}}");
   });
 });
 
