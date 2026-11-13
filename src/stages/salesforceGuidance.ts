@@ -191,6 +191,49 @@ export function globalSearchSubmit(ir: IRSteps): string[] {
 }
 
 /**
+ * A lookup that picks a record the case made, written without its run code ("Pump X200" for the Asset typed
+ * as "Pump X200 {{uid}}", run 2026-11-13T18-17-16-000Z-b895ffda): Salesforce offers every "Pump X200 ..."
+ * (other runs', the grounding replays'), so it gets the code back and picks this run's record. Returns notes.
+ */
+export function madeRecordLookups(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  const made: string[] = [];
+  for (const s of ir.steps) {
+    if (s.action === "fill" && s.value?.includes("{{uid}}") && !s.target?.lookup) made.push(s.value);
+    if (s.action !== "select" || !s.target?.lookup || !s.value || hasRunToken(s.value)) continue;
+    const name = made.find((v) => lineKey(v.replace(/\{\{uid\}\}/g, "")) === lineKey(s.value!));
+    if (!name) continue;
+    notes.push(`${s.id}: the "${s.target.name}" lookup picks the record this run made -> "${name}"`);
+    s.value = name;
+  }
+  return notes;
+}
+
+/**
+ * A lookup to an object named by an auto-number (Work Order, Case, Service Appointment) shows that number
+ * ("00000005") on the page, so a check that it shows the parent's Subject can never pass (run
+ * 2026-11-13T18-17-05-636Z-f22dc0b7). Such a check goes when the linked object has no typed Name field;
+ * the API checks the saved record. Returns notes.
+ */
+export function autoNumberLinkNotChecked(ir: IRSteps, org: SalesforceOrgModel | undefined): string[] {
+  const notes: string[] = [];
+  if (!org) return notes;
+  let form: string | null = null;
+  ir.steps = ir.steps.filter((s) => {
+    if (s.action === "navigate") form = /\/lightning\/o\/(\w+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? form;
+    if (s.action !== "assert" || !s.target?.field || !form || !s.value) return true;
+    const label = s.target.field.trim().toLowerCase();
+    const link = org.objects.find((o) => o.api === form)?.fields.find((f) => f.label.toLowerCase() === label)?.lookup;
+    const target = link && org.objects.find((o) => o.api === link);
+    if (!target || target.fields.some((f) => f.api === "Name")) return true;
+    if (/^\d+$/.test(s.value.trim())) return true;
+    notes.push(`${s.id}: the "${s.target.field}" link shows the ${target.label}'s number, never "${s.value}" -> check dropped (the API checks the saved record)`);
+    return false;
+  });
+  return notes;
+}
+
+/**
  * Right after a delete, Salesforce's own message names the record ('Opportunity "Delete Me ab12cd" was
  * deleted.'), so a check that the name is no longer on the page fails on that message (run
  * 2026-11-13T16-32-07-872Z-36eef730, the record was gone). The API check that it is gone is the proof;

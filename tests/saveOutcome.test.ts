@@ -1267,3 +1267,36 @@ describe("bug hunt round 4, second pass", () => {
     expect(i.steps.some((s) => s.id === "h")).toBe(false);
   });
 });
+
+describe("a link to an auto-numbered record is not checked by the parent's subject (run 2026-11-13T18-17-05-636Z-f22dc0b7)", () => {
+  const org = { objects: [
+    { api: "ZqLine", label: "Zq Line", fields: [{ label: "Zq Job", api: "ZqJob__c", type: "Reference", lookup: "ZqJob" }, { label: "Zq Acct", api: "ZqAcct__c", type: "Reference", lookup: "ZqAcct" }] },
+    { api: "ZqJob", label: "Zq Job", fields: [{ label: "Subject", api: "Subject", type: "String" }] },
+    { api: "ZqAcct", label: "Zq Acct", fields: [{ label: "Name", api: "Name", type: "String" }] },
+  ] } as any;
+  it("drops the subject check on the link, keeps a number check and a check on a named parent", async () => {
+    const { autoNumberLinkNotChecked } = await import("../src/stages/salesforceGuidance.js");
+    const steps = [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqLine/new?count=1" } },
+      { id: "a", action: "assert", target: { field: "Zq Job" }, value: "Site survey", assertion: "text_contains" },
+      { id: "b", action: "assert", target: { field: "Zq Job" }, value: "00000005", assertion: "text_contains" },
+      { id: "c", action: "assert", target: { field: "Zq Acct" }, value: "Zq Acme", assertion: "text_contains" },
+    ] as Step[];
+    const i = ir(steps);
+    expect(autoNumberLinkNotChecked(i, org)).toHaveLength(1);
+    expect(i.steps.map((s) => s.id)).toEqual(["n", "b", "c"]);
+  });
+});
+
+describe("a lookup picks the record this run made (run 2026-11-13T18-17-16-000Z-b895ffda)", () => {
+  it("adds the run code to a lookup written with the made record's bare name, and only that one", async () => {
+    const { madeRecordLookups } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([
+      { id: "f", action: "fill", target: { role: "textbox", name: "Zq Asset Name" }, value: "Zq Pump {{uid}}" },
+      { id: "l", action: "select", target: { role: "combobox", name: "Zq Asset", lookup: true }, value: "Zq Pump" },
+      { id: "o", action: "select", target: { role: "combobox", name: "Zq Account", lookup: true }, value: "Zq Other" },
+    ] as Step[]);
+    expect(madeRecordLookups(i)).toHaveLength(1);
+    expect(i.steps.map((s) => s.value)).toEqual(["Zq Pump {{uid}}", "Zq Pump {{uid}}", "Zq Other"]);
+  });
+});
