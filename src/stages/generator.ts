@@ -158,10 +158,14 @@ function emitAssert(step: Step): string {
         ? `  await assertChoice(${locator(t)}, ${valueCode(comparisonValue(step))}, "contains");`
         : `  await expect(${locator(t)}).toContainText(${valueCode(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
-    case "url_contains":
-      return `  await expect(page).toHaveURL(new RegExp(${q(
-        escapeRe(comparisonValue(step))
-      )}), { timeout: ${ASSERT_TIMEOUT_MS} });`;
+    case "url_contains": {
+      // A record page of some objects is /lightning/r/<record id>/view, with no object name (Service Territory,
+      // Work Order: run 2026-11-13T19-31-38-442Z-c26faa54 waited for "/lightning/r/ServiceTerritory/" on a saved
+      // record), so the record id stands in for the name.
+      const rec = /^\/lightning\/r\/(\w+)\/?$/.exec(comparisonValue(step).trim());
+      const pattern = rec ? `/lightning/r/(${rec[1]}|[A-Za-z0-9]{15,18})/` : escapeRe(comparisonValue(step));
+      return `  await expect(page).toHaveURL(new RegExp(${q(pattern)}), { timeout: ${ASSERT_TIMEOUT_MS} });`;
+    }
 
     // Page-level, like url_contains — asserts against <title> metadata, never body text.
     // Exists so "verify the page title is X" has a correct compilation target at all; without

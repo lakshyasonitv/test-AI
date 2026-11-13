@@ -1340,3 +1340,17 @@ describe("a lookup that holds several objects (run 2026-11-13T19-05-25-624Z-90c9
     expect(i.steps[3]).toMatchObject({ action: "select", target: { name: "Choose an object" }, value: "Zq Job" });
   });
 });
+
+describe("a record page URL check (run 2026-11-13T19-31-38-442Z-c26faa54)", () => {
+  it("accepts the record id where the object name would be", async () => {
+    const { generateSpec } = await import("../src/stages/generator.js");
+    const i = ir([{ id: "u", action: "assert", target: { url: "/lightning/r/ZqZone/" }, value: "/lightning/r/ZqZone/", assertion: "url_contains" } as Step]);
+    i.meta = { ...i.meta, feature: "Zq" } as IR["meta"];
+    const spec = generateSpec(i);
+    const m = /toHaveURL\(new RegExp\(("[^"]+")\)/.exec(spec);
+    const re = new RegExp(JSON.parse(m![1]));
+    expect(re.test("https://zq.example/lightning/r/0HhVA000001mlSH0AY/view")).toBe(true);
+    expect(re.test("https://zq.example/lightning/r/ZqZone/0HhVA000001mlSH0AY/view")).toBe(true);
+    expect(re.test("https://zq.example/lightning/o/ZqZone/list")).toBe(false);
+  });
+});
