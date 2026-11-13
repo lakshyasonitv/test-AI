@@ -42,6 +42,9 @@ export interface Typed {
 }
 
 const COMPARED = /^(string|textarea|picklist|multipicklist|double|currency|percent|int|long|email|phone|url)$/i;
+/** What a typed value is read back for: the compared types, and a date-time (read with SOQL FORMAT(), in the
+ *  user's own locale and time zone, so "11/15/2026 10:30 AM" as typed). */
+const TYPED = /^(string|textarea|picklist|multipicklist|double|currency|percent|int|long|email|phone|url|datetime)$/i;
 
 /** What each saved create form typed, in order; n = the how-many-th record of that object this case made. */
 export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
@@ -57,7 +60,7 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
     const o = org.objects.find((x) => x.api === object);
     const name = (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase();
     const f = o?.fields.find((x) => x.label.toLowerCase() === name || `${o.label} ${x.label}`.toLowerCase() === name);
-    return o && f && COMPARED.test(f.type) && !f.lookup && !flowSet(org, o).has(f.api.toLowerCase()) ? f : undefined;
+    return o && f && TYPED.test(f.type) && !f.lookup && !flowSet(org, o).has(f.api.toLowerCase()) ? f : undefined;
   };
   for (const [at, s] of ir.steps.entries()) {
     if (s.action === "navigate") {
@@ -103,7 +106,7 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
       const o = org.objects.find((x) => x.api === form);
       const name = (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase();
       const f = o?.fields.find((x) => x.label.toLowerCase() === name || `${o.label} ${x.label}`.toLowerCase() === name);
-      if (o && f && COMPARED.test(f.type) && !f.lookup && !flowSet(org, o).has(f.api.toLowerCase())) {
+      if (o && f && TYPED.test(f.type) && !f.lookup && !flowSet(org, o).has(f.api.toLowerCase())) {
         values = values.filter((v) => v.api !== f.api).concat({ label: f.label, api: f.api, type: f.type, value: s.value });
       }
     } else if (s.action === "click" && /^save$/i.test(s.target?.name ?? "")) {
@@ -137,6 +140,11 @@ export function sameValue(type: string, typed: string, stored: unknown): boolean
   if (stored === null || stored === undefined) return typed.trim() === "";
   const s = String(stored);
   if (/^phone$/i.test(type)) return typed.replace(/\D/g, "") === s.replace(/\D/g, "");
+  // "11/15/2026 9:00 AM" and "11/15/2026, 09:00 AM": the same moment, written two ways.
+  if (/^datetime$/i.test(type)) {
+    const n = (v: string) => v.toLowerCase().replace(/,/g, " ").replace(/\b0(\d)/g, "$1").replace(/\s+/g, " ").trim();
+    return n(typed) === n(s);
+  }
   if (/^(double|currency|percent|int|long)$/i.test(type)) {
     const a = shownNumber(typed), b = Number(stored);
     return a !== null && Number.isFinite(b) && Math.abs(a - b) < 1e-6;
@@ -174,16 +182,17 @@ export async function apiChecks(
     try {
       // A picklist read as its label, the text the case picked: Time Zone stores "America/Los_Angeles" for
       // "(GMT-08:00) Pacific Standard Time (America/Los_Angeles)" (run 2026-11-13T18-45-09-236Z-e01f6e2d).
-      const q = `SELECT ${t.values.map((v) => /picklist/i.test(v.type) ? `toLabel(${v.api})` : v.api).join(", ")} FROM ${t.object} WHERE Id = '${id}'`;
+      // A date-time read as the user sees it (FORMAT: their locale and time zone), under its own alias.
+      const q = `SELECT ${t.values.map((v, k) => /picklist/i.test(v.type) ? `toLabel(${v.api})` : /^datetime$/i.test(v.type) ? `FORMAT(${v.api}) dt${k}` : v.api).join(", ")} FROM ${t.object} WHERE Id = '${id}'`;
       rec = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0];
     } catch (err) {
       for (const v of t.values) out.push({ object: t.object, id, field: v.label, expected: v.value, ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
       continue;
     }
-    for (const v of t.values) {
+    for (const [k, v] of t.values.entries()) {
       const expected = resolveRunTokens(v.value, ctx);
       if (!rec) { out.push({ object: t.object, id, field: v.label, expected, ok: false, note: "the record is not in the org" }); continue; }
-      const actual = rec[v.api];
+      const actual = /^datetime$/i.test(v.type) ? rec[`dt${k}`] : rec[v.api];
       const shown = actual === null || actual === undefined ? "" : String(actual);
       // A value can match what was typed and still be wrong data: the field's own label saved in it ("Last
       // Name Sato", run 2026-11-13T15-19-02-592Z-1e01cacf passed with it) or a placeholder no one filled in

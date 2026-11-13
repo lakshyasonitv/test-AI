@@ -241,3 +241,23 @@ describe("a record the case deletes is checked as gone (run 2026-11-13T15-54-10-
     expect(out).toEqual([{ object: "Zq_Acct__c", id: "a00zq0000000001AAA", field: "deleted", expected: "gone", actual: "gone", ok: true }]);
   });
 });
+
+describe("a date-time is read back as the user sees it", () => {
+  it("is typed from its sf-dt step, read with FORMAT(), and compared as the same moment", async () => {
+    const dtOrg = { objects: [{ api: "ZqAppt", label: "Zq Appt", fields: [{ label: "Zq Due", api: "ZqDue__c", type: "DateTime" }] }] } as any;
+    const steps = [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { id: "sf-dt-a", action: "fill", target: { role: "group", name: "Zq Due" }, value: "{{date:+1:en-US}} 9:00 AM" },
+      { id: "s", action: "click", target: { role: "button", name: "Save" } },
+      { id: "c", action: "assert", target: { text: "was created" }, assertion: "visible" },
+    ] as Step[];
+    const t = typedValues({ steps }, dtOrg);
+    expect(t[0].values).toEqual([{ label: "Zq Due", api: "ZqDue__c", type: "DateTime", value: "{{date:+1:en-US}} 9:00 AM" }]);
+    const apiGet = vi.fn(async () => ({ records: [{ dt0: "11/15/2026, 09:00 AM" }] }));
+    const out = await apiChecks(apiGet, [{ object: "ZqAppt", n: 1, values: [{ label: "Zq Due", api: "ZqDue__c", type: "DateTime", value: "11/15/2026 9:00 AM" }] }], { ZqAppt: ["a00zq0000000001AAA"] }, { uid: "a", phone: "1" });
+    expect(out[0].ok).toBe(true);
+    expect(decodeURIComponent(String(apiGet.mock.calls[0][0]))).toContain("SELECT FORMAT(ZqDue__c) dt0 FROM ZqAppt");
+    const wrong = await apiChecks(vi.fn(async () => ({ records: [{ dt0: "11/15/2026 9:30 AM" }] })), [{ object: "ZqAppt", n: 1, values: [{ label: "Zq Due", api: "ZqDue__c", type: "DateTime", value: "11/15/2026 9:00 AM" }] }], { ZqAppt: ["a00zq0000000001AAA"] }, { uid: "a", phone: "1" });
+    expect(wrong[0].ok).toBe(false);
+  });
+});
