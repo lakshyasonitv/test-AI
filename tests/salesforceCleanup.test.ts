@@ -230,3 +230,20 @@ describe("a converted Lead", () => {
     expect(deleted).toEqual([`/sobjects/Opportunity/${OPP}`, `/sobjects/Contact/${CON}`, `/sobjects/Account/${ACC}`, `/sobjects/Lead/${LEAD}`]);
   });
 });
+
+describe("replayMade: what the grounding replays saved (run 2026-11-13T16-00-53-324Z-9f8e022d)", () => {
+  it("names each typed value with each replay code, on its form's object; skips emails and Case/Task", async () => {
+    const { replayMade } = await import("../src/stages/salesforceCleanup.js");
+    const steps = [
+      { action: "navigate", target: { url: "/lightning/o/Contact/new" } },
+      { action: "fill", value: "Zqruiz {{uid}}" },
+      { action: "fill", value: "zqruiz+{{uid}}@example.com" },
+      { action: "navigate", target: { url: "/lightning/o/Case/new" } },
+      { action: "fill", value: "Zq Subject {{uid}}" },
+    ];
+    expect(replayMade(steps, ["ab12cd", "ef34gh"])).toEqual([
+      { object: "Contact", name: "Zqruiz ab12cd" }, { object: "Contact", name: "Zqruiz ef34gh" },
+    ]);
+    expect(replayMade(steps, ["x'; DROP"])).toEqual([]);
+  });
+});

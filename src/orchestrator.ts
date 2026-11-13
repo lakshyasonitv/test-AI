@@ -15,7 +15,8 @@ import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
-import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
+import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, replayMade, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
+import { takeReplayCodes } from "./stages/liveExtend.js";
 import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
 import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, flowRecordChecks, leadConvertChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
@@ -822,6 +823,10 @@ export async function runPipeline(
         const facts = caseRunFacts(c.results);
         return facts ? screenFlowMade(c.ir.steps, appModel.salesforceOrg?.flows, facts.ctx) : [];
       });
+      // What the grounding replays saved, by the exact codes they used (run 2026-11-13T16-00-53-324Z-9f8e022d
+      // left two Contacts, and its own Save then met the duplicate rule).
+      const codes = takeReplayCodes(runId);
+      for (const c of runCases(runDir)) flowMade.push(...replayMade(c.ir.steps, codes));
       const byFlow = await cleanupByTypedName({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, flowMade, since);
       cleanup.deleted.push(...byFlow.deleted);
       cleanup.failed.push(...byFlow.failed);

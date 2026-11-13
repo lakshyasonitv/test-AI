@@ -216,3 +216,14 @@ describe("leadConvertChecks", () => {
     expect(out.find((c) => c.field === "converted Opportunity")).toMatchObject({ expected: "none", ok: true });
   });
 });
+
+describe("a record the case deletes is checked as gone (run 2026-11-13T15-54-10-339Z-babde72e)", () => {
+  it("expects it absent from the org instead of reading its fields", async () => {
+    const del = (id: string) => ({ id, action: "click", target: { role: "button", name: "Delete" } } as Step);
+    const gone = { id: "g", action: "assert", target: { text: "was deleted" }, assertion: "visible" } as Step;
+    const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "Zq Del"), save, created, del("d1"), del("d2"), gone] }, org);
+    expect(t[0].deleted).toBe(true);
+    const out = await apiChecks(vi.fn(async () => ({ records: [] })), t, { Zq_Acct__c: ["a00zq0000000001AAA"] }, { uid: "a", phone: "1" });
+    expect(out).toEqual([{ object: "Zq_Acct__c", id: "a00zq0000000001AAA", field: "deleted", expected: "gone", actual: "gone", ok: true }]);
+  });
+});

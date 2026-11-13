@@ -225,6 +225,27 @@ export function screenFlowMade(
   return out;
 }
 
+/**
+ * The records the grounding replays saved: every value a create form typed with the run's code ("Ruiz
+ * {{uid}}"), with each code a replay used in its place ("Ruiz uqzh6b"), on that form's object. Only
+ * objects whose records have a Name (Case and Task are named by Subject). cleanupByTypedName then deletes
+ * exactly those, this user's, made since the run began.
+ */
+export function replayMade(steps: { action: string; value?: string; target?: { url?: string } }[], codes: string[]): { object: string; name: string }[] {
+  const out: { object: string; name: string }[] = [];
+  let form: string | null = null;
+  for (const s of steps) {
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; continue; }
+    if (!form || /^(Case|Task|Event)$/.test(form) || s.action !== "fill" || !s.value?.includes("{{uid}}") || /@/.test(s.value)) continue;
+    for (const code of codes) {
+      if (!/^[a-z0-9]{4,12}$/.test(code)) continue;
+      const name = s.value.replace(/\{\{uid\}\}/g, code).replace(/\{\{[^}]*\}\}/g, "").trim();
+      if (name && !out.some((o) => o.object === form && o.name === name)) out.push({ object: form, name });
+    }
+  }
+  return out;
+}
+
 /** Delete records named like `made` (a typed value with the run's code), this user's, since `since`. */
 export async function cleanupByTypedName(session: ApiSession, made: { object: string; name: string }[], since: Date): Promise<CleanupReport> {
   const report: CleanupReport = { deleted: [], skipped: [], failed: [] };

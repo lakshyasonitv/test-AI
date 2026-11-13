@@ -35,7 +35,11 @@ function flowSet(org: Org, o: { api: string; label: string }): Set<string> {
   }
   return out;
 }
-export interface Typed { object: string; n: number; values: { label: string; api: string; type: string; value: string }[] }
+export interface Typed {
+  object: string; n: number; values: { label: string; api: string; type: string; value: string }[];
+  /** The case deleted this record (its Delete, then Salesforce's "was deleted"): the check is that it is gone. */
+  deleted?: boolean;
+}
 
 const COMPARED = /^(string|textarea|picklist|multipicklist|double|currency|percent|int|long|email|phone|url)$/i;
 
@@ -69,6 +73,13 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
         form = out[out.length - 1].object;
         values = out[out.length - 1].values.map((v) => ({ ...v }));
         editing = null;
+        continue;
+      }
+      // The record deleted by the case (run 2026-11-13T15-54-10-339Z-babde72e "passed" its delete, then the
+      // API check failed it for "the record is not in the org"): checked as gone instead.
+      if (s.action === "assert" && /\bwas deleted\b/i.test(s.target?.text ?? "") && out.length
+        && ir.steps.slice(0, at).some((x) => x.action === "click" && /^delete$/i.test((x.target?.name ?? "").trim()))) {
+        out[out.length - 1].deleted = true;
         continue;
       }
       if (s.action === "click" && /^edit$/i.test((s.target?.name ?? "").trim()) && out.length) editing = { of: out[out.length - 1], values: [] };
@@ -146,6 +157,15 @@ export async function apiChecks(
     const id = created[t.object]?.[t.n - 1];
     if (!id || !/^[A-Za-z0-9]{15,18}$/.test(id) || !/^[A-Za-z0-9_]+$/.test(t.object)) {
       for (const v of t.values) out.push({ object: t.object, field: v.label, expected: v.value, ok: false, note: "the case never reached the record it created" });
+      continue;
+    }
+    if (t.deleted) {
+      try {
+        const gone = !(await apiGet(`/query?q=${encodeURIComponent(`SELECT Id FROM ${t.object} WHERE Id = '${id}'`)}`))?.records?.length;
+        out.push({ object: t.object, id, field: "deleted", expected: "gone", actual: gone ? "gone" : "still in the org", ok: gone });
+      } catch (err) {
+        out.push({ object: t.object, id, field: "deleted", expected: "gone", ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
+      }
       continue;
     }
     let rec: any;

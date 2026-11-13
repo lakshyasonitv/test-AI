@@ -1199,3 +1199,14 @@ describe("bug hunt round 3", () => {
     expect(i.steps.some((s) => s.target?.text === "was saved")).toBe(false);
   });
 });
+
+describe("bug hunt round 4", () => {
+  it("global search runs on Enter after typing, not a second Search click (run 2026-11-13T15-59-07-870Z-cf7c96f8)", async () => {
+    const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
+    const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search..." }, value: "Zq Quasar" } as Step;
+    const i = ir([click("Search"), typed, { id: "w", action: "wait", value: "500" } as Step, click("Search")]);
+    expect(globalSearchSubmit(i)).toHaveLength(1);
+    expect(i.steps[3]).toMatchObject({ action: "press", value: "Enter", target: { name: "Search..." } });
+    expect(i.steps[0]).toMatchObject({ action: "click" });   // the first click opens the box: kept
+  });
+});

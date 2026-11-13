@@ -102,6 +102,6 @@ describe("toIR — attempts exhausted while still extending", () => {
     expect(spec).toContain("test(");
     expect(spec.match(/await shot\(page, /g) ?? []).toHaveLength(3);
     // No step interpolated a missing value into the emitted code.
-    expect(spec).not.toMatch(/\("undefined"|undefined\.|goto\(undefined/);
+    expect(spec).not.toMatch(/\("undefined"|\bundefined\.|goto\(undefined/);
   });
 });

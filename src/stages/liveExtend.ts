@@ -15,6 +15,7 @@ import {
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, credentialFingerprint, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import { cutAtBoundary, pageKey, lineKey, hasRunToken, resolveRunTokens, newRunTokenContext } from "../text.js";
+import { currentRunId } from "../runContext.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 import { mergeScreenInto } from "./screens.js";
 import { currentRunTargetApp } from "../runTarget.js";
@@ -48,7 +49,27 @@ export function prepareReplayPage(page: Page, prefix: Step[]): void {
     replayRecordPages.set(page, pages);
     page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) pages.visit(frame.url()); });
   }
-  if (prefix.some((s) => s.action === "select" && s.target?.lookup && hasRunToken(s.value))) replayTokens.set(page, newRunTokenContext());
+  if (prefix.some((s) => s.action === "select" && s.target?.lookup && hasRunToken(s.value))) replayTokens.set(page, replayContext());
+}
+
+/**
+ * The run-token codes the grounding replays of a run used. A replay that clicks Save makes a real record
+ * ("Ruiz uqzh6b", run 2026-11-13T16-00-53-324Z-9f8e022d), which the spec's own record tracking never sees:
+ * two Contacts were left in the org, and the run's own Save then met the duplicate rule. Cleanup deletes the
+ * records named with exactly these codes (salesforceCleanup.replayMade).
+ */
+const replayCodesByRun = new Map<string, Set<string>>();
+function replayContext() {
+  const ctx = newRunTokenContext();
+  const run = currentRunId();
+  if (run) { if (!replayCodesByRun.has(run)) replayCodesByRun.set(run, new Set()); replayCodesByRun.get(run)!.add(ctx.uid); }
+  return ctx;
+}
+/** The codes this run's replays used, forgotten once read. */
+export function takeReplayCodes(runId: string): string[] {
+  const codes = [...(replayCodesByRun.get(runId) ?? [])];
+  replayCodesByRun.delete(runId);
+  return codes;
 }
 
 /** Close Salesforce's "Similar Records Exist" warning when it is open (generator.ts sfDismissDuplicates). */
@@ -110,7 +131,7 @@ export async function runStepLive(
       // Run tokens: a fresh context per replayed fill (per replay when a lookup names a record the flow
       // created, prepareReplayPage). A replay that clicks Save creates a real record too, and must not
       // collide with the run's own name or another replay's (duplicate rules).
-      const val = hasRunToken(raw) ? resolveRunTokens(raw, replayTokens.get(page) ?? newRunTokenContext()) : raw;
+      const val = hasRunToken(raw) ? resolveRunTokens(raw, replayTokens.get(page) ?? replayContext()) : raw;
       // Focus first, as the spec's fill step does: a prefilled field that redraws on focus would
       // otherwise get the value appended ("10" into "10%" gave "1010").
       const el = await resolveLive(page, step.target!, "fill");

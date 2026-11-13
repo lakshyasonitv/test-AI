@@ -125,6 +125,26 @@ const isRecordChange = (s: Step) => isSave(s) || /^(mark (as current stage|stage
  * it to the page's own wording. The Save assertion stays; this only adds. Returns a note, or null.
  */
 /**
+ * Lightning's global search runs on Enter: after typing into its box, a click on "Search" looks for a second
+ * button that is not there (run 2026-11-13T15-59-07-870Z-cf7c96f8 timed out and was cut). The click after the
+ * typing becomes Enter in that box. Returns notes.
+ */
+export function globalSearchSubmit(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  for (let i = 1; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action !== "click" || !/^search$/i.test((s.target?.name ?? "").trim())) continue;
+    let j = i - 1;
+    while (j >= 0 && ir.steps[j].action === "wait") j--;
+    const typed = ir.steps[j];
+    if (!typed || typed.action !== "fill" || !/^search\b/i.test((typed.target?.name ?? typed.target?.placeholder ?? "").trim())) continue;
+    ir.steps[i] = { id: s.id, action: "press", target: typed.target, value: "Enter" } as Step;
+    notes.push(`${s.id}: the global search runs on Enter, not a second "Search" click`);
+  }
+  return notes;
+}
+
+/**
  * An activity's Subject (Log a Call, New Task, New Event) is a type-ahead box: it suggests Call, Email, Send
  * Letter… and takes any text. A select there picks the suggestion the value contains: "Intro call" was saved
  * as "Call" (run 2026-11-13T14-46-59-658Z-c76ab6b0). A Subject that is no plain suggestion is typed. Returns notes.

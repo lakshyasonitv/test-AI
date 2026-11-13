@@ -473,6 +473,19 @@ const SF_REVEAL_HELPER = `async function sfReveal(page, text, ready) {
 const SF_DISMISS_DUPLICATES_HELPER = `async function sfDismissDuplicates(page) {
   if (!(await page.getByText(${JSON.stringify(SF_DUPLICATE_WARNING)}, { exact: true }).first().isVisible().catch(() => false))) return;
   await page.getByRole("button", { name: ${JSON.stringify(SF_DUPLICATE_CLOSE)} }).first().click({ timeout: 2000 }).catch(() => {});
+}
+
+// A duplicate rule that only warns keeps the form open on the first Save: the record is made by a second
+// Save, as a person would click it (run 2026-11-13T16-00-53-324Z-9f8e022d waited for "was created" with the
+// New Contact form still open). A rule that blocks shows the warning again, and the run's own check fails.
+async function sfSaveThroughDuplicates(page) {
+  await page.waitForTimeout(1500);
+  if (!(await page.getByText(${JSON.stringify(SF_DUPLICATE_WARNING)}, { exact: true }).first().isVisible().catch(() => false))) return;
+  const save = page.locator('role=dialog >> role=button[name="Save"s]').first();
+  if (!(await save.isVisible().catch(() => false))) return;
+  await page.getByRole("button", { name: ${JSON.stringify(SF_DUPLICATE_CLOSE)} }).first().click({ timeout: 2000 }).catch(() => {});
+  await save.click({ timeout: 5000 }).catch(() => {});
+  test.info().annotations.push({ type: "sf-duplicate-warning", description: "saved through Salesforce's duplicate warning" });
 }`;
 
 // -----------------------------------------------------------------------------
@@ -1436,7 +1449,9 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
         ? `await sfReveal(page, ${q(step.target!.name!.replace(/^Show actions for /, ""))}, page.getByRole("button", { name: ${q(step.target!.name!)}, exact: true }).first());\n` : "";
       const dismiss = orgConnection && (step.action === "fill" || step.action === "select" || step.action === "click")
         ? "await sfDismissDuplicates(page);\n" : "";
-      const code = dismiss + reveal + emitStep(step, ir.meta.baseUrl);
+      const saveThrough = orgConnection && step.action === "click" && /^save$/i.test((step.target?.name ?? "").trim())
+        ? "\nawait sfSaveThroughDuplicates(page);" : "";
+      const code = dismiss + reveal + emitStep(step, ir.meta.baseUrl) + saveThrough;
       const indented = code.split("\n").map((l) => "    " + l).join("\n");
       return `    await test.step(${q(label)}, async () => {\n${indented}\n      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)});\n    });`;
     })
