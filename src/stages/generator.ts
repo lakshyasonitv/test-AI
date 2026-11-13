@@ -404,14 +404,16 @@ const SF_FIELD_SHOWN_HELPER = `async function sfFieldShown(page, label) {
 /** Scrolls down a screen at a time until `text` shows, so a lazily drawn section exists before it is
  *  checked (and a "hidden" check has really looked everywhere). A mouse wheel, not window.scrollBy:
  *  Lightning record pages often scroll an inner region, where the window never moves. */
-const SF_REVEAL_HELPER = `async function sfReveal(page, text) {
-  const wanted = page.getByText(text).first();
+const SF_REVEAL_HELPER = `async function sfReveal(page, text, ready) {
+  // ready: an element that exists only once the section has finished loading (a related list's own
+  // menu appears well after its heading), so the wait goes on until that, not just the heading.
+  const wanted = ready || page.getByText(text).first();
   const view = page.viewportSize() || { width: 1280, height: 720 };
   await page.mouse.move(view.width / 2, view.height * 0.7).catch(() => {});
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < (ready ? 30 : 12); i++) {
     if (await wanted.isVisible().catch(() => false)) return;
     await page.mouse.wheel(0, view.height * 0.8).catch(() => {});
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(ready ? 700 : 300);
   }
 }`;
 
@@ -1379,7 +1381,9 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
         // A related list's own menu ("Show actions for Approval History"): Lightning draws a related list only
         // once it is scrolled to (run 2026-11-13T05-00-05-164Z-7f9fd73a timed out with it below the fold).
         : orgConnection && step.action === "click" && /^Show actions for .+/.test(step.target?.name ?? "")
-        ? `await sfReveal(page, ${q(step.target!.name!.replace(/^Show actions for /, ""))});\n` : "";
+        // The heading shows long before the list's menu does (runs 2026-11-13T05-58-38-915Z-cd560909 and
+        // T06-13-33-779Z-9f995e50 clicked too soon), so the wait is for the menu button itself.
+        ? `await sfReveal(page, ${q(step.target!.name!.replace(/^Show actions for /, ""))}, page.getByRole("button", { name: ${q(step.target!.name!)}, exact: true }).first());\n` : "";
       const dismiss = orgConnection && (step.action === "fill" || step.action === "select" || step.action === "click")
         ? "await sfDismissDuplicates(page);\n" : "";
       const code = dismiss + reveal + emitStep(step, ir.meta.baseUrl);
