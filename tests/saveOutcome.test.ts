@@ -517,6 +517,11 @@ describe("fieldChecksOnRecordView: value checks", () => {
     fieldChecksOnRecordView(h, model, "Create a Zq Deal");
     expect(last(h).target).toEqual({ text: "Zq Heat Information" });
   });
+  it("a value typed into an address part is checked inside the compound address (run 2026-11-13T12-58-06-198Z-0bdc663a)", () => {
+    const i = ir([nav("/lightning/o/Zq_Deal__c/new"), fill("Billing Country", "Zqland"), click("Save"), created, check({ text: "Zqland" }, "text_equals", "Zqland")]);
+    fieldChecksOnRecordView(i, model, "Create a Zq Deal billed in Zqland");
+    expect(last(i)).toMatchObject({ target: { field: "Billing Address" }, assertion: "text_contains", value: "Zqland" });
+  });
   it("a bare number the case typed into a field is checked inside that field (run 2026-11-13T12-02-09-298Z-fc1e4b67)", () => {
     const i = ir([nav("/lightning/o/Zq_Deal__c/new"), fill("Zq Amount", "1234.56"), click("Save"), created, check({ text: "1234.56" }, "text_contains", "1234.56")]);
     const m2 = { ...model, salesforceOrg: { objects: [{ fields: [{ label: "Zq Amount" }] }] } };

@@ -670,7 +670,14 @@ function applyToSection(
       const rel = relativeDay(s.value);
       if (rel !== undefined) {
         notes.push(`${s.id}: "${f.label}" "${s.value}" -> ${rel === 0 ? "today" : rel < 0 ? "yesterday" : "tomorrow"}, worked out when the test runs`);
+        const was = s.value;
         s.value = dateToken(rel, locale);
+        // A check quoting it too (run 2026-11-13T12-56-03-736Z-5e8f62bc looked for "{{yesterday}}" on the page).
+        for (const a of ir.steps) {
+          if (a.action !== "assert") continue;
+          if (a.value === was) a.value = s.value;
+          if (a.target?.text === was) a.target = { ...a.target, text: s.value };
+        }
         continue;
       }
       // The day the request names, however the model wrote it ("15/03/1990" for "15 March 1990", run

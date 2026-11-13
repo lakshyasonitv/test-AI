@@ -678,6 +678,14 @@ const FORM_CONTROL = /^(textbox|combobox|spinbutton|checkbox|searchbox|listbox|r
 const isShownValue = (text: string) => shownNumber(text) !== null || /^(?:\d{1,4}([./-])\d{1,2}\1\d{1,4}\b|\{\{date:)/.test(text.trim());
 /** The field's label (or words of it) written as its value: a check that the label shows, not a value. */
 const namesLabel = (value: string, label: string) => ` ${lineKey(label)} `.includes(` ${lineKey(value)} `);
+/** The compound address field ("Billing Address") an earlier step typed this value into a part of. */
+function addressPartTyped(before: Step[], value: string): string | undefined {
+  const hit = [...before].reverse().find((s) => s.action === "fill" && lineKey(s.value ?? "") === lineKey(value) && !!lineKey(value));
+  const m = /^(Billing|Shipping|Mailing|Other)\s+(Street|City|State\/Province|State|Province|Zip\/Postal Code|Zip|Postal Code|Country)$/i
+    .exec((hit?.target?.name ?? hit?.target?.field ?? "").replace(/^\*\s*|\s*\*$/g, "").trim());
+  return m ? `${m[1][0].toUpperCase()}${m[1].slice(1).toLowerCase()} Address` : undefined;
+}
+
 /** "Stage Closed Lost" -> ["Stage", "Closed Lost"]: the longest field label the text starts with, and the rest. */
 function labelThenValue(text: string, labels: Set<string>): [string, string] | undefined {
   const t = text.trim();
@@ -883,6 +891,14 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       const label = (valueNamedField(`${request}\n${caseText}`, fieldLabels, v) ?? typedInto(steps.slice(0, i), fieldLabels, v))!;
       steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
       notes.push(`the request says "${label}" is "${v}" -> checks that field shows it`);
+    } else if (!s.target?.role && text && addressPartTyped(steps.slice(0, i), valueCheck ? s.value! : text)) {
+      // A value typed into a part of an address (Billing Country "Canada"): the record page shows the address
+      // as ONE field, "Billing Address" = "Toronto, Ontario M5V 2T6 Canada", never a "Billing Country" field
+      // (run 2026-11-13T12-58-06-198Z-0bdc663a). The value is read inside that address.
+      const v = valueCheck ? s.value! : text;
+      const label = addressPartTyped(steps.slice(0, i), v)!;
+      steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
+      notes.push(`"${v}" was typed into an address part -> checks the "${label}" field shows it`);
     } else if (!s.target?.role && text && labelThenValue(text, fieldLabels) && (() => {
       // Only a real value of that field: an option it offers, a value the case typed, a number or a date.
       // "Description Information" is a section heading, not Description's value.

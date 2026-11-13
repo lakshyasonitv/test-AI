@@ -964,6 +964,11 @@ describe("bug hunt 13 Nov: dates in words and full names", () => {
     const y = ir([{ id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "{{yesterday}}" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }]);
     applyTestData(y, valid, m, "Create a Zq Thing due yesterday");
     expect(value(y, "d")).toBe("{{date:-1:en-US}}");
+    // A check quoting the made-up token is changed with it.
+    const q = ir([{ id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "{{yesterday}}" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { text: "{{yesterday}}" }, assertion: "text_contains", value: "{{yesterday}}" }]);
+    applyTestData(q, valid, m, "Create a Zq Thing due yesterday");
+    expect(q.steps.find((s) => s.id === "a")).toMatchObject({ value: "{{date:-1:en-US}}", target: { text: "{{date:-1:en-US}}" } });
   });
   it("First Name keeps only its own words when it also holds the Last Name", () => {
     const m = structuredClone(appModel) as AppModel;
