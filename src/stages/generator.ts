@@ -192,6 +192,13 @@ function emitAssert(step: Step): string {
         `    let clickable = ${locator(t)};`,
         // A record's button that is not in its header is under "Show more actions" (Lightning shows the
         // first few only), as a menu item of the same name.
+        // And the other way round: a menu item the header shows as a button of its own.
+        ...(t.role === "menuitem" && t.name ? [
+          `    if (!(await clickable.isVisible().catch(() => false))) {`,
+          `      const direct = page.getByRole("button", { name: ${q(t.name)}, exact: true }).first();`,
+          `      if (await direct.isVisible().catch(() => false)) { await page.keyboard.press("Escape").catch(() => {}); clickable = direct; }`,
+          `    }`,
+        ] : []),
         ...(t.role === "button" && t.name ? [
           `    if (!(await clickable.isVisible().catch(() => false))) {`,
           `      const more = page.getByRole("button", { name: "Show more actions", exact: true }).first();`,
