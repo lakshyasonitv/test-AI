@@ -99,18 +99,39 @@ const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "
  * a value already in a numeric short format is left to the user, since 03/04 could be either way round.
  */
 export function localeDate(value: string, locale = "en-US"): string | undefined {
+  const date = parseDay(value);
+  if (!date) return undefined;
+  try { return new Intl.DateTimeFormat(locale.replace("_", "-"), { year: "numeric", month: "numeric", day: "numeric", timeZone: "UTC" }).format(date); } catch { return undefined; }
+}
+
+/** The calendar day a value names, or undefined: words ("15 March 1990", "March 15, 1990"), ISO, or a
+ *  numeric date that reads only one way (15/03/1990: no month 15). 03/04/1990 could be either: undefined. */
+export function parseDay(value: string): Date | undefined {
   const v = value.trim();
   let y: number | undefined, m: number | undefined, d: number | undefined;
   let r = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(v);
   if (r) { y = +r[1]; m = +r[2]; d = +r[3]; }
-  r = r ?? /^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})$/.exec(v);
-  if (r && y === undefined) { d = +r[1]; m = MONTHS.indexOf(r[2].slice(0, 3).toLowerCase()) + 1; y = +r[3]; }
-  r = r ?? /^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/.exec(v);
-  if (r && y === undefined) { m = MONTHS.indexOf(r[1].slice(0, 3).toLowerCase()) + 1; d = +r[2]; y = +r[3]; }
+  if (y === undefined && (r = /^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})$/.exec(v))) { d = +r[1]; m = MONTHS.indexOf(r[2].slice(0, 3).toLowerCase()) + 1; y = +r[3]; }
+  if (y === undefined && (r = /^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/.exec(v))) { m = MONTHS.indexOf(r[1].slice(0, 3).toLowerCase()) + 1; d = +r[2]; y = +r[3]; }
+  if (y === undefined && (r = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/.exec(v))) {
+    const a = +r[1], b = +r[2];
+    if (a > 12 && b <= 12) { d = a; m = b; y = +r[3]; } else if (b > 12 && a <= 12) { m = a; d = b; y = +r[3]; }
+  }
   if (!y || !m || !d || m < 1 || m > 12 || d < 1 || d > 31) return undefined;
   const date = new Date(Date.UTC(y, m - 1, d));
-  if (date.getUTCDate() !== d) return undefined;
-  try { return new Intl.DateTimeFormat(locale.replace("_", "-"), { year: "numeric", month: "numeric", day: "numeric", timeZone: "UTC" }).format(date); } catch { return undefined; }
+  return date.getUTCDate() === d ? date : undefined;
+}
+
+/** The days a request names ("born 15 March 1990", "closing 2026-12-01"). */
+function requestDays(request: string): number[] {
+  const re = /\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\.?,?\s+\d{4}\b|\b[A-Za-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b|\b\d{1,2}[./-]\d{1,2}[./-]\d{4}\b/g;
+  return (request.match(re) ?? []).map((t) => parseDay(t)?.getTime()).filter((t): t is number => t !== undefined);
+}
+
+/** "yesterday", "today", "tomorrow" (also as a made-up {{yesterday}} token): days from today. */
+function relativeDay(value: string): number | undefined {
+  const k = value.trim().replace(/^\{\{\s*|\s*\}\}$/g, "").toLowerCase();
+  return k === "yesterday" ? -1 : k === "today" ? 0 : k === "tomorrow" ? 1 : undefined;
 }
 
 /** The decimal mark the user's locale writes ("." in en-US, "," in de-DE). */
@@ -643,6 +664,32 @@ function applyToSection(
     if (s.action !== "fill") continue;
     const f = fieldFor(name);
     if (!f || ruleReads(o, f)) continue;
+    if (f.type === "Date" && s.value) {
+      // "Yesterday", "today", "tomorrow", or the model's own {{yesterday}} (typed as is, it refused the save,
+      // run 2026-11-13T12-43-46-655Z-6cd531ab): a day relative to the run.
+      const rel = relativeDay(s.value);
+      if (rel !== undefined) {
+        notes.push(`${s.id}: "${f.label}" "${s.value}" -> ${rel === 0 ? "today" : rel < 0 ? "yesterday" : "tomorrow"}, worked out when the test runs`);
+        s.value = dateToken(rel, locale);
+        continue;
+      }
+      // The day the request names, however the model wrote it ("15/03/1990" for "15 March 1990", run
+      // 2026-11-13T12-43-28-833Z-72d3e52b, was taken for a made-up date and replaced): that day, in the user's
+      // format, and every check of that day in the same format.
+      const day = parseDay(s.value);
+      if (day && requestDays(request).includes(day.getTime())) {
+        const v = localeDate(s.value, locale)!;
+        const was = s.value;
+        s.value = v;
+        for (const a of ir.steps) {
+          if (a.action !== "assert") continue;
+          if (a.value && parseDay(a.value)?.getTime() === day.getTime()) a.value = v;
+          if (a.target?.text && parseDay(a.target.text)?.getTime() === day.getTime()) a.target = { ...a.target, text: v };
+        }
+        if (v !== was) notes.push(`${s.id}: "${f.label}" "${was}" -> "${v}", the requested day in the user's format`);
+        continue;
+      }
+    }
     if (quoted(s.value)) {
       // A value a later check quotes stays as typed, except that it must still fit the field: Salesforce
       // cut "TRACK-PLAN-001" to 12 characters (run 2026-11-13T12-02-09-298Z-fc1e4b67), so the save and the

@@ -950,6 +950,21 @@ describe("bug hunt 13 Nov: dates in words and full names", () => {
     expect(value(r, "d")).toBe("3/15/1990");
     expect(r.steps.find((s) => s.id === "a")!.target?.text).toBe("3/15/1990");
   });
+  it("the requested day however the model wrote it, with its checks; yesterday and {{yesterday}} are run-relative", () => {
+    const m = structuredClone(appModel) as AppModel;
+    m.salesforceOrg!.objects[0].validationRules = [];
+    const r = ir([
+      { id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "15/03/1990" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { text: "15 March 1990" }, assertion: "visible" },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing with Zq Due 15 March 1990 and verify it");
+    expect(value(r, "d")).toBe("3/15/1990");
+    expect(r.steps.find((s) => s.id === "a")!.target?.text).toBe("3/15/1990");
+    const y = ir([{ id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "{{yesterday}}" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }]);
+    applyTestData(y, valid, m, "Create a Zq Thing due yesterday");
+    expect(value(y, "d")).toBe("{{date:-1:en-US}}");
+  });
   it("First Name keeps only its own words when it also holds the Last Name", () => {
     const m = structuredClone(appModel) as AppModel;
     const o = m.salesforceOrg!.objects[0];
