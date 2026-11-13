@@ -194,17 +194,43 @@ export function dateTimeFills(ir: IR, org: AppModel["salesforceOrg"], request = 
     const esc = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`\\b${esc}\\b\\s*(?:of|on|at|as|to|=|:)?\\s*((?:in\\s+)?\\d{1,3}\\s+days?(?:\\s+from\\s+(?:now|today))?|today|tomorrow|yesterday|next\\s+week)`, "i").exec(request)?.[1];
   };
+  // A rule between two of them the request sets ("Due Date is before its Earliest Start Permitted"): the day for
+  // each, so the pair breaks (or keeps) it as asked (run 2026-11-13T19-38-22-336Z-5d07d2ee filled neither).
+  const order = (o: OrgObject): Map<string, number> => {
+    const days = new Map<string, number>();
+    const dts = o.fields.filter((x) => x.type === "DateTime");
+    const esc = (l: string) => l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    for (const a of dts) for (const b of dts) {
+      if (a === b) continue;
+      const r = new RegExp(`\\b${esc(a.label)}\\b\\s+(?:is\\s+|being\\s+|set\\s+|falls\\s+)*(before|earlier than|prior to|after|later than)\\s+(?:the\\s+|its\\s+)?${esc(b.label)}\\b`, "i").exec(request);
+      if (!r) continue;
+      const before = /before|earlier|prior/i.test(r[1]);
+      days.set(a.api, before ? 1 : 2);
+      days.set(b.api, before ? 2 : 1);
+    }
+    return days;
+  };
   let o: OrgObject | undefined;
   let done = new Set<string>();
+  let ruled = new Map<string, number>();
   for (let i = 0; i < ir.steps.length; i++) {
     const s = ir.steps[i];
     const m = s.action === "navigate" ? /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "") : null;
-    if (m) { o = org.objects.find((x) => x.api === m[1]); done = new Set(); continue; }
+    if (m) { o = org.objects.find((x) => x.api === m[1]); done = new Set(); ruled = o ? order(o) : new Map(); continue; }
     if (!o || !o.fields.some((x) => x.type === "DateTime")) continue;
+    // A click on a date-time field's own label (the error list's link, captured after a refused save) opens
+    // nothing on the form before Save.
+    if (s.action === "click" && o.fields.some((x) => x.type === "DateTime" && x.label.toLowerCase() === (s.target?.name ?? "").trim().toLowerCase())) {
+      notes.push(`${s.id}: a click on the date-time field "${s.target?.name}" itself -> dropped (its own step fills it)`);
+      ir.steps.splice(i, 1);
+      i--;
+      continue;
+    }
     // The form's Save: each date-time field the request names gets its step first, if none wrote it.
     if (s.action === "click" && /^save$/i.test((s.target?.name ?? "").trim())) {
-      for (const f of o.fields.filter((x) => x.type === "DateTime" && !done.has(x.api) && askedFor(x.label) !== undefined)) {
-        const step = { id: `sf-dt-req-${f.api}`, action: "fill", target: { role: "group", name: f.label }, value: dateTimeValue("", f.label, locale, request, askedFor(f.label)) } as IR["steps"][number];
+      for (const f of o.fields.filter((x) => x.type === "DateTime" && !done.has(x.api) && (askedFor(x.label) !== undefined || ruled.has(x.api)))) {
+        const asked = askedFor(f.label) ?? `in ${ruled.get(f.api)} days`;
+        const step = { id: `sf-dt-req-${f.api}`, action: "fill", target: { role: "group", name: f.label }, value: dateTimeValue("", f.label, locale, request, asked) } as IR["steps"][number];
         ir.steps.splice(i, 0, step);
         i++;
         done.add(f.api);
@@ -230,7 +256,7 @@ export function dateTimeFills(ir: IR, org: AppModel["salesforceOrg"], request = 
     s.id = `sf-dt-${s.id}`;
     s.action = "fill";
     s.target = { role: "group", name: f.label };
-    s.value = dateTimeValue(was, f.label, locale, request, askedFor(f.label));
+    s.value = dateTimeValue(was, f.label, locale, request, askedFor(f.label) ?? (ruled.has(f.api) ? `in ${ruled.get(f.api)} days` : undefined));
     done.add(f.api);
     notes.push(`${s.id}: date-time "${f.label}" "${was}" -> "${s.value}", typed into its Date and Time boxes`);
   }

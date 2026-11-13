@@ -1100,3 +1100,23 @@ describe("date-time boxes named just Date or Time (run 2026-11-13T19-05-25-624Z-
     expect(ir.steps[2].value).toBe("{{date:+3:en-US}} 10:30 AM");
   });
 });
+
+describe("a rule between two date-time fields the request sets (run 2026-11-13T19-38-22-336Z-5d07d2ee)", () => {
+  it("gives the pair days that break it as asked, and drops a click on a field's own label", () => {
+    const org = { userLocale: "en_US", objects: [{ api: "ZqAppt", label: "Zq Appt", fields: [
+      { label: "Zq Earliest", api: "ZqEarliest__c", type: "DateTime" },
+      { label: "Zq Due", api: "ZqDue__c", type: "DateTime" },
+    ] }] } as any;
+    const ir = { meta: {}, steps: [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { id: "a", action: "fill", target: { role: "textbox", name: "Date" }, value: "2026-01-02" },
+      { id: "l", action: "click", target: { role: "link", name: "Zq Earliest" } },
+      { id: "e", action: "fill", target: { role: "textbox", name: "Zq Earliest" }, value: "2026-01-01 9:00 AM" },
+      { id: "s", action: "click", target: { role: "button", name: "Save" } },
+    ] } as unknown as IR;
+    dateTimeFills(ir, org, "Create a Zq Appt whose Zq Due is before its Zq Earliest and verify it is rejected");
+    expect(ir.steps.map((s) => s.id)).toEqual(["n", "sf-dt-e", "sf-dt-req-ZqDue__c", "s"]);
+    expect(ir.steps[1].value).toBe("{{date:+2:en-US}} 9:00 AM");
+    expect(ir.steps[2].value).toBe("{{date:+1:en-US}} 10:30 AM");
+  });
+});
