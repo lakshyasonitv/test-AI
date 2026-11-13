@@ -63,6 +63,14 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
       continue;
     }
     if (!form) {
+      // A clone is a new record of the same object, its form filled with the original's values; what the case
+      // types there replaces them (run 2026-11-13T15-21-25-383Z-1c19bd9f: the clone's 7500 was never read back).
+      if (s.action === "click" && /^clone$/i.test((s.target?.name ?? "").trim()) && out.length) {
+        form = out[out.length - 1].object;
+        values = out[out.length - 1].values.map((v) => ({ ...v }));
+        editing = null;
+        continue;
+      }
       if (s.action === "click" && /^edit$/i.test((s.target?.name ?? "").trim()) && out.length) editing = { of: out[out.length - 1], values: [] };
       else if (editing && (s.action === "fill" || s.action === "select") && s.value !== undefined) {
         const f = fieldOf(editing.of.object, s);
@@ -152,7 +160,14 @@ export async function apiChecks(
       const expected = resolveRunTokens(v.value, ctx);
       if (!rec) { out.push({ object: t.object, id, field: v.label, expected, ok: false, note: "the record is not in the org" }); continue; }
       const actual = rec[v.api];
-      out.push({ object: t.object, id, field: v.label, expected, actual: actual === null || actual === undefined ? "" : String(actual), ok: sameValue(v.type, expected, actual) });
+      const shown = actual === null || actual === undefined ? "" : String(actual);
+      // A value can match what was typed and still be wrong data: the field's own label saved in it ("Last
+      // Name Sato", run 2026-11-13T15-19-02-592Z-1e01cacf passed with it) or a placeholder no one filled in
+      // ("{{yesterday}}"). The test then checked its own mistake. Those fail here, whatever the page showed.
+      const junk = /\{\{[^}]*\}\}/.test(shown) ? "a placeholder was saved instead of a value"
+        : shown.toLowerCase().startsWith(`${v.label.toLowerCase()} `) && v.label.length >= 3 ? `the field's own label "${v.label}" was saved in its value`
+        : undefined;
+      out.push({ object: t.object, id, field: v.label, expected, actual: shown, ok: sameValue(v.type, expected, actual) && !junk, ...(junk ? { note: junk } : {}) });
     }
   }
   return out;

@@ -41,6 +41,18 @@ describe("typedValues", () => {
     expect(u[0].values.find((v) => v.api === "Phone")?.value).toBe("4155550101");
   });
 
+  it("a clone is checked as its own record: the original's values, then what the clone form typed", () => {
+    const clone = { id: "cl", action: "click", target: { role: "menuitem", name: "Clone" } } as Step;
+    const save2 = { id: "s2", action: "click", target: { role: "button", name: "Save" } } as Step;
+    const created2 = { id: "w2", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+    const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "Zq Base"), fill("Annual Revenue", "5000"), save, created,
+      clone, fill("Zq Name", "Zq Copy"), fill("Annual Revenue", "7500"), save2, created2] }, org);
+    expect(t).toHaveLength(2);
+    expect(t[1]).toMatchObject({ object: "Zq_Acct__c", n: 2 });
+    expect(t[1].values.map((v) => v.value)).toEqual(["Zq Copy", "7500"]);
+    expect(t[0].values.map((v) => v.value)).toEqual(["Zq Base", "5000"]);
+  });
+
   it("a form never saved checks nothing", () => {
     expect(typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "x")] }, org)).toEqual([]);
   });
@@ -70,6 +82,15 @@ describe("apiChecks", () => {
     const out = await apiChecks(apiGet, typed, { Zq_Acct__c: ["x' OR Id != '"] }, { uid: "a", phone: "1" });
     expect(out[0]).toMatchObject({ ok: false, note: "the case never reached the record it created" });
     expect(apiGet).not.toHaveBeenCalled();
+  });
+
+  it("fails a value that matches what was typed but is junk: its own label, or a placeholder (run 2026-11-13T15-19-02-592Z-1e01cacf)", async () => {
+    const t = (v: string) => [{ object: "Zq_Acct__c", n: 1, values: [{ label: "Zq Name", api: "Name", type: "string", value: v }] }];
+    const ids = { Zq_Acct__c: ["a00zq0000000001AAA"] };
+    const label = await apiChecks(vi.fn(async () => ({ records: [{ Name: "Zq Name Zqsato" }] })), t("Zq Name Zqsato"), ids, { uid: "a", phone: "1" });
+    expect(label[0]).toMatchObject({ ok: false, note: `the field's own label "Zq Name" was saved in its value` });
+    const token = await apiChecks(vi.fn(async () => ({ records: [{ Name: "{{yesterday}}" }] })), t("{{yesterday}}"), ids, { uid: "a", phone: "1" });
+    expect(token[0]).toMatchObject({ ok: false, note: "a placeholder was saved instead of a value" });
   });
 
   it("is off unless asked for", () => {
