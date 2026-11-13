@@ -125,6 +125,27 @@ const isRecordChange = (s: Step) => isSave(s) || /^(mark (as current stage|stage
  * it to the page's own wording. The Save assertion stays; this only adds. Returns a note, or null.
  */
 /**
+ * An activity's Subject (Log a Call, New Task, New Event) is a type-ahead box: it suggests Call, Email, Send
+ * Letter… and takes any text. A select there picks the suggestion the value contains: "Intro call" was saved
+ * as "Call" (run 2026-11-13T14-46-59-658Z-c76ab6b0). A Subject that is no plain suggestion is typed. Returns notes.
+ */
+const ACTIVITY_SUGGESTIONS = /^(call|email|send letter|send quote|other)$/i;
+export function activitySubjectTyped(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  let onActivity = false;
+  ir.steps.forEach((s, i) => {
+    if (s.action === "navigate") { onActivity = /\/lightning\/o\/(Task|Event)\/new\b/.test(s.target?.url ?? ""); return; }
+    if (s.action === "click" && /^(log a call|new task|new event|new activity)$/i.test((s.target?.name ?? "").trim())) { onActivity = true; return; }
+    if (s.action === "click" && isSave(s)) { onActivity = false; return; }
+    if (!onActivity || s.action !== "select" || !/^subject$/i.test((s.target?.name ?? "").replace(/^\*\s*|\s*\*$/g, "").trim())) return;
+    if (!s.value || ACTIVITY_SUGGESTIONS.test(s.value.trim())) return;
+    ir.steps[i] = { ...s, action: "fill", target: { role: "combobox", name: "Subject" } } as Step;
+    notes.push(`${s.id}: the activity's Subject "${s.value}" is typed (the box only suggests Call, Email...)`);
+  });
+  return notes;
+}
+
+/**
  * An edit's Save (after "Edit", or an inline field's pencil "Edit Phone") confirmed by Salesforce's own
  * '"<name>" was saved.' when the case left it out. Without it the record page never counts as reached:
  * run 2026-11-13T14-13-29-358Z-ac7a1e04 checked Priority on the edit form's own dropdown, and the API check
@@ -1332,7 +1353,9 @@ export function leadConvertSteps(ir: IRSteps): string[] {
     if (s.action !== "assert") continue;
     // "was created" after the dialog is the Lead's own earlier toast (run 2026-11-12T09-57-37-571Z-94237239
     // "passed" on it with nothing converted); "Converted" is also a path stage.
-    if (/\bwas created\b/i.test(s.target?.text ?? "")) { ir.steps.splice(i--, 1); notes.push(`${s.id}: "was created" after Convert is the Lead's earlier toast -> dropped`); continue; }
+    // "was saved" is no conversion's message either (run 2026-11-13T14-47-12-463Z-4594d2b5 converted the Lead
+    // and then failed waiting for it).
+    if (/\bwas (created|saved)\b/i.test(s.target?.text ?? "")) { ir.steps.splice(i--, 1); notes.push(`${s.id}: "${(s.target?.text ?? "").trim()}" after Convert is no conversion message -> dropped`); continue; }
     const text = (s.target?.text ?? "").trim();
     if (!/\bconvert/i.test(text) || /your lead has been converted/i.test(text)) continue;
     // Any other wording of it ("Converted" is also a path stage; "was converted" is never shown: run

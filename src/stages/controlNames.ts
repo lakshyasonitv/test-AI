@@ -33,7 +33,9 @@ const CAP_WORD = String.raw`(?:[A-Z][\p{L}\p{N}'&.-]*|\([A-Z]{2,}\))`;
 /** The control names in a request, longest first, de-duplicated (exact text kept). */
 export function extractControlNames(request: string): string[] {
   const out = new Set<string>();
-  for (const m of request.matchAll(/'([^'\n]{2,60})'|"([^"\n]{2,60})"|‘([^’\n]{2,60})’|“([^”\n]{2,60})”/g)) {
+  // A quote opens and closes outside a word: the apostrophe in "the clone's name to 'Clone Copy'" is not
+  // one (run 2026-11-13T14-57-14-748Z-4fac448b took "s name to" for a value and cut the run).
+  for (const m of request.matchAll(/(?<![\p{L}\p{N}])'([^'\n]{2,60})'(?![\p{L}\p{N}])|"([^"\n]{2,60})"|(?<![\p{L}\p{N}])‘([^’\n]{2,60})’(?![\p{L}\p{N}])|“([^”\n]{2,60})”/gu)) {
     const q = (m[1] ?? m[2] ?? m[3] ?? m[4]).trim();
     if (q) out.add(q);
   }

@@ -346,3 +346,11 @@ describe("a related list's actions menu", () => {
     expect(code).toContain('await sfReveal(page, "Zq History", page.getByRole("button", { name: "Show actions for Zq History", exact: true }).first());');
   });
 });
+
+describe("stepsMissingValues: a name typed over two fields (run 2026-11-13T14-39-38-512Z-7f31c334)", () => {
+  it("counts 'Contact Zq Maria Zqchen' as carried when First and Last Name hold its words", () => {
+    const steps = [{ value: "Zqmaria", target: { name: "First Name" } }, { value: "Zqchen {{uid}}", target: { name: "Last Name" } }];
+    expect(stepsMissingValues(steps, { steps: ["create Contact Zqmaria Zqchen"], expected: "" }, ["Contact Zqmaria Zqchen"])).toEqual([]);
+    expect(stepsMissingValues([{ value: "Zqmaria", target: { name: "First Name" } }], { steps: ["create Contact Zqmaria Zqchen"], expected: "" }, ["Contact Zqmaria Zqchen"])).toEqual(["Contact Zqmaria Zqchen"]);
+  });
+});

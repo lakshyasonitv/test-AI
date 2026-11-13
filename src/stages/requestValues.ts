@@ -89,7 +89,14 @@ export function stepsMissingValues(steps: StepText[], c: Pick<TestCase, "steps" 
   // "Account's TB Total Opportunity Amount" is checked as the field "TB Total Opportunity Amount"
   // (valuesFromRequest strips the object's name; run 2026-11-03T09-58-44-651Z-fd8a02f9).
   const bare = (v: string) => v.replace(/^[A-Z][\w ]*?['’]s\s+/, "");
-  return carried.filter((v) => !hay.includes(loose(v)) && !hay.includes(loose(bare(v))));
+  // A name typed over two fields: "Contact Maria Chen" is First Name "Maria" and Last Name "Chen" (run
+  // 2026-11-13T14-39-38-512Z-7f31c334 was cut as leaving it out). Every word after the first (which may be
+  // the object's name) is in some step.
+  const spread = (v: string) => {
+    const words = v.split(/\s+/).map(loose).filter((w) => w.length >= 2);
+    return words.length >= 2 && words.slice(1).every((w) => hay.includes(w));
+  };
+  return carried.filter((v) => !hay.includes(loose(v)) && !hay.includes(loose(bare(v))) && !spread(v));
 }
 
 const Rewrite = z.object({ steps: z.array(z.string().min(1)).min(1), expected: z.string().min(1) });

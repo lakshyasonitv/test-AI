@@ -1180,3 +1180,22 @@ describe("editSaveConfirmed (run 2026-11-13T14-13-29-358Z-ac7a1e04)", () => {
     expect(editSaveConfirmed(j)).toEqual([]);
   });
 });
+
+describe("bug hunt round 3", () => {
+  it("an activity's Subject that is no plain suggestion is typed (run 2026-11-13T14-46-59-658Z-c76ab6b0)", async () => {
+    const { activitySubjectTyped } = await import("../src/stages/salesforceGuidance.js");
+    const sel = (v: string) => ({ id: "sub", action: "select", target: { role: "combobox", name: "Subject" }, value: v } as Step);
+    const i = ir([click("Log a Call"), sel("Zq Intro call"), click("Save")]);
+    expect(activitySubjectTyped(i)).toHaveLength(1);
+    expect(i.steps[1]).toMatchObject({ action: "fill", value: "Zq Intro call" });
+    const k = ir([click("Log a Call"), sel("Call"), click("Save")]);
+    expect(activitySubjectTyped(k)).toEqual([]);
+  });
+  it("was saved after a Lead's Convert is dropped (run 2026-11-13T14-47-12-463Z-4594d2b5)", async () => {
+    const { leadConvertSteps } = await import("../src/stages/salesforceGuidance.js");
+    const conv = (id: string) => ({ id, action: "click", target: { role: "button", name: "Convert" } } as Step);
+    const i = ir([conv("a"), conv("b"), { id: "w", action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step]);
+    leadConvertSteps(i);
+    expect(i.steps.some((s) => s.target?.text === "was saved")).toBe(false);
+  });
+});
