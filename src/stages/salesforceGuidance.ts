@@ -1281,7 +1281,7 @@ export function calculatedFieldReads(ir: IRSteps, org: Pick<SalesforceOrgModel, 
  */
 export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "approvals"> | undefined, request: string, approverSignIn?: string): string[] {
   const approval = org?.approvals?.[0] && /\bsubmit\w*\b[^.]*\bapproval\b/i.test(request) ? org.approvals : undefined;
-  if (!approval || ir.steps.some((s) => s.action === "click" && /^submit for approval$/i.test(s.target?.name ?? ""))) return [];
+  if (!approval) return [];
   // The record: the last one the case saved on an object with an approval process.
   let form: string | null = null;
   let saved: { object: string; at: number; n: number } | null = null;
@@ -1297,26 +1297,39 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   });
   if (!saved) return [];
   const { object, n } = saved as { object: string; at: number; n: number };
-  let at = (saved as { at: number }).at + 1;
-  while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /\bwas created\b/.test(ir.steps[at].target?.text ?? "")))) at++;
-  // What the case wrote after the Save is not the approval (a text check of the outcome, a click elsewhere):
-  // it would run before the record is even submitted. The request's own check is added at the end instead.
-  const dropped = ir.steps.length - at;
-  ir.steps.splice(at);
-  const dialog = (name: string) => ({ role: "button", name, css: `role=dialog >> role=button[name="${name}"s]` });
-  const steps: Step[] = [
-    // The Approval History list on the record's Related tab carries "Submit for Approval" (the Opportunity
-    // layout's actions menu has none: run 2026-11-12T10-08-18-575Z-29afdb07).
-    { id: "sf-ap-related0", action: "click", target: { role: "tab", name: "Related" } },
-    { id: "sf-ap-wait0", action: "wait", value: "1500" },
-    { id: "sf-ap-submit", action: "click", target: { role: "button", name: "Submit for Approval" } },
-    { id: "sf-ap-wait", action: "wait", value: "1500" },
-    { id: "sf-ap-comment", action: "fill", target: { role: "textbox", name: "Comments" }, value: "Testbench approval test" },
-    { id: "sf-ap-send", action: "click", target: dialog("Submit") },
-    { id: "sf-ap-sent", action: "assert", target: { text: "submitted for approval" }, assertion: "visible" },
-  ] as Step[];
   const decision = /\breject\w*\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Reject"
     : /\bapprov(e|es|ed|ing)\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Approve" : null;
+  const dialog = (name: string) => ({ role: "button", name, css: `role=dialog >> role=button[name="${name}"s]` });
+  // The case's own submission (runs 2026-11-12T13-02-29-047Z-33e9cc1b and -13-03-30-475Z-d74a26c5 submitted
+  // correctly, then wandered: an "Approval History(0)" link, a task's menu, never the approver) is kept up
+  // to its confirmation; everything after it is this pass's. Without one, the submission is added too.
+  const submitAt = ir.steps.findIndex((s) => s.action === "click" && /^submit for approval$/i.test(s.target?.name ?? ""));
+  let at: number;
+  const steps: Step[] = [];
+  if (submitAt >= 0) {
+    const send = ir.steps.findIndex((s, i) => i > submitAt && s.action === "click" && /^submit$/i.test(s.target?.name ?? ""));
+    if (send < 0) return [];
+    at = send + 1;
+    while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /submitted/i.test(ir.steps[at].target?.text ?? "")))) at++;
+    if (!decision && !ir.steps.slice(at).some((s) => s.action !== "wait")) return [];
+    if (!ir.steps.slice(send, at).some((s) => s.action === "assert")) steps.push({ id: "sf-ap-sent", action: "assert", target: { text: "submitted for approval" }, assertion: "visible" } as Step);
+  } else {
+    at = (saved as { at: number }).at + 1;
+    while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /\bwas created\b/.test(ir.steps[at].target?.text ?? "")))) at++;
+    // "Submit for Approval" is in the record's actions menu (run 2026-11-12T12-27-14-303Z-faacdd52 submitted there).
+    steps.push(
+      { id: "sf-ap-menu", action: "click", target: { role: "button", name: "Show more actions" } } as Step,
+      { id: "sf-ap-submit", action: "click", target: { role: "menuitem", name: "Submit for Approval" } } as Step,
+      { id: "sf-ap-wait", action: "wait", value: "1500" } as Step,
+      { id: "sf-ap-comment", action: "fill", target: { role: "textbox", name: "Comments" }, value: "Testbench approval test" } as Step,
+      { id: "sf-ap-send", action: "click", target: dialog("Submit") } as Step,
+      { id: "sf-ap-sent", action: "assert", target: { text: "submitted for approval" }, assertion: "visible" } as Step,
+    );
+  }
+  // What the case wrote after that is not the approval (a check of the outcome before the decision, a click
+  // elsewhere). The request's own check is added at the end instead.
+  const dropped = ir.steps.length - at;
+  ir.steps.splice(at);
   if (decision) {
     // Phase C, two users: the approver decides. The same browser signs in as them (approverSignIn is the
     // run's second user, SECOND_USER_REF) and opens the record the first user created.

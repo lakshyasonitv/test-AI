@@ -1000,3 +1000,22 @@ describe("approvalSteps with an approver", () => {
     expect(i.steps.find((s) => s.id === "sf-ap-as-approver")?.target?.url).toBe(SECOND_USER_REF);
   });
 });
+
+describe("approvalSteps after the case's own submission", () => {
+  it("keeps the submission and replaces what follows with the approver's decision", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const { SECOND_USER_REF } = await import("../src/stages/salesforceFrontdoor.js");
+    const org = { objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Description", api: "Description" }] }], approvals: [{ label: "Zq Big Deal", api: "Zq_Big_Deal", object: "Zopp" }] };
+    const sub = { id: "s11", action: "click", target: { role: "menuitem", name: "Submit for Approval" } } as Step;
+    const send = { id: "s14", action: "click", target: { role: "button", name: "Submit" } } as Step;
+    const sent = { id: "s16", action: "assert", target: { text: "was submitted for approval" }, assertion: "visible" } as Step;
+    const wander = { id: "s17", action: "click", target: { role: "link", name: "Approval History(0)" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save"), sub, send, sent, wander]);
+    approvalSteps(i, org as any, "submit it for approval, then reject it and verify its Description shows Zq Rejected", SECOND_USER_REF);
+    const ids = i.steps.map((s) => s.id);
+    expect(ids.slice(0, 5)).toEqual(["n", "c", "s11", "s14", "s16"]);
+    expect(ids).not.toContain("s17");
+    expect(ids).toEqual(expect.arrayContaining(["sf-ap-as-approver", "sf-ap-decide", "sf-ap-check-Description"]));
+    expect(i.steps.find((s) => s.id === "sf-ap-decide")?.target?.name).toBe("Reject");
+  });
+});
