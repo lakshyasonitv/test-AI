@@ -139,6 +139,18 @@ export function globalSearchSubmit(ir: IRSteps): string[] {
     notes.push(`${s.id}: the global search box is "Search...", not "${s.target!.name}"`);
     s.target = { role: "searchbox", name: "Search..." };
   }
+  // The box exists only once the header's "Search" button opened it (run 2026-11-13T16-53-32-808Z-11eabab6
+  // typed into it straight away and was cut there): that click goes first when the case left it out.
+  const firstType = ir.steps.findIndex((s) => s.action === "fill" && s.target?.name === "Search...");
+  if (firstType > 0) {
+    let j = firstType - 1;
+    while (j >= 0 && ir.steps[j].action === "wait") j--;
+    if (!(ir.steps[j]?.action === "click" && /^search$/i.test((ir.steps[j].target?.name ?? "").trim()))) {
+      ir.steps.splice(firstType, 0, { id: "sf-search-box", action: "click", target: { role: "button", name: "Search" } } as Step,
+        { id: "sf-search-box-wait", action: "wait", value: "800" } as Step);
+      notes.push(`the global search box is opened by its "Search" button first`);
+    }
+  }
   for (let i = 1; i < ir.steps.length; i++) {
     const s = ir.steps[i];
     if (s.action !== "click" || !/^search$/i.test((s.target?.name ?? "").trim())) continue;

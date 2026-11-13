@@ -1236,6 +1236,16 @@ describe("bug hunt round 4, second pass", () => {
     expect(i.steps[3].target).toEqual({ role: "searchbox", name: "Search..." });
     expect(i.steps[5]).toMatchObject({ id: "sf-search-open-o", target: { role: "link", name: "Zq Quasar {{uid}}" } });
   });
+  it("opens the global search box with its button first when the case typed into it straight away (run 2026-11-13T16-53-32-808Z-11eabab6)", async () => {
+    const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
+    const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search Salesforce" }, value: "Zq Quasar" } as Step;
+    const i = ir([click("Save"), typed]);
+    globalSearchSubmit(i);
+    expect(i.steps.map((s) => s.id)).toEqual(["c", "sf-search-box", "sf-search-box-wait", "t"]);
+    const k = ir([click("Search"), typed]);
+    globalSearchSubmit(k);
+    expect(k.steps.some((s) => s.id === "sf-search-box")).toBe(false);
+  });
   it("a hidden check of the deleted record's name right after the delete goes (run 2026-11-13T16-32-07-872Z-36eef730)", async () => {
     const { deletedNameNotChecked } = await import("../src/stages/salesforceGuidance.js");
     const i = ir([fill("Zq Opp Name", "Zq Delete Me {{uid}}"), click("Save"), click("Delete"), click("Delete"),
