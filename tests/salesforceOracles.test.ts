@@ -157,3 +157,23 @@ describe("calculatedChecks with a shown value", () => {
       .toEqual([{ object: "Zq_Acct__c", n: 1, values: [{ label: "Zq Exp", api: "Zq_Exp__c", type: "Currency", value: "$20,000.00" }] }]);
   });
 });
+
+describe("leadConvertChecks", () => {
+  const click = (name: string) => ({ id: name, action: "click", target: { role: "button", name } } as Step);
+  const lead = { Lead: ["00Qzq0000000001AAA"] };
+  it("checks the conversion and what it made: Account by Company, Contact by Last Name, an Opportunity", async () => {
+    const { leadConvertChecks } = await import("../src/stages/salesforceOracles.js");
+    const apiGet = vi.fn(async () => ({ records: [{ IsConverted: true, Company: "Zq Co", LastName: "Zq Okafor",
+      ConvertedAccount: { Name: "Zq Co" }, ConvertedContact: { LastName: "Zq Okafor" }, ConvertedOpportunityId: "006zq0000000001AAA" }] }));
+    const out = await leadConvertChecks(apiGet, { steps: [click("Convert"), click("Convert")] }, lead);
+    expect(out.map((c) => [c.field, c.ok])).toEqual([["converted", true], ["converted Account name", true], ["converted Contact last name", true], ["converted Opportunity", true]]);
+  });
+  it("fails a missing Account, and expects no Opportunity when the case ticked Don't create one", async () => {
+    const { leadConvertChecks } = await import("../src/stages/salesforceOracles.js");
+    const apiGet = vi.fn(async () => ({ records: [{ IsConverted: true, Company: "Zq Co", LastName: "Zq L", ConvertedAccount: null, ConvertedContact: { LastName: "Zq L" }, ConvertedOpportunityId: null }] }));
+    const noOpp = { id: "n", action: "check", target: { role: "checkbox", name: "Don't create an opportunity upon conversion" } } as Step;
+    const out = await leadConvertChecks(apiGet, { steps: [click("Convert"), noOpp, click("Convert")] }, lead);
+    expect(out.find((c) => c.field === "converted Account name")?.ok).toBe(false);
+    expect(out.find((c) => c.field === "converted Opportunity")).toMatchObject({ expected: "none", ok: true });
+  });
+});

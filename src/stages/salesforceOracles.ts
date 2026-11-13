@@ -363,8 +363,16 @@ export async function leadConvertChecks(apiGet: (p: string) => Promise<any>, ir:
   for (const id of created.Lead ?? []) {
     if (!/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
     try {
-      const r = (await apiGet(`/query?q=${encodeURIComponent(`SELECT IsConverted FROM Lead WHERE Id = '${id}'`)}`))?.records?.[0];
+      const q = `SELECT IsConverted, Company, LastName, ConvertedAccount.Name, ConvertedContact.LastName, ConvertedOpportunityId FROM Lead WHERE Id = '${id}'`;
+      const r = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0];
       out.push({ object: "Lead", id, field: "converted", expected: "true", actual: String(r?.IsConverted ?? "not found"), ok: r?.IsConverted === true });
+      if (r?.IsConverted !== true) continue;
+      // What the conversion made: an Account named after the Lead's Company, a Contact with its Last Name,
+      // and an Opportunity unless the case ticked "Don't create an opportunity upon conversion".
+      out.push({ object: "Lead", id, field: "converted Account name", expected: String(r.Company ?? ""), actual: String(r.ConvertedAccount?.Name ?? "none"), ok: !!r.ConvertedAccount && r.ConvertedAccount.Name === r.Company });
+      out.push({ object: "Lead", id, field: "converted Contact last name", expected: String(r.LastName ?? ""), actual: String(r.ConvertedContact?.LastName ?? "none"), ok: !!r.ConvertedContact && r.ConvertedContact.LastName === r.LastName });
+      const noOpp = ir.steps.some((s) => (s.action === "check" || s.action === "click") && /don.t create an opportunity/i.test(s.target?.name ?? s.target?.text ?? ""));
+      out.push({ object: "Lead", id, field: "converted Opportunity", expected: noOpp ? "none" : "created", actual: r.ConvertedOpportunityId ? "created" : "none", ok: noOpp ? !r.ConvertedOpportunityId : !!r.ConvertedOpportunityId });
     } catch (err) {
       out.push({ object: "Lead", id, field: "converted", expected: "true", ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
     }
