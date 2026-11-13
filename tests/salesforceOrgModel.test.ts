@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readSalesforceOrgModel, orgModelForCases, createFormUrls, flowEffects, requestedObjects } from "../src/stages/salesforceOrgModel.js";
+import { readSalesforceOrgModel, orgModelForCases, createFormUrls, flowEffects, requestedObjects, namesField } from "../src/stages/salesforceOrgModel.js";
 import { SalesforceOrgModel, toLiteModel, type AppModel } from "../src/schema/appModel.js";
 
 /**
@@ -514,5 +514,14 @@ describe("objects the request names (runs 2026-11-13T17-50-56-653Z-989d3c23, 17-
   });
   it("skips an object Lightning cannot lay out, and a label inside another word", () => {
     expect(requestedObjects(sobjects, "Create a Zq Territory, then reorders")).toEqual([]);
+  });
+});
+
+describe("a field the request names survives the field cap (run 2026-11-13T18-11-00-028Z-90505eae)", () => {
+  it("matches a field label as a whole word or phrase", () => {
+    expect(namesField("Create a Zq Work Order with Subject 'Boiler repair'", "Subject")).toBe(true);
+    expect(namesField("an Asset with Serial Number SN-1", "Serial Number")).toBe(true);
+    expect(namesField("Create a Zq Work Order with Subjects", "Subject")).toBe(false);
+    expect(namesField("Zq (Ops) team", "(Ops)")).toBe(true);
   });
 });

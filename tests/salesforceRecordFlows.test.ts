@@ -354,3 +354,11 @@ describe("stepsMissingValues: a name typed over two fields (run 2026-11-13T14-39
     expect(stepsMissingValues([{ value: "Zqmaria", target: { name: "First Name" } }], { steps: ["create Contact Zqmaria Zqchen"], expected: "" }, ["Contact Zqmaria Zqchen"])).toEqual(["Contact Zqmaria Zqchen"]);
   });
 });
+
+describe("an object opened by its address carries its label (run 2026-11-13T18-11-18-597Z-22689070)", () => {
+  it("counts /lightning/o/ZqServiceZone/new as naming 'Zq Service Zone', and only that object", () => {
+    const c = { steps: ["create a Zq Service Zone named North"], expected: "" };
+    expect(stepsMissingValues([{ target: { url: "/lightning/o/ZqServiceZone/new?count=1" } }], c, ["Zq Service Zone"])).toEqual([]);
+    expect(stepsMissingValues([{ target: { url: "/lightning/o/ZqOtherZone/new?count=1" } }], c, ["Zq Service Zone"])).toEqual(["Zq Service Zone"]);
+  });
+});

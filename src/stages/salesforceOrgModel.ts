@@ -53,7 +53,13 @@ async function readApp(apiGet: ApiGet): Promise<{ label?: string; objects: strin
   return { label: typeof app.label === "string" ? app.label : undefined, objects };
 }
 
-async function readObject(apiGet: ApiGet, api: string): Promise<SalesforceOrgModel["objects"][number] | null> {
+/** The request names this field label as a whole word or phrase ("Subject", "Serial Number"). */
+export function namesField(request: string, label: string): boolean {
+  const l = label.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return l.length > 1 && new RegExp(`(^|[^a-z0-9])${l}([^a-z0-9]|$)`).test(request.toLowerCase());
+}
+
+async function readObject(apiGet: ApiGet, api: string, request = ""): Promise<SalesforceOrgModel["objects"][number] | null> {
   const info = await tryGet(apiGet, `/ui-api/object-info/${encodeURIComponent(api)}`);
   if (!info?.fields) return null;
   const picklists = info.defaultRecordTypeId
@@ -98,11 +104,14 @@ async function readObject(apiGet: ApiGet, api: string): Promise<SalesforceOrgMod
         ...(f.unique || f.externalId ? { unique: true } : {}),
       };
     })
-    // Required first (in the org's own order), then picklists and lookups (what a form step needs to
-    // get right), then the rest. A stable sort, so each group keeps the API's order.
+    // Required first (in the org's own order), then the fields the request names, then picklists and
+    // lookups (what a form step needs to get right), then the rest. A stable sort, so each group keeps the
+    // API's order. Work Order has 40+ Field Service picklists and lookups, so its Subject was cut by the cap
+    // and never API-checked (run 2026-11-13T18-11-00-028Z-90505eae).
     .sort((a, b) => {
       if (!!a.required !== !!b.required) return a.required ? -1 : 1;
       if (a.required) return 0;
+      if (namesField(request, a.label) !== namesField(request, b.label)) return namesField(request, a.label) ? -1 : 1;
       return Number(!!(b.picklist || b.lookup)) - Number(!!(a.picklist || a.lookup));
     })
     .slice(0, MAX_FIELDS);
@@ -473,7 +482,7 @@ export async function readSalesforceOrgModel(
   for (const o of app.objects) if (!names.includes(o)) names.push(o);
   for (const c of customObjects(sobjects)) if (!names.includes(c)) names.push(c);
   const objects = (await Promise.all(names.slice(0, MAX_OBJECTS).map(async (o) => {
-    const obj = await readObject(apiGet, o);
+    const obj = await readObject(apiGet, o, request);
     if (!obj) return null;
     const records = await countRecords(apiGet, o);
     return records === undefined ? obj : { ...obj, records };

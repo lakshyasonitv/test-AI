@@ -84,6 +84,9 @@ export function stepsMissingValues(steps: StepText[], c: Pick<TestCase, "steps" 
   // 2026-11-10T13-55-48-526Z-8bdcb95a was cut as leaving the flow's name out).
   const hay = steps.flatMap((s) => [s.value, s.target?.name, s.target?.text, s.target?.label, s.target?.placeholder, s.target?.field,
     /\/flow\/\w+/.exec(s.target?.url ?? "")?.[0],
+    // An object is named by the address that opens it: "Service Territory" is /lightning/o/ServiceTerritory/new
+    // (run 2026-11-13T18-11-18-597Z-22689070 was cut as leaving it out).
+    /\/lightning\/[or]\/(\w+)\//.exec(s.target?.url ?? "")?.[1],
     s.value && (s.target?.name ?? s.target?.label ?? s.target?.field) ? `${s.target?.name ?? s.target?.label ?? s.target?.field} ${s.value}` : undefined])
     .filter((x): x is string => typeof x === "string" && x.length > 0).map(loose).join("|");
   // "Account's TB Total Opportunity Amount" is checked as the field "TB Total Opportunity Amount"
