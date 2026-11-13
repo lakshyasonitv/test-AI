@@ -1028,6 +1028,10 @@ describe("bug hunt 13 Nov: dates in words and full names", () => {
       { id: "a", action: "assert", target: { field: "Zq Due" }, assertion: "text_contains", value: yesterday }]);
     applyTestData(f, valid, m, "Create a Zq Thing due yesterday");
     expect(f.steps.find((s) => s.id === "a")!.value).toBe("{{date:-1:en-US}}");
+    // "In 45 days" was typed as is and refused the save (run 2026-11-13T22-54-49-464Z-d812ddd7).
+    const n = ir([{ id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "in 45 days" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }]);
+    applyTestData(n, valid, m, "Create a Zq Thing with Zq Due in 45 days");
+    expect(value(n, "d")).toBe("{{date:+45:en-US}}");
   });
   it("First Name keeps only its own words when it also holds the Last Name", () => {
     const m = structuredClone(appModel) as AppModel;

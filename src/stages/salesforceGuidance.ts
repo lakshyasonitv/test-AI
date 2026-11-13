@@ -947,7 +947,8 @@ function addressPartTyped(before: Step[], value: string): string | undefined {
 
 /** "Stage Closed Lost" -> ["Stage", "Closed Lost"]: the longest field label the text starts with, and the rest. */
 function labelThenValue(text: string, labels: Set<string>): [string, string] | undefined {
-  const t = text.trim();
+  // The page's own line break between them: "Lead Status\nWorking - Contacted" (run 2026-11-13T23-01-23-187Z-0b878a94).
+  const t = text.replace(/\s+/g, " ").trim();
   const label = [...labels].filter((l) => l && t.length > l.length + 1 && t.toLowerCase().startsWith(`${l.toLowerCase()} `))
     .sort((a, b) => b.length - a.length)[0];
   const rest = label ? t.slice(label.length).replace(/^[\s:=-]+/, "").trim() : "";

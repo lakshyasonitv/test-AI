@@ -878,9 +878,10 @@ function applyToSection(
     if (f.type === "Date" && s.value) {
       // "Yesterday", "today", "tomorrow", or the model's own {{yesterday}} (typed as is, it refused the save,
       // run 2026-11-13T12-43-46-655Z-6cd531ab): a day relative to the run.
-      const rel = relativeDay(s.value);
+      // "In 45 days" too: typed as is, Close Date refused the save (run 2026-11-13T22-54-49-464Z-d812ddd7).
+      const rel = daysAhead(s.value);
       if (rel !== undefined) {
-        notes.push(`${s.id}: "${f.label}" "${s.value}" -> ${rel === 0 ? "today" : rel < 0 ? "yesterday" : "tomorrow"}, worked out when the test runs`);
+        notes.push(`${s.id}: "${f.label}" "${s.value}" -> ${rel === 0 ? "today" : rel === -1 ? "yesterday" : `${rel} day(s) from`} the day the test runs`);
         const was = s.value;
         s.value = dateToken(rel, locale);
         // A check quoting it too (run 2026-11-13T12-56-03-736Z-5e8f62bc looked for "{{yesterday}}" on the page), or
