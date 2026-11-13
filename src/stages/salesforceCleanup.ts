@@ -266,7 +266,9 @@ export async function cleanupByTypedName(session: ApiSession, made: { object: st
   try { me = (await session.apiGet("/chatter/users/me"))?.id; } catch { /* below */ }
   if (typeof me !== "string" || !/^005[A-Za-z0-9]{12,15}$/.test(me)) return { ...report, reason: "the org did not say which user is connected, so nothing was deleted" };
   const sinceIso = since.toISOString().replace(/\.\d{3}Z$/, "Z");
-  for (const m of made) {
+  // Last made first: a record made later may use an earlier one (a Service Territory its Operating Hours,
+  // which Salesforce will not delete while in use: run 2026-11-13T19-05-44-514Z-52f348c0 left two).
+  for (const m of [...made].reverse()) {
     const field = m.field ?? "Name";
     if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(m.object) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(field) || !/^[\w .'-]{4,80}$/.test(m.name)) continue;
     const like = soqlLike(m.name);
@@ -281,6 +283,15 @@ export async function cleanupByTypedName(session: ApiSession, made: { object: st
     } catch (err) {
       report.failed.push({ ref: { object: m.object, id: m.name }, error: (err as Error)?.message ?? String(err) });
     }
+  }
+  // Once more for a delete refused while another record still used it, now that the others are gone.
+  const used = report.failed.filter((f) => /DELETE_FAILED|ENTITY_IS_REFERENCED|associated with/i.test(f.error) && /^[A-Za-z0-9]{15,18}$/.test(f.ref.id));
+  for (const f of used) {
+    try {
+      await session.apiDelete(`/sobjects/${f.ref.object}/${f.ref.id}`);
+      report.failed.splice(report.failed.indexOf(f), 1);
+      report.deleted.push(f.ref);
+    } catch { /* still refused: reported as it was */ }
   }
   return report;
 }

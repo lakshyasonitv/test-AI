@@ -528,3 +528,20 @@ describe("a field the request names survives the field cap (run 2026-11-13T18-11
     expect(namesField("Zq (Ops) team", "(Ops)")).toBe(true);
   });
 });
+
+describe("a picklist the UI API lists no values for (run 2026-11-13T19-05-44-514Z-52f348c0)", () => {
+  it("takes its active values from the object's describe", async () => {
+    const { apiGet } = fakeApi();
+    const wrapped = async (p: string) => {
+      if (p === "/ui-api/object-info/Lead") {
+        const r = await apiGet(p);
+        return { ...r, fields: { ...r.fields, Zq_Zone__c: { apiName: "Zq_Zone__c", label: "Zq Zone", dataType: "Picklist", createable: true } } };
+      }
+      if (p === "/sobjects/Lead/describe") return { fields: [{ name: "Zq_Zone__c", picklistValues: [{ label: "(GMT+00:00) Zq Greenwich", active: true }, { label: "Zq Retired", active: false }] }] };
+      return apiGet(p);
+    };
+    const lead = (await readSalesforceOrgModel({ apiGet: wrapped }))!.objects.find((o) => o.api === "Lead")!;
+    expect(lead.fields.find((f) => f.api === "Zq_Zone__c")?.picklist).toEqual(["(GMT+00:00) Zq Greenwich"]);
+    expect(lead.fields.find((f) => f.label === "Lead Status")?.picklist).toEqual(["Open - Not Contacted", "Working - Contacted"]);
+  });
+});

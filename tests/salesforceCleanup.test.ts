@@ -263,8 +263,29 @@ describe("an object with no Name field is cleaned up by the field its code was t
     const queries: string[] = [];
     const apiGet = vi.fn(async (p: string) => { if (p === "/chatter/users/me") return { id: ME }; queries.push(decodeURIComponent(p)); return { records: [] }; });
     await cleanupByTypedName({ apiGet, apiDelete: vi.fn() }, made, new Date());
-    expect(queries[0]).toContain("FROM ZqJob WHERE Subject LIKE '%Zq meter ab12cd%'");
-    expect(queries[1]).toContain("FROM ZqAcct WHERE Name LIKE");
+    // Last made first.
+    expect(queries[0]).toContain("FROM ZqAcct WHERE Name LIKE");
+    expect(queries[1]).toContain("FROM ZqJob WHERE Subject LIKE '%Zq meter ab12cd%'");
     expect(soqlLike("O'Brien Zq_1 50%")).toBe(String.raw`O\'Brien Zq\_1 50\%`);
+  });
+});
+
+describe("a record another one uses is deleted after it (run 2026-11-13T19-05-44-514Z-52f348c0)", () => {
+  it("deletes the later record first, and retries a delete refused while the other still used it", async () => {
+    const { cleanupByTypedName } = await import("../src/stages/salesforceCleanup.js");
+    const order: string[] = [];
+    let territoryGone = false;
+    const apiGet = vi.fn(async (p: string) => {
+      if (p === "/chatter/users/me") return { id: ME };
+      return { records: [{ Id: decodeURIComponent(p).includes("FROM ZqHours") ? "0OHzq0000000001AAA" : "0HhZq0000000001AAA" }] };
+    });
+    const apiDelete = vi.fn(async (p: string) => {
+      if (p.includes("ZqHours") && !territoryGone) throw new Error("HTTP 400: DELETE_FAILED it is associated with the following service territories");
+      if (p.includes("ZqTerritory")) territoryGone = true;
+      order.push(p);
+    });
+    const r = await cleanupByTypedName({ apiGet, apiDelete }, [{ object: "ZqHours", name: "Zq Weekday ab12cd" }, { object: "ZqTerritory", name: "Zq North ab12cd" }], new Date());
+    expect(order).toEqual(["/sobjects/ZqTerritory/0HhZq0000000001AAA", "/sobjects/ZqHours/0OHzq0000000001AAA"]);
+    expect(r.failed).toEqual([]);
   });
 });

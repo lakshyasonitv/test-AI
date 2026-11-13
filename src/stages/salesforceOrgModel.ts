@@ -65,6 +65,18 @@ async function readObject(apiGet: ApiGet, api: string, request = ""): Promise<Sa
   const picklists = info.defaultRecordTypeId
     ? (await tryGet(apiGet, `/ui-api/object-info/${encodeURIComponent(api)}/picklist-values/${info.defaultRecordTypeId}`))?.picklistFieldValues ?? {}
     : {};
+  // A picklist the UI API lists no values for (Operating Hours' Time Zone): its active values from the
+  // object's describe. Without them an invented "GMT" stayed, and the form took the first option containing
+  // it, "(GMT+14:00) Line Islands Time" (run 2026-11-13T19-05-44-514Z-52f348c0).
+  const bare = Object.values<any>(info.fields).filter((f) => f?.dataType === "Picklist" && !picklists[f.apiName]?.values?.length);
+  if (bare.length) {
+    const described = await tryGet(apiGet, `/sobjects/${encodeURIComponent(api)}/describe`);
+    for (const f of bare) {
+      const d = (described?.fields ?? []).find((x: any) => x?.name === f.apiName);
+      const values = (d?.picklistValues ?? []).filter((p: any) => p?.active !== false && p?.label).map((p: any) => ({ label: String(p.label) }));
+      if (values.length) picklists[f.apiName] = { values };
+    }
+  }
   const lists = await tryGet(apiGet, `/ui-api/list-info/${encodeURIComponent(api)}`);
   // The create LAYOUT's required fields: what the form actually refuses to save without. Object-info
   // misses layout- and system-required ones (Lead's Company, run 2026-10-25T05-01-36-627Z-b0d6a138:
