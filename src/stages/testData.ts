@@ -672,11 +672,17 @@ function applyToSection(
         notes.push(`${s.id}: "${f.label}" "${s.value}" -> ${rel === 0 ? "today" : rel < 0 ? "yesterday" : "tomorrow"}, worked out when the test runs`);
         const was = s.value;
         s.value = dateToken(rel, locale);
-        // A check quoting it too (run 2026-11-13T12-56-03-736Z-5e8f62bc looked for "{{yesterday}}" on the page).
+        // A check quoting it too (run 2026-11-13T12-56-03-736Z-5e8f62bc looked for "{{yesterday}}" on the page), or
+        // naming that day as a fixed date ("11/12/2026", run 2026-11-13T13-30-41-541Z-6d66f06e): right today, wrong
+        // on tomorrow's replay of a saved suite. Both follow the field, relative to the run.
+        const now = new Date();
+        const thatDay = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() + rel);
+        const sameDay = (t?: string) => !!t && (t === was || parseDay(t)?.getTime() === thatDay
+          || new RegExp(`^${new Intl.DateTimeFormat(locale, { year: "numeric", month: "numeric", day: "numeric", timeZone: "UTC" }).format(new Date(thatDay)).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}$`).test(t.trim()));
         for (const a of ir.steps) {
           if (a.action !== "assert") continue;
-          if (a.value === was) a.value = s.value;
-          if (a.target?.text === was) a.target = { ...a.target, text: s.value };
+          if (sameDay(a.value)) a.value = s.value;
+          if (sameDay(a.target?.text)) a.target = { ...a.target, text: s.value };
         }
         continue;
       }

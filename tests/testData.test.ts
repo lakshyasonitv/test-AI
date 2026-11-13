@@ -969,6 +969,14 @@ describe("bug hunt 13 Nov: dates in words and full names", () => {
       { id: "a", action: "assert", target: { text: "{{yesterday}}" }, assertion: "text_contains", value: "{{yesterday}}" }]);
     applyTestData(q, valid, m, "Create a Zq Thing due yesterday");
     expect(q.steps.find((s) => s.id === "a")).toMatchObject({ value: "{{date:-1:en-US}}", target: { text: "{{date:-1:en-US}}" } });
+    // A fixed date naming that same day becomes relative too, so a replay tomorrow still checks yesterday.
+    const now = new Date();
+    const yesterday = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "numeric", day: "numeric", timeZone: "UTC" })
+      .format(new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() - 1)));
+    const f = ir([{ id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "yesterday" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { field: "Zq Due" }, assertion: "text_contains", value: yesterday }]);
+    applyTestData(f, valid, m, "Create a Zq Thing due yesterday");
+    expect(f.steps.find((s) => s.id === "a")!.value).toBe("{{date:-1:en-US}}");
   });
   it("First Name keeps only its own words when it also holds the Last Name", () => {
     const m = structuredClone(appModel) as AppModel;
