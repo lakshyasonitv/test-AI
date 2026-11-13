@@ -1360,11 +1360,15 @@ export function customLinkSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
       { id: `sf-cl-shown-${notes.length}`, action: "assert", target: { text: link.label }, assertion: "visible" } as Step,
       { id: `sf-cl-check-${notes.length}`, action: "assert", target: { role: "link", name: link.label }, assertion: "opens_url_contains", value: expected } as Step,
     ] : [
-      // A button is in the record's header, or under its "Show more actions" menu (the spec looks there
-      // when the header has no such button).
+      // A custom button is under the record header's "Show more actions" menu: Lightning shows only the
+      // first few actions (run 2026-11-13T08-38-54-510Z-c42b0bec: Follow, Edit, New Case, New Note, then the
+      // menu). Opened as a step of its own, so grounding sees the menu item. Where the header shows the
+      // button itself, the spec clicks that instead.
       { id: `sf-cl-open-${notes.length}`, action: "navigate", target: { url: recordRef(link.object, saved.n) } } as Step,
       { id: `sf-cl-wait-${notes.length}`, action: "wait", value: "2000" } as Step,
-      { id: `sf-cl-check-${notes.length}`, action: "assert", target: { role: "button", name: link.label }, assertion: "opens_url_contains", value: expected } as Step,
+      { id: `sf-cl-menu-${notes.length}`, action: "click", target: { role: "button", name: "Show more actions" } } as Step,
+      { id: `sf-cl-wait-menu-${notes.length}`, action: "wait", value: "800" } as Step,
+      { id: `sf-cl-check-${notes.length}`, action: "assert", target: { role: "menuitem", name: link.label }, assertion: "opens_url_contains", value: expected } as Step,
     ];
     ir.steps.push(...added);
     notes.push(`the ${o?.label ?? link.object}'s custom ${link.kind} "${link.label}" -> checks it opens "${expected}"${before > ir.steps.length - added.length ? ` (replacing ${before - (ir.steps.length - added.length)} step(s) of the case's)` : ""}`);

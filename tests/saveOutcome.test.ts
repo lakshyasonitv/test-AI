@@ -1103,7 +1103,9 @@ describe("customLinkSteps", () => {
     expect(i.steps.at(-1)?.value).toBe("http://zq.example/tb?n=Zq42");
     const j = ir([nav("/lightning/o/Zopp/new"), fill("Zopp Name", "Zq Deal"), click("Save")]);
     customLinkSteps(j, both as any, "click the Zq Search button of a new Zopp");
-    expect(j.steps.at(-1)).toMatchObject({ target: { role: "button", name: "Zq Search" }, value: "https://zq.example/s?q=Zq%20Deal" });
+    expect(j.steps.at(-1)).toMatchObject({ target: { role: "menuitem", name: "Zq Search" }, value: "https://zq.example/s?q=Zq%20Deal" });
+    // The menu opens as a step of its own, so grounding sees the item.
+    expect(j.steps.find((s) => s.id === "sf-cl-menu-0")?.target).toEqual({ role: "button", name: "Show more actions" });
     expect(j.steps.some((s) => s.target?.name === "Details")).toBe(false);
   });
   it("stays on the Details tab: the record-view pass leaves the link check there", async () => {

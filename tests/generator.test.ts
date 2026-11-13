@@ -431,5 +431,7 @@ describe("generateSpec — opens_url_contains", () => {
     expect(s).not.toContain("Show more actions");
     const b = spec([{ id: "c", action: "assert", target: { role: "button", name: "Zq Search" }, assertion: "opens_url_contains", value: "https://zq.example/s" }]);
     expect(b).toContain('page.getByRole("menuitem", { name: "Zq Search", exact: true })');
+    const m = spec([{ id: "d", action: "assert", target: { role: "menuitem", name: "Zq Search" }, assertion: "opens_url_contains", value: "https://zq.example/s" }]);
+    expect(m).toContain('page.getByRole("button", { name: "Zq Search", exact: true })');
   });
 });
