@@ -1027,3 +1027,21 @@ describe("bug hunt round 2: a record type picked as a picklist value (run 2026-1
     expect(k.steps.find((s) => s.id === "p")?.value).toBe("Zq Partner");
   });
 });
+
+describe("bug hunt round 3: a value holding its own field label (run 2026-11-13T15-19-02-592Z-1e01cacf)", () => {
+  it("drops the label, with the checks quoting it; a request that writes it so keeps it", () => {
+    const m = structuredClone(appModel) as AppModel;
+    m.salesforceOrg!.objects[0].validationRules = [];
+    const r = ir([
+      { id: "c", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq Name Zqsato {{uid}}" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { text: "Zq Name Zqsato {{uid}}" }, assertion: "visible" },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing for Zqsato");
+    expect(value(r, "c")).toBe("Zqsato {{uid}}");
+    expect(r.steps.find((s) => s.id === "a")!.target?.text).toBe("Zqsato {{uid}}");
+    const k = ir([{ id: "c", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq Name Zqsato" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }]);
+    applyTestData(k, valid, m, "Create a Zq Thing named Zq Name Zqsato");
+    expect(value(k, "c")).toContain("Zq Name Zqsato");
+  });
+});

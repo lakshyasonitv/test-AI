@@ -705,6 +705,24 @@ function applyToSection(
       notes.push(`${first.id}: First Name "${was}" also held the Last Name -> "${first.value}"`);
     }
   }
+  // A value that starts with its own field's label ("Last Name Sato" in Last Name, "Company Kintsugi Labs" in
+  // Company, run 2026-11-13T15-19-02-592Z-1e01cacf saved them so): the label goes, unless the request writes it so.
+  for (const s of positive ? steps() : []) {
+    if (s.action !== "fill" || !s.value) continue;
+    const label = nameOf(s).replace(/^\*\s*|\s*\*$/g, "").trim();
+    if (!label || !s.value.toLowerCase().startsWith(`${label.toLowerCase()} `)) continue;
+    const rest = s.value.slice(label.length).trim();
+    if (!rest || mentions(request, s.value.replace(/\s*\{\{uid\}\}/g, ""))) continue;
+    // The checks that quote it change with it.
+    const was = s.value;
+    s.value = rest;
+    for (const a of ir.steps) {
+      if (a.action !== "assert") continue;
+      if (a.value === was) a.value = rest;
+      if (a.target?.text === was) a.target = { ...a.target, text: rest };
+    }
+    notes.push(`${s.id}: "${was}" held its own field label -> "${rest}"`);
+  }
   for (const s of positive ? steps() : []) {
     const name = nameOf(s);
     if (!name || isEnvValueRef(s.value)) continue;
