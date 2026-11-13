@@ -558,6 +558,19 @@ function applyToSection(
     ir.steps.splice(i, end - i);
     to -= end - i;
   }
+  // Every case: the record type is the form's own (chosen by its URL), never a value of another picklist:
+  // run 2026-11-13T14-13-11-352Z-7c8d6c62 picked "TB Partner" in the Account's Type, which offers no such
+  // option, and stopped there. The step goes when the field does not offer that name.
+  for (let i = to - 1; i >= from; i--) {
+    const s = ir.steps[i];
+    if (s.action !== "select" || !s.value) continue;
+    const f = fieldFor(nameOf(s));
+    const rt = o.recordTypes?.find((r) => lineKey(r.name) === lineKey(s.value!));
+    if (!rt || f?.picklist?.some((p) => lineKey(p) === lineKey(s.value!))) continue;
+    notes.push(`${s.id}: "${s.value}" is the record type, not a "${nameOf(s)}" option -> dropped (the form's URL already chooses it)`);
+    ir.steps.splice(i, 1);
+    to--;
+  }
   // Every case: a picklist offers only its options, so a value that is not one is never what a test
   // means ("Working" for "Working - Contacted", run 2026-10-24T20-37-00-424Z-410671c2).
   for (const s of steps()) {

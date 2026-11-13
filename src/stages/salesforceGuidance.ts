@@ -124,6 +124,30 @@ const isRecordChange = (s: Step) => isSave(s) || /^(mark (as current stage|stage
  * terminal-text grounding checks it on the live page and, on an org in another language, corrects
  * it to the page's own wording. The Save assertion stays; this only adds. Returns a note, or null.
  */
+/**
+ * An edit's Save (after "Edit", or an inline field's pencil "Edit Phone") confirmed by Salesforce's own
+ * '"<name>" was saved.' when the case left it out. Without it the record page never counts as reached:
+ * run 2026-11-13T14-13-29-358Z-ac7a1e04 checked Priority on the edit form's own dropdown, and the API check
+ * did not count the edit. Returns notes.
+ */
+export function editSaveConfirmed(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  let editing = false;
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action === "navigate") { editing = false; continue; }
+    if (s.action === "click" && /^edit\b/i.test((s.target?.name ?? "").trim())) { editing = true; continue; }
+    if (!editing || s.action !== "click" || !isSave(s)) continue;
+    editing = false;
+    let j = i + 1;
+    while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
+    if (j < ir.steps.length && ir.steps[j].action === "assert" && /\bwas saved\b|\bwe hit a snag\b|\breview the (following|errors)\b/i.test(ir.steps[j].target?.text ?? "")) continue;
+    ir.steps.splice(i + 1, 0, { id: `sf-saved-${s.id}`, action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step);
+    notes.push(`${s.id}: the edit's Save -> checks Salesforce's "was saved" first`);
+  }
+  return notes;
+}
+
 export function strengthenSaveOutcome(ir: IRSteps): string | null {
   const steps = ir.steps;
   // "Press Enter" on a create form never saves it: Enter only picks the open picklist's option

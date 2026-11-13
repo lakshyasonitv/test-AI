@@ -1010,3 +1010,20 @@ describe("bug hunt round 2: dates typed on an edit form (run 2026-11-13T13-59-40
     expect(r.steps.find((s) => s.id === "a")!.value).toBe("12/31/2026");
   });
 });
+
+describe("bug hunt round 2: a record type picked as a picklist value (run 2026-11-13T14-13-11-352Z-7c8d6c62)", () => {
+  it("is dropped when the field does not offer it; a field that does offer it keeps it", () => {
+    const m = structuredClone(appModel) as AppModel;
+    const o = m.salesforceOrg!.objects[0];
+    o.validationRules = [];
+    o.recordTypes = [{ name: "Zq Partner", id: "012zq0000000001AAA" }] as any;
+    const step = (v: string) => ({ id: "p", action: "select", target: { role: "combobox", name: "Zq Stage" }, value: v });
+    const r = { meta: {}, steps: [{ id: "s1", action: "navigate", target: { url: "/lightning/o/Zq_Thing__c/new?recordTypeId=012zq0000000001AAA" } }, step("Zq Partner"), { id: "sv", action: "click", target: { role: "button", name: "Save" } }] } as unknown as IR;
+    applyTestData(r, valid, m, "Create a Zq Partner Zq Thing");
+    expect(r.steps.some((s) => s.id === "p")).toBe(false);
+    o.fields.find((f) => f.label === "Zq Stage")!.picklist!.push("Zq Partner");
+    const k = { meta: {}, steps: [{ id: "s1", action: "navigate", target: { url: "/lightning/o/Zq_Thing__c/new" } }, step("Zq Partner"), { id: "sv", action: "click", target: { role: "button", name: "Save" } }] } as unknown as IR;
+    applyTestData(k, valid, m, "Create a Zq Thing");
+    expect(k.steps.find((s) => s.id === "p")?.value).toBe("Zq Partner");
+  });
+});

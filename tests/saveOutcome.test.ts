@@ -1169,3 +1169,14 @@ describe("customLinkSteps", () => {
     expect(customLinkSteps(j, org as any, "create a Zopp")).toEqual([]);
   });
 });
+
+describe("editSaveConfirmed (run 2026-11-13T14-13-29-358Z-ac7a1e04)", () => {
+  it("adds was saved after an edit's Save, and only when the case has no outcome check there", async () => {
+    const { editSaveConfirmed } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([nav("/lightning/o/Zq_Deal__c/new"), click("Save"), click("Edit"), { id: "w", action: "wait", value: "500" } as Step, click("Save"), { id: "x", action: "assert", target: { field: "Zq Heat" }, assertion: "text_equals", value: "Zq Hot" } as Step]);
+    expect(editSaveConfirmed(i)).toHaveLength(1);
+    expect(i.steps[5]).toMatchObject({ action: "assert", target: { text: "was saved" } });
+    const j = ir([nav("/lightning/o/Zq_Deal__c/new"), click("Save"), click("Edit"), click("Save"), { id: "y", action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step]);
+    expect(editSaveConfirmed(j)).toEqual([]);
+  });
+});
