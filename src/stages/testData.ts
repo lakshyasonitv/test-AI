@@ -691,10 +691,16 @@ function applyToSection(
   // — the model invents names ("Existing Account", case-0) — or the one THIS case created earlier
   // under the name it typed ("Test Account {{uid}}" for an Opportunity's Account, Phase A), else the
   // first record the org offers.
-  if (!DATA_IS_THE_TEST.has(testCase.category ?? "")) {
+  // An invalid-input case too, for a lookup the request does not name: its bad value is elsewhere, and an
+  // unpicked Parent Record made Salesforce refuse the save for that instead (run
+  // 2026-11-13T19-16-31-705Z-1c10477d "passed" its Due-before-Start rule without reaching it).
+  const invalid = testCase.category === "invalid-input";
+  if (!DATA_IS_THE_TEST.has(testCase.category ?? "") || invalid) {
     for (const s of steps()) {
       const f = fieldFor(nameOf(s)) ?? (s.action === "select" ? lookupNamedFor(o, nameOf(s)) : undefined);
       if (!f?.lookup || (s.action !== "fill" && s.action !== "select") || s.target?.lookup) continue;
+      if (invalid && [...formNamesOf(f), nameOf(s), ...f.lookup.split("/").map((a) => appModel.salesforceOrg?.objects.find((x) => x.api === a)?.label ?? a)]
+        .some((n) => !!n && mentions(request, n))) continue;
       s.action = "select";
       s.target = { ...s.target, role: "combobox", lookup: true };
       const own = !!s.value && hasRunToken(s.value) && createdBefore(ir, from, f.lookup.split("/")).has(s.value);

@@ -573,6 +573,14 @@ describe("lookups in every case (run 2026-10-25T06-38-05-138Z-dfdd0d4f, a Contac
       expect(s3.value, category).toBe("zz-not-a-firm");
     }
   });
+
+  it("an invalid-input case picks a record for a lookup the request does not name (run 2026-11-13T19-16-31-705Z-1c10477d)", () => {
+    const neg = flow({ action: "fill", target: { role: "textbox", name: "Zq Firm Name" }, value: "Zq Invented Parent" });
+    applyTestData(neg, { category: "invalid-input" } as any, org, "Create a Zq Person whose Zq Due is before its Zq Start and verify it is rejected");
+    const s3 = neg.steps.find((s) => s.id === "s3")!;
+    expect(s3.target?.lookup).toBe(true);
+    expect(s3.value).toBe("");
+  });
 });
 
 describe("a case that expects a save gets its required fields, whatever its category (run 2026-10-25T10-28-59-649Z-7acbedab)", () => {

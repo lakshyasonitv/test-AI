@@ -83,8 +83,14 @@ export async function sfDateTimeLive(page: Page, label: string, value: string): 
   await d.fill(date, { timeout: 10000 });
   if (time) {
     const t = box.locator("lightning-timepicker input").first();
-    await t.fill(time, { timeout: 10000 });
-    await t.press("Tab").catch(() => {});
+    // Typed key by key, then its own option picked: a value set in one go is refused as "does not match
+    // the allowed format" (run 2026-11-13T19-16-31-705Z-1c10477d).
+    await t.click({ timeout: 10000 });
+    await t.fill("", { timeout: 10000 });
+    await t.pressSequentially(time, { delay: 30 });
+    const opt = box.getByRole("option", { name: time, exact: true }).first();
+    if (await opt.isVisible().catch(() => false)) await opt.click({ timeout: 5000 }).catch(() => {});
+    else await t.press("Tab").catch(() => {});
   }
 }
 
