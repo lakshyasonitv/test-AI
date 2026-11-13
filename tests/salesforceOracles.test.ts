@@ -261,3 +261,21 @@ describe("a date-time is read back as the user sees it", () => {
     expect(wrong[0].ok).toBe(false);
   });
 });
+
+describe("a failed check of a field an org flow sets says so (run 2026-11-13T23-13-33-343Z-2598923f)", () => {
+  it("names the flow and its branches; nothing for a field no flow sets", async () => {
+    const { flowExplainsField } = await import("../src/stages/salesforceOracles.js");
+    const org = { objects: [{ api: "ZqLead", label: "Zq Lead", fields: [
+      { label: "Zq Heat", api: "ZqHeat__c", type: "Picklist" }, { label: "Zq Firm", api: "ZqFirm__c", type: "String" }] }],
+      flows: [{ label: "Zq Routing", object: "ZqLead", effects: ["sets ZqHeat__c = Zq Cold", "branch \"Cold\" (none of the above) -> sets ZqHeat__c = Zq Cold"] }] } as any;
+    const ir = { steps: [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqLead/new" } },
+      { id: "h", action: "assert", target: { field: "Zq Heat" }, value: "Zq Hot", assertion: "text_contains" },
+      { id: "f", action: "assert", target: { field: "Zq Firm" }, value: "Zq Co", assertion: "text_contains" },
+    ] } as any;
+    const why = flowExplainsField(ir, org, "h");
+    expect(why).toContain('"Zq Routing" sets Zq Heat');
+    expect(why).toContain('branch "Cold"');
+    expect(flowExplainsField(ir, org, "f")).toBeUndefined();
+  });
+});

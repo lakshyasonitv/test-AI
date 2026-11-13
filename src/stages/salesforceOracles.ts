@@ -35,6 +35,30 @@ function flowSet(org: Org, o: { api: string; label: string }): Set<string> {
   }
   return out;
 }
+/**
+ * A failed check of a field that an org flow sets on the record being checked: the flow's name and what it sets,
+ * as a sentence for the diagnosis. Run 2026-11-13T23-13-33-343Z-2598923f picked Rating "Hot" and the page showed
+ * "Cold": TB Lead Qualification Routing sets Rating = Cold on create unless the Lead's revenue is high enough.
+ */
+export function flowExplainsField(ir: Pick<IR, "steps">, org: Org | undefined, failingStepId: string | undefined): string | undefined {
+  const at = ir.steps.findIndex((s) => s.id === failingStepId);
+  const label = ir.steps[at]?.target?.field?.trim().toLowerCase();
+  if (!org || at < 0 || !label) return undefined;
+  let api: string | undefined;
+  for (const s of ir.steps.slice(0, at)) {
+    if (s.action !== "navigate") continue;
+    api = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? api;
+  }
+  const o = org.objects.find((x) => x.api === api);
+  const f = o?.fields.find((x) => [x.label, `${o.label} ${x.label}`].some((l) => l.toLowerCase() === label));
+  if (!o || !f || !flowSet(org, o).has(f.api.toLowerCase())) return undefined;
+  const flows = (org.flows ?? []).filter((fl) => (fl.object === o.label || fl.object === o.api)
+    && (fl.effects ?? []).some((e) => new RegExp(`\\bsets\\b[^;]*\\b${f.api} = `, "i").test(e)));
+  const how = flows.flatMap((fl) => (fl.effects ?? []).filter((e) => /^branch\b/.test(e) && new RegExp(`\\b${f.api} = `).test(e)));
+  return `The org's flow ${flows.map((fl) => `"${fl.label}"`).join(", ")} sets ${f.label} when the ${o.label} is saved, ` +
+    `so the page shows the flow's value, not the one the test picked` + (how.length ? `: ${how.join("; ")}.` : ".");
+}
+
 export interface Typed {
   object: string; n: number; values: { label: string; api: string; type: string; value: string }[];
   /** The case deleted this record (its Delete, then Salesforce's "was deleted"): the check is that it is gone. */
