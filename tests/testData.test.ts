@@ -912,3 +912,20 @@ describe("test data fitted to each field (field limits from object-info)", () =>
     expect(value(r, "p")).toBe("Zq Partner Open");
   });
 });
+
+describe("a value a check quotes still fits its field (run 2026-11-13T12-02-09-298Z-fc1e4b67)", () => {
+  it("is shortened, and the checks quoting it are shortened the same way", () => {
+    const m = structuredClone(appModel) as AppModel;
+    const o = m.salesforceOrg!.objects[0];
+    o.validationRules = [];
+    o.fields.push({ label: "Zq Track", api: "Zq_Track__c", type: "String", length: 12 } as any);
+    const r = ir([
+      { id: "t", action: "fill", target: { role: "textbox", name: "Zq Track" }, value: "ZQTRACK-PLAN-001" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { text: "ZQTRACK-PLAN-001" }, assertion: "visible" },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing with a Zq Track");
+    expect(value(r, "t")).toBe("ZQTRACK-PLAN");
+    expect(r.steps.find((s) => s.id === "a")!.target?.text).toBe("ZQTRACK-PLAN");
+  });
+});

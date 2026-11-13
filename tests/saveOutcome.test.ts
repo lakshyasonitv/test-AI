@@ -509,6 +509,12 @@ describe("fieldChecksOnRecordView: value checks", () => {
   const check = (target: any, assertion: string, value?: string): Step => ({ id: "x", action: "assert", target, assertion, value } as Step);
   const last = (i: IR) => i.steps[i.steps.length - 1];
 
+  it("a bare number the case typed into a field is checked inside that field (run 2026-11-13T12-02-09-298Z-fc1e4b67)", () => {
+    const i = ir([nav("/lightning/o/Zq_Deal__c/new"), fill("Zq Amount", "1234.56"), click("Save"), created, check({ text: "1234.56" }, "text_contains", "1234.56")]);
+    const m2 = { ...model, salesforceOrg: { objects: [{ fields: [{ label: "Zq Amount" }] }] } };
+    fieldChecksOnRecordView(i, m2, "Create a Zq Deal with Zq Amount 1234.56");
+    expect(last(i)).toMatchObject({ target: { field: "Zq Amount" }, assertion: "text_contains", value: "1234.56" });
+  });
   it("a bare number the request gives a field becomes a check of that field (run 2026-11-13T07-31-06-677Z-c4484063)", () => {
     const i = ir([...base(), check({ text: "$100.00" }, "text_contains", "$100.00")]);
     fieldChecksOnRecordView(i, model, "Create a Zq Deal with Amount 1000 and verify Zq Expected is $100.00");

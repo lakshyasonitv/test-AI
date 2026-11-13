@@ -678,6 +678,15 @@ const FORM_CONTROL = /^(textbox|combobox|spinbutton|checkbox|searchbox|listbox|r
 const isShownValue = (text: string) => shownNumber(text) !== null || /^(?:\d{1,4}([./-])\d{1,2}\1\d{1,4}\b|\{\{date:)/.test(text.trim());
 /** The field's label (or words of it) written as its value: a check that the label shows, not a value. */
 const namesLabel = (value: string, label: string) => ` ${lineKey(label)} `.includes(` ${lineKey(value)} `);
+/** The field an earlier step typed this value into (its label as the org names it), or undefined. */
+function typedInto(before: Step[], labels: Set<string>, value: string): string | undefined {
+  const n = shownNumber(value);
+  const hit = [...before].reverse().find((s) => s.action === "fill" && typeof s.value === "string"
+    && (s.value.trim() === value.trim() || (n !== null && shownNumber(s.value) === n)));
+  const label = (hit?.target?.name ?? hit?.target?.field ?? "").replace(/^\*\s*|\s*\*$/g, "").trim();
+  return label && labels.has(label) ? label : undefined;
+}
+
 /** The one field label the request gives this value ("Expected Revenue is $100.00"), or undefined. */
 function valueNamedField(request: string, labels: Iterable<string>, value: string): string | undefined {
   const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -856,11 +865,13 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       notes.push(`"${text}" checked right after the "${after}" label -> checks the "${after}" field shows it`);
       continue;
     } else if (!s.target?.role && text && isShownValue(valueCheck ? s.value! : text)
-      && valueNamedField(`${request}\n${caseText}`, fieldLabels, valueCheck ? s.value! : text)) {
+      && (valueNamedField(`${request}\n${caseText}`, fieldLabels, valueCheck ? s.value! : text) ?? typedInto(steps.slice(0, i), fieldLabels, valueCheck ? s.value! : text))) {
       // A bare number the request gives a field ("verify Expected Revenue is $100.00"): getByText("$100.00")
-      // could be any field's (run 2026-11-13T07-31-06-677Z-c4484063), so it is read inside that field.
+      // could be any field's (run 2026-11-13T07-31-06-677Z-c4484063), so it is read inside that field. So is a
+      // number the case typed into a field: the page shows "$1,234.56" for a typed "1234.56" (run
+      // 2026-11-13T12-02-09-298Z-fc1e4b67), and the field check compares numbers by value.
       const v = valueCheck ? s.value! : text;
-      const label = valueNamedField(`${request}\n${caseText}`, fieldLabels, v)!;
+      const label = (valueNamedField(`${request}\n${caseText}`, fieldLabels, v) ?? typedInto(steps.slice(0, i), fieldLabels, v))!;
       steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
       notes.push(`the request says "${label}" is "${v}" -> checks that field shows it`);
     } else if (s.target?.field && !text) {

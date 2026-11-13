@@ -609,7 +609,24 @@ function applyToSection(
     if (!name || isEnvValueRef(s.value)) continue;
     if (s.action !== "fill") continue;
     const f = fieldFor(name);
-    if (!f || ruleReads(o, f) || quoted(s.value)) continue;
+    if (!f || ruleReads(o, f)) continue;
+    if (quoted(s.value)) {
+      // A value a later check quotes stays as typed, except that it must still fit the field: Salesforce
+      // cut "TRACK-PLAN-001" to 12 characters (run 2026-11-13T12-02-09-298Z-fc1e4b67), so the save and the
+      // check disagreed. Shortened here, the checks that quote it are changed the same way.
+      const was = s.value!;
+      const fitted = mentions(request, was) ? was : fitToField(was, f, locale);
+      if (fitted !== was) {
+        s.value = fitted;
+        for (const a of ir.steps) {
+          if (a.action !== "assert") continue;
+          if (a.value === was) a.value = fitted;
+          if (a.target?.text === was) a.target = { ...a.target, text: fitted };
+        }
+        notes.push(`${s.id}: "${f.label}" fitted to the field: "${was}" -> "${fitted}", and the checks quoting it`);
+      }
+      continue;
+    }
     if (!s.value?.trim()) {
       const v = f.required ? valueFor(f, locale) : undefined;
       if (v) { notes.push(`${s.id}: empty required "${f.label}" -> "${v}"`); s.value = v; }
