@@ -119,6 +119,14 @@ describe("SF_FIELD_MATCH_JS: does a field block show the value", () => {
     expect(match(block("Zq Total", "$5,000.00"), "Zq Total", "500", "contains")).toBe(false);
   });
 
+  it("a whole-number field shows a typed fraction rounded", () => {
+    expect(match(block("Zq Revenue", "$2,500,001"), "Zq Revenue", "2,500,000.75", "contains")).toBe(true);
+    expect(match(block("Zq Revenue", "$2,500,001"), "Zq Revenue", "2500000.75", "equals")).toBe(true);
+    expect(match(block("Zq Revenue", "$2,500,000"), "Zq Revenue", "2500000.75", "contains")).toBe(false);
+    expect(match(block("Zq Revenue", "$2,500,001.00"), "Zq Revenue", "2500000.75", "contains")).toBe(false);
+    expect(match(block("Zq Count", "3"), "Zq Count", "3", "equals")).toBe(true);
+  });
+
   it("text compares as text; the label and its pencil are not the value", () => {
     expect(match(block("Zq Heat", "Zq Hot"), "Zq Heat", "Zq Hot", "equals")).toBe(true);
     expect(match(block("Zq Heat", "Zq Hot"), "Zq Heat", "Hot", "contains")).toBe(true);

@@ -383,8 +383,14 @@ export const SF_FIELD_MATCH_JS = `(lines, label, expected, mode) => {
     .filter((l) => l && l !== label && l !== "Edit " + label);
   const want = num(expected);
   if (want !== null) {
-    return shown.some((l) => num(l) === want
-      || (mode !== "equals" && (l.match(/\\d[\\d.,]*/g) || []).some((x) => num(x) === want)));
+    // A whole-number field (Account's Annual Revenue is currency with no decimals) shows the typed
+    // 2500000.75 as "$2,500,001" (run 2026-11-13T19-57-24-341Z-d9e0ee3e); the API still holds 2500000.75.
+    const same = (t) => {
+      const n = num(t);
+      return n === want || (n !== null && !Number.isInteger(want) && n === Math.round(want) && !/[.,]\\d{1,2}(?!\\d)/.test(t));
+    };
+    return shown.some((l) => same(l)
+      || (mode !== "equals" && (l.match(/\\d[\\d.,]*/g) || []).some((x) => same(x))));
   }
   const e = String(expected).replace(/\\s+/g, " ").trim();
   return shown.some((l) => mode === "equals" ? l === e : l.includes(e));
