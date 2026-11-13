@@ -417,12 +417,35 @@ async function readFlows(apiGet: ApiGet, request = ""): Promise<SalesforceOrgMod
 
 /** Custom objects (`__c`) a user can create and query — the org's own data model, nav or no nav.
  *  Shares, history, metadata types (`__mdt`) and platform events (`__e`) are not `__c`. */
-async function readCustomObjects(apiGet: ApiGet): Promise<string[]> {
-  const res = await tryGet(apiGet, "/sobjects");
-  return (res?.sobjects ?? [])
+function customObjects(sobjects: any[]): string[] {
+  return sobjects
     // ponytail: no `custom` check — every `__c` object is custom, so it could never decide anything.
     .filter((s: any) => s?.createable && s.queryable && /__c$/.test(String(s.name)))
     .map((s: any) => String(s.name));
+}
+
+/**
+ * Objects the request names by label ("Work Order", "Operating Hours") that a user can create and open
+ * in Lightning, nav or no nav. Field Service objects sit outside the Sales app's tabs, so a "Work Order"
+ * request was built as a Case and an "Operating Hours" one went to Setup (runs
+ * 2026-11-13T17-50-56-653Z-989d3c23, 17-51-15-443Z-6b6d9b04). Longest label first, and a matched label
+ * leaves the text, so "Work Order" does not also bring Order.
+ */
+export function requestedObjects(sobjects: any[], request: string): string[] {
+  let text = ` ${request.toLowerCase()} `;
+  const out: string[] = [];
+  const named = sobjects
+    .filter((s: any) => s?.createable && s.queryable && s.layoutable && typeof s.label === "string")
+    .flatMap((s: any) => [s.label, s.labelPlural].filter((l: unknown): l is string => typeof l === "string" && l.length > 2)
+      .map((l: string) => ({ api: String(s.name), label: l.toLowerCase() })))
+    .sort((a: { label: string }, b: { label: string }) => b.label.length - a.label.length);
+  for (const n of named) {
+    const re = new RegExp(`(^|[^a-z0-9])${n.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=[^a-z0-9]|$)`, "g");
+    if (!re.test(text)) continue;
+    text = text.replace(re, "$1 ");
+    if (!out.includes(n.api)) out.push(n.api);
+  }
+  return out;
 }
 
 /** Records the object holds, or undefined when SOQL refused (no access, not queryable). */
@@ -443,9 +466,12 @@ export async function readSalesforceOrgModel(
   if (!app) return null;
   const apps = ((await tryGet(apiGet, "/ui-api/apps?formFactor=Large"))?.apps ?? [])
     .map((a: any) => a?.label).filter((l: unknown): l is string => typeof l === "string" && !!l);
-  // The app's own tabs first, then custom objects no nav shows (where an org's real model lives).
-  const names = [...app.objects];
-  for (const c of await readCustomObjects(apiGet)) if (!names.includes(c)) names.push(c);
+  // The objects the request names first (so the cap never drops them), then the app's own tabs, then
+  // custom objects no nav shows (where an org's real model lives).
+  const sobjects: any[] = (await tryGet(apiGet, "/sobjects"))?.sobjects ?? [];
+  const names = [...requestedObjects(sobjects, request)];
+  for (const o of app.objects) if (!names.includes(o)) names.push(o);
+  for (const c of customObjects(sobjects)) if (!names.includes(c)) names.push(c);
   const objects = (await Promise.all(names.slice(0, MAX_OBJECTS).map(async (o) => {
     const obj = await readObject(apiGet, o);
     if (!obj) return null;

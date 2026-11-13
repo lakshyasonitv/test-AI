@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readSalesforceOrgModel, orgModelForCases, createFormUrls, flowEffects } from "../src/stages/salesforceOrgModel.js";
+import { readSalesforceOrgModel, orgModelForCases, createFormUrls, flowEffects, requestedObjects } from "../src/stages/salesforceOrgModel.js";
 import { SalesforceOrgModel, toLiteModel, type AppModel } from "../src/schema/appModel.js";
 
 /**
@@ -498,5 +498,21 @@ describe("orgModelForCases: a multi-step approval", () => {
     const text = orgModelForCases({ objects: [{ api: "Zopp", label: "Zopp", fields: [] }], validationRulesRead: true,
       approvals: [{ label: "Zq Mega", api: "Zq_Mega", object: "Zopp", steps: ["Zq First", "Zq Final"] }] } as any);
     expect(text).toContain('"Zq Mega" on Zopp (2 steps: Zq First, Zq Final; each is decided in turn)');
+  });
+});
+
+describe("objects the request names (runs 2026-11-13T17-50-56-653Z-989d3c23, 17-51-15-443Z-6b6d9b04)", () => {
+  const so = (name: string, label: string, labelPlural: string, more: object = {}) =>
+    ({ name, label, labelPlural, createable: true, queryable: true, layoutable: true, ...more });
+  const sobjects = [
+    so("Order", "Order", "Orders"), so("Zq_WorkOrder", "Zq Work Order", "Zq Work Orders"),
+    so("Zq_Hours", "Zq Operating Hours", "Zq Operating Hours"), so("Zq_Hidden", "Zq Territory", "Zq Territories", { layoutable: false }),
+  ];
+  it("reads an object outside the app's tabs by its label, longest label first", () => {
+    expect(requestedObjects(sobjects, "Create a Zq Work Order with Subject 'x'")).toEqual(["Zq_WorkOrder"]);
+    expect(requestedObjects(sobjects, "Create Zq Operating Hours, then an order")).toEqual(["Zq_Hours", "Order"]);
+  });
+  it("skips an object Lightning cannot lay out, and a label inside another word", () => {
+    expect(requestedObjects(sobjects, "Create a Zq Territory, then reorders")).toEqual([]);
   });
 });
