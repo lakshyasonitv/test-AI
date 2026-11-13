@@ -1338,7 +1338,11 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
       { id: "sf-ap-open", action: "navigate", target: { url: recordRef(object, n) } } as Step,
       { id: "sf-ap-related", action: "click", target: { role: "tab", name: "Related" } } as Step,
       { id: "sf-ap-wait2", action: "wait", value: "1500" } as Step,
-      { id: "sf-ap-decide", action: "click", target: { role: "button", name: decision } } as Step,
+      // The Approval History list keeps Approve / Reject behind its own actions menu (run
+      // 2026-11-12T13-02-29-047Z-33e9cc1b: "Show actions for Approval History", no Approve button on the page).
+      { id: "sf-ap-actions", action: "click", target: { role: "button", name: "Show actions for Approval History" } } as Step,
+      { id: "sf-ap-wait-menu", action: "wait", value: "800" } as Step,
+      { id: "sf-ap-decide", action: "click", target: { role: "menuitem", name: decision } } as Step,
       { id: "sf-ap-wait3", action: "wait", value: "1500" } as Step,
       { id: "sf-ap-comment2", action: "fill", target: { role: "textbox", name: "Comments" }, value: `Testbench ${decision.toLowerCase()} test` } as Step,
       { id: "sf-ap-confirm", action: "click", target: dialog(decision) } as Step,
