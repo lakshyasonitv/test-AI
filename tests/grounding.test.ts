@@ -1366,3 +1366,21 @@ describe("a dropped check that carried the request's value does not leave a 'pas
     expect(drop).toMatch(/const stillAsserts = steps\.some\(s => s\.action === "assert"\) && !lost\.length;/);
   });
 });
+
+describe("groundingError: a later round of a multi-step approval", () => {
+  const m = model([{ role: "menuitem", name: "Zq Approve", css: "#zq-approve" }]);
+  it("rests on round 1's grounding when it repeats round 1's step", () => {
+    const out = groundingError(ir([
+      { id: "sf-ap-decide", action: "click", target: { role: "menuitem", name: "Zq Approve" } },
+      { id: "sf-ap-decide-2", action: "click", target: { role: "menuitem", name: "Zq Approve" } },
+    ]), m, { captureBefore: new Set([1]) } as any);
+    expect(out).toBeNull();
+  });
+  it("is still checked when it differs from round 1, or has no round 1", () => {
+    expect(groundingError(ir([
+      { id: "sf-ap-decide", action: "click", target: { role: "menuitem", name: "Zq Approve" } },
+      { id: "sf-ap-decide-2", action: "click", target: { role: "menuitem", name: "Zq Missing" } },
+    ]), m)).not.toBeNull();
+    expect(groundingError(ir([{ id: "sf-ap-decide-2", action: "click", target: { role: "menuitem", name: "Zq Missing" } }]), m)).not.toBeNull();
+  });
+});
