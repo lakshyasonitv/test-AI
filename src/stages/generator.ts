@@ -1150,6 +1150,27 @@ function emitStep(step: Step, baseUrl: string): string {
 
     case "click": {
       const t = step.target!;
+      // A record the test just made, opened from Salesforce's search results: the index has it only after a
+      // while (run 2026-11-13T16-35-10-260Z-944deb2f), so the search runs again (the typed term is the step's
+      // value) until the result shows, up to about 40 s. salesforceGuidance.globalSearchSubmit marks it.
+      if (step.id.startsWith("sf-search-open-") && t.name) {
+        code += [
+          `  {`,
+          `    const result = page.getByRole("link", { name: ${valueCode(t.name)}, exact: true }).first();`,
+          `    for (let i = 0; i < 8 && !(await result.isVisible().catch(() => false)); i++) {`,
+          `      await page.waitForTimeout(5000);`,
+          ...(step.value ? [
+            `      const box = page.getByRole("searchbox", { name: "Search...", exact: true }).first();`,
+            `      if (!(await box.isVisible().catch(() => false))) await page.getByRole("button", { name: "Search", exact: true }).first().click().catch(() => {});`,
+            `      await box.fill(${valueCode(step.value)}).catch(() => {});`,
+            `      await box.press("Enter").catch(() => {});`,
+          ] : [`      await page.reload().catch(() => {});`]),
+          `    }`,
+          `    await result.click({ timeout: ${ASSERT_TIMEOUT_MS} });`,
+          `  }`,
+        ].join("\n");
+        break;
+      }
       // A click on a named radio or checkbox ticks it (see "check"): its label intercepts a plain click.
       if (isNamedToggle({ ...t, css: undefined })) {
         code += `  await page.getByRole(${q(t.role!)}, { name: ${q(t.name!)}, exact: true }).first().check({ force: true, timeout: ${ASSERT_TIMEOUT_MS} });`;

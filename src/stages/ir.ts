@@ -22,7 +22,7 @@ import {
 import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import {
-  salesforceGuidance, strengthenSaveOutcome, editSaveConfirmed, activitySubjectTyped, globalSearchSubmit, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
+  salesforceGuidance, strengthenSaveOutcome, editSaveConfirmed, activitySubjectTyped, globalSearchSubmit, deletedNameNotChecked, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
   returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, requestedTextChecks, noTokensInRuleFields, pathStageClicks, seededLookups, placeholderMessages, eventRecordSearch, leadConvertSteps, calculatedFieldReads, approvalSteps, customLinkSteps, valuesFromRequest,
 } from "./salesforceGuidance.js";
 import { FRONTDOOR_REF, SECOND_USER_REF, currentFrontdoor, isFrontdoorRef, isSecondUserRef, recordRefObject } from "./salesforceFrontdoor.js";
@@ -1243,6 +1243,10 @@ export function groundingError(
     // unverified enters the case through this door. The fresh-run compile path passes no scope
     // and still checks every step.
     if (onlySet && !onlySet.has(index)) continue;
+    // Opening a just-made record from search results (salesforceGuidance globalSearchSubmit): whether the
+    // result is there yet depends on Salesforce's indexing, so no screen can be captured for it in advance.
+    // The spec searches again until it shows (generator.ts).
+    if (step.id.startsWith("sf-search-open-")) continue;
     // A later round of a multi-step approval (salesforceGuidance approvalSteps: "sf-ap-decide-2") repeats
     // round 1's step on the same record, and round 1 was grounded. Its live capture cannot reproduce
     // the second step's pending request (run 2026-11-13T09-03-00-638Z-80eeb68e dropped the whole approval
@@ -2942,6 +2946,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       for (const r of editSaveConfirmed(parsed.data)) console.log(`[ir] ${r}`);
       for (const r of activitySubjectTyped(parsed.data)) console.log(`[ir] ${r}`);
       for (const r of globalSearchSubmit(parsed.data)) console.log(`[ir] ${r}`);
+      for (const r of deletedNameNotChecked(parsed.data)) console.log(`[ir] ${r}`);
       for (const rt of assertRecordTypeForms(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${rt}`);
       // Before the field checks: a record opened again is a record page too.
       for (const r of returnToCreatedRecords(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);

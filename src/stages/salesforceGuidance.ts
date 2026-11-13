@@ -141,6 +141,45 @@ export function globalSearchSubmit(ir: IRSteps): string[] {
     ir.steps[i] = { id: s.id, action: "press", target: typed.target, value: "Enter" } as Step;
     notes.push(`${s.id}: the global search runs on Enter, not a second "Search" click`);
   }
+  // Opening a record the test just made from the search results: Salesforce's search index takes a while
+  // to have a new record (run 2026-11-13T16-35-10-260Z-944deb2f searched at once and found nothing). The
+  // spec searches again until it shows (generator.ts, "sf-search-open-"), and grounding does not demand the
+  // results screen ahead of time.
+  for (let i = 1; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action !== "click" || !s.target?.name?.includes("{{uid}}")) continue;
+    let j = i - 1;
+    while (j >= 0 && ir.steps[j].action === "wait") j--;
+    const prev = ir.steps[j];
+    if (!prev || prev.action !== "press" || !/^enter$/i.test(prev.value ?? "") || !/^search\b/i.test((prev.target?.name ?? "").trim())) continue;
+    let k = j - 1;
+    while (k >= 0 && ir.steps[k].action === "wait") k--;
+    const typed = ir.steps[k]?.action === "fill" ? ir.steps[k].value : undefined;
+    ir.steps[i] = { ...s, id: `sf-search-open-${s.id}`, target: { role: "link", name: s.target.name }, ...(typed ? { value: typed } : {}) } as Step;
+    notes.push(`${s.id}: opens the new record from the search results, searching again until Salesforce has indexed it`);
+  }
+  return notes;
+}
+
+/**
+ * Right after a delete, Salesforce's own message names the record ('Opportunity "Delete Me ab12cd" was
+ * deleted.'), so a check that the name is no longer on the page fails on that message (run
+ * 2026-11-13T16-32-07-872Z-36eef730, the record was gone). The API check that it is gone is the proof;
+ * such a check goes. Returns notes.
+ */
+export function deletedNameNotChecked(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  const at = ir.steps.findIndex((s) => s.action === "assert" && /\bwas deleted\b/i.test(s.target?.text ?? ""));
+  if (at < 0) return notes;
+  const typed = ir.steps.slice(0, at).filter((s) => s.action === "fill" && s.value).map((s) => lineKey(s.value!.replace(/\{\{uid\}\}/g, "")));
+  for (let i = ir.steps.length - 1; i > at; i--) {
+    const s = ir.steps[i];
+    if (s.action !== "assert" || s.assertion !== "hidden" || !s.target?.text) continue;
+    const k = lineKey(s.target.text.replace(/\{\{uid\}\}/g, ""));
+    if (!k || !typed.some((t) => t.includes(k) || k.includes(t))) continue;
+    ir.steps.splice(i, 1);
+    notes.push(`${s.id}: "${s.target.text}" hidden right after the delete -> dropped (Salesforce's own message names it; the API checks it is gone)`);
+  }
   return notes;
 }
 

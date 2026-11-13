@@ -1210,3 +1210,27 @@ describe("bug hunt round 4", () => {
     expect(i.steps[0]).toMatchObject({ action: "click" });   // the first click opens the box: kept
   });
 });
+
+describe("bug hunt round 4, second pass", () => {
+  it("opening a just-made record from search results searches again until indexed (run 2026-11-13T16-35-10-260Z-944deb2f)", async () => {
+    const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
+    const { generateSpec } = await import("../src/stages/generator.js");
+    const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search..." }, value: "Zq Quasar {{uid}}" } as Step;
+    const enter = { id: "e", action: "press", target: { role: "searchbox", name: "Search..." }, value: "Enter" } as Step;
+    const open = { id: "o", action: "click", target: { role: "link", name: "Zq Quasar {{uid}}" } } as Step;
+    const i = ir([click("Search"), typed, enter, { id: "w", action: "wait", value: "500" } as Step, open]);
+    globalSearchSubmit(i);
+    expect(i.steps[4]).toMatchObject({ id: "sf-search-open-o", value: "Zq Quasar {{uid}}" });
+    const spec = generateSpec({ ...i, meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "s", baseUrl: "https://x.example" } } as any);
+    expect(spec).toContain("for (let i = 0; i < 8 && !(await result.isVisible()");
+    expect(spec).toContain('box.press("Enter")');
+  });
+  it("a hidden check of the deleted record's name right after the delete goes (run 2026-11-13T16-32-07-872Z-36eef730)", async () => {
+    const { deletedNameNotChecked } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([fill("Zq Opp Name", "Zq Delete Me {{uid}}"), click("Save"), click("Delete"), click("Delete"),
+      { id: "d", action: "assert", target: { text: "was deleted" }, assertion: "visible" } as Step,
+      { id: "h", action: "assert", target: { text: "Zq Delete Me" }, assertion: "hidden" } as Step]);
+    expect(deletedNameNotChecked(i)).toHaveLength(1);
+    expect(i.steps.some((s) => s.id === "h")).toBe(false);
+  });
+});
