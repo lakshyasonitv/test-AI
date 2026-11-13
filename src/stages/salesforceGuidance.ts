@@ -176,9 +176,12 @@ export function globalSearchSubmit(ir: IRSteps): string[] {
     while (k >= 0 && ir.steps[k].action === "wait") k--;
     const typed = ir.steps[k]?.action === "fill" ? ir.steps[k].value : undefined;
     // The record the test made, by the name it was given ("Quasar Robotics {{uid}}"), however the model wrote
-    // the link: without its run code it could be an older record of the same name.
+    // the link: without its run code it could be an older record of the same name, and with ANOTHER run's
+    // code ("Quasar Robotics msymz4", copied off a captured results screen, run
+    // 2026-11-13T17-21-21-999Z-ecc97eb2) it is a record that is gone by the time the spec runs.
+    const bare = lineKey(s.target.name.replace(/\{\{uid\}\}/g, "").replace(/\s[a-z0-9]{6}$/, ""));
     const made = ir.steps.slice(0, k).filter((x) => x.action === "fill" && x.value?.includes("{{uid}}")).map((x) => x.value!)
-      .find((v) => lineKey(v.replace(/\{\{uid\}\}/g, "")) === lineKey(s.target!.name!.replace(/\{\{uid\}\}/g, "")));
+      .find((v) => lineKey(v.replace(/\{\{uid\}\}/g, "")) === bare);
     const name = s.target.name.includes("{{uid}}") ? s.target.name : made;
     if (!name) continue;
     ir.steps[i] = { ...s, id: `sf-search-open-${s.id}`, target: { role: "link", name }, ...(typed ? { value: typed } : {}) } as Step;

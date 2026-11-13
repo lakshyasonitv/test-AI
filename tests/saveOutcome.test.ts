@@ -1236,6 +1236,18 @@ describe("bug hunt round 4, second pass", () => {
     expect(i.steps[3].target).toEqual({ role: "searchbox", name: "Search..." });
     expect(i.steps[5]).toMatchObject({ id: "sf-search-open-o", target: { role: "link", name: "Zq Quasar {{uid}}" } });
   });
+  it("opens the made record when the link carries another run's code copied off a captured screen (run 2026-11-13T17-21-21-999Z-ecc97eb2)", async () => {
+    const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
+    const made = { id: "m", action: "fill", target: { role: "textbox", name: "Account Name" }, value: "Zq Quasar {{uid}}" } as Step;
+    const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search..." }, value: "Zq Quasar" } as Step;
+    const enter = { id: "e", action: "press", target: { role: "searchbox", name: "Search..." }, value: "Enter" } as Step;
+    const i = ir([made, click("Save"), click("Search"), typed, enter, { id: "o", action: "click", target: { role: "link", name: "Zq Quasar msymz4" } } as Step]);
+    globalSearchSubmit(i);
+    expect(i.steps[5]).toMatchObject({ id: "sf-search-open-o", target: { role: "link", name: "Zq Quasar {{uid}}" } });
+    const other = ir([made, click("Save"), click("Search"), typed, enter, { id: "o", action: "click", target: { role: "link", name: "Zq Quasar Holdings" } } as Step]);
+    globalSearchSubmit(other);
+    expect(other.steps[5].id).toBe("o");
+  });
   it("opens the global search box with its button first when the case typed into it straight away (run 2026-11-13T16-53-32-808Z-11eabab6)", async () => {
     const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
     const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search Salesforce" }, value: "Zq Quasar" } as Step;
