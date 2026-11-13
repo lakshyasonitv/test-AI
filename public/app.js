@@ -467,7 +467,7 @@ async function initAuth() {
       // home screen. Read once and cleared, so a later ordinary sign-in still goes home.
       const resume = returnToRunAfterSignIn;
       returnToRunAfterSignIn = null;
-      navigate(resume ? `#/run/${resume}` : "#/");
+      navigate(resume ? `#/run/${resume}` : afterSignInHash());
       applyRoute();
       loadHistory();
     } catch (err) {
@@ -527,7 +527,7 @@ async function initAuth() {
         { refreshToken: body.refreshToken });
       document.getElementById("signupPassword").value = "";
       await refreshIdentity();
-      navigate("#/");
+      navigate(afterSignInHash());
       applyRoute();
       loadHistory();
     } catch (err) {
@@ -3020,6 +3020,7 @@ async function postCaseSelectionDecision(runId, decision) {
 }
 
 caseSelectAllBtnEl.addEventListener("click", () => {
+  disarmRefine();
   caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
     cb.checked = true;
     gateDrafts.checked[Number(cb.dataset.index)] = true;
@@ -3029,6 +3030,7 @@ caseSelectAllBtnEl.addEventListener("click", () => {
 });
 
 caseSelectNoneBtnEl.addEventListener("click", () => {
+  disarmRefine();
   const primaryWasChecked = Array.from(caseSelectionListEl.querySelectorAll('input[type="checkbox"]'))
     .some((cb) => cb.checked && currentBatch[Number(cb.dataset.index)]?.fromPrompt);
   caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
@@ -3067,6 +3069,7 @@ caseDoneBtnEl.addEventListener("click", async () => {
  * open/closed state is carried by `.case-refine-collapsed`, which belongs to this feature.
  */
 function setRefineOpen(open) {
+  disarmRefine();
   caseRefineInputWrapEl.classList.remove("hidden");
   caseRefineInputWrapEl.classList.toggle("case-refine-collapsed", !open);
   caseNotSatisfiedBtnEl.textContent = open ? "Cancel refine" : "Not satisfied — refine";
@@ -3092,6 +3095,51 @@ function ensureRefineConfirmBtn() {
   return btn;
 }
 
+/**
+ * The "are you sure?" step, drawn IN the panel instead of window.confirm().
+ *
+ * It used to be a confirm() pop-up. Embedded browsers (the Claude desktop app's browser pane, some
+ * webviews) never show one and answer "Cancel" at once, so "Generate another round" sent nothing
+ * and said nothing — refine looked broken. Now the first press states the warning in the panel's
+ * own notice line and turns the button into "Yes, generate another round", with a Cancel beside
+ * it; only that second, explicit press sends. Still two deliberate actions, so a stray click can
+ * never spend a round (the reason the trigger above is disclosure-only).
+ *
+ * Armed means "the warning on screen is the one the next press agrees to". Anything that could
+ * change it (the note, the ticks, closing the box, a new round) disarms, so the user never
+ * confirms a stale count. The Cancel button is created and removed, not shown and hidden, so
+ * nothing new toggles `.hidden` (rule 4); both buttons reuse `.case-refine-confirm` (rule 3).
+ */
+let refineArmed = false;
+
+function disarmRefine() {
+  if (!refineArmed) return;
+  refineArmed = false;
+  const btn = document.getElementById("case-refine-confirm-btn");
+  if (btn) btn.textContent = "Generate another round";
+  document.getElementById("case-refine-cancel-btn")?.remove();
+  caseNoticeEl.classList.add("hidden");
+  caseNoticeEl.textContent = "";
+}
+
+function armRefine(warning) {
+  refineArmed = true;
+  showNotice(warning);
+  const btn = ensureRefineConfirmBtn();
+  btn.textContent = "Yes, generate another round";
+  if (!document.getElementById("case-refine-cancel-btn")) {
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.id = "case-refine-cancel-btn";
+    cancel.className = "case-refine-confirm";
+    cancel.style.marginLeft = "8px";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => { disarmRefine(); caseNewPromptInputEl.focus(); });
+    btn.after(cancel);
+  }
+  btn.focus();
+}
+
 /** Send the refine. The only path that posts `not_satisfied`. */
 async function submitRefine() {
   if (!caseRunId) return;
@@ -3111,17 +3159,32 @@ async function submitRefine() {
   const unticked = gateCases().filter((c) => !selectedIndexes.includes(c.index)).length;
   const warning = unticked === 0
     ? "Generate another round of cases?"
-    : `Generate another round?
-
-${unticked} case${unticked === 1 ? "" : "s"} you have not ` +
+    : `Generate another round? ${unticked} case${unticked === 1 ? "" : "s"} you have not ` +
       `ticked will be recorded as rejected, and cannot be offered again in this run.`;
-  if (!confirm(warning)) return;
+  // First press: say what will happen, in the panel. Second press (the same button, now "Yes"):
+  // send. See armRefine() for why this is not window.confirm().
+  if (!refineArmed) return armRefine(warning);
 
+  const btn = document.getElementById("case-refine-confirm-btn");
+  if (btn) btn.disabled = true; // one press, one round
   const ok = await postCaseSelectionDecision(caseRunId, {
     action: "not_satisfied", selectedIndexes, newPrompt, ...gateEditPayload(),
   });
-  if (ok) hideCaseSelectionPanel();
+  if (btn) btn.disabled = false;
+  if (ok) {
+    disarmRefine();
+    hideCaseSelectionPanel();
+  } else {
+    // postCaseSelectionDecision has put the server's reason in the notice line; keep it there
+    // and put the buttons back to their first state.
+    refineArmed = false;
+    if (btn) btn.textContent = "Generate another round";
+    document.getElementById("case-refine-cancel-btn")?.remove();
+  }
 }
+
+// Anything that changes what the warning describes takes the "Yes" back.
+caseNewPromptInputEl.addEventListener("input", disarmRefine);
 
 // The trigger only discloses — open, or close again with nothing sent.
 caseNotSatisfiedBtnEl.addEventListener("click", () => {
@@ -3131,6 +3194,7 @@ caseNotSatisfiedBtnEl.addEventListener("click", () => {
 
 caseSelectionListEl.addEventListener("change", (e) => {
   if (!e.target.matches('input[type="checkbox"]')) return;
+  disarmRefine();
   setGateChecked(Number(e.target.dataset.index), e.target.checked);
   updateDoneButtonState();
 });
@@ -3573,6 +3637,18 @@ let pollGeneration = 0;
  * signOut never touches it.
  */
 let returnToRunAfterSignIn = null;
+
+/**
+ * Where a fresh sign-in lands. With the dashboard on (D-79): the page the person was opening when
+ * the sign-in screen stopped them (the landing page's "Start testing" asks for #/dashboard, "Run a
+ * new test" for #/), or the dashboard when they opened the bare address. With it off: #/, exactly
+ * as before. The sign-in screen never changes location.hash, so it still holds that request.
+ */
+function afterSignInHash() {
+  if (!dashboardOn) return "#/";
+  const h = location.hash;
+  return h && h !== "#" ? h : "#/dashboard";
+}
 
 /**
  * Stop the run view for a reason retrying cannot fix, and say which reason.
@@ -5557,8 +5633,11 @@ async function renderCompareView(caseId, fromV, toV) {
     navigate(caseHash(c.projectId, caseId)));
 }
 
-const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login", "signup", "team"];
+const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login", "signup", "team", "dashboard", "projects", "settings"];
 let currentView = "home";
+// The dashboard screen (D-79). False until /api/health reports `dashboard: true`; while false,
+// applyRoute() never routes to it, so #/dashboard falls through to home like any unknown hash.
+let dashboardOn = false;
 
 /**
  * The ONLY thing that switches screens.
@@ -5616,7 +5695,8 @@ function setCrumbs(parts) {
     .join("");
   crumbsEl.innerHTML =
     `<button type="button" class="crumb crumb-root" id="crumbRoot">Testbench</button>${tail}`;
-  crumbsEl.querySelector("#crumbRoot").addEventListener("click", () => navigate("#/"));
+  // With the dashboard on (D-79) the "Testbench" crumb leads there; off, it is home as before.
+  crumbsEl.querySelector("#crumbRoot").addEventListener("click", () => navigate(dashboardOn ? "#/dashboard" : "#/"));
 }
 
 function navigate(hash) {
@@ -5725,6 +5805,27 @@ function applyRoute() {
     const [bare, query] = id.split("?");
     const params = new URLSearchParams(query ?? "");
     renderCompareView(bare, params.get("from"), params.get("to"));
+    return;
+  }
+  // D-80. The Projects and Settings pages exist only with the dashboard's top-nav layout on.
+  // #/projects/<id>/cases/<id> is a case and was routed above (caseRoute), so only the bare list
+  // and a single project reach here. Off, both hashes fall through to home as they always did.
+  if (head === "projects" && dashboardOn) {
+    showView("projects");
+    setCrumbs(["Projects"]);
+    renderProjectsView(id ? decodeURIComponent(id.split("?")[0]) : null);
+    return;
+  }
+  if (head === "settings" && dashboardOn) {
+    showView("settings");
+    setCrumbs(["Settings"]);
+    return;
+  }
+  // D-79. Only while the server has the dashboard on; otherwise this hash is home, below.
+  if (head === "dashboard" && dashboardOn) {
+    showView("dashboard");
+    setCrumbs(["Dashboard"]);
+    renderDashboardView();
     return;
   }
 
@@ -6152,6 +6253,7 @@ fetch("/api/health")
     if (h && h.jira === true) renderJiraRow();
     if (h && h.projectDiscovery === true) renderProjectFreshBox();
     if (h && typeof h.landingUrl === "string") renderLandingLink(h.landingUrl);
+    if (h && h.dashboard === true) enableDashboard();
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);
@@ -6182,6 +6284,84 @@ function renderLandingLink(url) {
   a.style.cssText = "display:inline-flex;align-items:center;text-decoration:none";
   actions.insertBefore(a, actions.firstChild);
 }
+
+// -----------------------------------------------------------------------------
+// Dashboard (DASHBOARD_ENABLED, D-79)
+//
+// Turned on only by /api/health's `dashboard: true`. Then: #/dashboard routes to the overview
+// screen, the "Testbench" crumb leads there, and one "Dashboard" link joins the top bar, built
+// the same way as the landing link above (reuses .topbar-btn, rule 3; created, never shown or
+// hidden with .hidden, rule 4). Off: none of this runs and the app is exactly as before.
+//
+// The health check answers after the first applyRoute(), so a page opened straight at
+// #/dashboard was routed home while the flag was still unknown. Re-route once it is known.
+// -----------------------------------------------------------------------------
+
+function enableDashboard() {
+  if (dashboardOn) return;
+  dashboardOn = true;
+  // The top-nav layout (D-80): one nav row, no permanent sidebar, Projects and Settings as pages.
+  // theme.css keys every layout rule off this attribute, so with the flag off nothing changes.
+  document.body.dataset.shell = "top";
+  renderDashboardLink();
+  buildSettingsView();
+  // Opening the app's bare address (no #page at all) starts on the dashboard. Only an EMPTY hash:
+  // "#/" is still the new-test screen, so New run, the landing page's "Run a new test" and every
+  // other link to #/ open the composer exactly as before. replace() keeps Back from looping.
+  // Not in the dev-only state preview (?preview=states, preview.js), which drives the run view
+  // itself and rewrites the URL without a hash.
+  const previewing = new URLSearchParams(location.search).get("preview") === "states";
+  if (!previewing && (!location.hash || location.hash === "#")) { location.replace("#/dashboard"); return; }
+  const head = (location.hash || "#/").replace(/^#\/?/, "").split("/")[0];
+  if (["dashboard", "projects", "settings"].includes(head) && currentView !== head) applyRoute();
+}
+
+/** The one navigation row (D-80), the same on every page: Dashboard · New test · Projects ·
+ *  History beside the brand, and Settings on the right, beside the landing link. theme.css marks
+ *  the link for the current page from showView()'s own .view-active, so no script keeps it in
+ *  sync. Every link is a hash the router knows; "New test" is the sidebar's New run (startNewTest)
+ *  because the sidebar is folded away in this layout. Built once; reuses .topbar-btn (rule 3). */
+function renderDashboardLink() {
+  if (document.getElementById("dashboardLink")) return;
+  const actions = document.querySelector(".topbar-actions");
+  const crumbs = document.getElementById("crumbs");
+  if (!actions || !crumbs) return;
+  const link = (id, href, text) => {
+    const a = document.createElement("a");
+    a.id = id;
+    a.className = "topbar-btn";
+    a.href = href;
+    a.textContent = text;
+    a.style.cssText = "display:inline-flex;align-items:center;text-decoration:none";
+    return a;
+  };
+  const nav = document.createElement("nav");
+  nav.id = "appNav";
+  nav.setAttribute("aria-label", "Main");
+  nav.append(
+    link("dashboardLink", "#/dashboard", "Dashboard"),
+    link("navNew", "#/", "New test"),
+    link("navProjects", "#/projects", "Projects"),
+    link("navHistory", "#/history", "History"),
+  );
+  nav.querySelector("#navNew").addEventListener("click", startNewTest);
+  crumbs.after(nav);
+  // Settings sits just before the ☰ menu wrapper, so it stays right of the landing link however
+  // the two health-driven links happen to be created.
+  const settings = link("navSettings", "#/settings", "Settings");
+  actions.insertBefore(settings, actions.querySelector(".hdr-menu-wrap"));
+}
+
+/** The dashboard's "New test" does exactly what the sidebar's New run button does (clear the
+ *  last run and the composer, then go home), by clicking that button. If it cannot (no button,
+ *  or already fresh) it is a plain link to #/, so text being typed is never wiped. */
+function startNewTest(e) {
+  const nr = document.getElementById("newRunBtn");
+  if (currentView === "home" || !nr || nr.disabled) return; // plain link to #/
+  e.preventDefault();
+  nr.click();
+}
+
 
 // -----------------------------------------------------------------------------
 // Pro document intake (SPEC_INTAKE_ENABLED)
@@ -7524,6 +7704,627 @@ async function renderHistoryView() {
       });
     });
   });
+}
+
+// -----------------------------------------------------------------------------
+// Dashboard screen (D-79). Reached only through applyRoute() while dashboardOn.
+//
+// Read-only. Three GETs the app already makes elsewhere: /api/runs (as History does),
+// /api/suites and /api/projects (as the sidebar tree does), each guarded the way History guards
+// /api/runs, so a 401 or an error body becomes an empty list instead of a broken render. Every
+// link is a hash the router already knows (#/, #/history, #/run/<id>, #/suite/<id>), so the
+// dashboard adds no navigation of its own. "Projects" opens the sidebar with the existing
+// openSidebarDrawer(); theme.css tucks the sidebar away only while this view is active.
+// Existing classes only (.eyebrow, .page-head-title, .tagline, .case-badge, .dl-btn,
+// .dl-btn-inline, .run-btn, .tree-empty); the layout and the charts are styled through
+// data-dash attributes in theme.css, so the class vocabulary gains nothing (rule 3). The charts
+// are inline SVG drawn from the same data, no library. Nothing is shown or hidden with .hidden
+// (rule 4). Every value from the server is escaped; numbers are computed, never server strings.
+// -----------------------------------------------------------------------------
+
+async function renderDashboardView() {
+  const body = document.getElementById("dashboardViewBody");
+  if (!body) return;
+  // No buttons of its own in the header: in the top-nav layout (D-80) New test and Projects are
+  // in the nav row on every page, and a second copy here would be two buttons for one action.
+  const head = `
+    <div data-dash="head">
+      <div>
+        <div class="eyebrow">DASHBOARD</div>
+        <h1 class="page-head-title">Welcome back</h1>
+        <p class="tagline">Your recent runs and saved suites at a glance.</p>
+      </div>
+    </div>`;
+  body.innerHTML = `${head}<div class="tree-empty" style="padding:24px 4px">Loading…</div>`;
+
+  const asList = (raw, key) =>
+    Array.isArray(raw) ? raw : raw && Array.isArray(raw[key]) ? raw[key] : [];
+  const [rawRuns, rawSuites, rawProjects] = await Promise.all([
+    fetch("/api/runs").then((r) => r.json()).catch(() => []),
+    fetch("/api/suites").then((r) => r.json()).catch(() => ({})),
+    fetch("/api/projects").then((r) => r.json()).catch(() => ({})),
+  ]);
+  // Navigated away while these were in flight: nothing to draw.
+  if (currentView !== "dashboard") return;
+
+  const runs = asList(rawRuns, "runs");
+  const suites = asList(rawSuites, "suites");
+  const projects = asList(rawProjects, "projects");
+  const projectName = new Map(projects.map((p) => [p.id, p.name]));
+
+  // Counted over the runs /api/runs returns (the most recent ones), and said so on screen.
+  const keyOf = (r) => statusKey(r.status);
+  const passed = runs.filter((r) => keyOf(r) === "passed").length;
+  const failed = runs.filter((r) => keyOf(r) === "failed").length;
+  const other = runs.length - passed - failed;
+  const finished = runs.filter((r) => !["running", "pending", "draft"].includes(keyOf(r))).length;
+  const rate = finished ? Math.round((passed / finished) * 100) : null;
+  const savedCases = projects.reduce((n, p) => n + (Number(p.caseCount) || 0), 0);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+  // Verdict colours stay the app's own (green passed, red failed); everything else is chrome.
+  const C_PASS = "var(--done-dot)", C_FAIL = "var(--failed-dot)", C_OTHER = "#c9ced8";
+
+  const kpi = (ico, label, value, chip, chipClass) => `
+    <div data-dash="card">
+      <div data-dash="card-head"><span data-dash="ico">${icon(ico, { size: 15 })}</span><h2>${escapeHtml(label)}</h2></div>
+      <div data-dash="big-row">
+        <span data-dash="big">${escapeHtml(String(value))}</span>
+        ${chip ? `<span class="case-badge ${chipClass}">${escapeHtml(chip)}</span>` : ""}
+      </div>
+    </div>`;
+
+  // ---- runs by day: a stacked bar per calendar day, the 7 days up to the newest run ----
+  const DAY = 86400000;
+  const dayKey = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const dated = runs.filter((r) => Number.isFinite(Number(r.startedAt)));
+  const lastDay = dated.length ? Math.max(...dated.map((r) => dayKey(Number(r.startedAt)))) : dayKey(Date.now());
+  const days = Array.from({ length: 7 }, (_, i) => lastDay - (6 - i) * DAY).map((d) => {
+    const inDay = dated.filter((r) => dayKey(Number(r.startedAt)) === d);
+    return {
+      d,
+      p: inDay.filter((r) => keyOf(r) === "passed").length,
+      f: inDay.filter((r) => keyOf(r) === "failed").length,
+      o: inDay.filter((r) => !["passed", "failed"].includes(keyOf(r))).length,
+    };
+  });
+  const maxDay = Math.max(1, ...days.map((x) => x.p + x.f + x.o));
+  const W = 560, H = 190, base = 160, top = 14, slot = W / 7, bw = Math.min(42, slot * 0.5);
+  const scale = (n) => (n / maxDay) * (base - top);
+  const bars = days.map((x, i) => {
+    const cx = slot * i + slot / 2, x0 = cx - bw / 2;
+    let y = base;
+    const seg = (n, color) => {
+      if (!n) return "";
+      const h = scale(n); y -= h;
+      return `<rect x="${x0.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h - 2, 2).toFixed(1)}" rx="5" fill="${color}"/>`;
+    };
+    const total = x.p + x.f + x.o;
+    const label = new Date(x.d).toLocaleDateString(undefined, { weekday: "short" });
+    const isLast = i === 6;
+    return `
+      <rect x="${x0.toFixed(1)}" y="${top}" width="${bw.toFixed(1)}" height="${base - top}" rx="6" fill="var(--surface-2)"/>
+      ${seg(x.p, C_PASS)}${seg(x.f, C_FAIL)}${seg(x.o, C_OTHER)}
+      ${total ? `<text x="${cx.toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">${total}</text>` : ""}
+      <text x="${cx.toFixed(1)}" y="${base + 20}" text-anchor="middle" font-size="11" fill="${isLast ? "var(--text)" : "var(--muted)"}" font-weight="${isLast ? 700 : 400}">${escapeHtml(label)}</text>`;
+  }).join("");
+  // The card's own totals cover ONLY the 7 days drawn, so the number always matches the bars
+  // (runs older than the window are counted in the KPIs above, not here).
+  const win = days.reduce((a, x) => ({ p: a.p + x.p, f: a.f + x.f, o: a.o + x.o }), { p: 0, f: 0, o: 0 });
+  const inWindow = win.p + win.f + win.o;
+  const byDay = `
+    <div data-dash="card">
+      <div data-dash="card-head"><span data-dash="ico">${icon("list", { size: 15 })}</span><h2>Runs by day</h2>
+        <span class="case-badge badge-pending">${escapeHtml(dated.length ? "7 days up to the latest run" : "no runs yet")}</span></div>
+      <div data-dash="big-row"><span data-dash="big">${inWindow}</span><span data-dash="muted">${escapeHtml(`${win.p} passed · ${win.f} failed${win.o ? ` · ${win.o} other` : ""}`)}</span></div>
+      <div data-dash="sub" style="margin:0 0 4px">${escapeHtml(`${inWindow} of your ${runs.length} most recent runs fall in these 7 days.`)}</div>
+      <svg data-dash="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${escapeHtml(`Runs per day over 7 days: ${days.map((x) => x.p + x.f + x.o).join(", ")}`)}">${bars}</svg>
+      <div data-dash="legend" style="margin:6px 0 0">
+        <div style="--c:${C_PASS}"><small>Passed</small></div><div style="--c:${C_FAIL}"><small>Failed</small></div><div style="--c:${C_OTHER}"><small>Other</small></div>
+      </div>
+    </div>`;
+
+  // ---- results split: a donut of passed / failed / other ----
+  const R = 54, CIRC = 2 * Math.PI * R;
+  let offset = 0;
+  const arc = (n, color) => {
+    if (!n || !runs.length) return "";
+    const len = (n / runs.length) * CIRC;
+    const s = `<circle cx="70" cy="70" r="${R}" fill="none" stroke="${color}" stroke-width="16" stroke-dasharray="${len.toFixed(2)} ${(CIRC - len).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 70 70)"/>`;
+    offset += len;
+    return s;
+  };
+  const split = `
+    <div data-dash="card">
+      <div data-dash="card-head"><span data-dash="ico">${icon("check", { size: 15 })}</span><h2>Results split</h2></div>
+      <div data-dash="legend">
+        <div style="--c:${C_PASS}"><small>Passed</small><b>${passed}</b></div>
+        <div style="--c:${C_FAIL}"><small>Failed</small><b>${failed}</b></div>
+        <div style="--c:${C_OTHER}"><small>Other</small><b>${other}</b></div>
+      </div>
+      <svg data-dash="chart" viewBox="0 0 140 140" style="max-width:190px;margin:0 auto" role="img" aria-label="${escapeHtml(`${passed} passed, ${failed} failed, ${other} other`)}">
+        <circle cx="70" cy="70" r="${R}" fill="none" stroke="var(--surface-3)" stroke-width="16"/>
+        ${arc(passed, C_PASS)}${arc(failed, C_FAIL)}${arc(other, C_OTHER)}
+        <text x="70" y="68" text-anchor="middle" font-size="22" font-weight="700" fill="var(--text)">${rate === null ? "—" : `${rate}%`}</text>
+        <text x="70" y="86" text-anchor="middle" font-size="9" fill="var(--muted)">pass rate</text>
+      </svg>
+    </div>`;
+
+  // ---- tables ----
+  const empty = (text) => `<div class="tree-empty" style="padding:28px 16px;text-align:center">${escapeHtml(text)}</div>`;
+  const runRow = (r) => {
+    const st = keyOf(r);
+    // Short form ("10 Nov, 12:39") so the test name keeps the room; History shows the full one.
+    const when = r.startedAt
+      ? new Date(r.startedAt).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+      : "";
+    const gone = r.artifactsAvailable === false;
+    const total = r.suite ? Number(r.suite.total) || 0 : 0;
+    const ok = r.suite ? Number(r.suite.passed) || 0 : 0;
+    const result = total
+      ? `<span data-dash="bar"><span><i style="--w:${Math.round((ok / total) * 100)}%"></i></span><span data-dash="muted">${ok}/${total}</span></span>`
+      : `<span data-dash="muted">—</span>`;
+    return `
+      <tr>
+        <td><span class="case-badge badge-${escapeHtml(st)}">${escapeHtml(statusText(r.status))}</span></td>
+        <td data-dash="grow"><span data-dash="clip" title="${escapeHtml(r.prompt || "")}">${escapeHtml(r.prompt || "(no prompt)")}</span></td>
+        <td data-dash="hide-sm">${result}</td>
+        <td data-dash="hide-sm"><span data-dash="muted">${escapeHtml(when)}</span></td>
+        <td style="text-align:right">${gone ? "" : `<a class="dl-btn-inline" href="#/run/${encodeURIComponent(r.runId)}">View</a>`}</td>
+      </tr>`;
+  };
+  const suiteRow = (s) => {
+    const n = Number(s.caseCount) || 0;
+    return `
+      <tr>
+        <td data-dash="grow">
+          <span data-dash="clip">${escapeHtml(s.name || "(unnamed suite)")}</span>
+          <span data-dash="muted">${escapeHtml(projectName.get(s.projectId) || "")}</span>
+        </td>
+        <td><span data-dash="muted">${escapeHtml(plural(n, "case"))}</span></td>
+        <td style="text-align:right"><a class="dl-btn-inline" href="#/suite/${encodeURIComponent(s.id)}">Open</a></td>
+      </tr>`;
+  };
+  const topSuites = [...suites].sort((a, b) => (Number(b.caseCount) || 0) - (Number(a.caseCount) || 0)).slice(0, 8);
+  const runsTable = `
+    <div data-dash="card">
+      <div data-dash="card-head"><span data-dash="ico">${icon("clock", { size: 15 })}</span><h2>Recent runs</h2>
+        <a class="dl-btn-inline" href="#/history">See all</a></div>
+      ${runs.length ? `<div data-dash="scroll"><table data-dash="table">
+        <thead><tr><th>Status</th><th>Test</th><th data-dash="hide-sm">Result</th><th data-dash="hide-sm">When</th><th></th></tr></thead>
+        <tbody>${runs.slice(0, 6).map(runRow).join("")}</tbody></table></div>` : empty("No runs yet. Start one with New test.")}
+    </div>`;
+  const suitesTable = `
+    <div data-dash="card">
+      <div data-dash="card-head"><span data-dash="ico">${icon("file-text", { size: 15 })}</span><h2>Saved suites</h2>
+        <span class="case-badge badge-pending">${escapeHtml(plural(suites.length, "suite"))}</span></div>
+      ${topSuites.length ? `<div data-dash="scroll"><table data-dash="table">
+        <thead><tr><th>Suite · project</th><th>Cases</th><th></th></tr></thead>
+        <tbody>${topSuites.map(suiteRow).join("")}</tbody></table></div>` : empty("No saved suites yet. Save a case from a run to start one.")}
+    </div>`;
+
+  body.innerHTML = `
+    ${head}
+    <div class="hrow-meta" style="margin:-6px 0 -4px">${escapeHtml(runs.length
+      ? `Run counts below are from your ${runs.length} most recent runs, the same list as History. Saved cases are all of them.`
+      : "No runs yet. Saved cases are all of them.")}</div>
+    <div data-dash="kpis">
+      ${kpi("clock", "Recent runs", runs.length, runs.length ? `last ${runs.length}` : "none yet", "badge-pending")}
+      ${kpi("check", "Passed", passed, rate === null ? "" : `${rate}% pass rate`, "badge-passed")}
+      ${kpi("x", "Failed", failed, runs.length ? `of ${runs.length}` : "", "badge-failed")}
+      ${kpi("file-text", "Saved cases", savedCases, `in ${plural(projects.length, "project")}`, "badge-pending")}
+    </div>
+    <div data-dash="row" data-wide>${byDay}${split}</div>
+    <div data-dash="row">${runsTable}${suitesTable}</div>`;
+}
+
+// -----------------------------------------------------------------------------
+// Projects screen (#/projects, #/projects/<id>) — the sidebar's project tree as a page (D-80).
+//
+// Reached only through applyRoute() while dashboardOn, i.e. in the top-nav layout where the
+// sidebar is folded away. Every action is the sidebar tree's own, unchanged: the same routes
+// (POST/PATCH/DELETE /api/projects, POST/PATCH/DELETE /api/suites), the same permission checks
+// (canManageProjects / canAuthorSuites / canDeleteSuites — the server enforces them regardless),
+// the same confirmProjectDelete() type-the-name gate, the same confirm text and toasts. After a
+// change it calls loadProjects(), the sidebar's own refresh, so projectsCache / suitesCache /
+// unfiledCases stay the one source both views draw from. No database: projectsCache is null and,
+// exactly like the sidebar, the page falls back to recent runs grouped by address, read-only.
+// Existing classes only; layout through data-dash attributes in theme.css (rule 3). Nothing is
+// shown or hidden with .hidden (rule 4). Every server value is escaped.
+// -----------------------------------------------------------------------------
+
+/** The one inline form open on the Projects screen, or null. One at a time, like the sidebar. */
+let pvForm = null;
+let pvGen = 0;
+
+async function renderProjectsView(projectId) {
+  const body = document.getElementById("projectsViewBody");
+  if (!body) return;
+  const gen = ++pvGen;
+  pvForm = null;
+  body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">Loading…</div>`;
+  await loadProjects();
+  // Navigated away (or to another project) while that was in flight: the newer render owns it.
+  if (gen !== pvGen || currentView !== "projects") return;
+  drawProjectsView(projectId);
+}
+
+function pvProjects() {
+  return projectsCache === null ? groupRunsByUrl(allRunsCache) : projectsCache;
+}
+
+/** Recent runs at a project's address, matched the way the sidebar tree matches them. Only the
+ *  newest runs are on hand (History's list), so the page labels it that way. */
+function pvRunsFor(p) {
+  const keys = new Set([normalizeUrlKey(p.name) || p.name, normalizeUrlKey(p.baseUrl)].filter(Boolean));
+  return (allRunsCache || []).filter((r) => keys.has(normalizeUrlKey(r.url)));
+}
+
+function drawProjectsView(projectId) {
+  const body = document.getElementById("projectsViewBody");
+  if (!body) return;
+  if (projectId) drawOneProject(body, projectId);
+  else drawProjectList(body);
+}
+
+const pvPlural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const pvErr = () => (pvForm?.error ? `<div class="suite-new-err">${escapeHtml(pvForm.error)}</div>` : "");
+
+/** The project create/edit form, as a card. The same fields and rules as the sidebar's form. */
+function pvProjectFormHtml() {
+  const editing = pvForm.mode === "project-edit";
+  return `
+    <div data-dash="card">
+      <div data-dash="card-head"><h2>${editing ? "Edit project" : "New project"}</h2></div>
+      <div data-dash="form">
+        <input type="text" class="project-form-input" data-pv="name" placeholder="Project name"
+               value="${escapeHtml(pvForm.name)}" aria-label="Project name" />
+        <input type="text" class="project-form-input" data-pv="url" placeholder="Base URL (optional)"
+               value="${escapeHtml(pvForm.url)}" aria-label="Base URL, optional" />
+        <button type="button" class="run-btn" data-pv-act="project-save">${editing ? "Save" : "Create"}</button>
+        <button type="button" class="dl-btn" data-pv-act="cancel">Cancel</button>
+      </div>
+      ${pvErr()}
+    </div>`;
+}
+
+function drawProjectList(body) {
+  const projects = pvProjects();
+  const canManage = canManageProjects();
+  const suiteCount = (id) => suitesCache.filter((s) => s.projectId === id).length;
+  const needsAccess = auth.required && auth.role && !roleAtLeast(auth.role, "admin");
+  const card = (p) => {
+    const cases = typeof p.caseCount === "number" ? p.caseCount : 0;
+    const runs = typeof p.runCount === "number" ? p.runCount : pvRunsFor(p).length;
+    const chips = [
+      projectsUnavailable ? "" : pvPlural(cases, "case"),
+      projectsUnavailable ? "" : pvPlural(suiteCount(p.id), "suite"),
+      pvPlural(runs, projectsUnavailable ? "recent run" : "run"),
+    ].filter(Boolean);
+    return `
+      <a data-dash="pcard" href="#/projects/${encodeURIComponent(p.id)}" title="${escapeHtml(p.name)}">
+        <h2>${escapeHtml(shortProjectName(p.name))}</h2>
+        <div data-dash="mono">${escapeHtml(displayUrl(p.baseUrl || p.name) || "No base URL")}</div>
+        <div data-dash="chips">${chips.map((c) => `<span class="case-badge badge-pending">${escapeHtml(c)}</span>`).join("")}</div>
+      </a>`;
+  };
+  const emptyMsg = needsAccess
+    ? "You're not in any project yet. Ask an admin to add you to one."
+    : canManage ? "No projects yet. Use New project to add one." : "No projects yet.";
+  body.innerHTML = `
+    <div data-dash="head">
+      <div>
+        <div class="eyebrow">PROJECTS</div>
+        <h1 class="page-head-title">Projects</h1>
+        <p class="tagline">Every site you test, with its saved suites and cases.</p>
+      </div>
+      <div data-dash="actions">
+        ${canManage ? `<button type="button" class="run-btn" data-pv-act="project-new">${icon("plus", { size: 14 })} New project</button>` : ""}
+      </div>
+    </div>
+    ${projectsUnavailable ? `<div class="hrow-meta">This server has no database, so there are no saved projects. These are your recent runs grouped by address.</div>` : ""}
+    ${pvForm && pvForm.mode === "project-new" ? pvProjectFormHtml() : ""}
+    ${projects.length
+      ? `<div data-dash="pgrid">${projects.map(card).join("")}</div>`
+      : `<div data-dash="card"><div class="tree-empty" style="padding:28px 16px;text-align:center">${escapeHtml(emptyMsg)}</div></div>`}`;
+  bindProjectsView(body, null);
+}
+
+function drawOneProject(body, projectId) {
+  const p = pvProjects().find((x) => x.id === projectId);
+  const back = `<div><a class="dl-btn-inline" href="#/projects">&larr; All projects</a></div>`;
+  if (!p) {
+    body.innerHTML = `${back}
+      <div data-dash="card"><div class="tree-empty" style="padding:28px 16px;text-align:center">This project doesn't exist, or you can't see it.</div></div>`;
+    setCrumbs(["Projects"]);
+    return;
+  }
+  setCrumbs(["Projects", shortProjectName(p.name)]);
+  const canManage = canManageProjects();
+  const canAuthor = canAuthorSuites();
+  const canDelete = canDeleteSuites();
+  const suites = suitesCache.filter((s) => s.projectId === p.id);
+  const unfiled = unfiledCases.filter((c) => c.projectId === p.id);
+  const runs = pvRunsFor(p);
+  const cases = typeof p.caseCount === "number" ? p.caseCount : 0;
+  const runCount = typeof p.runCount === "number" ? p.runCount : runs.length;
+  const empty = (t) => `<div class="tree-empty" style="padding:22px 16px;text-align:center">${escapeHtml(t)}</div>`;
+
+  const suiteRow = (s) => (pvForm?.mode === "suite-rename" && pvForm.id === s.id
+    ? `<div class="hrow">
+         <input type="text" class="suite-new-input" data-pv="name" value="${escapeHtml(pvForm.name)}"
+                placeholder="Suite name" aria-label="New name for this suite" style="flex:1;min-width:0" />
+         <div class="hrow-actions">
+           <button type="button" class="dl-btn-inline" data-pv-act="suite-rename-save">Save</button>
+           <button type="button" class="dl-btn-inline" data-pv-act="cancel">Cancel</button>
+         </div>
+       </div>${pvErr()}`
+    : `<div class="hrow">
+         <div class="hrow-main">
+           <div class="hrow-label">${escapeHtml(s.name || "(unnamed suite)")}</div>
+           <div class="hrow-meta">${escapeHtml(pvPlural(Number(s.caseCount) || 0, "case"))}</div>
+         </div>
+         <div class="hrow-actions">
+           <a class="dl-btn-inline" href="#/suite/${encodeURIComponent(s.id)}">Open</a>
+           ${canAuthor ? `<button type="button" class="dl-btn-inline" data-pv-act="suite-rename" data-id="${escapeHtml(s.id)}">Rename</button>` : ""}
+           ${canDelete ? `<button type="button" class="dl-btn-inline hrow-del" data-pv-act="suite-delete" data-id="${escapeHtml(s.id)}">Delete</button>` : ""}
+         </div>
+       </div>`);
+  const newSuiteRow = pvForm?.mode === "suite-new"
+    ? `<div class="hrow">
+         <input type="text" class="suite-new-input" data-pv="name" value="${escapeHtml(pvForm.name)}"
+                placeholder="Suite name" aria-label="Name for the new suite" style="flex:1;min-width:0" />
+         <div class="hrow-actions">
+           <button type="button" class="dl-btn-inline" data-pv-act="suite-create">Add</button>
+           <button type="button" class="dl-btn-inline" data-pv-act="cancel">Cancel</button>
+         </div>
+       </div>${pvErr()}`
+    : "";
+  const suitesCard = projectsUnavailable ? "" : `
+    <div data-dash="card">
+      <div data-dash="card-head"><span data-dash="ico">${icon("file-text", { size: 15 })}</span><h2>Suites</h2>
+        ${canAuthor ? `<button type="button" class="dl-btn-inline" data-pv-act="suite-new">+ New suite</button>` : ""}</div>
+      ${newSuiteRow}
+      ${suites.length ? suites.map(suiteRow).join("") : (newSuiteRow ? "" : empty("No suites in this project yet."))}
+    </div>`;
+  const unfiledCard = projectsUnavailable ? "" : `
+    <div data-dash="card">
+      <div data-dash="card-head"><span data-dash="ico">${icon("list", { size: 15 })}</span><h2>Not in a suite</h2></div>
+      ${unfiled.length ? unfiled.map((c) => `
+        <div class="hrow">
+          <div class="hrow-main">
+            <div class="hrow-label">${escapeHtml(c.title)}</div>
+            <div class="hrow-meta">${escapeHtml(`${c.feature ? `${c.feature} · ` : ""}v${c.currentVersion}`)}</div>
+          </div>
+          <div class="hrow-actions"><a class="dl-btn-inline" href="${caseHash(p.id, c.id)}">Open</a></div>
+        </div>`).join("") : empty("Every saved case here is in a suite.")}
+    </div>`;
+  const runsCard = `
+    <div data-dash="card">
+      <div data-dash="card-head"><span data-dash="ico">${icon("clock", { size: 15 })}</span><h2>Recent runs</h2>
+        <a class="dl-btn-inline" href="#/history">See all</a></div>
+      <div class="hrow-meta" style="margin:-6px 0 6px">From your ${(allRunsCache || []).length} most recent runs, the same list as History.</div>
+      ${runs.length ? runs.slice(0, 8).map((r) => `
+        <div class="hrow">
+          <span class="case-badge badge-${escapeHtml(statusKey(r.status))}">${escapeHtml(statusText(r.status))}</span>
+          <div class="hrow-main"><div class="hrow-label">${escapeHtml(r.prompt || "(no prompt)")}</div>
+            <div class="hrow-meta">${escapeHtml(r.startedAt ? new Date(r.startedAt).toLocaleString() : "")}</div></div>
+          <div class="hrow-actions">${r.artifactsAvailable === false ? "" : `<a class="dl-btn-inline" href="#/run/${encodeURIComponent(r.runId)}">View</a>`}</div>
+        </div>`).join("") : empty("No recent runs at this address.")}
+    </div>`;
+
+  const summary = projectsUnavailable
+    ? pvPlural(runCount, "recent run")
+    : `${pvPlural(cases, "saved case")} · ${pvPlural(suites.length, "suite")} · ${pvPlural(runCount, "run")}`;
+  body.innerHTML = `
+    ${back}
+    <div data-dash="head">
+      <div style="min-width:0">
+        <div class="eyebrow">PROJECT</div>
+        <h1 class="page-head-title" title="${escapeHtml(p.name)}">${escapeHtml(shortProjectName(p.name))}</h1>
+        <p class="tagline">${escapeHtml(summary)}</p>
+        ${p.baseUrl ? `<div data-dash="mono">${escapeHtml(p.baseUrl)}</div>` : ""}
+      </div>
+      <div data-dash="actions">
+        ${canManage ? `<button type="button" class="dl-btn" data-pv-act="project-edit">Edit</button>` : ""}
+        ${canManage ? `<button type="button" class="dl-btn hrow-del" data-pv-act="project-delete">Delete</button>` : ""}
+        <button type="button" class="run-btn" data-pv-act="new-test">${icon("plus", { size: 14 })} New test here</button>
+      </div>
+    </div>
+    ${pvForm?.mode === "project-edit" ? pvProjectFormHtml() : ""}
+    <div data-dash="row">${suitesCard}${unfiledCard}</div>
+    ${runsCard}`;
+  bindProjectsView(body, p);
+}
+
+/** Wire the Projects screen. Each handler is the sidebar tree's own call, in the same order. */
+function bindProjectsView(body, p) {
+  const redraw = () => drawProjectsView(p ? p.id : null);
+  const focusName = () => body.querySelector('[data-pv="name"]')?.focus();
+  const nameEl = body.querySelector('[data-pv="name"]');
+  const urlInput = body.querySelector('[data-pv="url"]');
+  nameEl?.addEventListener("input", () => { if (pvForm) pvForm.name = nameEl.value; });
+  urlInput?.addEventListener("input", () => { if (pvForm) pvForm.url = urlInput.value; });
+
+  const fail = (err) => { if (pvForm) pvForm.error = err.message; redraw(); focusName(); };
+
+  const actions = {
+    "cancel": () => { pvForm = null; redraw(); },
+    "project-new": () => {
+      if (!canManageProjects()) return;
+      pvForm = { mode: "project-new", name: "", url: "", error: "" };
+      redraw(); focusName();
+    },
+    "project-edit": () => {
+      if (!p || !canManageProjects()) return;
+      pvForm = { mode: "project-edit", id: p.id, name: p.name || "", url: p.baseUrl || "", error: "" };
+      redraw(); focusName();
+    },
+    "project-save": async () => {
+      const name = pvForm.name.trim();
+      if (!name) { pvForm.error = "Give the project a name."; redraw(); focusName(); return; }
+      try {
+        if (pvForm.mode === "project-edit") {
+          // baseUrl is sent even when blank — that is how a URL gets cleared (as in the sidebar).
+          await api(`/api/projects/${encodeURIComponent(pvForm.id)}`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, baseUrl: pvForm.url.trim() }),
+          });
+          pvForm = null;
+          await loadProjects();
+          toast("Project updated.");
+          redraw();
+        } else {
+          const created = await api("/api/projects", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, baseUrl: pvForm.url.trim() }),
+          });
+          pvForm = null;
+          await loadProjects();
+          toast(`Project "${name}" created.`);
+          // Land in the new project, where "+ New suite" is the obvious next step.
+          if (created?.id) navigate("#/projects/" + encodeURIComponent(created.id));
+          else redraw();
+        }
+      } catch (err) { fail(err); }
+    },
+    "project-delete": async () => {
+      if (!p || !canManageProjects()) return;
+      if (!(await confirmProjectDelete(p))) return;
+      try {
+        await api(`/api/projects/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+        expandedProjects.delete(p.id);
+        await loadProjects();
+        toast(`Project "${p.name}" deleted.`);
+        navigate("#/projects");
+      } catch (err) { toast(err.message); }
+    },
+    "suite-new": () => {
+      if (!canAuthorSuites()) return;
+      pvForm = { mode: "suite-new", name: "", error: "" };
+      redraw(); focusName();
+    },
+    "suite-create": async () => {
+      const name = pvForm.name.trim();
+      if (!name) { pvForm.error = "Give the suite a name."; redraw(); focusName(); return; }
+      try {
+        const created = await api("/api/suites", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: p.id, name }),
+        });
+        pvForm = null;
+        expandedProjects.add(p.id);
+        await loadProjects();
+        // Land in the new (empty) suite, as the sidebar does: adding cases is the next step.
+        navigate("#/suite/" + encodeURIComponent(created.id));
+      } catch (err) { fail(err); }
+    },
+    "suite-rename": (btn) => {
+      const s = suitesCache.find((x) => x.id === btn.dataset.id);
+      if (!s || !canAuthorSuites()) return;
+      pvForm = { mode: "suite-rename", id: s.id, name: s.name || "", error: "" };
+      redraw(); focusName();
+    },
+    "suite-rename-save": async () => {
+      const name = pvForm.name.trim();
+      if (!name) { pvForm.error = "Give the suite a name."; redraw(); focusName(); return; }
+      const current = suitesCache.find((x) => x.id === pvForm.id);
+      if (current && name === current.name) { pvForm = null; redraw(); return; }
+      try {
+        await api(`/api/suites/${encodeURIComponent(pvForm.id)}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        pvForm = null;
+        await loadProjects();
+        toast("Suite renamed.");
+        redraw();
+      } catch (err) { fail(err); }
+    },
+    "suite-delete": async (btn) => {
+      const s = suitesCache.find((x) => x.id === btn.dataset.id);
+      if (!s) return;
+      if (!confirm(`Delete the suite "${s.name}"? The cases themselves are kept.`)) return;
+      try {
+        await api(`/api/suites/${encodeURIComponent(s.id)}`, { method: "DELETE" });
+        if (pvForm?.id === s.id) pvForm = null;
+        await loadProjects();
+        toast("Suite deleted — its cases were kept.");
+        redraw();
+      } catch (err) { toast(err.message); }
+    },
+    // The composer, emptied the way New run empties it, with this project's address filled in.
+    "new-test": () => {
+      const nr = document.getElementById("newRunBtn");
+      if (nr && typeof nr.disabled === "boolean" && !nr.disabled) nr.click();
+      if (p?.baseUrl) setUrlFieldValue(p.baseUrl);
+      navigate("#/");
+      refreshComposerState();
+      promptEl.focus();
+    },
+  };
+
+  body.querySelectorAll("[data-pv-act]").forEach((btn) => {
+    btn.addEventListener("click", () => actions[btn.dataset.pvAct]?.(btn));
+  });
+  // Enter saves and Escape cancels, as in the sidebar's forms.
+  for (const el of [nameEl, urlInput]) {
+    el?.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { pvForm = null; redraw(); return; }
+      if (e.key !== "Enter" || !pvForm) return;
+      e.preventDefault();
+      const save = { "project-new": "project-save", "project-edit": "project-save",
+        "suite-new": "suite-create", "suite-rename": "suite-rename-save" }[pvForm.mode];
+      actions[save]?.();
+    });
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Settings screen (#/settings, D-80). Built once, when the top-nav layout turns on.
+//
+// It MOVES the existing controls out of the ☰ menu's Settings popover and header into cards here
+// — appendChild relocates a live node, it does not clone it — so #gateToggle, #healToggle,
+// #clearWalkCacheBtn, #sessionBadge, #signOutBtn and #teamBtn keep their ids, classes and every
+// listener bound earlier in this file. Their .hidden gating (auth, role) is untouched; theme.css
+// shows the Account and Team cards only while the control inside them is not .hidden. Off (no
+// dashboard), this never runs and the popover is exactly as before.
+// -----------------------------------------------------------------------------
+
+function buildSettingsView() {
+  const body = document.getElementById("settingsViewBody");
+  if (!body || body.dataset.built) return;
+  body.dataset.built = "1";
+  body.innerHTML = `
+    <div data-dash="head">
+      <div>
+        <div class="eyebrow">SETTINGS</div>
+        <h1 class="page-head-title">Settings</h1>
+        <p class="tagline">How your runs behave, and your account.</p>
+      </div>
+    </div>
+    <div data-dash="row">
+      <div data-dash="card">
+        <div data-dash="card-head"><span data-dash="ico">${icon("zap", { size: 15 })}</span><h2>Run behaviour</h2></div>
+        <div data-set="run"></div>
+      </div>
+      <div data-dash="card" data-set="account">
+        <div data-dash="card-head"><span data-dash="ico">${icon("key", { size: 15 })}</span><h2>Account</h2></div>
+        <div data-set="account-slot"></div>
+      </div>
+      <div data-dash="card" data-set="team">
+        <div data-dash="card-head"><span data-dash="ico">${icon("list", { size: 15 })}</span><h2>Team</h2></div>
+        <p class="tagline" style="margin:0 0 12px">Members of your organisation and their roles.</p>
+        <div data-set="team-slot"></div>
+      </div>
+    </div>`;
+  const put = (slot, ids) => {
+    const host = body.querySelector(`[data-set="${slot}"]`);
+    for (const id of ids) { const el = document.getElementById(id); if (el && host) host.appendChild(el); }
+  };
+  put("run", ["gateToggle", "healToggle", "clearWalkCacheBtn"]);
+  put("account-slot", ["sessionBadge", "signOutBtn"]);
+  put("team-slot", ["teamBtn"]);
 }
 
 // -----------------------------------------------------------------------------

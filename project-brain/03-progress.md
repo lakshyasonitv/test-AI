@@ -1,5 +1,18 @@
 # Progress — where we are
 
+*Last updated: 2026-11-13. Branch `ui/dashboard`, still NOT committed: the dashboard (D-79, now ON by default) plus
+the top-nav layout (D-80) — one nav row on every page (Dashboard · New test · Projects · History · Settings),
+Projects and Settings as pages, the sidebar and ☰ menu folded away; `DASHBOARD_ENABLED=false` gives the old app.
+Live Azure is still `main` 88a4b27 (no dashboard). The Hostinger zip on the Desktop predates the landing's
+`#/dashboard` links; rebuild it before uploading. Also uncommitted: refine at the case-review gate now confirms
+in the panel (TD-187, fixed); TD-188 (a case that logs in after its first click runs signed out) is diagnosed, open.
+See journal/2026-11-13.md.*
+
+*Last updated: 2026-11-12. Branch `ui/dashboard` = `ui/app-like-landing` (theme.css restyle, pushed for review) +
+origin/main `ed59ee1` + an in-app dashboard at `#/dashboard` behind `DASHBOARD_ENABLED` (D-79, read-only, off by
+default); landing buttons and `/app` now open `#/dashboard` (home when the flag is off). NOT committed. See
+journal/2026-11-12.md.*
+
 *Last updated: 2026-11-06. Branch `redesign/app-ui` (3 commits ahead of main: landing page, top-bar link, theme.css
 re-theme). On top of it, NOT committed: the landing page moved out of the app into `landing/` for Hostinger, linked
 both ways (buttons → Azure app; `LANDING_URL` → "Landing page" link in the app, off when unset), D-76. Uncommitted

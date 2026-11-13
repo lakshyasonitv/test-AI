@@ -6299,3 +6299,46 @@ before. `summariseRun` itself is unchanged (the Phase 3 backfill and the run-sta
 `tests/listRunsRace.test.ts` (a gone folder is skipped, the cap still yields 20, a corrupt run still throws, and no
 error while a second process creates and deletes the folders being read; the three race tests fail without the fix
 with the CI error, `ENOENT ... stat 'runs/…'`).
+
+### TD-187. "Generate another round" (refine at the case-review gate) did nothing in an embedded browser — High / Accidental — **Fixed (2026-11-13)**
+
+**Found** by the user: refine "is not happening". `submitRefine()` asked `window.confirm()` ("N cases you have not
+ticked will be recorded as rejected…") before posting `not_satisfied`. Embedded browsers — the Claude desktop app's
+browser pane, some webviews — never show that dialog and return `false` at once (measured: 1 ms, no dialog), so the
+handler returned with no request and no message. Run 2026-11-13T05-24-54-516Z-24c61a3d shows the trace: one
+`case_round_requested`, then a `done` decision, no `not_satisfied` ever reached the server. In a normal browser the
+dialog appears and refine works, which is why it looked intermittent.
+
+**Fix.** The confirmation is drawn in the panel (`armRefine` / `disarmRefine`, app.js): the first press shows the same
+warning in the panel's notice line and turns the button into "Yes, generate another round" with a Cancel beside it;
+only that second press posts. Editing the note, ticking or unticking a case, Select all / none, closing the box and a
+new round all take the "Yes" back, so a stale count is never confirmed. The request body is unchanged. Verified live
+in the pane on the `?preview=states&scene=caseSelection` scene (no `confirm()` call; Cancel, typing and ticking
+disarm; the second press posts `not_satisfied`). Test: `tests/refineConfirm.test.ts`.
+
+**Not fixed.** Every other `confirm()` in app.js (delete a suite / project / run, leave a case with unsaved steps)
+still cancels itself silently in an embedded browser. That fails safe — nothing is deleted or discarded — but those
+buttons look dead there.
+
+### TD-188. A case that clicks before it signs in runs signed out: its own late login suppresses the login prefix — High / Accidental — **Open**
+
+**Found** in run 2026-11-13T05-24-54-516Z-24c61a3d (learnvibes, "go to the admin panel and try to add the user…
+assign manager to vaibhav parmar"). Discovery signed in fine (its pages show "Admin" and "Vaibhav Parmar · admin").
+The generated case read "Go to /learning. Click 'Admin'. If shown a login screen, log in…", and its IR became
+`s1 navigate /`, `s2 click Admin`, `s3–s5 fill email / fill password / click Sign In`. `irAlreadyLogsIn()` (ir.ts) saw
+the password fill and skipped `buildLoginPrefix()` — "the prefix would log in twice" — but that login comes AFTER the
+first click. In the fresh browser `/` redirects to `/login`, `s2` waits for an "Admin" button that is not there, and
+the run fails (`final-page.txt` and `test-failed-1.png` are the login form). The same site's saved case "Admin creates
+a new user via management interface" (replayed 2026-11-06) signs in FIRST and reaches the Users form, which is why it
+"worked earlier".
+
+**The gap.** `irAlreadyLogsIn()` asks "does the IR fill a password anywhere?" when the question that matters is "is the
+browser signed in before the first step that needs it?". A structural fix: treat the IR as logging itself in only if
+its first credential fill comes before any click / select / non-credential fill; otherwise prepend the recorded login
+and drop the case's own later login block (the same slice `swapInRecordedLogin()` already identifies). Confirm by
+artifact replay of this run's `02-appmodel.json` + case before any live run.
+
+**Workaround.** The user's request did not mention signing in; the case writer added the late login itself. Until
+the fix: at the case-review gate, use "Edit steps" on the case and delete its login lines (with no password fill in
+the case, the recorded login is prepended automatically), or say "sign in first, then open Admin > Users and…" in
+the request.

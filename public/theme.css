@@ -8,7 +8,9 @@
        .hidden, .view-active, .case-card.open, .history-item.active, .tree-* …).
      - Never hide or show anything. Every rule here is paint, radius, shadow, type or
        spacing; no `display` on a view and nothing on .hidden (rule 4: showView() owns
-       which view is visible).
+       which view is visible). One scoped exception: the top-nav layout section (D-80) folds
+       the sidebar and the header menu away, keyed only off body[data-shell="top"], which
+       app.js sets while the dashboard is on.
    Reverting the redesign is one line: delete the <link> to this file in index.html.
 
    Look: soft dotted grey canvas, white rounded cards with soft shadows, frosted-glass
@@ -414,6 +416,241 @@ body::before {
 /* Cards lift a touch on hover, as the landing page's feature cards do. */
 .panel, .cd-card { transition: box-shadow .25s var(--ease); }
 .cd-card:hover { box-shadow: var(--shadow-lg); }
+
+/* ---------- one look on every page ----------
+   The same title, card, card heading, pill, tab strip and button size on every screen, so
+   moving between pages feels like one product. Paint and size only; every selector is a class
+   or id the app already renders. */
+
+/* Page titles: one size and weight everywhere (home, dashboard, history, suite, case, run, compare, team). */
+.page-head h1, .page-head-title, .run-title, .cd-title {
+  font-size: 2rem; font-weight: 700; line-height: 1.12; letter-spacing: -.03em;
+}
+@media (max-width: 600px) {
+  .page-head h1, .page-head-title, .run-title, .cd-title { font-size: 1.6rem; }
+}
+/* Cards: one surface — white, 18px corners, a hairline and the same soft shadow. */
+:root { --tb-card-shadow: 0 1px 2px rgba(17, 24, 39, .04), 0 10px 26px -18px rgba(17, 24, 39, .16); }
+.panel, .cd-card, .cmp-col, .case-card, .stages li, .test-summary, :is(#view-dashboard, #view-projects, #view-settings) [data-dash="card"] {
+  background: #fff; border: 1px solid #ececef; border-radius: 18px; box-shadow: var(--tb-card-shadow);
+}
+.cd-card { padding: 18px 20px; }
+
+/* Card headings: the dashboard's sans heading everywhere, instead of a mix of tiny sans,
+   mono capitals ("ASK FOR A CHANGE") and grey bands. */
+.cd-card-head, .cd-card-label, .panel h2 {
+  font-family: inherit; font-size: .9rem; font-weight: 600; letter-spacing: -.005em;
+  text-transform: none; color: var(--text);
+}
+.cd-card-head, .cd-card-label { margin-bottom: 12px; }
+.cmp-col-head { background: #fff; padding: 14px 18px; }
+.cmp-col-head > :not(.case-badge) { font-family: inherit; font-size: .9rem; font-weight: 600; letter-spacing: 0; color: var(--text); }
+
+/* Pills: the run page's check counts ("6 checks", "5 passed") look like every other status pill. */
+.suite-stat { font-family: inherit; font-size: .72rem; font-weight: 600; letter-spacing: 0; padding: 4px 11px; border-radius: 999px; }
+
+/* Tab strips (Steps / Script / Runs & versions) are as wide as their tabs, not the whole page. */
+.wide > .seg { align-self: flex-start; }
+
+/* The saved case's two message slots (feedback, edit conflict) take no room while they are
+   empty; when the app writes into them they show exactly as before. */
+#caseFeedback:not(:has(*)), #cdConflict:not(:has(*)) { display: none; }
+
+/* Buttons: one height for page-level actions, so a row of them lines up with the blue one. */
+.dl-btn { min-height: 38px; }
+/* A saved case's action row (Save, Duplicate, Compare, Delete, Run case) was `flex: none`, so on
+   a phone it stayed one line wider than the screen and the whole page scrolled sideways (true
+   before this redesign too). On a phone it now takes the full width and wraps. */
+@media (max-width: 600px) {
+  .cd-actions { flex: 1 1 100%; min-width: 0; }
+}
+
+
+/* ---------- dashboard (D-79) ----------
+   Only while #view-dashboard is the active view; every other screen is untouched.
+
+   Projects is a page of its own now (D-80), so the dashboard no longer opens the sidebar. */
+
+/* Dashboard layout. Styled through data-dash attributes on the dashboard's own markup, so no
+   class is added to the app's class vocabulary (rule 3). */
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="head"] { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="actions"] { display: flex; flex-wrap: wrap; gap: 8px; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="actions"] .run-btn { text-decoration: none; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="kpis"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 16px; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="row"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; align-items: stretch; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="row"][data-wide] { grid-template-columns: minmax(0, 1.7fr) minmax(min(100%, 300px), 1fr); }
+@media (max-width: 1000px) { :is(#view-dashboard, #view-projects, #view-settings) [data-dash="row"][data-wide] { grid-template-columns: minmax(0, 1fr); } }
+
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="card"] {
+  background: #fff; border: 1px solid #ececef; border-radius: 18px;
+  box-shadow: var(--tb-card-shadow); padding: 18px 20px; min-width: 0;
+}
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="card-head"] { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="card-head"] h2 { margin: 0; font-size: .9rem; font-weight: 600; flex: 1; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="ico"] {
+  display: inline-grid; place-items: center; width: 30px; height: 30px; flex: none;
+  border-radius: 9px; background: var(--surface-3); color: var(--text-2);
+}
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="big"] { font-size: 2rem; font-weight: 700; letter-spacing: -.03em; line-height: 1.1; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="big-row"] { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="sub"] { margin-top: 6px; font-size: .78rem; color: var(--muted); }
+
+/* legend numbers with a coloured rule on the left, as in the reference */
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="legend"] { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 14px; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="legend"] > div { border-left: 3px solid var(--c); padding-left: 10px; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="legend"] small { display: block; font-size: .74rem; color: var(--muted); }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="legend"] b { font-size: 1.25rem; letter-spacing: -.02em; }
+
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="chart"] { width: 100%; height: auto; display: block; overflow: visible; }
+
+/* tables */
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] { width: 100%; border-collapse: collapse; font-size: .82rem; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] th {
+  text-align: left; font-family: var(--font-mono); font-size: .62rem; font-weight: 600;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
+  padding: 8px 10px; border-bottom: 1px solid var(--line-soft); white-space: nowrap;
+}
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] td { padding: 11px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] tr:last-child td { border-bottom: 0; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] tbody tr { transition: background .15s; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] tbody tr:hover { background: rgba(var(--ink-rgb), .025); }
+/* The name column takes the space that is left and clips a long name with "…", so the status,
+   result, date and action columns always fit inside the card (width:100% + max-width:0 is
+   what lets a table cell shrink below its content). */
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] td[data-dash="grow"] { width: 100%; max-width: 0; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="clip"] { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] td[data-dash="grow"] [data-dash="muted"] { display: block; overflow: hidden; text-overflow: ellipsis; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="muted"] { color: var(--muted); font-size: .76rem; white-space: nowrap; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="bar"] { display: flex; align-items: center; gap: 8px; min-width: 96px; }
+/* the track is the FIRST span only; the "n/m" label beside it is the second */
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="bar"] > span:first-child { flex: 1; min-width: 40px; height: 5px; border-radius: 9px; background: var(--surface-3); overflow: hidden; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="bar"] > span:first-child > i { display: block; height: 100%; width: var(--w); background: var(--accent); border-radius: inherit; }
+:is(#view-dashboard, #view-projects, #view-settings) [data-dash="scroll"] { overflow-x: auto; margin: 0 -10px; }
+@media (max-width: 600px) {
+  :is(#view-dashboard, #view-projects, #view-settings) [data-dash="hide-sm"] { display: none; }
+}
+
+/* ---------- the top-nav layout (D-80) ----------
+   Only while app.js has set body[data-shell="top"], which it does when the dashboard is on.
+   One glass nav row on every page, like the landing page: the brand, then Dashboard · New test ·
+   Projects · History, then the landing link and Settings on the right. The permanent sidebar and
+   its phone ☰ are folded away: everything they offered has a page now (New run is New test, the
+   project tree is Projects, Recent runs is History), and the header ☰ menu's controls were MOVED
+   into the Settings page by app.js. This hides whole regions of the chrome, never a view and
+   never anything through .hidden (rule 4). Flag off, the attribute is never set and none of it
+   applies. */
+body[data-shell="top"] .sidebar,
+body[data-shell="top"] .sidebar-open,
+body[data-shell="top"] .scrim,
+body[data-shell="top"] .topbar-actions .hdr-menu-wrap { display: none; }
+
+body[data-shell="top"] .topbar {
+  width: calc(100% - 32px); max-width: 1180px; margin: 14px auto 0; height: 62px;
+  padding: 0 10px 0 14px; gap: 14px; top: 14px;
+}
+/* The brand: the root crumb, which already leads to the dashboard, drawn as the landing logo.
+   The rest of the trail steps aside; every page names itself in its own heading. */
+body[data-shell="top"] .crumbs { flex: none; }
+body[data-shell="top"] .crumb-sep,
+body[data-shell="top"] .crumb-current { display: none; }
+body[data-shell="top"] .crumb-root {
+  display: inline-flex; align-items: center; gap: 9px; max-width: none;
+  background: none; padding: 4px 2px; font-size: .98rem; font-weight: 700; color: var(--text);
+}
+body[data-shell="top"] .crumb-root::before {
+  content: ""; width: 26px; height: 26px; border-radius: 8px; flex: none;
+  background:
+    radial-gradient(circle, #fff 2.6px, transparent 3px) 7px 7px / 12px 12px,
+    linear-gradient(135deg, #45c8ff, var(--accent));
+}
+
+#appNav { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+#appNav .topbar-btn,
+body[data-shell="top"] #navSettings,
+body[data-shell="top"] #landingLink {
+  border-color: transparent; background: none; height: 38px; padding: 0 14px;
+  font-size: .88rem; font-weight: 500; color: var(--text-2); white-space: nowrap;
+}
+#appNav .topbar-btn:hover,
+body[data-shell="top"] #navSettings:hover,
+body[data-shell="top"] #landingLink:hover { background: rgba(var(--ink-rgb), .05); color: var(--text); transform: none; }
+body[data-shell="top"] #landingLink { border-color: var(--line); background: #fff; color: var(--text); }
+
+/* The link for the page you are on, read straight from showView()'s own .view-active, so no script
+   keeps it in sync. A run belongs to New test (where it was started); a suite or a case to
+   Projects (where they live). */
+body:has(#view-dashboard.view-active) #dashboardLink,
+body:has(#view-home.view-active) #navNew,
+body:has(#view-run.view-active) #navNew,
+body:has(#view-projects.view-active) #navProjects,
+body:has(#view-suite.view-active) #navProjects,
+body:has(#view-case.view-active) #navProjects,
+body:has(#view-compare.view-active) #navProjects,
+body:has(#view-history.view-active) #navHistory,
+body:has(#view-settings.view-active) #navSettings,
+body:has(#view-team.view-active) #navSettings {
+  background: rgba(var(--accent-rgb), .1); color: var(--accent); font-weight: 600;
+}
+
+body[data-shell="top"] .main-inner { max-width: 1212px; padding-top: 36px; }
+
+/* Phone: the brand and the right-hand links on one row, the page links on a second row that
+   scrolls sideways if it has to, so every page stays one tap away. */
+@media (max-width: 760px) {
+  body[data-shell="top"] .topbar {
+    flex-wrap: wrap; height: auto; padding: 8px 8px 6px 10px; row-gap: 4px;
+    width: calc(100% - 16px); margin-top: 8px; top: 8px;
+  }
+  body[data-shell="top"] .crumbs { flex: 1; }
+  #appNav { order: 3; flex: 1 1 100%; overflow-x: auto; scrollbar-width: none; }
+  #appNav::-webkit-scrollbar { display: none; }
+  #appNav .topbar-btn,
+  body[data-shell="top"] #navSettings,
+  body[data-shell="top"] #landingLink { height: 34px; padding: 0 11px; font-size: .84rem; }
+  body[data-shell="top"] .main-inner { padding-top: 22px; }
+}
+
+/* New test, as the landing page's hero: a centred headline over a wide composer. */
+body[data-shell="top"] #view-home .col { max-width: 860px; }
+body[data-shell="top"] #view-home .page-head { text-align: center; align-items: center; padding-top: 18px; }
+body[data-shell="top"] #view-home .page-head h1 { font-size: 3.1rem; }
+body[data-shell="top"] #view-home .page-head .tagline { max-width: 56ch; }
+body[data-shell="top"] #view-home .templates-row { justify-content: center; }
+@media (max-width: 600px) {
+  body[data-shell="top"] #view-home .page-head h1 { font-size: 2.1rem; }
+}
+
+/* Projects: a grid of project cards, each one a link to its page. */
+#view-projects [data-dash="pgrid"] { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+#view-projects [data-dash="pcard"] {
+  display: block; min-width: 0; padding: 20px; color: inherit; text-decoration: none;
+  background: #fff; border: 1px solid #ececef; border-radius: 18px; box-shadow: var(--tb-card-shadow);
+  transition: transform .2s var(--ease), box-shadow .2s var(--ease);
+}
+#view-projects [data-dash="pcard"]:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
+#view-projects [data-dash="pcard"] h2 { margin: 0; font-size: 1.02rem; font-weight: 700; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#view-projects [data-dash="mono"] {
+  font-family: var(--font-mono); font-size: .74rem; color: var(--muted);
+  margin: 4px 0 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#view-projects [data-dash="chips"] { display: flex; flex-wrap: wrap; gap: 6px; }
+#view-projects [data-dash="form"] { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#view-projects [data-dash="form"] .project-form-input { flex: 1 1 220px; min-width: 0; height: 38px; }
+#view-projects [data-dash="card"] .hrow { padding-left: 0; padding-right: 0; }
+#view-projects [data-dash="card"] .hrow:last-child { border-bottom: 0; }
+#view-projects .page-head-title { overflow: hidden; text-overflow: ellipsis; }
+
+/* Settings: the moved controls sit in cards. The Account and Team cards show only while the
+   control inside them is shown — app.js's own auth and role gating, through .hidden, decides. */
+#view-settings [data-dash="row"] { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
+#view-settings .settings-row { width: 100%; padding: 12px 4px; border-radius: 12px; }
+#view-settings .settings-row + .settings-row { border-top: 1px solid var(--line-soft); }
+#view-settings .settings-row-text b { font-size: .88rem; font-weight: 600; }
+#view-settings .settings-row-text span { font-size: .8rem; }
+#view-settings [data-set="account"]:not(:has(#signOutBtn:not(.hidden))),
+#view-settings [data-set="team"]:not(:has(#teamBtn:not(.hidden))) { display: none; }
+#view-settings [data-set="account-slot"] { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+#view-settings .session-badge { font-size: .88rem; }
 
 /* ---------- motion ----------
    A view fades up when it becomes active. This is an animation on the class

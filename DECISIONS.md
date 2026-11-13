@@ -2382,3 +2382,101 @@ then only work on a host that reads `.htaccess`.
 **Not covered.** The app's address appears in two places in `landing/` (`index.html` and `.htaccess`); changing it is a
 search-and-replace there, not a setting. A custom domain for the app (`app.yourdomain.com`) is documented in
 `landing/README.md` but not set up.
+
+## D-79. An in-app dashboard at `#/dashboard`, read-only, ON by default (`DASHBOARD_ENABLED=false` turns it off)
+
+(Numbered past D-78 on purpose: `refactored-code` already uses D-76 to D-78, and a `main` commit message refers
+to a D-77 that has no record here yet. Skipping avoids a third collision.)
+
+**Context.** The user wants one place to start from: the landing page should lead into the app at an overview,
+and from there to a new test, History, saved suites and recent runs, without changing how any of those work.
+
+**Decision.** A new view, `dashboard`, in `VIEWS` and `index.html` (`#view-dashboard`), reached only through
+`applyRoute()` and `showView()` (rule 4) and only while `dashboardOn` is true. `DASHBOARD_ENABLED=true`
+(`src/server/dashboardFlag.ts`) makes `/api/health` carry `dashboard: true`; app.js then routes the hash, adds one
+`.topbar-btn` "Dashboard" link, and points the "Testbench" crumb there. Because the health check answers after the
+first route, a page opened at `#/dashboard` is re-routed once the flag is known. `renderDashboardView()` only reads
+`/api/runs`, `/api/suites` and `/api/projects`, guarded like History (an error body becomes an empty list), and every
+link is a hash the router already handles. It reuses existing classes and puts layout in inline styles (rule 3). The
+landing page's buttons and `/app` redirect now open `#/dashboard`; with the flag off that hash falls through to home,
+so they work either way.
+
+The screen's look follows a SaaS dashboard reference the user chose: KPI cards, a "Runs by day" stacked bar chart, a
+"Results split" donut, and "Recent runs" / "Saved suites" tables, all drawn from that same data (inline SVG, no chart
+library; pass and fail keep the app's green and red). The projects sidebar is tucked away while the dashboard is open
+and comes out with a "Projects" button, which calls the existing `openSidebarDrawer()`; theme.css gives the phone
+drawer's geometry to wide screens only while `#view-dashboard` is active, so the sidebar itself and every other screen
+are unchanged. Dashboard layout is styled through `data-dash` attributes, not new classes.
+
+The three places link both ways, with one button per destination on any screen: landing -> dashboard ("Start
+testing") and landing -> new test ("Run a new test", `#/`); in the app the top bar carries Dashboard · History (the
+current one marked) beside the existing Landing page link; New test is the sidebar's New run everywhere, and the
+dashboard header's New test (where the sidebar is tucked away) clicks that same button. Where the top bar shows
+History, the ☰ menu's History steps aside on wide screens; on a phone it is the other way round.
+
+**On by default — a deliberate exception to platform rule 2.** It first shipped behind `DASHBOARD_ENABLED`, off by
+default. On 2026-11-12 the user asked for it to "work directly", with no setting, so `dashboardEnabled()` is true
+unless the variable is `false`, `0`, `off` or `no`. The rule's purpose is kept another way: off still means exactly the
+old app (no health field, no links, `#/dashboard` -> home), and `tests/dashboard.test.ts` pins that. Opening the bare
+app address (no hash) lands on the dashboard; `#/` is still the new-test screen. `GET /dashboard` (a new route)
+redirects to `/#/dashboard`, or to `/` when off, so the dashboard has a plain address to share.
+
+**Rejected.** A new `/api/dashboard` summary route: everything shown is already returned by existing routes, and a
+new route is more surface to secure and test. Making the dashboard the default `#/`: it would change what every
+existing link and bookmark to `#/` opens, and the composer is still the main action. An `#anchor` link for "Saved
+suites": the router reads any hash as a route, so it would send the user home; it scrolls with a button instead.
+
+**Not covered.** The counts describe only the runs `/api/runs` returns (the most recent ones), and the screen says
+so; it is not an all-time report. There is no project page to link to, so projects appear only by name under their
+suites. Pinned by `tests/dashboard.test.ts`.
+
+*Superseded in part by D-80 (2026-11-13): the sidebar drawer, the dashboard header's own buttons and the
+Dashboard · History top-bar pair are replaced by one nav row, and Projects is now a page.*
+
+## D-80. One top-nav layout with the dashboard: Projects and Settings become pages, the sidebar folds away
+
+**Context.** With the dashboard in, the user still found the app's pages unlike each other and unlike the landing page
+("pages ek-doosre se alag"), and asked for Projects to be its own page rather than the sidebar, and for Settings to be
+reachable as a page too. A prototype of the layout was approved before this was built.
+
+**Decision.** Tied to the dashboard flag, not a new one: when `/api/health` reports `dashboard: true`,
+`enableDashboard()` sets `body[data-shell="top"]`, builds one nav row and the Settings page. theme.css keys every
+layout rule off that attribute, so `DASHBOARD_ENABLED=false` is still exactly the old app (sidebar, ☰ menu, Settings
+popover, `#/projects` and `#/settings` -> home).
+
+- **Nav row**, the same on every page: the brand (the existing root crumb, which already leads to the dashboard),
+  Dashboard · New test · Projects · History, and Landing page · Settings on the right. The current page's link is
+  marked from `showView()`'s own `.view-active` in CSS (a run marks New test; a suite or case marks Projects). "New
+  test" is `startNewTest`, i.e. the sidebar's New run button clicked, so it resets exactly as before. On a phone the
+  page links take a second row that scrolls sideways, so every page stays one tap away without the ☰ menu.
+- **The sidebar and the header ☰ menu fold away** (`display: none` under the attribute). Each thing they offered has
+  a page: New run is New test, the project tree is Projects, Recent runs is History, and the menu's controls are on
+  Settings. The sidebar's code still runs (it is hidden, not removed), which is what keeps New run and the tree's
+  caches working.
+- **Projects** (`#/projects`, `#/projects/<id>`; a case at `#/projects/<id>/cases/<id>` is still routed to the case
+  view first) is the sidebar tree as a page: project cards with case, suite and run counts; a project page with Edit,
+  Delete, + New suite, suites with Open / Rename / Delete, the cases that sit in no suite, and recent runs at its
+  address; and "New test here" (New run, then the project's base URL filled in). Every action is the tree's own call,
+  unchanged: the same routes and bodies, `canManageProjects` / `canAuthorSuites` / `canDeleteSuites`,
+  `confirmProjectDelete()`'s type-the-name gate, the same confirm text and toasts, then `loadProjects()` so both
+  views draw from one cache. No database: the same runs-grouped-by-address fallback, read-only.
+- **Settings** (`#/settings`) **moves** `#gateToggle`, `#healToggle`, `#clearWalkCacheBtn`, `#sessionBadge`,
+  `#signOutBtn` and `#teamBtn` into cards (appendChild relocates the live node, so every id, class and listener is
+  kept). Their `.hidden` gating is untouched; the Account and Team cards show only while the control inside is not
+  `.hidden` (`:has()`), so with auth off they do not appear, as before.
+- **New test** is drawn as the landing page's hero: centred headline over a wider composer.
+- **The dashboard header loses its Projects and New test buttons**: the nav row has both on every page, and the
+  user asked for one button per destination.
+
+No route, request or response changes (rule 1). No class is added to style.css; the pages reuse `.hrow`,
+`.case-badge`, `.dl-btn`, `.run-btn`, `.project-form-input`, `.suite-new-input`, `.suite-new-err`, and lay out
+through `data-dash` attributes (rule 3). Views switch only through `showView()` (rule 4).
+
+**Rejected.** A second flag for the layout: two flags would allow a dashboard inside the old sidebar layout, a
+combination nobody asked for and nothing tests. Cloning the settings controls into the page: two copies of a toggle
+would each need their own state syncing, and the originals' listeners would not follow. Keeping the sidebar beside a
+Projects page: the same tree in two places is the duplicate the user asked to remove.
+
+**Not covered.** The project page's "Recent runs" lists only the newest runs (History's list) whose address matches
+the project, and says so; the card's run count is the server's full figure. Pinned by `tests/dashboard.test.ts`
+(the "D-80" block) and `tests/appJsNewRunBtn.test.ts`.

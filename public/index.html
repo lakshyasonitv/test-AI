@@ -303,6 +303,18 @@
         <section class="view" data-view="compare" id="view-compare"><div class="wide" id="compareViewBody"></div></section>
         <section class="view" data-view="history" id="view-history"><div class="wide" id="historyViewBody"></div></section>
 
+        <!-- ================= DASHBOARD (D-79) =================
+             Overview with links to a new test, History, saved suites and recent runs. Only
+             reachable when the server reports dashboard:true (DASHBOARD_ENABLED); otherwise
+             #/dashboard routes to home and this section never becomes .view-active. Body is
+             rendered by app.js renderDashboardView(). -->
+        <section class="view" data-view="dashboard" id="view-dashboard"><div class="wide" id="dashboardViewBody"></div></section>
+
+        <!-- Projects and Settings as pages (D-80). Reachable only in the dashboard's top-nav
+             layout; with DASHBOARD_ENABLED=false the router never shows them. -->
+        <section class="view" data-view="projects" id="view-projects"><div class="wide" id="projectsViewBody"></div></section>
+        <section class="view" data-view="settings" id="view-settings"><div class="wide" id="settingsViewBody"></div></section>
+
         <!-- ================= TEAM =================
              Members of the current organisation, and (for admin/owner) the controls to add,
              promote and remove them. Body is rendered by app.js from

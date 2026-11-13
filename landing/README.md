@@ -51,11 +51,15 @@ included, into `public_html`. Upload only the four files and the `media` folder 
 
 ## 2. Landing page → app (already done)
 
-Every app button in `index.html` points at:
+Every "Start testing" button in `index.html` points at the app's dashboard (the one "Run a new test" button
+points at the app's new-test screen, the same address ending in `#/`):
 
 ```
-https://testbench.livelysmoke-6ad5557f.koreacentral.azurecontainerapps.io/
+https://testbench.livelysmoke-6ad5557f.koreacentral.azurecontainerapps.io/#/dashboard
 ```
+
+The dashboard appears only when the container has `DASHBOARD_ENABLED=true` (D-79). Without it the
+same link simply opens the app's home screen, so the buttons work either way.
 
 `.htaccess` also sends `https://testbench.space/app` there, which gives you a short address to share.
 If the app's address changes (see step 4), replace that address in `index.html` and `.htaccess`, then
