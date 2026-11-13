@@ -1443,20 +1443,28 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
     // run's second user, SECOND_USER_REF) and opens the record the first user created.
     // A recall is the submitter's own action: no switch to the approver.
     if (approverSignIn && decision !== "Recall") steps.push({ id: "sf-ap-as-approver", action: "navigate", target: { url: approverSignIn } } as Step);
-    steps.push(
-      { id: "sf-ap-open", action: "navigate", target: { url: recordRef(object, n) } } as Step,
-      { id: "sf-ap-related", action: "click", target: { role: "tab", name: "Related" } } as Step,
-      { id: "sf-ap-wait2", action: "wait", value: "1500" } as Step,
-      // The Approval History list keeps Approve / Reject behind its own actions menu (run
-      // 2026-11-12T13-02-29-047Z-33e9cc1b: "Show actions for Approval History", no Approve button on the page).
-      { id: "sf-ap-actions", action: "click", target: { role: "button", name: "Show actions for Approval History" } } as Step,
-      { id: "sf-ap-wait-menu", action: "wait", value: "800" } as Step,
-      { id: "sf-ap-decide", action: "click", target: { role: "menuitem", name: decision } } as Step,
-      { id: "sf-ap-wait3", action: "wait", value: "1500" } as Step,
-      { id: "sf-ap-comment2", action: "fill", target: { role: "textbox", name: "Comments" }, value: `Testbench ${decision.toLowerCase()} test` } as Step,
-      { id: "sf-ap-confirm", action: "click", target: dialog(decision) } as Step,
-      { id: "sf-ap-wait4", action: "wait", value: "2500" } as Step,
-    );
+    // A multi-step approval the request asks to take through ("approve both steps"): one decision per
+    // step of the object's longest process. Each approval opens the next step's request. A rejection
+    // or a recall ends the request at once.
+    const most = Math.max(1, ...approval.filter((a) => a.object === object).map((a) => a.steps?.length ?? 1));
+    const rounds = decision === "Approve" && /\b(both|all|each|every|two|2|three|3)\s+(approval\s+)?steps?\b|\bmulti-?step\b|\btwice\b|\bevery approver\b/i.test(request) ? most : 1;
+    for (let k = 0; k < rounds; k++) {
+      const x = k ? `-${k + 1}` : "";
+      steps.push(
+        { id: `sf-ap-open${x}`, action: "navigate", target: { url: recordRef(object, n) } } as Step,
+        { id: `sf-ap-related${x}`, action: "click", target: { role: "tab", name: "Related" } } as Step,
+        { id: `sf-ap-wait2${x}`, action: "wait", value: "1500" } as Step,
+        // The Approval History list keeps Approve / Reject behind its own actions menu (run
+        // 2026-11-12T13-02-29-047Z-33e9cc1b: "Show actions for Approval History", no Approve button on the page).
+        { id: `sf-ap-actions${x}`, action: "click", target: { role: "button", name: "Show actions for Approval History" } } as Step,
+        { id: `sf-ap-wait-menu${x}`, action: "wait", value: "800" } as Step,
+        { id: `sf-ap-decide${x}`, action: "click", target: { role: "menuitem", name: decision } } as Step,
+        { id: `sf-ap-wait3${x}`, action: "wait", value: "1500" } as Step,
+        { id: `sf-ap-comment2${x}`, action: "fill", target: { role: "textbox", name: "Comments" }, value: `Testbench ${decision.toLowerCase()} test${x ? ` (step ${k + 1})` : ""}` } as Step,
+        { id: `sf-ap-confirm${x}`, action: "click", target: dialog(decision) } as Step,
+        { id: `sf-ap-wait4${x}`, action: "wait", value: "2500" } as Step,
+      );
+    }
   }
   // The field the request names ("its Description shows TB Approved"), on the record after the decision.
   const o = org!.objects.find((x) => x.api === object);

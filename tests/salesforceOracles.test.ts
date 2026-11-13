@@ -141,6 +141,14 @@ describe("approvalChecks", () => {
     expect(out[0]).toMatchObject({ expected: "Pending", ok: true });
     expect(await approvalChecks(vi.fn(), { steps: [click("Save")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] })).toEqual([]);
   });
+  it("checks each record once when its object has two processes, named by the one it went through", async () => {
+    const { approvalChecks } = await import("../src/stages/salesforceOracles.js");
+    const two = [{ label: "Zq Big Deal", object: "Zq_Opp__c" }, { label: "Zq Mega Deal", object: "Zq_Opp__c" }];
+    const out = await approvalChecks(vi.fn(async () => ({ records: [{ Status: "Approved", ProcessDefinition: { Name: "Zq Mega Deal" } }] })),
+      { steps: [click("Submit for Approval"), click("Submit"), click("Approve")] }, two, { Zq_Opp__c: ["a01zq0000000001AAA"] });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ field: "Zq Mega Deal: approval status", ok: true });
+  });
   it("expects Removed after a Recall", async () => {
     const { approvalChecks } = await import("../src/stages/salesforceOracles.js");
     const out = await approvalChecks(vi.fn(async () => ({ records: [{ Status: "Removed" }] })), { steps: [click("Submit for Approval"), click("Submit"), click("Recall"), click("Recall")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] });

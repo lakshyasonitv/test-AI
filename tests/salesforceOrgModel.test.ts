@@ -492,3 +492,11 @@ describe("orgModelForCases: custom links", () => {
     expect(text).toContain("a link sits at the bottom of the Details tab");
   });
 });
+
+describe("orgModelForCases: a multi-step approval", () => {
+  it("lists the steps, decided in turn", () => {
+    const text = orgModelForCases({ objects: [{ api: "Zopp", label: "Zopp", fields: [] }], validationRulesRead: true,
+      approvals: [{ label: "Zq Mega", api: "Zq_Mega", object: "Zopp", steps: ["Zq First", "Zq Final"] }] } as any);
+    expect(text).toContain('"Zq Mega" on Zopp (2 steps: Zq First, Zq Final; each is decided in turn)');
+  });
+});

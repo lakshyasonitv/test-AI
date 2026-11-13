@@ -986,6 +986,16 @@ describe("approvalSteps", () => {
     expect(p.steps.some((s) => s.id === "sf-ap-decide")).toBe(false);
     expect(approvalSteps(ir([nav("/lightning/o/Zopp/new"), click("Save")]), org as any, "create a Zopp")).toEqual([]);
   });
+  it("approves each step of a multi-step process when the request asks for both steps; once otherwise", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const two = { ...org, approvals: [...org.approvals, { label: "Zq Mega", api: "Zq_Mega", object: "Zopp", steps: ["Zq First", "Zq Final"] }] };
+    const m = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(m, two as any, "Create a Zopp, submit it for approval, then approve both steps");
+    expect(m.steps.filter((s) => /^sf-ap-decide/.test(s.id)).map((s) => s.id)).toEqual(["sf-ap-decide", "sf-ap-decide-2"]);
+    const one = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(one, two as any, "Create a Zopp, submit it for approval, then approve it");
+    expect(one.steps.filter((s) => /^sf-ap-decide/.test(s.id))).toHaveLength(1);
+  });
   it("recalls as the submitter: the Recall menu item and dialog button, and no switch to the approver", async () => {
     const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
     const r = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);

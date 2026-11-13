@@ -340,16 +340,20 @@ export async function approvalChecks(
     // A recalled request: ProcessInstance.Status is "Removed" (checked live 2026-11-13).
     else if (/^recall$/i.test(s.target?.name ?? "")) expected = "Removed";
   }
-  for (const a of approvals) {
-    if (!/^\w+$/.test(a.object)) continue;
-    for (const id of created[a.object] ?? []) {
+  // One check per record, whatever number of processes its object has (two on Opportunity since
+  // 2026-11-13): the process the record went through names it.
+  for (const object of new Set(approvals.map((a) => a.object))) {
+    if (!/^\w+$/.test(object)) continue;
+    const fallback = approvals.find((a) => a.object === object)!.label;
+    for (const id of created[object] ?? []) {
       if (!/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
       try {
-        const q = `SELECT Status FROM ProcessInstance WHERE TargetObjectId = '${id}' ORDER BY CreatedDate DESC LIMIT 1`;
-        const status = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0]?.Status;
-        out.push({ object: a.object, id, field: `${a.label}: approval status`, expected, actual: status ?? "not submitted", ok: status === expected });
+        const q = `SELECT Status, ProcessDefinition.Name FROM ProcessInstance WHERE TargetObjectId = '${id}' ORDER BY CreatedDate DESC LIMIT 1`;
+        const rec = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0];
+        const status = rec?.Status;
+        out.push({ object, id, field: `${rec?.ProcessDefinition?.Name ?? fallback}: approval status`, expected, actual: status ?? "not submitted", ok: status === expected });
       } catch (err) {
-        out.push({ object: a.object, id, field: `${a.label}: approval status`, expected, ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
+        out.push({ object, id, field: `${fallback}: approval status`, expected, ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
       }
     }
   }

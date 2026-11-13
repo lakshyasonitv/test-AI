@@ -430,7 +430,8 @@ export const SalesforceOrgModel = z.object({
   userLocale: z.string().optional(),
   /** Active flows (Phase B): what runs, on what, when, and what it visibly does. Absent when unread. */
   /** Phase C (SALESFORCE_APPROVALS_ENABLED): the active approval processes and the object each runs on. */
-  approvals: z.array(z.object({ label: z.string(), api: z.string(), object: z.string() })).optional(),
+  /** `steps`: the process's approval steps in order (ProcessNode), when read. */
+  approvals: z.array(z.object({ label: z.string(), api: z.string(), object: z.string(), steps: z.array(z.string()).optional() })).optional(),
   /** Custom links and buttons (SALESFORCE_CUSTOM_LINKS_ENABLED): the URL ones, with the address each opens.
    *  `url` keeps Salesforce's {!merge} fields; `newWindow` = it opens a new tab. */
   customLinks: z.array(z.object({

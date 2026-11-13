@@ -499,10 +499,16 @@ export function approvalsEnabled(): boolean {
 
 /** The active approval processes (ProcessDefinition, a plain SOQL object): label, API name, object. */
 async function readApprovals(apiGet: ApiGet): Promise<NonNullable<SalesforceOrgModel["approvals"]>> {
-  const q = "SELECT Name, DeveloperName, TableEnumOrId FROM ProcessDefinition WHERE Type = 'Approval' AND State = 'Active' LIMIT 20";
+  const q = "SELECT Id, Name, DeveloperName, TableEnumOrId FROM ProcessDefinition WHERE Type = 'Approval' AND State = 'Active' LIMIT 20";
   const res = await tryGet(apiGet, `/query?q=${encodeURIComponent(q)}`);
+  // Each process's steps (ProcessNode), for a multi-step approval: one decision per step.
+  const nodes = await tryGet(apiGet, `/query?q=${encodeURIComponent("SELECT Name, ProcessDefinitionId FROM ProcessNode LIMIT 200")}`);
+  const stepsOf = (id: unknown) => (nodes?.records ?? []).filter((n: any) => n?.ProcessDefinitionId === id && typeof n?.Name === "string").map((n: any) => String(n.Name));
   return (res?.records ?? []).filter((r: any) => typeof r?.Name === "string" && typeof r?.TableEnumOrId === "string")
-    .map((r: any) => ({ label: String(r.Name), api: String(r.DeveloperName ?? r.Name), object: String(r.TableEnumOrId) }));
+    .map((r: any) => {
+      const steps = stepsOf(r.Id);
+      return { label: String(r.Name), api: String(r.DeveloperName ?? r.Name), object: String(r.TableEnumOrId), ...(steps.length ? { steps } : {}) };
+    });
 }
 
 /**
@@ -708,7 +714,7 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
   if (flowsBlock) body += `\n${flowsBlock}`;
   // Phase C: approval processes, and how Lightning drives one, for a case about an approval.
   if (org.approvals?.length) {
-    body += `\napproval processes (active): ${org.approvals.map((a) => `"${a.label}" on ${a.object}`).join(", ")}.`
+    body += `\napproval processes (active): ${org.approvals.map((a) => `"${a.label}" on ${a.object}${(a.steps?.length ?? 0) > 1 ? ` (${a.steps!.length} steps: ${a.steps!.join(", ")}; each is decided in turn)` : ""}`).join(", ")}.`
       + ` A case about one: create a record that meets its entry criteria (the request's values) and save it; on the record page`
       + ` click "Submit for Approval" (in the header or under "Show more actions"), type a comment, click "Submit"; Salesforce`
       + ` shows "was submitted for approval" and the record is locked. To decide it, open the record's Related tab, the`
