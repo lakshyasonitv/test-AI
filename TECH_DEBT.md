@@ -6320,7 +6320,11 @@ disarm; the second press posts `not_satisfied`). Test: `tests/refineConfirm.test
 still cancels itself silently in an embedded browser. That fails safe — nothing is deleted or discarded — but those
 buttons look dead there.
 
-### TD-188. A case that clicks before it signs in runs signed out: its own late login suppresses the login prefix — High / Accidental — **Fixed (2026-11-13)**
+### TD-188. A case that clicks before it signs in runs signed out: its own late login suppresses the login prefix — High / Accidental — **Open — fix on branch `fix/admin-signin-order`**
+
+> **Status on `main` / `ui/dashboard` (2026-11-13): OPEN.** At the user's request `ui/dashboard` keeps `main's` test-running code
+> byte for byte, so the fix below is NOT on it. It is kept on the local branch `fix/admin-signin-order` (commit dc18514),
+> verified as described, for a separate review.
 
 **Found** in run 2026-11-13T05-24-54-516Z-24c61a3d (learnvibes, "go to the admin panel and try to add the user…
 assign manager to vaibhav parmar"). Discovery signed in fine (its pages show "Admin" and "Vaibhav Parmar · admin").
@@ -6352,7 +6356,11 @@ the fix: at the case-review gate, use "Edit steps" on the case and delete its lo
 the case, the recorded login is prepended automatically), or say "sign in first, then open Admin > Users and…" in
 the request.
 
-### TD-189. The grounding walk did not wait for the recorded login when its submit had no name, so pages behind the login were never captured — High / Accidental — **Fixed (2026-11-13)**
+### TD-189. The grounding walk did not wait for the recorded login when its submit had no name, so pages behind the login were never captured — High / Accidental — **Open — fix on branch `fix/admin-signin-order`**
+
+> **Status on `main` / `ui/dashboard` (2026-11-13): OPEN.** At the user's request `ui/dashboard` keeps `main's` test-running code
+> byte for byte, so the fix below is NOT on it. It is kept on the local branch `fix/admin-signin-order` (commit dc18514),
+> verified as described, for a separate review.
 
 **Found** in run 2026-11-13T06-48-25-868Z-a3842ef7 (learnvibes, the re-run of TD-188's case, with TD-188 fixed). Every
 case now signed in first, and the executed spec reached `/admin` (`final-page.txt` shows "Users", "Add New"), but both

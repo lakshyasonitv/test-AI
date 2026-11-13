@@ -1,5 +1,7 @@
 # Progress — where we are
 
+*Last updated: 2026-11-13, latest. `ui/dashboard` (pushed) = origin/main 510697d backend byte for byte + the new frontend (dashboard D-79, top-nav layout D-80, in-panel refine TD-187) + GET /dashboard and the health `dashboard` field. The admin-run fixes (TD-188/189) are on local branch fix/admin-signin-order only. See journal/2026-11-13.md.*
+
 *Last updated: 2026-11-13. Branch `ui/dashboard`, still NOT committed: the dashboard (D-79, now ON by default) plus
 the top-nav layout (D-80) — one nav row on every page (Dashboard · New test · Projects · History · Settings),
 Projects and Settings as pages, the sidebar and ☰ menu folded away; `DASHBOARD_ENABLED=false` gives the old app.

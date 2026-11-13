@@ -308,28 +308,6 @@ describe("TD-146 a missing role+name is answered with the closest real elements"
     expect(s).toContain("rather than borrowing one from another page");
   });
 
-  it("run 2026-11-13T07-11-28: a plural is the same word, so a page captured later is still offered", () => {
-    // Ten earlier buttons scored 0 for "User Management" ("users" != "user") and filled the list.
-    const dash = Array.from({ length: 10 }, (_, i) => ({ role: "button", name: `Nav ${i}`, visible: true }));
-    const s = similarElementsHint([
-      { url: "https://learnvibes.example/dashboard", elements: dash as any },
-      { url: "https://learnvibes.example/admin", elements: [
-        { role: "button", name: "Users", visible: true }, { role: "button", name: "Add New", visible: true },
-      ] as any },
-    ], "button", "user management");
-    expect(s).toContain('button "Users" on /admin');
-    expect(s.indexOf('"Users"')).toBeLessThan(s.indexOf('"Nav 0"'));
-    const add = similarElementsHint([{ url: "https://learnvibes.example/admin", elements: [
-      { role: "button", name: "Learning Paths", visible: true }, { role: "button", name: "Add New", visible: true },
-    ] as any }], "button", "add user");
-    expect(add.indexOf('"Add New"')).toBeLessThan(add.indexOf('"Learning Paths"'));
-    // "class" is not a plural of "clas": a double s is left alone.
-    const cls = similarElementsHint([{ url: "https://x.example/", elements: [
-      { role: "button", name: "Other", visible: true }, { role: "button", name: "Class", visible: true },
-    ] as any }], "button", "class list");
-    expect(cls.indexOf('"Class"')).toBeLessThan(cls.indexOf('"Other"'));
-  });
-
   it("nothing of a compatible role: no hint", () => {
     expect(similarElementsHint([{ url: "https://x.example.com/", elements: [{ role: "heading", name: "Hi", visible: true }] as any }], "button", "go")).toBe("");
   });
