@@ -457,6 +457,7 @@ export async function readSalesforceOrgModel(
   const flows = await readFlows(apiGet, request);
   // Phase C (SALESFORCE_APPROVALS_ENABLED, default off): the active approval processes, by object.
   const approvals = approvalsEnabled() ? await readApprovals(apiGet) : undefined;
+  const customLinks = customLinksEnabled() ? await readCustomLinks(apiGet, objects.map((o) => o.api)) : undefined;
   if (deepDiscoveryEnabled()) {
     const deep = await readDeepFacts(apiGet, { objects, validationRulesRead: rules !== null }, request).catch(() => null);
     if (deep) console.log(`[org model] deep read: ${deep.objects} object(s), ${deep.calls} API call(s), ${(deep.ms / 1000).toFixed(1)} s`);
@@ -468,7 +469,27 @@ export async function readSalesforceOrgModel(
     ...(userLocale ? { userLocale } : {}),
     ...(flows?.length ? { flows } : {}),
     ...(approvals?.length ? { approvals } : {}),
+    ...(customLinks?.length ? { customLinks } : {}),
   };
+}
+
+/** Custom links and buttons in the org model. Off unless asked for. */
+export function customLinksEnabled(): boolean {
+  return process.env.SALESFORCE_CUSTOM_LINKS_ENABLED === "true";
+}
+
+/** The org's own URL custom links and buttons (Tooling WebLink, no managed packages) on the modelled
+ *  objects. JavaScript and Visualforce ones are left out: their address is not in the setup. */
+async function readCustomLinks(apiGet: ApiGet, objects: string[]): Promise<NonNullable<SalesforceOrgModel["customLinks"]>> {
+  const q = "SELECT Name, EntityDefinition.QualifiedApiName, Metadata FROM WebLink WHERE NamespacePrefix = null LIMIT 50";
+  const res = await tryGet(apiGet, `/tooling/query?q=${encodeURIComponent(q)}`);
+  return (res?.records ?? []).flatMap((r: any) => {
+    const m = r?.Metadata, object = r?.EntityDefinition?.QualifiedApiName;
+    if (!m || m.linkType !== "url" || typeof m.url !== "string" || !objects.includes(object)) return [];
+    const kind = m.displayType === "link" ? "link" : m.displayType === "button" ? "button" : null;
+    if (!kind) return [];   // "massActionButton": a list view's, not a record's
+    return [{ object, label: String(m.masterLabel ?? r.Name), url: m.url.trim(), kind, newWindow: m.openType === "newWindow" }];
+  });
 }
 
 /** Phase C: approvals in the org model and the API checks of them. Off unless asked for. */
@@ -478,10 +499,16 @@ export function approvalsEnabled(): boolean {
 
 /** The active approval processes (ProcessDefinition, a plain SOQL object): label, API name, object. */
 async function readApprovals(apiGet: ApiGet): Promise<NonNullable<SalesforceOrgModel["approvals"]>> {
-  const q = "SELECT Name, DeveloperName, TableEnumOrId FROM ProcessDefinition WHERE Type = 'Approval' AND State = 'Active' LIMIT 20";
+  const q = "SELECT Id, Name, DeveloperName, TableEnumOrId FROM ProcessDefinition WHERE Type = 'Approval' AND State = 'Active' LIMIT 20";
   const res = await tryGet(apiGet, `/query?q=${encodeURIComponent(q)}`);
+  // Each process's steps (ProcessNode), for a multi-step approval: one decision per step.
+  const nodes = await tryGet(apiGet, `/query?q=${encodeURIComponent("SELECT Name, ProcessDefinitionId FROM ProcessNode LIMIT 200")}`);
+  const stepsOf = (id: unknown) => (nodes?.records ?? []).filter((n: any) => n?.ProcessDefinitionId === id && typeof n?.Name === "string").map((n: any) => String(n.Name));
   return (res?.records ?? []).filter((r: any) => typeof r?.Name === "string" && typeof r?.TableEnumOrId === "string")
-    .map((r: any) => ({ label: String(r.Name), api: String(r.DeveloperName ?? r.Name), object: String(r.TableEnumOrId) }));
+    .map((r: any) => {
+      const steps = stepsOf(r.Id);
+      return { label: String(r.Name), api: String(r.DeveloperName ?? r.Name), object: String(r.TableEnumOrId), ...(steps.length ? { steps } : {}) };
+    });
 }
 
 /**
@@ -687,12 +714,17 @@ export function orgModelForCases(org: SalesforceOrgModel | undefined, maxChars =
   if (flowsBlock) body += `\n${flowsBlock}`;
   // Phase C: approval processes, and how Lightning drives one, for a case about an approval.
   if (org.approvals?.length) {
-    body += `\napproval processes (active): ${org.approvals.map((a) => `"${a.label}" on ${a.object}`).join(", ")}.`
+    body += `\napproval processes (active): ${org.approvals.map((a) => `"${a.label}" on ${a.object}${(a.steps?.length ?? 0) > 1 ? ` (${a.steps!.length} steps: ${a.steps!.join(", ")}; each is decided in turn)` : ""}`).join(", ")}.`
       + ` A case about one: create a record that meets its entry criteria (the request's values) and save it; on the record page`
       + ` click "Submit for Approval" (in the header or under "Show more actions"), type a comment, click "Submit"; Salesforce`
       + ` shows "was submitted for approval" and the record is locked. To decide it, open the record's Related tab, the`
       + ` "Approval History" list, click "Approve" or "Reject", type a comment, and click the dialog's "Approve" or "Reject".`
       + ` Then check what the approval changes on the record (its final field update) on the Details tab.`;
+  }
+  if (org.customLinks?.length) {
+    body += `\ncustom links and buttons (on a record page; a link sits at the bottom of the Details tab, a button in the header or under "Show more actions"): `
+      + org.customLinks.map((l) => `${l.object} ${l.kind} "${l.label}" opens ${l.url}${l.newWindow ? " in a new tab" : ""}`).join("; ")
+      + `. The {!…} parts are filled from the record's own fields. A case about one: create the record with those fields set, save, open the record, and check where the ${org.customLinks.some((l) => l.kind === "link") ? "link" : "button"} goes.`;
   }
   // Phase D: records made through the API before the test, for a case about an "existing" one.
   if (org.seeded?.length) body += `\nrecords Testbench ALREADY CREATED for this test, through the API (use them as the "existing" record the request means; pick them in a lookup by this exact name; never create them again): ${org.seeded.map((r) => `${r.label} "${r.name}"`).join(", ")}`;

@@ -141,6 +141,19 @@ describe("approvalChecks", () => {
     expect(out[0]).toMatchObject({ expected: "Pending", ok: true });
     expect(await approvalChecks(vi.fn(), { steps: [click("Save")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] })).toEqual([]);
   });
+  it("checks each record once when its object has two processes, named by the one it went through", async () => {
+    const { approvalChecks } = await import("../src/stages/salesforceOracles.js");
+    const two = [{ label: "Zq Big Deal", object: "Zq_Opp__c" }, { label: "Zq Mega Deal", object: "Zq_Opp__c" }];
+    const out = await approvalChecks(vi.fn(async () => ({ records: [{ Status: "Approved", ProcessDefinition: { Name: "Zq Mega Deal" } }] })),
+      { steps: [click("Submit for Approval"), click("Submit"), click("Approve")] }, two, { Zq_Opp__c: ["a01zq0000000001AAA"] });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ field: "Zq Mega Deal: approval status", ok: true });
+  });
+  it("expects Removed after a Recall", async () => {
+    const { approvalChecks } = await import("../src/stages/salesforceOracles.js");
+    const out = await approvalChecks(vi.fn(async () => ({ records: [{ Status: "Removed" }] })), { steps: [click("Submit for Approval"), click("Submit"), click("Recall"), click("Recall")] }, approvals, { Zq_Opp__c: ["a01zq0000000001AAA"] });
+    expect(out[0]).toMatchObject({ expected: "Removed", actual: "Removed", ok: true });
+  });
 });
 
 describe("calculatedChecks with a shown value", () => {
@@ -150,5 +163,25 @@ describe("calculatedChecks with a shown value", () => {
     const read = { id: "sf-calc-a", action: "assert", target: { field: "Zq Exp" }, assertion: "visible" } as Step;
     expect(calculatedChecks({ steps: [nav("/lightning/o/Zq_Acct__c/new"), save, read] }, withCalc as any, { "Zq Exp": "$20,000.00" }))
       .toEqual([{ object: "Zq_Acct__c", n: 1, values: [{ label: "Zq Exp", api: "Zq_Exp__c", type: "Currency", value: "$20,000.00" }] }]);
+  });
+});
+
+describe("leadConvertChecks", () => {
+  const click = (name: string) => ({ id: name, action: "click", target: { role: "button", name } } as Step);
+  const lead = { Lead: ["00Qzq0000000001AAA"] };
+  it("checks the conversion and what it made: Account by Company, Contact by Last Name, an Opportunity", async () => {
+    const { leadConvertChecks } = await import("../src/stages/salesforceOracles.js");
+    const apiGet = vi.fn(async () => ({ records: [{ IsConverted: true, Company: "Zq Co", LastName: "Zq Okafor",
+      ConvertedAccount: { Name: "Zq Co" }, ConvertedContact: { LastName: "Zq Okafor" }, ConvertedOpportunityId: "006zq0000000001AAA" }] }));
+    const out = await leadConvertChecks(apiGet, { steps: [click("Convert"), click("Convert")] }, lead);
+    expect(out.map((c) => [c.field, c.ok])).toEqual([["converted", true], ["converted Account name", true], ["converted Contact last name", true], ["converted Opportunity", true]]);
+  });
+  it("fails a missing Account, and expects no Opportunity when the case ticked Don't create one", async () => {
+    const { leadConvertChecks } = await import("../src/stages/salesforceOracles.js");
+    const apiGet = vi.fn(async () => ({ records: [{ IsConverted: true, Company: "Zq Co", LastName: "Zq L", ConvertedAccount: null, ConvertedContact: { LastName: "Zq L" }, ConvertedOpportunityId: null }] }));
+    const noOpp = { id: "n", action: "check", target: { role: "checkbox", name: "Don't create an opportunity upon conversion" } } as Step;
+    const out = await leadConvertChecks(apiGet, { steps: [click("Convert"), noOpp, click("Convert")] }, lead);
+    expect(out.find((c) => c.field === "converted Account name")?.ok).toBe(false);
+    expect(out.find((c) => c.field === "converted Opportunity")).toMatchObject({ expected: "none", ok: true });
   });
 });

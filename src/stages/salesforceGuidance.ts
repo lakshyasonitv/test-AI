@@ -678,6 +678,16 @@ const FORM_CONTROL = /^(textbox|combobox|spinbutton|checkbox|searchbox|listbox|r
 const isShownValue = (text: string) => shownNumber(text) !== null || /^(?:\d{1,4}([./-])\d{1,2}\1\d{1,4}\b|\{\{date:)/.test(text.trim());
 /** The field's label (or words of it) written as its value: a check that the label shows, not a value. */
 const namesLabel = (value: string, label: string) => ` ${lineKey(label)} `.includes(` ${lineKey(value)} `);
+/** The one field label the request gives this value ("Expected Revenue is $100.00"), or undefined. */
+function valueNamedField(request: string, labels: Iterable<string>, value: string): string | undefined {
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const hits = [...new Set(labels)].filter((l) => l && new RegExp(
+    `\\b${esc(l)}\\s+(?:is|shows|equals|reads|=|should be|of)\\s+["'“]?${esc(value.trim())}(?![\\p{N}])`, "iu").test(request));
+  // The longest wins when one label holds another ("Revenue" inside "Expected Revenue").
+  const longest = hits.sort((a, b) => b.length - a.length)[0];
+  return longest && hits.every((h) => h === longest || longest.toLowerCase().includes(h.toLowerCase())) ? longest : undefined;
+}
+
 /** The request names this label as whole words ("verify the SLA field" names "SLA"). */
 const mentionsWord = (request: string, label: string) => !!lineKey(label) && ` ${lineKey(request)} `.includes(` ${lineKey(label)} `);
 
@@ -805,7 +815,9 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
     // On Details, a visible check of text that is no field of the record (a related record's name, run
     // 2026-11-10T05-56-59-108Z-b85b16e9: the Case "TB Onboarding" on the Account) is on the Related tab.
     // A "contains" check on that text reads the same (run 2026-11-10T15-46-12-893Z-4e645505: "TB Onboarding" text_contains).
-    if (onDetails && (s.assertion === "visible" || valueCheck) && text && !s.target?.role && !s.target?.field
+    // customLinkSteps' own check of the link's text is on Details by design (run
+    // 2026-11-13T07-54-34-011Z-9a55e65c was sent to Related, where there is none).
+    if (onDetails && !s.id.startsWith("sf-cl-") && (s.assertion === "visible" || valueCheck) && text && !s.target?.role && !s.target?.field
       && !fieldLabels.has(text) && !fields.some((f) => f.picklist?.includes(text)) && !isShownValue(text)
       && !/\bwas (created|saved|deleted)\b/.test(text)
       // A value the case typed or picked (a lookup's record name) is that field's value, on Details (run
@@ -843,6 +855,14 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       steps[i] = { ...s, target: { field: after }, assertion: "text_contains", value: text };
       notes.push(`"${text}" checked right after the "${after}" label -> checks the "${after}" field shows it`);
       continue;
+    } else if (!s.target?.role && text && isShownValue(valueCheck ? s.value! : text)
+      && valueNamedField(`${request}\n${caseText}`, fieldLabels, valueCheck ? s.value! : text)) {
+      // A bare number the request gives a field ("verify Expected Revenue is $100.00"): getByText("$100.00")
+      // could be any field's (run 2026-11-13T07-31-06-677Z-c4484063), so it is read inside that field.
+      const v = valueCheck ? s.value! : text;
+      const label = valueNamedField(`${request}\n${caseText}`, fieldLabels, v)!;
+      steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
+      notes.push(`the request says "${label}" is "${v}" -> checks that field shows it`);
     } else if (s.target?.field && !text) {
       // Already a field check (added by requestedFieldChecks): it still reads on the Details tab.
     } else if (!s.target?.role && text && pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), `${request}
@@ -937,7 +957,9 @@ export function inventedRecordLinks(ir: IRSteps): string[] {
 export function requestedTextChecks(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects"> | undefined, request: string): string[] {
   const checkPart = request.slice(requestedActions(request).length);
   if (!checkPart.trim()) return [];
-  const names = new Set((org?.objects ?? []).flatMap((o) => [o.label, o.labelPlural ?? "", ...o.fields.map((f) => f.label)]).map(lineKey));
+  // Calculated fields too: "Expected Revenue" is a field, not a missing value (run
+  // 2026-11-13T07-31-06-677Z-c4484063 checked its label as text before the record existed).
+  const names = new Set((org?.objects ?? []).flatMap((o) => [o.label, o.labelPlural ?? "", ...o.fields.map((f) => f.label), ...(o.calculated ?? []).map((f) => f.label)]).map(lineKey));
   const seen = lineKey(ir.steps.map((s) => [s.value, s.target?.text, s.target?.name, s.target?.field].filter(Boolean).join(" ")).join(" "));
   const missing = requestValues(checkPart).filter((v) => v.trim().split(/\s+/).length >= 2 && !/['’]s\b/.test(v)
     && !names.has(lineKey(v)) && !seen.includes(lineKey(v)));
@@ -946,6 +968,9 @@ export function requestedTextChecks(ir: IRSteps, org: Pick<SalesforceOrgModel, "
   for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "assert" && ir.steps[i].target?.field) at = i + 1;
   for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) at = i + 1;
   if (at < 0) return [];
+  // Never ahead of the Save's own confirmation: the record page is not there yet.
+  while (at < ir.steps.length && (ir.steps[at].action === "wait"
+    || (ir.steps[at].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[at].target?.text ?? "")))) at++;
   ir.steps.splice(at, 0, ...missing.map((v) => ({ id: `sf-req-${v}`.replace(/\W+/g, "-").slice(0, 60), action: "assert", target: { text: v }, assertion: "visible" } as Step)));
   return missing.map((v) => `the request verifies "${v}" and no step checked it -> added`);
 }
@@ -1271,6 +1296,83 @@ export function calculatedFieldReads(ir: IRSteps, org: Pick<SalesforceOrgModel, 
 }
 
 /**
+ * A custom link the request names ("…then check its Delivery Status link opens the FedEx tracking page"),
+ * on a record the case saved: the record is opened again, its Details tab (where the "Custom Links"
+ * section is), and the link is checked by the address it opens. That address is the link's URL with its
+ * {!merge} fields filled from what the case typed; past the first one the case did not type, only the
+ * part before it is checked. The case's own steps on the link after the Save (a click that opens a new
+ * tab, a check of an address) are replaced. A custom button is checked the same way, from the record header.
+ */
+export function customLinkSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "customLinks"> | undefined, request: string): string[] {
+  const named = (org?.customLinks ?? []).filter((l) => ` ${lineKey(request)} `.includes(` ${lineKey(l.label)} `));
+  // "TB Delivery Status" names that link, not also the "Delivery Status" inside its words.
+  const asked = named.filter((l) => !named.some((m) => m !== l && m.object === l.object && lineKey(m.label).length > lineKey(l.label).length
+    && ` ${lineKey(m.label)} `.includes(` ${lineKey(l.label)} `)));
+  if (!asked.length) return [];
+  // The records the case saved, by object, in order (recordRef numbers them the same way).
+  let form: string | null = null;
+  const saves: { object: string; at: number; n: number }[] = [];
+  ir.steps.forEach((s, i) => {
+    if (s.action === "navigate") { form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; return; }
+    if (s.action === "click" && isSave(s) && form) {
+      saves.push({ object: form, at: i, n: saves.filter((x) => x.object === form).length + 1 });
+      form = null;
+    }
+  });
+  const notes: string[] = [];
+  for (const link of asked) {
+    const saved = saves.filter((x) => x.object === link.object).at(-1);
+    if (!saved) continue;
+    const o = org!.objects.find((x) => x.api === link.object);
+    // What the case typed, by field label, before that Save.
+    const typed = new Map<string, string>();
+    for (const s of ir.steps.slice(0, saved.at)) {
+      const label = s.target?.field ?? s.target?.name;
+      if ((s.action === "fill" || s.action === "select") && label && typeof s.value === "string") typed.set(lineKey(label), s.value);
+    }
+    let expected = "";
+    let rest = link.url;
+    for (let m = /\{!\s*([^}]+?)\s*\}/.exec(rest); m; m = /\{!\s*([^}]+?)\s*\}/.exec(rest)) {
+      // {!Opportunity_Tracking_Number} or {!Opportunity.TrackingNumber__c}: the field after the object.
+      const name = m[1].replace(new RegExp(`^(${link.object}|${(o?.label ?? link.object).replace(/\W+/g, "_")})[._]`, "i"), "");
+      const f = o?.fields.find((x) => x.api.toLowerCase() === name.toLowerCase() || lineKey(x.label) === lineKey(name.replace(/_/g, " ")));
+      const value = f ? typed.get(lineKey(f.label)) : undefined;
+      if (value === undefined || hasRunToken(value)) { expected += rest.slice(0, m.index); rest = ""; break; }
+      expected += rest.slice(0, m.index) + encodeURIComponent(value);
+      rest = rest.slice(m.index + m[0].length);
+    }
+    expected += rest;
+    // The record's own Name merge ({!Account_Name}) is cut above unless typed; an address cut to nothing
+    // proves nothing.
+    if (!/^(https?:\/\/[^/?#]+|\/[^?#]+)/.test(expected)) continue;
+    // The case's own steps on this link, or on an opened address, after the Save.
+    const before = ir.steps.length;
+    ir.steps = ir.steps.filter((s, i) => i <= saved.at || !(
+      (s.target?.name && lineKey(s.target.name) === lineKey(link.label))
+      || (s.target?.text && lineKey(s.target.text) === lineKey(link.label))
+      || (s.action === "assert" && s.assertion === "url_contains")));
+    const added: Step[] = link.kind === "link" ? [
+      { id: `sf-cl-open-${notes.length}`, action: "navigate", target: { url: recordRef(link.object, saved.n) } } as Step,
+      { id: `sf-cl-details-${notes.length}`, action: "click", target: { role: "tab", name: "Details" } } as Step,
+      { id: `sf-cl-wait-${notes.length}`, action: "wait", value: "1500" } as Step,
+      // The link's own text, which scrolls it into view: Lightning draws the section without its "Custom
+      // Links" heading (run 2026-11-13T08-00-06-682Z-51e74c8b: "Delivery Status" shown, no heading).
+      { id: `sf-cl-shown-${notes.length}`, action: "assert", target: { text: link.label }, assertion: "visible" } as Step,
+      { id: `sf-cl-check-${notes.length}`, action: "assert", target: { role: "link", name: link.label }, assertion: "opens_url_contains", value: expected } as Step,
+    ] : [
+      // A button is in the record's header, or under its "Show more actions" menu (the spec looks there
+      // when the header has no such button).
+      { id: `sf-cl-open-${notes.length}`, action: "navigate", target: { url: recordRef(link.object, saved.n) } } as Step,
+      { id: `sf-cl-wait-${notes.length}`, action: "wait", value: "2000" } as Step,
+      { id: `sf-cl-check-${notes.length}`, action: "assert", target: { role: "button", name: link.label }, assertion: "opens_url_contains", value: expected } as Step,
+    ];
+    ir.steps.push(...added);
+    notes.push(`the ${o?.label ?? link.object}'s custom ${link.kind} "${link.label}" -> checks it opens "${expected}"${before > ir.steps.length - added.length ? ` (replacing ${before - (ir.steps.length - added.length)} step(s) of the case's)` : ""}`);
+  }
+  return notes;
+}
+
+/**
  * Phase C, an approval done the way Lightning does it, when the request asks for one ("submit it for
  * approval, then approve it and verify its Description shows TB Approved") on an object with an approval
  * process: the case writer left the approval steps out in runs 2026-11-12T09-57-07-371Z-96fab553 and
@@ -1297,8 +1399,13 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   });
   if (!saved) return [];
   const { object, n } = saved as { object: string; at: number; n: number };
-  const decision = /\breject\w*\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Reject"
-    : /\bapprov(e|es|ed|ing)\b/i.test(request.replace(/\bsubmit\w*\b[^.]*\bapproval\b/i, "")) ? "Approve" : null;
+  // Lazy: "submit it for approval, then recall the approval request" keeps "then recall …".
+  const after = request.replace(/\bsubmit\w*\b[^.]*?\bapproval\b/i, "");
+  // Recall: the submitter pulls the request back (same Approval History menu, a "Recall Approval Request"
+  // dialog; checked live 2026-11-13, the API then says Removed).
+  const decision = /\b(recall\w*|withdr[ae]w\w*)\b/i.test(after) ? "Recall"
+    : /\breject\w*\b/i.test(after) ? "Reject"
+    : /\bapprov(e|es|ed|ing)\b/i.test(after) ? "Approve" : null;
   const dialog = (name: string) => ({ role: "button", name, css: `role=dialog >> role=button[name="${name}"s]` });
   // The case's own submission (runs 2026-11-12T13-02-29-047Z-33e9cc1b and -13-03-30-475Z-d74a26c5 submitted
   // correctly, then wandered: an "Approval History(0)" link, a task's menu, never the approver) is kept up
@@ -1334,21 +1441,30 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   if (decision) {
     // Phase C, two users: the approver decides. The same browser signs in as them (approverSignIn is the
     // run's second user, SECOND_USER_REF) and opens the record the first user created.
-    if (approverSignIn) steps.push({ id: "sf-ap-as-approver", action: "navigate", target: { url: approverSignIn } } as Step);
-    steps.push(
-      { id: "sf-ap-open", action: "navigate", target: { url: recordRef(object, n) } } as Step,
-      { id: "sf-ap-related", action: "click", target: { role: "tab", name: "Related" } } as Step,
-      { id: "sf-ap-wait2", action: "wait", value: "1500" } as Step,
-      // The Approval History list keeps Approve / Reject behind its own actions menu (run
-      // 2026-11-12T13-02-29-047Z-33e9cc1b: "Show actions for Approval History", no Approve button on the page).
-      { id: "sf-ap-actions", action: "click", target: { role: "button", name: "Show actions for Approval History" } } as Step,
-      { id: "sf-ap-wait-menu", action: "wait", value: "800" } as Step,
-      { id: "sf-ap-decide", action: "click", target: { role: "menuitem", name: decision } } as Step,
-      { id: "sf-ap-wait3", action: "wait", value: "1500" } as Step,
-      { id: "sf-ap-comment2", action: "fill", target: { role: "textbox", name: "Comments" }, value: `Testbench ${decision.toLowerCase()} test` } as Step,
-      { id: "sf-ap-confirm", action: "click", target: dialog(decision) } as Step,
-      { id: "sf-ap-wait4", action: "wait", value: "2500" } as Step,
-    );
+    // A recall is the submitter's own action: no switch to the approver.
+    if (approverSignIn && decision !== "Recall") steps.push({ id: "sf-ap-as-approver", action: "navigate", target: { url: approverSignIn } } as Step);
+    // A multi-step approval the request asks to take through ("approve both steps"): one decision per
+    // step of the object's longest process. Each approval opens the next step's request. A rejection
+    // or a recall ends the request at once.
+    const most = Math.max(1, ...approval.filter((a) => a.object === object).map((a) => a.steps?.length ?? 1));
+    const rounds = decision === "Approve" && /\b(both|all|each|every|two|2|three|3)\s+(approval\s+)?steps?\b|\bmulti-?step\b|\btwice\b|\bevery approver\b/i.test(request) ? most : 1;
+    for (let k = 0; k < rounds; k++) {
+      const x = k ? `-${k + 1}` : "";
+      steps.push(
+        { id: `sf-ap-open${x}`, action: "navigate", target: { url: recordRef(object, n) } } as Step,
+        { id: `sf-ap-related${x}`, action: "click", target: { role: "tab", name: "Related" } } as Step,
+        { id: `sf-ap-wait2${x}`, action: "wait", value: "1500" } as Step,
+        // The Approval History list keeps Approve / Reject behind its own actions menu (run
+        // 2026-11-12T13-02-29-047Z-33e9cc1b: "Show actions for Approval History", no Approve button on the page).
+        { id: `sf-ap-actions${x}`, action: "click", target: { role: "button", name: "Show actions for Approval History" } } as Step,
+        { id: `sf-ap-wait-menu${x}`, action: "wait", value: "800" } as Step,
+        { id: `sf-ap-decide${x}`, action: "click", target: { role: "menuitem", name: decision } } as Step,
+        { id: `sf-ap-wait3${x}`, action: "wait", value: "1500" } as Step,
+        { id: `sf-ap-comment2${x}`, action: "fill", target: { role: "textbox", name: "Comments" }, value: `Testbench ${decision.toLowerCase()} test${x ? ` (step ${k + 1})` : ""}` } as Step,
+        { id: `sf-ap-confirm${x}`, action: "click", target: dialog(decision) } as Step,
+        { id: `sf-ap-wait4${x}`, action: "wait", value: "2500" } as Step,
+      );
+    }
   }
   // The field the request names ("its Description shows TB Approved"), on the record after the decision.
   const o = org!.objects.find((x) => x.api === object);
@@ -1359,5 +1475,5 @@ export function approvalSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
       { id: `sf-ap-check-${f.api}`, action: "assert", target: { field: f.label }, assertion: "text_contains", value: m[2].trim() } as Step);
   }
   ir.steps.push(...steps);
-  return [`the request ${decision ? `submits and ${decision === "Approve" ? "approves" : "rejects"}` : "submits"} the ${o?.label ?? object} for approval -> the approval steps${dropped ? ` (replacing ${dropped} step(s) after the Save)` : ""}${m && f ? `, then checks ${f.label} shows "${m[2].trim()}"` : ""}`];
+  return [`the request ${decision ? `submits and ${decision === "Approve" ? "approves" : decision === "Reject" ? "rejects" : "recalls"}` : "submits"} the ${o?.label ?? object} for approval -> the approval steps${dropped ? ` (replacing ${dropped} step(s) after the Save)` : ""}${m && f ? `, then checks ${f.label} shows "${m[2].trim()}"` : ""}`];
 }

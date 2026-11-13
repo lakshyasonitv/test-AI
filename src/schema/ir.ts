@@ -67,6 +67,9 @@ export const Step = z.object({
   assertion: z.enum([
     "visible", "hidden", "text_equals", "text_contains",
     "url_contains", "title_contains", "title_equals", "enabled", "disabled",
+    // A link or button that opens a page: clicks it and checks the address it opens (a new tab or
+    // this one) contains `value`. Salesforce custom links (SALESFORCE_CUSTOM_LINKS_ENABLED).
+    "opens_url_contains",
   ]).optional(),
   preAction: z.object({
     action: z.enum(["hover", "click"]),

@@ -337,17 +337,23 @@ export async function approvalChecks(
     if (s.action !== "click") continue;
     if (/^approve$/i.test(s.target?.name ?? "")) expected = "Approved";
     else if (/^reject$/i.test(s.target?.name ?? "")) expected = "Rejected";
+    // A recalled request: ProcessInstance.Status is "Removed" (checked live 2026-11-13).
+    else if (/^recall$/i.test(s.target?.name ?? "")) expected = "Removed";
   }
-  for (const a of approvals) {
-    if (!/^\w+$/.test(a.object)) continue;
-    for (const id of created[a.object] ?? []) {
+  // One check per record, whatever number of processes its object has (two on Opportunity since
+  // 2026-11-13): the process the record went through names it.
+  for (const object of new Set(approvals.map((a) => a.object))) {
+    if (!/^\w+$/.test(object)) continue;
+    const fallback = approvals.find((a) => a.object === object)!.label;
+    for (const id of created[object] ?? []) {
       if (!/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
       try {
-        const q = `SELECT Status FROM ProcessInstance WHERE TargetObjectId = '${id}' ORDER BY CreatedDate DESC LIMIT 1`;
-        const status = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0]?.Status;
-        out.push({ object: a.object, id, field: `${a.label}: approval status`, expected, actual: status ?? "not submitted", ok: status === expected });
+        const q = `SELECT Status, ProcessDefinition.Name FROM ProcessInstance WHERE TargetObjectId = '${id}' ORDER BY CreatedDate DESC LIMIT 1`;
+        const rec = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0];
+        const status = rec?.Status;
+        out.push({ object, id, field: `${rec?.ProcessDefinition?.Name ?? fallback}: approval status`, expected, actual: status ?? "not submitted", ok: status === expected });
       } catch (err) {
-        out.push({ object: a.object, id, field: `${a.label}: approval status`, expected, ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
+        out.push({ object, id, field: `${fallback}: approval status`, expected, ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
       }
     }
   }
@@ -361,8 +367,16 @@ export async function leadConvertChecks(apiGet: (p: string) => Promise<any>, ir:
   for (const id of created.Lead ?? []) {
     if (!/^[A-Za-z0-9]{15,18}$/.test(id)) continue;
     try {
-      const r = (await apiGet(`/query?q=${encodeURIComponent(`SELECT IsConverted FROM Lead WHERE Id = '${id}'`)}`))?.records?.[0];
+      const q = `SELECT IsConverted, Company, LastName, ConvertedAccount.Name, ConvertedContact.LastName, ConvertedOpportunityId FROM Lead WHERE Id = '${id}'`;
+      const r = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0];
       out.push({ object: "Lead", id, field: "converted", expected: "true", actual: String(r?.IsConverted ?? "not found"), ok: r?.IsConverted === true });
+      if (r?.IsConverted !== true) continue;
+      // What the conversion made: an Account named after the Lead's Company, a Contact with its Last Name,
+      // and an Opportunity unless the case ticked "Don't create an opportunity upon conversion".
+      out.push({ object: "Lead", id, field: "converted Account name", expected: String(r.Company ?? ""), actual: String(r.ConvertedAccount?.Name ?? "none"), ok: !!r.ConvertedAccount && r.ConvertedAccount.Name === r.Company });
+      out.push({ object: "Lead", id, field: "converted Contact last name", expected: String(r.LastName ?? ""), actual: String(r.ConvertedContact?.LastName ?? "none"), ok: !!r.ConvertedContact && r.ConvertedContact.LastName === r.LastName });
+      const noOpp = ir.steps.some((s) => (s.action === "check" || s.action === "click") && /don.t create an opportunity/i.test(s.target?.name ?? s.target?.text ?? ""));
+      out.push({ object: "Lead", id, field: "converted Opportunity", expected: noOpp ? "none" : "created", actual: r.ConvertedOpportunityId ? "created" : "none", ok: noOpp ? !r.ConvertedOpportunityId : !!r.ConvertedOpportunityId });
     } catch (err) {
       out.push({ object: "Lead", id, field: "converted", expected: "true", ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
     }

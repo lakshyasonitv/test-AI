@@ -116,6 +116,7 @@ export function formatIrStep(step: Step | null | undefined): string {
       if (assertion === "visible") return `Check that ${targetDesc} appears on the page`;
       if (assertion === "hidden") return `Check that ${targetDesc} is not shown`;
       if (assertion === "url_contains") return `Check the page address contains "${step.value || target?.url || ""}"`;
+      if (assertion === "opens_url_contains") return `Check that ${targetDesc} opens an address containing "${step.value || ""}"`;
       // A record field's value (Target.field): read inside that field on the record page, not anywhere.
       if (target?.field && (assertion === "text_contains" || assertion === "text_equals")) return `Check that the "${target.field}" field shows "${step.value || ""}"`;      if (assertion === "text_contains") return `Check that the text "${step.value || ""}" is displayed`;
       if (assertion === "text_equals") return `Check that the text "${step.value || ""}" is displayed`;

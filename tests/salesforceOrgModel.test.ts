@@ -483,3 +483,20 @@ describe("approvals in the org model text", () => {
     if (was !== undefined) process.env.SALESFORCE_APPROVALS_ENABLED = was;
   });
 });
+
+describe("orgModelForCases: custom links", () => {
+  it("lists each custom link with the address it opens and where it sits", () => {
+    const text = orgModelForCases({ objects: [{ api: "Zopp", label: "Zopp", fields: [] }], validationRulesRead: true,
+      customLinks: [{ object: "Zopp", label: "Zq Delivery", url: "http://zq.example/t?n={!Zopp_Zq_N}", kind: "link", newWindow: true }] } as any);
+    expect(text).toContain('Zopp link "Zq Delivery" opens http://zq.example/t?n={!Zopp_Zq_N} in a new tab');
+    expect(text).toContain("a link sits at the bottom of the Details tab");
+  });
+});
+
+describe("orgModelForCases: a multi-step approval", () => {
+  it("lists the steps, decided in turn", () => {
+    const text = orgModelForCases({ objects: [{ api: "Zopp", label: "Zopp", fields: [] }], validationRulesRead: true,
+      approvals: [{ label: "Zq Mega", api: "Zq_Mega", object: "Zopp", steps: ["Zq First", "Zq Final"] }] } as any);
+    expect(text).toContain('"Zq Mega" on Zopp (2 steps: Zq First, Zq Final; each is decided in turn)');
+  });
+});

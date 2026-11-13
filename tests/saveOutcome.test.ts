@@ -509,6 +509,17 @@ describe("fieldChecksOnRecordView: value checks", () => {
   const check = (target: any, assertion: string, value?: string): Step => ({ id: "x", action: "assert", target, assertion, value } as Step);
   const last = (i: IR) => i.steps[i.steps.length - 1];
 
+  it("a bare number the request gives a field becomes a check of that field (run 2026-11-13T07-31-06-677Z-c4484063)", () => {
+    const i = ir([...base(), check({ text: "$100.00" }, "text_contains", "$100.00")]);
+    fieldChecksOnRecordView(i, model, "Create a Zq Deal with Amount 1000 and verify Zq Expected is $100.00");
+    expect(last(i)).toMatchObject({ target: { field: "Zq Expected" }, assertion: "text_contains", value: "$100.00" });
+    expect(i.steps.some((s) => s.target?.name === "Details")).toBe(true);
+    // Not named by the request: left alone.
+    const j = ir([...base(), check({ text: "$100.00" }, "text_contains", "$100.00")]);
+    fieldChecksOnRecordView(j, model, "Create a Zq Deal with Amount 1000");
+    expect(last(j).target).toEqual({ text: "$100.00" });
+  });
+
   it("a value check on a field's label or on its form control becomes a check of that field", () => {
     const byText = ir([...base(), check({ text: "Zq Expected" }, "text_contains", "$100.00")]);
     fieldChecksOnRecordView(byText, model);
@@ -785,6 +796,16 @@ describe("requestedTextChecks", () => {
     expect(requestedTextChecks(i, org as any, "Create a Zacct and verify its Ztype shows Zq Direct and a case Zq Onboarding Item appears")).toHaveLength(1);
     expect(i.steps[3]).toMatchObject({ action: "assert", target: { text: "Zq Onboarding Item" }, assertion: "visible" });
   });
+  it("never adds a calculated field's name, and never ahead of the Save's confirmation", async () => {
+    const { requestedTextChecks } = await import("../src/stages/salesforceGuidance.js");
+    const calc = { objects: [{ ...org.objects[0], calculated: [{ label: "Zq Expected Gain" }] }] };
+    const created = { id: "w", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+    const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), created]);
+    expect(requestedTextChecks(i, calc as any, "Create a Zacct and verify Zq Expected Gain is $100.00")).toEqual([]);
+    const k = ir([nav("/lightning/o/Zacct/new"), click("Save"), { id: "wt", action: "wait", value: "500" } as Step, created]);
+    requestedTextChecks(k, org as any, "Create a Zacct and verify a case Zq Onboarding Item appears");
+    expect(k.steps.map((s) => s.id)).toEqual(["n", "c", "wt", "w", "sf-req-Zq-Onboarding-Item"]);
+  });
   it("adds nothing when every verified value is checked, or names a field", async () => {
     const { requestedTextChecks } = await import("../src/stages/salesforceGuidance.js");
     const i = ir([nav("/lightning/o/Zacct/new"), click("Save"), fieldCheck]);
@@ -965,6 +986,28 @@ describe("approvalSteps", () => {
     expect(p.steps.some((s) => s.id === "sf-ap-decide")).toBe(false);
     expect(approvalSteps(ir([nav("/lightning/o/Zopp/new"), click("Save")]), org as any, "create a Zopp")).toEqual([]);
   });
+  it("approves each step of a multi-step process when the request asks for both steps; once otherwise", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const two = { ...org, approvals: [...org.approvals, { label: "Zq Mega", api: "Zq_Mega", object: "Zopp", steps: ["Zq First", "Zq Final"] }] };
+    const m = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(m, two as any, "Create a Zopp, submit it for approval, then approve both steps");
+    expect(m.steps.filter((s) => /^sf-ap-decide/.test(s.id)).map((s) => s.id)).toEqual(["sf-ap-decide", "sf-ap-decide-2"]);
+    const one = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(one, two as any, "Create a Zopp, submit it for approval, then approve it");
+    expect(one.steps.filter((s) => /^sf-ap-decide/.test(s.id))).toHaveLength(1);
+  });
+  it("recalls as the submitter: the Recall menu item and dialog button, and no switch to the approver", async () => {
+    const { approvalSteps } = await import("../src/stages/salesforceGuidance.js");
+    const r = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(r, org as any, "Create a Zopp, submit it for approval, then recall the approval request", "${env:ZQ_SECOND}");
+    expect(r.steps.find((s) => s.id === "sf-ap-decide")?.target?.name).toBe("Recall");
+    expect(r.steps.find((s) => s.id === "sf-ap-confirm")?.target?.name).toBe("Recall");
+    expect(r.steps.some((s) => s.id === "sf-ap-as-approver")).toBe(false);
+    // Approve still switches to the approver.
+    const a = ir([nav("/lightning/o/Zopp/new"), click("Save"), created]);
+    approvalSteps(a, org as any, "submit it for approval, then approve it", "${env:ZQ_SECOND}");
+    expect(a.steps.some((s) => s.id === "sf-ap-as-approver")).toBe(true);
+  });
 });
 
 describe("leadConvertSteps: the model's was-created check", () => {
@@ -1031,5 +1074,53 @@ describe("approvalSteps after a half-done submission", () => {
     const ids = i.steps.map((s) => s.id);
     expect(ids).not.toContain("s14");
     expect(ids).toEqual(expect.arrayContaining(["sf-ap-submit", "sf-ap-send", "sf-ap-decide"]));
+  });
+});
+
+describe("customLinkSteps", () => {
+  const org = {
+    objects: [{ api: "Zopp", label: "Zopp", fields: [{ label: "Zq Tracking Number", api: "ZqTracking__c" }, { label: "Zopp Name", api: "Name" }] }],
+    customLinks: [{ object: "Zopp", label: "Zq Delivery", url: "http://zq.example/track?n={!Zopp_Zq_Tracking_Number}&lang=en", kind: "link", newWindow: true }],
+  };
+  const fill = (name: string, value: string) => ({ id: `f-${name}`, action: "fill", target: { role: "textbox", name }, value } as Step);
+  it("opens the record's Details and checks the address with the typed merge value, replacing the case's own link steps", async () => {
+    const { customLinkSteps } = await import("../src/stages/salesforceGuidance.js");
+    const own = { id: "own", action: "click", target: { role: "link", name: "Zq Delivery" } } as Step;
+    const i = ir([nav("/lightning/o/Zopp/new"), fill("Zq Tracking Number", "Zq 42"), click("Save"), own]);
+    expect(customLinkSteps(i, org as any, "Create a Zopp with tracking number Zq 42 and check its Zq Delivery link")).toHaveLength(1);
+    expect(i.steps.map((s) => s.id)).not.toContain("own");
+    const check = i.steps.at(-1)!;
+    expect(check).toMatchObject({ assertion: "opens_url_contains", target: { role: "link", name: "Zq Delivery" }, value: "http://zq.example/track?n=Zq%2042&lang=en" });
+    expect(i.steps.find((s) => s.id === "sf-cl-open-0")?.target?.url).toBe("${record:Zopp:1}");
+  });
+  it("a button is checked from the record header; the longer of two nested labels is the one named", async () => {
+    const { customLinkSteps } = await import("../src/stages/salesforceGuidance.js");
+    const both = { ...org, customLinks: [...org.customLinks,
+      { object: "Zopp", label: "Zq TB Delivery", url: "http://zq.example/tb?n={!Zopp.ZqTracking__c}", kind: "link", newWindow: true },
+      { object: "Zopp", label: "Zq Search", url: "https://zq.example/s?q={!Zopp.Name}", kind: "button", newWindow: true }] };
+    const i = ir([nav("/lightning/o/Zopp/new"), fill("Zq Tracking Number", "Zq42"), click("Save")]);
+    expect(customLinkSteps(i, both as any, "check the Zq TB Delivery link of a new Zopp")).toHaveLength(1);
+    expect(i.steps.at(-1)?.value).toBe("http://zq.example/tb?n=Zq42");
+    const j = ir([nav("/lightning/o/Zopp/new"), fill("Zopp Name", "Zq Deal"), click("Save")]);
+    customLinkSteps(j, both as any, "click the Zq Search button of a new Zopp");
+    expect(j.steps.at(-1)).toMatchObject({ target: { role: "button", name: "Zq Search" }, value: "https://zq.example/s?q=Zq%20Deal" });
+    expect(j.steps.some((s) => s.target?.name === "Details")).toBe(false);
+  });
+  it("stays on the Details tab: the record-view pass leaves the link check there", async () => {
+    const { customLinkSteps, fieldChecksOnRecordView } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([nav("/lightning/o/Zopp/new"), fill("Zq Tracking Number", "Zq 42"), click("Save")]);
+    customLinkSteps(i, org as any, "check the Zq Delivery link of a new Zopp");
+    fieldChecksOnRecordView(i, { pages: [], salesforceOrg: org as any }, "check the Zq Delivery link of a new Zopp");
+    expect(i.steps.some((s) => s.target?.name === "Related")).toBe(false);
+    // The link's own text, not a "Custom Links" heading Lightning does not draw.
+    expect(i.steps.find((s) => s.id === "sf-cl-shown-0")?.target).toEqual({ text: "Zq Delivery" });
+  });
+  it("checks only the part before a merge field the case did not type, and nothing when the link is not asked for", async () => {
+    const { customLinkSteps } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([nav("/lightning/o/Zopp/new"), fill("Zopp Name", "Zq {{uid}}"), click("Save")]);
+    customLinkSteps(i, org as any, "check the Zq Delivery link of a new Zopp");
+    expect(i.steps.at(-1)?.value).toBe("http://zq.example/track?n=");
+    const j = ir([nav("/lightning/o/Zopp/new"), click("Save")]);
+    expect(customLinkSteps(j, org as any, "create a Zopp")).toEqual([]);
   });
 });
