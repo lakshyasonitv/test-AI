@@ -122,8 +122,11 @@ export async function runStepLive(
       // The spec's own rule (generator.ts): a related list's menu is scrolled into being first (lazy lists).
       if (/^Show actions for .+/.test(step.target?.name ?? "")) {
         const list = page.getByText(step.target!.name!.replace(/^Show actions for /, "")).first();
-        for (let k = 0; k < 15 && !(await list.isVisible().catch(() => false)); k++) {
-          await page.evaluate(() => window.scrollBy(0, window.innerHeight)).catch(() => {});
+        // A mouse wheel: Lightning record pages scroll an inner region, where the window never moves.
+        const view = page.viewportSize() ?? { width: 1280, height: 720 };
+        await page.mouse.move(view.width / 2, view.height * 0.7).catch(() => {});
+        for (let k = 0; k < 12 && !(await list.isVisible().catch(() => false)); k++) {
+          await page.mouse.wheel(0, view.height * 0.8).catch(() => {});
           await page.waitForTimeout(300);
         }
       }
