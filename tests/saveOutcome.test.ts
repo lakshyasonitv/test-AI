@@ -509,6 +509,14 @@ describe("fieldChecksOnRecordView: value checks", () => {
   const check = (target: any, assertion: string, value?: string): Step => ({ id: "x", action: "assert", target, assertion, value } as Step);
   const last = (i: IR) => i.steps[i.steps.length - 1];
 
+  it("a label and its value as one text is a check of that field; a section heading is not (run 2026-11-13T12-23-59-973Z-80c3f152)", () => {
+    const i = ir([...base(), check({ text: "Zq Heat Zq Hot" }, "visible")]);
+    fieldChecksOnRecordView(i, model, "Create a Zq Deal and verify the heat");
+    expect(last(i)).toMatchObject({ target: { field: "Zq Heat" }, assertion: "text_contains", value: "Zq Hot" });
+    const h = ir([...base(), check({ text: "Zq Heat Information" }, "visible")]);
+    fieldChecksOnRecordView(h, model, "Create a Zq Deal");
+    expect(last(h).target).toEqual({ text: "Zq Heat Information" });
+  });
   it("a bare number the case typed into a field is checked inside that field (run 2026-11-13T12-02-09-298Z-fc1e4b67)", () => {
     const i = ir([nav("/lightning/o/Zq_Deal__c/new"), fill("Zq Amount", "1234.56"), click("Save"), created, check({ text: "1234.56" }, "text_contains", "1234.56")]);
     const m2 = { ...model, salesforceOrg: { objects: [{ fields: [{ label: "Zq Amount" }] }] } };
@@ -1124,6 +1132,13 @@ describe("customLinkSteps", () => {
     // The menu opens as a step of its own, so grounding sees the item.
     expect(j.steps.find((s) => s.id === "sf-cl-menu-0")?.target).toEqual({ role: "button", name: "Show more actions" });
     expect(j.steps.some((s) => s.target?.name === "Details")).toBe(false);
+  });
+  it("a link is requested only when named as a link or button (run 2026-11-13T12-26-08-557Z-f7e2c00c: a billing address)", async () => {
+    const { customLinkSteps } = await import("../src/stages/salesforceGuidance.js");
+    const billing = { ...org, customLinks: [{ object: "Zopp", label: "Zq Billing", url: "http://zq.example/b", kind: "link", newWindow: true }] };
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save")]);
+    expect(customLinkSteps(i, billing as any, "Create a Zopp with a Zq Billing address in Toronto")).toEqual([]);
+    expect(customLinkSteps(ir([nav("/lightning/o/Zopp/new"), click("Save")]), billing as any, "Create a Zopp and open its Zq Billing link")).toHaveLength(1);
   });
   it("stays on the Details tab: the record-view pass leaves the link check there", async () => {
     const { customLinkSteps, fieldChecksOnRecordView } = await import("../src/stages/salesforceGuidance.js");

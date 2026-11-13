@@ -92,6 +92,27 @@ export function fitToField(value: string, f: Pick<OrgField, "type" | "length" | 
   return v;
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+/**
+ * A calendar date written in words ("15 March 1990", "March 15, 1990") or as ISO ("1990-03-15"), in the
+ * user's short format ("3/15/1990" in en-US, "15.3.1990" in de-DE). Undefined when it is not such a date:
+ * a value already in a numeric short format is left to the user, since 03/04 could be either way round.
+ */
+export function localeDate(value: string, locale = "en-US"): string | undefined {
+  const v = value.trim();
+  let y: number | undefined, m: number | undefined, d: number | undefined;
+  let r = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(v);
+  if (r) { y = +r[1]; m = +r[2]; d = +r[3]; }
+  r = r ?? /^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})$/.exec(v);
+  if (r && y === undefined) { d = +r[1]; m = MONTHS.indexOf(r[2].slice(0, 3).toLowerCase()) + 1; y = +r[3]; }
+  r = r ?? /^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/.exec(v);
+  if (r && y === undefined) { m = MONTHS.indexOf(r[1].slice(0, 3).toLowerCase()) + 1; d = +r[2]; y = +r[3]; }
+  if (!y || !m || !d || m < 1 || m > 12 || d < 1 || d > 31) return undefined;
+  const date = new Date(Date.UTC(y, m - 1, d));
+  if (date.getUTCDate() !== d) return undefined;
+  try { return new Intl.DateTimeFormat(locale.replace("_", "-"), { year: "numeric", month: "numeric", day: "numeric", timeZone: "UTC" }).format(date); } catch { return undefined; }
+}
+
 /** The decimal mark the user's locale writes ("." in en-US, "," in de-DE). */
 function decimalMark(locale: string): string {
   try { return new Intl.NumberFormat(locale.replace("_", "-")).format(1.5).replace(/\d/g, "") || "."; } catch { return "."; }
@@ -604,6 +625,18 @@ function applyToSection(
     notes.push(`${s.id}: "${nameOf(s)}" starts as "${other}", not "${s.value}", the value the request checks it changes to`);
     s.value = other;
   }
+  // A full name typed into First Name too ("Ana Lopez" there and "Lopez" in Last Name, run
+  // 2026-11-13T12-25-46-923Z-8b85bfb3): First Name keeps only its own words.
+  {
+    const first = steps().find((s) => s.action === "fill" && /^first ?name$/i.test(nameOf(s).replace(/^\*\s*|\s*\*$/g, "").trim()));
+    const last = steps().find((s) => s.action === "fill" && /^last ?name$/i.test(nameOf(s).replace(/^\*\s*|\s*\*$/g, "").trim()));
+    const lastWords = (last?.value ?? "").replace(/\{\{uid\}\}/g, "").trim();
+    if (first?.value && lastWords && first.value.trim().toLowerCase().endsWith(` ${lastWords.toLowerCase()}`)) {
+      const was = first.value;
+      first.value = first.value.trim().slice(0, -lastWords.length).trim();
+      notes.push(`${first.id}: First Name "${was}" also held the Last Name -> "${first.value}"`);
+    }
+  }
   for (const s of positive ? steps() : []) {
     const name = nameOf(s);
     if (!name || isEnvValueRef(s.value)) continue;
@@ -615,7 +648,9 @@ function applyToSection(
       // cut "TRACK-PLAN-001" to 12 characters (run 2026-11-13T12-02-09-298Z-fc1e4b67), so the save and the
       // check disagreed. Shortened here, the checks that quote it are changed the same way.
       const was = s.value!;
-      const fitted = mentions(request, was) ? was : fitToField(was, f, locale);
+      // A date in words is the same day in the user's format (the record page shows it that way too).
+      const fitted = f.type === "Date" ? localeDate(was, locale) ?? was
+        : mentions(request, was) ? was : fitToField(was, f, locale);
       if (fitted !== was) {
         s.value = fitted;
         for (const a of ir.steps) {
@@ -646,6 +681,12 @@ function applyToSection(
     } else if (/\b(street|city)\b/i.test(f.label) && !hasRunToken(s.value) && !mentions(request, s.value)) {
       notes.push(`${s.id}: "${f.label}" made unique per run`);
       s.value = `${s.value} ${UNIQUE_TOKEN}`;
+    } else if (f.type === "Date" && !hasRunToken(s.value) && mentions(request, s.value) && localeDate(s.value, locale)) {
+      // A date the request gives in words ("15 March 1990") or as ISO: Lightning's date box takes only the
+      // user's short format, and refused the save (run 2026-11-13T12-25-46-923Z-8b85bfb3: "Review the
+      // following fields: Birthdate"). Same day, the user's way of writing it.
+      const v = localeDate(s.value, locale)!;
+      if (v !== s.value) { notes.push(`${s.id}: "${f.label}" "${s.value}" -> "${v}", the user's date format`); s.value = v; }
     } else if (f.type === "Date" && !hasRunToken(s.value) && !mentions(request, s.value)) {
       notes.push(`${s.id}: "${f.label}" -> a date computed when the test runs`);
       s.value = dateToken(30, locale);

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { applyTestData, asksForEveryField, fitToField, testDataEnabled, valueFor } from "../src/stages/testData.js";
+import { applyTestData, asksForEveryField, fitToField, localeDate, testDataEnabled, valueFor } from "../src/stages/testData.js";
 import { UNIQUE_TOKEN } from "../src/text.js";
 import type { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -927,5 +927,40 @@ describe("a value a check quotes still fits its field (run 2026-11-13T12-02-09-2
     applyTestData(r, valid, m, "Create a Zq Thing with a Zq Track");
     expect(value(r, "t")).toBe("ZQTRACK-PLAN");
     expect(r.steps.find((s) => s.id === "a")!.target?.text).toBe("ZQTRACK-PLAN");
+  });
+});
+
+describe("bug hunt 13 Nov: dates in words and full names", () => {
+  it("a date in words or ISO is the same day in the user's format; a numeric one is left alone", () => {
+    expect(localeDate("15 March 1990", "en-US")).toBe("3/15/1990");
+    expect(localeDate("March 15, 1990", "en-US")).toBe("3/15/1990");
+    expect(localeDate("1990-03-15", "de-DE")).toBe("15.3.1990");
+    expect(localeDate("31 February 1990")).toBeUndefined();
+    expect(localeDate("03/04/1990")).toBeUndefined();
+  });
+  it("a requested date in words is typed in the user's format, and a check quoting it changes with it", () => {
+    const m = structuredClone(appModel) as AppModel;
+    m.salesforceOrg!.objects[0].validationRules = [];
+    const r = ir([
+      { id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "15 March 1990" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { text: "15 March 1990" }, assertion: "visible" },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing with Zq Due 15 March 1990 and verify it");
+    expect(value(r, "d")).toBe("3/15/1990");
+    expect(r.steps.find((s) => s.id === "a")!.target?.text).toBe("3/15/1990");
+  });
+  it("First Name keeps only its own words when it also holds the Last Name", () => {
+    const m = structuredClone(appModel) as AppModel;
+    const o = m.salesforceOrg!.objects[0];
+    o.validationRules = [];
+    o.fields.push({ label: "First Name", api: "FirstName", type: "String" } as any, { label: "Last Name", api: "LastName", type: "String", required: true } as any);
+    const r = ir([
+      { id: "f", action: "fill", target: { role: "textbox", name: "First Name" }, value: "Zqana Zqlopez" },
+      { id: "l", action: "fill", target: { role: "textbox", name: "Last Name" }, value: "Zqlopez {{uid}}" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing for Zqana Zqlopez");
+    expect(value(r, "f")).toBe("Zqana");
   });
 });

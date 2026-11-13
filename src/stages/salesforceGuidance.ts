@@ -678,6 +678,15 @@ const FORM_CONTROL = /^(textbox|combobox|spinbutton|checkbox|searchbox|listbox|r
 const isShownValue = (text: string) => shownNumber(text) !== null || /^(?:\d{1,4}([./-])\d{1,2}\1\d{1,4}\b|\{\{date:)/.test(text.trim());
 /** The field's label (or words of it) written as its value: a check that the label shows, not a value. */
 const namesLabel = (value: string, label: string) => ` ${lineKey(label)} `.includes(` ${lineKey(value)} `);
+/** "Stage Closed Lost" -> ["Stage", "Closed Lost"]: the longest field label the text starts with, and the rest. */
+function labelThenValue(text: string, labels: Set<string>): [string, string] | undefined {
+  const t = text.trim();
+  const label = [...labels].filter((l) => l && t.length > l.length + 1 && t.toLowerCase().startsWith(`${l.toLowerCase()} `))
+    .sort((a, b) => b.length - a.length)[0];
+  const rest = label ? t.slice(label.length).replace(/^[\s:=-]+/, "").trim() : "";
+  return label && rest ? [label, rest] : undefined;
+}
+
 /** The field an earlier step typed this value into (its label as the org names it), or undefined. */
 function typedInto(before: Step[], labels: Set<string>, value: string): string | undefined {
   const n = shownNumber(value);
@@ -874,6 +883,19 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       const label = (valueNamedField(`${request}\n${caseText}`, fieldLabels, v) ?? typedInto(steps.slice(0, i), fieldLabels, v))!;
       steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
       notes.push(`the request says "${label}" is "${v}" -> checks that field shows it`);
+    } else if (!s.target?.role && text && labelThenValue(text, fieldLabels) && (() => {
+      // Only a real value of that field: an option it offers, a value the case typed, a number or a date.
+      // "Description Information" is a section heading, not Description's value.
+      const [label, v] = labelThenValue(text, fieldLabels)!;
+      return fields.some((f) => f.label === label && f.picklist?.some((p) => lineKey(p) === lineKey(v)))
+        || steps.slice(0, i).some((x) => (x.action === "fill" || x.action === "select") && lineKey(x.value ?? "") === lineKey(v))
+        || isShownValue(v);
+    })()) {
+      // A field's label and its value as one text ("Stage Closed Lost", run 2026-11-13T12-23-59-973Z-80c3f152):
+      // the page never shows them as one string. The value is that field's, read inside it.
+      const [label, v] = labelThenValue(text, fieldLabels)!;
+      steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
+      notes.push(`"${text}" is the "${label}" field and its value -> checks that field shows "${v}"`);
     } else if (s.target?.field && !text) {
       // Already a field check (added by requestedFieldChecks): it still reads on the Details tab.
     } else if (!s.target?.role && text && pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), `${request}
@@ -1315,7 +1337,15 @@ export function calculatedFieldReads(ir: IRSteps, org: Pick<SalesforceOrgModel, 
  * tab, a check of an address) are replaced. A custom button is checked the same way, from the record header.
  */
 export function customLinkSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "customLinks"> | undefined, request: string): string[] {
-  const named = (org?.customLinks ?? []).filter((l) => ` ${lineKey(request)} `.includes(` ${lineKey(l.label)} `));
+  // Named AS a link or button ("its Delivery Status link", "the TB Search Deal button", or in quotes): the
+  // org's "Billing" link is no reason to click anything for "a billing address in Toronto" (run
+  // 2026-11-13T12-26-08-557Z-f7e2c00c clicked it and failed).
+  const req = ` ${lineKey(request)} `;
+  const named = (org?.customLinks ?? []).filter((l) => {
+    const k = lineKey(l.label);
+    return new RegExp(` ${k} (custom )?(link|button|url)s? | (link|button) (called |named )?${k} `).test(req)
+      || new RegExp(`["“']${l.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["”']`, "i").test(request);
+  });
   // "TB Delivery Status" names that link, not also the "Delivery Status" inside its words.
   const asked = named.filter((l) => !named.some((m) => m !== l && m.object === l.object && lineKey(m.label).length > lineKey(l.label).length
     && ` ${lineKey(m.label)} `.includes(` ${lineKey(l.label)} `)));
