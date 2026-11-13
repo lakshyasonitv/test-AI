@@ -1309,6 +1309,22 @@ describe("a lookup picks the record this run made (run 2026-11-13T18-17-16-000Z-
   });
 });
 
+describe("a value the case puts into a field is not a button to click (run 2026-11-13T21-24-10-979Z-ea90feef)", () => {
+  it("drops the click on that value's button; keeps buttons the case does click, and navigation", async () => {
+    const { valueClickedAsButton } = await import("../src/stages/salesforceGuidance.js");
+    const text = "Set the 'Zq Origin' picklist to 'Zq Mail'.\nPick 'Zq Hot' in 'Zq Heat'.\nClick the 'Zq Save' button.\nGo to 'Zq Tab'.\nSet 'Zq Kind' to 'Zq Save'.";
+    const i = ir([
+      { id: "a", action: "click", target: { role: "button", name: "Zq Mail" } },
+      { id: "b", action: "click", target: { role: "button", name: "Zq Hot" } },
+      { id: "c", action: "click", target: { role: "button", name: "Zq Save" } },
+      { id: "d", action: "click", target: { role: "button", name: "Zq Tab" } },
+      { id: "e", action: "select", target: { role: "combobox", name: "Zq Origin" }, value: "Zq Mail" },
+    ] as Step[]);
+    expect(valueClickedAsButton(i, text)).toHaveLength(2);
+    expect(i.steps.map((s) => s.id)).toEqual(["c", "d", "e"]);
+  });
+});
+
 describe("a date-time step in the spec (run 2026-11-13T18-30-28-619Z-653368f1)", () => {
   it("fills the field's own Date and Time boxes through sfDateTime, with its helper", async () => {
     const { generateSpec } = await import("../src/stages/generator.js");

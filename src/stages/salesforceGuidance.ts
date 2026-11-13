@@ -223,6 +223,29 @@ export function polymorphicLookupObject(ir: IRSteps, org: SalesforceOrgModel | u
 }
 
 /**
+ * A click on a button named after a value the case puts INTO a field ("set the 'Case Origin' picklist to
+ * 'Email'") and never says to click: the field was not on the form (Contact's "New Case" quick action has no
+ * Case Origin), so the model clicked the page's "Email" activity button instead (run
+ * 2026-11-13T21-24-10-979Z-ea90feef). Dropped; the form's own default stands. Returns notes.
+ */
+export function valueClickedAsButton(ir: IRSteps, caseText: string): string[] {
+  const notes: string[] = [];
+  const q = (...res: RegExp[]) => new Set(res.flatMap((re) => Array.from(caseText.matchAll(re), (m) => m[1].trim().toLowerCase())));
+  // Only a value put into a field: "set ... to 'V'", "'F' picklist to 'V'", "pick 'V' in ...". Not "go to 'Opportunities'".
+  const values = q(/\bset\b[^.;\n]*?\bto\s+'([^']+)'/gi,
+    /'[^']+'(?:\s+(?:picklist|field|combobox|dropdown|lookup))?\s+to\s+'([^']+)'/gi,
+    /\b(?:pick|select|choose)\s+'([^']+)'\s+(?:in|from|for|as)\b/gi);
+  const clicked = q(/\b(?:click|press|tap)(?:\s+on)?(?:\s+the)?\s+'([^']+)'/gi);
+  ir.steps = ir.steps.filter((s) => {
+    const name = s.action === "click" && s.target?.role === "button" ? (s.target?.name ?? "").trim().toLowerCase() : "";
+    if (!name || !values.has(name) || clicked.has(name)) return true;
+    notes.push(`${s.id}: dropped the click on "${s.target?.name}": the case sets a field to that value, it never clicks it`);
+    return false;
+  });
+  return notes;
+}
+
+/**
  * A lookup that picks a record the case made, written without its run code ("Pump X200" for the Asset typed
  * as "Pump X200 {{uid}}", run 2026-11-13T18-17-16-000Z-b895ffda): Salesforce offers every "Pump X200 ..."
  * (other runs', the grounding replays'), so it gets the code back and picks this run's record. Returns notes.

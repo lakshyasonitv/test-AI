@@ -24,7 +24,7 @@ import {
 import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import {
-  salesforceGuidance, strengthenSaveOutcome, editSaveConfirmed, activitySubjectTyped, globalSearchSubmit, deletedNameNotChecked, autoNumberLinkNotChecked, madeRecordLookups, polymorphicLookupObject, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
+  salesforceGuidance, strengthenSaveOutcome, editSaveConfirmed, activitySubjectTyped, globalSearchSubmit, deletedNameNotChecked, autoNumberLinkNotChecked, madeRecordLookups, valueClickedAsButton, polymorphicLookupObject, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
   returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, requestedTextChecks, noTokensInRuleFields, pathStageClicks, seededLookups, placeholderMessages, eventRecordSearch, leadConvertSteps, calculatedFieldReads, approvalSteps, customLinkSteps, valuesFromRequest,
 } from "./salesforceGuidance.js";
 import { FRONTDOOR_REF, SECOND_USER_REF, currentFrontdoor, isFrontdoorRef, isSecondUserRef, recordRefObject } from "./salesforceFrontdoor.js";
@@ -2964,6 +2964,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       for (const r of globalSearchSubmit(parsed.data)) console.log(`[ir] ${r}`);
       for (const r of deletedNameNotChecked(parsed.data)) console.log(`[ir] ${r}`);
       for (const r of madeRecordLookups(parsed.data)) console.log(`[ir] ${r}`);
+      for (const r of valueClickedAsButton(parsed.data, (testCase.steps ?? []).join("\n"))) console.log(`[ir] ${r}`);
       for (const rt of assertRecordTypeForms(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${rt}`);
       // Before the field checks: a record opened again is a record page too.
       for (const r of returnToCreatedRecords(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
