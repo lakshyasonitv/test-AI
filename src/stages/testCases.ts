@@ -383,13 +383,16 @@ export const TestCase = z.object({
   // avoid regenerating cases for pages we already covered. Stamped in code, never
   // produced by the LLM — excluded from the LLM-facing schema below.
   generatedFrom: z.enum(["upfront", "reactive"]).optional().default("upfront"),
+  // Data-driven runs (dataRows.ts): the request filled with THIS case's row, used instead of the
+  // run's request when compiling it. Stamped in code, never produced by the LLM.
+  rowPrompt: z.string().optional(),
 });
 export type TestCase = z.infer<typeof TestCase>;
 
 // LLM-facing schema: same as TestCase but WITHOUT generatedFrom — the model never
 // produces this field, it's stamped in code after parsing.
 /** Exported so the schema's own tolerance can be tested directly, without a model round-trip. */
-export const LLMTestCase = TestCase.omit({ generatedFrom: true });
+export const LLMTestCase = TestCase.omit({ generatedFrom: true, rowPrompt: true });
 
 // Grounding is deliberately NOT checked here. This stage only ever sees the entry-page model
 // (extension enriches the model later, inside toIR), so a fuzzy check here can't tell a

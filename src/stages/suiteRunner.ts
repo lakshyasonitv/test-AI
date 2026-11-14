@@ -461,7 +461,7 @@ export async function runSuite(
         // Counted inside this case's own async chain (withCaseUsage), not as a before/after difference
         // of the run's shared budget: with cases running at once that difference would also hold
         // every other case's calls.
-        const compiled = await withCaseUsage(() => toIR(tc, appModel, sourcePrompt, entryUrl, llmBudget, runCreds));
+        const compiled = await withCaseUsage(() => toIR(tc, appModel, tc.rowPrompt ?? sourcePrompt, entryUrl, llmBudget, runCreds));
         let { ir } = compiled.value;
         const llmCalls = llmBudget ? compiled.calls : undefined;
         const llmTokens = llmBudget ? compiled.totalTokens : undefined;
@@ -555,7 +555,7 @@ export async function runSuite(
             }, undefined, onEvent);
             try {
               const healedOutcome = await attemptHeal({
-                testCase: tc, ir, appModel, diagnosis, sourcePrompt, entryUrl, llmBudget,
+                testCase: tc, ir, appModel, diagnosis, sourcePrompt: tc.rowPrompt ?? sourcePrompt, entryUrl, llmBudget,
                 runCreds, outDir: caseDir, failure,
               });
               if (healedOutcome) {

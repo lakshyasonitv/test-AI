@@ -1,3 +1,4 @@
+import { dataRowsOf, rowCases } from "./stages/dataRows.js";
 import type { DiscoveryScope } from "./kb/projectDiscovery.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
@@ -171,12 +172,15 @@ export function runUsageLine(runId: string, s: LlmUsageSnapshot): string {
 }
 
 export async function runPipeline(
-  { prompt, url, urls, coverage, options }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; options?: RunOptions },
+  { prompt: request, url, urls, coverage, options }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; options?: RunOptions },
   onEvent: OnEvent = () => { },
   presetRunId?: string,
   askCredentials?: AskCredentials
 ) {
   // Normalize: single `url` becomes `urls: [url]`; both provided means `urls` wins.
+  // Data-driven (dataRows.ts): every stage works on row 1's request; the other rows join as cases.
+  const dataRows = dataRowsOf(request);
+  const prompt = dataRows ? dataRows.prompts[0] : request;
   const resolvedUrls = urls?.length ? urls : url ? [url] : [];
   if (!resolvedUrls.length) throw new Error("Either url or urls must be provided");
   // The client's choice wins; otherwise the server's own configured default (SELF_HEAL_DEFAULT,
@@ -714,7 +718,10 @@ export async function runPipeline(
 
     // Single selection authority over the merged list — see finalizeCaseSelection's own doc
     // comment for why this branches on gateUsed.
-    const scopedCases = finalizeCaseSelection(allCases, scope, thePlan.coverage, gateUsed, appModel.auth?.loginUrl);
+    const scopedCases = [
+      ...finalizeCaseSelection(allCases, scope, thePlan.coverage, gateUsed, appModel.auth?.loginUrl),
+      ...(dataRows ? rowCases(primary, dataRows) : []),
+    ];
     insight("case-selection", () => ({
       generated: allCases.length, reactive: reactiveCount, selected: scopedCases.length,
       budget: budgetFor(thePlan.coverage), newPagesFound: newPages.length,
