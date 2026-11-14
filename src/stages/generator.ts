@@ -333,13 +333,33 @@ async function assertGone(loc, namedAs) {
 // Record pages reached (Phase D cleanup, org-connection specs only)
 // -----------------------------------------------------------------------------
 
+/** Runs in the page (an init script, a plain string so no transform touches it): every success toast
+ *  "<Object> "<name>" was created." is handed once to the spec's __tbToast. A quick action (Contact's
+ *  "New Case") never opens the record it made, so its toast is the only place the record is named
+ *  (salesforceOracles.ts toastCreated looks its id up). */
+export const SF_TOAST_WATCH_JS = `(() => {
+  const seen = new Set();
+  new MutationObserver(() => {
+    for (const el of document.querySelectorAll(".forceToastMessage, .slds-notify_toast, [role=alert], [role=status]")) {
+      const t = (el.innerText || "").replace(/\\s+/g, " ").trim();
+      if (!/ was created\\./.test(t) || seen.has(t) || typeof window.__tbToast !== "function") continue;
+      seen.add(t);
+      window.__tbToast(t);
+    }
+  }).observe(document, { childList: true, subtree: true, characterData: true });
+})();`;
+
 // After a Save, Lightning often lands on /lightning/r/<Id>/view with no object in the URL: the record
 // tracker names it from the create form before it (run 2026-11-10T12-38-44-987Z-c98c9e72 recorded the
 // Account it went back to and missed the Opportunity it created). Insertion order = creation order,
 // which cleanup reverses so children go before their parents.
 const SF_RECORDS_HELPER = `const SF_RECORDS = new Set();
 let SF_CREATED = {};
-test.beforeEach(({ page }) => {
+let SF_TOASTS = [];
+test.beforeEach(async ({ page }) => {
+  SF_TOASTS = [];
+  await page.exposeFunction("__tbToast", (t) => { SF_TOASTS.push(String(t)); }).catch(() => {});
+  await page.addInitScript(${JSON.stringify(SF_TOAST_WATCH_JS)}).catch(() => {});
   const made = (${SF_RECORD_PAGES_JS})();
   SF_CREATED = made.made();
   page.on("framenavigated", (frame) => {
@@ -353,6 +373,7 @@ test.beforeEach(({ page }) => {
 test.afterEach(() => {
   test.info().annotations.push({ type: "sf-records", description: JSON.stringify([...SF_RECORDS]) });
   test.info().annotations.push({ type: "sf-created", description: JSON.stringify(SF_CREATED) });
+  test.info().annotations.push({ type: "sf-toasts", description: JSON.stringify(SF_TOASTS) });
 });`;
 
 /**

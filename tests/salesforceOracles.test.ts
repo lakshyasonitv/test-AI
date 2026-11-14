@@ -142,7 +142,7 @@ describe("caseRunFacts without run tokens", () => {
     const { tmpdir } = await import("node:os");
     const f = join(mkdtempSync(join(tmpdir(), "zq-")), "results.json");
     writeFileSync(f, JSON.stringify({ suites: [{ specs: [{ tests: [{ annotations: [{ type: "sf-created", description: JSON.stringify({ Case: ["500zq0000000001AAA"] }) }] }] }] }] }));
-    expect(caseRunFacts(f)).toEqual({ ctx: { uid: "", phone: "" }, created: { Case: ["500zq0000000001AAA"] }, shown: {} });
+    expect(caseRunFacts(f)).toEqual({ ctx: { uid: "", phone: "" }, created: { Case: ["500zq0000000001AAA"] }, shown: {}, toasts: [] });
   });
 });
 

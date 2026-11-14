@@ -231,17 +231,19 @@ export async function apiChecks(
 }
 
 /** One case's annotations from its results.json: the run tokens and the records it created. */
-export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; created: Record<string, string[]>; shown: Record<string, string> } | null {
+export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; created: Record<string, string[]>; shown: Record<string, string>; toasts: string[] } | null {
   if (!existsSync(resultsPath)) return null;
   let ctx: RunTokenContext | null = null;
   let created: Record<string, string[]> = {};
   const shown: Record<string, string> = {};
+  let toasts: string[] = [];
   const visit = (s: any) => {
     for (const sp of s?.specs ?? []) for (const t of sp.tests ?? []) {
       for (const a of [...(t.annotations ?? []), ...(t.results ?? []).flatMap((r: any) => r.annotations ?? [])]) {
         try {
           if (a?.type === "run-tokens") ctx = JSON.parse(a.description);
           if (a?.type === "sf-created") created = JSON.parse(a.description);
+          if (a?.type === "sf-toasts") toasts = JSON.parse(a.description);
           if (a?.type === "sf-shown") { const v = JSON.parse(a.description); if (typeof v?.label === "string") shown[v.label] = String(v.shown ?? ""); }
         } catch { /* a broken annotation reads as absent */ }
       }
@@ -251,7 +253,35 @@ export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; creat
   try { for (const s of JSON.parse(readFileSync(resultsPath, "utf8"))?.suites ?? []) visit(s); } catch { return null; }
   // A spec that types no run token writes no "run-tokens" annotation (run 2026-11-12T07-16-11-742Z-c2ab98b6
   // picked only picklist values and got no API check at all): nothing to resolve, so an empty context.
-  return ctx || Object.keys(created).length ? { ctx: ctx ?? { uid: "", phone: "" }, created, shown } : null;
+  return ctx || Object.keys(created).length || toasts.length ? { ctx: ctx ?? { uid: "", phone: "" }, created, shown, toasts } : null;
+}
+
+/**
+ * Records a quick action made (Contact's "New Case"): the test never opens their page, so their ids are
+ * never seen, and its success toast ('Case "00001159" was created.') is the only place each is named.
+ * The id is looked up by the object's name field. Only objects with no id of their own yet: a record
+ * whose page the test did open is already known, in the order it was made.
+ */
+export async function toastCreated(
+  apiGet: (path: string) => Promise<any>,
+  org: { objects: { api: string; label: string }[] },
+  toasts: string[], created: Record<string, string[]>,
+): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = { ...created };
+  for (const t of new Set(toasts)) {
+    const m = /^(?:Success notification\.*\s*)?(.+?) "(.+)" was created\./.exec(t.trim());
+    const obj = m && org.objects.find((o) => o.label.toLowerCase() === m[1].trim().toLowerCase());
+    if (!m || !obj || created[obj.api]?.length) continue;
+    try {
+      const nameField = (await apiGet(`/sobjects/${obj.api}/describe`))?.fields?.find((f: any) => f.nameField)?.name;
+      if (!nameField) continue;
+      const literal = m[2].replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      const q = `SELECT Id FROM ${obj.api} WHERE ${nameField} = '${literal}' ORDER BY CreatedDate DESC LIMIT 1`;
+      const id = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0]?.Id;
+      if (id && !(out[obj.api] ?? []).includes(id)) out[obj.api] = [...(out[obj.api] ?? []), id];
+    } catch { /* not found through the API: that record is simply not checked */ }
+  }
+  return out;
 }
 
 /** Every case of a run: its IR and its results.json (case 0's results sit at the run's root). */

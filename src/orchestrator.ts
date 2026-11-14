@@ -19,7 +19,7 @@ import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./s
 import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, replayMade, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
 import { takeReplayCodes } from "./stages/replayCodes.js";
 import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
-import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, flowExplainsField, flowRecordChecks, leadConvertChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
+import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, toastCreated, flowExplainsField, flowRecordChecks, leadConvertChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -788,6 +788,7 @@ export async function runPipeline(
         const facts = caseRunFacts(c.results);
         const typed = [...typedValues(c.ir, sfOrg), ...calculatedChecks(c.ir, sfOrg, facts?.shown), ...flowSetChecks(c.ir, sfOrg)];
         if (!facts) continue;
+        if (facts.toasts.length) facts.created = await toastCreated(fd.apiGet, sfOrg, facts.toasts, facts.created);
         const all = [
           ...(typed.length ? await apiChecks(fd.apiGet, typed, facts.created, facts.ctx) : []),
           // What a flow made on the record (and must not have made on this branch).
