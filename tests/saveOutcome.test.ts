@@ -891,6 +891,18 @@ describe("pathStageClicks", () => {
   });
 });
 
+describe("seededLookups: the link check goes after the Save of the form that picked it", () => {
+  it("not after a later Save on another form (run 2026-11-15T12-25-16-325Z-2816d0d4)", async () => {
+    const { seededLookups } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zplan", label: "Zplan", fields: [{ label: "Zacct", api: "AccountId", lookup: "Zacct" }] }],
+      seeded: [{ object: "Zacct", label: "Zacct", name: "TB Seed zq12cd" }] };
+    const look = { id: "l", action: "select", target: { role: "combobox", name: "Zacct", lookup: true }, value: "TB Seed zq12cd" } as Step;
+    const i = ir([nav("/lightning/o/Zplan/new"), look, click("Save"), click("New"), click("Save")]);
+    seededLookups(i, org as any);
+    expect(i.steps.map((s) => s.id).indexOf("sf-seed-link")).toBe(3);
+  });
+});
+
 describe("seededLookups", () => {
   it("fills an empty lookup to a seeded object with the seeded record's name", async () => {
     const { seededLookups } = await import("../src/stages/salesforceGuidance.js");

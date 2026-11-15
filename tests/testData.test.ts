@@ -1209,3 +1209,27 @@ describe("a check of a date-time field in words (run 2026-11-15T11-55-56-797Z-71
     expect(ir.steps[1].value).toBe("in 5 days");
   });
 });
+
+describe("a required lookup the captured form does not show (run 2026-11-15T12-19-24-256Z-d9e8322e)", () => {
+  it("is left to Salesforce, not given a step", () => {
+    const model = {
+      baseUrl: "https://zq.example",
+      pages: [{ url: "https://zq.example/lightning/o/Zq_Plan__c/new?count=1", elements: [{ role: "combobox", name: "Zq Order" }] }],
+      salesforceOrg: { validationRulesRead: true, objects: [{ api: "Zq_Plan__c", label: "Zq Plan", createable: true, fields: [
+        { label: "Zq Parent ID", api: "Zq_Parent__c", type: "Reference", required: true, lookup: "Zq_Order__c" },
+        { label: "Zq Order ID", api: "Zq_Order__c", type: "Reference", required: true, lookup: "Zq_Order__c" },
+      ] }] },
+    } as unknown as AppModel;
+    const r = {
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/lightning/o/Zq_Plan__c/new" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Save" } },
+      ],
+    } as unknown as IR;
+    applyTestData(r, valid, model);
+    const names = r.steps.map((s) => s.target?.name);
+    expect(names).toContain("Zq Order");
+    expect(names.some((n) => /Parent/.test(n ?? ""))).toBe(false);
+  });
+});

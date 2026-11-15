@@ -1001,6 +1001,10 @@ function applyToSection(
   for (const f of o.fields) {
     if (!f.required || touched.has(f.api)) continue;
     const label = formLabel(appModel, o, f);
+    // A required lookup the captured form does not show is set by Salesforce: Work Plan's "Parent Record" comes
+    // from its Work Order (run 2026-11-15T12-19-24-256Z-d9e8322e was cut short looking for that box).
+    const form = appModel.pages.find((p) => new RegExp(`/lightning/o/${o.api}/new(\\?|$)`).test(p.url));
+    if (f.lookup && form && !form.elements.some((e) => lineKey(e.name ?? "") === lineKey(label))) continue;
     if (f.lookup) {
       add({ id: `td-${++n}`, action: "select", target: { role: "combobox", name: label, lookup: true }, value: "" },
         `required lookup "${label}" had no step -> picks the first suggestion`);

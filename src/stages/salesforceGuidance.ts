@@ -1484,9 +1484,12 @@ export function seededLookups(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   for (const seed of org.seeded) {
     if (!ir.steps.some((s) => s.action === "select" && s.value === seed.name)) continue;
     if (ir.steps.some((s) => s.action === "assert" && lineKey(s.target?.text ?? s.value ?? "") === lineKey(seed.name))) continue;
-    let at = -1;
-    for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) at = i + 1;
-    if (at < 0) continue;
+    // After the Save of the form that picked it, not the test's last Save: run 2026-11-15T12-25-16-325Z-2816d0d4
+    // then added a Maintenance Asset from the plan's Related tab, where the plan's Account is not shown.
+    const picked = ir.steps.map((s) => s.action === "select" && s.value === seed.name).lastIndexOf(true);
+    const save = ir.steps.findIndex((s, i) => i > picked && s.action === "click" && isSave(s));
+    if (save < 0) continue;
+    let at = save + 1;
     while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /\bwas created\b/.test(ir.steps[at].target?.text ?? "")))) at++;
     ir.steps.splice(at, 0, { id: `sf-seed-link`, action: "assert", target: { text: seed.name }, assertion: "visible" } as Step);
     notes.push(`the new record links the seeded ${seed.label} -> checks "${seed.name}" shows on it`);

@@ -190,6 +190,20 @@ export async function runStepLive(
         await page.getByRole(step.target!.role as "radio" | "checkbox", { name: step.target!.name!, exact: true }).first().check({ force: true });
         return;
       }
+      // The spec's own rule (generator.ts sfMoreItem): a record action under "Show more actions" (a Service
+      // Appointment's Edit; run 2026-11-15T12-19-24-259Z-744d6c2b never captured its edit form).
+      if (currentFrontdoor() && step.target?.role === "button" && step.target.name && !/^(save|cancel|show more actions)$/i.test(step.target.name)) {
+        const own = step.target.css ? page.locator(step.target.css).first() : page.getByRole("button", { name: step.target.name, exact: true }).first();
+        if (!(await own.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false))) {
+          const more = page.getByRole("button", { name: "Show more actions", exact: true }).first();
+          if (await more.isVisible().catch(() => false)) {
+            await more.click();
+            const item = page.getByRole("menuitem", { name: step.target.name, exact: true }).first();
+            if (await item.waitFor({ state: "visible", timeout: 3000 }).then(() => true, () => false)) { await item.click(); return; }
+            await page.keyboard.press("Escape").catch(() => {});
+          }
+        }
+      }
       await (await resolveLive(page, step.target!)).click();
       // The replay skips the "was created" check, which in the spec waits for the save: without it the
       // replay moved on before Lightning opened the new record, and a later step back to that record
