@@ -881,6 +881,14 @@ describe("pathStageClicks", () => {
     expect(i.steps.map((s) => s.target?.name ?? s.value ?? s.id)).toEqual([undefined, "Stage", "Save", "Zq Two", "Mark as Current Stage", "1500"].map((x, k) => k === 0 ? i.steps[0].target?.name ?? i.steps[0].value ?? i.steps[0].id : x));
     expect(pathStageClicks(i, org as any)).toEqual([]);
   });
+  it("a related list's New button (a stage's name too) that opens a form is no path stage", async () => {
+    const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
+    const zorg = { objects: [{ api: "Zwo", label: "Zwo", fields: [{ label: "Status", api: "Status", picklist: ["New", "Zq Done"] }] }] };
+    const i = ir([nav("/lightning/o/Zwo/new"), click("Save"), click("New"),
+      { id: "w", action: "wait", value: "500" } as Step, { id: "f", action: "fill", target: { role: "textbox", name: "Subject" }, value: "Zq valve" } as Step]);
+    expect(pathStageClicks(i, zorg as any)).toEqual([]);
+    expect(i.steps.some((s) => s.target?.name === "Mark as Current Stage")).toBe(false);
+  });
 });
 
 describe("seededLookups", () => {

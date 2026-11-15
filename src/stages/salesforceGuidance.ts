@@ -1389,6 +1389,10 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
     let j = i + 1;
     while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
     if (/^mark as current stage$/i.test(ir.steps[j]?.target?.name ?? "")) continue;
+    // A related list's "New" button shares its name with the stage "New" (Work Order, Work Plan Status):
+    // a click a form fill follows opened a form, it chose no stage (runs 2026-11-15T11-39-38-168Z-349b393d
+    // and 2026-11-15T11-58-18-436Z-5f4f7c56 were cut short looking for "Mark as Current Stage").
+    if (ir.steps[j]?.action === "fill" || ir.steps[j]?.action === "select") continue;
     ir.steps.splice(j, 0, { id: `sf-path-mark-${s.id}`, action: "click", target: { role: "button", name: "Mark as Current Stage" } } as Step,
       { id: `sf-path-mark-${s.id}-wait`, action: "wait", value: "1500" } as Step);
     notes.push(`${s.id}: "${s.target?.name}" on the path only selects it -> clicks "Mark as Current Stage"`);

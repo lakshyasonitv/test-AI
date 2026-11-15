@@ -260,6 +260,15 @@ export function dateTimeFills(ir: IR, org: AppModel["salesforceOrg"], request = 
     done.add(f.api);
     notes.push(`${s.id}: date-time "${f.label}" "${was}" -> "${s.value}", typed into its Date and Time boxes`);
   }
+  // A check of a date or date-time field in words ("Due Date contains in 5 days"): the page shows a date, so the
+  // check looks for that day (run 2026-11-15T11-55-56-797Z-7153003e compared Due Date with the text "in 5 days").
+  const dated = new Set(org.objects.flatMap((o) => o.fields).filter((f) => f.type === "Date" || f.type === "DateTime").map((f) => f.label.toLowerCase()));
+  for (const s of ir.steps) {
+    const rel = s.action === "assert" && s.target?.field && s.value && dated.has(s.target.field.toLowerCase()) ? daysAhead(s.value) : undefined;
+    if (rel === undefined) continue;
+    notes.push(`${s.id}: check of "${s.target!.field}" "${s.value}" -> the day ${rel} day(s) from the run`);
+    s.value = dateToken(rel, locale);
+  }
   return notes;
 }
 
@@ -1000,7 +1009,13 @@ function applyToSection(
       add({ id: `td-${++n}`, action: "select", target: { role: "combobox", name: label }, value: f.picklist[0] },
         `required picklist "${label}" had no step -> "${f.picklist[0]}"`);
     } else {
-      const v = valueFor(f, locale);
+      // A date-time the request gives ("Start Time tomorrow 9:00 AM") is that value, not one made up: the case
+      // typed it into the inner "Date"/"Time" boxes, which name no field and are dropped (run
+      // 2026-11-15T11-51-59-919Z-284bb4d4 got 10:30 AM for both ends and Salesforce refused the save).
+      const asked = f.type === "DateTime"
+        ? new RegExp(`\\b${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b\\s*(?:(?:is|of|at|to)\\b|[=:])?\\s*(.+?\\d{1,2}:\\d{2}\\s*(?:[AP]M)?)`, "i").exec(request)?.[1]
+        : undefined;
+      const v = asked ?? valueFor(f, locale);
       if (!v) continue;
       add({ id: `td-${++n}`, action: "fill", target: { role: "textbox", name: label }, value: v },
         `required "${label}" had no step -> filled "${v}"`);

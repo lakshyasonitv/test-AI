@@ -1167,3 +1167,45 @@ describe("a rule between two date-time fields the request sets (run 2026-11-13T1
     expect(ir.steps[2].value).toBe("{{date:+1:en-US}} 10:30 AM");
   });
 });
+
+describe("a required date-time the request gives (run 2026-11-15T11-51-59-919Z-284bb4d4)", () => {
+  // The case typed into the inner "Date"/"Time" boxes, which name no field; both ends got 10:30 AM and
+  // Salesforce refused the save. Canary names.
+  const model = {
+    baseUrl: "https://zq.example", pages: [],
+    salesforceOrg: { validationRulesRead: true, objects: [
+      { api: "Zq_Shift__c", label: "Zq Shift", createable: true, fields: [
+        { label: "Zq End", api: "Zq_End__c", type: "DateTime", required: true },
+        { label: "Zq Start", api: "Zq_Start__c", type: "DateTime", required: true },
+      ] },
+    ] },
+  } as unknown as AppModel;
+  it("takes the request's value instead of making one up", () => {
+    const r = {
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/lightning/o/Zq_Shift__c/new" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Save" } },
+      ],
+    } as unknown as IR;
+    applyTestData(r, valid, model, "Create a Zq Shift with Zq Start tomorrow 9:00 AM and Zq End tomorrow 5:00 PM, then verify the start");
+    expect(r.steps.find((s) => s.target?.name === "Zq Start")?.value).toBe("tomorrow 9:00 AM");
+    expect(r.steps.find((s) => s.target?.name === "Zq End")?.value).toBe("tomorrow 5:00 PM");
+  });
+});
+
+describe("a check of a date-time field in words (run 2026-11-15T11-55-56-797Z-7153003e)", () => {
+  it("looks for that day, not the words", () => {
+    const org = { userLocale: "en_US", objects: [{ api: "ZqAppt", label: "Zq Appt", fields: [
+      { label: "Zq Due", api: "ZqDue__c", type: "DateTime" },
+      { label: "Zq Note", api: "ZqNote__c", type: "String" },
+    ] }] } as any;
+    const ir = { meta: {}, steps: [
+      { id: "c", action: "assert", target: { field: "Zq Due" }, value: "in 5 days", assertion: "text_contains" },
+      { id: "d", action: "assert", target: { field: "Zq Note" }, value: "in 5 days", assertion: "text_contains" },
+    ] } as unknown as IR;
+    dateTimeFills(ir, org, "edit the Zq Due to 5 days from now and verify it");
+    expect(ir.steps[0].value).toBe("{{date:+5:en-US}}");
+    expect(ir.steps[1].value).toBe("in 5 days");
+  });
+});

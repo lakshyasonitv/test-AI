@@ -353,6 +353,20 @@ export const SF_TOAST_WATCH_JS = `(() => {
 // tracker names it from the create form before it (run 2026-11-10T12-38-44-987Z-c98c9e72 recorded the
 // Account it went back to and missed the Opportunity it created). Insertion order = creation order,
 // which cleanup reverses so children go before their parents.
+/** A record action that is not on the page: given 5 s to show, then looked for under the record's "Show
+ *  more actions" menu. The menu item when it is there; null otherwise (the menu closed again), and the
+ *  caller clicks as usual. */
+const SF_MORE_ITEM_HELPER = `async function sfMoreItem(page, loc, name) {
+  if (await loc.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false)) return null;
+  const more = page.getByRole("button", { name: "Show more actions", exact: true }).first();
+  if (!(await more.isVisible().catch(() => false))) return null;
+  await more.click();
+  const item = page.getByRole("menuitem", { name, exact: true }).first();
+  if (await item.waitFor({ state: "visible", timeout: 3000 }).then(() => true, () => false)) return item;
+  await page.keyboard.press("Escape").catch(() => {});
+  return null;
+}`;
+
 const SF_RECORDS_HELPER = `const SF_RECORDS = new Set();
 let SF_CREATED = {};
 let SF_TOASTS = [];
@@ -1250,12 +1264,18 @@ function emitStep(step: Step, baseUrl: string): string {
       // an element whose accessible name is empty or was derived by discovery.
       // Not for a target inside an iframe either: safeClick resolves against `page` and navigates
       // with page.goto/page.url, none of which a frame root offers; locate() via locator(t) does.
+      // A record action Lightning keeps under "Show more actions" (a Service Appointment shows New Contact,
+      // New Opportunity, New Case and hides Edit; run 2026-11-15T11-55-56-797Z-7153003e timed out on it).
+      const more = /\.(salesforce|force)\.com/i.test(baseUrl) && t.role === "button" && t.name && !t.frame
+        && !/^(save|cancel|show more actions)$/i.test(t.name);
+      if (more) code += `  { const sfItem = await sfMoreItem(page, ${locator(t)}, ${q(t.name!)}); if (sfItem) await sfItem.click({ timeout: ${ASSERT_TIMEOUT_MS} }); else `;
       if (!t.css && !t.frame && t.role && t.name) {
         const nthParam = t.nth !== undefined ? `, ${t.nth}` : '';
-        code += `  await safeClick(page, ${q(t.role)}, ${q(t.name)}${nthParam});`;
+        code += `${more ? "" : "  "}await safeClick(page, ${q(t.role)}, ${q(t.name)}${nthParam});`;
       } else {
-        code += `  await ${locator(t)}.click({ timeout: ${ASSERT_TIMEOUT_MS} });`;
+        code += `${more ? "" : "  "}await ${locator(t)}.click({ timeout: ${ASSERT_TIMEOUT_MS} });`;
       }
+      if (more) code += " }";
       code += `\n  await page.waitForLoadState("domcontentloaded", { timeout: ${ASSERT_TIMEOUT_MS} }).catch(() => {});`;
       break;
     }
@@ -1612,6 +1632,7 @@ test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", descr
     body.includes("await sfOpenRecord(") ? SF_OPEN_RECORD_HELPER : "",
     body.includes("await sfFieldValue(") ? SF_FIELD_HELPER : "",
     body.includes("await sfDateTime(") ? SF_DATETIME_HELPER : "",
+    body.includes("await sfMoreItem(") ? SF_MORE_ITEM_HELPER : "",
   ]
     .filter(Boolean)
     .join("\n\n");
