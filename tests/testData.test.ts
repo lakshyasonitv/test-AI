@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { applyTestData, asksForEveryField, dateTimeFills, dateTimeValue, fitToField, localeDate, testDataEnabled, valueFor } from "../src/stages/testData.js";
+import { applyTestData, asksForEveryField, dateTimeFills, datedFieldChecks, dateTimeValue, fitToField, localeDate, testDataEnabled, valueFor } from "../src/stages/testData.js";
 import { UNIQUE_TOKEN } from "../src/text.js";
 import type { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -1204,7 +1204,7 @@ describe("a check of a date-time field in words (run 2026-11-15T11-55-56-797Z-71
       { id: "c", action: "assert", target: { field: "Zq Due" }, value: "in 5 days", assertion: "text_contains" },
       { id: "d", action: "assert", target: { field: "Zq Note" }, value: "in 5 days", assertion: "text_contains" },
     ] } as unknown as IR;
-    dateTimeFills(ir, org, "edit the Zq Due to 5 days from now and verify it");
+    datedFieldChecks(ir, org);
     expect(ir.steps[0].value).toBe("{{date:+5:en-US}}");
     expect(ir.steps[1].value).toBe("in 5 days");
   });

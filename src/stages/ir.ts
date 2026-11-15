@@ -15,7 +15,7 @@ import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap
 import { currentRunTargetApp } from "../runTarget.js";
 import { requestValues, stepsMissingValues } from "./requestValues.js";
 import { hollowPassGuardsEnabled, isPositiveCase, describeMarkers } from "./hollowPassGuards.js";
-import { applyTestData, dateTimeFills, testDataEnabled } from "./testData.js";
+import { applyTestData, dateTimeFills, datedFieldChecks, testDataEnabled } from "./testData.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
@@ -3000,6 +3000,7 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       for (const f of eventRecordSearch(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
       for (const f of noTokensInRuleFields(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
       for (const f of fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt, `${testCase.title}\n${testCase.expected ?? ""}`)) console.log(`[ir] ${f}`);
+      for (const f of datedFieldChecks(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
       for (const f of autoNumberLinkNotChecked(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
       for (const f of recordTabClicks(parsed.data)) console.log(`[ir] ${f}`);
       for (const f of inventedRecordLinks(parsed.data)) console.log(`[ir] ${f}`);

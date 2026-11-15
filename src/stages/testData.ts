@@ -260,8 +260,18 @@ export function dateTimeFills(ir: IR, org: AppModel["salesforceOrg"], request = 
     done.add(f.api);
     notes.push(`${s.id}: date-time "${f.label}" "${was}" -> "${s.value}", typed into its Date and Time boxes`);
   }
-  // A check of a date or date-time field in words ("Due Date contains in 5 days"): the page shows a date, so the
-  // check looks for that day (run 2026-11-15T11-55-56-797Z-7153003e compared Due Date with the text "in 5 days").
+  return notes;
+}
+
+/**
+ * A check of a date or date-time field in words ("Due Date contains in 5 days"): the page shows a date, so the
+ * check looks for that day (run 2026-11-15T11-55-56-797Z-7153003e compared Due Date with the text "in 5 days").
+ * Runs after fieldChecksOnRecordView, which makes such field checks out of text checks. Returns notes.
+ */
+export function datedFieldChecks(ir: IR, org: AppModel["salesforceOrg"]): string[] {
+  const notes: string[] = [];
+  if (!org) return notes;
+  const locale = (org.userLocale ?? "en-US").replace("_", "-");
   const dated = new Set(org.objects.flatMap((o) => o.fields).filter((f) => f.type === "Date" || f.type === "DateTime").map((f) => f.label.toLowerCase()));
   for (const s of ir.steps) {
     const rel = s.action === "assert" && s.target?.field && s.value && dated.has(s.target.field.toLowerCase()) ? daysAhead(s.value) : undefined;
