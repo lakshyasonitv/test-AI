@@ -715,3 +715,23 @@ body[data-shell="top"] #view-home .templates-row { justify-content: center; }
 #view-projects [data-dash="search"] [data-pv-search-count] { white-space: nowrap; }
 #view-projects [data-pv-hits] { margin: -2px 0 6px 18px; padding-left: 10px; border-left: 2px solid rgba(var(--accent-rgb), .35); }
 #view-projects [data-pv-hit] .hrow-label { font-size: .82rem; }
+
+/* ── nothing of the app before the sign-in check (TD-190) ────────────────────────────────────
+   index.html starts as <html data-auth-check="pending">; app.js removes it once it knows whether
+   sign-in is required (and, if it is, has routed a signed-out visitor to the sign-in page). Until
+   then every part of the page is invisible, which also means it cannot be clicked or focused, and
+   a small loader shows. "unreachable": the server never answered, so the page stays covered and
+   says so instead of drawing an app nobody has signed in to. A paint gate, not a view switch. */
+html[data-auth-check] body > * { visibility: hidden !important; }
+html[data-auth-check] body::after {
+  content: ""; position: fixed; top: 50%; left: 50%; width: 28px; height: 28px; margin: -14px 0 0 -14px;
+  border-radius: 50%; border: 3px solid rgba(var(--accent-rgb), .18); border-top-color: var(--accent);
+  animation: tb-auth-spin .8s linear infinite;
+}
+html[data-auth-check="unreachable"] body::after {
+  content: "Testbench can't reach its server right now. Reload the page to try again.";
+  width: min(420px, calc(100vw - 32px)); height: auto; margin: 0; transform: translate(-50%, -50%);
+  border: 0; border-radius: 0; animation: none; text-align: center; color: var(--text-2); font-size: .95rem; line-height: 1.5;
+}
+@keyframes tb-auth-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { html[data-auth-check="pending"] body::after { animation: none; } }

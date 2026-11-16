@@ -346,7 +346,12 @@ async function refreshIdentity() {
   }
   try {
     await fetch("/api/auth/bootstrap", { method: "POST" });
-    const me = await fetch("/api/auth/me").then((r) => (r.ok ? r.json() : null));
+    const meRes = await fetch("/api/auth/me");
+    // TD-190: a saved session the server no longer accepts (expired, revoked, signed out elsewhere;
+    // the fetch wrapper has already tried one renewal) used to be kept, so the app was drawn
+    // "signed in" with every request answering 401. Now it is a sign-out: the sign-in page, saying why.
+    if (meRes.status === 401) { await sessionRejected(); return; }
+    const me = meRes.ok ? await meRes.json() : null;
     if (me) {
       auth.role = me.role || null;
       auth.organisationId = me.organisationId || null;
@@ -361,6 +366,17 @@ async function refreshIdentity() {
   // Which projects are visible follows from the role we just learned — an admin sees every one,
   // a viewer only what they've been assigned — so the tree has to be re-fetched, not just redrawn.
   await loadProjects();
+}
+
+/** TD-190: the server refused this browser's session. Signed out locally (signOut's own path, so
+ *  every cache and the poll are cleared the same way) and the sign-in page says why. */
+async function sessionRejected() {
+  await signOut();
+  const el = document.getElementById("loginError");
+  if (el) {
+    el.textContent = "Your session has ended. Please sign in again.";
+    el.classList.remove("hidden");
+  }
 }
 
 async function signOut() {
@@ -397,10 +413,20 @@ async function signOut() {
 
 async function initAuth() {
   let cfg;
-  try {
-    cfg = await rawFetch("/api/auth/config").then((r) => r.json());
-  } catch {
-    return; // config unreachable — leave auth off rather than locking the user out of a working app
+  // TD-190: an unreachable config used to mean "leave auth off", which drew the whole app for a
+  // signed-out visitor of a server that does require sign-in. Now it is tried again (1 s, 2 s,
+  // 4 s); if it never answers, the page stays covered and says the server cannot be reached
+  // (theme.css, data-auth-check="unreachable"). Nothing of the app is drawn without an answer.
+  for (const wait of [0, 1000, 2000, 4000]) {
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    try {
+      cfg = await rawFetch("/api/auth/config").then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
+      break;
+    } catch { cfg = undefined; }
+  }
+  if (cfg === undefined) {
+    document.documentElement.dataset.authCheck = "unreachable";
+    throw new Error("auth config unreachable");   // the .finally() at startup must not uncover the page
   }
   if (!cfg || !cfg.authEnabled) return; // the default path: nothing below ever runs
 
@@ -9040,8 +9066,19 @@ enableDashboard({ startup: true });
 applyRoute();
 
 // Async, and deliberately AFTER the synchronous applyRoute() above: with auth off this resolves
-// to a no-op, so the first paint is unchanged. With auth on it re-routes to the login view.
-initAuth();
+// to a no-op. With auth on it re-routes to the login view.
+//
+// TD-190: until it settles nothing of the app is painted. index.html starts as
+// <html data-auth-check="pending">, which theme.css draws as a blank page with a small loader, so
+// a signed-out visitor never sees (or clicks) the dashboard, the nav or any other screen while
+// /api/auth/config is in flight; the first screen they see is the sign-in page. Whatever way
+// initAuth() ends (auth off, signed out, signed in, the config unreachable, an exception), the
+// cover comes off once, after its final applyRoute(). Not a view switch: no .hidden, no showView.
+initAuth()
+  .catch(() => { /* "unreachable" stays covered, with its message; anything else is uncovered below */ })
+  .finally(() => {
+    if (document.documentElement.dataset.authCheck === "pending") delete document.documentElement.dataset.authCheck;
+  });
 
 /**
  * The per-organisation LLM configuration panel — admin and owner only.
