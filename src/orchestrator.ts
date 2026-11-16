@@ -19,7 +19,7 @@ import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./s
 import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, replayMade, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
 import { takeReplayCodes } from "./stages/replayCodes.js";
 import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
-import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, toastCreated, flowExplainsField, flowRecordChecks, leadConvertChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
+import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, toastCreated, withFlowNote, flowRecordChecks, leadConvertChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -595,10 +595,8 @@ export async function runPipeline(
     if (!result.passed) {
       const callsBeforeDiagnosis = llmBudget.snapshot().calls;
       diagnosis = await step("failure_analysis", "06-diagnosis.json", async () => {
-        const d = await analyzeFailure(ir, result as any, appModel.auth?.loginUrl);
         // An org flow that sets the checked field says why it shows another value (deterministic, no model call).
-        const flow = d && flowExplainsField(ir, appModel.salesforceOrg, d.failingStepId ?? undefined);
-        return d && flow ? { ...d, explanation: `${flow} ${d.explanation}` } : d;
+        return withFlowNote(await analyzeFailure(ir, result as any, appModel.auth?.loginUrl), ir, appModel.salesforceOrg);
       });
       const diagnosed = diagnosis; // a const for the closure: `diagnosis` itself is reassigned below
       insight("failure-analysis", () => ({
@@ -747,6 +745,8 @@ export async function runPipeline(
       result: { passed: finalResult.passed, exitCode: finalResult.exitCode, artifactsDir: finalResult.artifactsDir, resultsJsonPath: finalResult.resultsJsonPath, raw: finalResult.raw },
       specCode: finalSpecCode,
       healed,
+      // The primary's diagnosis, so the suite files it for case-0 instead of asking the model again.
+      ...(diagnosis && !healed ? { diagnosis } : {}),
       ...(deterministicHeal ? { deterministicHeal: true } : {}),
     };
     console.log("3. Running suite...");

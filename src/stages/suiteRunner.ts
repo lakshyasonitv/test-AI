@@ -7,6 +7,7 @@ import { generateSpec } from "./generator.js";
 import { runSpec, findScreenshot, findVideo, detectBlocked, extractFailureDetail } from "./executor.js";
 import { credentialEnvVars, type Credentials } from "./credentials.js";
 import { analyzeFailure } from "./failureAnalysis.js";
+import { withFlowNote } from "./salesforceOracles.js";
 import { attemptHeal, isHealable, isValueHealable } from "./heal.js";
 import type { TestCase } from "./testCases.js";
 import type { AppModel } from "../schema/appModel.js";
@@ -28,6 +29,8 @@ export interface PrimaryCaseResult {
   healed: boolean;
   /** True when `healed` is set and the heal used the deterministic (no-LLM) path. */
   deterministicHeal?: boolean;
+  /** The orchestrator's diagnosis of the primary case (flow note included), filed as case-0's. */
+  diagnosis?: unknown;
 }
 
 /**
@@ -429,7 +432,8 @@ export async function runSuite(
 
         let diagnosisPath: string | undefined;
         if (!primaryResult.result.passed) {
-          const diagnosis = await analyzeFailure(primaryResult.ir, primaryResult.result, appModel.auth?.loginUrl);
+          const diagnosis = primaryResult.diagnosis
+            ?? withFlowNote(await analyzeFailure(primaryResult.ir, primaryResult.result, appModel.auth?.loginUrl), primaryResult.ir, appModel.salesforceOrg);
           diagnosisPath = path.join(caseDir, "06-diagnosis.json");
           writeFileSync(diagnosisPath, JSON.stringify(diagnosis, null, 2));
         }
@@ -514,7 +518,7 @@ export async function runSuite(
         let deterministicHeal = false;
         if (!result.passed) {
           const callsBeforeDiagnosis = llmBudget?.snapshot().calls ?? 0;
-          const diagnosis = await analyzeFailure(ir, result, appModel.auth?.loginUrl);
+          const diagnosis = withFlowNote(await analyzeFailure(ir, result, appModel.auth?.loginUrl), ir, appModel.salesforceOrg);
           insight("failure-analysis", () => ({
             case: caseId, category: diagnosis?.category, failingStep: diagnosis?.failingStepId ?? undefined,
             decidedBy: (llmBudget?.snapshot().calls ?? 0) > callsBeforeDiagnosis ? "ai" : "rules",

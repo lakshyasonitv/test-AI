@@ -278,4 +278,19 @@ describe("a failed check of a field an org flow sets says so (run 2026-11-13T23-
     expect(why).toContain('branch "Cold"');
     expect(flowExplainsField(ir, org, "f")).toBeUndefined();
   });
+
+  it("every written diagnosis carries it, through one helper (run 2026-11-16T09-30-55-431Z-975038fa)", async () => {
+    const { withFlowNote } = await import("../src/stages/salesforceOracles.js");
+    const org = { objects: [{ api: "ZqLead", label: "Zq Lead", fields: [{ label: "Zq Heat", api: "ZqHeat__c", type: "Picklist" }] }],
+      flows: [{ label: "Zq Routing", object: "ZqLead", effects: ["sets ZqHeat__c = Zq Cold"] }] } as any;
+    const ir = { steps: [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqLead/new" } },
+      { id: "h", action: "assert", target: { field: "Zq Heat" }, value: "Zq Hot", assertion: "text_contains" },
+    ] } as any;
+    const d = withFlowNote({ failingStepId: "h", category: "assertion_failed", explanation: "Zq shows Cold.", suggestedFix: "" }, ir, org);
+    expect(d.explanation).toMatch(/^The org's flow "Zq Routing" sets Zq Heat.* Zq shows Cold\.$/);
+    expect(withFlowNote(null, ir, org)).toBeNull();
+    const other = { failingStepId: "n", explanation: "Zq other." };
+    expect(withFlowNote(other, ir, org)).toBe(other);
+  });
 });

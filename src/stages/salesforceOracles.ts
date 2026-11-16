@@ -40,6 +40,18 @@ function flowSet(org: Org, o: { api: string; label: string }): Set<string> {
  * as a sentence for the diagnosis. Run 2026-11-13T23-13-33-343Z-2598923f picked Rating "Hot" and the page showed
  * "Cold": TB Lead Qualification Routing sets Rating = Cold on create unless the Lead's revenue is high enough.
  */
+/**
+ * A diagnosis with the org-flow sentence in front of its explanation, when an org flow sets the checked
+ * field. ONE helper for every place a diagnosis is written: the per-case copy the report reads was written
+ * without it (run 2026-11-16T09-30-55-431Z-975038fa's report never named the flow that set Rating = Cold).
+ */
+export function withFlowNote<T extends { explanation: string; failingStepId?: string | null } | null>(
+  d: T, ir: Pick<IR, "steps">, org: Org | undefined,
+): T {
+  const flow = d && flowExplainsField(ir, org, d.failingStepId ?? undefined);
+  return d && flow ? { ...d, explanation: `${flow} ${d.explanation}` } : d;
+}
+
 export function flowExplainsField(ir: Pick<IR, "steps">, org: Org | undefined, failingStepId: string | undefined): string | undefined {
   const at = ir.steps.findIndex((s) => s.id === failingStepId);
   const label = ir.steps[at]?.target?.field?.trim().toLowerCase();
