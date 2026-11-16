@@ -431,7 +431,7 @@ body::before {
 }
 /* Cards: one surface — white, 18px corners, a hairline and the same soft shadow. */
 :root { --tb-card-shadow: 0 1px 2px rgba(17, 24, 39, .04), 0 10px 26px -18px rgba(17, 24, 39, .16); }
-.panel, .cd-card, .cmp-col, .case-card, .stages li, .test-summary, :is(#view-dashboard, #view-projects, #view-settings) [data-dash="card"] {
+.panel, .cd-card, .cmp-col, .case-card, .stages li, .test-summary, :is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="card"] {
   background: #fff; border: 1px solid #ececef; border-radius: 18px; box-shadow: var(--tb-card-shadow);
 }
 .cd-card { padding: 18px 20px; }
@@ -473,61 +473,61 @@ body::before {
 
 /* Dashboard layout. Styled through data-dash attributes on the dashboard's own markup, so no
    class is added to the app's class vocabulary (rule 3). */
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="head"] { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="actions"] { display: flex; flex-wrap: wrap; gap: 8px; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="actions"] .run-btn { text-decoration: none; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="kpis"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 16px; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="row"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; align-items: stretch; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="row"][data-wide] { grid-template-columns: minmax(0, 1.7fr) minmax(min(100%, 300px), 1fr); }
-@media (max-width: 1000px) { :is(#view-dashboard, #view-projects, #view-settings) [data-dash="row"][data-wide] { grid-template-columns: minmax(0, 1fr); } }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="head"] { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="actions"] { display: flex; flex-wrap: wrap; gap: 8px; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="actions"] .run-btn { text-decoration: none; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="kpis"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 16px; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="row"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; align-items: stretch; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="row"][data-wide] { grid-template-columns: minmax(0, 1.7fr) minmax(min(100%, 300px), 1fr); }
+@media (max-width: 1000px) { :is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="row"][data-wide] { grid-template-columns: minmax(0, 1fr); } }
 
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="card"] {
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="card"] {
   background: #fff; border: 1px solid #ececef; border-radius: 18px;
   box-shadow: var(--tb-card-shadow); padding: 18px 20px; min-width: 0;
 }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="card-head"] { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="card-head"] h2 { margin: 0; font-size: .9rem; font-weight: 600; flex: 1; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="ico"] {
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="card-head"] { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="card-head"] h2 { margin: 0; font-size: .9rem; font-weight: 600; flex: 1; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="ico"] {
   display: inline-grid; place-items: center; width: 30px; height: 30px; flex: none;
   border-radius: 9px; background: var(--surface-3); color: var(--text-2);
 }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="big"] { font-size: 2rem; font-weight: 700; letter-spacing: -.03em; line-height: 1.1; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="big-row"] { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="sub"] { margin-top: 6px; font-size: .78rem; color: var(--muted); }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="big"] { font-size: 2rem; font-weight: 700; letter-spacing: -.03em; line-height: 1.1; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="big-row"] { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="sub"] { margin-top: 6px; font-size: .78rem; color: var(--muted); }
 
 /* legend numbers with a coloured rule on the left, as in the reference */
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="legend"] { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 14px; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="legend"] > div { border-left: 3px solid var(--c); padding-left: 10px; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="legend"] small { display: block; font-size: .74rem; color: var(--muted); }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="legend"] b { font-size: 1.25rem; letter-spacing: -.02em; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="legend"] { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 14px; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="legend"] > div { border-left: 3px solid var(--c); padding-left: 10px; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="legend"] small { display: block; font-size: .74rem; color: var(--muted); }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="legend"] b { font-size: 1.25rem; letter-spacing: -.02em; }
 
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="chart"] { width: 100%; height: auto; display: block; overflow: visible; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="chart"] { width: 100%; height: auto; display: block; overflow: visible; }
 
 /* tables */
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] { width: 100%; border-collapse: collapse; font-size: .82rem; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] th {
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="table"] { width: 100%; border-collapse: collapse; font-size: .82rem; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="table"] th {
   text-align: left; font-family: var(--font-mono); font-size: .62rem; font-weight: 600;
   letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
   padding: 8px 10px; border-bottom: 1px solid var(--line-soft); white-space: nowrap;
 }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] td { padding: 11px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] tr:last-child td { border-bottom: 0; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] tbody tr { transition: background .15s; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] tbody tr:hover { background: rgba(var(--ink-rgb), .025); }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="table"] td { padding: 11px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="table"] tr:last-child td { border-bottom: 0; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="table"] tbody tr { transition: background .15s; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="table"] tbody tr:hover { background: rgba(var(--ink-rgb), .025); }
 /* The name column takes the space that is left and clips a long name with "…", so the status,
    result, date and action columns always fit inside the card (width:100% + max-width:0 is
    what lets a table cell shrink below its content). */
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] td[data-dash="grow"] { width: 100%; max-width: 0; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="clip"] { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="table"] td[data-dash="grow"] [data-dash="muted"] { display: block; overflow: hidden; text-overflow: ellipsis; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="muted"] { color: var(--muted); font-size: .76rem; white-space: nowrap; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="bar"] { display: flex; align-items: center; gap: 8px; min-width: 96px; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="table"] td[data-dash="grow"] { width: 100%; max-width: 0; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="clip"] { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="table"] td[data-dash="grow"] [data-dash="muted"] { display: block; overflow: hidden; text-overflow: ellipsis; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="muted"] { color: var(--muted); font-size: .76rem; white-space: nowrap; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="bar"] { display: flex; align-items: center; gap: 8px; min-width: 96px; }
 /* the track is the FIRST span only; the "n/m" label beside it is the second */
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="bar"] > span:first-child { flex: 1; min-width: 40px; height: 5px; border-radius: 9px; background: var(--surface-3); overflow: hidden; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="bar"] > span:first-child > i { display: block; height: 100%; width: var(--w); background: var(--accent); border-radius: inherit; }
-:is(#view-dashboard, #view-projects, #view-settings) [data-dash="scroll"] { overflow-x: auto; margin: 0 -10px; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="bar"] > span:first-child { flex: 1; min-width: 40px; height: 5px; border-radius: 9px; background: var(--surface-3); overflow: hidden; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="bar"] > span:first-child > i { display: block; height: 100%; width: var(--w); background: var(--accent); border-radius: inherit; }
+:is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="scroll"] { overflow-x: auto; margin: 0 -10px; }
 @media (max-width: 600px) {
-  :is(#view-dashboard, #view-projects, #view-settings) [data-dash="hide-sm"] { display: none; }
+  :is(#view-dashboard, #view-projects, #view-settings, #view-admin) [data-dash="hide-sm"] { display: none; }
 }
 
 /* ---------- the top-nav layout (D-80) ----------
@@ -588,7 +588,8 @@ body:has(#view-case.view-active) #navProjects,
 body:has(#view-compare.view-active) #navProjects,
 body:has(#view-history.view-active) #navHistory,
 body:has(#view-settings.view-active) #navSettings,
-body:has(#view-team.view-active) #navSettings {
+body:has(#view-team.view-active) #navSettings,
+body:has(#view-admin.view-active) #navAdmin {
   background: rgba(var(--accent-rgb), .1); color: var(--accent); font-weight: 600;
 }
 
@@ -764,3 +765,10 @@ body[data-shell="top"] .crumb-root::before {
     radial-gradient(circle closest-side, #121418 96%, transparent 100%) 32.5px 32.5px / 12px 12px no-repeat,
     #fff;
 }
+
+/* ── D-84: the Admin page, an admin's organisation picker, and New test's project choice ───────
+   The Admin page reuses the dashboard's data-dash card layout (the :is(...) lists above include
+   #view-admin). The picker and the project choice reuse .team-select. */
+#orgPicker { height: 36px; max-width: 200px; margin-right: 4px; }
+#projectPickerWrap { margin: 0 0 10px; }
+#projectPickerWrap .team-select { width: 100%; max-width: 360px; }

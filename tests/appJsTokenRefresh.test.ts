@@ -139,6 +139,9 @@ function harness(opts: {
     };
     let tokenRefreshTimer = null;
     let tokenRefreshInFlight = null;
+    // TD-192: the wrapper reports a dead session to sessionLost(); counted here, behaviour unchanged.
+    let sessionLostCalls = 0;
+    function sessionLost() { sessionLostCalls++; }
     ${SOURCES}
     return { auth, fetch: window.fetch, setSession, refreshSession, tokenNeedsRefresh, jwtExpiry };
     `,

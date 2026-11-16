@@ -153,7 +153,7 @@ describe("the dashboard in app.js", () => {
     expect(APP).toMatch(/function showView\(name\) \{[\s\S]*?closeSidebarDrawer\(\);/);
   });
 
-  it("theme.css: the dashboard section no longer touches the sidebar; its layout reaches only the three pages", () => {
+  it("theme.css: the dashboard section no longer touches the sidebar; its layout reaches only its pages", () => {
     const THEME = read("public/theme.css");
     const s = THEME.indexOf("/* ---------- dashboard (D-79)");
     const e = THEME.indexOf("/* ---------- the top-nav layout (D-80)", s);
@@ -163,7 +163,8 @@ describe("the dashboard in app.js", () => {
     const selectors = [...section.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{/g)].map((m) => m[1].trim());
     expect(selectors.filter((sel) => /\.sidebar/.test(sel))).toEqual([]);
     for (const sel of selectors.filter((x) => /data-dash/.test(x))) {
-      expect(sel).toMatch(/^:is\(#view-dashboard, #view-projects, #view-settings\) /);
+      // D-84 adds the Admin page to the pages this layout reaches.
+      expect(sel).toMatch(/^:is\(#view-dashboard, #view-projects, #view-settings, #view-admin\) /);
     }
   });
 

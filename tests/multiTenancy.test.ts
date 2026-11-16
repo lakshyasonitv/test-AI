@@ -285,6 +285,8 @@ const RESOURCE_ROUTES: { name: string; method: Method; path: string; body?: unkn
   { name: "read org A's roster", method: "get", path: `/api/organisations/${ORG_A}/members`, mounted: "GET /api/organisations/:orgId/members" },
   { name: "read org A's assignments", method: "get", path: `/api/organisations/${ORG_A}/assignments`, mounted: "GET /api/organisations/:orgId/assignments" },
   { name: "add a member to org A", method: "post", path: `/api/organisations/${ORG_A}/members`, body: { email: "nobody@example.com", role: "viewer" }, mounted: "POST /api/organisations/:orgId/members" },
+  // D-84: an owner's "New user". Org B's owner naming org A is refused (404 with the model off, 403 on).
+  { name: "create a user in org A", method: "post", path: `/api/organisations/${ORG_A}/users`, body: { email: "new@example.com", password: "long-enough-1", role: "viewer" }, mounted: "POST /api/organisations/:orgId/users" },
   { name: "change a role in org A", method: "patch", path: `/api/organisations/${ORG_A}/members/${VIEWER_A}`, body: { role: "admin" }, mounted: "PATCH /api/organisations/:orgId/members/:userId" },
   { name: "remove a member from org A", method: "delete", path: `/api/organisations/${ORG_A}/members/${VIEWER_A}`, mounted: "DELETE /api/organisations/:orgId/members/:userId" },
   // The whole point of these two: an admin of org B must not be able to read whether org A has a
@@ -380,6 +382,9 @@ const EXEMPT: Record<string, string> = {
   "GET /api/auth/me": "scoped to req.user by construction; returns the caller's own identity only",
   "POST /api/auth/bootstrap": "scoped to req.user; gives the caller an organisation, never reads another's",
   "POST /api/organisations": "creates a NEW organisation for the caller — it is the one route that acts outside every organisation",
+  "GET /api/admin/organisations": "D-84: platform admins only (platform_admins, not an org role); 404 unless PLATFORM_ADMIN_ENABLED, 403 for every other caller — covered in tests/platformAdmin.test.ts",
+  "POST /api/admin/organisations": "D-84: as above; creates a new, empty organisation",
+  "POST /api/admin/organisations/:orgId/move-user": "D-84: as above; only a platform admin may move an account between organisations",
   "POST /api/runs": "creates a run in the caller's own org; there is no org-A resource to name",
   "POST /api/spec/upload": "takes a file from the caller and returns a result to the caller; names no stored resource, reads no row",
   "POST /api/spec/confirm": "echoes the caller's own answers back; names no stored resource, reads no row",

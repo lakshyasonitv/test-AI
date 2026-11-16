@@ -440,17 +440,21 @@ async function addCreatorToProject(
  * ponytail: one server process only; several instances need the index.
  */
 const resolving = new Map<string, Promise<unknown>>();
-export function resolveProjectForUrl(orgId: string, url: string | null, userId?: string): Promise<string | null> {
+export function resolveProjectForUrl(
+  orgId: string, url: string | null, userId?: string,
+  /** D-84 (TD-193): `create: false` only looks — a tester's run never makes a new project. */
+  opts: { create?: boolean } = {},
+): Promise<string | null> {
   const k = `${orgId}\n${siteHost(url ?? "") ?? normaliseUrlKey(url)}`;
   const next = (resolving.get(k) ?? Promise.resolve()).catch(() => undefined)
-    .then(() => resolveProjectForUrlOnce(orgId, url, userId));
+    .then(() => resolveProjectForUrlOnce(orgId, url, userId, opts.create !== false));
   resolving.set(k, next);
   void next.finally(() => { if (resolving.get(k) === next) resolving.delete(k); }).catch(() => undefined);
   return next;
 }
 
 async function resolveProjectForUrlOnce(
-  orgId: string, url: string | null, userId?: string,
+  orgId: string, url: string | null, userId?: string, allowCreate = true,
 ): Promise<string | null> {
   const key = normaliseUrlKey(url);
   if (!key) return null;
@@ -513,6 +517,8 @@ async function resolveProjectForUrlOnce(
         if (chosen) return chosen.id;
       }
     }
+
+    if (!allowCreate) return null;
 
     const { data: created, error: createErr } = await client
       .from("projects")

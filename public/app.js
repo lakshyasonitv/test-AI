@@ -93,7 +93,16 @@ const auth = {
   tokenRefresh: false,
   refreshToken: null,
   expiresAt: null,          // access-token expiry, epoch SECONDS (Supabase's own unit)
+  // D-84 (PLATFORM_ADMIN_ENABLED): from /api/auth/me's optional fields. `platformAdmin` draws the
+  // Admin page and the organisation picker; `adminOrgId` is the organisation an admin picked, sent
+  // as x-organisation-id (the server ignores it for anyone who is not an admin).
+  platformAdmin: false,
+  organisationName: null,
+  adminOrgId: (() => { try { return sessionStorage.getItem("tb-admin-org"); } catch { return null; } })(),
 };
+
+/** D-84: /api/health reports `platformAdmins: true` when the platform-admin model is on. */
+let platformModel = false;
 
 /** Role ladder, mirrored from src/server/authz.ts. Kept in sync by hand — it is only ever used
  *  to hide controls, so a drift shows up as a visible affordance the server then refuses. */
@@ -263,15 +272,24 @@ window.fetch = function (input, init) {
   const headers = new Headers(next.headers || (typeof input === "object" && input.headers) || {});
   const callerAuth = headers.has("Authorization");
   if (!callerAuth) headers.set("Authorization", `Bearer ${auth.token}`);
+  // D-84: the organisation a platform admin picked. Ignored by the server for anyone else.
+  if (auth.adminOrgId && !headers.has("x-organisation-id")) headers.set("x-organisation-id", auth.adminOrgId);
   next.headers = headers;
+  // TD-192: a 401 on one of this app's own API calls, once signed in, means the session is gone
+  // (any renewal has already been tried below). Back to the sign-in page, saying so, instead of every
+  // screen showing its own "authentication required".
+  const watch = (p) => p.then((res) => {
+    if (res.status === 401 && auth.token && /^\/api\//.test(url.replace(location.origin, "")) && !/^\/api\/auth\//.test(url.replace(location.origin, ""))) sessionLost();
+    return res;
+  });
   const sent = rawFetch(input, next);
-  if (!auth.tokenRefresh || callerAuth || !canReplay(input, next)) return sent;
+  if (!auth.tokenRefresh || callerAuth || !canReplay(input, next)) return watch(sent);
 
   // TD-108: one renew-and-retry on a 401, then the ORIGINAL response is what the caller sees if
   // that didn't help — so every existing 401 handler (the run poll's "session expired") still
   // runs, unchanged, whenever the session truly can't be saved.
   const sentToken = auth.token;
-  return sent.then(async (res) => {
+  return watch(sent.then(async (res) => {
     if (res.status !== 401) return res;
     // Safe even for a POST: requireAuth answers 401 before any route handler runs, so the first
     // attempt did nothing. Another request may already have renewed while this one was in flight.
@@ -280,8 +298,18 @@ window.fetch = function (input, init) {
     const retryHeaders = new Headers(headers);
     retryHeaders.set("Authorization", `Bearer ${auth.token}`);
     return rawFetch(input, { ...next, headers: retryHeaders });
-  });
+  }));
 };
+
+/** TD-192: the session ended while the app was open. Once, however many requests 401 together; a
+ *  run in progress is parked so signing back in returns to it. */
+let sessionLostPending = false;
+function sessionLost() {
+  if (sessionLostPending) return;
+  sessionLostPending = true;
+  try { if (currentRunId && !currentRunFinished) returnToRunAfterSignIn = currentRunId; } catch { /* not yet defined at load */ }
+  sessionRejected().finally(() => { sessionLostPending = false; });
+}
 
 /** A request may be re-sent only if sending it twice is literally the same request: a URL (not a
  *  Request, whose body is single-use) and no body or a string body. Anything else keeps its 401. */
@@ -322,11 +350,14 @@ function applyRoleRestrictions() {
   if (!badge) return;
   if (auth.required && auth.token && auth.role) {
     emailEl.textContent = auth.email || "";
-    roleEl.textContent = auth.role;
+    // D-84: "admin" for a platform admin, and the organisation's name beside the role.
+    const shownRole = auth.platformAdmin ? "admin" : auth.role;
+    roleEl.textContent = auth.organisationName ? `${shownRole} · ${auth.organisationName}` : shownRole;
     badge.classList.remove("hidden");
   } else {
     badge.classList.add("hidden");
   }
+  renderAdminChrome();
 }
 
 /**
@@ -357,6 +388,13 @@ async function refreshIdentity() {
       auth.organisationId = me.organisationId || null;
       auth.userId = me.userId || null;
       if (me.email) auth.email = me.email;
+      auth.platformAdmin = me.platformAdmin === true;
+      auth.organisationName = me.organisationName || null;
+      // D-84: an account in no organisation (and not an admin) can do nothing; say so on sign-in.
+      if (platformModel && me.tenancyEnforced && !me.organisationId && !auth.platformAdmin) {
+        await sessionRejected("Your account isn't part of an organisation yet. Ask your owner or admin to add you.");
+        return;
+      }
     }
   } catch {
     // Non-fatal: an unknown role simply restricts nothing in the UI, and the server still
@@ -366,15 +404,17 @@ async function refreshIdentity() {
   // Which projects are visible follows from the role we just learned — an admin sees every one,
   // a viewer only what they've been assigned — so the tree has to be re-fetched, not just redrawn.
   await loadProjects();
+  renderProjectPicker();
+  fillProjectPicker();
 }
 
 /** TD-190: the server refused this browser's session. Signed out locally (signOut's own path, so
  *  every cache and the poll are cleared the same way) and the sign-in page says why. */
-async function sessionRejected() {
+async function sessionRejected(message = "Your session has ended. Please sign in again.") {
   await signOut();
   const el = document.getElementById("loginError");
   if (el) {
-    el.textContent = "Your session has ended. Please sign in again.";
+    el.textContent = message;
     el.classList.remove("hidden");
   }
 }
@@ -391,6 +431,13 @@ async function signOut() {
   auth.organisationId = null;
   auth.userId = null;
   auth.screen = "login";
+  // D-84: the next person on this browser starts with no admin view and no picked organisation.
+  auth.platformAdmin = false;
+  auth.organisationName = null;
+  auth.adminOrgId = null;
+  try { sessionStorage.removeItem("tb-admin-org"); } catch { /* storage blocked */ }
+  document.getElementById("navAdmin")?.remove();
+  document.getElementById("orgPicker")?.remove();
   // Drop the previous account's visible projects, or the next person to sign in on this browser
   // sees the last one's sidebar until their own fetch lands.
   projectsCache = null;
@@ -3981,7 +4028,9 @@ form.addEventListener("submit", async (e) => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ prompt, url, coverage,
-        options: proOptions ? { ...baseOptions, ...proOptions } : baseOptions }),
+        options: proOptions ? { ...baseOptions, ...proOptions } : baseOptions,
+        // D-84: the project picked on New test; POST /api/runs already accepts an optional projectId.
+        ...(platformModel && pickedProjectId ? { projectId: pickedProjectId } : {}) }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null);
@@ -5750,7 +5799,7 @@ async function renderCompareView(caseId, fromV, toV) {
     navigate(caseHash(c.projectId, caseId)));
 }
 
-const VIEWS = ["home", "run", "suite", "case", "compare", "history", "login", "signup", "team", "dashboard", "projects", "settings"];
+const VIEWS = ["admin", "home", "run", "suite", "case", "compare", "history", "login", "signup", "team", "dashboard", "projects", "settings"];
 let currentView = "home";
 // The dashboard screen (D-79). False until /api/health reports `dashboard: true`; while false,
 // applyRoute() never routes to it, so #/dashboard falls through to home like any unknown hash.
@@ -5927,6 +5976,11 @@ function applyRoute() {
   // D-80. The Projects and Settings pages exist only with the dashboard's top-nav layout on.
   // #/projects/<id>/cases/<id> is a case and was routed above (caseRoute), so only the bare list
   // and a single project reach here. Off, both hashes fall through to home as they always did.
+  // D-84: the Admin page, platform admins only (the server refuses everyone else regardless).
+  if (head === "admin" && dashboardOn) {
+    if (!auth.platformAdmin) { navigate("#/dashboard"); return; }
+    showView("admin"); setCrumbs(["Admin"]); renderAdminView(); return;
+  }
   if (head === "projects" && dashboardOn) {
     showView("projects");
     setCrumbs(["Projects"]);
@@ -6561,6 +6615,7 @@ fetch("/api/health")
     if (h && h.jira === true) renderJiraRow();
     if (h && h.projectDiscovery === true) renderProjectFreshBox();
     if (h && typeof h.landingUrl === "string") renderLandingLink(h.landingUrl);
+    if (h && h.platformAdmins === true) { platformModel = true; renderProjectPicker(); }
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);
@@ -8467,6 +8522,12 @@ function drawOneProject(body, projectId) {
       ${runs.length ? `<div data-pv-none hidden>${empty("No recent run here matches.")}</div>` : ""}
     </div>`;
 
+  // D-84: who can see this project, for owners and admins (testers and viewers are added here).
+  const membersCard = platformModel && !projectsUnavailable && canManageProjects() ? `
+    <div data-dash="card">
+      <div data-dash="card-head"><span data-dash="ico">${icon("list", { size: 15 })}</span><h2>Who can see this project</h2></div>
+      <div data-pv-members><div class="tree-empty" style="padding:12px 4px">Loading…</div></div>
+    </div>` : "";
   const summary = projectsUnavailable
     ? pvPlural(runCount, "recent run")
     : `${pvPlural(cases, "saved case")} · ${pvPlural(suites.length, "suite")} · ${pvPlural(runCount, "run")}`;
@@ -8494,8 +8555,10 @@ function drawOneProject(body, projectId) {
       <span class="hrow-meta" data-pv-search-count aria-live="polite"></span>
     </div>
     <div data-dash="row">${suitesCard}${unfiledCard}</div>
+    ${membersCard}
     ${runsCard}`;
   bindProjectsView(body, p);
+  if (membersCard) renderProjectMembers(body, p);
   bindProjectSearch(body, p, suites);
 }
 
@@ -8789,6 +8852,247 @@ function buildSettingsView() {
 }
 
 // -----------------------------------------------------------------------------
+// D-84: platform admins and company organisations (PLATFORM_ADMIN_ENABLED, default off).
+//
+// Drawn only when /api/health says `platformAdmins: true` (platformModel) and, for the Admin page
+// and the organisation picker, only for an account /api/auth/me reports as `platformAdmin`. Every
+// action is a NEW route checked on the server (src/server/platformAdmin.ts); hiding a control here
+// is a courtesy, never the gate. Existing classes only (rule 3); layout through data-dash.
+// -----------------------------------------------------------------------------
+
+/** The "Admin" nav link and the organisation picker — admins only, built once, removed on sign-out. */
+async function renderAdminChrome() {
+  if (!platformModel || !auth.platformAdmin || !dashboardOn) return;
+  const nav = document.getElementById("appNav");
+  if (nav && !document.getElementById("navAdmin")) {
+    const a = document.createElement("a");
+    a.id = "navAdmin";
+    a.className = "topbar-btn";
+    a.href = "#/admin";
+    a.textContent = "Admin";
+    nav.appendChild(a);
+  }
+  if (document.getElementById("orgPicker")) return;
+  const res = await fetch("/api/admin/organisations").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const orgs = res && Array.isArray(res.organisations) ? res.organisations : [];
+  if (!orgs.length || document.getElementById("orgPicker")) return;
+  const sel = document.createElement("select");
+  sel.id = "orgPicker";
+  sel.className = "team-select";
+  sel.setAttribute("aria-label", "Organisation you are working in");
+  sel.title = "Organisation you are working in";
+  sel.innerHTML = orgs.map((o) => `<option value="${escapeHtml(o.id)}"${o.id === auth.organisationId ? " selected" : ""}>${escapeHtml(o.name)}</option>`).join("");
+  sel.addEventListener("change", () => switchAdminOrg(sel.value));
+  const actions = document.querySelector(".topbar-actions");
+  actions?.insertBefore(sel, actions.firstChild);
+}
+
+/** Work in another organisation: remembered for this tab, then everything is loaded again for it. */
+function switchAdminOrg(orgId) {
+  auth.adminOrgId = orgId || null;
+  try { if (orgId) sessionStorage.setItem("tb-admin-org", orgId); else sessionStorage.removeItem("tb-admin-org"); } catch { /* storage blocked */ }
+  location.hash = "#/dashboard";
+  location.reload();
+}
+
+/** The Admin page: every organisation, a New organisation form, and one organisation's people. */
+let adminOpenOrg = null;
+async function renderAdminView() {
+  const body = document.getElementById("adminViewBody");
+  if (!body) return;
+  body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">Loading…</div>`;
+  const res = await fetch("/api/admin/organisations").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (currentView !== "admin") return;
+  const orgs = res && Array.isArray(res.organisations) ? res.organisations : [];
+  const row = (o) => `
+    <div class="hrow" data-adm-org="${escapeHtml(o.id)}">
+      <div class="hrow-main">
+        <div class="hrow-label">${escapeHtml(o.name)}${o.id === auth.organisationId ? ` <span class="case-badge badge-passed">working in</span>` : ""}</div>
+        <div class="hrow-meta">${escapeHtml(`${pvPlural(o.members, "user")} · ${pvPlural(o.projects, "project")}`)}</div>
+      </div>
+      <div class="hrow-actions">
+        <button type="button" class="dl-btn-inline" data-adm-act="people" data-id="${escapeHtml(o.id)}">People</button>
+        <button type="button" class="dl-btn-inline" data-adm-act="open" data-id="${escapeHtml(o.id)}">Work in this</button>
+      </div>
+    </div>
+    ${adminOpenOrg === o.id ? `<div data-adm-people="${escapeHtml(o.id)}" style="margin:0 0 10px 14px"><div class="tree-empty" style="padding:12px 4px">Loading…</div></div>` : ""}`;
+  body.innerHTML = `
+    <div data-dash="head">
+      <div>
+        <div class="eyebrow">ADMIN</div>
+        <h1 class="page-head-title">Organisations</h1>
+        <p class="tagline">Every company on this Testbench. Create one, add its people, or work inside it.</p>
+      </div>
+    </div>
+    <div data-dash="card">
+      <div data-dash="card-head"><h2>New organisation</h2></div>
+      <div data-dash="form">
+        <input type="text" class="project-form-input" data-adm="org-name" placeholder="Company name" aria-label="Company name" />
+        <button type="button" class="run-btn" data-adm-act="org-create">Create</button>
+      </div>
+      <div class="hrow-meta" data-adm="org-msg" aria-live="polite"></div>
+    </div>
+    <div data-dash="card">
+      <div data-dash="card-head"><h2>${escapeHtml(pvPlural(orgs.length, "organisation"))}</h2></div>
+      ${orgs.length ? orgs.map(row).join("") : `<div class="tree-empty" style="padding:22px 16px;text-align:center">${res ? "No organisations yet. Create the first one above." : "Couldn't load the organisations."}</div>`}
+    </div>`;
+
+  body.querySelector('[data-adm-act="org-create"]').addEventListener("click", async () => {
+    const input = body.querySelector('[data-adm="org-name"]');
+    const msg = body.querySelector('[data-adm="org-msg"]');
+    const name = input.value.trim();
+    if (!name) { msg.textContent = "Enter the company's name."; return; }
+    const r = await fetch("/api/admin/organisations", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+    });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.textContent = out.error || "That didn't work."; return; }
+    adminOpenOrg = out.id;
+    toast(`${out.name} created. Add its first owner below.`);
+    document.getElementById("orgPicker")?.remove();
+    renderAdminChrome();
+    renderAdminView();
+  });
+  body.querySelectorAll('[data-adm-act="open"]').forEach((b) => b.addEventListener("click", () => switchAdminOrg(b.dataset.id)));
+  body.querySelectorAll('[data-adm-act="people"]').forEach((b) => b.addEventListener("click", () => {
+    adminOpenOrg = adminOpenOrg === b.dataset.id ? null : b.dataset.id;
+    renderAdminView();
+  }));
+  if (adminOpenOrg) renderAdminPeople(body, adminOpenOrg);
+}
+
+/** One organisation's people on the Admin page: who is in it, New user, and Move an existing account here. */
+async function renderAdminPeople(body, orgId) {
+  const host = body.querySelector(`[data-adm-people="${CSS.escape(orgId)}"]`);
+  if (!host) return;
+  const res = await fetch(`/api/organisations/${encodeURIComponent(orgId)}/members`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const members = res && Array.isArray(res.members) ? res.members : [];
+  const roleOpts = (sel) => ["owner", "tester", "viewer"].map((r) => `<option value="${r}"${r === sel ? " selected" : ""}>${r}</option>`).join("");
+  host.innerHTML = `
+    ${members.length ? members.map((m) => `
+      <div class="hrow">
+        <div class="hrow-main"><div class="hrow-label">${escapeHtml(m.email || "(unknown address)")}</div></div>
+        <span class="case-badge badge-pending">${escapeHtml(m.role === "admin" ? "owner" : m.role)}</span>
+      </div>`).join("") : `<div class="hrow-meta" style="padding:6px 0">Nobody here yet.</div>`}
+    <div class="hrow-meta" style="margin:12px 0 4px">New user in this organisation</div>
+    <div data-dash="form">
+      <input type="email" class="project-form-input" data-adm="u-email" placeholder="name@company.com" aria-label="New user's email" autocomplete="off" />
+      <input type="password" class="project-form-input" data-adm="u-pass" placeholder="Password (8+ characters)" aria-label="New user's password" autocomplete="new-password" />
+      <select class="team-select" data-adm="u-role" aria-label="New user's role">${roleOpts("owner")}</select>
+      <button type="button" class="dl-btn" data-adm-act="u-create">Create user</button>
+    </div>
+    <div class="hrow-meta" style="margin:12px 0 4px">Move an existing account here (takes it out of any other organisation)</div>
+    <div data-dash="form">
+      <input type="email" class="project-form-input" data-adm="m-email" placeholder="their@email.com" aria-label="Account to move" autocomplete="off" />
+      <select class="team-select" data-adm="m-role" aria-label="Role after the move">${roleOpts("tester")}</select>
+      <button type="button" class="dl-btn" data-adm-act="u-move">Move here</button>
+    </div>
+    <div class="hrow-meta" data-adm="p-msg" aria-live="polite" style="margin-top:6px"></div>`;
+  const msg = host.querySelector('[data-adm="p-msg"]');
+  const call = async (url, payload, ok) => {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.textContent = out.error || "That didn't work."; return; }
+    toast(ok(out));
+    renderAdminView();
+  };
+  host.querySelector('[data-adm-act="u-create"]').addEventListener("click", () => {
+    const email = host.querySelector('[data-adm="u-email"]').value.trim();
+    const password = host.querySelector('[data-adm="u-pass"]').value;
+    const role = host.querySelector('[data-adm="u-role"]').value;
+    if (!email) { msg.textContent = "Enter the new user's email."; return; }
+    if (password.length < 8) { msg.textContent = "The password needs at least 8 characters."; return; }
+    call(`/api/organisations/${encodeURIComponent(orgId)}/users`, { email, password, role },
+      (o) => `${o.email} created as ${o.role}. Give them their email and password to sign in.`);
+  });
+  host.querySelector('[data-adm-act="u-move"]').addEventListener("click", () => {
+    const email = host.querySelector('[data-adm="m-email"]').value.trim();
+    const role = host.querySelector('[data-adm="m-role"]').value;
+    if (!email) { msg.textContent = "Enter the account's email."; return; }
+    if (!confirm(`Move ${email} into this organisation as ${role}? They leave any other organisation.`)) return;
+    call(`/api/admin/organisations/${encodeURIComponent(orgId)}/move-user`, { email, role },
+      (o) => `${o.email} moved here as ${o.role}.`);
+  });
+}
+
+/** D-84: on New test, the projects this person may test in. Picking one fills in its address and
+ *  files the run under it (`projectId`, a field POST /api/runs already accepts). */
+let pickedProjectId = null;
+function renderProjectPicker() {
+  if (!platformModel || !auth.required || document.getElementById("projectPicker")) return;
+  const urlField = document.querySelector("#view-home .field-url");
+  if (!urlField) return;
+  const wrap = document.createElement("label");
+  wrap.className = "field";
+  wrap.id = "projectPickerWrap";
+  wrap.innerHTML = `<span class="field-label">Project</span>
+    <select id="projectPicker" class="team-select" aria-label="Project to test in"><option value="">Choose a project…</option></select>`;
+  urlField.parentNode.insertBefore(wrap, urlField);
+  const sel = wrap.querySelector("select");
+  sel.addEventListener("change", () => {
+    pickedProjectId = sel.value || null;
+    const p = (projectsCache || []).find((x) => x.id === sel.value);
+    if (p && p.baseUrl) {
+      const urlEl = document.getElementById("url");
+      urlEl.value = p.baseUrl.replace(/^https?:\/\//i, "");
+      urlEl.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+  fillProjectPicker();
+}
+function fillProjectPicker() {
+  const sel = document.getElementById("projectPicker");
+  if (!sel) return;
+  const keep = sel.value;
+  sel.innerHTML = `<option value="">Choose a project…</option>` + (projectsCache || [])
+    .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(shortProjectName(p.name))}</option>`).join("");
+  sel.value = keep;
+  if (sel.value !== keep) pickedProjectId = null;
+}
+
+/** D-84: who can see this project — on a project page, for owners and admins. The project's own
+ *  member routes (admin+ on the server, which an owner is). Testers and viewers only: owners see all. */
+async function renderProjectMembers(body, p) {
+  const host = body.querySelector("[data-pv-members]");
+  if (!host || !auth.organisationId) return;
+  const [mRes, oRes] = await Promise.all([
+    fetch(`/api/projects/${encodeURIComponent(p.id)}/members`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    fetch(`/api/organisations/${encodeURIComponent(auth.organisationId)}/members`).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+  ]);
+  if (!document.body.contains(host)) return;
+  const inProject = mRes && Array.isArray(mRes.members) ? mRes.members : [];
+  const people = oRes && Array.isArray(oRes.members) ? oRes.members : [];
+  const inIds = new Set(inProject.map((m) => m.userId));
+  const roleOf = new Map(people.map((m) => [m.userId, m.role]));
+  const addable = people.filter((m) => !inIds.has(m.userId) && (m.role === "tester" || m.role === "viewer"));
+  host.innerHTML = `
+    ${inProject.filter((m) => roleOf.get(m.userId) !== "owner").map((m) => `
+      <div class="hrow">
+        <div class="hrow-main"><div class="hrow-label">${escapeHtml(m.email || "(unknown address)")}</div>
+          <div class="hrow-meta">${escapeHtml(roleOf.get(m.userId) || "")}</div></div>
+        <div class="hrow-actions"><button type="button" class="dl-btn-inline hrow-del" data-pm-del="${escapeHtml(m.userId)}">Remove</button></div>
+      </div>`).join("") || `<div class="hrow-meta" style="padding:6px 0">No testers or viewers yet. Owners see every project.</div>`}
+    ${addable.length ? `<select class="team-select" data-pm-add aria-label="Give this project to someone" style="margin-top:8px">
+      <option value="">+ Add person…</option>
+      ${addable.map((m) => `<option value="${escapeHtml(m.userId)}">${escapeHtml(`${m.email || "(unknown)"} · ${m.role}`)}</option>`).join("")}
+    </select>` : ""}`;
+  host.querySelector("[data-pm-add]")?.addEventListener("change", async (e) => {
+    const userId = e.target.value;
+    if (!userId) return;
+    const r = await fetch(`/api/projects/${encodeURIComponent(p.id)}/members`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId }),
+    });
+    if (!r.ok) { const out = await r.json().catch(() => ({})); toast(out.error || "That didn't work.", "error"); }
+    renderProjectMembers(body, p);
+  });
+  host.querySelectorAll("[data-pm-del]").forEach((b) => b.addEventListener("click", async () => {
+    const r = await fetch(`/api/projects/${encodeURIComponent(p.id)}/members/${encodeURIComponent(b.dataset.pmDel)}`, { method: "DELETE" });
+    if (!r.ok) { const out = await r.json().catch(() => ({})); toast(out.error || "That didn't work.", "error"); }
+    renderProjectMembers(body, p);
+  }));
+}
+
+// -----------------------------------------------------------------------------
 // Team screen — the members of your organisation, and the controls to manage them.
 //
 // This is the UI for routes that already existed and were already enforced
@@ -8818,6 +9122,8 @@ function teamRoleOptions(selected, maxRole) {
   // src/server/authz.ts, and offering `owner` to an admin only produces a 403 they can't act on.
   return ROLES_ASC
     .filter((r) => roleAtLeast(maxRole, r))
+    // D-84: Admin is the platform level, not a company role.
+    .filter((r) => !(platformModel && r === "admin"))
     .map((r) => `<option value="${r}"${r === selected ? " selected" : ""}>${r}</option>`)
     .join("");
 }
@@ -8848,6 +9154,52 @@ async function renderTeamView() {
 
   const isAdmin = roleAtLeast(auth.role, "admin");
 
+  // D-84: with the platform-admin model on, owners CREATE the account here (email, password, role,
+  // optional first project) instead of adding one that already exists. The server refuses anyone
+  // below owner and any organisation that is not theirs.
+  if (isAdmin && platformModel) {
+    document.getElementById("teamAddWrap").innerHTML = `
+      <div class="team-add">
+        <label class="field">
+          <span class="field-label">New user's email</span>
+          <input id="teamNewEmail" type="email" placeholder="name@company.com" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input id="teamNewPassword" type="password" placeholder="8 or more characters" autocomplete="new-password" />
+        </label>
+        <label class="field" style="flex:0 0 130px">
+          <span class="field-label">Role</span>
+          <select id="teamNewRole" class="team-select">${teamRoleOptions("tester", auth.role)}</select>
+        </label>
+        <label class="field" style="flex:0 0 190px">
+          <span class="field-label">First project (optional)</span>
+          <select id="teamNewProject" class="team-select"><option value="">None</option></select>
+        </label>
+        <div class="team-add-actions">
+          <label class="hrow-meta" style="display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="teamNewShow" /> Show password</label>
+          <button type="button" id="teamNewBtn" class="dl-btn-inline">Create user</button>
+        </div>
+      </div>`;
+    document.getElementById("teamNewShow").addEventListener("change", (e) => {
+      document.getElementById("teamNewPassword").type = e.target.checked ? "text" : "password";
+    });
+    document.getElementById("teamNewBtn").addEventListener("click", async () => {
+      const email = document.getElementById("teamNewEmail").value.trim();
+      const password = document.getElementById("teamNewPassword").value;
+      const role = document.getElementById("teamNewRole").value;
+      const projectId = document.getElementById("teamNewProject").value || undefined;
+      if (!email) return teamFeedback("Enter the new user's email.", true);
+      if (password.length < 8) return teamFeedback("The password needs at least 8 characters.", true);
+      await teamCall(
+        `/api/organisations/${encodeURIComponent(orgId)}/users`,
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password, role, ...(projectId ? { projectId } : {}) }) },
+        `${email} created as ${role}${auth.organisationName ? ` in ${auth.organisationName}` : ""}. Give them their email and password to sign in.`,
+      );
+    });
+  } else
   // Add-member form, admins and owners only. The server refuses POST from anyone lower, so
   // this is purely about not offering a dead control.
   if (isAdmin) {
@@ -8907,6 +9259,10 @@ async function renderTeamView() {
   const assignments = (aRes && aRes.assignments) || {};
   const allProjects = (pRes && Array.isArray(pRes.projects)) ? pRes.projects : [];
   const projectName = new Map(allProjects.map((p) => [p.id, p.name]));
+  // D-84: the New user form's "First project" choices.
+  const firstProject = document.getElementById("teamNewProject");
+  if (firstProject) firstProject.innerHTML = `<option value="">None</option>` + allProjects
+    .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(shortProjectName(p.name))}</option>`).join("");
 
   if (!members.length) {
     rows.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">

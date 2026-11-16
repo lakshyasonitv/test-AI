@@ -2570,3 +2570,50 @@ Always landing on the dashboard after sign-in, even for a link to a particular r
 shared link that needs a sign-in first.
 
 **Rollback.** There is no off switch any more. To go back to the old interface, revert this branch's merge on main.
+
+## D-84. Companies and platform Admins: viewer < tester < owner < Admin
+
+**Context.** Members added to a team could not see the team (TD-191): sign-in gave every account an organisation of
+its own, and the app acts in a person's oldest one. The user then set out the model they want: "only an admin can
+create an organisation, which is basically a company; the admins are us, who have access to all organisations and
+can create users with all roles and assign them to the organisation they want; when an owner creates a new user the
+user belongs to the owner's organisation; the hierarchy is viewer < tester < owner < Admin". Their answers: testers
+and viewers see only the projects the owner gives them; the owner sets the new user's password; one organisation per
+person; owners may delete in their own organisation (for now); Admins may work inside any organisation; owners
+manage other owners; old data stays as it is (an old in-company `admin` reads as owner); the first Admin is
+admin@gmail.com.
+
+**Decision.** Behind `PLATFORM_ADMIN_ENABLED` (default off; off is the older model exactly):
+- **Admins** are rows in a new table, `platform_admins` (migration `20261116120000`), kept apart from
+  `organisation_members` because an Admin belongs to no company. `assertOrgAccess` answers "owner" for an Admin in
+  any organisation that exists; an Admin picks one with the `x-organisation-id` header (`actingOrgFor`), which is
+  ignored for everyone else, and sees that organisation's runs.
+- **Company roles** are owner, tester and viewer. The existing ladder already ranked owner above the old in-company
+  admin, so owners already passed every admin-gated route; a legacy `admin` row is simply read as `owner`
+  (`effectiveCompanyRole`), and the member routes refuse to hand `admin` out.
+- **Accounts are created inside a company:** `POST /api/organisations/:orgId/users` (owner of that organisation, or
+  an Admin) makes the Supabase account with the password the owner typed and its membership in one step, with an
+  optional first project; it is unwound if the membership fails. An email that already has an account anywhere is
+  refused (one organisation per person); an Admin moves an existing account with
+  `POST /api/admin/organisations/:orgId/move-user`, which takes it out of any other organisation.
+- **Only Admins create organisations** (`POST /api/admin/organisations`; the old self-serve `POST /api/organisations`
+  answers 403). Sign-in (`/api/auth/bootstrap`) never creates one; an account in none is told to ask its owner.
+- **Testers and viewers test only in their projects (TD-193):** `POST /api/runs` decides the run's project before
+  anything starts — a named project or the URL's project must be one of theirs, and their runs never create a
+  project.
+- **Screens:** an Admin page (`#/admin`: organisations, New organisation, each one's people, New user, Move here),
+  an Admin nav link and organisation picker, "New user" on Team (replacing "Email of an existing account"), "Who can
+  see this project" on a project page, and a Project choice on New test that fills in the address and files the run.
+
+Not flagged, because it fixes the existing sign-in (TD-192): any 401 on the app's own API once signed in returns to
+the sign-in page with "Your session has ended", parking a run in progress.
+
+Tests: `tests/platformAdmin.test.ts` (18, model on), the isolation tables in `tests/multiTenancy.test.ts`, and the
+existing tenancy suites unchanged with it off.
+
+**Rejected.** Making the four Admins owners of every organisation: a membership row per company per Admin would put
+Admins in every roster and make "one organisation per person" false for them. Letting owners move accounts between
+companies: that is a cross-tenant act, so it is the Admins'.
+
+**Not done.** Email invites (the owner passes the password on); an Admin button to add Admins (a row in the table
+for now); a per-project role.
