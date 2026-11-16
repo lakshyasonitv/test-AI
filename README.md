@@ -30,9 +30,16 @@ deterministic code verifies.
   a project's discovery can be shared by its runs.
 - **Secrets stay out of storage.** Credentials live in memory for one run; generated tests carry
   `${env:...}` references, and served artifacts are scrubbed.
+- **A dashboard and one top nav.** A fresh sign-in lands on an overview (`#/dashboard`, also
+  `/dashboard`): counts, two charts, recent runs and saved suites. One nav row on every page
+  (Dashboard · New test · Projects · History · Settings), Projects and Settings as pages, a search
+  over projects and inside each project (its suites, the cases in them, its runs), and every result
+  card listing a case's steps, green up to where it got and red from the step it failed on. Always
+  on, no setting (D-79 to D-83).
 
 Every capability beyond the core pipeline sits behind a setting that defaults **off** — with nothing
-set, the app behaves exactly as the core pipeline always has.
+set, the app behaves exactly as the core pipeline always has. The one exception is the dashboard
+and its layout above, which are simply the app's interface (D-83).
 
 ## Quick start
 

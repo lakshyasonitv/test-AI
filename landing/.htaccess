@@ -1,7 +1,10 @@
 # Read by Hostinger's web server (LiteSpeed/Apache). Optional: delete this file and nothing else changes.
 #
-# https://testbench.space/app  ->  the Testbench app on Azure.
+# https://testbench.space/app  ->  the Testbench app on Azure, opened at its dashboard (D-79).
 # 302 (temporary) on purpose: browsers do not remember it, so changing the address below later
 # takes effect at once. Keep it equal to the app links in index.html.
+# NE (no escape) keeps the "#" of "#/dashboard" as a "#"; without it Apache sends "%23" and the
+# app would read the whole thing as a path. If the app's dashboard is off, #/dashboard simply
+# opens the app's home screen.
 RewriteEngine On
-RewriteRule ^app/?$ https://testbench.livelysmoke-6ad5557f.koreacentral.azurecontainerapps.io/ [R=302,L]
+RewriteRule ^app/?$ https://testbench.livelysmoke-6ad5557f.koreacentral.azurecontainerapps.io/#/dashboard [R=302,L,NE]

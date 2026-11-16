@@ -138,7 +138,7 @@ describe("public/app.js — New run button", () => {
     };
 
     // Every view in VIEWS except home, with an otherwise-identical empty workspace.
-    for (const view of ["run", "suite", "case", "compare", "history", "login", "signup", "team"]) {
+    for (const view of ["run", "suite", "case", "compare", "history", "login", "signup", "team", "dashboard", "projects", "settings"]) {
       expect(disabledOn(view), `New Run must stay clickable on the "${view}" view`).toBe(false);
     }
 

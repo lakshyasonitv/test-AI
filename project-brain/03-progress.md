@@ -1,5 +1,26 @@
 # Progress — where we are
 
+*Last updated: 2026-11-16, latest. ui/dashboard MERGED INTO MAIN at the user's go (production deploy). The new interface (D-79..D-82) plus D-83: the dashboard has no setting (DASHBOARD_ENABLED gone) and a sign-in lands on it. Server vs pre-merge main: only GET /dashboard (7 lines). Rollback = revert the merge commit on main. Open: TD-151 (a first run on a new multi-screen form, e.g. TB Customer Onboarding Wizard, stops after screen 1 — main's pipeline); lower roles' view of the new pages not checked live. See journal/2026-11-16.md.*
+
+*Last updated: 2026-11-16, latest. + D-82 search inside a project (suites, the cases in them, unfiled cases, runs), frontend only. ui/dashboard = origin/main d536a57 backend + the new frontend, incl. D-81 step list on result cards (green up to where a case got, red from its failing step). Local .env now turns on MAX_CONCURRENT_RUNS=2, SALESFORCE_DEEP_DISCOVERY / HOLLOW_PASS_GUARDS / SALESFORCE_API_CHECKS / SEED / CLEANUP / APPROVALS / CUSTOM_LINKS (user's choice; .env is gitignored, defaults in .env.example unchanged). Salesforce run 2026-11-13T10-40-05-865Z-3cb6d6f7 (before those flags) on innovation-inspiration-2209: flows worked, 2 cases failed on their own label-text checks (main's code). See journal/2026-11-13.md.*
+
+*Last updated: 2026-11-13, latest. `ui/dashboard` (pushed) = origin/main 510697d backend byte for byte + the new frontend (dashboard D-79, top-nav layout D-80, in-panel refine TD-187) + GET /dashboard and the health `dashboard` field. The admin-run fixes (TD-188/189) are on local branch fix/admin-signin-order only. See journal/2026-11-13.md.*
+
+*Last updated: 2026-11-13. Branch `ui/dashboard`, still NOT committed: the dashboard (D-79, now ON by default) plus
+the top-nav layout (D-80) — one nav row on every page (Dashboard · New test · Projects · History · Settings),
+Projects and Settings as pages, the sidebar and ☰ menu folded away; `DASHBOARD_ENABLED=false` gives the old app.
+Live Azure is still `main` 88a4b27 (no dashboard). The Hostinger zip on the Desktop predates the landing's
+`#/dashboard` links; rebuild it before uploading. Also uncommitted: refine at the case-review gate now confirms
+in the panel (TD-187, fixed). UPDATE later 2026-11-13: that work is committed locally (03b52cc, not pushed) and
+origin/main e9bae35 is merged in (the branch had been 16 Salesforce commits behind — the "made it worse" report).
+TD-188 (a case that logs in after its first click ran signed out) fixed in ir.ts, uncommitted, not yet live-run.
+See journal/2026-11-13.md.*
+
+*Last updated: 2026-11-12. Branch `ui/dashboard` = `ui/app-like-landing` (theme.css restyle, pushed for review) +
+origin/main `ed59ee1` + an in-app dashboard at `#/dashboard` behind `DASHBOARD_ENABLED` (D-79, read-only, off by
+default); landing buttons and `/app` now open `#/dashboard` (home when the flag is off). NOT committed. See
+journal/2026-11-12.md.*
+
 *Last updated: 2026-11-06. Branch `redesign/app-ui` (3 commits ahead of main: landing page, top-bar link, theme.css
 re-theme). On top of it, NOT committed: the landing page moved out of the app into `landing/` for Hostinger, linked
 both ways (buttons → Azure app; `LANDING_URL` → "Landing page" link in the app, off when unset), D-76. Uncommitted

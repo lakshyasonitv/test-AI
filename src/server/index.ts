@@ -2501,6 +2501,13 @@ app.get("/", (_req, res) => {
   res.sendFile(path.resolve("public/index.html"));
 });
 
+// A plain, shareable address for the dashboard (D-79): /dashboard -> the app's #/dashboard. The app
+// routes by hash, so this is a redirect rather than a second copy of the page. A NEW route; no
+// existing route changes (rule 1). Always on, like the dashboard itself (D-83).
+app.get("/dashboard", (_req, res) => {
+  res.redirect(302, "/#/dashboard");
+});
+
 const port = Number(process.env.PORT ?? 3000);
 
 /**
