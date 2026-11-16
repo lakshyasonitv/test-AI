@@ -3,27 +3,20 @@ import { readFileSync } from "node:fs";
 import request from "supertest";
 import { app } from "../src/server/index.js";
 import { invalidateMemberships } from "../src/server/authz.js";
-import { dashboardEnabled } from "../src/server/dashboardFlag.js";
 
 /**
- * D-79 — the dashboard screen at #/dashboard. ON by default at the user's explicit request (an
- * exception to platform rule 2, recorded in D-79); DASHBOARD_ENABLED=false|0|off|no turns it off,
- * and off means /api/health and the app are exactly what they were before the dashboard existed.
+ * D-79 — the dashboard screen at #/dashboard. Since D-83 it is simply the app: no setting turns it
+ * on or off (DASHBOARD_ENABLED is gone, at the user's request), and a fresh sign-in lands on it.
  * The screen only reads existing routes, never changes a route's shape (rule 1), reuses existing
  * classes (rule 3) and never shows or hides anything with .hidden (rule 4).
  */
 
-const original = process.env.DASHBOARD_ENABLED;
 beforeEach(() => {
   delete process.env.AUTH_ENABLED;
   delete process.env.DB_ENABLED;
-  delete process.env.DASHBOARD_ENABLED;
   invalidateMemberships();
 });
-afterEach(() => {
-  if (original === undefined) delete process.env.DASHBOARD_ENABLED;
-  else process.env.DASHBOARD_ENABLED = original;
-});
+afterEach(() => { delete process.env.DASHBOARD_ENABLED; });
 
 // Normalised to LF: a Windows checkout (core.autocrlf) has CRLF line endings, CI does not (TD-170).
 const read = (p: string) => readFileSync(p, "utf8").replace(/\r\n/g, "\n");
@@ -39,52 +32,25 @@ function fnSource(decl: string): string {
   return e < 0 ? "" : APP.slice(s, e + 2);
 }
 
-describe("dashboardEnabled()", () => {
-  it("is ON by default: unset, blank, or any value that is not an explicit off", () => {
-    expect(dashboardEnabled()).toBe(true);
-    for (const v of ["", "  ", "true", "TRUE", "1", "yes", "on"]) {
-      process.env.DASHBOARD_ENABLED = v;
-      expect(dashboardEnabled(), `DASHBOARD_ENABLED=${JSON.stringify(v)}`).toBe(true);
-    }
+describe("D-83: no setting, and the server is main's apart from /dashboard", () => {
+  it("has no DASHBOARD_ENABLED in the server or the app", () => {
+    expect(read("src/server/index.ts")).not.toContain("DASHBOARD_ENABLED");
+    expect(read("src/server/index.ts")).not.toContain("dashboardEnabled");
+    expect(APP).not.toContain("DASHBOARD_ENABLED");
   });
 
-  it("is off for false, 0, off or no, ignoring case and surrounding space", () => {
-    for (const v of ["false", "FALSE", " false ", "0", "off", "OFF", "no"]) {
-      process.env.DASHBOARD_ENABLED = v;
-      expect(dashboardEnabled(), `DASHBOARD_ENABLED=${JSON.stringify(v)}`).toBe(false);
-    }
-  });
-});
-
-describe("GET /api/health and DASHBOARD_ENABLED", () => {
-  it("reports dashboard:true by default, with no setting at all", async () => {
+  it("leaves /api/health as it was: no dashboard field", async () => {
     const res = await request(app).get("/api/health");
     expect(res.status).toBe(200);
-    expect(res.body.dashboard).toBe(true);
+    expect("dashboard" in res.body).toBe(false);
+    expect(res.body.status).toBe("ok");
   });
 
-  it("serves a plain /dashboard address that redirects into the app", async () => {
-    const on = await request(app).get("/dashboard");
-    expect(on.status).toBe(302);
-    expect(on.headers.location).toBe("/#/dashboard");
-    process.env.DASHBOARD_ENABLED = "false";
-    const off = await request(app).get("/dashboard");
-    expect(off.status).toBe(302);
-    expect(off.headers.location).toBe("/");
-  });
-
-  it("has no dashboard field when turned off, and on only ADDS that field", async () => {
-    process.env.DASHBOARD_ENABLED = "false";
-    const off = (await request(app).get("/api/health")).body;
-    expect("dashboard" in off).toBe(false);
-    delete process.env.DASHBOARD_ENABLED;
-    const on = (await request(app).get("/api/health")).body;
-    expect(on.dashboard).toBe(true);
-    // Additive only: every key of the flag-off body is still there, in the same order.
-    const offKeys = Object.keys(off);
-    expect(Object.keys(on).slice(0, offKeys.length)).toEqual(offKeys);
-    expect(on.status).toBe("ok");
-    expect(typeof on.defaults.gateReview).toBe("boolean");
+  it("serves a plain /dashboard address that always redirects into the app", async () => {
+    process.env.DASHBOARD_ENABLED = "false";   // no longer read: still the dashboard
+    const res = await request(app).get("/dashboard");
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe("/#/dashboard");
   });
 });
 
@@ -101,26 +67,28 @@ describe("the dashboard in app.js", () => {
     expect(ENABLE).toContain("dashboardOn = true");
   });
 
-  it("is a view showView() knows, starts off, and is only turned on by /api/health", () => {
+  it("is a view showView() knows, turned on once at startup before the first route (D-83)", () => {
     expect(APP).toMatch(/const VIEWS = \[[^\]]*"dashboard"[^\]]*\];/);
     expect(APP).toContain("let dashboardOn = false;");
-    expect(APP).toContain("if (h && h.dashboard === true) enableDashboard();");
+    // no longer waits for /api/health: there is no setting
+    expect(APP).not.toContain("h.dashboard === true");
+    expect(APP).toContain("enableDashboard({ startup: true });\napplyRoute();\n");
     // the only assignment that turns it on is inside enableDashboard()
     expect(APP.split("dashboardOn = true").length - 1).toBe(1);
   });
 
-  it("after sign-in, lands on the page that was asked for (dashboard on), or #/ as before (off)", () => {
+  it("after sign-in, lands on the dashboard; only a link to one particular page goes there (D-83)", () => {
     const src = fnSource("function afterSignInHash(");
-    expect(src).toContain('if (!dashboardOn) return "#/";');
     const run = (on: boolean, hash: string) =>
       // eslint-disable-next-line no-new-func
       new Function("dashboardOn", "location", `${src}; return afterSignInHash();`)(on, { hash });
-    expect(run(false, "#/dashboard")).toBe("#/");          // flag off: exactly the old behaviour
-    expect(run(false, "")).toBe("#/");
-    expect(run(true, "#/dashboard")).toBe("#/dashboard");  // landing "Start testing"
-    expect(run(true, "#/")).toBe("#/");                    // landing "Run a new test"
-    expect(run(true, "#/history")).toBe("#/history");
     expect(run(true, "")).toBe("#/dashboard");             // bare address
+    expect(run(true, "#")).toBe("#/dashboard");
+    expect(run(true, "#/")).toBe("#/dashboard");           // the home screen: the dashboard after sign-in
+    expect(run(true, "#/dashboard")).toBe("#/dashboard");  // landing "Start testing"
+    expect(run(true, "#/history")).toBe("#/history");      // a particular page: a shared link still works
+    expect(run(true, "#/run/2026-11-16T08-08-54-241Z-3b2afe63")).toBe("#/run/2026-11-16T08-08-54-241Z-3b2afe63");
+    expect(run(true, "#/projects/abc")).toBe("#/projects/abc");
     // both the sign-in and the sign-up handler use it; a parked run still wins
     expect(APP).toContain("navigate(resume ? `#/run/${resume}` : afterSignInHash());");
     expect(APP.split("navigate(afterSignInHash());").length - 1).toBe(1);
@@ -131,12 +99,14 @@ describe("the dashboard in app.js", () => {
   });
 
   it("opens the dashboard for the bare app address only, never for #/ (the new-test screen)", () => {
+    // at startup without a hashchange (replaceState), so the first route draws it once
+    expect(ENABLE).toContain(`if (!previewing && (!location.hash || location.hash === "#")) history.replaceState(null, "", "#/dashboard");`);
     expect(ENABLE).toContain(`if (!previewing && (!location.hash || location.hash === "#")) { location.replace("#/dashboard"); return; }`);
     // #/ still routes to home: the redirect is in enableDashboard(), not in applyRoute()
     expect(APP).toContain('showView("home");\n  setCrumbs([]);');
   });
 
-  it("routes #/dashboard only while the flag is on, before the home fallback", () => {
+  it("routes #/dashboard (dashboardOn, always true since D-83) before the home fallback", () => {
     expect(APP).toContain('if (head === "dashboard" && dashboardOn) {');
     const routeBlock = APP.slice(ROUTE_START, APP.indexOf("return;", ROUTE_START));
     expect(routeBlock).toContain('showView("dashboard")');
@@ -261,7 +231,7 @@ describe("the dashboard in app.js", () => {
     expect(hides).toEqual(["#caseFeedback:not(:has(*)), #cdConflict:not(:has(*))"]);
   });
 
-  it("keeps the 'Testbench' crumb at home while the flag is off", () => {
+  it("the 'Testbench' crumb leads to the dashboard", () => {
     expect(APP).toContain('navigate(dashboardOn ? "#/dashboard" : "#/")');
   });
 });

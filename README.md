@@ -30,9 +30,16 @@ deterministic code verifies.
   a project's discovery can be shared by its runs.
 - **Secrets stay out of storage.** Credentials live in memory for one run; generated tests carry
   `${env:...}` references, and served artifacts are scrubbed.
+- **A dashboard and one top nav.** A fresh sign-in lands on an overview (`#/dashboard`, also
+  `/dashboard`): counts, two charts, recent runs and saved suites. One nav row on every page
+  (Dashboard · New test · Projects · History · Settings), Projects and Settings as pages, a search
+  over projects and inside each project (its suites, the cases in them, its runs), and every result
+  card listing a case's steps, green up to where it got and red from the step it failed on. Always
+  on, no setting (D-79 to D-83).
 
 Every capability beyond the core pipeline sits behind a setting that defaults **off** — with nothing
-set, the app behaves exactly as the core pipeline always has.
+set, the app behaves exactly as the core pipeline always has. The one exception is the dashboard
+and its layout above, which are simply the app's interface (D-83).
 
 ## Quick start
 
@@ -327,7 +334,6 @@ not been configured for a capability never advertises it.
 | `PROJECT_DISCOVERY_SHARING` | `false` | A project's site discovery is saved for **7 days** and reused by every run of that project with the same URL and the same login, instead of exploring the site each time (and instead of the 30-minute global cache). If several people start runs on one project at once, one explores and the others wait and reuse it. "Explore the site again" on the home screen makes the next run explore afresh and replace the saved one. Separate per company and per project. Org-connection Salesforce runs keep their own saved scan (`SALESFORCE_DISCOVERY_CACHE_ENABLED`). See `DECISIONS.md` D-72 |
 | `JIRA_ENABLED` | `false` | Jira Phase 1: "Connect Jira" above the prompt box. Each user signs in to their own Atlassian account (OAuth 2.0, read-only `read:jira-work`), types a story key, and the story's title and description fill the prompt box; the URL and Run are unchanged. Needs `JIRA_CLIENT_ID`, `JIRA_CLIENT_SECRET`; `JIRA_REDIRECT_URL` defaults to `http://localhost:<PORT>/api/jira/callback` and must match the Atlassian console exactly. The Jira token is held in server memory only, so a restart means connecting again. `JIRA_MAX_PROMPT_CHARS` (default 4000) caps the text. See `DECISIONS.md` D-71 |
 | `LANDING_URL` | unset | Address of the marketing landing page, which is hosted apart from the app (`landing/`, see [landing/README.md](landing/README.md)). Set to an `http(s)` address: a "Landing page" link in the top bar goes there. Unset or invalid: no link. See `DECISIONS.md` D-76 |
-| `DASHBOARD_ENABLED` | `true` (on) | On by default (D-79 exception to the off-by-default rule): the app opens on an overview screen (also at `/dashboard`). Set `false` to turn it off. When on it adds an overview screen at `#/dashboard`: links to a new test, History, saved suites and recent runs, with counts and two charts from the recent runs. The landing page's buttons open it. It also switches the app to one top-nav layout (D-80): Dashboard · New test · Projects · History · Settings on every page, Projects and Settings as pages (`#/projects`, `#/settings`), and the sidebar and the ☰ menu folded away. A run's result cards list every step of a case, green up to where it got and red from the step it failed on (D-81). The Projects page has a search box (projects by name, address or suite), and each project page one over its suites (and the cases inside them), its other cases and its recent runs (D-82). Reads and writes only through existing routes. Off: no screen, no nav row, the old sidebar layout, and `#/dashboard`, `#/projects`, `#/settings` open home. See `DECISIONS.md` D-79 and D-80 |
 | `DETERMINISTIC_HEAL` | `false` | A failed step is first re-matched against the discovered page by structure (renamed or moved element), with no AI call and no new browser, before the AI self-heal is tried |
 | `SCREEN_MAP_ENABLED` | `false` | Salesforce runs remember the screens their captures reach (names only, never selectors) and show them to the next run as hints. See `DECISIONS.md` D-54 |
 | `ORG_LLM_CONFIG_ENABLED` | `false` | An organisation can store its own Gemini key, model and budget (sealed with `LLM_KEY_FILE`, never returned to a browser). Off: the routes 404 and runs use the env keys |

@@ -670,7 +670,7 @@ body[data-shell="top"] #view-home .templates-row { justify-content: center; }
    Every step of the case, green up to where the run got, red from the step it failed on and
    every step after it. Data attributes, not classes (style.css's class contract is untouched);
    the colours are the verdict tokens .badge-passed / .badge-failed already use, so dark mode
-   follows. app.js only draws it with the new layout on (DASHBOARD_ENABLED). */
+   follows. app.js draws it in the new layout, which is always on (D-83). */
 [data-step-trail] { margin: 4px 0 14px; }
 [data-step-head] { margin: 0 0 8px; font-size: .8rem; color: var(--text-2); }
 [data-step-head] b { color: var(--text); font-weight: 600; margin-right: 6px; }

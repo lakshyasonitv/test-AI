@@ -124,7 +124,6 @@ import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabl
 import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
 import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
 import { landingUrl } from "./landingLink.js";
-import { dashboardEnabled } from "./dashboardFlag.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -919,9 +918,6 @@ app.get("/api/health", (_req, res) => {
     // ADDITIVE, present ONLY when LANDING_URL is a valid http(s) address (D-76): app.js then adds a
     // "Landing page" link to the top bar. The landing page is public, so its address is too.
     ...(landingUrl() ? { landingUrl: landingUrl() } : {}),
-    // ADDITIVE, present ONLY when DASHBOARD_ENABLED=true (D-79): app.js then routes #/dashboard to
-    // the overview screen and adds a "Dashboard" link. Off: the body is unchanged.
-    ...(dashboardEnabled() ? { dashboard: true } : {}),
   });
 });
 
@@ -2507,9 +2503,9 @@ app.get("/", (_req, res) => {
 
 // A plain, shareable address for the dashboard (D-79): /dashboard -> the app's #/dashboard. The app
 // routes by hash, so this is a redirect rather than a second copy of the page. A NEW route; no
-// existing route changes (rule 1). With the dashboard turned off it goes to the app's home.
+// existing route changes (rule 1). Always on, like the dashboard itself (D-83).
 app.get("/dashboard", (_req, res) => {
-  res.redirect(302, dashboardEnabled() ? "/#/dashboard" : "/");
+  res.redirect(302, "/#/dashboard");
 });
 
 const port = Number(process.env.PORT ?? 3000);

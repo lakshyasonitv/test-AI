@@ -1925,7 +1925,7 @@ function renderCaseNarrative(container, c, ir, status = "passed", tokens = null)
  * generateSpec emits exactly one test.step() per IR step in order (extractFailureDetail in
  * executor.ts relies on the same fact), so step i of the report is step i of the IR. A step the
  * report holds without an error ran; the one with the error failed; a step past the end of the
- * report never ran. Part of the new layout: with DASHBOARD_ENABLED off nothing here runs.
+ * report never ran. Part of the new layout (dashboardOn, always on since D-83).
  */
 function reportStepsOf(raw, title, strict = false) {
   const tests = [];
@@ -3725,15 +3725,17 @@ let pollGeneration = 0;
 let returnToRunAfterSignIn = null;
 
 /**
- * Where a fresh sign-in lands. With the dashboard on (D-79): the page the person was opening when
- * the sign-in screen stopped them (the landing page's "Start testing" asks for #/dashboard, "Run a
- * new test" for #/), or the dashboard when they opened the bare address. With it off: #/, exactly
- * as before. The sign-in screen never changes location.hash, so it still holds that request.
+ * Where a fresh sign-in lands (D-83): the dashboard. Only a link to one particular page the person
+ * was opening when the sign-in screen stopped them (a run, a suite, a case, a project...) goes
+ * there instead, so a shared link still works. The bare address, "#/" (the new-test screen, where
+ * the landing page's "Run a new test" points) and #/dashboard all land on the dashboard. The
+ * sign-in screen never changes location.hash, so it still holds that request. `!dashboardOn` keeps
+ * the pre-dashboard answer for a page that never turned it on (none does since D-83).
  */
 function afterSignInHash() {
   if (!dashboardOn) return "#/";
   const h = location.hash;
-  return h && h !== "#" ? h : "#/dashboard";
+  return h && h !== "#" && h !== "#/" ? h : "#/dashboard";
 }
 
 /**
@@ -6532,7 +6534,6 @@ fetch("/api/health")
     if (h && h.jira === true) renderJiraRow();
     if (h && h.projectDiscovery === true) renderProjectFreshBox();
     if (h && typeof h.landingUrl === "string") renderLandingLink(h.landingUrl);
-    if (h && h.dashboard === true) enableDashboard();
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);
@@ -6565,18 +6566,16 @@ function renderLandingLink(url) {
 }
 
 // -----------------------------------------------------------------------------
-// Dashboard (DASHBOARD_ENABLED, D-79)
+// Dashboard (D-79), always on (D-83)
 //
-// Turned on only by /api/health's `dashboard: true`. Then: #/dashboard routes to the overview
-// screen, the "Testbench" crumb leads there, and one "Dashboard" link joins the top bar, built
-// the same way as the landing link above (reuses .topbar-btn, rule 3; created, never shown or
-// hidden with .hidden, rule 4). Off: none of this runs and the app is exactly as before.
-//
-// The health check answers after the first applyRoute(), so a page opened straight at
-// #/dashboard was routed home while the flag was still unknown. Re-route once it is known.
+// Turned on once at startup, before the first route; there is no setting any more (D-83 removed
+// its setting at the user's request). #/dashboard routes to the overview screen, the
+// "Testbench" crumb leads there, and the nav row is built (reuses .topbar-btn, rule 3; created,
+// never shown or hidden with .hidden, rule 4). `dashboardOn` stays as the one switch the router
+// and the D-80..D-82 screens read, so the old layout's code paths are untouched, just unused.
 // -----------------------------------------------------------------------------
 
-function enableDashboard() {
+function enableDashboard({ startup = false } = {}) {
   if (dashboardOn) return;
   dashboardOn = true;
   // The top-nav layout (D-80): one nav row, no permanent sidebar, Projects and Settings as pages.
@@ -6590,6 +6589,12 @@ function enableDashboard() {
   // Not in the dev-only state preview (?preview=states, preview.js), which drives the run view
   // itself and rewrites the URL without a hash.
   const previewing = new URLSearchParams(location.search).get("preview") === "states";
+  // At startup the first applyRoute() comes right after this, so the address is changed without a
+  // hashchange (replaceState fires none) and that one route draws the dashboard, once.
+  if (startup) {
+    if (!previewing && (!location.hash || location.hash === "#")) history.replaceState(null, "", "#/dashboard");
+    return;
+  }
   if (!previewing && (!location.hash || location.hash === "#")) { location.replace("#/dashboard"); return; }
   const head = (location.hash || "#/").replace(/^#\/?/, "").split("/")[0];
   if (["dashboard", "projects", "settings"].includes(head) && currentView !== head) applyRoute();
@@ -9028,6 +9033,9 @@ async function teamCall(url, init, successMessage) {
 }
 
 let currentRunId = null;
+// D-83: the dashboard and the top-nav layout are the app, with no setting: turned on here, before
+// the first route, so the very first paint is already the new layout (no flash of the old one).
+enableDashboard({ startup: true });
 applyRoute();
 
 // Async, and deliberately AFTER the synchronous applyRoute() above: with auth off this resolves

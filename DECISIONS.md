@@ -2540,3 +2540,33 @@ its own display. The input reuses `.project-form-input`. Pinned by `tests/projec
 make with routes that already exist, and a new route would be new backend on a branch whose backend is kept
 identical to main. Searching the case's steps: the case list carries titles and features, not steps; reading
 every case's steps would be one call per case.
+
+## D-83. The dashboard has no setting, and a sign-in lands on it
+
+**Context.** D-79 made the dashboard (and, with D-80, the top-nav layout) ON by default behind `DASHBOARD_ENABLED`,
+which could turn it off. Before taking it to production the user decided it "does not need any type of flag", and
+that the dashboard should come right after login.
+
+**Decision.**
+- **No setting.** `src/server/dashboardFlag.ts` and the `/api/health` `dashboard` field are gone, so `/api/health`
+  is main's body again. `app.js` calls `enableDashboard({ startup: true })` just before the first `applyRoute()`,
+  so the first paint is already the new layout (it used to wait for the health check and could flash the old one).
+  At startup a bare address becomes `#/dashboard` with `history.replaceState`, which fires no hashchange, so the
+  dashboard is drawn once. `GET /dashboard` stays and always redirects to `/#/dashboard`; with that, the server
+  differs from main by that one 7-line route.
+- **Sign-in lands on the dashboard.** `afterSignInHash()` now sends a bare address, `#` and `#/` to `#/dashboard`
+  (before: `#/` stayed on the new-test screen). Only a link to one particular page the sign-in screen stopped (a
+  run, a suite, a case, a project, History) still opens that page, so a shared link keeps working, and a run parked
+  by a mid-run 401 still wins. Opening `#/` while already signed in is unchanged: the new-test screen.
+- `dashboardOn` stays as the one switch the router and the D-80..D-82 screens read; it is simply always true.
+  The old layout's code (the sidebar, the ☰ menu) is still in the files, hidden by the layout as before.
+
+This is a deliberate exception to platform rule 2 (new capabilities default OFF), made by the user, like D-79's.
+`DASHBOARD_ENABLED` is no longer read anywhere: a value left in an environment does nothing. Pinned by
+`tests/dashboard.test.ts` (the "D-83" block and the sign-in landing cases).
+
+**Rejected.** Keeping the setting but hiding it: an off switch nobody can see is still a second code path to test.
+Always landing on the dashboard after sign-in, even for a link to a particular run: that would break every
+shared link that needs a sign-in first.
+
+**Rollback.** There is no off switch any more. To go back to the old interface, revert this branch's merge on main.
