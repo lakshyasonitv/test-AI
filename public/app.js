@@ -4018,7 +4018,7 @@ form.addEventListener("submit", async (e) => {
 // -----------------------------------------------------------------------------
 
 // Static chrome icons — set once, here, so index.html stays free of inline SVG.
-document.getElementById("brandMark").innerHTML = icon("zap", { size: 18 });
+// #brandMark: the landing page's four-dot logo, drawn by theme.css ("one logo everywhere").
 document.getElementById("newRunIcon").innerHTML = icon("plus", { size: 15 });
 document.getElementById("runIcon").innerHTML = icon("play", { size: 14 });
 document.getElementById("credIcon").innerHTML = icon("key", { size: 18 });
