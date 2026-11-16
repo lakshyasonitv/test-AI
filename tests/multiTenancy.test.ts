@@ -336,6 +336,7 @@ const RESOURCE_ROUTES: { name: string; method: Method; path: string; body?: unkn
   // The report is built from another org's run artifacts -- step titles, error text, screenshots.
   // Reading it is reading their run, so it is isolated exactly like the artifacts it renders.
   { name: "read org A's case report", method: "get", path: `/api/runs/${RUN_A}/report.html`, mounted: "GET /api/runs/:runId/report.html" },
+  { name: "read org A's case report as PDF", method: "get", path: `/api/runs/${RUN_A}/report.pdf`, mounted: "GET /api/runs/:runId/report.pdf" },
   { name: "answer org A's credential prompt", method: "post", path: `/api/runs/${RUN_A}/credentials`, body: { skip: true }, mounted: "POST /api/runs/:runId/credentials" },
   { name: "answer org A's selection gate", method: "post", path: `/api/runs/${RUN_A}/case-selection`, body: { action: "done", selectedIndexes: [0] }, mounted: "POST /api/runs/:runId/case-selection" },
   { name: "rewrite org A's gate case", method: "post", path: `/api/runs/${RUN_A}/case-selection/rewrite`, body: { title: "t", steps: ["s"], instruction: "i" }, mounted: "POST /api/runs/:runId/case-selection/rewrite" },

@@ -188,6 +188,7 @@ const RUN_SCOPED_ROUTES: { name: string; method: "get" | "post" | "delete"; path
   { name: "GET  page-elements",         method: "get",    path: `/api/runs/${RUN_A}/page-elements` },
   // Generated on demand from another run's artifacts, so it is as run-scoped as the artifacts are.
   { name: "GET  run report.html",       method: "get",    path: `/api/runs/${RUN_A}/report.html` },
+  { name: "GET  run report.pdf",        method: "get",    path: `/api/runs/${RUN_A}/report.pdf` },
   { name: "DEL  run",                   method: "delete", path: `/api/runs/${RUN_A}` },
   // Step 5.2's bridge from a run into the library. Doubly scoped — the SOURCE run must be
   // reachable and the DESTINATION project must be too — so it belongs in this table like any

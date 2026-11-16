@@ -1,7 +1,7 @@
 import express from "express";
 import path from "node:path";
-import { rmSync, existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
-import { buildRunReportHtml } from "../stages/htmlReport.js";
+import { rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { buildRunReportHtml, loadRunReport, renderReportPdf } from "../stages/htmlReport.js";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
@@ -604,73 +604,34 @@ app.post("/api/runs/:runId/case-selection/rewrite", requireRunRole("tester"), ex
  * artifacts listing decides whether a step can show its screenshot. A missing one degrades that
  * part rather than failing the page.
  */
+/** The run's report with the org warning, or null when the run recorded no case. */
+function runReport(runId: string) {
+  const report = loadRunReport(runId);
+  if (!report) return null;
+  // D-68: only on a ticked Salesforce run against a non-test org; absent everywhere else.
+  let target: unknown;
+  try { target = JSON.parse(readFileSync(path.join("runs", runId, "00-run-target.json"), "utf8"))?.targetApp; } catch { /* none */ }
+  const w = target === "salesforce" && report.baseUrl ? orgWarning(report.baseUrl) : null;
+  return w ? { ...report, orgWarning: w.message } : report;
+}
+
 app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => {
-  const { runId } = req.params;
-  const runDir = path.join("runs", runId);
-  const readJson = (...seg: string[]): any | null => {
-    try { return JSON.parse(readFileSync(path.join(runDir, ...seg), "utf8")); } catch { return null; }
-  };
+  const report = runReport(req.params.runId);
+  if (!report) return res.status(404).send("no cases recorded for this run");
+  res.type("html").send(buildRunReportHtml(report));
+});
 
-  const summary = readJson("07-suite-summary.json");
-  const input = readJson("00-input.json");
-  const usage = readJson("08-llm-usage.json");
-
-  // The suite summary is the only place that knows a case's HONEST status — blocked and
-  // truncated_no_assertion cannot be expressed by 05-result.json's passed boolean. Falling back to
-  // the primary case keeps single-case runs (and older runs with no summary) working.
-  const entries: any[] = summary?.cases?.length
-    ? summary.cases
-    : [{ caseId: "case-0", title: readJson("04-ir.json")?.ir?.meta?.title ?? readJson("04-ir.json")?.meta?.title ?? "Test case",
-         status: readJson("05-result.json")?.passed ? "passed" : "failed", resultPath: "" }];
-
-  const cases = entries.map((e: any) => {
-    // A suite case lives in cases/<id>/; the primary case's artifacts sit at the run root.
-    const dir = e.resultPath ? path.join(runDir, "cases", e.caseId) : runDir;
-    const rd = (name: string): any | null => {
-      try { return JSON.parse(readFileSync(path.join(dir, name), "utf8")); } catch { return null; }
-    };
-    // 04-ir.json is a WRAPPER {ir, updatedAppModel} at the run root and a bare IR under cases/.
-    const irRaw = rd("04-ir.json");
-    let artifactFiles: string[] = [];
-    const artifactsDir = path.join(dir, "artifacts");
-    try { artifactFiles = readdirSync(artifactsDir); } catch { /* cleared or never written */ }
-
-    return {
-      caseId: e.caseId,
-      title: e.title ?? e.caseId,
-      status: e.status ?? "failed",
-      whyItMatters: e.whyItMatters,
-      expected: e.expected,
-      saved: rd("05-result.json") ?? {},
-      ir: irRaw?.ir ?? irRaw ?? null,
-      diagnosis: rd("06-diagnosis.json"),
-      artifactsDir,
-      artifactFiles,
-    };
-  });
-
-  if (!cases.length) return res.status(404).send("no cases recorded for this run");
-
-  res.type("html").send(buildRunReportHtml({
-    runId,
-    prompt: input?.prompt,
-    baseUrl: input?.url ?? cases[0]?.ir?.meta?.baseUrl,
-    // A runId is makeRunId()'s ISO stamp with : and . swapped for -, e.g.
-    // 2026-09-17T11-55-50-219Z-0a948aa9. Restore the separators rather than parsing the whole
-    // thing; an unparseable id simply omits the date.
-    startedAt: Date.parse(runId.replace(
-      /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z.*$/, "$1T$2:$3:$4.$5Z")) || undefined,
-    // Totals sit at the top level of 08-llm-usage.json, alongside byStage — not under a `totals` key.
-    llmCalls: usage?.calls,
-    llmTokens: usage?.totalTokens,
-    // D-68: only on a ticked Salesforce run against a non-test org; absent everywhere else.
-    ...(() => {
-      const target = readJson("00-run-target.json")?.targetApp;
-      const w = target === "salesforce" && input?.url ? orgWarning(input.url) : null;
-      return w ? { orgWarning: w.message } : {};
-    })(),
-    cases,
-  }));
+/** The same report as a PDF, for sending to managers and clients and for keeping on file. */
+app.get("/api/runs/:runId/report.pdf", requireRunRole("viewer"), async (req, res) => {
+  const report = runReport(req.params.runId);
+  if (!report) return res.status(404).send("no cases recorded for this run");
+  try {
+    const pdf = await renderReportPdf(buildRunReportHtml(report));
+    res.type("pdf").setHeader("Content-Disposition", `attachment; filename="test-report-${req.params.runId}.pdf"`);
+    res.send(pdf);
+  } catch (err) {
+    res.status(500).send(`the PDF could not be made: ${(err as Error)?.message ?? err}`);
+  }
 });
 
 app.get("/api/runs/:runId/page-elements", requireRunRole("viewer"), (req, res) => {

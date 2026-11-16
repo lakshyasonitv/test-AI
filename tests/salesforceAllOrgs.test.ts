@@ -92,7 +92,7 @@ describe("the HTML report", () => {
   it("shows the warning box under the header when given one", async () => {
     const { buildRunReportHtml } = await import("../src/stages/htmlReport.js");
     const html = buildRunReportHtml({ ...base, orgWarning: "acme.my.salesforce.com is a PRODUCTION Salesforce org." });
-    expect(html).toContain('<div class="failbox"><h3>Not a test org</h3>acme.my.salesforce.com is a PRODUCTION Salesforce org.</div>');
+    expect(html).toContain('<div class="box failed"><p><b>Not a test org.</b> acme.my.salesforce.com is a PRODUCTION Salesforce org.</p></div>');
     expect(html.indexOf("Not a test org")).toBeGreaterThan(html.indexOf("</header>"));
   });
 
