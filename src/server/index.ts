@@ -618,7 +618,7 @@ function runReport(runId: string) {
 app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => {
   const report = runReport(req.params.runId);
   if (!report) return res.status(404).send("no cases recorded for this run");
-  res.type("html").send(buildRunReportHtml(report));
+  res.type("html").send(buildRunReportHtml(report, { everyStepScreenshot: true }));
 });
 
 /** The same report as a PDF, for sending to managers and clients and for keeping on file. */

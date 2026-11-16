@@ -219,3 +219,28 @@ describe("loadRunReport", () => {
     rmSync(root, { recursive: true, force: true });
   });
 });
+
+describe("HTML is the tester's copy, the PDF the short one", () => {
+  it("the HTML appendix carries every step's screenshot; without the option (the PDF) only key ones", () => {
+    const c = aCase({ ir: zqIr, saved: { passed: true, raw: raw(zqSteps.slice(0, 5), [], [tokens]) } });
+    const html = buildRunReportHtml({ runId: "r", cases: [c] }, { everyStepScreenshot: true });
+    expect(html).toContain("Screenshot after step 3");      // a fill: no key screenshot, but the tester's copy has it
+    expect(shots(html)).toBe(1 + 4);                        // the key one, plus steps 1-4 (the wait, step 5, is left out)
+    expect(buildRunReportHtml({ runId: "r", cases: [c] })).not.toContain("Screenshot after step");
+  });
+});
+
+describe("a check's screenshot is taken the moment it passes", () => {
+  it("assert steps call shot(..., true); other steps settle first", async () => {
+    const { generateSpec } = await import("../src/stages/generator.js");
+    const spec = generateSpec({ meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Zq Save" } },
+        { id: "s3", action: "assert", target: { text: "was created" }, assertion: "visible" },
+      ] } as any);
+    expect(spec).toMatch(/step-3\.png", true\);/);
+    expect(spec).toMatch(/step-2\.png"\);/);
+    expect(spec).toContain("async function shot(page, path, now)");
+  });
+});

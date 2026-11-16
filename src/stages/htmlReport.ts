@@ -335,6 +335,8 @@ const STYLE = `
   figcaption { color: #5a5f68; font-size: 12px; margin-top: 4px; }
   ol.steps { margin: 6px 0 0; padding-left: 22px; } ol.steps li { padding: 2px 0; }
   ol.steps li.bad { color: #b42318; font-weight: 600; }
+  ol.steps details { margin: 4px 0 8px; font-weight: 400; } ol.steps summary { cursor: pointer; color: #414750; font-size: 13px; }
+  ol.steps details img { max-width: 100%; border: 1px solid #e2e5ea; border-radius: 8px; margin-top: 6px; display: block; }
   .dur { color: #767b84; font-size: 12px; }
   .err { background: #f6f7f9; border: 1px solid #e2e5ea; border-radius: 8px; padding: 10px 12px;
          font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
@@ -405,10 +407,18 @@ function caseDetail(c: ReportCase, f: ReturnType<typeof caseFacts>, budget: { le
   </section>`;
 }
 
-function caseAppendix(c: ReportCase, f: ReturnType<typeof caseFacts>): string {
+function caseAppendix(c: ReportCase, f: ReturnType<typeof caseFacts>, budget: { left: number }, everyShot: boolean): string {
   const visible = f.rows.filter((r) => !r.isWait);
+  const files = new Set(c.artifactFiles ?? []);
+  // The HTML is the tester's copy: every step keeps its screenshot, folded under the step so the page
+  // stays short. The PDF (everyShot false) carries only the key ones, in the test details above.
+  const shot = (i: number): string => {
+    if (!everyShot || !files.has(`step-${i + 1}.png`)) return "";
+    const src = inlineImage(c.artifactsDir, `step-${i + 1}.png`, budget);
+    return src ? `<details${i === f.failedIdx ? " open" : ""}><summary>Screenshot after step ${i + 1}</summary><img src="${src}" alt="After step ${i + 1}" /></details>` : "";
+  };
   const steps = f.steps.length
-    ? `<ol class="steps">${visible.map((r) => `<li value="${r.i + 1}" class="${r.i === f.failedIdx ? "bad" : ""}">${esc(r.title)} <span class="dur">${esc(secs(r.durationMs))}</span></li>`).join("")}</ol>`
+    ? `<ol class="steps">${visible.map((r) => `<li value="${r.i + 1}" class="${r.i === f.failedIdx ? "bad" : ""}">${esc(r.title)} <span class="dur">${esc(secs(r.durationMs))}</span>${shot(r.i)}</li>`).join("")}</ol>`
     : `<p class="note">No step record: the run ended before the browser test started.</p>`;
   const err = f.outcome === "failed" ? cleanError(f.detail.errorDetail ?? f.detail.error, f.ctx) : "";
   return `
@@ -422,7 +432,9 @@ function caseAppendix(c: ReportCase, f: ReturnType<typeof caseFacts>): string {
   </section>`;
 }
 
-export function buildRunReportHtml(input: RunReportInput): string {
+/** `everyStepScreenshot`: the HTML (tester's) copy shows every step's screenshot in the appendix;
+ *  the PDF leaves it out and shows only the key screenshots. */
+export function buildRunReportHtml(input: RunReportInput, opts: { everyStepScreenshot?: boolean } = {}): string {
   const budget = { left: MAX_INLINE_BYTES };
   const facts = input.cases.map((c) => caseFacts(c));
   const n = (o: Outcome) => facts.filter((f) => f.outcome === o).length;
@@ -466,7 +478,7 @@ export function buildRunReportHtml(input: RunReportInput): string {
   ${total ? `<h2 class="part">Test details</h2>${input.cases.map((c, i) => caseDetail(c, facts[i], budget)).join("")}` : ""}
   <div class="appendix">
   <h2 class="part">Technical appendix</h2>
-  ${input.cases.map((c, i) => caseAppendix(c, facts[i])).join("")}
+  ${input.cases.map((c, i) => caseAppendix(c, facts[i], budget, !!opts.everyStepScreenshot)).join("")}
   <section class="card"><dl class="facts">
     <dt>Run</dt><dd>${esc(input.runId)}</dd>
     ${input.cleanup ? `<dt>Test records</dt><dd>${deleted} deleted from the org after the run${notDeleted ? `, ${notDeleted} could not be deleted` : ""}</dd>` : ""}
