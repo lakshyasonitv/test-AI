@@ -1,6 +1,15 @@
 import type { Request, Response, NextFunction } from "express";
 import { getServiceClient, isDbEnabled, DEFAULT_ORG_ID, fetchRunScopes } from "../db.js";
 import { LOCAL_USER_ID, isAuthEnabled } from "./auth.js";
+import {
+  platformAdminEnabled, isPlatformAdmin, organisationExists, firstOrganisation, effectiveCompanyRole,
+} from "./platformAdmin.js";
+
+/**
+ * D-84: the request header a platform admin uses to say which organisation they are working in.
+ * Read ONLY for a platform admin; for everyone else it is ignored (they belong to one organisation).
+ */
+export const ORG_HEADER = "x-organisation-id";
 
 /**
  * Tenancy and roles — implentationplan.md Step 3.4, plus the role-enforcement half of Step 5.4.
@@ -140,7 +149,8 @@ export async function getMemberships(userId: string): Promise<Membership[]> {
     .filter((r: { role: string }) => isRole(r.role))
     .map((r: { organisation_id: string; role: string }) => ({
       organisationId: r.organisation_id,
-      role: r.role as Role,
+      // D-84: with the platform-admin model on, a legacy in-company `admin` row reads as `owner`.
+      role: effectiveCompanyRole(r.role as Role),
     }));
 
   membershipCache.set(userId, { at: Date.now(), memberships });
@@ -162,6 +172,21 @@ export async function primaryOrgFor(userId: string): Promise<string | null> {
 }
 
 /**
+ * The organisation a request acts in. For everyone: their (one) organisation, as before. For a
+ * platform admin (D-84): the one named in the `x-organisation-id` header if it exists, else their
+ * own membership if they have one, else the oldest organisation — so an admin always lands somewhere
+ * and switches with the organisation picker. The header is ignored for anyone who is not an admin.
+ */
+export async function actingOrgFor(userId: string, req?: { headers?: Record<string, unknown> }): Promise<string | null> {
+  if (platformAdminEnabled() && canEnforceTenancy() && await isPlatformAdmin(userId)) {
+    const asked = req?.headers?.[ORG_HEADER];
+    if (typeof asked === "string" && asked && await organisationExists(asked)) return asked;
+    return (await primaryOrgFor(userId)) ?? (await firstOrganisation());
+  }
+  return primaryOrgFor(userId);
+}
+
+/**
  * THE authorization helper. Every route and the artifact guard goes through this one function.
  *
  * Note the shape: the caller passes the org id it wants to act on, and this proves the caller is
@@ -175,6 +200,13 @@ export async function assertOrgAccess(
   minRole: Role = "viewer",
 ): Promise<Role> {
   if (!canEnforceTenancy()) return "owner";
+
+  // D-84: a platform admin acts as the owner of ANY organisation that exists. Checked against the
+  // organisations table, so a made-up id is still refused.
+  if (platformAdminEnabled() && await isPlatformAdmin(userId)) {
+    if (await organisationExists(organisationId)) return "owner";
+    throw new AccessError(404, "no such organisation");
+  }
 
   const memberships = await getMemberships(userId);
   const found = memberships.find((m) => m.organisationId === organisationId);
@@ -220,7 +252,7 @@ export function requireRole(minRole: Role) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const userId = userIdOf(req);
-      const orgId = await primaryOrgFor(userId);
+      const orgId = await actingOrgFor(userId, req);
       if (!orgId) {
         throw new AccessError(
           403,
@@ -345,8 +377,17 @@ export async function visibleProjectIds(
 export async function filterRunsForUser<T extends { runId: string }>(
   userId: string,
   runs: T[],
+  /** D-84: the organisation a platform admin is looking at; their list is that organisation's runs. */
+  adminOrgScope?: string,
 ): Promise<T[]> {
   if (!canEnforceTenancy()) return runs;
+
+  if (platformAdminEnabled() && await isPlatformAdmin(userId)) {
+    if (!adminOrgScope) return [];
+    const scopes = await fetchRunScopes(runs.map((r) => r.runId));
+    if (scopes === null) return [];
+    return runs.filter((r) => scopes.get(r.runId)?.organisationId === adminOrgScope);
+  }
 
   const memberships = await getMemberships(userId);
   if (memberships.length === 0) return [];

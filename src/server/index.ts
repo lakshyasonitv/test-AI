@@ -26,11 +26,23 @@ import {
   canViewRun,
   filterRunsForUser,
   isRole,
-  primaryOrgFor,
+  actingOrgFor,
+  roleAtLeast,
   requireOrgRole,
   requireRole,
   requireRunRole,
 } from "./authz.js";
+import {
+  platformAdminEnabled,
+  isPlatformAdmin,
+  isCompanyRole,
+  listAllOrganisations,
+  createCompany,
+  createCompanyUser,
+  moveUserToOrganisation,
+  organisationName,
+  organisationExists,
+} from "./platformAdmin.js";
 import {
   addMember,
   bootstrapUser,
@@ -346,6 +358,28 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
     }
     : undefined;
 
+  // D-84 / TD-193: with the platform-admin model on, someone below owner may only test inside the
+  // projects their owner gave them. The run's project is decided HERE, before anything starts: a
+  // named project must be one of theirs, a URL must belong to one of theirs, and a tester's run never
+  // creates a new project (only owners and admins do). Off: decided later, as it always was.
+  let decidedProject: string | null | undefined;
+  if (platformAdminEnabled() && canEnforceTenancy() && !roleAtLeast(req.organisationRole!, "owner")) {
+    const uid = req.user?.id ?? LOCAL_USER_ID;
+    const firstUrl = typeof url === "string" ? url : (Array.isArray(urls) ? urls[0] ?? null : null);
+    const explicit = typeof projectId === "string" && projectId ? projectId : null;
+    const found = explicit ?? await resolveProjectForUrl(req.organisationId!, firstUrl, uid, { create: false });
+    const mine = found
+      ? await assertProjectVisible(uid, req.organisationId!, req.organisationRole!, found).then(() => true, () => false)
+      : false;
+    if (!mine) {
+      return res.status(403).json({
+        code: "project-not-assigned",
+        error: "This site isn't in your projects. Ask your owner to add it to one of your projects.",
+      });
+    }
+    decidedProject = found;
+  }
+
   const runId = makeRunId();
 
   // Dual-write (Step 3.4's dependency). Authorization asks "which organisation owns this run?",
@@ -379,6 +413,11 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
   // is kept as a promise the run awaits before discovery; filing itself stays fire-and-forget.
   const runProjectP = (async (): Promise<string | null> => {
     try {
+      // D-84: already decided and checked above for someone below owner.
+      if (decidedProject !== undefined) {
+        if (decidedProject) recordRunProject(runId, decidedProject);
+        return decidedProject;
+      }
       const explicit = typeof projectId === "string" && projectId ? projectId : null;
       const resolved = explicit
         // assertProjectVisible, not assertProjectInOrg: being in the caller's organisation is not
@@ -739,6 +778,8 @@ app.get("/api/runs", requireRole("viewer"), async (req, res) => {
     const visible = await filterRunsForUser(
       userId,
       [...diskIds, ...orphans.map((r) => r.id)].map((runId) => ({ runId })),
+      // D-84: a platform admin sees the runs of the organisation they picked; ignored for anyone else.
+      req.organisationId,
     );
     const visibleIds = new Set(visible.map((r) => r.runId));
 
@@ -879,6 +920,9 @@ app.get("/api/health", (_req, res) => {
     // ADDITIVE, present ONLY when LANDING_URL is a valid http(s) address (D-76): app.js then adds a
     // "Landing page" link to the top bar. The landing page is public, so its address is too.
     ...(landingUrl() ? { landingUrl: landingUrl() } : {}),
+    // ADDITIVE, only with PLATFORM_ADMIN_ENABLED (D-84): app.js then shows the New user form, the
+    // company roles, and (for an admin) the Admin page and the organisation picker.
+    ...(platformAdminEnabled() ? { platformAdmins: true } : {}),
   });
 });
 
@@ -1259,8 +1303,12 @@ function sendAccessError(res: express.Response, err: unknown): void {
 app.get("/api/auth/me", async (req, res) => {
   const userId = req.user?.id ?? LOCAL_USER_ID;
   try {
-    const organisationId = await primaryOrgFor(userId);
+    // D-84: a platform admin's organisation is the one they picked (x-organisation-id); everyone
+    // else's is their one organisation, exactly as before.
+    const organisationId = await actingOrgFor(userId, req);
     const role = organisationId ? await assertOrgAccess(userId, organisationId, "viewer") : null;
+    const adminModel = platformAdminEnabled() && canEnforceTenancy();
+    const platformAdmin = adminModel && await isPlatformAdmin(userId);
     res.json({
       userId,
       email: req.user?.email ?? null,
@@ -1268,6 +1316,10 @@ app.get("/api/auth/me", async (req, res) => {
       organisationId,
       role,
       tenancyEnforced: canEnforceTenancy(),
+      // ADDITIVE, only with PLATFORM_ADMIN_ENABLED (rule 1): the organisation's name, and whether
+      // this account is a platform admin. Flag off: the body is exactly what it was.
+      ...(adminModel ? { organisationName: organisationId ? await organisationName(organisationId) : null } : {}),
+      ...(platformAdmin ? { platformAdmin: true } : {}),
     });
   } catch (err) {
     sendAccessError(res, err);
@@ -1283,6 +1335,21 @@ app.get("/api/auth/me", async (req, res) => {
  */
 app.post("/api/auth/bootstrap", async (req, res) => {
   try {
+    // D-84: nobody gets an organisation of their own on sign-in any more — accounts are created
+    // inside one by an owner or admin. An account in none (and not an admin) is told so; it can
+    // still sign in, and every organisation-scoped route refuses it, as for any non-member.
+    if (platformAdminEnabled() && canEnforceTenancy()) {
+      const uid = req.user?.id ?? LOCAL_USER_ID;
+      const orgId = await actingOrgFor(uid, req);
+      if (!orgId) {
+        return res.status(403).json({
+          code: "no-organisation",
+          error: "Your account isn't part of an organisation yet. Ask your owner or admin to add you.",
+        });
+      }
+      const role = await assertOrgAccess(uid, orgId, "viewer");
+      return res.json({ organisationId: orgId, organisationName: (await organisationName(orgId)) ?? "Organisation", role, created: false });
+    }
     const result = await bootstrapUser(req.user?.id ?? LOCAL_USER_ID, req.user?.email ?? null);
     res.json(result);
   } catch (err) {
@@ -1308,6 +1375,11 @@ app.post("/api/organisations", async (req, res) => {
   const { name } = req.body ?? {};
   if (typeof name !== "string" || !name.trim()) {
     return res.status(400).json({ error: "name is required" });
+  }
+  // D-84: only a platform admin creates organisations (POST /api/admin/organisations). This old
+  // self-serve route is closed while the model is on; off, unchanged.
+  if (platformAdminEnabled() && canEnforceTenancy()) {
+    return res.status(403).json({ error: "only an admin can create an organisation" });
   }
   try {
     res.status(201).json(await createOrganisation(req.user?.id ?? LOCAL_USER_ID, name));
@@ -1530,6 +1602,10 @@ app.post("/api/organisations/:orgId/members", requireOrgRole("admin"), async (re
   if (!isRole(role)) {
     return res.status(400).json({ error: "role must be one of: owner, admin, tester, viewer" });
   }
+  // D-84: company roles are owner, tester and viewer; Admin is the platform level, not a company role.
+  if (platformAdminEnabled() && !isCompanyRole(role)) {
+    return res.status(400).json({ error: "role must be one of: owner, tester, viewer" });
+  }
   try {
     res.status(201).json(await addMember(req.params.orgId, req.organisationRole!, email, role));
   } catch (err) {
@@ -1541,6 +1617,9 @@ app.patch("/api/organisations/:orgId/members/:userId", requireOrgRole("admin"), 
   const { role } = req.body ?? {};
   if (!isRole(role)) {
     return res.status(400).json({ error: "role must be one of: owner, admin, tester, viewer" });
+  }
+  if (platformAdminEnabled() && !isCompanyRole(role)) {
+    return res.status(400).json({ error: "role must be one of: owner, tester, viewer" });
   }
   try {
     res.json(await changeMemberRole(
@@ -1559,6 +1638,69 @@ app.delete("/api/organisations/:orgId/members/:userId", requireOrgRole("admin"),
   try {
     await removeMember(req.params.orgId, req.organisationRole!, req.params.userId);
     res.status(204).end();
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+// --------------------------------------------------------------------------
+// D-84: platform admins and company organisations (PLATFORM_ADMIN_ENABLED, default off).
+// All NEW routes (rule 1). Off: every one answers 404, as if it did not exist.
+// --------------------------------------------------------------------------
+
+const platformModelOff = (res: express.Response) =>
+  res.status(404).json({ error: "the platform-admin model is not turned on on this server" });
+
+/** Only a platform admin. Not an organisation role: it is checked against platform_admins. */
+async function requirePlatformAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!platformAdminEnabled() || !canEnforceTenancy()) return platformModelOff(res);
+  if (await isPlatformAdmin(req.user?.id ?? "")) return next();
+  res.status(403).json({ error: "only an admin can do this" });
+}
+
+/**
+ * "New user": an owner creates an account in THEIR organisation (or an admin in any). The account,
+ * its role and an optional first project are made together; the password is passed to Supabase and
+ * never stored or echoed. requireOrgRole("owner") proves the caller owns THIS organisation (a
+ * platform admin owns every one); owner may hand out owner, tester or viewer.
+ */
+app.post("/api/organisations/:orgId/users", async (_req, res, next) => {
+  if (!platformAdminEnabled() || !canEnforceTenancy()) return platformModelOff(res);
+  next();
+}, requireOrgRole("owner"), async (req, res) => {
+  try {
+    const { email, password, role, projectId } = req.body ?? {};
+    const made = await createCompanyUser(req.params.orgId, { email, password, role, projectId });
+    res.status(201).json(made);
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+/** Every organisation, with member and project counts — the Admin page. */
+app.get("/api/admin/organisations", requirePlatformAdmin, async (_req, res) => {
+  try {
+    res.json({ organisations: await listAllOrganisations() });
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+/** A new company. The admin who creates it is not added to it: admins reach every organisation. */
+app.post("/api/admin/organisations", requirePlatformAdmin, async (req, res) => {
+  try {
+    res.status(201).json(await createCompany(String(req.body?.name ?? "")));
+  } catch (err) {
+    sendAccessError(res, err);
+  }
+});
+
+/** Put an existing account into this organisation with this role (one organisation per person). */
+app.post("/api/admin/organisations/:orgId/move-user", requirePlatformAdmin, async (req, res) => {
+  try {
+    if (!(await organisationExists(req.params.orgId))) return res.status(404).json({ error: "no such organisation" });
+    const { email, role } = req.body ?? {};
+    res.json(await moveUserToOrganisation(req.params.orgId, email, role));
   } catch (err) {
     sendAccessError(res, err);
   }
@@ -2507,6 +2649,7 @@ export const BOOLEAN_ENV_FLAGS = [
   "SCRIPT_OVERRIDE_ENABLED",
   "SELF_HEAL_DEFAULT",
   "SIGNUP_ENABLED",
+  "PLATFORM_ADMIN_ENABLED",
   // Pro document intake (src/stages/specIntake.ts). Off: no Pro toggle, the /api/spec/* routes
   // 403, and options.spec on POST /api/runs is ignored.
   "SPEC_INTAKE_ENABLED",

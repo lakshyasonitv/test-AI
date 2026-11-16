@@ -6417,3 +6417,50 @@ The server was never the hole: every API route still refused (401). What leaked 
 No route, server or class change; nothing switches views except the existing router guard. The landing page is a
 separate site and stays public. Tests: `tests/authGate.test.ts`. Checked live (21/21): config held back 3 s on
 an auth-on and an auth-off server, config aborted, and the stale saved session.
+
+### TD-191. A team member never sees the team's workspace: they act in the empty one their first sign-in created — High / Accidental — **Fixed behind PLATFORM_ADMIN_ENABLED (D-84)**
+
+> 2026-11-16: with the company model on, sign-in never creates an organisation, owners create accounts inside their
+> own, and Admins move existing accounts. Off, the trap remains; accounts already stuck stay until an Admin moves them.
+
+**Found 2026-11-16 (user: "if I assign a project to a person, it is not visible to that user").** Every request
+acts in ONE organisation, `primaryOrgFor()` = the person's OLDEST membership (authz.ts). `bootstrapUser()`
+(organisations.ts) gives any account with no membership its own new workspace, as owner, on its first sign-in.
+`addMember()` only accepts an account that already exists ("they must sign up first"). So the normal order —
+the person signs in once, then an admin adds them to the team — leaves them with two memberships, and the oldest
+is their own empty workspace: every page shows that one, their Settings says OWNER, and the projects assigned to
+them in the team's workspace never appear. It only works if the admin adds them BEFORE their first sign-in.
+Read from the code; a direct count on the database was not run (blocked as a live-database read).
+
+**Options:** (a) a workspace switcher (a header the server checks with `assertOrgAccess`, plus a picker in
+Settings → Account); (b) when an admin adds someone whose only other membership is an untouched auto-created
+workspace (sole owner, no projects, no runs), drop that workspace; (c) prefer an organisation the person was
+added to over an untouched auto-created one in `primaryOrgFor()`. Workaround today: add people before their first
+sign-in, or delete the person's empty-workspace membership row.
+
+### TD-192. After about an hour a signed-in page stops working and shows errors instead of sign-in — Medium / Accidental — **Fixed (D-84, not flagged)**
+
+> 2026-11-16: any 401 on the app's own API once signed in goes to the sign-in page ("Your session has ended"),
+> parking a run in progress. Setting `AUTH_TOKEN_REFRESH=true` on the server is still recommended so it happens rarely.
+
+**Found 2026-11-16 on the local auth server (Team page: "authentication required").** Supabase access tokens
+last an hour; renewal (`AUTH_TOKEN_REFRESH`, TD-108) is off by default and not set on production. When the token
+lapses mid-session every API call 401s and each screen shows its own error. TD-190 only signs a rejected session
+out at page load. **Fix:** set `AUTH_TOKEN_REFRESH=true` on the server, and send any 401 after sign-in to the
+sign-in page ("Your session has ended") the way TD-190 does at load.
+
+### TD-193. A tester or viewer-turned-tester can start runs outside the projects they were added to — Medium / Accidental — **Fixed behind PLATFORM_ADMIN_ENABLED (D-84)**
+
+**Found 2026-11-16 (user: "if I am assigned to a project I should only be able to work on that project").** The
+library is project-scoped end to end (`library.ts`: every suite and case call goes through `assertProjectVisible`),
+but starting a run is not. `POST /api/runs` (tester+) files the run by its URL (`resolveProjectForUrl`):
+- a URL that belongs to a project the tester is NOT in files the run there anyway — it runs on the workspace's AI
+  budget, lands in someone else's project, and its own author is then refused when watching it;
+- a URL no project covers creates a new project and adds the tester to it (`addCreatorToProject`), so a tester can
+  give themselves new projects simply by testing a new site.
+Only an explicit `projectId` in the body is checked (`assertProjectVisible`). No test covers either case
+(`tests/tenancy.test.ts` only checks that a tester passes the role gate).
+
+**Fix:** below admin, refuse a run whose resolved project is not one of theirs (403 "you have not been added to
+this project"), and do not create a new project from a run — "ask an admin to add a project for this site". A
+tester with no projects then cannot start runs, which is the stated rule.
