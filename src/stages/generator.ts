@@ -626,7 +626,14 @@ async function waitForAuthSettle(page) {
  * 2-3s delay that would be paid on every step of every case regardless.
  */
 const SHOT_HELPER = `
-async function shot(page, path) {
+async function shot(page, path, now) {
+  // A check that just passed has already waited for what it checks, so its frame is taken at once,
+  // before a passing message fades. The settle loop below took ~1.5 s, and Salesforce's "was created"
+  // toast was gone from the screenshot of the very check that saw it (run 2026-11-16T08-39-16-652Z-9b6494e7).
+  if (now) {
+    try { writeFileSync(path, await page.screenshot({ caret: "hide" })); } catch {}
+    return;
+  }
   const step = Number(process.env.SCREENSHOT_SETTLE_MS ?? 150);
   const maxSamples = Number(process.env.SCREENSHOT_MAX_SAMPLES ?? 10);
   const paintTimeout = Number(process.env.SCREENSHOT_PAINT_TIMEOUT_MS ?? 8000);
@@ -1565,7 +1572,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
         ? "\nawait sfSaveThroughDuplicates(page);" : "";
       const code = dismiss + reveal + emitStep(step, ir.meta.baseUrl) + saveThrough;
       const indented = code.split("\n").map((l) => "    " + l).join("\n");
-      return `    await test.step(${q(label)}, async () => {\n${indented}\n      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)});\n    });`;
+      return `    await test.step(${q(label)}, async () => {\n${indented}\n      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)}${step.action === "assert" ? ", true" : ""});\n    });`;
     })
     .join("\n");
 

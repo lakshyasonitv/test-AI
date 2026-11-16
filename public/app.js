@@ -1209,7 +1209,8 @@ function renderCaseCard(c, runId, index) {
         </figure>` : ""}
         <div class="case-downloads">
           <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn">${icon("file-text", { size: 13 })} Download test script</a>
-          <a href="${escapeHtml(reportUrl)}" download="test-report-${escapeHtml(runId)}.html" class="dl-btn">${icon("file-text", { size: 13 })} Download report (all cases)</a>
+          <a href="${escapeHtml(reportUrl.replace(/\.html$/, ".pdf"))}" download="test-report-${escapeHtml(runId)}.pdf" class="dl-btn">${icon("file-text", { size: 13 })} Download report (PDF)</a>
+          <a href="${escapeHtml(reportUrl)}" download="test-report-${escapeHtml(runId)}.html" class="dl-btn">${icon("file-text", { size: 13 })} Download report (HTML)</a>
           <!-- The raw reporter output is KEPT alongside the readable report, not replaced by it:
                it is the primary evidence anyone debugging this project actually reads, and the
                report is generated from it. A QA tester's note is why the report exists at all —
