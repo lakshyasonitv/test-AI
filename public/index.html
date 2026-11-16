@@ -1,5 +1,7 @@
 <!doctype html>
-<html lang="en">
+<!-- data-auth-check (TD-190): the page stays covered until app.js knows whether sign-in is required,
+     so a signed-out visitor sees the sign-in page first and never the app. theme.css draws it. -->
+<html lang="en" data-auth-check="pending">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />

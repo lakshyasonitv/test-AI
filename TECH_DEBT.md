@@ -6387,3 +6387,33 @@ and its singular now count as the same word (trailing "s", not "ss"). Replayed o
 `tests/stableLoop.test.ts`. Not yet confirmed by a live re-run.
 
 **Not fixed.** `lastErr` from a failed `extendAppModel` is still not logged on its own line.
+
+### TD-190. With sign-in on, the app could be seen and clicked before signing in — High / Accidental — **Fixed**
+
+**Found 2026-11-16, after the new interface went to production.** Three ways in, all in `public/app.js`:
+
+1. **While the sign-in check was in flight.** The first `applyRoute()` ran before `initAuth()` had asked
+   `/api/auth/config` whether sign-in is required, so a signed-out visitor saw (and could click) the dashboard, the
+   nav and the other screens until the answer arrived; the code's own comment said they "slipped past". On a
+   distant server that window is plainly visible.
+2. **An unreachable config meant "sign-in off".** `initAuth()` returned early, so the whole app was drawn for a
+   server that does require sign-in (every API call then 401s).
+3. **A saved session the server no longer accepts was kept.** With token renewal off (production has no
+   `tokenRefresh`), a session saved hours earlier was restored; `/api/auth/me` answered 401, which
+   `refreshIdentity()` ignored, so the app came up "signed in" with no role and nothing loading. Reproduced on the
+   local auth server with a 3-hour-old session.
+
+The server was never the hole: every API route still refused (401). What leaked was the app's screens.
+
+**Fix:**
+1. `index.html` starts as `<html data-auth-check="pending">`; theme.css hides every part of the body (visibility,
+   so nothing can be clicked or focused) and shows a small loader; app.js removes the attribute once
+   `initAuth()` has settled, after its final `applyRoute()`. Signed out, the first screen anyone sees is sign-in.
+2. The config is retried (1 s, 2 s, 4 s); if it never answers the page stays covered (`data-auth-check=
+   "unreachable"`) and says the server can't be reached.
+3. A 401 from `/api/auth/me` is a sign-out (`sessionRejected()` -> `signOut()`), and the sign-in page says
+   "Your session has ended. Please sign in again."
+
+No route, server or class change; nothing switches views except the existing router guard. The landing page is a
+separate site and stays public. Tests: `tests/authGate.test.ts`. Checked live (21/21): config held back 3 s on
+an auth-on and an auth-off server, config aborted, and the stale saved session.
