@@ -25,6 +25,7 @@ import type { TestCase } from "./testCases.js";
 import { isPositiveCase } from "./hollowPassGuards.js";
 import { isEnvValueRef } from "./credentials.js";
 import { UNIQUE_TOKEN, PHONE_TOKEN, dateToken, hasRunToken, lineKey } from "../text.js";
+import { recordRefObject } from "./salesforceFrontdoor.js";
 
 export function testDataEnabled(): boolean {
   return process.env.TEST_DATA_ENABLED === "true";
@@ -92,16 +93,201 @@ export function fitToField(value: string, f: Pick<OrgField, "type" | "length" | 
   return v;
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+/**
+ * A calendar date written in words ("15 March 1990", "March 15, 1990") or as ISO ("1990-03-15"), in the
+ * user's short format ("3/15/1990" in en-US, "15.3.1990" in de-DE). Undefined when it is not such a date:
+ * a value already in a numeric short format is left to the user, since 03/04 could be either way round.
+ */
+export function localeDate(value: string, locale = "en-US"): string | undefined {
+  const date = parseDay(value);
+  if (!date) return undefined;
+  try { return new Intl.DateTimeFormat(locale.replace("_", "-"), { year: "numeric", month: "numeric", day: "numeric", timeZone: "UTC" }).format(date); } catch { return undefined; }
+}
+
+/** The calendar day a value names, or undefined: words ("15 March 1990", "March 15, 1990"), ISO, or a
+ *  numeric date that reads only one way (15/03/1990: no month 15). 03/04/1990 could be either: undefined. */
+export function parseDay(value: string): Date | undefined {
+  const v = value.trim();
+  let y: number | undefined, m: number | undefined, d: number | undefined;
+  let r = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(v);
+  if (r) { y = +r[1]; m = +r[2]; d = +r[3]; }
+  if (y === undefined && (r = /^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})$/.exec(v))) { d = +r[1]; m = MONTHS.indexOf(r[2].slice(0, 3).toLowerCase()) + 1; y = +r[3]; }
+  if (y === undefined && (r = /^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/.exec(v))) { m = MONTHS.indexOf(r[1].slice(0, 3).toLowerCase()) + 1; d = +r[2]; y = +r[3]; }
+  if (y === undefined && (r = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/.exec(v))) {
+    const a = +r[1], b = +r[2];
+    if (a > 12 && b <= 12) { d = a; m = b; y = +r[3]; } else if (b > 12 && a <= 12) { m = a; d = b; y = +r[3]; }
+  }
+  if (!y || !m || !d || m < 1 || m > 12 || d < 1 || d > 31) return undefined;
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCDate() === d ? date : undefined;
+}
+
+/** The days a request names ("born 15 March 1990", "closing 2026-12-01"). */
+function requestDays(request: string): number[] {
+  const re = /\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\.?,?\s+\d{4}\b|\b[A-Za-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b|\b\d{1,2}[./-]\d{1,2}[./-]\d{4}\b/g;
+  return (request.match(re) ?? []).map((t) => parseDay(t)?.getTime()).filter((t): t is number => t !== undefined);
+}
+
+/** "yesterday", "today", "tomorrow" (also as a made-up {{yesterday}} token): days from today. */
+function relativeDay(value: string): number | undefined {
+  const k = value.trim().replace(/^\{\{\s*|\s*\}\}$/g, "").toLowerCase();
+  return k === "yesterday" ? -1 : k === "today" ? 0 : k === "tomorrow" ? 1 : undefined;
+}
+
 /** The decimal mark the user's locale writes ("." in en-US, "," in de-DE). */
 function decimalMark(locale: string): string {
   try { return new Intl.NumberFormat(locale.replace("_", "-")).format(1.5).replace(/\d/g, "") || "."; } catch { return "."; }
 }
 
+/** A time of day the way the user's locale writes one ("10:30 AM", "10:30"). */
+function localTime(locale: string, h = 10, m = 30): string {
+  try { return new Intl.DateTimeFormat(locale.replace("_", "-"), { hour: "numeric", minute: "2-digit" }).format(new Date(2000, 0, 1, h, m)); }
+  catch { return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`; }
+}
+
+/** Days from the run a phrase names: today/tomorrow/yesterday, "in 3 days", "3 days from now", "+3 days", "next week". */
+function daysAhead(text: string): number | undefined {
+  const t = text.trim().replace(/^\{\{\s*|\s*\}\}$/g, "").toLowerCase();
+  const rel = relativeDay(t);
+  if (rel !== undefined) return rel;
+  let r = /^(?:in\s+|\+\s*)?(\d{1,3})\s+days?(?:\s+from\s+(?:now|today))?$/.exec(t);
+  if (r) return +r[1];
+  if ((r = /^(?:in\s+)?(?:a|one|1)\s+week(?:\s+from\s+(?:now|today))?$|^next\s+week$/.exec(t))) return 7;
+  return undefined;
+}
+
+/**
+ * A date-time value: "<date> <time>", each in the user's format, the date relative to the run unless the request
+ * names that exact day. `asked` is what the request says for this field ("tomorrow", "in 3 days"), if anything.
+ * Due/end fields default a little later than start fields, so a pair is never back to front.
+ */
+export function dateTimeValue(raw: string, label: string, locale: string, request = "", asked?: string): string {
+  const v = raw.trim();
+  const tm = /(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap])?\.?\s*m?\.?/i.exec(v.replace(/^\d{4}-\d{2}-\d{2}T/, "x "));
+  let h = tm ? +tm[1] : 10;
+  if (tm?.[3]) h = (h % 12) + (/p/i.test(tm[3]) ? 12 : 0);
+  const time = localTime(locale, h, tm ? +tm[2] : 30);
+  const dayText = v.replace(/T?\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s*[ap]\.?m\.?)?(?:Z|[+-]\d{2}:?\d{2})?$/i, "").trim();
+  const token = /^\{\{date:[+-]?\d+:[^}]+\}\}$/.test(dayText) ? dayText : undefined;
+  const ahead = (asked !== undefined ? daysAhead(asked) : undefined) ?? daysAhead(dayText);
+  const day = parseDay(dayText);
+  const date = ahead !== undefined ? dateToken(ahead, locale)
+    : token ? token
+    : day && requestDays(request).includes(day.getTime()) ? localeDate(dayText, locale)!
+    : dateToken(/\b(due|end|finish|close|expir)/i.test(label) ? 3 : 1, locale);
+  return `${date} ${time}`;
+}
+
+/**
+ * A date-time field is two boxes, "Date" and "Time", and a form has several (a Service Appointment's
+ * Earliest Start Permitted and Due Date): a step naming the field, or a box named just "Date", could not be
+ * found (runs 2026-11-13T18-30-28-619Z-653368f1, 18-35-51-793Z-df1af5e4). Each fill of a DateTime field on a
+ * create form becomes one "sf-dt-" step naming the field, with "<date> <time>" (dateTimeValue); the spec and the
+ * replay fill its boxes (generator.ts sfDateTime). Returns notes.
+ */
+export function dateTimeFills(ir: IR, org: AppModel["salesforceOrg"], request = ""): string[] {
+  const notes: string[] = [];
+  if (!org) return notes;
+  const locale = (org.userLocale ?? "en-US").replace("_", "-");
+  const askedFor = (label: string) => {
+    const esc = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${esc}\\b\\s*(?:of|on|at|as|to|=|:)?\\s*((?:in\\s+)?\\d{1,3}\\s+days?(?:\\s+from\\s+(?:now|today))?|today|tomorrow|yesterday|next\\s+week)`, "i").exec(request)?.[1];
+  };
+  // A rule between two of them the request sets ("Due Date is before its Earliest Start Permitted"): the day for
+  // each, so the pair breaks (or keeps) it as asked (run 2026-11-13T19-38-22-336Z-5d07d2ee filled neither).
+  const order = (o: OrgObject): Map<string, number> => {
+    const days = new Map<string, number>();
+    const dts = o.fields.filter((x) => x.type === "DateTime");
+    const esc = (l: string) => l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    for (const a of dts) for (const b of dts) {
+      if (a === b) continue;
+      const r = new RegExp(`\\b${esc(a.label)}\\b\\s+(?:is\\s+|being\\s+|set\\s+|falls\\s+)*(before|earlier than|prior to|after|later than)\\s+(?:the\\s+|its\\s+)?${esc(b.label)}\\b`, "i").exec(request);
+      if (!r) continue;
+      const before = /before|earlier|prior/i.test(r[1]);
+      days.set(a.api, before ? 1 : 2);
+      days.set(b.api, before ? 2 : 1);
+    }
+    return days;
+  };
+  let o: OrgObject | undefined;
+  let done = new Set<string>();
+  let ruled = new Map<string, number>();
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    const m = s.action === "navigate" ? /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "") : null;
+    if (m) { o = org.objects.find((x) => x.api === m[1]); done = new Set(); ruled = o ? order(o) : new Map(); continue; }
+    if (!o || !o.fields.some((x) => x.type === "DateTime")) continue;
+    // A click on a date-time field's own label (the error list's link, captured after a refused save) opens
+    // nothing on the form before Save.
+    if (s.action === "click" && o.fields.some((x) => x.type === "DateTime" && x.label.toLowerCase() === (s.target?.name ?? "").trim().toLowerCase())) {
+      notes.push(`${s.id}: a click on the date-time field "${s.target?.name}" itself -> dropped (its own step fills it)`);
+      ir.steps.splice(i, 1);
+      i--;
+      continue;
+    }
+    // The form's Save: each date-time field the request names gets its step first, if none wrote it.
+    if (s.action === "click" && /^save$/i.test((s.target?.name ?? "").trim())) {
+      for (const f of o.fields.filter((x) => x.type === "DateTime" && !done.has(x.api) && (askedFor(x.label) !== undefined || ruled.has(x.api)))) {
+        const asked = askedFor(f.label) ?? `in ${ruled.get(f.api)} days`;
+        const step = { id: `sf-dt-req-${f.api}`, action: "fill", target: { role: "group", name: f.label }, value: dateTimeValue("", f.label, locale, request, asked) } as IR["steps"][number];
+        ir.steps.splice(i, 0, step);
+        i++;
+        done.add(f.api);
+        notes.push(`${step.id}: the request sets date-time "${f.label}" -> "${step.value}"`);
+      }
+      continue;
+    }
+    if (s.action !== "fill" && s.action !== "select") continue;
+    const name = (s.target?.name ?? s.target?.label ?? "").split("*").join("").trim().toLowerCase();
+    // A box named just "Date" or "Time" on a form with date-time fields names none of them (the first such box
+    // on the page took both "tomorrow" and "in 3 days", run 2026-11-13T19-05-25-624Z-90c95d42): the field's own
+    // step does it.
+    if (/^(date|time)$/.test(name) && !o.fields.some((x) => x.label.toLowerCase() === name)) {
+      notes.push(`${s.id}: a box named "${s.target?.name}" names no date-time field -> dropped (each field's own step fills it)`);
+      ir.steps.splice(i, 1);
+      i--;
+      continue;
+    }
+    if (s.id.startsWith("sf-dt-")) { const f = o.fields.find((x) => x.label === s.target?.name); if (f) done.add(f.api); continue; }
+    const f = o.fields.find((x) => x.type === "DateTime" && x.label.toLowerCase() === name);
+    if (!f) continue;
+    const was = s.value ?? "";
+    s.id = `sf-dt-${s.id}`;
+    s.action = "fill";
+    s.target = { role: "group", name: f.label };
+    s.value = dateTimeValue(was, f.label, locale, request, askedFor(f.label) ?? (ruled.has(f.api) ? `in ${ruled.get(f.api)} days` : undefined));
+    done.add(f.api);
+    notes.push(`${s.id}: date-time "${f.label}" "${was}" -> "${s.value}", typed into its Date and Time boxes`);
+  }
+  return notes;
+}
+
+/**
+ * A check of a date or date-time field in words ("Due Date contains in 5 days"): the page shows a date, so the
+ * check looks for that day (run 2026-11-15T11-55-56-797Z-7153003e compared Due Date with the text "in 5 days").
+ * Runs after fieldChecksOnRecordView, which makes such field checks out of text checks. Returns notes.
+ */
+export function datedFieldChecks(ir: IR, org: AppModel["salesforceOrg"]): string[] {
+  const notes: string[] = [];
+  if (!org) return notes;
+  const locale = (org.userLocale ?? "en-US").replace("_", "-");
+  const dated = new Set(org.objects.flatMap((o) => o.fields).filter((f) => f.type === "Date" || f.type === "DateTime").map((f) => f.label.toLowerCase()));
+  for (const s of ir.steps) {
+    const rel = s.action === "assert" && s.target?.field && s.value && dated.has(s.target.field.toLowerCase()) ? daysAhead(s.value) : undefined;
+    if (rel === undefined) continue;
+    notes.push(`${s.id}: check of "${s.target!.field}" "${s.value}" -> the day ${rel} day(s) from the run`);
+    s.value = dateToken(rel, locale);
+  }
+  return notes;
+}
+
 function rawValueFor(f: OrgField, locale: string): string | undefined {
   const l = f.label.toLowerCase();
-  // A multi-select picklist is a dual list box, a geolocation two number boxes, a date-time two inputs:
-  // none takes one typed value.
-  if (f.lookup || f.type === "Reference" || f.type === "Boolean" || f.type === "DateTime" || f.type === "MultiPicklist" || f.type === "Location") return undefined;
+  // A required date-time: the field's Date and Time boxes (dateTimeFills marks the step).
+  if (f.type === "DateTime") return dateTimeValue("", f.label, locale);
+  // A multi-select picklist is a dual list box, a geolocation two number boxes: neither takes one typed value.
+  if (f.lookup || f.type === "Reference" || f.type === "Boolean" || f.type === "MultiPicklist" || f.type === "Location") return undefined;
   if (f.type === "Picklist") return f.picklist?.[0];
   if (f.type === "Email") return `${pick(FIRST, l).toLowerCase()}.${pick(LAST, l + "x").toLowerCase()}+${UNIQUE_TOKEN}@example.com`;
   if (f.type === "Phone") return PHONE_TOKEN;
@@ -222,6 +408,14 @@ function snapPicklist(o: OrgObject, value: string, field?: OrgField): string | u
   if (starts.length === 1) return starts[0];
   const contains = [...new Set(options.filter((p) => lineKey(p).includes(v)))];
   if (contains.length === 1) return contains[0];
+  // Several hold it whole ("Pacific Standard Time" in two time zones): the one holding it most often
+  // ("GMT" in "(GMT+00:00) Greenwich Mean Time (GMT)"), then the shortest. Not the field's FIRST option,
+  // which was "(GMT+14:00) Line Islands Time" (run 2026-11-13T22-11-33-599Z-55da10c9).
+  const whole = contains.filter((p) => ` ${lineKey(p)} `.includes(` ${v} `));
+  if (whole.length > 1) {
+    const times = (p: string) => ` ${lineKey(p)} `.split(` ${v} `).length - 1;
+    return whole.sort((a, b) => times(b) - times(a) || a.length - b.length)[0];
+  }
   // The value holds one option as whole words ("Region South" for "South"): the longest, if alone.
   const inside = options.filter((p) => lineKey(p) && ` ${v} `.includes(` ${lineKey(p)} `))
     .sort((a, b) => lineKey(b).length - lineKey(a).length);
@@ -297,10 +491,16 @@ function namesARecord(value: string, f: OrgField): boolean {
 function createdBefore(ir: IR, before: number, objects: string[]): Set<string> {
   const out = new Set<string>();
   let form: string | undefined;
+  let first = "";
   for (const s of ir.steps.slice(0, before)) {
     const m = s.action === "navigate" ? /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "") : null;
-    if (m) form = m[1];
-    else if (s.action === "fill" && form && objects.includes(form) && hasRunToken(s.value)) out.add(s.value!);
+    if (m) { form = m[1]; first = ""; }
+    else if (s.action === "fill" && /^first name$/i.test(s.target?.name ?? "")) first = s.value?.trim() ?? "";
+    else if (s.action === "fill" && form && objects.includes(form) && hasRunToken(s.value)) {
+      out.add(s.value!);
+      // A person's record is named First + Last: "Rahul Mehta {{uid}}" (run 2026-11-13T20-51-11-629Z-44da5f13).
+      if (first && /^last name$/i.test(s.target?.name ?? "")) out.add(`${first} ${s.value}`);
+    }
   }
   return out;
 }
@@ -367,6 +567,39 @@ export function applyTestData(ir: IR, testCase: Pick<TestCase, "category">, appM
   for (const sec of sections) {
     const save = ir.steps.findIndex((s, i) => i > sec.from && i < sec.to && s.action === "click" && /^save$/i.test((s.target?.name ?? "").trim()));
     if (save > 0) sec.to = save + 1;
+  }
+  // Edit forms too: a date typed on an existing record's Edit form ("31 December 2026", run
+  // 2026-11-13T13-59-40-225Z-73d6d7c6) was typed as words and the save was refused. Only dates are fixed
+  // there: the fill policy is about what a NEW record needs, an edit types what it was asked to.
+  if (isPositiveCase(testCase)) {
+    const locale = (org.userLocale ?? "en-US").replace("_", "-");
+    let object: OrgObject | undefined;
+    let inCreate = false;
+    for (const s of ir.steps) {
+      if (s.action === "navigate") {
+        const m = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "");
+        inCreate = !!m;
+        const api = m?.[1] ?? recordRefObject(s.target?.url);
+        if (api) object = org.objects.find((x) => x.api === api);
+        continue;
+      }
+      if (inCreate) { if (s.action === "click" && /^save$/i.test((s.target?.name ?? "").trim())) inCreate = false; continue; }
+      if (s.action !== "fill" || !s.value || !object) continue;
+      const f = fieldOf(object, s.target?.name ?? s.target?.label ?? "");
+      if (f?.type !== "Date") continue;
+      const rel = relativeDay(s.value);
+      const v = rel !== undefined ? dateToken(rel, locale) : localeDate(s.value, locale);
+      if (!v || v === s.value) continue;
+      const was = s.value;
+      const day = parseDay(was)?.getTime();
+      s.value = v;
+      for (const a of ir.steps) {
+        if (a.action !== "assert") continue;
+        if (a.value === was || (day !== undefined && a.value && parseDay(a.value)?.getTime() === day)) a.value = v;
+        if (a.target?.text === was || (day !== undefined && a.target?.text && parseDay(a.target.text)?.getTime() === day)) a.target = { ...a.target, text: v };
+      }
+      notes.push(`${s.id}: "${f.label}" on the edit form "${was}" -> "${v}", the user's date format`);
+    }
   }
   let n = 0;
   for (const sec of sections.reverse()) {
@@ -482,6 +715,19 @@ function applyToSection(
     ir.steps.splice(i, end - i);
     to -= end - i;
   }
+  // Every case: the record type is the form's own (chosen by its URL), never a value of another picklist:
+  // run 2026-11-13T14-13-11-352Z-7c8d6c62 picked "TB Partner" in the Account's Type, which offers no such
+  // option, and stopped there. The step goes when the field does not offer that name.
+  for (let i = to - 1; i >= from; i--) {
+    const s = ir.steps[i];
+    if (s.action !== "select" || !s.value) continue;
+    const f = fieldFor(nameOf(s));
+    const rt = o.recordTypes?.find((r) => lineKey(r.name) === lineKey(s.value!));
+    if (!rt || f?.picklist?.some((p) => lineKey(p) === lineKey(s.value!))) continue;
+    notes.push(`${s.id}: "${s.value}" is the record type, not a "${nameOf(s)}" option -> dropped (the form's URL already chooses it)`);
+    ir.steps.splice(i, 1);
+    to--;
+  }
   // Every case: a picklist offers only its options, so a value that is not one is never what a test
   // means ("Working" for "Working - Contacted", run 2026-10-24T20-37-00-424Z-410671c2).
   for (const s of steps()) {
@@ -504,10 +750,16 @@ function applyToSection(
   // — the model invents names ("Existing Account", case-0) — or the one THIS case created earlier
   // under the name it typed ("Test Account {{uid}}" for an Opportunity's Account, Phase A), else the
   // first record the org offers.
-  if (!DATA_IS_THE_TEST.has(testCase.category ?? "")) {
+  // An invalid-input case too, for a lookup the request does not name: its bad value is elsewhere, and an
+  // unpicked Parent Record made Salesforce refuse the save for that instead (run
+  // 2026-11-13T19-16-31-705Z-1c10477d "passed" its Due-before-Start rule without reaching it).
+  const invalid = testCase.category === "invalid-input";
+  if (!DATA_IS_THE_TEST.has(testCase.category ?? "") || invalid) {
     for (const s of steps()) {
       const f = fieldFor(nameOf(s)) ?? (s.action === "select" ? lookupNamedFor(o, nameOf(s)) : undefined);
       if (!f?.lookup || (s.action !== "fill" && s.action !== "select") || s.target?.lookup) continue;
+      if (invalid && [...formNamesOf(f), nameOf(s), ...f.lookup.split("/").map((a) => appModel.salesforceOrg?.objects.find((x) => x.api === a)?.label ?? a)]
+        .some((n) => !!n && mentions(request, n))) continue;
       s.action = "select";
       s.target = { ...s.target, role: "combobox", lookup: true };
       const own = !!s.value && hasRunToken(s.value) && createdBefore(ir, from, f.lookup.split("/")).has(s.value);
@@ -582,7 +834,9 @@ function applyToSection(
     // 2026-10-25T05-01-36-627Z-b0d6a138 kept an unrequested Phone that way).
     const keep = f ? wanted(f, s)
       : (everyField && fills(s)) || mentions(asks, nameOf(s)) || (!!s.value && !hasRunToken(s.value) && mentions(asks, s.value)) || quoted(s.value);
-    if (keep) continue;
+    // A lookup to the record this case made ("a Case for that contact") links the two: that IS the test.
+    const ownPick = !!f?.lookup && !!s.value && hasRunToken(s.value) && createdBefore(ir, i, f.lookup.split("/")).has(s.value);
+    if (keep || ownPick) continue;
     notes.push(`${s.id}: dropped "${nameOf(s)}" — optional, no rule reads it and the request does not name it`);
     ir.steps.splice(i, 1);
     to--;
@@ -604,12 +858,101 @@ function applyToSection(
     notes.push(`${s.id}: "${nameOf(s)}" starts as "${other}", not "${s.value}", the value the request checks it changes to`);
     s.value = other;
   }
+  // A full name typed into First Name too ("Ana Lopez" there and "Lopez" in Last Name, run
+  // 2026-11-13T12-25-46-923Z-8b85bfb3): First Name keeps only its own words.
+  {
+    const first = steps().find((s) => s.action === "fill" && /^first ?name$/i.test(nameOf(s).replace(/^\*\s*|\s*\*$/g, "").trim()));
+    const last = steps().find((s) => s.action === "fill" && /^last ?name$/i.test(nameOf(s).replace(/^\*\s*|\s*\*$/g, "").trim()));
+    const lastWords = (last?.value ?? "").replace(/\{\{uid\}\}/g, "").trim();
+    if (first?.value && lastWords && first.value.trim().toLowerCase().endsWith(` ${lastWords.toLowerCase()}`)) {
+      const was = first.value;
+      first.value = first.value.trim().slice(0, -lastWords.length).trim();
+      notes.push(`${first.id}: First Name "${was}" also held the Last Name -> "${first.value}"`);
+    }
+  }
+  // A value that starts with its own field's label ("Last Name Sato" in Last Name, "Company Kintsugi Labs" in
+  // Company, run 2026-11-13T15-19-02-592Z-1e01cacf saved them so): the label goes, unless the request writes it so.
+  for (const s of positive ? steps() : []) {
+    if (s.action !== "fill" || !s.value) continue;
+    const label = nameOf(s).replace(/^\*\s*|\s*\*$/g, "").trim();
+    if (!label || !s.value.toLowerCase().startsWith(`${label.toLowerCase()} `)) continue;
+    const rest = s.value.slice(label.length).trim();
+    if (!rest || mentions(request, s.value.replace(/\s*\{\{uid\}\}/g, ""))) continue;
+    // The checks that quote it change with it.
+    const was = s.value;
+    s.value = rest;
+    for (const a of ir.steps) {
+      if (a.action !== "assert") continue;
+      if (a.value === was) a.value = rest;
+      if (a.target?.text === was) a.target = { ...a.target, text: rest };
+    }
+    notes.push(`${s.id}: "${was}" held its own field label -> "${rest}"`);
+  }
   for (const s of positive ? steps() : []) {
     const name = nameOf(s);
     if (!name || isEnvValueRef(s.value)) continue;
     if (s.action !== "fill") continue;
     const f = fieldFor(name);
-    if (!f || ruleReads(o, f) || quoted(s.value)) continue;
+    if (!f || ruleReads(o, f)) continue;
+    if (f.type === "Date" && s.value) {
+      // "Yesterday", "today", "tomorrow", or the model's own {{yesterday}} (typed as is, it refused the save,
+      // run 2026-11-13T12-43-46-655Z-6cd531ab): a day relative to the run.
+      // "In 45 days" too: typed as is, Close Date refused the save (run 2026-11-13T22-54-49-464Z-d812ddd7).
+      const rel = daysAhead(s.value);
+      if (rel !== undefined) {
+        notes.push(`${s.id}: "${f.label}" "${s.value}" -> ${rel === 0 ? "today" : rel === -1 ? "yesterday" : `${rel} day(s) from`} the day the test runs`);
+        const was = s.value;
+        s.value = dateToken(rel, locale);
+        // A check quoting it too (run 2026-11-13T12-56-03-736Z-5e8f62bc looked for "{{yesterday}}" on the page), or
+        // naming that day as a fixed date ("11/12/2026", run 2026-11-13T13-30-41-541Z-6d66f06e): right today, wrong
+        // on tomorrow's replay of a saved suite. Both follow the field, relative to the run.
+        const now = new Date();
+        const thatDay = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() + rel);
+        const sameDay = (t?: string) => !!t && (t === was || parseDay(t)?.getTime() === thatDay
+          || new RegExp(`^${new Intl.DateTimeFormat(locale, { year: "numeric", month: "numeric", day: "numeric", timeZone: "UTC" }).format(new Date(thatDay)).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}$`).test(t.trim()));
+        for (const a of ir.steps) {
+          if (a.action !== "assert") continue;
+          if (sameDay(a.value)) a.value = s.value;
+          if (sameDay(a.target?.text)) a.target = { ...a.target, text: s.value };
+        }
+        continue;
+      }
+      // The day the request names, however the model wrote it ("15/03/1990" for "15 March 1990", run
+      // 2026-11-13T12-43-28-833Z-72d3e52b, was taken for a made-up date and replaced): that day, in the user's
+      // format, and every check of that day in the same format.
+      const day = parseDay(s.value);
+      if (day && requestDays(request).includes(day.getTime())) {
+        const v = localeDate(s.value, locale)!;
+        const was = s.value;
+        s.value = v;
+        for (const a of ir.steps) {
+          if (a.action !== "assert") continue;
+          if (a.value && parseDay(a.value)?.getTime() === day.getTime()) a.value = v;
+          if (a.target?.text && parseDay(a.target.text)?.getTime() === day.getTime()) a.target = { ...a.target, text: v };
+        }
+        if (v !== was) notes.push(`${s.id}: "${f.label}" "${was}" -> "${v}", the requested day in the user's format`);
+        continue;
+      }
+    }
+    if (quoted(s.value)) {
+      // A value a later check quotes stays as typed, except that it must still fit the field: Salesforce
+      // cut "TRACK-PLAN-001" to 12 characters (run 2026-11-13T12-02-09-298Z-fc1e4b67), so the save and the
+      // check disagreed. Shortened here, the checks that quote it are changed the same way.
+      const was = s.value!;
+      // A date in words is the same day in the user's format (the record page shows it that way too).
+      const fitted = f.type === "Date" ? localeDate(was, locale) ?? was
+        : mentions(request, was) ? was : fitToField(was, f, locale);
+      if (fitted !== was) {
+        s.value = fitted;
+        for (const a of ir.steps) {
+          if (a.action !== "assert") continue;
+          if (a.value === was) a.value = fitted;
+          if (a.target?.text === was) a.target = { ...a.target, text: fitted };
+        }
+        notes.push(`${s.id}: "${f.label}" fitted to the field: "${was}" -> "${fitted}", and the checks quoting it`);
+      }
+      continue;
+    }
     if (!s.value?.trim()) {
       const v = f.required ? valueFor(f, locale) : undefined;
       if (v) { notes.push(`${s.id}: empty required "${f.label}" -> "${v}"`); s.value = v; }
@@ -629,6 +972,12 @@ function applyToSection(
     } else if (/\b(street|city)\b/i.test(f.label) && !hasRunToken(s.value) && !mentions(request, s.value)) {
       notes.push(`${s.id}: "${f.label}" made unique per run`);
       s.value = `${s.value} ${UNIQUE_TOKEN}`;
+    } else if (f.type === "Date" && !hasRunToken(s.value) && mentions(request, s.value) && localeDate(s.value, locale)) {
+      // A date the request gives in words ("15 March 1990") or as ISO: Lightning's date box takes only the
+      // user's short format, and refused the save (run 2026-11-13T12-25-46-923Z-8b85bfb3: "Review the
+      // following fields: Birthdate"). Same day, the user's way of writing it.
+      const v = localeDate(s.value, locale)!;
+      if (v !== s.value) { notes.push(`${s.id}: "${f.label}" "${s.value}" -> "${v}", the user's date format`); s.value = v; }
     } else if (f.type === "Date" && !hasRunToken(s.value) && !mentions(request, s.value)) {
       notes.push(`${s.id}: "${f.label}" -> a date computed when the test runs`);
       s.value = dateToken(30, locale);
@@ -662,6 +1011,10 @@ function applyToSection(
   for (const f of o.fields) {
     if (!f.required || touched.has(f.api)) continue;
     const label = formLabel(appModel, o, f);
+    // A required lookup the captured form does not show is set by Salesforce: Work Plan's "Parent Record" comes
+    // from its Work Order (run 2026-11-15T12-19-24-256Z-d9e8322e was cut short looking for that box).
+    const form = appModel.pages.find((p) => new RegExp(`/lightning/o/${o.api}/new(\\?|$)`).test(p.url));
+    if (f.lookup && form && !form.elements.some((e) => lineKey(e.name ?? "") === lineKey(label))) continue;
     if (f.lookup) {
       add({ id: `td-${++n}`, action: "select", target: { role: "combobox", name: label, lookup: true }, value: "" },
         `required lookup "${label}" had no step -> picks the first suggestion`);
@@ -670,7 +1023,13 @@ function applyToSection(
       add({ id: `td-${++n}`, action: "select", target: { role: "combobox", name: label }, value: f.picklist[0] },
         `required picklist "${label}" had no step -> "${f.picklist[0]}"`);
     } else {
-      const v = valueFor(f, locale);
+      // A date-time the request gives ("Start Time tomorrow 9:00 AM") is that value, not one made up: the case
+      // typed it into the inner "Date"/"Time" boxes, which name no field and are dropped (run
+      // 2026-11-15T11-51-59-919Z-284bb4d4 got 10:30 AM for both ends and Salesforce refused the save).
+      const asked = f.type === "DateTime"
+        ? new RegExp(`\\b${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b\\s*(?:(?:is|of|at|to)\\b|[=:])?\\s*(.+?\\d{1,2}:\\d{2}\\s*(?:[AP]M)?)`, "i").exec(request)?.[1]
+        : undefined;
+      const v = asked ?? valueFor(f, locale);
       if (!v) continue;
       add({ id: `td-${++n}`, action: "fill", target: { role: "textbox", name: label }, value: v },
         `required "${label}" had no step -> filled "${v}"`);

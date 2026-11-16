@@ -233,8 +233,9 @@ describe("multi-screen form on one URL (Salesforce run)", () => {
     // Discovery saw the full first screen; screen 2 no longer has "Website" at all.
     const model = await discover("/wizard-dropped");
     geminiMock.mockImplementation(answer(WIZARD_IR("/wizard-dropped")));
+    // The request names Website: a field it never names is left out instead (selectOnTextbox.test.ts).
     const { ir, updatedAppModel } = await withTargetApp("salesforce",
-      () => toIR(testCase("dropped"), model, unique(), base + "/wizard-dropped"));
+      () => toIR(testCase("dropped"), model, `${unique()} with a Website`, base + "/wizard-dropped"));
 
     expect(ir.meta.truncated).toBe(true);
     // Kept everything up to the missing field, and nothing after it.

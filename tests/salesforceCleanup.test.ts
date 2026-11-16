@@ -230,3 +230,75 @@ describe("a converted Lead", () => {
     expect(deleted).toEqual([`/sobjects/Opportunity/${OPP}`, `/sobjects/Contact/${CON}`, `/sobjects/Account/${ACC}`, `/sobjects/Lead/${LEAD}`]);
   });
 });
+
+describe("replayMade: what the grounding replays saved (run 2026-11-13T16-00-53-324Z-9f8e022d)", () => {
+  it("names each typed value with each replay code, on its form's object; skips emails and Case/Task", async () => {
+    const { replayMade } = await import("../src/stages/salesforceCleanup.js");
+    const steps = [
+      { action: "navigate", target: { url: "/lightning/o/Contact/new" } },
+      { action: "fill", value: "Zqruiz {{uid}}" },
+      { action: "fill", value: "zqruiz+{{uid}}@example.com" },
+      { action: "navigate", target: { url: "/lightning/o/Case/new" } },
+      { action: "fill", value: "Zq Subject {{uid}}" },
+    ];
+    expect(replayMade(steps, ["ab12cd", "ef34gh"])).toEqual([
+      { object: "Contact", name: "Zqruiz ab12cd" }, { object: "Contact", name: "Zqruiz ef34gh" },
+    ]);
+    expect(replayMade(steps, ["x'; DROP"])).toEqual([]);
+  });
+});
+
+describe("an object with no Name field is cleaned up by the field its code was typed in (run 2026-11-13T18-30-28-619Z-653368f1)", () => {
+  it("finds a replay Zq Job by its Subject, and escapes a quote and an underscore", async () => {
+    const { replayMade, cleanupByTypedName, soqlLike } = await import("../src/stages/salesforceCleanup.js");
+    const org = { objects: [{ api: "ZqJob", fields: [{ label: "Subject", api: "Subject" }] }, { api: "ZqAcct", fields: [{ label: "Zq Name", api: "Name" }] }] };
+    const steps = [
+      { action: "navigate", target: { url: "/lightning/o/ZqJob/new" } },
+      { action: "fill", target: { name: "Subject" }, value: "Zq meter {{uid}}" },
+      { action: "navigate", target: { url: "/lightning/o/ZqAcct/new" } },
+      { action: "fill", target: { name: "Zq Name" }, value: "Zq Acme {{uid}}" },
+    ];
+    const made = replayMade(steps, ["ab12cd"], org);
+    expect(made).toEqual([{ object: "ZqJob", name: "Zq meter ab12cd", field: "Subject" }, { object: "ZqAcct", name: "Zq Acme ab12cd" }]);
+    const queries: string[] = [];
+    const apiGet = vi.fn(async (p: string) => { if (p === "/chatter/users/me") return { id: ME }; queries.push(decodeURIComponent(p)); return { records: [] }; });
+    await cleanupByTypedName({ apiGet, apiDelete: vi.fn() }, made, new Date());
+    // Last made first.
+    expect(queries[0]).toContain("FROM ZqAcct WHERE Name LIKE");
+    expect(queries[1]).toContain("FROM ZqJob WHERE Subject LIKE '%Zq meter ab12cd%'");
+    expect(soqlLike("O'Brien Zq_1 50%")).toBe(String.raw`O\'Brien Zq\_1 50\%`);
+  });
+});
+
+describe("a record another one uses is deleted after it (run 2026-11-13T19-05-44-514Z-52f348c0)", () => {
+  it("deletes the later record first, and retries a delete refused while the other still used it", async () => {
+    const { cleanupByTypedName } = await import("../src/stages/salesforceCleanup.js");
+    const order: string[] = [];
+    let territoryGone = false;
+    const apiGet = vi.fn(async (p: string) => {
+      if (p === "/chatter/users/me") return { id: ME };
+      return { records: [{ Id: decodeURIComponent(p).includes("FROM ZqHours") ? "0OHzq0000000001AAA" : "0HhZq0000000001AAA" }] };
+    });
+    const apiDelete = vi.fn(async (p: string) => {
+      if (p.includes("ZqHours") && !territoryGone) throw new Error("HTTP 400: DELETE_FAILED it is associated with the following service territories");
+      if (p.includes("ZqTerritory")) territoryGone = true;
+      order.push(p);
+    });
+    const r = await cleanupByTypedName({ apiGet, apiDelete }, [{ object: "ZqHours", name: "Zq Weekday ab12cd" }, { object: "ZqTerritory", name: "Zq North ab12cd" }], new Date());
+    expect(order).toEqual(["/sobjects/ZqTerritory/0HhZq0000000001AAA", "/sobjects/ZqHours/0OHzq0000000001AAA"]);
+    expect(r.failed).toEqual([]);
+  });
+});
+
+describe("a lookup's typed text names no record of this form (run 2026-11-13T19-16-31-705Z-1c10477d)", () => {
+  it("is not searched for", async () => {
+    const { replayMade } = await import("../src/stages/salesforceCleanup.js");
+    const org = { objects: [{ api: "ZqAppt", fields: [{ label: "Zq Parent", api: "ZqParentId", type: "Reference", lookup: "Account" }, { label: "Subject", api: "Subject", type: "String" }] }] };
+    const steps = [
+      { action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { action: "fill", target: { name: "Zq Parent" }, value: "Zq Acme {{uid}}" },
+      { action: "fill", target: { name: "Subject" }, value: "Zq visit {{uid}}" },
+    ];
+    expect(replayMade(steps, ["ab12cd"], org)).toEqual([{ object: "ZqAppt", name: "Zq visit ab12cd", field: "Subject" }]);
+  });
+});

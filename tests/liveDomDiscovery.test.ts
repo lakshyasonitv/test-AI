@@ -629,7 +629,7 @@ describe("Salesforce: a form Lightning hides from the accessibility tree keeps a
     expect(els.find((e) => e.name === "Save")?.css).toBe('button[name="SaveEdit"]');
     const go = els.find((e) => e.name === "Go");
     expect(go).toBeDefined();
-    expect(go?.css ?? "").not.toMatch(/^body/);
+    expect(go?.css ?? "").not.toMatch(/^body\b/);
     // An ordinary run is unchanged: the chain-prefixed candidates as before.
     const plain = await enumerateLiveElements(page);
     expect(plain.find((e) => e.role === "textbox")?.css).toBe('#h >> #input-9');

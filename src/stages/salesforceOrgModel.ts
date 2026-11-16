@@ -53,12 +53,30 @@ async function readApp(apiGet: ApiGet): Promise<{ label?: string; objects: strin
   return { label: typeof app.label === "string" ? app.label : undefined, objects };
 }
 
-async function readObject(apiGet: ApiGet, api: string): Promise<SalesforceOrgModel["objects"][number] | null> {
+/** The request names this field label as a whole word or phrase ("Subject", "Serial Number"). */
+export function namesField(request: string, label: string): boolean {
+  const l = label.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return l.length > 1 && new RegExp(`(^|[^a-z0-9])${l}([^a-z0-9]|$)`).test(request.toLowerCase());
+}
+
+async function readObject(apiGet: ApiGet, api: string, request = ""): Promise<SalesforceOrgModel["objects"][number] | null> {
   const info = await tryGet(apiGet, `/ui-api/object-info/${encodeURIComponent(api)}`);
   if (!info?.fields) return null;
   const picklists = info.defaultRecordTypeId
     ? (await tryGet(apiGet, `/ui-api/object-info/${encodeURIComponent(api)}/picklist-values/${info.defaultRecordTypeId}`))?.picklistFieldValues ?? {}
     : {};
+  // A picklist the UI API lists no values for (Operating Hours' Time Zone): its active values from the
+  // object's describe. Without them an invented "GMT" stayed, and the form took the first option containing
+  // it, "(GMT+14:00) Line Islands Time" (run 2026-11-13T19-05-44-514Z-52f348c0).
+  const bare = Object.values<any>(info.fields).filter((f) => f?.dataType === "Picklist" && !picklists[f.apiName]?.values?.length);
+  if (bare.length) {
+    const described = await tryGet(apiGet, `/sobjects/${encodeURIComponent(api)}/describe`);
+    for (const f of bare) {
+      const d = (described?.fields ?? []).find((x: any) => x?.name === f.apiName);
+      const values = (d?.picklistValues ?? []).filter((p: any) => p?.active !== false && p?.label).map((p: any) => ({ label: String(p.label) }));
+      if (values.length) picklists[f.apiName] = { values };
+    }
+  }
   const lists = await tryGet(apiGet, `/ui-api/list-info/${encodeURIComponent(api)}`);
   // The create LAYOUT's required fields: what the form actually refuses to save without. Object-info
   // misses layout- and system-required ones (Lead's Company, run 2026-10-25T05-01-36-627Z-b0d6a138:
@@ -67,12 +85,17 @@ async function readObject(apiGet: ApiGet, api: string): Promise<SalesforceOrgMod
     ? await tryGet(apiGet, `/ui-api/layout/${encodeURIComponent(api)}?layoutType=Full&mode=Create&recordTypeId=${info.defaultRecordTypeId}`)
     : null;
   const layoutRequired = new Set<string>();
+  const formLabel = new Map<string, string>();
   for (const sec of layout?.sections ?? []) for (const row of sec?.layoutRows ?? []) for (const item of row?.layoutItems ?? []) {
     // One field per item only: a compound item (Lead's Name = Salutation + First + Last) is required
     // as a whole, and object-info already says which of its parts are (run
     // 2026-10-25T06-38-05-099Z-07e036cc filled an unrequested Salutation and First Name).
     const parts = (item?.layoutComponents ?? []).filter((c: any) => c?.componentType === "Field" && c.apiName);
     if (item?.required && parts.length === 1) layoutRequired.add(parts[0].apiName);
+    // What the FORM calls the field: object-info says "Operating Hour ID" for the Service Territory field the
+    // form labels "Operating Hours", so no step naming it matched, and test data added a second one under a
+    // third name (run 2026-11-13T18-45-09-236Z-e01f6e2d).
+    if (parts.length === 1 && typeof item?.label === "string" && item.label.trim()) formLabel.set(parts[0].apiName, item.label.trim());
   }
 
   const fields = Object.values<any>(info.fields)
@@ -84,7 +107,7 @@ async function readObject(apiGet: ApiGet, api: string): Promise<SalesforceOrgMod
       const lookup = (f.referenceToInfos ?? []).map((r: any) => r?.apiName).filter(Boolean).join("/") || undefined;
       const dependency = dependencyOf(f, picklists);
       return {
-        label: String(f.label ?? f.apiName), api: f.apiName, type: String(f.dataType ?? ""),
+        label: formLabel.get(f.apiName) ?? String(f.label ?? f.apiName), api: f.apiName, type: String(f.dataType ?? ""),
         ...(required ? { required: true } : {}),
         // ponytail: 200 values covers every standard picklist (Industry has 30+; 25 cut "Technology" and a
         // test picked "Biotechnology", run 2026-11-10T05-05-39-201Z-52ce7aed). A huge global value set
@@ -98,11 +121,14 @@ async function readObject(apiGet: ApiGet, api: string): Promise<SalesforceOrgMod
         ...(f.unique || f.externalId ? { unique: true } : {}),
       };
     })
-    // Required first (in the org's own order), then picklists and lookups (what a form step needs to
-    // get right), then the rest. A stable sort, so each group keeps the API's order.
+    // Required first (in the org's own order), then the fields the request names, then picklists and
+    // lookups (what a form step needs to get right), then the rest. A stable sort, so each group keeps the
+    // API's order. Work Order has 40+ Field Service picklists and lookups, so its Subject was cut by the cap
+    // and never API-checked (run 2026-11-13T18-11-00-028Z-90505eae).
     .sort((a, b) => {
       if (!!a.required !== !!b.required) return a.required ? -1 : 1;
       if (a.required) return 0;
+      if (namesField(request, a.label) !== namesField(request, b.label)) return namesField(request, a.label) ? -1 : 1;
       return Number(!!(b.picklist || b.lookup)) - Number(!!(a.picklist || a.lookup));
     })
     .slice(0, MAX_FIELDS);
@@ -417,12 +443,35 @@ async function readFlows(apiGet: ApiGet, request = ""): Promise<SalesforceOrgMod
 
 /** Custom objects (`__c`) a user can create and query — the org's own data model, nav or no nav.
  *  Shares, history, metadata types (`__mdt`) and platform events (`__e`) are not `__c`. */
-async function readCustomObjects(apiGet: ApiGet): Promise<string[]> {
-  const res = await tryGet(apiGet, "/sobjects");
-  return (res?.sobjects ?? [])
+function customObjects(sobjects: any[]): string[] {
+  return sobjects
     // ponytail: no `custom` check — every `__c` object is custom, so it could never decide anything.
     .filter((s: any) => s?.createable && s.queryable && /__c$/.test(String(s.name)))
     .map((s: any) => String(s.name));
+}
+
+/**
+ * Objects the request names by label ("Work Order", "Operating Hours") that a user can create and open
+ * in Lightning, nav or no nav. Field Service objects sit outside the Sales app's tabs, so a "Work Order"
+ * request was built as a Case and an "Operating Hours" one went to Setup (runs
+ * 2026-11-13T17-50-56-653Z-989d3c23, 17-51-15-443Z-6b6d9b04). Longest label first, and a matched label
+ * leaves the text, so "Work Order" does not also bring Order.
+ */
+export function requestedObjects(sobjects: any[], request: string): string[] {
+  let text = ` ${request.toLowerCase()} `;
+  const out: string[] = [];
+  const named = sobjects
+    .filter((s: any) => s?.createable && s.queryable && s.layoutable && typeof s.label === "string")
+    .flatMap((s: any) => [s.label, s.labelPlural].filter((l: unknown): l is string => typeof l === "string" && l.length > 2)
+      .map((l: string) => ({ api: String(s.name), label: l.toLowerCase() })))
+    .sort((a: { label: string }, b: { label: string }) => b.label.length - a.label.length);
+  for (const n of named) {
+    const re = new RegExp(`(^|[^a-z0-9])${n.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=[^a-z0-9]|$)`, "g");
+    if (!re.test(text)) continue;
+    text = text.replace(re, "$1 ");
+    if (!out.includes(n.api)) out.push(n.api);
+  }
+  return out;
 }
 
 /** Records the object holds, or undefined when SOQL refused (no access, not queryable). */
@@ -443,11 +492,14 @@ export async function readSalesforceOrgModel(
   if (!app) return null;
   const apps = ((await tryGet(apiGet, "/ui-api/apps?formFactor=Large"))?.apps ?? [])
     .map((a: any) => a?.label).filter((l: unknown): l is string => typeof l === "string" && !!l);
-  // The app's own tabs first, then custom objects no nav shows (where an org's real model lives).
-  const names = [...app.objects];
-  for (const c of await readCustomObjects(apiGet)) if (!names.includes(c)) names.push(c);
+  // The objects the request names first (so the cap never drops them), then the app's own tabs, then
+  // custom objects no nav shows (where an org's real model lives).
+  const sobjects: any[] = (await tryGet(apiGet, "/sobjects"))?.sobjects ?? [];
+  const names = [...requestedObjects(sobjects, request)];
+  for (const o of app.objects) if (!names.includes(o)) names.push(o);
+  for (const c of customObjects(sobjects)) if (!names.includes(c)) names.push(c);
   const objects = (await Promise.all(names.slice(0, MAX_OBJECTS).map(async (o) => {
-    const obj = await readObject(apiGet, o);
+    const obj = await readObject(apiGet, o, request);
     if (!obj) return null;
     const records = await countRecords(apiGet, o);
     return records === undefined ? obj : { ...obj, records };

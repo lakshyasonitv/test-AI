@@ -1,3 +1,4 @@
+import { dataRowsOf, rowCases } from "./stages/dataRows.js";
 import type { DiscoveryScope } from "./kb/projectDiscovery.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
@@ -15,9 +16,10 @@ import { enterWithRunLocale } from "./browserLaunch.js";
 import { enterWithTargetApp, type TargetApp } from "./runTarget.js";
 import { orgWarning } from "./stages/salesforceOrgLogin.js";
 import { enterWithFrontdoor, currentFrontdoor, type FrontdoorSession } from "./stages/salesforceFrontdoor.js";
-import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
+import { cleanupByTypedName, cleanupEnabled, cleanupRecords, cleanupSeeded, replayMade, runRecords, runStartedAt, screenFlowMade } from "./stages/salesforceCleanup.js";
+import { takeReplayCodes } from "./stages/replayCodes.js";
 import { publishRequestedEvents, seedEnabled, seedExistingRecords, withoutPublishSteps, type Published } from "./stages/salesforceSeed.js";
-import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, flowRecordChecks, leadConvertChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
+import { apiChecks, apiChecksEnabled, approvalChecks, calculatedChecks, caseRunFacts, toastCreated, flowExplainsField, flowRecordChecks, leadConvertChecks, flowSetChecks, runCases, typedValues, type ApiCheck } from "./stages/salesforceOracles.js";
 import { enterWithRunId } from "./runContext.js";
 import { extendedLoggingEnabled } from "./logging.js";
 import {
@@ -170,12 +172,15 @@ export function runUsageLine(runId: string, s: LlmUsageSnapshot): string {
 }
 
 export async function runPipeline(
-  { prompt, url, urls, coverage, options }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; options?: RunOptions },
+  { prompt: request, url, urls, coverage, options }: { prompt: string; url?: string; urls?: string[]; coverage?: Coverage; options?: RunOptions },
   onEvent: OnEvent = () => { },
   presetRunId?: string,
   askCredentials?: AskCredentials
 ) {
   // Normalize: single `url` becomes `urls: [url]`; both provided means `urls` wins.
+  // Data-driven (dataRows.ts): every stage works on row 1's request; the other rows join as cases.
+  const dataRows = dataRowsOf(request);
+  const prompt = dataRows ? dataRows.prompts[0] : request;
   const resolvedUrls = urls?.length ? urls : url ? [url] : [];
   if (!resolvedUrls.length) throw new Error("Either url or urls must be provided");
   // The client's choice wins; otherwise the server's own configured default (SELF_HEAL_DEFAULT,
@@ -589,7 +594,12 @@ export async function runPipeline(
 
     if (!result.passed) {
       const callsBeforeDiagnosis = llmBudget.snapshot().calls;
-      diagnosis = await step("failure_analysis", "06-diagnosis.json", () => analyzeFailure(ir, result as any, appModel.auth?.loginUrl));
+      diagnosis = await step("failure_analysis", "06-diagnosis.json", async () => {
+        const d = await analyzeFailure(ir, result as any, appModel.auth?.loginUrl);
+        // An org flow that sets the checked field says why it shows another value (deterministic, no model call).
+        const flow = d && flowExplainsField(ir, appModel.salesforceOrg, d.failingStepId ?? undefined);
+        return d && flow ? { ...d, explanation: `${flow} ${d.explanation}` } : d;
+      });
       const diagnosed = diagnosis; // a const for the closure: `diagnosis` itself is reassigned below
       insight("failure-analysis", () => ({
         case: "primary", category: diagnosed?.category, failingStep: diagnosed?.failingStepId ?? undefined,
@@ -708,7 +718,10 @@ export async function runPipeline(
 
     // Single selection authority over the merged list — see finalizeCaseSelection's own doc
     // comment for why this branches on gateUsed.
-    const scopedCases = finalizeCaseSelection(allCases, scope, thePlan.coverage, gateUsed, appModel.auth?.loginUrl);
+    const scopedCases = [
+      ...finalizeCaseSelection(allCases, scope, thePlan.coverage, gateUsed, appModel.auth?.loginUrl),
+      ...(dataRows ? rowCases(primary, dataRows) : []),
+    ];
     insight("case-selection", () => ({
       generated: allCases.length, reactive: reactiveCount, selected: scopedCases.length,
       budget: budgetFor(thePlan.coverage), newPagesFound: newPages.length,
@@ -775,6 +788,7 @@ export async function runPipeline(
         const facts = caseRunFacts(c.results);
         const typed = [...typedValues(c.ir, sfOrg), ...calculatedChecks(c.ir, sfOrg, facts?.shown), ...flowSetChecks(c.ir, sfOrg)];
         if (!facts) continue;
+        if (facts.toasts.length) facts.created = await toastCreated(fd.apiGet, sfOrg, facts.toasts, facts.created);
         const all = [
           ...(typed.length ? await apiChecks(fd.apiGet, typed, facts.created, facts.ctx) : []),
           // What a flow made on the record (and must not have made on this branch).
@@ -822,6 +836,10 @@ export async function runPipeline(
         const facts = caseRunFacts(c.results);
         return facts ? screenFlowMade(c.ir.steps, appModel.salesforceOrg?.flows, facts.ctx) : [];
       });
+      // What the grounding replays saved, by the exact codes they used (run 2026-11-13T16-00-53-324Z-9f8e022d
+      // left two Contacts, and its own Save then met the duplicate rule).
+      const codes = takeReplayCodes(runId);
+      for (const c of runCases(runDir)) flowMade.push(...replayMade(c.ir.steps, codes, appModel.salesforceOrg));
       const byFlow = await cleanupByTypedName({ apiGet: fd.apiGet, apiDelete: fd.apiDelete }, flowMade, since);
       cleanup.deleted.push(...byFlow.deleted);
       cleanup.failed.push(...byFlow.failed);

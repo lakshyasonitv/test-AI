@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { applyTestData, asksForEveryField, fitToField, testDataEnabled, valueFor } from "../src/stages/testData.js";
+import { applyTestData, asksForEveryField, dateTimeFills, datedFieldChecks, dateTimeValue, fitToField, localeDate, testDataEnabled, valueFor } from "../src/stages/testData.js";
 import { UNIQUE_TOKEN } from "../src/text.js";
 import type { IR } from "../src/schema/ir.js";
 import type { AppModel } from "../src/schema/appModel.js";
@@ -150,6 +150,20 @@ describe("applyTestData", () => {
     const unnamed = ir([{ id: "s2", action: "select", target: { role: "combobox", name: "Zq Sector" }, value: "tech" }]);
     applyTestData(unnamed, valid, org, "Create a Zq Thing");
     expect(value(unnamed, "s2")).toBe("Zqbiotech");
+  });
+
+  // Run 2026-11-13T22-11-33-599Z-55da10c9: "Pacific Standard Time" sits in two time zones, so nothing
+  // snapped and the FIRST option, "(GMT+14:00) Line Islands Time", was picked; "GMT" the same.
+  it("a value in several options picks the one holding it most often, then the shortest, not the first", () => {
+    const org = structuredClone(appModel) as AppModel;
+    org.salesforceOrg!.objects[0].fields.push({ label: "Zq Zone", api: "Zq_Zone__c", type: "Picklist", required: true, picklist: [
+      "(GMT+14:00) Zq Line Time (Zq/Kiri)", "(GMT+00:00) Zq Mean Time (GMT)",
+      "(GMT-08:00) Zq Pacific Standard Time (Zq/Tijuana)", "(GMT-08:00) Zq Pacific Standard Time (Zq/LA)"] } as any);
+    for (const [v, want] of [["Zq Pacific Standard Time", "(GMT-08:00) Zq Pacific Standard Time (Zq/LA)"], ["GMT", "(GMT+00:00) Zq Mean Time (GMT)"]]) {
+      const r = ir([{ id: "s2", action: "select", target: { role: "combobox", name: "Zq Zone" }, value: v }]);
+      applyTestData(r, valid, org, "Create a Zq Thing");
+      expect(value(r, "s2"), v).toBe(want);
+    }
   });
 
   it("does nothing without an org model or a create-form navigate", () => {
@@ -561,6 +575,35 @@ describe("lookups in every case (run 2026-10-25T06-38-05-138Z-dfdd0d4f, a Contac
     expect(invented.steps.find((s) => s.id === "s3")!.value).toBe("");
   });
 
+  // Run 2026-11-13T20-51-11-629Z-44da5f13: "a Case for that contact" picked "Rahul Mehta {{uid}}", the
+  // Contact typed as "Rahul" + "Mehta {{uid}}"; it was blanked, then dropped as unrequested, so the Case
+  // was never linked to the Contact.
+  it("a lookup to the person this case made (First + Last) is kept, with that name", () => {
+    const m = { baseUrl: "https://zq.example", pages: [], salesforceOrg: { validationRulesRead: true, objects: [
+      { api: "Zq_Who__c", label: "Zq Who", createable: true, fields: [
+        { label: "First Name", api: "FirstName", type: "String" },
+        { label: "Last Name", api: "LastName", type: "String", required: true }] },
+      { api: "Zq_Ticket__c", label: "Zq Ticket", createable: true, fields: [
+        { label: "Zq Topic", api: "Zq_Topic__c", type: "String", required: true },
+        { label: "Zq Asker ID", api: "Zq_Asker__c", type: "Reference", lookup: "Zq_Who__c" }] },
+    ] } } as unknown as AppModel;
+    const pick = `Zq Rahul Zq Mehta ${UNIQUE_TOKEN}`;
+    const r = { meta: {}, steps: [
+      { id: "p1", action: "navigate", target: { url: "/lightning/o/Zq_Who__c/new" } },
+      { id: "p2", action: "fill", target: { role: "textbox", name: "First Name" }, value: "Zq Rahul" },
+      { id: "p3", action: "fill", target: { role: "textbox", name: "Last Name" }, value: `Zq Mehta ${UNIQUE_TOKEN}` },
+      { id: "p4", action: "click", target: { role: "button", name: "Save" } },
+      { id: "t1", action: "navigate", target: { url: "/lightning/o/Zq_Ticket__c/new" } },
+      { id: "t2", action: "select", target: { role: "combobox", name: "Zq Asker Name" }, value: pick },
+      { id: "t3", action: "fill", target: { role: "textbox", name: "Zq Topic" }, value: "Zq Login" },
+      { id: "t4", action: "click", target: { role: "button", name: "Save" } },
+    ] } as unknown as IR;
+    applyTestData(r, valid, m, "Create a Zq Who named Zq Rahul Zq Mehta, then create a Zq Ticket for that person with Zq Topic 'Zq Login'");
+    const t2 = r.steps.find((s) => s.id === "t2");
+    expect(t2?.target?.lookup).toBe(true);
+    expect(t2?.value).toBe(pick);
+  });
+
   it("a security case picks a record too, so its save can happen (case-3); invalid-input and empty cases are left alone", () => {
     const sec = flow({ action: "fill", target: { role: "textbox", name: "Zq Firm Name" }, value: "Existing Zq Firm" });
     applyTestData(sec, { category: "security-xss" } as any, org, req);
@@ -572,6 +615,14 @@ describe("lookups in every case (run 2026-10-25T06-38-05-138Z-dfdd0d4f, a Contac
       expect(s3.action, category).toBe("fill");
       expect(s3.value, category).toBe("zz-not-a-firm");
     }
+  });
+
+  it("an invalid-input case picks a record for a lookup the request does not name (run 2026-11-13T19-16-31-705Z-1c10477d)", () => {
+    const neg = flow({ action: "fill", target: { role: "textbox", name: "Zq Firm Name" }, value: "Zq Invented Parent" });
+    applyTestData(neg, { category: "invalid-input" } as any, org, "Create a Zq Person whose Zq Due is before its Zq Start and verify it is rejected");
+    const s3 = neg.steps.find((s) => s.id === "s3")!;
+    expect(s3.target?.lookup).toBe(true);
+    expect(s3.value).toBe("");
   });
 });
 
@@ -910,5 +961,275 @@ describe("test data fitted to each field (field limits from object-info)", () =>
       { id: "p", action: "select", target: { role: "combobox", name: "Zq Stage" }, value: "Open" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }] } as unknown as IR;
     applyTestData(r, valid, m, "Create a Zq Partner Zq Thing");
     expect(value(r, "p")).toBe("Zq Partner Open");
+  });
+});
+
+describe("a value a check quotes still fits its field (run 2026-11-13T12-02-09-298Z-fc1e4b67)", () => {
+  it("is shortened, and the checks quoting it are shortened the same way", () => {
+    const m = structuredClone(appModel) as AppModel;
+    const o = m.salesforceOrg!.objects[0];
+    o.validationRules = [];
+    o.fields.push({ label: "Zq Track", api: "Zq_Track__c", type: "String", length: 12 } as any);
+    const r = ir([
+      { id: "t", action: "fill", target: { role: "textbox", name: "Zq Track" }, value: "ZQTRACK-PLAN-001" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { text: "ZQTRACK-PLAN-001" }, assertion: "visible" },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing with a Zq Track");
+    expect(value(r, "t")).toBe("ZQTRACK-PLAN");
+    expect(r.steps.find((s) => s.id === "a")!.target?.text).toBe("ZQTRACK-PLAN");
+  });
+});
+
+describe("bug hunt 13 Nov: dates in words and full names", () => {
+  it("a date in words or ISO is the same day in the user's format; a numeric one is left alone", () => {
+    expect(localeDate("15 March 1990", "en-US")).toBe("3/15/1990");
+    expect(localeDate("March 15, 1990", "en-US")).toBe("3/15/1990");
+    expect(localeDate("1990-03-15", "de-DE")).toBe("15.3.1990");
+    expect(localeDate("31 February 1990")).toBeUndefined();
+    expect(localeDate("03/04/1990")).toBeUndefined();
+  });
+  it("a requested date in words is typed in the user's format, and a check quoting it changes with it", () => {
+    const m = structuredClone(appModel) as AppModel;
+    m.salesforceOrg!.objects[0].validationRules = [];
+    const r = ir([
+      { id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "15 March 1990" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { text: "15 March 1990" }, assertion: "visible" },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing with Zq Due 15 March 1990 and verify it");
+    expect(value(r, "d")).toBe("3/15/1990");
+    expect(r.steps.find((s) => s.id === "a")!.target?.text).toBe("3/15/1990");
+  });
+  it("the requested day however the model wrote it, with its checks; yesterday and {{yesterday}} are run-relative", () => {
+    const m = structuredClone(appModel) as AppModel;
+    m.salesforceOrg!.objects[0].validationRules = [];
+    const r = ir([
+      { id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "15/03/1990" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { text: "15 March 1990" }, assertion: "visible" },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing with Zq Due 15 March 1990 and verify it");
+    expect(value(r, "d")).toBe("3/15/1990");
+    expect(r.steps.find((s) => s.id === "a")!.target?.text).toBe("3/15/1990");
+    const y = ir([{ id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "{{yesterday}}" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }]);
+    applyTestData(y, valid, m, "Create a Zq Thing due yesterday");
+    expect(value(y, "d")).toBe("{{date:-1:en-US}}");
+    // A check quoting the made-up token is changed with it.
+    const q = ir([{ id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "{{yesterday}}" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { text: "{{yesterday}}" }, assertion: "text_contains", value: "{{yesterday}}" }]);
+    applyTestData(q, valid, m, "Create a Zq Thing due yesterday");
+    expect(q.steps.find((s) => s.id === "a")).toMatchObject({ value: "{{date:-1:en-US}}", target: { text: "{{date:-1:en-US}}" } });
+    // A fixed date naming that same day becomes relative too, so a replay tomorrow still checks yesterday.
+    const now = new Date();
+    const yesterday = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "numeric", day: "numeric", timeZone: "UTC" })
+      .format(new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() - 1)));
+    const f = ir([{ id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "yesterday" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { field: "Zq Due" }, assertion: "text_contains", value: yesterday }]);
+    applyTestData(f, valid, m, "Create a Zq Thing due yesterday");
+    expect(f.steps.find((s) => s.id === "a")!.value).toBe("{{date:-1:en-US}}");
+    // "In 45 days" was typed as is and refused the save (run 2026-11-13T22-54-49-464Z-d812ddd7).
+    const n = ir([{ id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "in 45 days" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }]);
+    applyTestData(n, valid, m, "Create a Zq Thing with Zq Due in 45 days");
+    expect(value(n, "d")).toBe("{{date:+45:en-US}}");
+  });
+  it("First Name keeps only its own words when it also holds the Last Name", () => {
+    const m = structuredClone(appModel) as AppModel;
+    const o = m.salesforceOrg!.objects[0];
+    o.validationRules = [];
+    o.fields.push({ label: "First Name", api: "FirstName", type: "String" } as any, { label: "Last Name", api: "LastName", type: "String", required: true } as any);
+    const r = ir([
+      { id: "f", action: "fill", target: { role: "textbox", name: "First Name" }, value: "Zqana Zqlopez" },
+      { id: "l", action: "fill", target: { role: "textbox", name: "Last Name" }, value: "Zqlopez {{uid}}" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing for Zqana Zqlopez");
+    expect(value(r, "f")).toBe("Zqana");
+  });
+});
+
+describe("bug hunt round 2: dates typed on an edit form (run 2026-11-13T13-59-40-225Z-73d6d7c6)", () => {
+  it("a date in words on the Edit form is typed in the user's format, with its checks", () => {
+    const m = structuredClone(appModel) as AppModel;
+    m.salesforceOrg!.objects[0].validationRules = [];
+    const r = ir([
+      { id: "n", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq {{uid}}" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "ed", action: "click", target: { role: "button", name: "Edit" } },
+      { id: "d", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "31 December 2026" },
+      { id: "sv2", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { field: "Zq Due" }, assertion: "text_equals", value: "31 December 2026" },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing, then edit its Zq Due to 31 December 2026");
+    expect(value(r, "d")).toBe("12/31/2026");
+    expect(r.steps.find((s) => s.id === "a")!.value).toBe("12/31/2026");
+  });
+});
+
+describe("bug hunt round 2: a record type picked as a picklist value (run 2026-11-13T14-13-11-352Z-7c8d6c62)", () => {
+  it("is dropped when the field does not offer it; a field that does offer it keeps it", () => {
+    const m = structuredClone(appModel) as AppModel;
+    const o = m.salesforceOrg!.objects[0];
+    o.validationRules = [];
+    o.recordTypes = [{ name: "Zq Partner", id: "012zq0000000001AAA" }] as any;
+    const step = (v: string) => ({ id: "p", action: "select", target: { role: "combobox", name: "Zq Stage" }, value: v });
+    const r = { meta: {}, steps: [{ id: "s1", action: "navigate", target: { url: "/lightning/o/Zq_Thing__c/new?recordTypeId=012zq0000000001AAA" } }, step("Zq Partner"), { id: "sv", action: "click", target: { role: "button", name: "Save" } }] } as unknown as IR;
+    applyTestData(r, valid, m, "Create a Zq Partner Zq Thing");
+    expect(r.steps.some((s) => s.id === "p")).toBe(false);
+    o.fields.find((f) => f.label === "Zq Stage")!.picklist!.push("Zq Partner");
+    const k = { meta: {}, steps: [{ id: "s1", action: "navigate", target: { url: "/lightning/o/Zq_Thing__c/new" } }, step("Zq Partner"), { id: "sv", action: "click", target: { role: "button", name: "Save" } }] } as unknown as IR;
+    applyTestData(k, valid, m, "Create a Zq Thing");
+    expect(k.steps.find((s) => s.id === "p")?.value).toBe("Zq Partner");
+  });
+});
+
+describe("bug hunt round 3: a value holding its own field label (run 2026-11-13T15-19-02-592Z-1e01cacf)", () => {
+  it("drops the label, with the checks quoting it; a request that writes it so keeps it", () => {
+    const m = structuredClone(appModel) as AppModel;
+    m.salesforceOrg!.objects[0].validationRules = [];
+    const r = ir([
+      { id: "c", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq Name Zqsato {{uid}}" },
+      { id: "sv", action: "click", target: { role: "button", name: "Save" } },
+      { id: "a", action: "assert", target: { text: "Zq Name Zqsato {{uid}}" }, assertion: "visible" },
+    ]);
+    applyTestData(r, valid, m, "Create a Zq Thing for Zqsato");
+    expect(value(r, "c")).toBe("Zqsato {{uid}}");
+    expect(r.steps.find((s) => s.id === "a")!.target?.text).toBe("Zqsato {{uid}}");
+    const k = ir([{ id: "c", action: "fill", target: { role: "textbox", name: "Zq Name" }, value: "Zq Name Zqsato" }, { id: "sv", action: "click", target: { role: "button", name: "Save" } }]);
+    applyTestData(k, valid, m, "Create a Zq Thing named Zq Name Zqsato");
+    expect(value(k, "c")).toContain("Zq Name Zqsato");
+  });
+});
+
+describe("date-time fields (runs 2026-11-13T18-30-28-619Z-653368f1, 18-35-51-793Z-df1af5e4)", () => {
+  it("writes '<day> <time>' in the user's format, the day relative to the run", () => {
+    expect(dateTimeValue("tomorrow 9:00 AM", "Zq Start", "en-US")).toBe("{{date:+1:en-US}} 9:00 AM");
+    expect(dateTimeValue("in 3 days 2:15 PM", "Zq Start", "en-US")).toBe("{{date:+3:en-US}} 2:15 PM");
+    expect(dateTimeValue("2026-11-16T14:00:00Z", "Zq Start", "en-US", "", "tomorrow")).toBe("{{date:+1:en-US}} 2:00 PM");
+    expect(dateTimeValue("15 March 2030 10:00", "Zq Start", "en-US", "start on 15 March 2030")).toBe("3/15/2030 10:00 AM");
+    expect(dateTimeValue("2026-11-16", "Zq Due Date", "en-US")).toBe("{{date:+3:en-US}} 10:30 AM");
+    expect(dateTimeValue("", "Zq Start", "de-DE")).toBe("{{date:+1:de-DE}} 10:30");
+  });
+  it("turns a fill of a DateTime field into one sf-dt- step naming the field, and leaves other fields", () => {
+    const org = { userLocale: "en_US", objects: [{ api: "ZqAppt", label: "Zq Appt", fields: [
+      { label: "Zq Earliest", api: "ZqEarliest__c", type: "DateTime", required: true },
+      { label: "Zq Due", api: "ZqDue__c", type: "DateTime", required: true },
+      { label: "Zq Subject", api: "Subject", type: "String" },
+    ] }] } as any;
+    const ir = { meta: {}, steps: [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { id: "a", action: "fill", target: { role: "textbox", name: "Zq Earliest" }, value: "2026-11-16" },
+      { id: "b", action: "fill", target: { role: "textbox", name: "Zq Due" }, value: "2026-11-18 4:00 PM" },
+      { id: "c", action: "fill", target: { role: "textbox", name: "Zq Subject" }, value: "Zq" },
+    ] } as unknown as IR;
+    expect(dateTimeFills(ir, org, "Zq Earliest tomorrow and Zq Due in 3 days")).toHaveLength(2);
+    expect(ir.steps[1]).toMatchObject({ id: "sf-dt-a", target: { role: "group", name: "Zq Earliest" }, value: "{{date:+1:en-US}} 10:30 AM" });
+    expect(ir.steps[2]).toMatchObject({ id: "sf-dt-b", value: "{{date:+3:en-US}} 4:00 PM" });
+    expect(ir.steps[3].id).toBe("c");
+  });
+});
+
+describe("date-time boxes named just Date or Time (run 2026-11-13T19-05-25-624Z-90c95d42)", () => {
+  it("drops them, and gives each date-time field the request sets its own step before Save", () => {
+    const org = { userLocale: "en_US", objects: [{ api: "ZqAppt", label: "Zq Appt", fields: [
+      { label: "Zq Earliest", api: "ZqEarliest__c", type: "DateTime" },
+      { label: "Zq Due", api: "ZqDue__c", type: "DateTime" },
+    ] }] } as any;
+    const ir = { meta: {}, steps: [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { id: "a", action: "fill", target: { role: "textbox", name: "Date" }, value: "tomorrow" },
+      { id: "b", action: "fill", target: { role: "textbox", name: "Date" }, value: "in 3 days" },
+      { id: "s", action: "click", target: { role: "button", name: "Save" } },
+    ] } as unknown as IR;
+    dateTimeFills(ir, org, "Create a Zq Appt with Zq Earliest tomorrow and Zq Due in 3 days");
+    expect(ir.steps.map((s) => s.id)).toEqual(["n", "sf-dt-req-ZqEarliest__c", "sf-dt-req-ZqDue__c", "s"]);
+    expect(ir.steps[1].value).toBe("{{date:+1:en-US}} 10:30 AM");
+    expect(ir.steps[2].value).toBe("{{date:+3:en-US}} 10:30 AM");
+  });
+});
+
+describe("a rule between two date-time fields the request sets (run 2026-11-13T19-38-22-336Z-5d07d2ee)", () => {
+  it("gives the pair days that break it as asked, and drops a click on a field's own label", () => {
+    const org = { userLocale: "en_US", objects: [{ api: "ZqAppt", label: "Zq Appt", fields: [
+      { label: "Zq Earliest", api: "ZqEarliest__c", type: "DateTime" },
+      { label: "Zq Due", api: "ZqDue__c", type: "DateTime" },
+    ] }] } as any;
+    const ir = { meta: {}, steps: [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { id: "a", action: "fill", target: { role: "textbox", name: "Date" }, value: "2026-01-02" },
+      { id: "l", action: "click", target: { role: "link", name: "Zq Earliest" } },
+      { id: "e", action: "fill", target: { role: "textbox", name: "Zq Earliest" }, value: "2026-01-01 9:00 AM" },
+      { id: "s", action: "click", target: { role: "button", name: "Save" } },
+    ] } as unknown as IR;
+    dateTimeFills(ir, org, "Create a Zq Appt whose Zq Due is before its Zq Earliest and verify it is rejected");
+    expect(ir.steps.map((s) => s.id)).toEqual(["n", "sf-dt-e", "sf-dt-req-ZqDue__c", "s"]);
+    expect(ir.steps[1].value).toBe("{{date:+2:en-US}} 9:00 AM");
+    expect(ir.steps[2].value).toBe("{{date:+1:en-US}} 10:30 AM");
+  });
+});
+
+describe("a required date-time the request gives (run 2026-11-15T11-51-59-919Z-284bb4d4)", () => {
+  // The case typed into the inner "Date"/"Time" boxes, which name no field; both ends got 10:30 AM and
+  // Salesforce refused the save. Canary names.
+  const model = {
+    baseUrl: "https://zq.example", pages: [],
+    salesforceOrg: { validationRulesRead: true, objects: [
+      { api: "Zq_Shift__c", label: "Zq Shift", createable: true, fields: [
+        { label: "Zq End", api: "Zq_End__c", type: "DateTime", required: true },
+        { label: "Zq Start", api: "Zq_Start__c", type: "DateTime", required: true },
+      ] },
+    ] },
+  } as unknown as AppModel;
+  it("takes the request's value instead of making one up", () => {
+    const r = {
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/lightning/o/Zq_Shift__c/new" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Save" } },
+      ],
+    } as unknown as IR;
+    applyTestData(r, valid, model, "Create a Zq Shift with Zq Start tomorrow 9:00 AM and Zq End tomorrow 5:00 PM, then verify the start");
+    expect(r.steps.find((s) => s.target?.name === "Zq Start")?.value).toBe("tomorrow 9:00 AM");
+    expect(r.steps.find((s) => s.target?.name === "Zq End")?.value).toBe("tomorrow 5:00 PM");
+  });
+});
+
+describe("a check of a date-time field in words (run 2026-11-15T11-55-56-797Z-7153003e)", () => {
+  it("looks for that day, not the words", () => {
+    const org = { userLocale: "en_US", objects: [{ api: "ZqAppt", label: "Zq Appt", fields: [
+      { label: "Zq Due", api: "ZqDue__c", type: "DateTime" },
+      { label: "Zq Note", api: "ZqNote__c", type: "String" },
+    ] }] } as any;
+    const ir = { meta: {}, steps: [
+      { id: "c", action: "assert", target: { field: "Zq Due" }, value: "in 5 days", assertion: "text_contains" },
+      { id: "d", action: "assert", target: { field: "Zq Note" }, value: "in 5 days", assertion: "text_contains" },
+    ] } as unknown as IR;
+    datedFieldChecks(ir, org);
+    expect(ir.steps[0].value).toBe("{{date:+5:en-US}}");
+    expect(ir.steps[1].value).toBe("in 5 days");
+  });
+});
+
+describe("a required lookup the captured form does not show (run 2026-11-15T12-19-24-256Z-d9e8322e)", () => {
+  it("is left to Salesforce, not given a step", () => {
+    const model = {
+      baseUrl: "https://zq.example",
+      pages: [{ url: "https://zq.example/lightning/o/Zq_Plan__c/new?count=1", elements: [{ role: "combobox", name: "Zq Order" }] }],
+      salesforceOrg: { validationRulesRead: true, objects: [{ api: "Zq_Plan__c", label: "Zq Plan", createable: true, fields: [
+        { label: "Zq Parent ID", api: "Zq_Parent__c", type: "Reference", required: true, lookup: "Zq_Order__c" },
+        { label: "Zq Order ID", api: "Zq_Order__c", type: "Reference", required: true, lookup: "Zq_Order__c" },
+      ] }] },
+    } as unknown as AppModel;
+    const r = {
+      meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "p", baseUrl: "https://zq.example" },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/lightning/o/Zq_Plan__c/new" } },
+        { id: "s2", action: "click", target: { role: "button", name: "Save" } },
+      ],
+    } as unknown as IR;
+    applyTestData(r, valid, model);
+    const names = r.steps.map((s) => s.target?.name);
+    expect(names).toContain("Zq Order");
+    expect(names.some((n) => /Parent/.test(n ?? ""))).toBe(false);
   });
 });

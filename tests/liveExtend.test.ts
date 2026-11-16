@@ -537,3 +537,17 @@ describe("{{uid}} in the grounding replay and its text correction", () => {
     expect(res.ir.steps.at(-1)!.target!.text).toBe("was created");
   });
 });
+
+describe("restoreReplayCodes (run 2026-11-13T16-58-36-613Z-a34e9804)", () => {
+  it("puts {{uid}} back where a step named a replay's record, and drops the replay page's selector", async () => {
+    const { restoreReplayCodes } = await import("../src/stages/replayCodes.js");
+    const steps: any[] = [
+      { id: "o", action: "click", target: { role: "link", name: "Zq Quasar za3lt6", css: "body > div:nth-of-type(4) a" } },
+      { id: "k", action: "assert", target: { text: "Zq Quasar abc999" }, assertion: "visible" },
+    ];
+    expect(restoreReplayCodes(steps, ["za3lt6"])).toHaveLength(1);
+    expect(steps[0].target).toEqual({ role: "link", name: "Zq Quasar {{uid}}", css: undefined });
+    expect(steps[1].target.text).toBe("Zq Quasar abc999");   // not a replay code: untouched
+    expect(restoreReplayCodes(steps, [])).toEqual([]);
+  });
+});

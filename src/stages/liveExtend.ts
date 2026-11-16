@@ -14,7 +14,8 @@ import {
 } from "./credentials.js";
 import { isAuthTriggeringStep, waitForAuthSettle } from "./authSettle.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, credentialFingerprint, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
-import { cutAtBoundary, pageKey, lineKey, hasRunToken, resolveRunTokens, newRunTokenContext } from "../text.js";
+import { cutAtBoundary, pageKey, lineKey, hasRunToken, resolveRunTokens } from "../text.js";
+import { replayContext } from "./replayCodes.js";
 import { llmCacheDimension } from "../llm/llmContext.js";
 import { mergeScreenInto } from "./screens.js";
 import { currentRunTargetApp } from "../runTarget.js";
@@ -48,8 +49,9 @@ export function prepareReplayPage(page: Page, prefix: Step[]): void {
     replayRecordPages.set(page, pages);
     page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) pages.visit(frame.url()); });
   }
-  if (prefix.some((s) => s.action === "select" && s.target?.lookup && hasRunToken(s.value))) replayTokens.set(page, newRunTokenContext());
+  if (prefix.some((s) => s.action === "select" && s.target?.lookup && hasRunToken(s.value))) replayTokens.set(page, replayContext());
 }
+
 
 /** Close Salesforce's "Similar Records Exist" warning when it is open (generator.ts sfDismissDuplicates). */
 export async function dismissDuplicateWarning(page: Page): Promise<void> {
@@ -60,6 +62,38 @@ export async function dismissDuplicateWarning(page: Page): Promise<void> {
 /** Run one grounded prefix step against a live page. Mirrors generator.ts's emitStep,
  *  but executed instead of emitted. Assertions are skipped by the caller — they only
  *  check state, they don't advance it, and a strict assertion shouldn't abort the replay. */
+/** A date-time field: the Date and Time boxes of the lightning-datetimepicker whose legend is `label`; `value`
+ *  is "<date> <time>". The spec's sfDateTime (generator.ts SF_DATETIME_HELPER) does the same. */
+export async function sfDateTimeLive(page: Page, label: string, value: string): Promise<void> {
+  const v = value.trim();
+  const at = v.indexOf(" ");
+  const date = at < 0 ? v : v.slice(0, at);
+  const time = at < 0 ? "" : v.slice(at + 1).trim();
+  const want = label.split("*").join("").trim().toLowerCase();
+  const pickers = page.locator("lightning-datetimepicker");
+  await pickers.first().waitFor({ timeout: 10000 });
+  let box;
+  for (let i = (await pickers.count()) - 1; i >= 0 && !box; i--) {
+    const legend = (await pickers.nth(i).locator("legend").first().textContent({ timeout: 2000 }).catch(() => "")) ?? "";
+    if (legend.split("*").join("").replace(/\s+/g, " ").trim().toLowerCase() === want) box = pickers.nth(i);
+  }
+  if (!box) throw new Error(`No date-time field "${label}" on the page`);
+  const d = box.locator("lightning-datepicker input").first();
+  await d.focus({ timeout: 10000 });
+  await d.fill(date, { timeout: 10000 });
+  if (time) {
+    const t = box.locator("lightning-timepicker input").first();
+    // Typed key by key, then its own option picked: a value set in one go is refused as "does not match
+    // the allowed format" (run 2026-11-13T19-16-31-705Z-1c10477d).
+    await t.click({ timeout: 10000 });
+    await t.fill("", { timeout: 10000 });
+    await t.pressSequentially(time, { delay: 30 });
+    const opt = box.getByRole("option", { name: time, exact: true }).first();
+    if (await opt.isVisible().catch(() => false)) await opt.click({ timeout: 5000 }).catch(() => {});
+    else await t.press("Tab").catch(() => {});
+  }
+}
+
 export async function runStepLive(
   page: Page, step: Step, baseUrl: string, creds?: Credentials,
   /** Same DOM-derived field map the IR uses. Without it the replay can't tell which box is
@@ -110,7 +144,9 @@ export async function runStepLive(
       // Run tokens: a fresh context per replayed fill (per replay when a lookup names a record the flow
       // created, prepareReplayPage). A replay that clicks Save creates a real record too, and must not
       // collide with the run's own name or another replay's (duplicate rules).
-      const val = hasRunToken(raw) ? resolveRunTokens(raw, replayTokens.get(page) ?? newRunTokenContext()) : raw;
+      const val = hasRunToken(raw) ? resolveRunTokens(raw, replayTokens.get(page) ?? replayContext()) : raw;
+      // A date-time field's own Date and Time boxes (generator.ts SF_DATETIME_HELPER, the same logic).
+      if (step.id.startsWith("sf-dt-") && step.target?.name) { await sfDateTimeLive(page, step.target.name, val); return; }
       // Focus first, as the spec's fill step does: a prefilled field that redraws on focus would
       // otherwise get the value appended ("10" into "10%" gave "1010").
       const el = await resolveLive(page, step.target!, "fill");
@@ -153,6 +189,20 @@ export async function runStepLive(
       if (isNamedToggle({ ...step.target, css: undefined })) {
         await page.getByRole(step.target!.role as "radio" | "checkbox", { name: step.target!.name!, exact: true }).first().check({ force: true });
         return;
+      }
+      // The spec's own rule (generator.ts sfMoreItem): a record action under "Show more actions" (a Service
+      // Appointment's Edit; run 2026-11-15T12-19-24-259Z-744d6c2b never captured its edit form).
+      if (currentFrontdoor() && step.target?.role === "button" && step.target.name && !/^(save|cancel|show more actions)$/i.test(step.target.name)) {
+        const own = step.target.css ? page.locator(step.target.css).first() : page.getByRole("button", { name: step.target.name, exact: true }).first();
+        if (!(await own.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false))) {
+          const more = page.getByRole("button", { name: "Show more actions", exact: true }).first();
+          if (await more.isVisible().catch(() => false)) {
+            await more.click();
+            const item = page.getByRole("menuitem", { name: step.target.name, exact: true }).first();
+            if (await item.waitFor({ state: "visible", timeout: 3000 }).then(() => true, () => false)) { await item.click(); return; }
+            await page.keyboard.press("Escape").catch(() => {});
+          }
+        }
       }
       await (await resolveLive(page, step.target!)).click();
       // The replay skips the "was created" check, which in the spec waits for the save: without it the

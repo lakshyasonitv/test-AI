@@ -509,6 +509,37 @@ describe("fieldChecksOnRecordView: value checks", () => {
   const check = (target: any, assertion: string, value?: string): Step => ({ id: "x", action: "assert", target, assertion, value } as Step);
   const last = (i: IR) => i.steps[i.steps.length - 1];
 
+  it("a label and its value as one text is a check of that field; a section heading is not (run 2026-11-13T12-23-59-973Z-80c3f152)", () => {
+    const i = ir([...base(), check({ text: "Zq Heat Zq Hot" }, "visible")]);
+    fieldChecksOnRecordView(i, model, "Create a Zq Deal and verify the heat");
+    expect(last(i)).toMatchObject({ target: { field: "Zq Heat" }, assertion: "text_contains", value: "Zq Hot" });
+    const h = ir([...base(), check({ text: "Zq Heat Information" }, "visible")]);
+    fieldChecksOnRecordView(h, model, "Create a Zq Deal");
+    expect(last(h).target).toEqual({ text: "Zq Heat Information" });
+  });
+  it("a label-and-value text after the Details click stays on Details as that field's check (run 2026-11-13T13-50-37-642Z-f2f97e6d)", () => {
+    const i = ir([...base(), { id: "dt", action: "click", target: { role: "tab", name: "Details" } } as Step, check({ text: "Zq Heat Zq Hot" }, "visible")]);
+    fieldChecksOnRecordView(i, model, "Create a Zq Deal with heat Zq Hot");
+    expect(i.steps.some((s) => s.target?.name === "Related")).toBe(false);
+    expect(last(i)).toMatchObject({ target: { field: "Zq Heat" }, value: "Zq Hot" });
+  });
+  it("a label and its value on two lines is that field's check too (run 2026-11-13T23-01-23-187Z-0b878a94)", () => {
+    const i = ir([...base(), { id: "dt", action: "click", target: { role: "tab", name: "Details" } } as Step, check({ text: "Zq Heat\nZq Hot" }, "visible")]);
+    fieldChecksOnRecordView(i, model, "Create a Zq Deal with heat Zq Hot");
+    expect(i.steps.some((s) => s.target?.name === "Related")).toBe(false);
+    expect(last(i)).toMatchObject({ target: { field: "Zq Heat" }, value: "Zq Hot" });
+  });
+  it("a value typed into an address part is checked inside the compound address (run 2026-11-13T12-58-06-198Z-0bdc663a)", () => {
+    const i = ir([nav("/lightning/o/Zq_Deal__c/new"), fill("Billing Country", "Zqland"), click("Save"), created, check({ text: "Zqland" }, "text_equals", "Zqland")]);
+    fieldChecksOnRecordView(i, model, "Create a Zq Deal billed in Zqland");
+    expect(last(i)).toMatchObject({ target: { field: "Billing Address" }, assertion: "text_contains", value: "Zqland" });
+  });
+  it("a bare number the case typed into a field is checked inside that field (run 2026-11-13T12-02-09-298Z-fc1e4b67)", () => {
+    const i = ir([nav("/lightning/o/Zq_Deal__c/new"), fill("Zq Amount", "1234.56"), click("Save"), created, check({ text: "1234.56" }, "text_contains", "1234.56")]);
+    const m2 = { ...model, salesforceOrg: { objects: [{ fields: [{ label: "Zq Amount" }] }] } };
+    fieldChecksOnRecordView(i, m2, "Create a Zq Deal with Zq Amount 1234.56");
+    expect(last(i)).toMatchObject({ target: { field: "Zq Amount" }, assertion: "text_contains", value: "1234.56" });
+  });
   it("a bare number the request gives a field becomes a check of that field (run 2026-11-13T07-31-06-677Z-c4484063)", () => {
     const i = ir([...base(), check({ text: "$100.00" }, "text_contains", "$100.00")]);
     fieldChecksOnRecordView(i, model, "Create a Zq Deal with Amount 1000 and verify Zq Expected is $100.00");
@@ -850,6 +881,26 @@ describe("pathStageClicks", () => {
     expect(i.steps.map((s) => s.target?.name ?? s.value ?? s.id)).toEqual([undefined, "Stage", "Save", "Zq Two", "Mark as Current Stage", "1500"].map((x, k) => k === 0 ? i.steps[0].target?.name ?? i.steps[0].value ?? i.steps[0].id : x));
     expect(pathStageClicks(i, org as any)).toEqual([]);
   });
+  it("a related list's New button (a stage's name too) that opens a form is no path stage", async () => {
+    const { pathStageClicks } = await import("../src/stages/salesforceGuidance.js");
+    const zorg = { objects: [{ api: "Zwo", label: "Zwo", fields: [{ label: "Status", api: "Status", picklist: ["New", "Zq Done"] }] }] };
+    const i = ir([nav("/lightning/o/Zwo/new"), click("Save"), click("New"),
+      { id: "w", action: "wait", value: "500" } as Step, { id: "f", action: "fill", target: { role: "textbox", name: "Subject" }, value: "Zq valve" } as Step]);
+    expect(pathStageClicks(i, zorg as any)).toEqual([]);
+    expect(i.steps.some((s) => s.target?.name === "Mark as Current Stage")).toBe(false);
+  });
+});
+
+describe("seededLookups: the link check goes after the Save of the form that picked it", () => {
+  it("not after a later Save on another form (run 2026-11-15T12-25-16-325Z-2816d0d4)", async () => {
+    const { seededLookups } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [{ api: "Zplan", label: "Zplan", fields: [{ label: "Zacct", api: "AccountId", lookup: "Zacct" }] }],
+      seeded: [{ object: "Zacct", label: "Zacct", name: "TB Seed zq12cd" }] };
+    const look = { id: "l", action: "select", target: { role: "combobox", name: "Zacct", lookup: true }, value: "TB Seed zq12cd" } as Step;
+    const i = ir([nav("/lightning/o/Zplan/new"), look, click("Save"), click("New"), click("Save")]);
+    seededLookups(i, org as any);
+    expect(i.steps.map((s) => s.id).indexOf("sf-seed-link")).toBe(3);
+  });
 });
 
 describe("seededLookups", () => {
@@ -1119,6 +1170,13 @@ describe("customLinkSteps", () => {
     expect(j.steps.find((s) => s.id === "sf-cl-menu-0")?.target).toEqual({ role: "button", name: "Show more actions" });
     expect(j.steps.some((s) => s.target?.name === "Details")).toBe(false);
   });
+  it("a link is requested only when named as a link or button (run 2026-11-13T12-26-08-557Z-f7e2c00c: a billing address)", async () => {
+    const { customLinkSteps } = await import("../src/stages/salesforceGuidance.js");
+    const billing = { ...org, customLinks: [{ object: "Zopp", label: "Zq Billing", url: "http://zq.example/b", kind: "link", newWindow: true }] };
+    const i = ir([nav("/lightning/o/Zopp/new"), click("Save")]);
+    expect(customLinkSteps(i, billing as any, "Create a Zopp with a Zq Billing address in Toronto")).toEqual([]);
+    expect(customLinkSteps(ir([nav("/lightning/o/Zopp/new"), click("Save")]), billing as any, "Create a Zopp and open its Zq Billing link")).toHaveLength(1);
+  });
   it("stays on the Details tab: the record-view pass leaves the link check there", async () => {
     const { customLinkSteps, fieldChecksOnRecordView } = await import("../src/stages/salesforceGuidance.js");
     const i = ir([nav("/lightning/o/Zopp/new"), fill("Zq Tracking Number", "Zq 42"), click("Save")]);
@@ -1135,5 +1193,220 @@ describe("customLinkSteps", () => {
     expect(i.steps.at(-1)?.value).toBe("http://zq.example/track?n=");
     const j = ir([nav("/lightning/o/Zopp/new"), click("Save")]);
     expect(customLinkSteps(j, org as any, "create a Zopp")).toEqual([]);
+  });
+});
+
+describe("editSaveConfirmed (run 2026-11-13T14-13-29-358Z-ac7a1e04)", () => {
+  it("adds was saved after an edit's Save, and only when the case has no outcome check there", async () => {
+    const { editSaveConfirmed } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([nav("/lightning/o/Zq_Deal__c/new"), click("Save"), click("Edit"), { id: "w", action: "wait", value: "500" } as Step, click("Save"), { id: "x", action: "assert", target: { field: "Zq Heat" }, assertion: "text_equals", value: "Zq Hot" } as Step]);
+    expect(editSaveConfirmed(i)).toHaveLength(1);
+    expect(i.steps[5]).toMatchObject({ action: "assert", target: { text: "was saved" } });
+    const j = ir([nav("/lightning/o/Zq_Deal__c/new"), click("Save"), click("Edit"), click("Save"), { id: "y", action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step]);
+    expect(editSaveConfirmed(j)).toEqual([]);
+  });
+  it("an inline pencil's Save shows no toast: its field showing the new value is checked instead (run 2026-11-13T18-24-42-379Z-c78076e2)", async () => {
+    const { editSaveConfirmed } = await import("../src/stages/salesforceGuidance.js");
+    const sel = { id: "st", action: "select", target: { role: "combobox", name: "Zq Status" }, value: "Zq Busy" } as Step;
+    const i = ir([nav("/lightning/o/Zq_Job__c/new"), click("Save"), click("Edit Zq Status"), sel, click("Save"), { id: "y", action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step]);
+    expect(editSaveConfirmed(i)).toHaveLength(1);
+    expect(i.steps[5]).toMatchObject({ action: "assert", target: { field: "Zq Status" }, value: "Zq Busy" });
+    expect(i.steps.some((x) => x.target?.text === "was saved")).toBe(false);
+  });
+});
+
+describe("bug hunt round 3", () => {
+  it("an activity's Subject that is no plain suggestion is typed (run 2026-11-13T14-46-59-658Z-c76ab6b0)", async () => {
+    const { activitySubjectTyped } = await import("../src/stages/salesforceGuidance.js");
+    const sel = (v: string) => ({ id: "sub", action: "select", target: { role: "combobox", name: "Subject" }, value: v } as Step);
+    const i = ir([click("Log a Call"), sel("Zq Intro call"), click("Save")]);
+    expect(activitySubjectTyped(i)).toHaveLength(1);
+    expect(i.steps[1]).toMatchObject({ action: "fill", value: "Zq Intro call" });
+    const k = ir([click("Log a Call"), sel("Call"), click("Save")]);
+    expect(activitySubjectTyped(k)).toEqual([]);
+  });
+  it("was saved after a Lead's Convert is dropped (run 2026-11-13T14-47-12-463Z-4594d2b5)", async () => {
+    const { leadConvertSteps } = await import("../src/stages/salesforceGuidance.js");
+    const conv = (id: string) => ({ id, action: "click", target: { role: "button", name: "Convert" } } as Step);
+    const i = ir([conv("a"), conv("b"), { id: "w", action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step]);
+    leadConvertSteps(i);
+    expect(i.steps.some((s) => s.target?.text === "was saved")).toBe(false);
+  });
+});
+
+describe("bug hunt round 4", () => {
+  it("global search runs on Enter after typing, not a second Search click (run 2026-11-13T15-59-07-870Z-cf7c96f8)", async () => {
+    const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
+    const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search..." }, value: "Zq Quasar" } as Step;
+    const i = ir([click("Search"), typed, { id: "w", action: "wait", value: "500" } as Step, click("Search")]);
+    expect(globalSearchSubmit(i)).toHaveLength(1);
+    expect(i.steps[3]).toMatchObject({ action: "press", value: "Enter", target: { name: "Search..." } });
+    expect(i.steps[0]).toMatchObject({ action: "click" });   // the first click opens the box: kept
+  });
+});
+
+describe("bug hunt round 4, second pass", () => {
+  it("opening a just-made record from search results searches again until indexed (run 2026-11-13T16-35-10-260Z-944deb2f)", async () => {
+    const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
+    const { generateSpec } = await import("../src/stages/generator.js");
+    const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search..." }, value: "Zq Quasar {{uid}}" } as Step;
+    const enter = { id: "e", action: "press", target: { role: "searchbox", name: "Search..." }, value: "Enter" } as Step;
+    const open = { id: "o", action: "click", target: { role: "link", name: "Zq Quasar {{uid}}" } } as Step;
+    const i = ir([click("Search"), typed, enter, { id: "w", action: "wait", value: "500" } as Step, open]);
+    globalSearchSubmit(i);
+    expect(i.steps[4]).toMatchObject({ id: "sf-search-open-o", value: "Zq Quasar {{uid}}" });
+    const spec = generateSpec({ ...i, meta: { feature: "f", title: "t", priority: "high", sourcePrompt: "s", baseUrl: "https://x.example" } } as any);
+    expect(spec).toContain("for (let i = 0; i < 8 && !(await result.isVisible()");
+    expect(spec).toContain('box.press("Enter")');
+  });
+  it("names the search box by its real name, and opens the made record even when the link was written without its code", async () => {
+    const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
+    const made = { id: "m", action: "fill", target: { role: "textbox", name: "Account Name" }, value: "Zq Quasar {{uid}}" } as Step;
+    const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search Salesforce" }, value: "Zq Quasar" } as Step;
+    const enter = { id: "e", action: "press", target: { role: "searchbox", name: "Search Salesforce" }, value: "Enter" } as Step;
+    const open = { id: "o", action: "click", target: { role: "link", name: "Zq Quasar" } } as Step;
+    const i = ir([made, click("Save"), click("Search"), typed, enter, open]);
+    globalSearchSubmit(i);
+    expect(i.steps[3].target).toEqual({ role: "searchbox", name: "Search..." });
+    expect(i.steps[5]).toMatchObject({ id: "sf-search-open-o", target: { role: "link", name: "Zq Quasar {{uid}}" } });
+  });
+  it("opens the made record when the link carries another run's code copied off a captured screen (run 2026-11-13T17-21-21-999Z-ecc97eb2)", async () => {
+    const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
+    const made = { id: "m", action: "fill", target: { role: "textbox", name: "Account Name" }, value: "Zq Quasar {{uid}}" } as Step;
+    const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search..." }, value: "Zq Quasar" } as Step;
+    const enter = { id: "e", action: "press", target: { role: "searchbox", name: "Search..." }, value: "Enter" } as Step;
+    const i = ir([made, click("Save"), click("Search"), typed, enter, { id: "o", action: "click", target: { role: "link", name: "Zq Quasar msymz4" } } as Step]);
+    globalSearchSubmit(i);
+    expect(i.steps[5]).toMatchObject({ id: "sf-search-open-o", target: { role: "link", name: "Zq Quasar {{uid}}" } });
+    const other = ir([made, click("Save"), click("Search"), typed, enter, { id: "o", action: "click", target: { role: "link", name: "Zq Quasar Holdings" } } as Step]);
+    globalSearchSubmit(other);
+    expect(other.steps[5].id).toBe("o");
+  });
+  it("opens the global search box with its button first when the case typed into it straight away (run 2026-11-13T16-53-32-808Z-11eabab6)", async () => {
+    const { globalSearchSubmit } = await import("../src/stages/salesforceGuidance.js");
+    const typed = { id: "t", action: "fill", target: { role: "searchbox", name: "Search Salesforce" }, value: "Zq Quasar" } as Step;
+    const i = ir([click("Save"), typed]);
+    globalSearchSubmit(i);
+    expect(i.steps.map((s) => s.id)).toEqual(["c", "sf-search-box", "sf-search-box-wait", "t"]);
+    const k = ir([click("Search"), typed]);
+    globalSearchSubmit(k);
+    expect(k.steps.some((s) => s.id === "sf-search-box")).toBe(false);
+  });
+  it("a hidden check of the deleted record's name right after the delete goes (run 2026-11-13T16-32-07-872Z-36eef730)", async () => {
+    const { deletedNameNotChecked } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([fill("Zq Opp Name", "Zq Delete Me {{uid}}"), click("Save"), click("Delete"), click("Delete"),
+      { id: "d", action: "assert", target: { text: "was deleted" }, assertion: "visible" } as Step,
+      { id: "h", action: "assert", target: { text: "Zq Delete Me" }, assertion: "hidden" } as Step]);
+    expect(deletedNameNotChecked(i)).toHaveLength(1);
+    expect(i.steps.some((s) => s.id === "h")).toBe(false);
+  });
+});
+
+describe("a link to an auto-numbered record is not checked by the parent's subject (run 2026-11-13T18-17-05-636Z-f22dc0b7)", () => {
+  const org = { objects: [
+    { api: "ZqLine", label: "Zq Line", fields: [{ label: "Zq Job", api: "ZqJob__c", type: "Reference", lookup: "ZqJob" }, { label: "Zq Acct", api: "ZqAcct__c", type: "Reference", lookup: "ZqAcct" }, { label: "Zq Who", api: "ZqWho__c", type: "Reference", lookup: "ZqWho" }] },
+    { api: "ZqWho", label: "Zq Who", fields: [{ label: "Last Name", api: "LastName", type: "String" }] },
+    { api: "ZqJob", label: "Zq Job", fields: [{ label: "Subject", api: "Subject", type: "String" }] },
+    { api: "ZqAcct", label: "Zq Acct", fields: [{ label: "Name", api: "Name", type: "String" }] },
+  ] } as any;
+  it("drops the subject check on the link, keeps a number check and a check on a named parent", async () => {
+    const { autoNumberLinkNotChecked } = await import("../src/stages/salesforceGuidance.js");
+    const steps = [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqLine/new?count=1" } },
+      { id: "a", action: "assert", target: { field: "Zq Job" }, value: "Site survey", assertion: "text_contains" },
+      { id: "b", action: "assert", target: { field: "Zq Job" }, value: "00000005", assertion: "text_contains" },
+      { id: "c", action: "assert", target: { field: "Zq Acct" }, value: "Zq Acme", assertion: "text_contains" },
+      { id: "w", action: "assert", target: { field: "Zq Who" }, value: "Zq Rahul Zq Mehta", assertion: "text_contains" },
+    ] as Step[];
+    const i = ir(steps);
+    expect(autoNumberLinkNotChecked(i, org)).toHaveLength(1);
+    // A person (Last Name, no createable Name) shows its name: run 2026-11-13T21-40-23-740Z-7ea523fc.
+    expect(i.steps.map((s) => s.id)).toEqual(["n", "b", "c", "w"]);
+  });
+});
+
+describe("a lookup picks the record this run made (run 2026-11-13T18-17-16-000Z-b895ffda)", () => {
+  it("adds the run code to a lookup written with the made record's bare name, and only that one", async () => {
+    const { madeRecordLookups } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([
+      { id: "f", action: "fill", target: { role: "textbox", name: "Zq Asset Name" }, value: "Zq Pump {{uid}}" },
+      { id: "l", action: "select", target: { role: "combobox", name: "Zq Asset", lookup: true }, value: "Zq Pump" },
+      { id: "o", action: "select", target: { role: "combobox", name: "Zq Account", lookup: true }, value: "Zq Other" },
+    ] as Step[]);
+    expect(madeRecordLookups(i)).toHaveLength(1);
+    expect(i.steps.map((s) => s.value)).toEqual(["Zq Pump {{uid}}", "Zq Pump {{uid}}", "Zq Other"]);
+  });
+
+  it("a person made as First + Last is picked by the full name (run 2026-11-13T20-51-11-629Z-44da5f13)", async () => {
+    const { madeRecordLookups } = await import("../src/stages/salesforceGuidance.js");
+    const i = ir([
+      { id: "f", action: "fill", target: { role: "textbox", name: "First Name" }, value: "Zq Rahul" },
+      { id: "g", action: "fill", target: { role: "textbox", name: "Last Name" }, value: "Zq Mehta {{uid}}" },
+      { id: "l", action: "select", target: { role: "combobox", name: "Zq Contact", lookup: true }, value: "Zq Rahul Zq Mehta" },
+    ] as Step[]);
+    expect(madeRecordLookups(i)).toHaveLength(1);
+    expect(i.steps[2].value).toBe("Zq Rahul Zq Mehta {{uid}}");
+  });
+});
+
+describe("a value the case puts into a field is not a button to click (run 2026-11-13T21-24-10-979Z-ea90feef)", () => {
+  it("drops the click on that value's button; keeps buttons the case does click, and navigation", async () => {
+    const { valueClickedAsButton } = await import("../src/stages/salesforceGuidance.js");
+    const text = "Set the 'Zq Origin' picklist to 'Zq Mail'.\nPick 'Zq Hot' in 'Zq Heat'.\nClick the 'Zq Save' button.\nGo to 'Zq Tab'.\nSet 'Zq Kind' to 'Zq Save'.";
+    const i = ir([
+      { id: "a", action: "click", target: { role: "button", name: "Zq Mail" } },
+      { id: "b", action: "click", target: { role: "button", name: "Zq Hot" } },
+      { id: "c", action: "click", target: { role: "button", name: "Zq Save" } },
+      { id: "d", action: "click", target: { role: "button", name: "Zq Tab" } },
+      { id: "e", action: "select", target: { role: "combobox", name: "Zq Origin" }, value: "Zq Mail" },
+    ] as Step[]);
+    expect(valueClickedAsButton(i, text)).toHaveLength(2);
+    expect(i.steps.map((s) => s.id)).toEqual(["c", "d", "e"]);
+  });
+});
+
+describe("a date-time step in the spec (run 2026-11-13T18-30-28-619Z-653368f1)", () => {
+  it("fills the field's own Date and Time boxes through sfDateTime, with its helper", async () => {
+    const { generateSpec } = await import("../src/stages/generator.js");
+    const i = ir([{ id: "sf-dt-a", action: "fill", target: { role: "group", name: "Zq Earliest" }, value: "{{date:+1:en-US}} 10:30 AM" } as Step]);
+    i.meta = { ...i.meta, feature: "Zq" } as IR["meta"];
+    const spec = generateSpec(i);
+    expect(spec).toContain('await sfDateTime(page, "Zq Earliest", resolveRunTokens("{{date:+1:en-US}} 10:30 AM", RUN_CTX));');
+    expect(spec).toContain("async function sfDateTime(page, label, value)");
+    expect(spec).toContain(String.raw`replace(/\s+/g, " ")`);
+  });
+});
+
+describe("a lookup that holds several objects (run 2026-11-13T19-05-25-624Z-90c95d42)", () => {
+  it("picks the made record's object in the field's object menu first", async () => {
+    const { polymorphicLookupObject } = await import("../src/stages/salesforceGuidance.js");
+    const org = { objects: [
+      { api: "ZqJob", label: "Zq Job", fields: [] },
+      { api: "ZqAppt", label: "Zq Appt", fields: [{ label: "Zq Parent", api: "ZqParent", type: "Reference", lookup: "Account/ZqJob" }, { label: "Zq Acct", api: "ZqAcct", type: "Reference", lookup: "Account" }] },
+    ] } as any;
+    const i = ir([
+      { id: "n1", action: "navigate", target: { url: "/lightning/o/ZqJob/new" } },
+      { id: "f", action: "fill", target: { role: "textbox", name: "Subject" }, value: "Zq meter {{uid}}" },
+      { id: "n2", action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { id: "p", action: "select", target: { role: "combobox", name: "Zq Parent", lookup: true }, value: "Zq meter {{uid}}" },
+      { id: "q", action: "select", target: { role: "combobox", name: "Zq Acct", lookup: true }, value: "Zq meter {{uid}}" },
+    ] as Step[]);
+    expect(polymorphicLookupObject(i, org)).toHaveLength(1);
+    expect(i.steps.map((s) => s.id)).toEqual(["n1", "f", "n2", "sf-poly-p", "p", "q"]);
+    expect(i.steps[3]).toMatchObject({ action: "select", target: { name: "Choose an object" }, value: "Zq Job" });
+  });
+});
+
+describe("a record page URL check (run 2026-11-13T19-31-38-442Z-c26faa54)", () => {
+  it("accepts the record id where the object name would be", async () => {
+    const { generateSpec } = await import("../src/stages/generator.js");
+    const i = ir([{ id: "u", action: "assert", target: { url: "/lightning/r/ZqZone/" }, value: "/lightning/r/ZqZone/", assertion: "url_contains" } as Step]);
+    i.meta = { ...i.meta, feature: "Zq" } as IR["meta"];
+    const spec = generateSpec(i);
+    const m = /toHaveURL\(new RegExp\(("[^"]+")\)/.exec(spec);
+    const re = new RegExp(JSON.parse(m![1]));
+    expect(re.test("https://zq.example/lightning/r/0HhVA000001mlSH0AY/view")).toBe(true);
+    expect(re.test("https://zq.example/lightning/r/ZqZone/0HhVA000001mlSH0AY/view")).toBe(true);
+    expect(re.test("https://zq.example/lightning/o/ZqZone/list")).toBe(false);
   });
 });

@@ -718,7 +718,7 @@ const MAX_CLICK_PROBES = 12;
  * anchored `^...$`, so they stop a button named exactly "Delete" and admit one named "Delete
  * account". ("Reset app state" IS covered — the regex names it explicitly; an older version of
  * this comment said otherwise.) See `TECH_DEBT.md` TD-105: loosening the anchors is a tradeoff,
- * not a free win, because `^delete` would also start excluding real navigation like
+ * not a free win, because `^delete\b` would also start excluding real navigation like
  * "Cancelled orders".
  */
 /** `norm` for element names — shared by the candidate filter and its dedupe key. */
@@ -752,7 +752,7 @@ const normName = (s: string) => (s ?? "").toLowerCase().replace(/\s+/g, " ").tri
  *
  * Known ceiling, narrower than it reads: both verb guards are anchored `^...$`, so they stop a
  * control named exactly "Delete" and admit "Delete account". See TD-105 — loosening the anchors is a
- * tradeoff, not a free win, because `^delete` would also exclude real navigation like
+ * tradeoff, not a free win, because `^delete\b` would also exclude real navigation like
  * "Cancelled orders".
  */
 export function isCrawlClickCandidate(

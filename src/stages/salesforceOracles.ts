@@ -35,9 +35,40 @@ function flowSet(org: Org, o: { api: string; label: string }): Set<string> {
   }
   return out;
 }
-export interface Typed { object: string; n: number; values: { label: string; api: string; type: string; value: string }[] }
+/**
+ * A failed check of a field that an org flow sets on the record being checked: the flow's name and what it sets,
+ * as a sentence for the diagnosis. Run 2026-11-13T23-13-33-343Z-2598923f picked Rating "Hot" and the page showed
+ * "Cold": TB Lead Qualification Routing sets Rating = Cold on create unless the Lead's revenue is high enough.
+ */
+export function flowExplainsField(ir: Pick<IR, "steps">, org: Org | undefined, failingStepId: string | undefined): string | undefined {
+  const at = ir.steps.findIndex((s) => s.id === failingStepId);
+  const label = ir.steps[at]?.target?.field?.trim().toLowerCase();
+  if (!org || at < 0 || !label) return undefined;
+  let api: string | undefined;
+  for (const s of ir.steps.slice(0, at)) {
+    if (s.action !== "navigate") continue;
+    api = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? api;
+  }
+  const o = org.objects.find((x) => x.api === api);
+  const f = o?.fields.find((x) => [x.label, `${o.label} ${x.label}`].some((l) => l.toLowerCase() === label));
+  if (!o || !f || !flowSet(org, o).has(f.api.toLowerCase())) return undefined;
+  const flows = (org.flows ?? []).filter((fl) => (fl.object === o.label || fl.object === o.api)
+    && (fl.effects ?? []).some((e) => new RegExp(`\\bsets\\b[^;]*\\b${f.api} = `, "i").test(e)));
+  const how = flows.flatMap((fl) => (fl.effects ?? []).filter((e) => /^branch\b/.test(e) && new RegExp(`\\b${f.api} = `).test(e)));
+  return `The org's flow ${flows.map((fl) => `"${fl.label}"`).join(", ")} sets ${f.label} when the ${o.label} is saved, ` +
+    `so the page shows the flow's value, not the one the test picked` + (how.length ? `: ${how.join("; ")}.` : ".");
+}
+
+export interface Typed {
+  object: string; n: number; values: { label: string; api: string; type: string; value: string }[];
+  /** The case deleted this record (its Delete, then Salesforce's "was deleted"): the check is that it is gone. */
+  deleted?: boolean;
+}
 
 const COMPARED = /^(string|textarea|picklist|multipicklist|double|currency|percent|int|long|email|phone|url)$/i;
+/** What a typed value is read back for: the compared types, and a date-time (read with SOQL FORMAT(), in the
+ *  user's own locale and time zone, so "11/15/2026 10:30 AM" as typed). */
+const TYPED = /^(string|textarea|picklist|multipicklist|double|currency|percent|int|long|email|phone|url|datetime)$/i;
 
 /** What each saved create form typed, in order; n = the how-many-th record of that object this case made. */
 export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
@@ -45,25 +76,68 @@ export function typedValues(ir: Pick<IR, "steps">, org: Org): Typed[] {
   const count = new Map<string, number>();
   let form: string | null = null;
   let values: Typed["values"] = [];
-  for (const s of ir.steps) {
+  // An edit of the record just created (its Edit button, then a confirmed "was saved"): the values it types
+  // are the record's now. Run 2026-11-13T14-02-56-990Z-6fa8cd30 edited Priority Low -> High and the check
+  // still expected Low.
+  let editing: { of: Typed; values: Typed["values"] } | null = null;
+  const fieldOf = (object: string, s: IR["steps"][number]) => {
+    const o = org.objects.find((x) => x.api === object);
+    const name = (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase();
+    const f = o?.fields.find((x) => x.label.toLowerCase() === name || `${o.label} ${x.label}`.toLowerCase() === name);
+    return o && f && TYPED.test(f.type) && !f.lookup && !flowSet(org, o).has(f.api.toLowerCase()) ? f : undefined;
+  };
+  for (const [at, s] of ir.steps.entries()) {
     if (s.action === "navigate") {
       form = /\/lightning\/o\/([^/?#]+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null;
       values = [];
+      editing = null;
       continue;
     }
-    if (!form) continue;
+    if (!form) {
+      // A clone is a new record of the same object, its form filled with the original's values; what the case
+      // types there replaces them (run 2026-11-13T15-21-25-383Z-1c19bd9f: the clone's 7500 was never read back).
+      if (s.action === "click" && /^clone$/i.test((s.target?.name ?? "").trim()) && out.length) {
+        form = out[out.length - 1].object;
+        values = out[out.length - 1].values.map((v) => ({ ...v }));
+        editing = null;
+        continue;
+      }
+      // The record deleted by the case (run 2026-11-13T15-54-10-339Z-babde72e "passed" its delete, then the
+      // API check failed it for "the record is not in the org"): checked as gone instead.
+      if (s.action === "assert" && /\bwas deleted\b/i.test(s.target?.text ?? "") && out.length
+        && ir.steps.slice(0, at).some((x) => x.action === "click" && /^delete$/i.test((x.target?.name ?? "").trim()))) {
+        out[out.length - 1].deleted = true;
+        continue;
+      }
+      // "Edit", or an inline field's pencil "Edit Status" (run 2026-11-13T18-24-42-379Z-c78076e2).
+      if (s.action === "click" && /^edit\b/i.test((s.target?.name ?? "").trim()) && out.length) editing = { of: out[out.length - 1], values: [] };
+      else if (editing && (s.action === "fill" || s.action === "select") && s.value !== undefined) {
+        const f = fieldOf(editing.of.object, s);
+        if (f) editing.values = editing.values.filter((v) => v.api !== f.api).concat({ label: f.label, api: f.api, type: f.type, value: s.value });
+      } else if (editing && s.action === "click" && /^save$/i.test(s.target?.name ?? "")) {
+        const i = at;
+        let confirmed = false;
+        for (let j = i + 1; j < ir.steps.length && ir.steps[j].action !== "navigate"; j++) {
+          // An inline edit has no toast: its check that the field shows the new value confirms it.
+          if (ir.steps[j].action === "assert" && (/\bwas (created|saved)\b/.test(ir.steps[j].target?.text ?? "") || /^sf-inline-/.test(ir.steps[j].id))) { confirmed = true; break; }
+        }
+        if (confirmed) for (const v of editing.values) editing.of.values = editing.of.values.filter((x) => x.api !== v.api).concat(v);
+        editing = null;
+      }
+      continue;
+    }
     if ((s.action === "fill" || s.action === "select") && s.value !== undefined) {
       const o = org.objects.find((x) => x.api === form);
       const name = (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase();
       const f = o?.fields.find((x) => x.label.toLowerCase() === name || `${o.label} ${x.label}`.toLowerCase() === name);
-      if (o && f && COMPARED.test(f.type) && !f.lookup && !flowSet(org, o).has(f.api.toLowerCase())) {
+      if (o && f && TYPED.test(f.type) && !f.lookup && !flowSet(org, o).has(f.api.toLowerCase())) {
         values = values.filter((v) => v.api !== f.api).concat({ label: f.label, api: f.api, type: f.type, value: s.value });
       }
     } else if (s.action === "click" && /^save$/i.test(s.target?.name ?? "")) {
       // Only a save the case confirms ("was created" before it leaves the page): a negative case's
       // save is refused on purpose, and no record exists to read (run 2026-11-10T20-26-17-929Z-6c3320d0,
       // the Company "AB" case, reported two "mismatches" against a record that was never made).
-      const i = ir.steps.indexOf(s);
+      const i = at;
       let confirmed = false;
       for (let j = i + 1; j < ir.steps.length && ir.steps[j].action !== "navigate"; j++) {
         if (ir.steps[j].action === "assert" && /\bwas (created|saved)\b/.test(ir.steps[j].target?.text ?? "")) { confirmed = true; break; }
@@ -90,6 +164,11 @@ export function sameValue(type: string, typed: string, stored: unknown): boolean
   if (stored === null || stored === undefined) return typed.trim() === "";
   const s = String(stored);
   if (/^phone$/i.test(type)) return typed.replace(/\D/g, "") === s.replace(/\D/g, "");
+  // "11/15/2026 9:00 AM" and "11/15/2026, 09:00 AM": the same moment, written two ways.
+  if (/^datetime$/i.test(type)) {
+    const n = (v: string) => v.toLowerCase().replace(/,/g, " ").replace(/\b0(\d)/g, "$1").replace(/\s+/g, " ").trim();
+    return n(typed) === n(s);
+  }
   if (/^(double|currency|percent|int|long)$/i.test(type)) {
     const a = shownNumber(typed), b = Number(stored);
     return a !== null && Number.isFinite(b) && Math.abs(a - b) < 1e-6;
@@ -114,36 +193,57 @@ export async function apiChecks(
       for (const v of t.values) out.push({ object: t.object, field: v.label, expected: v.value, ok: false, note: "the case never reached the record it created" });
       continue;
     }
+    if (t.deleted) {
+      try {
+        const gone = !(await apiGet(`/query?q=${encodeURIComponent(`SELECT Id FROM ${t.object} WHERE Id = '${id}'`)}`))?.records?.length;
+        out.push({ object: t.object, id, field: "deleted", expected: "gone", actual: gone ? "gone" : "still in the org", ok: gone });
+      } catch (err) {
+        out.push({ object: t.object, id, field: "deleted", expected: "gone", ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
+      }
+      continue;
+    }
     let rec: any;
     try {
-      const q = `SELECT ${t.values.map((v) => v.api).join(", ")} FROM ${t.object} WHERE Id = '${id}'`;
+      // A picklist read as its label, the text the case picked: Time Zone stores "America/Los_Angeles" for
+      // "(GMT-08:00) Pacific Standard Time (America/Los_Angeles)" (run 2026-11-13T18-45-09-236Z-e01f6e2d).
+      // A date-time read as the user sees it (FORMAT: their locale and time zone), under its own alias.
+      const q = `SELECT ${t.values.map((v, k) => /picklist/i.test(v.type) ? `toLabel(${v.api})` : /^datetime$/i.test(v.type) ? `FORMAT(${v.api}) dt${k}` : v.api).join(", ")} FROM ${t.object} WHERE Id = '${id}'`;
       rec = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0];
     } catch (err) {
       for (const v of t.values) out.push({ object: t.object, id, field: v.label, expected: v.value, ok: false, note: `the API refused: ${(err as Error)?.message ?? err}` });
       continue;
     }
-    for (const v of t.values) {
+    for (const [k, v] of t.values.entries()) {
       const expected = resolveRunTokens(v.value, ctx);
       if (!rec) { out.push({ object: t.object, id, field: v.label, expected, ok: false, note: "the record is not in the org" }); continue; }
-      const actual = rec[v.api];
-      out.push({ object: t.object, id, field: v.label, expected, actual: actual === null || actual === undefined ? "" : String(actual), ok: sameValue(v.type, expected, actual) });
+      const actual = /^datetime$/i.test(v.type) ? rec[`dt${k}`] : rec[v.api];
+      const shown = actual === null || actual === undefined ? "" : String(actual);
+      // A value can match what was typed and still be wrong data: the field's own label saved in it ("Last
+      // Name Sato", run 2026-11-13T15-19-02-592Z-1e01cacf passed with it) or a placeholder no one filled in
+      // ("{{yesterday}}"). The test then checked its own mistake. Those fail here, whatever the page showed.
+      const junk = /\{\{[^}]*\}\}/.test(shown) ? "a placeholder was saved instead of a value"
+        : shown.toLowerCase().startsWith(`${v.label.toLowerCase()} `) && v.label.length >= 3 ? `the field's own label "${v.label}" was saved in its value`
+        : undefined;
+      out.push({ object: t.object, id, field: v.label, expected, actual: shown, ok: sameValue(v.type, expected, actual) && !junk, ...(junk ? { note: junk } : {}) });
     }
   }
   return out;
 }
 
 /** One case's annotations from its results.json: the run tokens and the records it created. */
-export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; created: Record<string, string[]>; shown: Record<string, string> } | null {
+export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; created: Record<string, string[]>; shown: Record<string, string>; toasts: string[] } | null {
   if (!existsSync(resultsPath)) return null;
   let ctx: RunTokenContext | null = null;
   let created: Record<string, string[]> = {};
   const shown: Record<string, string> = {};
+  let toasts: string[] = [];
   const visit = (s: any) => {
     for (const sp of s?.specs ?? []) for (const t of sp.tests ?? []) {
       for (const a of [...(t.annotations ?? []), ...(t.results ?? []).flatMap((r: any) => r.annotations ?? [])]) {
         try {
           if (a?.type === "run-tokens") ctx = JSON.parse(a.description);
           if (a?.type === "sf-created") created = JSON.parse(a.description);
+          if (a?.type === "sf-toasts") toasts = JSON.parse(a.description);
           if (a?.type === "sf-shown") { const v = JSON.parse(a.description); if (typeof v?.label === "string") shown[v.label] = String(v.shown ?? ""); }
         } catch { /* a broken annotation reads as absent */ }
       }
@@ -153,7 +253,35 @@ export function caseRunFacts(resultsPath: string): { ctx: RunTokenContext; creat
   try { for (const s of JSON.parse(readFileSync(resultsPath, "utf8"))?.suites ?? []) visit(s); } catch { return null; }
   // A spec that types no run token writes no "run-tokens" annotation (run 2026-11-12T07-16-11-742Z-c2ab98b6
   // picked only picklist values and got no API check at all): nothing to resolve, so an empty context.
-  return ctx || Object.keys(created).length ? { ctx: ctx ?? { uid: "", phone: "" }, created, shown } : null;
+  return ctx || Object.keys(created).length || toasts.length ? { ctx: ctx ?? { uid: "", phone: "" }, created, shown, toasts } : null;
+}
+
+/**
+ * Records a quick action made (Contact's "New Case"): the test never opens their page, so their ids are
+ * never seen, and its success toast ('Case "00001159" was created.') is the only place each is named.
+ * The id is looked up by the object's name field. Only objects with no id of their own yet: a record
+ * whose page the test did open is already known, in the order it was made.
+ */
+export async function toastCreated(
+  apiGet: (path: string) => Promise<any>,
+  org: { objects: { api: string; label: string }[] },
+  toasts: string[], created: Record<string, string[]>,
+): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = { ...created };
+  for (const t of new Set(toasts)) {
+    const m = /^(?:Success notification\.*\s*)?(.+?) "(.+)" was created\./.exec(t.trim());
+    const obj = m && org.objects.find((o) => o.label.toLowerCase() === m[1].trim().toLowerCase());
+    if (!m || !obj || created[obj.api]?.length) continue;
+    try {
+      const nameField = (await apiGet(`/sobjects/${obj.api}/describe`))?.fields?.find((f: any) => f.nameField)?.name;
+      if (!nameField) continue;
+      const literal = m[2].replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      const q = `SELECT Id FROM ${obj.api} WHERE ${nameField} = '${literal}' ORDER BY CreatedDate DESC LIMIT 1`;
+      const id = (await apiGet(`/query?q=${encodeURIComponent(q)}`))?.records?.[0]?.Id;
+      if (id && !(out[obj.api] ?? []).includes(id)) out[obj.api] = [...(out[obj.api] ?? []), id];
+    } catch { /* not found through the API: that record is simply not checked */ }
+  }
+  return out;
 }
 
 /** Every case of a run: its IR and its results.json (case 0's results sit at the run's root). */

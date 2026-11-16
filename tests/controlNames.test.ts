@@ -114,3 +114,12 @@ describe("toTestCases restores the request's names on a Salesforce run only", ()
     expect(changed).toBe(2);
   });
 });
+
+describe("an apostrophe inside a word is no quote (run 2026-11-13T14-57-14-748Z-4fac448b)", () => {
+  it("keeps the quoted name and invents nothing from the possessive", async () => {
+    const { extractControlNames } = await import("../src/stages/controlNames.js");
+    const names = extractControlNames("clone it, change the clone's name to 'Zq Copy' and its Amount to 7500, then verify the clone's amount");
+    expect(names).toContain("Zq Copy");
+    expect(names.some((n) => /s name to|then verify the clone/.test(n))).toBe(false);
+  });
+});

@@ -119,6 +119,14 @@ describe("SF_FIELD_MATCH_JS: does a field block show the value", () => {
     expect(match(block("Zq Total", "$5,000.00"), "Zq Total", "500", "contains")).toBe(false);
   });
 
+  it("a whole-number field shows a typed fraction rounded", () => {
+    expect(match(block("Zq Revenue", "$2,500,001"), "Zq Revenue", "2,500,000.75", "contains")).toBe(true);
+    expect(match(block("Zq Revenue", "$2,500,001"), "Zq Revenue", "2500000.75", "equals")).toBe(true);
+    expect(match(block("Zq Revenue", "$2,500,000"), "Zq Revenue", "2500000.75", "contains")).toBe(false);
+    expect(match(block("Zq Revenue", "$2,500,001.00"), "Zq Revenue", "2500000.75", "contains")).toBe(false);
+    expect(match(block("Zq Count", "3"), "Zq Count", "3", "equals")).toBe(true);
+  });
+
   it("text compares as text; the label and its pencil are not the value", () => {
     expect(match(block("Zq Heat", "Zq Hot"), "Zq Heat", "Zq Hot", "equals")).toBe(true);
     expect(match(block("Zq Heat", "Zq Hot"), "Zq Heat", "Hot", "contains")).toBe(true);
@@ -344,5 +352,21 @@ describe("a related list's actions menu", () => {
       steps: [{ id: "a", action: "navigate", target: { url: FRONTDOOR_REF } }, { id: "b", action: "click", target: { role: "button", name: "Show actions for Zq History" } }] } as any);
     // Waits for the list's own menu, not just its heading (the menu loads well after it).
     expect(code).toContain('await sfReveal(page, "Zq History", page.getByRole("button", { name: "Show actions for Zq History", exact: true }).first());');
+  });
+});
+
+describe("stepsMissingValues: a name typed over two fields (run 2026-11-13T14-39-38-512Z-7f31c334)", () => {
+  it("counts 'Contact Zq Maria Zqchen' as carried when First and Last Name hold its words", () => {
+    const steps = [{ value: "Zqmaria", target: { name: "First Name" } }, { value: "Zqchen {{uid}}", target: { name: "Last Name" } }];
+    expect(stepsMissingValues(steps, { steps: ["create Contact Zqmaria Zqchen"], expected: "" }, ["Contact Zqmaria Zqchen"])).toEqual([]);
+    expect(stepsMissingValues([{ value: "Zqmaria", target: { name: "First Name" } }], { steps: ["create Contact Zqmaria Zqchen"], expected: "" }, ["Contact Zqmaria Zqchen"])).toEqual(["Contact Zqmaria Zqchen"]);
+  });
+});
+
+describe("an object opened by its address carries its label (run 2026-11-13T18-11-18-597Z-22689070)", () => {
+  it("counts /lightning/o/ZqServiceZone/new as naming 'Zq Service Zone', and only that object", () => {
+    const c = { steps: ["create a Zq Service Zone named North"], expected: "" };
+    expect(stepsMissingValues([{ target: { url: "/lightning/o/ZqServiceZone/new?count=1" } }], c, ["Zq Service Zone"])).toEqual([]);
+    expect(stepsMissingValues([{ target: { url: "/lightning/o/ZqOtherZone/new?count=1" } }], c, ["Zq Service Zone"])).toEqual(["Zq Service Zone"]);
   });
 });

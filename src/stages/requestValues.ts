@@ -57,7 +57,14 @@ export function requestValues(request: string, names: string[] = []): string[] {
 /** The values a case does not mention anywhere in its steps or expected outcome. */
 export function missingValues(c: Pick<TestCase, "steps" | "expected">, values: string[]): string[] {
   const text = norm([...c.steps, c.expected ?? ""].join("\n"));
-  return values.filter((v) => !text.includes(norm(v)));
+  // A name typed over two fields ("Ivan" in First Name, "Petrov {{uid}}" in Last Name) is carried: the
+  // rewrite put "Ivan Petrov" INTO Last Name (run 2026-11-13T22-20-23-861Z-c00631c3).
+  const words = ` ${text.replace(/[^\p{L}\p{N}]+/gu, " ")} `;
+  const spread = (v: string) => {
+    const ws = norm(v).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    return ws.length >= 2 && ws.every((w) => words.includes(` ${w} `));
+  };
+  return values.filter((v) => !text.includes(norm(v)) && !spread(v));
 }
 
 /** Letters and digits only: a page label "Preferred Area(s)" still carries the request's "Preferred Areas". */
@@ -84,12 +91,22 @@ export function stepsMissingValues(steps: StepText[], c: Pick<TestCase, "steps" 
   // 2026-11-10T13-55-48-526Z-8bdcb95a was cut as leaving the flow's name out).
   const hay = steps.flatMap((s) => [s.value, s.target?.name, s.target?.text, s.target?.label, s.target?.placeholder, s.target?.field,
     /\/flow\/\w+/.exec(s.target?.url ?? "")?.[0],
+    // An object is named by the address that opens it: "Service Territory" is /lightning/o/ServiceTerritory/new
+    // (run 2026-11-13T18-11-18-597Z-22689070 was cut as leaving it out).
+    /\/lightning\/[or]\/(\w+)\//.exec(s.target?.url ?? "")?.[1],
     s.value && (s.target?.name ?? s.target?.label ?? s.target?.field) ? `${s.target?.name ?? s.target?.label ?? s.target?.field} ${s.value}` : undefined])
     .filter((x): x is string => typeof x === "string" && x.length > 0).map(loose).join("|");
   // "Account's TB Total Opportunity Amount" is checked as the field "TB Total Opportunity Amount"
   // (valuesFromRequest strips the object's name; run 2026-11-03T09-58-44-651Z-fd8a02f9).
   const bare = (v: string) => v.replace(/^[A-Z][\w ]*?['’]s\s+/, "");
-  return carried.filter((v) => !hay.includes(loose(v)) && !hay.includes(loose(bare(v))));
+  // A name typed over two fields: "Contact Maria Chen" is First Name "Maria" and Last Name "Chen" (run
+  // 2026-11-13T14-39-38-512Z-7f31c334 was cut as leaving it out). Every word after the first (which may be
+  // the object's name) is in some step.
+  const spread = (v: string) => {
+    const words = v.split(/\s+/).map(loose).filter((w) => w.length >= 2);
+    return words.length >= 2 && words.slice(1).every((w) => hay.includes(w));
+  };
+  return carried.filter((v) => !hay.includes(loose(v)) && !hay.includes(loose(bare(v))) && !spread(v));
 }
 
 const Rewrite = z.object({ steps: z.array(z.string().min(1)).min(1), expected: z.string().min(1) });

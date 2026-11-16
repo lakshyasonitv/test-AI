@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readSalesforceOrgModel, orgModelForCases, createFormUrls, flowEffects } from "../src/stages/salesforceOrgModel.js";
+import { readSalesforceOrgModel, orgModelForCases, createFormUrls, flowEffects, requestedObjects, namesField } from "../src/stages/salesforceOrgModel.js";
 import { SalesforceOrgModel, toLiteModel, type AppModel } from "../src/schema/appModel.js";
 
 /**
@@ -36,7 +36,8 @@ function fakeApi(opts: { toolingRefused?: boolean } = {}) {
     // Company in run 2026-10-25T05-01-36-627Z-b0d6a138: "Review the following fields: Company").
     "/ui-api/layout/Lead?layoutType=Full&mode=Create&recordTypeId=012000000000000AAA": { sections: [{ layoutRows: [
       { layoutItems: [{ required: true, layoutComponents: [{ componentType: "Field", apiName: "Email" }] }] },
-      { layoutItems: [{ required: false, layoutComponents: [{ componentType: "Field", apiName: "Partner__c" }] }] },
+      // The form's own label for a field (Service Territory's "Operating Hours", object-info "Operating Hour ID").
+      { layoutItems: [{ required: false, label: "Zq Partner Shown", layoutComponents: [{ componentType: "Field", apiName: "Partner__c" }] }] },
       // A compound item (Lead's Name: Salutation, First Name, Last Name) is "required" as a whole:
       // only its parts object-info requires are (run 2026-10-25T06-38-05-099Z-07e036cc filled Salutation).
       { layoutItems: [{ required: true, layoutComponents: [
@@ -65,6 +66,8 @@ describe("readSalesforceOrgModel", () => {
     const lead = (await readSalesforceOrgModel({ apiGet }))!.objects.find((o) => o.api === "Lead")!;
     expect(lead.fields.find((f) => f.api === "Email")?.required).toBe(true);
     expect(lead.fields.find((f) => f.api === "Partner__c")?.required).toBeUndefined();
+    expect(lead.fields.find((f) => f.api === "Partner__c")?.label).toBe("Zq Partner Shown");
+    expect(lead.fields.find((f) => f.api === "Email")?.label).toBe("Email");
     expect(lead.fields.find((f) => f.api === "FirstName")?.required).toBeUndefined();
     expect(lead.fields.find((f) => f.api === "LastName")?.required).toBe(true);
   });
@@ -180,7 +183,7 @@ describe("orgModelForCases and the lite model", () => {
     expect(block).toContain("- Leads (object Lead)");
     expect(block).toContain("required on create: Last Name, Company, Lead Status");
     expect(block).toContain("Lead Status = Open - Not Contacted | Working - Contacted");
-    expect(block).toContain("Partner -> Account");
+    expect(block).toContain("Zq Partner Shown -> Account");
     expect(block).toContain('validation rule Phone_Required (on Phone): "Phone is required for a hot lead"');
     expect(orgModelForCases(undefined)).toBe("");
   });
@@ -498,5 +501,47 @@ describe("orgModelForCases: a multi-step approval", () => {
     const text = orgModelForCases({ objects: [{ api: "Zopp", label: "Zopp", fields: [] }], validationRulesRead: true,
       approvals: [{ label: "Zq Mega", api: "Zq_Mega", object: "Zopp", steps: ["Zq First", "Zq Final"] }] } as any);
     expect(text).toContain('"Zq Mega" on Zopp (2 steps: Zq First, Zq Final; each is decided in turn)');
+  });
+});
+
+describe("objects the request names (runs 2026-11-13T17-50-56-653Z-989d3c23, 17-51-15-443Z-6b6d9b04)", () => {
+  const so = (name: string, label: string, labelPlural: string, more: object = {}) =>
+    ({ name, label, labelPlural, createable: true, queryable: true, layoutable: true, ...more });
+  const sobjects = [
+    so("Order", "Order", "Orders"), so("Zq_WorkOrder", "Zq Work Order", "Zq Work Orders"),
+    so("Zq_Hours", "Zq Operating Hours", "Zq Operating Hours"), so("Zq_Hidden", "Zq Territory", "Zq Territories", { layoutable: false }),
+  ];
+  it("reads an object outside the app's tabs by its label, longest label first", () => {
+    expect(requestedObjects(sobjects, "Create a Zq Work Order with Subject 'x'")).toEqual(["Zq_WorkOrder"]);
+    expect(requestedObjects(sobjects, "Create Zq Operating Hours, then an order")).toEqual(["Zq_Hours", "Order"]);
+  });
+  it("skips an object Lightning cannot lay out, and a label inside another word", () => {
+    expect(requestedObjects(sobjects, "Create a Zq Territory, then reorders")).toEqual([]);
+  });
+});
+
+describe("a field the request names survives the field cap (run 2026-11-13T18-11-00-028Z-90505eae)", () => {
+  it("matches a field label as a whole word or phrase", () => {
+    expect(namesField("Create a Zq Work Order with Subject 'Boiler repair'", "Subject")).toBe(true);
+    expect(namesField("an Asset with Serial Number SN-1", "Serial Number")).toBe(true);
+    expect(namesField("Create a Zq Work Order with Subjects", "Subject")).toBe(false);
+    expect(namesField("Zq (Ops) team", "(Ops)")).toBe(true);
+  });
+});
+
+describe("a picklist the UI API lists no values for (run 2026-11-13T19-05-44-514Z-52f348c0)", () => {
+  it("takes its active values from the object's describe", async () => {
+    const { apiGet } = fakeApi();
+    const wrapped = async (p: string) => {
+      if (p === "/ui-api/object-info/Lead") {
+        const r = await apiGet(p);
+        return { ...r, fields: { ...r.fields, Zq_Zone__c: { apiName: "Zq_Zone__c", label: "Zq Zone", dataType: "Picklist", createable: true } } };
+      }
+      if (p === "/sobjects/Lead/describe") return { fields: [{ name: "Zq_Zone__c", picklistValues: [{ label: "(GMT+00:00) Zq Greenwich", active: true }, { label: "Zq Retired", active: false }] }] };
+      return apiGet(p);
+    };
+    const lead = (await readSalesforceOrgModel({ apiGet: wrapped }))!.objects.find((o) => o.api === "Lead")!;
+    expect(lead.fields.find((f) => f.api === "Zq_Zone__c")?.picklist).toEqual(["(GMT+00:00) Zq Greenwich"]);
+    expect(lead.fields.find((f) => f.label === "Lead Status")?.picklist).toEqual(["Open - Not Contacted", "Working - Contacted"]);
   });
 });

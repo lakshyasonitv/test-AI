@@ -158,10 +158,14 @@ function emitAssert(step: Step): string {
         ? `  await assertChoice(${locator(t)}, ${valueCode(comparisonValue(step))}, "contains");`
         : `  await expect(${locator(t)}).toContainText(${valueCode(comparisonValue(step))}, { timeout: ${ASSERT_TIMEOUT_MS} });`;
 
-    case "url_contains":
-      return `  await expect(page).toHaveURL(new RegExp(${q(
-        escapeRe(comparisonValue(step))
-      )}), { timeout: ${ASSERT_TIMEOUT_MS} });`;
+    case "url_contains": {
+      // A record page of some objects is /lightning/r/<record id>/view, with no object name (Service Territory,
+      // Work Order: run 2026-11-13T19-31-38-442Z-c26faa54 waited for "/lightning/r/ServiceTerritory/" on a saved
+      // record), so the record id stands in for the name.
+      const rec = /^\/lightning\/r\/(\w+)\/?$/.exec(comparisonValue(step).trim());
+      const pattern = rec ? `/lightning/r/(${rec[1]}|[A-Za-z0-9]{15,18})/` : escapeRe(comparisonValue(step));
+      return `  await expect(page).toHaveURL(new RegExp(${q(pattern)}), { timeout: ${ASSERT_TIMEOUT_MS} });`;
+    }
 
     // Page-level, like url_contains — asserts against <title> metadata, never body text.
     // Exists so "verify the page title is X" has a correct compilation target at all; without
@@ -329,13 +333,47 @@ async function assertGone(loc, namedAs) {
 // Record pages reached (Phase D cleanup, org-connection specs only)
 // -----------------------------------------------------------------------------
 
+/** Runs in the page (an init script, a plain string so no transform touches it): every success toast
+ *  "<Object> "<name>" was created." is handed once to the spec's __tbToast. A quick action (Contact's
+ *  "New Case") never opens the record it made, so its toast is the only place the record is named
+ *  (salesforceOracles.ts toastCreated looks its id up). */
+export const SF_TOAST_WATCH_JS = `(() => {
+  const seen = new Set();
+  new MutationObserver(() => {
+    for (const el of document.querySelectorAll(".forceToastMessage, .slds-notify_toast, [role=alert], [role=status]")) {
+      const t = (el.innerText || "").replace(/\\s+/g, " ").trim();
+      if (!/ was created\\./.test(t) || seen.has(t) || typeof window.__tbToast !== "function") continue;
+      seen.add(t);
+      window.__tbToast(t);
+    }
+  }).observe(document, { childList: true, subtree: true, characterData: true });
+})();`;
+
 // After a Save, Lightning often lands on /lightning/r/<Id>/view with no object in the URL: the record
 // tracker names it from the create form before it (run 2026-11-10T12-38-44-987Z-c98c9e72 recorded the
 // Account it went back to and missed the Opportunity it created). Insertion order = creation order,
 // which cleanup reverses so children go before their parents.
+/** A record action that is not on the page: given 5 s to show, then looked for under the record's "Show
+ *  more actions" menu. The menu item when it is there; null otherwise (the menu closed again), and the
+ *  caller clicks as usual. */
+const SF_MORE_ITEM_HELPER = `async function sfMoreItem(page, loc, name) {
+  if (await loc.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false)) return null;
+  const more = page.getByRole("button", { name: "Show more actions", exact: true }).first();
+  if (!(await more.isVisible().catch(() => false))) return null;
+  await more.click();
+  const item = page.getByRole("menuitem", { name, exact: true }).first();
+  if (await item.waitFor({ state: "visible", timeout: 3000 }).then(() => true, () => false)) return item;
+  await page.keyboard.press("Escape").catch(() => {});
+  return null;
+}`;
+
 const SF_RECORDS_HELPER = `const SF_RECORDS = new Set();
 let SF_CREATED = {};
-test.beforeEach(({ page }) => {
+let SF_TOASTS = [];
+test.beforeEach(async ({ page }) => {
+  SF_TOASTS = [];
+  await page.exposeFunction("__tbToast", (t) => { SF_TOASTS.push(String(t)); }).catch(() => {});
+  await page.addInitScript(${JSON.stringify(SF_TOAST_WATCH_JS)}).catch(() => {});
   const made = (${SF_RECORD_PAGES_JS})();
   SF_CREATED = made.made();
   page.on("framenavigated", (frame) => {
@@ -349,6 +387,7 @@ test.beforeEach(({ page }) => {
 test.afterEach(() => {
   test.info().annotations.push({ type: "sf-records", description: JSON.stringify([...SF_RECORDS]) });
   test.info().annotations.push({ type: "sf-created", description: JSON.stringify(SF_CREATED) });
+  test.info().annotations.push({ type: "sf-toasts", description: JSON.stringify(SF_TOASTS) });
 });`;
 
 /**
@@ -379,8 +418,14 @@ export const SF_FIELD_MATCH_JS = `(lines, label, expected, mode) => {
     .filter((l) => l && l !== label && l !== "Edit " + label);
   const want = num(expected);
   if (want !== null) {
-    return shown.some((l) => num(l) === want
-      || (mode !== "equals" && (l.match(/\\d[\\d.,]*/g) || []).some((x) => num(x) === want)));
+    // A whole-number field (Account's Annual Revenue is currency with no decimals) shows the typed
+    // 2500000.75 as "$2,500,001" (run 2026-11-13T19-57-24-341Z-d9e0ee3e); the API still holds 2500000.75.
+    const same = (t) => {
+      const n = num(t);
+      return n === want || (n !== null && !Number.isInteger(want) && n === Math.round(want) && !/[.,]\\d{1,2}(?!\\d)/.test(t));
+    };
+    return shown.some((l) => same(l)
+      || (mode !== "equals" && (l.match(/\\d[\\d.,]*/g) || []).some((x) => same(x))));
   }
   const e = String(expected).replace(/\\s+/g, " ").trim();
   return shown.some((l) => mode === "equals" ? l === e : l.includes(e));
@@ -470,9 +515,56 @@ const SF_REVEAL_HELPER = `async function sfReveal(page, text, ready) {
  *  and covers the fields under it; typing into one then waits until the run is killed (run
  *  2026-11-03T05-07-28-369Z-388aa153, Billing Zip). It is a warning, not a block: closed before each
  *  step of an org-connection test, the Save still goes through. Same names as liveExtend's replay. */
+/** A date-time field is a Date box and a Time box inside a lightning-datetimepicker whose legend is the field's
+ *  label; a form has several (Service Appointment: Earliest Start Permitted, Due Date), every box named just
+ *  "Date" or "Time" (runs 2026-11-13T18-30-28-619Z-653368f1, 18-35-51-793Z-df1af5e4). The value is
+ *  "<date> <time>", each in the user's format. Same logic as liveExtend's sfDateTimeLive. */
+const SF_DATETIME_HELPER = `async function sfDateTime(page, label, value) {
+  const v = String(value).trim();
+  const at = v.indexOf(" ");
+  const date = at < 0 ? v : v.slice(0, at);
+  const time = at < 0 ? "" : v.slice(at + 1).trim();
+  const want = label.split("*").join("").trim().toLowerCase();
+  const pickers = page.locator("lightning-datetimepicker");
+  await pickers.first().waitFor({ timeout: 10000 });
+  let box;
+  for (let i = (await pickers.count()) - 1; i >= 0 && !box; i--) {
+    const legend = ((await pickers.nth(i).locator("legend").first().textContent({ timeout: 2000 }).catch(() => "")) || "");
+    if (legend.split("*").join("").replace(/\\s+/g, " ").trim().toLowerCase() === want) box = pickers.nth(i);
+  }
+  if (!box) throw new Error('No date-time field "' + label + '" on the page');
+  const d = box.locator("lightning-datepicker input").first();
+  await d.focus({ timeout: 10000 });
+  await d.fill(date, { timeout: 10000 });
+  if (time) {
+    const t = box.locator("lightning-timepicker input").first();
+    // Typed key by key, then its own option picked: a value set in one go is refused as "does not match
+    // the allowed format" (run 2026-11-13T19-16-31-705Z-1c10477d).
+    await t.click({ timeout: 10000 });
+    await t.fill("", { timeout: 10000 });
+    await t.pressSequentially(time, { delay: 30 });
+    const opt = box.getByRole("option", { name: time, exact: true }).first();
+    if (await opt.isVisible().catch(() => false)) await opt.click({ timeout: 5000 }).catch(() => {});
+    else await t.press("Tab").catch(() => {});
+  }
+}`;
+
 const SF_DISMISS_DUPLICATES_HELPER = `async function sfDismissDuplicates(page) {
   if (!(await page.getByText(${JSON.stringify(SF_DUPLICATE_WARNING)}, { exact: true }).first().isVisible().catch(() => false))) return;
   await page.getByRole("button", { name: ${JSON.stringify(SF_DUPLICATE_CLOSE)} }).first().click({ timeout: 2000 }).catch(() => {});
+}
+
+// A duplicate rule that only warns keeps the form open on the first Save: the record is made by a second
+// Save, as a person would click it (run 2026-11-13T16-00-53-324Z-9f8e022d waited for "was created" with the
+// New Contact form still open). A rule that blocks shows the warning again, and the run's own check fails.
+async function sfSaveThroughDuplicates(page) {
+  await page.waitForTimeout(1500);
+  if (!(await page.getByText(${JSON.stringify(SF_DUPLICATE_WARNING)}, { exact: true }).first().isVisible().catch(() => false))) return;
+  const save = page.locator('role=dialog >> role=button[name="Save"s]').first();
+  if (!(await save.isVisible().catch(() => false))) return;
+  await page.getByRole("button", { name: ${JSON.stringify(SF_DUPLICATE_CLOSE)} }).first().click({ timeout: 2000 }).catch(() => {});
+  await save.click({ timeout: 5000 }).catch(() => {});
+  test.info().annotations.push({ type: "sf-duplicate-warning", description: "saved through Salesforce's duplicate warning" });
 }`;
 
 // -----------------------------------------------------------------------------
@@ -1137,6 +1229,27 @@ function emitStep(step: Step, baseUrl: string): string {
 
     case "click": {
       const t = step.target!;
+      // A record the test just made, opened from Salesforce's search results: the index has it only after a
+      // while (run 2026-11-13T16-35-10-260Z-944deb2f), so the search runs again (the typed term is the step's
+      // value) until the result shows, up to about 40 s. salesforceGuidance.globalSearchSubmit marks it.
+      if (step.id.startsWith("sf-search-open-") && t.name) {
+        code += [
+          `  {`,
+          `    const result = page.getByRole("link", { name: ${valueCode(t.name)}, exact: true }).first();`,
+          `    for (let i = 0; i < 8 && !(await result.isVisible().catch(() => false)); i++) {`,
+          `      await page.waitForTimeout(5000);`,
+          ...(step.value ? [
+            `      const box = page.getByRole("searchbox", { name: "Search...", exact: true }).first();`,
+            `      if (!(await box.isVisible().catch(() => false))) await page.getByRole("button", { name: "Search", exact: true }).first().click().catch(() => {});`,
+            `      await box.fill(${valueCode(step.value)}).catch(() => {});`,
+            `      await box.press("Enter").catch(() => {});`,
+          ] : [`      await page.reload().catch(() => {});`]),
+          `    }`,
+          `    await result.click({ timeout: ${ASSERT_TIMEOUT_MS} });`,
+          `  }`,
+        ].join("\n");
+        break;
+      }
       // A click on a named radio or checkbox ticks it (see "check"): its label intercepts a plain click.
       if (isNamedToggle({ ...t, css: undefined })) {
         code += `  await page.getByRole(${q(t.role!)}, { name: ${q(t.name!)}, exact: true }).first().check({ force: true, timeout: ${ASSERT_TIMEOUT_MS} });`;
@@ -1151,17 +1264,29 @@ function emitStep(step: Step, baseUrl: string): string {
       // an element whose accessible name is empty or was derived by discovery.
       // Not for a target inside an iframe either: safeClick resolves against `page` and navigates
       // with page.goto/page.url, none of which a frame root offers; locate() via locator(t) does.
+      // A record action Lightning keeps under "Show more actions" (a Service Appointment shows New Contact,
+      // New Opportunity, New Case and hides Edit; run 2026-11-15T11-55-56-797Z-7153003e timed out on it).
+      const more = /\.(salesforce|force)\.com/i.test(baseUrl) && t.role === "button" && t.name && !t.frame
+        && !/^(save|cancel|show more actions)$/i.test(t.name);
+      if (more) code += `  { const sfItem = await sfMoreItem(page, ${locator(t)}, ${q(t.name!)}); if (sfItem) await sfItem.click({ timeout: ${ASSERT_TIMEOUT_MS} }); else `;
       if (!t.css && !t.frame && t.role && t.name) {
         const nthParam = t.nth !== undefined ? `, ${t.nth}` : '';
-        code += `  await safeClick(page, ${q(t.role)}, ${q(t.name)}${nthParam});`;
+        code += `${more ? "" : "  "}await safeClick(page, ${q(t.role)}, ${q(t.name)}${nthParam});`;
       } else {
-        code += `  await ${locator(t)}.click({ timeout: ${ASSERT_TIMEOUT_MS} });`;
+        code += `${more ? "" : "  "}await ${locator(t)}.click({ timeout: ${ASSERT_TIMEOUT_MS} });`;
       }
+      if (more) code += " }";
       code += `\n  await page.waitForLoadState("domcontentloaded", { timeout: ${ASSERT_TIMEOUT_MS} }).catch(() => {});`;
       break;
     }
 
     case "fill":
+      // A date-time field (testData.dateTimeFills marks it "sf-dt-"): its own Date and Time boxes, found by the
+      // field's label (a form has several boxes named just "Date"). Mirrored by liveExtend's sfDateTimeLive.
+      if (step.id.startsWith("sf-dt-") && step.target?.name) {
+        code += `  await sfDateTime(page, ${q(step.target.name)}, ${valueCode(step.value)});`;
+        break;
+      }
       // Focus, then the one fill. A field holding a value that redraws on focus (Lightning shows a
       // percent as "10%", the raw "10" when focused) drops the selection fill() made, so the text
       // was added to the old value: "1010" (run 2026-11-02T17-24-47-449Z-ab0328f3). Mirrored by
@@ -1436,7 +1561,9 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
         ? `await sfReveal(page, ${q(step.target!.name!.replace(/^Show actions for /, ""))}, page.getByRole("button", { name: ${q(step.target!.name!)}, exact: true }).first());\n` : "";
       const dismiss = orgConnection && (step.action === "fill" || step.action === "select" || step.action === "click")
         ? "await sfDismissDuplicates(page);\n" : "";
-      const code = dismiss + reveal + emitStep(step, ir.meta.baseUrl);
+      const saveThrough = orgConnection && step.action === "click" && /^save$/i.test((step.target?.name ?? "").trim())
+        ? "\nawait sfSaveThroughDuplicates(page);" : "";
+      const code = dismiss + reveal + emitStep(step, ir.meta.baseUrl) + saveThrough;
       const indented = code.split("\n").map((l) => "    " + l).join("\n");
       return `    await test.step(${q(label)}, async () => {\n${indented}\n      await shot(page, ${q(`${shotDir}/step-${i + 1}.png`)});\n    });`;
     })
@@ -1504,6 +1631,8 @@ test.beforeEach(() => { test.info().annotations.push({ type: "run-tokens", descr
     body.includes("await sfDismissDuplicates(") ? SF_DISMISS_DUPLICATES_HELPER : "",
     body.includes("await sfOpenRecord(") ? SF_OPEN_RECORD_HELPER : "",
     body.includes("await sfFieldValue(") ? SF_FIELD_HELPER : "",
+    body.includes("await sfDateTime(") ? SF_DATETIME_HELPER : "",
+    body.includes("await sfMoreItem(") ? SF_MORE_ITEM_HELPER : "",
   ]
     .filter(Boolean)
     .join("\n\n");

@@ -31,6 +31,35 @@ describe("typedValues", () => {
     expect(t[0].values.map((v) => v.api)).toEqual(["Name"]);
   });
 
+  it("an edit of the record after its create counts: the last value saved is the expected one", () => {
+    const edit = { id: "e", action: "click", target: { role: "button", name: "Edit" } } as Step;
+    const saved = { id: "w2", action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step;
+    const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Phone", "4155550101"), save, created, edit, fill("Phone", "4155550199"), save, saved] }, org);
+    expect(t[0].values.find((v) => v.api === "Phone")?.value).toBe("4155550199");
+    // An edit whose save was not confirmed changes nothing.
+    const u = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Phone", "4155550101"), save, created, edit, fill("Phone", "4155550199"), save] }, org);
+    expect(u[0].values.find((v) => v.api === "Phone")?.value).toBe("4155550101");
+  });
+
+  it("an inline pencil's edit counts once its field check confirms it (run 2026-11-13T18-24-42-379Z-c78076e2)", () => {
+    const pencil = { id: "e", action: "click", target: { role: "button", name: "Edit Phone" } } as Step;
+    const shown = { id: "sf-inline-s2", action: "assert", target: { field: "Phone" }, value: "4155550199", assertion: "text_contains" } as Step;
+    const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Phone", "4155550101"), save, created, pencil, fill("Phone", "4155550199"), save, shown] }, org);
+    expect(t[0].values.find((v) => v.api === "Phone")?.value).toBe("4155550199");
+  });
+
+  it("a clone is checked as its own record: the original's values, then what the clone form typed", () => {
+    const clone = { id: "cl", action: "click", target: { role: "menuitem", name: "Clone" } } as Step;
+    const save2 = { id: "s2", action: "click", target: { role: "button", name: "Save" } } as Step;
+    const created2 = { id: "w2", action: "assert", target: { text: "was created" }, assertion: "visible" } as Step;
+    const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "Zq Base"), fill("Annual Revenue", "5000"), save, created,
+      clone, fill("Zq Name", "Zq Copy"), fill("Annual Revenue", "7500"), save2, created2] }, org);
+    expect(t).toHaveLength(2);
+    expect(t[1]).toMatchObject({ object: "Zq_Acct__c", n: 2 });
+    expect(t[1].values.map((v) => v.value)).toEqual(["Zq Copy", "7500"]);
+    expect(t[0].values.map((v) => v.value)).toEqual(["Zq Base", "5000"]);
+  });
+
   it("a form never saved checks nothing", () => {
     expect(typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "x")] }, org)).toEqual([]);
   });
@@ -54,12 +83,28 @@ describe("apiChecks", () => {
     expect(out).toEqual([{ object: "Zq_Acct__c", id: "a00zq0000000001AAA", field: "Zq Name", expected: "Zq ab12cd", actual: "Zq ab12cd", ok: true }]);
     expect(decodeURIComponent(String(apiGet.mock.calls[0][0]))).toContain("SELECT Name FROM Zq_Acct__c WHERE Id = 'a00zq0000000001AAA'");
   });
+  it("reads a picklist as its label, the text the case picked (run 2026-11-13T18-45-09-236Z-e01f6e2d)", async () => {
+    const tz = [{ object: "Zq_Hours__c", n: 1, values: [{ label: "Zq Zone", api: "Zq_Zone__c", type: "Picklist", value: "(GMT-08:00) Zq Pacific" }] }];
+    const apiGet = vi.fn(async () => ({ records: [{ Zq_Zone__c: "(GMT-08:00) Zq Pacific" }] }));
+    const out = await apiChecks(apiGet, tz, { Zq_Hours__c: ["a00zq0000000001AAA"] }, { uid: "a", phone: "1" });
+    expect(out[0].ok).toBe(true);
+    expect(decodeURIComponent(String(apiGet.mock.calls[0][0]))).toContain("SELECT toLabel(Zq_Zone__c) FROM Zq_Hours__c");
+  });
 
   it("fails, with a reason, when the case never reached its record; never queries a bad id", async () => {
     const apiGet = vi.fn();
     const out = await apiChecks(apiGet, typed, { Zq_Acct__c: ["x' OR Id != '"] }, { uid: "a", phone: "1" });
     expect(out[0]).toMatchObject({ ok: false, note: "the case never reached the record it created" });
     expect(apiGet).not.toHaveBeenCalled();
+  });
+
+  it("fails a value that matches what was typed but is junk: its own label, or a placeholder (run 2026-11-13T15-19-02-592Z-1e01cacf)", async () => {
+    const t = (v: string) => [{ object: "Zq_Acct__c", n: 1, values: [{ label: "Zq Name", api: "Name", type: "string", value: v }] }];
+    const ids = { Zq_Acct__c: ["a00zq0000000001AAA"] };
+    const label = await apiChecks(vi.fn(async () => ({ records: [{ Name: "Zq Name Zqsato" }] })), t("Zq Name Zqsato"), ids, { uid: "a", phone: "1" });
+    expect(label[0]).toMatchObject({ ok: false, note: `the field's own label "Zq Name" was saved in its value` });
+    const token = await apiChecks(vi.fn(async () => ({ records: [{ Name: "{{yesterday}}" }] })), t("{{yesterday}}"), ids, { uid: "a", phone: "1" });
+    expect(token[0]).toMatchObject({ ok: false, note: "a placeholder was saved instead of a value" });
   });
 
   it("is off unless asked for", () => {
@@ -97,7 +142,7 @@ describe("caseRunFacts without run tokens", () => {
     const { tmpdir } = await import("node:os");
     const f = join(mkdtempSync(join(tmpdir(), "zq-")), "results.json");
     writeFileSync(f, JSON.stringify({ suites: [{ specs: [{ tests: [{ annotations: [{ type: "sf-created", description: JSON.stringify({ Case: ["500zq0000000001AAA"] }) }] }] }] }] }));
-    expect(caseRunFacts(f)).toEqual({ ctx: { uid: "", phone: "" }, created: { Case: ["500zq0000000001AAA"] }, shown: {} });
+    expect(caseRunFacts(f)).toEqual({ ctx: { uid: "", phone: "" }, created: { Case: ["500zq0000000001AAA"] }, shown: {}, toasts: [] });
   });
 });
 
@@ -183,5 +228,54 @@ describe("leadConvertChecks", () => {
     const out = await leadConvertChecks(apiGet, { steps: [click("Convert"), noOpp, click("Convert")] }, lead);
     expect(out.find((c) => c.field === "converted Account name")?.ok).toBe(false);
     expect(out.find((c) => c.field === "converted Opportunity")).toMatchObject({ expected: "none", ok: true });
+  });
+});
+
+describe("a record the case deletes is checked as gone (run 2026-11-13T15-54-10-339Z-babde72e)", () => {
+  it("expects it absent from the org instead of reading its fields", async () => {
+    const del = (id: string) => ({ id, action: "click", target: { role: "button", name: "Delete" } } as Step);
+    const gone = { id: "g", action: "assert", target: { text: "was deleted" }, assertion: "visible" } as Step;
+    const t = typedValues({ steps: [nav("/lightning/o/Zq_Acct__c/new"), fill("Zq Name", "Zq Del"), save, created, del("d1"), del("d2"), gone] }, org);
+    expect(t[0].deleted).toBe(true);
+    const out = await apiChecks(vi.fn(async () => ({ records: [] })), t, { Zq_Acct__c: ["a00zq0000000001AAA"] }, { uid: "a", phone: "1" });
+    expect(out).toEqual([{ object: "Zq_Acct__c", id: "a00zq0000000001AAA", field: "deleted", expected: "gone", actual: "gone", ok: true }]);
+  });
+});
+
+describe("a date-time is read back as the user sees it", () => {
+  it("is typed from its sf-dt step, read with FORMAT(), and compared as the same moment", async () => {
+    const dtOrg = { objects: [{ api: "ZqAppt", label: "Zq Appt", fields: [{ label: "Zq Due", api: "ZqDue__c", type: "DateTime" }] }] } as any;
+    const steps = [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqAppt/new" } },
+      { id: "sf-dt-a", action: "fill", target: { role: "group", name: "Zq Due" }, value: "{{date:+1:en-US}} 9:00 AM" },
+      { id: "s", action: "click", target: { role: "button", name: "Save" } },
+      { id: "c", action: "assert", target: { text: "was created" }, assertion: "visible" },
+    ] as Step[];
+    const t = typedValues({ steps }, dtOrg);
+    expect(t[0].values).toEqual([{ label: "Zq Due", api: "ZqDue__c", type: "DateTime", value: "{{date:+1:en-US}} 9:00 AM" }]);
+    const apiGet = vi.fn(async () => ({ records: [{ dt0: "11/15/2026, 09:00 AM" }] }));
+    const out = await apiChecks(apiGet, [{ object: "ZqAppt", n: 1, values: [{ label: "Zq Due", api: "ZqDue__c", type: "DateTime", value: "11/15/2026 9:00 AM" }] }], { ZqAppt: ["a00zq0000000001AAA"] }, { uid: "a", phone: "1" });
+    expect(out[0].ok).toBe(true);
+    expect(decodeURIComponent(String(apiGet.mock.calls[0][0]))).toContain("SELECT FORMAT(ZqDue__c) dt0 FROM ZqAppt");
+    const wrong = await apiChecks(vi.fn(async () => ({ records: [{ dt0: "11/15/2026 9:30 AM" }] })), [{ object: "ZqAppt", n: 1, values: [{ label: "Zq Due", api: "ZqDue__c", type: "DateTime", value: "11/15/2026 9:00 AM" }] }], { ZqAppt: ["a00zq0000000001AAA"] }, { uid: "a", phone: "1" });
+    expect(wrong[0].ok).toBe(false);
+  });
+});
+
+describe("a failed check of a field an org flow sets says so (run 2026-11-13T23-13-33-343Z-2598923f)", () => {
+  it("names the flow and its branches; nothing for a field no flow sets", async () => {
+    const { flowExplainsField } = await import("../src/stages/salesforceOracles.js");
+    const org = { objects: [{ api: "ZqLead", label: "Zq Lead", fields: [
+      { label: "Zq Heat", api: "ZqHeat__c", type: "Picklist" }, { label: "Zq Firm", api: "ZqFirm__c", type: "String" }] }],
+      flows: [{ label: "Zq Routing", object: "ZqLead", effects: ["sets ZqHeat__c = Zq Cold", "branch \"Cold\" (none of the above) -> sets ZqHeat__c = Zq Cold"] }] } as any;
+    const ir = { steps: [
+      { id: "n", action: "navigate", target: { url: "/lightning/o/ZqLead/new" } },
+      { id: "h", action: "assert", target: { field: "Zq Heat" }, value: "Zq Hot", assertion: "text_contains" },
+      { id: "f", action: "assert", target: { field: "Zq Firm" }, value: "Zq Co", assertion: "text_contains" },
+    ] } as any;
+    const why = flowExplainsField(ir, org, "h");
+    expect(why).toContain('"Zq Routing" sets Zq Heat');
+    expect(why).toContain('branch "Cold"');
+    expect(flowExplainsField(ir, org, "f")).toBeUndefined();
   });
 });

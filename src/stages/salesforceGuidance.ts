@@ -58,6 +58,7 @@ const ROUTE = {
 - A case never relies on a record already in the org ("an Account known to have open Opportunities") — except one the org model lists under "records Testbench ALREADY CREATED": that one was made for this test, so the case picks it by that exact name and does not create another: it creates what it needs, in order, then acts on it. A rule about related records (a delete blocked while open child records exist, a roll-up) creates the parent, then the child from its own create form with the parent picked in its lookup, using values that make it count (an open Opportunity: a stage that is not Closed), then goes back to the parent and acts. This is the one case that creates several objects. (Backed by: deleteOutsideOwnRecord, which refuses a delete of any record the case did not create — run 2026-11-10T10-20-10-752Z-2c9915e1 ended after its first Save.)`,
     ir: `- The run is already signed in through its org connection: the sign-in step is supplied; write no login, username or password step. Reach a page with "navigate" to a path that is in the application model: /lightning/o/<Object>/new opens the create form as a modal dialog and its fields are in that page's model. Never click through the App Launcher or the navigation bar to reach an object. Create every record, a related one too, through its own create form path, and pick its parent in that form's lookup (an Opportunity "for that Account": /lightning/o/Opportunity/new, Account Name = that Account), never through another record page's actions menu or its "New <Object>" buttons, unless the case says to use that action. (Backed by: the navigate-URL guard, TD-82; run 2026-11-10T06-30-57-251Z-32a03bc8 lost its way in the Account page's "Show more actions" menu.)
 - In a flow that creates a record, the "fill" value of each name field (Last Name, Company, Account Name, a record Name) ends with the token {{uid}}, e.g. "Smith {{uid}}"; the spec and the replay replace it with a unique code, so the org's duplicate rules never block a repeat. Never in a field a validation rule reads, never in an assertion: assert "was created", never the record's name. (Backed by: generator valueCode and runStepLive.)
+- A date-time field (type DateTime in the org model, e.g. Earliest Start Permitted, Due Date) is ONE "fill" step: target name = the field's label, value "<day> <time>" ("tomorrow 10:30 AM", "in 3 days 9:00 AM"). Never fill its boxes named "Date" or "Time": every date-time field on the form has boxes with those names. (Backed by: testData.dateTimeFills, which types the day in the user's format, relative to the run.)
 - Fill only the required fields, the fields a validation rule reads, and the fields the case names. Never type into a lookup (a record reference such as Account Name on a Contact) unless the case names a record for it. (Backed by: the test-data pass drops other optional fills.)`,
   },
 } as const;
@@ -124,6 +125,264 @@ const isRecordChange = (s: Step) => isSave(s) || /^(mark (as current stage|stage
  * terminal-text grounding checks it on the live page and, on an org in another language, corrects
  * it to the page's own wording. The Save assertion stays; this only adds. Returns a note, or null.
  */
+/**
+ * Lightning's global search runs on Enter: after typing into its box, a click on "Search" looks for a second
+ * button that is not there (run 2026-11-13T15-59-07-870Z-cf7c96f8 timed out and was cut). The click after the
+ * typing becomes Enter in that box. Returns notes.
+ */
+export function globalSearchSubmit(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  // The global search box is "Search..." once opened; the model also calls it "Search Salesforce" (run
+  // 2026-11-13T16-45-27-540Z-72773d0c could not type into it).
+  for (const s of ir.steps) {
+    if ((s.action !== "fill" && s.action !== "press") || !/^search\b/i.test((s.target?.name ?? "").trim()) || s.target?.name === "Search...") continue;
+    if (s.target?.role && !/^(searchbox|textbox|combobox)$/.test(s.target.role)) continue;
+    notes.push(`${s.id}: the global search box is "Search...", not "${s.target!.name}"`);
+    s.target = { role: "searchbox", name: "Search..." };
+  }
+  // The box exists only once the header's "Search" button opened it (run 2026-11-13T16-53-32-808Z-11eabab6
+  // typed into it straight away and was cut there): that click goes first when the case left it out.
+  const firstType = ir.steps.findIndex((s) => s.action === "fill" && s.target?.name === "Search...");
+  if (firstType > 0) {
+    let j = firstType - 1;
+    while (j >= 0 && ir.steps[j].action === "wait") j--;
+    if (!(ir.steps[j]?.action === "click" && /^search$/i.test((ir.steps[j].target?.name ?? "").trim()))) {
+      ir.steps.splice(firstType, 0, { id: "sf-search-box", action: "click", target: { role: "button", name: "Search" } } as Step,
+        { id: "sf-search-box-wait", action: "wait", value: "800" } as Step);
+      notes.push(`the global search box is opened by its "Search" button first`);
+    }
+  }
+  for (let i = 1; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action !== "click" || !/^search$/i.test((s.target?.name ?? "").trim())) continue;
+    let j = i - 1;
+    while (j >= 0 && ir.steps[j].action === "wait") j--;
+    const typed = ir.steps[j];
+    if (!typed || typed.action !== "fill" || !/^search\b/i.test((typed.target?.name ?? typed.target?.placeholder ?? "").trim())) continue;
+    ir.steps[i] = { id: s.id, action: "press", target: typed.target, value: "Enter" } as Step;
+    notes.push(`${s.id}: the global search runs on Enter, not a second "Search" click`);
+  }
+  // Opening a record the test just made from the search results: Salesforce's search index takes a while
+  // to have a new record (run 2026-11-13T16-35-10-260Z-944deb2f searched at once and found nothing). The
+  // spec searches again until it shows (generator.ts, "sf-search-open-"), and grounding does not demand the
+  // results screen ahead of time.
+  for (let i = 1; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action !== "click" || !s.target?.name) continue;
+    let j = i - 1;
+    while (j >= 0 && ir.steps[j].action === "wait") j--;
+    const prev = ir.steps[j];
+    if (!prev || prev.action !== "press" || !/^enter$/i.test(prev.value ?? "") || !/^search\b/i.test((prev.target?.name ?? "").trim())) continue;
+    let k = j - 1;
+    while (k >= 0 && ir.steps[k].action === "wait") k--;
+    const typed = ir.steps[k]?.action === "fill" ? ir.steps[k].value : undefined;
+    // The record the test made, by the name it was given ("Quasar Robotics {{uid}}"), however the model wrote
+    // the link: without its run code it could be an older record of the same name, and with ANOTHER run's
+    // code ("Quasar Robotics msymz4", copied off a captured results screen, run
+    // 2026-11-13T17-21-21-999Z-ecc97eb2) it is a record that is gone by the time the spec runs.
+    const bare = lineKey(s.target.name.replace(/\{\{uid\}\}/g, "").replace(/\s[a-z0-9]{6}$/, ""));
+    const made = ir.steps.slice(0, k).filter((x) => x.action === "fill" && x.value?.includes("{{uid}}")).map((x) => x.value!)
+      .find((v) => lineKey(v.replace(/\{\{uid\}\}/g, "")) === bare);
+    const name = s.target.name.includes("{{uid}}") ? s.target.name : made;
+    if (!name) continue;
+    ir.steps[i] = { ...s, id: `sf-search-open-${s.id}`, target: { role: "link", name }, ...(typed ? { value: typed } : {}) } as Step;
+    notes.push(`${s.id}: opens the new record from the search results, searching again until Salesforce has indexed it`);
+  }
+  return notes;
+}
+
+/**
+ * A lookup that can hold several objects (a Service Appointment's Parent Record: Account, Work Order, Asset...)
+ * searches one object at a time, Account first: the Work Order the case made was never offered (run
+ * 2026-11-13T19-05-25-624Z-90c95d42 "Available: Quasar Robotics ..."). When the record it names was made earlier
+ * in the case, on object X, the field's "Choose an object" menu picks X first. Returns notes.
+ */
+export function polymorphicLookupObject(ir: IRSteps, org: SalesforceOrgModel | undefined): string[] {
+  const notes: string[] = [];
+  if (!org) return notes;
+  let form: string | null = null;
+  const made = new Map<string, string>();   // a typed name -> the object whose form typed it
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action === "navigate") { form = /\/lightning\/o\/(\w+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? null; continue; }
+    if (!form) continue;
+    if (s.action === "fill" && s.value?.includes("{{uid}}") && !s.target?.lookup) { made.set(lineKey(s.value), form); continue; }
+    if (s.action !== "select" || !s.target?.lookup || !s.value) continue;
+    const label = (s.target.name ?? "").trim().toLowerCase();
+    const targets = org.objects.find((o) => o.api === form)?.fields.find((f) => f.label.toLowerCase() === label)?.lookup?.split("/") ?? [];
+    const of = made.get(lineKey(s.value));
+    if (targets.length < 2 || !of || !targets.includes(of)) continue;
+    const prev = ir.steps[i - 1];
+    if (prev?.action === "select" && /^choose an object$/i.test(prev.target?.name ?? "")) continue;
+    const objLabel = org.objects.find((o) => o.api === of)?.label ?? of.replace(/([a-z])([A-Z])/g, "$1 $2");
+    ir.steps.splice(i, 0, { id: `sf-poly-${s.id}`, action: "select", target: { role: "combobox", name: "Choose an object" }, value: objLabel } as Step);
+    notes.push(`${s.id}: "${s.target.name}" can hold several objects -> picks "${objLabel}" in its object menu first`);
+    i++;
+  }
+  return notes;
+}
+
+/**
+ * A click on a button named after a value the case puts INTO a field ("set the 'Case Origin' picklist to
+ * 'Email'") and never says to click: the field was not on the form (Contact's "New Case" quick action has no
+ * Case Origin), so the model clicked the page's "Email" activity button instead (run
+ * 2026-11-13T21-24-10-979Z-ea90feef). Dropped; the form's own default stands. Returns notes.
+ */
+export function valueClickedAsButton(ir: IRSteps, caseText: string): string[] {
+  const notes: string[] = [];
+  const q = (...res: RegExp[]) => new Set(res.flatMap((re) => Array.from(caseText.matchAll(re), (m) => m[1].trim().toLowerCase())));
+  // Only a value put into a field: "set ... to 'V'", "'F' picklist to 'V'", "pick 'V' in ...". Not "go to 'Opportunities'".
+  const values = q(/\bset\b[^.;\n]*?\bto\s+'([^']+)'/gi,
+    /'[^']+'(?:\s+(?:picklist|field|combobox|dropdown|lookup))?\s+to\s+'([^']+)'/gi,
+    /\b(?:pick|select|choose)\s+'([^']+)'\s+(?:in|from|for|as)\b/gi);
+  const clicked = q(/\b(?:click|press|tap)(?:\s+on)?(?:\s+the)?\s+'([^']+)'/gi);
+  ir.steps = ir.steps.filter((s) => {
+    const name = s.action === "click" && s.target?.role === "button" ? (s.target?.name ?? "").trim().toLowerCase() : "";
+    if (!name || !values.has(name) || clicked.has(name)) return true;
+    notes.push(`${s.id}: dropped the click on "${s.target?.name}": the case sets a field to that value, it never clicks it`);
+    return false;
+  });
+  return notes;
+}
+
+/**
+ * A lookup that picks a record the case made, written without its run code ("Pump X200" for the Asset typed
+ * as "Pump X200 {{uid}}", run 2026-11-13T18-17-16-000Z-b895ffda): Salesforce offers every "Pump X200 ..."
+ * (other runs', the grounding replays'), so it gets the code back and picks this run's record. Returns notes.
+ */
+export function madeRecordLookups(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  const made: string[] = [];
+  let first = "";
+  for (const s of ir.steps) {
+    if (s.action === "navigate") first = "";
+    if (s.action === "fill" && /^first name$/i.test(s.target?.name ?? "")) first = s.value?.trim() ?? "";
+    if (s.action === "fill" && s.value?.includes("{{uid}}") && !s.target?.lookup) {
+      made.push(s.value);
+      // A person is named First + Last: the Contact "Rahul" "Mehta {{uid}}" is picked as "Rahul Mehta".
+      if (first && /^last name$/i.test(s.target?.name ?? "")) made.push(`${first} ${s.value}`);
+    }
+    if (s.action !== "select" || !s.target?.lookup || !s.value || hasRunToken(s.value)) continue;
+    const name = made.find((v) => lineKey(v.replace(/\{\{uid\}\}/g, "")) === lineKey(s.value!));
+    if (!name) continue;
+    notes.push(`${s.id}: the "${s.target.name}" lookup picks the record this run made -> "${name}"`);
+    s.value = name;
+  }
+  return notes;
+}
+
+/**
+ * A lookup to an object named by an auto-number (Work Order, Case, Service Appointment) shows that number
+ * ("00000005") on the page, so a check that it shows the parent's Subject can never pass (run
+ * 2026-11-13T18-17-05-636Z-f22dc0b7). Such a check goes when the linked object has no typed Name field;
+ * the API checks the saved record. Returns notes.
+ */
+export function autoNumberLinkNotChecked(ir: IRSteps, org: SalesforceOrgModel | undefined): string[] {
+  const notes: string[] = [];
+  if (!org) return notes;
+  let form: string | null = null;
+  ir.steps = ir.steps.filter((s) => {
+    if (s.action === "navigate") form = /\/lightning\/o\/(\w+)\/new\b/.exec(s.target?.url ?? "")?.[1] ?? form;
+    if (s.action !== "assert" || !s.target?.field || !form || !s.value) return true;
+    const label = s.target.field.trim().toLowerCase();
+    const link = org.objects.find((o) => o.api === form)?.fields.find((f) => f.label.toLowerCase() === label)?.lookup;
+    const target = link && org.objects.find((o) => o.api === link);
+    // A person (Contact, Lead) has no createable Name, but its link shows First + Last: kept (run
+    // 2026-11-13T21-40-23-740Z-7ea523fc dropped the Case's "Contact Name" check that way).
+    if (!target || target.fields.some((f) => f.api === "Name" || f.api === "LastName")) return true;
+    if (/^\d+$/.test(s.value.trim())) return true;
+    notes.push(`${s.id}: the "${s.target.field}" link shows the ${target.label}'s number, never "${s.value}" -> check dropped (the API checks the saved record)`);
+    return false;
+  });
+  return notes;
+}
+
+/**
+ * Right after a delete, Salesforce's own message names the record ('Opportunity "Delete Me ab12cd" was
+ * deleted.'), so a check that the name is no longer on the page fails on that message (run
+ * 2026-11-13T16-32-07-872Z-36eef730, the record was gone). The API check that it is gone is the proof;
+ * such a check goes. Returns notes.
+ */
+export function deletedNameNotChecked(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  const at = ir.steps.findIndex((s) => s.action === "assert" && /\bwas deleted\b/i.test(s.target?.text ?? ""));
+  if (at < 0) return notes;
+  const typed = ir.steps.slice(0, at).filter((s) => s.action === "fill" && s.value).map((s) => lineKey(s.value!.replace(/\{\{uid\}\}/g, "")));
+  for (let i = ir.steps.length - 1; i > at; i--) {
+    const s = ir.steps[i];
+    if (s.action !== "assert" || s.assertion !== "hidden" || !s.target?.text) continue;
+    const k = lineKey(s.target.text.replace(/\{\{uid\}\}/g, ""));
+    if (!k || !typed.some((t) => t.includes(k) || k.includes(t))) continue;
+    ir.steps.splice(i, 1);
+    notes.push(`${s.id}: "${s.target.text}" hidden right after the delete -> dropped (Salesforce's own message names it; the API checks it is gone)`);
+  }
+  return notes;
+}
+
+/**
+ * An activity's Subject (Log a Call, New Task, New Event) is a type-ahead box: it suggests Call, Email, Send
+ * Letter… and takes any text. A select there picks the suggestion the value contains: "Intro call" was saved
+ * as "Call" (run 2026-11-13T14-46-59-658Z-c76ab6b0). A Subject that is no plain suggestion is typed. Returns notes.
+ */
+const ACTIVITY_SUGGESTIONS = /^(call|email|send letter|send quote|other)$/i;
+export function activitySubjectTyped(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  let onActivity = false;
+  ir.steps.forEach((s, i) => {
+    if (s.action === "navigate") { onActivity = /\/lightning\/o\/(Task|Event)\/new\b/.test(s.target?.url ?? ""); return; }
+    if (s.action === "click" && /^(log a call|new task|new event|new activity)$/i.test((s.target?.name ?? "").trim())) { onActivity = true; return; }
+    if (s.action === "click" && isSave(s)) { onActivity = false; return; }
+    if (!onActivity || s.action !== "select" || !/^subject$/i.test((s.target?.name ?? "").replace(/^\*\s*|\s*\*$/g, "").trim())) return;
+    if (!s.value || ACTIVITY_SUGGESTIONS.test(s.value.trim())) return;
+    ir.steps[i] = { ...s, action: "fill", target: { role: "combobox", name: "Subject" } } as Step;
+    notes.push(`${s.id}: the activity's Subject "${s.value}" is typed (the box only suggests Call, Email...)`);
+  });
+  return notes;
+}
+
+/**
+ * An edit's Save (after "Edit", or an inline field's pencil "Edit Phone") confirmed by Salesforce's own
+ * '"<name>" was saved.' when the case left it out. Without it the record page never counts as reached:
+ * run 2026-11-13T14-13-29-358Z-ac7a1e04 checked Priority on the edit form's own dropdown, and the API check
+ * did not count the edit. Returns notes.
+ */
+export function editSaveConfirmed(ir: IRSteps): string[] {
+  const notes: string[] = [];
+  let editing = false;
+  // An inline pencil ("Edit Status") saves with no toast at all (run 2026-11-13T18-24-42-379Z-c78076e2 waited
+  // for "was saved" on a Work Order whose Status had saved): its field showing the new value is the proof.
+  let inline: { field: string; value?: string } | null = null;
+  for (let i = 0; i < ir.steps.length; i++) {
+    const s = ir.steps[i];
+    if (s.action === "navigate") { editing = false; inline = null; continue; }
+    if (s.action === "click" && /^edit\b/i.test((s.target?.name ?? "").trim())) {
+      editing = true;
+      const field = /^edit\s+(.+)$/i.exec((s.target?.name ?? "").trim())?.[1];
+      inline = field ? { field } : null;
+      continue;
+    }
+    if (inline && (s.action === "fill" || s.action === "select") && s.value !== undefined
+      && (s.target?.name ?? s.target?.label ?? "").trim().toLowerCase() === inline.field.toLowerCase()) inline.value = s.value;
+    if (!editing || s.action !== "click" || !isSave(s)) continue;
+    editing = false;
+    let j = i + 1;
+    while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
+    if (inline?.value !== undefined) {
+      const check = { id: `sf-inline-${s.id}`, action: "assert", target: { field: inline.field }, value: inline.value, assertion: "text_contains" } as Step;
+      if (j < ir.steps.length && ir.steps[j].action === "assert" && /\bwas saved\b/i.test(ir.steps[j].target?.text ?? "")) ir.steps[j] = check;
+      else ir.steps.splice(i + 1, 0, check);
+      notes.push(`${s.id}: an inline edit's Save shows no toast -> checks "${inline.field}" shows "${inline.value}"`);
+      inline = null;
+      continue;
+    }
+    inline = null;
+    if (j < ir.steps.length && ir.steps[j].action === "assert" && /\bwas saved\b|\bwe hit a snag\b|\breview the (following|errors)\b/i.test(ir.steps[j].target?.text ?? "")) continue;
+    ir.steps.splice(i + 1, 0, { id: `sf-saved-${s.id}`, action: "assert", target: { text: "was saved" }, assertion: "visible" } as Step);
+    notes.push(`${s.id}: the edit's Save -> checks Salesforce's "was saved" first`);
+  }
+  return notes;
+}
+
 export function strengthenSaveOutcome(ir: IRSteps): string | null {
   const steps = ir.steps;
   // "Press Enter" on a create form never saves it: Enter only picks the open picklist's option
@@ -678,6 +937,33 @@ const FORM_CONTROL = /^(textbox|combobox|spinbutton|checkbox|searchbox|listbox|r
 const isShownValue = (text: string) => shownNumber(text) !== null || /^(?:\d{1,4}([./-])\d{1,2}\1\d{1,4}\b|\{\{date:)/.test(text.trim());
 /** The field's label (or words of it) written as its value: a check that the label shows, not a value. */
 const namesLabel = (value: string, label: string) => ` ${lineKey(label)} `.includes(` ${lineKey(value)} `);
+/** The compound address field ("Billing Address") an earlier step typed this value into a part of. */
+function addressPartTyped(before: Step[], value: string): string | undefined {
+  const hit = [...before].reverse().find((s) => s.action === "fill" && lineKey(s.value ?? "") === lineKey(value) && !!lineKey(value));
+  const m = /^(Billing|Shipping|Mailing|Other)\s+(Street|City|State\/Province|State|Province|Zip\/Postal Code|Zip|Postal Code|Country)$/i
+    .exec((hit?.target?.name ?? hit?.target?.field ?? "").replace(/^\*\s*|\s*\*$/g, "").trim());
+  return m ? `${m[1][0].toUpperCase()}${m[1].slice(1).toLowerCase()} Address` : undefined;
+}
+
+/** "Stage Closed Lost" -> ["Stage", "Closed Lost"]: the longest field label the text starts with, and the rest. */
+function labelThenValue(text: string, labels: Set<string>): [string, string] | undefined {
+  // The page's own line break between them: "Lead Status\nWorking - Contacted" (run 2026-11-13T23-01-23-187Z-0b878a94).
+  const t = text.replace(/\s+/g, " ").trim();
+  const label = [...labels].filter((l) => l && t.length > l.length + 1 && t.toLowerCase().startsWith(`${l.toLowerCase()} `))
+    .sort((a, b) => b.length - a.length)[0];
+  const rest = label ? t.slice(label.length).replace(/^[\s:=-]+/, "").trim() : "";
+  return label && rest ? [label, rest] : undefined;
+}
+
+/** The field an earlier step typed this value into (its label as the org names it), or undefined. */
+function typedInto(before: Step[], labels: Set<string>, value: string): string | undefined {
+  const n = shownNumber(value);
+  const hit = [...before].reverse().find((s) => s.action === "fill" && typeof s.value === "string"
+    && (s.value.trim() === value.trim() || (n !== null && shownNumber(s.value) === n)));
+  const label = (hit?.target?.name ?? hit?.target?.field ?? "").replace(/^\*\s*|\s*\*$/g, "").trim();
+  return label && labels.has(label) ? label : undefined;
+}
+
 /** The one field label the request gives this value ("Expected Revenue is $100.00"), or undefined. */
 function valueNamedField(request: string, labels: Iterable<string>, value: string): string | undefined {
   const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -817,7 +1103,15 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
     // A "contains" check on that text reads the same (run 2026-11-10T15-46-12-893Z-4e645505: "TB Onboarding" text_contains).
     // customLinkSteps' own check of the link's text is on Details by design (run
     // 2026-11-13T07-54-34-011Z-9a55e65c was sent to Related, where there is none).
-    if (onDetails && !s.id.startsWith("sf-cl-") && (s.assertion === "visible" || valueCheck) && text && !s.target?.role && !s.target?.field
+    // A field's label and its value as one text ("Customer Priority Medium") is that field's check, on
+    // Details: run 2026-11-13T13-50-37-642Z-f2f97e6d sent it to the Related tab first.
+    const labelValue = !!text && !s.target?.role && !!labelThenValue(text, fieldLabels) && (() => {
+      const [label, v] = labelThenValue(text, fieldLabels)!;
+      return fields.some((f) => f.label === label && f.picklist?.some((p) => lineKey(p) === lineKey(v)))
+        || steps.slice(0, i).some((x) => (x.action === "fill" || x.action === "select") && lineKey(x.value ?? "") === lineKey(v))
+        || isShownValue(v);
+    })();
+    if (onDetails && !labelValue && !s.id.startsWith("sf-cl-") && (s.assertion === "visible" || valueCheck) && text && !s.target?.role && !s.target?.field
       && !fieldLabels.has(text) && !fields.some((f) => f.picklist?.includes(text)) && !isShownValue(text)
       && !/\bwas (created|saved|deleted)\b/.test(text)
       // A value the case typed or picked (a lookup's record name) is that field's value, on Details (run
@@ -856,13 +1150,31 @@ export function fieldChecksOnRecordView(ir: IRSteps, model: {
       notes.push(`"${text}" checked right after the "${after}" label -> checks the "${after}" field shows it`);
       continue;
     } else if (!s.target?.role && text && isShownValue(valueCheck ? s.value! : text)
-      && valueNamedField(`${request}\n${caseText}`, fieldLabels, valueCheck ? s.value! : text)) {
+      && (valueNamedField(`${request}\n${caseText}`, fieldLabels, valueCheck ? s.value! : text) ?? typedInto(steps.slice(0, i), fieldLabels, valueCheck ? s.value! : text))) {
       // A bare number the request gives a field ("verify Expected Revenue is $100.00"): getByText("$100.00")
-      // could be any field's (run 2026-11-13T07-31-06-677Z-c4484063), so it is read inside that field.
+      // could be any field's (run 2026-11-13T07-31-06-677Z-c4484063), so it is read inside that field. So is a
+      // number the case typed into a field: the page shows "$1,234.56" for a typed "1234.56" (run
+      // 2026-11-13T12-02-09-298Z-fc1e4b67), and the field check compares numbers by value.
       const v = valueCheck ? s.value! : text;
-      const label = valueNamedField(`${request}\n${caseText}`, fieldLabels, v)!;
+      const label = (valueNamedField(`${request}\n${caseText}`, fieldLabels, v) ?? typedInto(steps.slice(0, i), fieldLabels, v))!;
       steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
       notes.push(`the request says "${label}" is "${v}" -> checks that field shows it`);
+    } else if (!s.target?.role && text && addressPartTyped(steps.slice(0, i), valueCheck ? s.value! : text)) {
+      // A value typed into a part of an address (Billing Country "Canada"): the record page shows the address
+      // as ONE field, "Billing Address" = "Toronto, Ontario M5V 2T6 Canada", never a "Billing Country" field
+      // (run 2026-11-13T12-58-06-198Z-0bdc663a). The value is read inside that address.
+      const v = valueCheck ? s.value! : text;
+      const label = addressPartTyped(steps.slice(0, i), v)!;
+      steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
+      notes.push(`"${v}" was typed into an address part -> checks the "${label}" field shows it`);
+    } else if (labelValue) {
+      // Only a real value of that field (labelValue): an option it offers, a value the case typed, a number
+      // or a date. "Description Information" is a section heading, not Description's value.
+      // A field's label and its value as one text ("Stage Closed Lost", run 2026-11-13T12-23-59-973Z-80c3f152):
+      // the page never shows them as one string. The value is that field's, read inside it.
+      const [label, v] = labelThenValue(text, fieldLabels)!;
+      steps[i] = { ...s, target: { field: label }, assertion: "text_contains", value: v };
+      notes.push(`"${text}" is the "${label}" field and its value -> checks that field shows "${v}"`);
     } else if (s.target?.field && !text) {
       // Already a field check (added by requestedFieldChecks): it still reads on the Details tab.
     } else if (!s.target?.role && text && pickedValueField(text, valueCheck ? s.value! : text, fieldsOf(onObject), `${request}
@@ -1077,6 +1389,10 @@ export function pathStageClicks(ir: IRSteps, org: Pick<SalesforceOrgModel, "obje
     let j = i + 1;
     while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
     if (/^mark as current stage$/i.test(ir.steps[j]?.target?.name ?? "")) continue;
+    // A related list's "New" button shares its name with the stage "New" (Work Order, Work Plan Status):
+    // a click a form fill follows opened a form, it chose no stage (runs 2026-11-15T11-39-38-168Z-349b393d
+    // and 2026-11-15T11-58-18-436Z-5f4f7c56 were cut short looking for "Mark as Current Stage").
+    if (ir.steps[j]?.action === "fill" || ir.steps[j]?.action === "select") continue;
     ir.steps.splice(j, 0, { id: `sf-path-mark-${s.id}`, action: "click", target: { role: "button", name: "Mark as Current Stage" } } as Step,
       { id: `sf-path-mark-${s.id}-wait`, action: "wait", value: "1500" } as Step);
     notes.push(`${s.id}: "${s.target?.name}" on the path only selects it -> clicks "Mark as Current Stage"`);
@@ -1168,9 +1484,12 @@ export function seededLookups(ir: IRSteps, org: Pick<SalesforceOrgModel, "object
   for (const seed of org.seeded) {
     if (!ir.steps.some((s) => s.action === "select" && s.value === seed.name)) continue;
     if (ir.steps.some((s) => s.action === "assert" && lineKey(s.target?.text ?? s.value ?? "") === lineKey(seed.name))) continue;
-    let at = -1;
-    for (let i = ir.steps.length - 1; i >= 0 && at < 0; i--) if (ir.steps[i].action === "click" && isSave(ir.steps[i])) at = i + 1;
-    if (at < 0) continue;
+    // After the Save of the form that picked it, not the test's last Save: run 2026-11-15T12-25-16-325Z-2816d0d4
+    // then added a Maintenance Asset from the plan's Related tab, where the plan's Account is not shown.
+    const picked = ir.steps.map((s) => s.action === "select" && s.value === seed.name).lastIndexOf(true);
+    const save = ir.steps.findIndex((s, i) => i > picked && s.action === "click" && isSave(s));
+    if (save < 0) continue;
+    let at = save + 1;
     while (at < ir.steps.length && (ir.steps[at].action === "wait" || (ir.steps[at].action === "assert" && /\bwas created\b/.test(ir.steps[at].target?.text ?? "")))) at++;
     ir.steps.splice(at, 0, { id: `sf-seed-link`, action: "assert", target: { text: seed.name }, assertion: "visible" } as Step);
     notes.push(`the new record links the seeded ${seed.label} -> checks "${seed.name}" shows on it`);
@@ -1256,7 +1575,9 @@ export function leadConvertSteps(ir: IRSteps): string[] {
     if (s.action !== "assert") continue;
     // "was created" after the dialog is the Lead's own earlier toast (run 2026-11-12T09-57-37-571Z-94237239
     // "passed" on it with nothing converted); "Converted" is also a path stage.
-    if (/\bwas created\b/i.test(s.target?.text ?? "")) { ir.steps.splice(i--, 1); notes.push(`${s.id}: "was created" after Convert is the Lead's earlier toast -> dropped`); continue; }
+    // "was saved" is no conversion's message either (run 2026-11-13T14-47-12-463Z-4594d2b5 converted the Lead
+    // and then failed waiting for it).
+    if (/\bwas (created|saved)\b/i.test(s.target?.text ?? "")) { ir.steps.splice(i--, 1); notes.push(`${s.id}: "${(s.target?.text ?? "").trim()}" after Convert is no conversion message -> dropped`); continue; }
     const text = (s.target?.text ?? "").trim();
     if (!/\bconvert/i.test(text) || /your lead has been converted/i.test(text)) continue;
     // Any other wording of it ("Converted" is also a path stage; "was converted" is never shown: run
@@ -1304,7 +1625,15 @@ export function calculatedFieldReads(ir: IRSteps, org: Pick<SalesforceOrgModel, 
  * tab, a check of an address) are replaced. A custom button is checked the same way, from the record header.
  */
 export function customLinkSteps(ir: IRSteps, org: Pick<SalesforceOrgModel, "objects" | "customLinks"> | undefined, request: string): string[] {
-  const named = (org?.customLinks ?? []).filter((l) => ` ${lineKey(request)} `.includes(` ${lineKey(l.label)} `));
+  // Named AS a link or button ("its Delivery Status link", "the TB Search Deal button", or in quotes): the
+  // org's "Billing" link is no reason to click anything for "a billing address in Toronto" (run
+  // 2026-11-13T12-26-08-557Z-f7e2c00c clicked it and failed).
+  const req = ` ${lineKey(request)} `;
+  const named = (org?.customLinks ?? []).filter((l) => {
+    const k = lineKey(l.label);
+    return new RegExp(` ${k} (custom )?(link|button|url)s? | (link|button) (called |named )?${k} `).test(req)
+      || new RegExp(`["“']${l.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["”']`, "i").test(request);
+  });
   // "TB Delivery Status" names that link, not also the "Delivery Status" inside its words.
   const asked = named.filter((l) => !named.some((m) => m !== l && m.object === l.object && lineKey(m.label).length > lineKey(l.label).length
     && ` ${lineKey(m.label)} `.includes(` ${lineKey(l.label)} `)));

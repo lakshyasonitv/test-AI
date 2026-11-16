@@ -7,13 +7,15 @@ import type { TestCase } from "./testCases.js";
 import { AppModel, PageModel, DomForm, Element, type AuthOutcome, toLiteModel, toMicroModel, hiddenInputNames, isUsableElement } from "../schema/appModel.js";
 import { cutAtBoundary, siteHost, pageKey, lineKey } from "../text.js";
 import { extendAppModel, refreshPageModel, captureScreenAt, groundTerminalTextAssertion, isPureTextAssertion, finalScreenErrors } from "./liveExtend.js";
+import { peekReplayCodes, restoreReplayCodes } from "./replayCodes.js";
+import { currentRunId } from "../runContext.js";
 import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens.js";
 import { networkSettleEnabled } from "./networkSettle.js";
 import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, edgeForCapture, routeToControl, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
 import { currentRunTargetApp } from "../runTarget.js";
 import { requestValues, stepsMissingValues } from "./requestValues.js";
 import { hollowPassGuardsEnabled, isPositiveCase, describeMarkers } from "./hollowPassGuards.js";
-import { applyTestData, testDataEnabled } from "./testData.js";
+import { applyTestData, dateTimeFills, datedFieldChecks, testDataEnabled } from "./testData.js";
 import {
   applyCredentials, credentialPolicyFor, promptCarriesCredentials,
   credentialFieldMap, credentialKindForTarget, credentialFieldsNeeded, envValueRef,
@@ -22,7 +24,7 @@ import {
 import { fixedLoginRun, sameSalesforceApp } from "./salesforceOrgLogin.js";
 import { llmCacheGet, llmCacheSet, makeCacheKey, isCacheableResult, llmCacheVersion } from "../kb/llmCache.js";
 import {
-  salesforceGuidance, strengthenSaveOutcome, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
+  salesforceGuidance, strengthenSaveOutcome, editSaveConfirmed, activitySubjectTyped, globalSearchSubmit, deletedNameNotChecked, autoNumberLinkNotChecked, madeRecordLookups, valueClickedAsButton, polymorphicLookupObject, assertRecordTypeForms, deleteOutsideOwnRecord, fieldChecksOnRecordView,
   returnToCreatedRecords, checksOnCreatedRecord, requestedFieldChecks, deleteNamedRecord, flowEffectChecks, recordTabClicks, inventedRecordLinks, requestedTextChecks, noTokensInRuleFields, pathStageClicks, seededLookups, placeholderMessages, eventRecordSearch, leadConvertSteps, calculatedFieldReads, approvalSteps, customLinkSteps, valuesFromRequest,
 } from "./salesforceGuidance.js";
 import { FRONTDOOR_REF, SECOND_USER_REF, currentFrontdoor, isFrontdoorRef, isSecondUserRef, recordRefObject } from "./salesforceFrontdoor.js";
@@ -1243,6 +1245,13 @@ export function groundingError(
     // unverified enters the case through this door. The fresh-run compile path passes no scope
     // and still checks every step.
     if (onlySet && !onlySet.has(index)) continue;
+    // Opening a just-made record from search results (salesforceGuidance globalSearchSubmit): whether the
+    // result is there yet depends on Salesforce's indexing, so no screen can be captured for it in advance.
+    // The spec searches again until it shows (generator.ts).
+    if (step.id.startsWith("sf-search-open-")) continue;
+    // A date-time field (testData.dateTimeFills): its boxes are all named "Date" and "Time", so none names the
+    // field; the spec and the replay find them by the field's label (generator.ts sfDateTime).
+    if (step.id.startsWith("sf-dt-")) continue;
     // A later round of a multi-step approval (salesforceGuidance approvalSteps: "sf-ap-decide-2") repeats
     // round 1's step on the same record, and round 1 was grounded. Its live capture cannot reproduce
     // the second step's pending request (run 2026-11-13T09-03-00-638Z-80eeb68e dropped the whole approval
@@ -1524,8 +1533,13 @@ export function groundingError(
     // meant is a guess, so the step is rejected naming them (TD-126).
     if (!matched && screenPage && step.action === "select" && step.value) {
       const want = norm(step.value);
+      // An open dialog is the screen: the page behind it is not pressable. "Case Origin: Email" became a
+      // click on the record page's "Email" activity button behind Contact's New Case quick action, which
+      // has no Case Origin (run 2026-11-13T21-38-27).
+      const inDialog = (e: typeof elements[number]) => e.containerRole === "dialog";
+      const modal = elements.some((e) => inDialog(e) && e.visible !== false);
       const pressable = elements.filter((e) => (norm(e.role) === "button" || norm(e.role) === "radio")
-        && e.visible !== false && e.enabled !== false && norm(e.name));
+        && e.visible !== false && e.enabled !== false && norm(e.name) && (!modal || inDialog(e)));
       const exact = pressable.filter((e) => norm(e.name) === want);
       const options = exact.length ? exact
         : pressable.filter((e) => hasWholeWords(norm(e.name), want) || hasWholeWords(want, norm(e.name)));
@@ -2009,8 +2023,10 @@ export function missingActions(ir: IR, testCase: TestCase): { message: string } 
   // whose IR carried out login, then stopped — 2 fills and a click can't cover 5 named steps.
   // Same quote-stripping as above, and for the same reason: a step whose quoted VALUE contains
   // "click" is not a step that clicks.
+  // "Type" after a capitalised word is a name, not the verb: "the created Work Type record" counted as a
+  // typing action (run 2026-11-13T18-24-32-852Z-709dbe87, 6 "actions" for 4), so do "Record Type", "Duration Type".
   const caseActionLines = steps
-    .map(unquoted)
+    .map((s) => unquoted(s).replace(/\b([A-Z][a-z]+) Types?\b/g, "$1"))
     .filter(s => CASE_ACTION_LINE.test(s) || CHECK_ACTION_LINE.test(s)).length;
   const irActionSteps = ir.steps.filter(s => IR_ACTION_KINDS.has(s.action)).length;
   if (caseActionLines >= 2 && irActionSteps < caseActionLines - 1) {
@@ -2656,6 +2672,11 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // just relocate the "system overrides what I asked for" bug to a different field.
   const finalize = (ir: IR): IR => {
     ir.meta.baseUrl = origin;
+    // A step grounding pinned to a record a REPLAY made ("Quasar Robotics za3lt6"): the run makes its own
+    // record with its own code, and cleanup deletes the replay's, so that name can never be there (run
+    // 2026-11-13T16-58-36-613Z-a34e9804 clicked it and failed). The code goes back to {{uid}}, and a
+    // position-only selector found on the replay's page goes with it.
+    for (const note of restoreReplayCodes(ir.steps, peekReplayCodes(currentRunId() ?? ""))) console.log(`[ir] ${note}`);
     ir.meta.hasTerminalAssertion = hasTerminalAssertion(ir.steps);
     // TD-156 follow-up: a "none"-policy case (most negative cases) has no `creds`, so the literal ->
     // ${env:} pre-pass inside applyCredentials never ran, and a password the model read off a login
@@ -2793,6 +2814,8 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
    * (measured across every run in `runs/`), each further attempt buys nothing.
    */
   const seenRejections = new Set<string>();
+  // Fields a form was shown, twice, not to have, which the request never names: left out of later attempts.
+  const leaveOut = new Set<string>();
   const rejectionKey = (u: NonNullable<ReturnType<typeof groundingError>>, ir: IR): string => {
     const t = ir.steps[u.index]?.target ?? {};
     return JSON.stringify({
@@ -2926,6 +2949,12 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     parsed.data.meta.baseUrl = origin;
     // D-65: only this function decides whether the spec runs the fixed Salesforce login.
     delete parsed.data.meta.fixedLogin;
+    // A field the form does not have and the request does not name (see where leaveOut is filled).
+    if (leaveOut.size) parsed.data.steps = parsed.data.steps.filter((st) => {
+      const out = (st.action === "fill" || st.action === "select") && leaveOut.has(lineKey(st.target?.name ?? ""));
+      if (out) console.log(`[ir] step ${st.id}: left out "${st.target?.name}": the form has no such field`);
+      return !out;
+    });
 
     // Before grounding: the grounding replays type these values too (Session 102). The model's own
     // steps are kept aside first: the fill policy removes optional fields ON PURPOSE, and coverage
@@ -2937,8 +2966,18 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     }
     // Also before grounding, so the added outcome is the terminal assertion the live replay checks.
     if (sfOutcome) {
+      // The model reads names off screens a replay captured, and copies a replay record's code into a step
+      // ("Quasar Robotics za3lt6"): back to {{uid}} before the passes below read the steps.
+      for (const r of restoreReplayCodes(parsed.data.steps, peekReplayCodes(currentRunId() ?? ""))) console.log(`[ir] ${r}`);
+      for (const r of dateTimeFills(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       const note = strengthenSaveOutcome(parsed.data);
       if (note) console.log(`[ir] ${note}`);
+      for (const r of editSaveConfirmed(parsed.data)) console.log(`[ir] ${r}`);
+      for (const r of activitySubjectTyped(parsed.data)) console.log(`[ir] ${r}`);
+      for (const r of globalSearchSubmit(parsed.data)) console.log(`[ir] ${r}`);
+      for (const r of deletedNameNotChecked(parsed.data)) console.log(`[ir] ${r}`);
+      for (const r of madeRecordLookups(parsed.data)) console.log(`[ir] ${r}`);
+      for (const r of valueClickedAsButton(parsed.data, (testCase.steps ?? []).join("\n"))) console.log(`[ir] ${r}`);
       for (const rt of assertRecordTypeForms(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${rt}`);
       // Before the field checks: a record opened again is a record page too.
       for (const r of returnToCreatedRecords(parsed.data, sourcePrompt)) console.log(`[ir] ${r}`);
@@ -2946,6 +2985,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       for (const r of deleteNamedRecord(parsed.data, currentModel.salesforceOrg, `${sourcePrompt}\n${testCase.title}\n${(testCase.steps ?? []).join("\n")}`)) console.log(`[ir] ${r}`);
       for (const r of pathStageClicks(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
       for (const r of seededLookups(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${r}`);
+      for (const r of polymorphicLookupObject(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${r}`);
       for (const r of leadConvertSteps(parsed.data)) console.log(`[ir] ${r}`);
       for (const r of approvalSteps(parsed.data, currentModel.salesforceOrg, sourcePrompt, currentFrontdoor()?.second ? SECOND_USER_REF : undefined)) console.log(`[ir] ${r}`);
       for (const r of customLinkSteps(parsed.data, currentModel.salesforceOrg, sourcePrompt)) console.log(`[ir] ${r}`);
@@ -2960,6 +3000,8 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       for (const f of eventRecordSearch(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
       for (const f of noTokensInRuleFields(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
       for (const f of fieldChecksOnRecordView(parsed.data, currentModel, sourcePrompt, `${testCase.title}\n${testCase.expected ?? ""}`)) console.log(`[ir] ${f}`);
+      for (const f of datedFieldChecks(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
+      for (const f of autoNumberLinkNotChecked(parsed.data, currentModel.salesforceOrg)) console.log(`[ir] ${f}`);
       for (const f of recordTabClicks(parsed.data)) console.log(`[ir] ${f}`);
       for (const f of inventedRecordLinks(parsed.data)) console.log(`[ir] ${f}`);
     }
@@ -3486,6 +3528,18 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       }
       rejectedReach.set(key, reach(prefix));
       for (const s of prefix) if (s.target) groundedTargets.add(targetKey(s.target));
+      // Rejected twice, absent from the form, and a field the request never names: the form does not have
+      // it (Contact's "New Case" quick action has no Case Origin; run 2026-11-13T22-20-23-861Z-c00631c3 was
+      // cut short there). The next attempt leaves it out and the form's default stands.
+      const miss = parsed.data.steps[ungrounded.index];
+      const field = miss?.target?.name ?? "";
+      if (repeated && currentRunTargetApp() === "salesforce" && (miss?.action === "fill" || miss?.action === "select")
+        && /\bnot present\b/.test(ungrounded.message) && field && !leaveOut.has(lineKey(field))
+        && !` ${lineKey(sourcePrompt)} `.includes(` ${lineKey(field)} `)) {
+        leaveOut.add(lineKey(field));
+        repeated = false;
+        console.log(`[ir] "${field}" is not on the form and the request does not name it -> the next attempt leaves it out`);
+      }
     }
 
     if (prefix.length && attempt < attemptCap - 1 && !repeated) {
