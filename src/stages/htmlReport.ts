@@ -346,7 +346,7 @@ const STYLE = `
   @page { size: A4; margin: 14mm 12mm; }
   @media print { body { background: #fff; } .page { padding: 0; max-width: none; }
     .card { break-inside: avoid-page; } .appendix { break-before: page; } figure { break-inside: avoid; }
-    h2.part { break-after: avoid-page; } }
+    h2.part { break-after: avoid-page; } .keep { break-inside: avoid-page; } }
 `;
 
 function caseDetail(c: ReportCase, f: ReturnType<typeof caseFacts>, budget: { left: number }): string {
@@ -392,8 +392,9 @@ function caseDetail(c: ReportCase, f: ReturnType<typeof caseFacts>, budget: { le
   if (lastRun && want.length < MAX_KEY_SHOTS + 1) add(shotOf(lastRun.i), `Step ${lastRun.i + 1}, the last step run`);
   want.sort((a, b) => a.i - b.i);
   const shots = want.map((w) => ({ ...w, src: inlineImage(c.artifactsDir, `step-${w.i + 1}.png`, budget) })).filter((w) => w.src);
-  const shotsHtml = shots.length ? `<p class="label">Key screenshots</p><div class="shots">${shots.map((s) =>
-    `<figure><img src="${s.src}" alt="${esc(s.caption)}" /><figcaption>${esc(s.caption)}</figcaption></figure>`).join("")}</div>` : "";
+  // Label and pictures kept together: a PDF page break between them left the label alone at a page foot.
+  const shotsHtml = shots.length ? `<div class="keep"><p class="label">Key screenshots</p><div class="shots">${shots.map((s) =>
+    `<figure><img src="${s.src}" alt="${esc(s.caption)}" /><figcaption>${esc(s.caption)}</figcaption></figure>`).join("")}</div></div>` : "";
 
   return `
   <section class="card" id="${esc(c.caseId)}">
@@ -478,12 +479,12 @@ export function buildRunReportHtml(input: RunReportInput, opts: { everyStepScree
   ${total ? `<h2 class="part">Test details</h2>${input.cases.map((c, i) => caseDetail(c, facts[i], budget)).join("")}` : ""}
   <div class="appendix">
   <h2 class="part">Technical appendix</h2>
-  ${input.cases.map((c, i) => caseAppendix(c, facts[i], budget, !!opts.everyStepScreenshot)).join("")}
   <section class="card"><dl class="facts">
     <dt>Run</dt><dd>${esc(input.runId)}</dd>
     ${input.cleanup ? `<dt>Test records</dt><dd>${deleted} deleted from the org after the run${notDeleted ? `, ${notDeleted} could not be deleted` : ""}</dd>` : ""}
     ${input.llmCalls ? `<dt>AI use</dt><dd>${input.llmCalls} calls${input.llmTokens ? `, ${Math.round(input.llmTokens / 1000)}k tokens` : ""}</dd>` : ""}
   </dl></section>
+  ${input.cases.map((c, i) => caseAppendix(c, facts[i], budget, !!opts.everyStepScreenshot)).join("")}
   </div>
   <footer>Built from this run's own records, without AI. Screenshots are embedded, so this file can be sent as it is.</footer>
 </div></body></html>`;
