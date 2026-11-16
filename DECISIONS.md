@@ -2512,3 +2512,31 @@ No server change, no route change (rule 1). Styled through `data-step*` attribut
 only once Playwright has written its report, so the list appears when the case finishes, not during it. Matching
 report steps to IR steps by title: the titles are generator wording ("Fill 'Company' with 'BigCo'") and some repeat
 ("Wait 500ms"); position is the contract the executor already depends on.
+
+## D-82. Search inside a project: suites, the cases in them, and its runs
+
+**Context.** With more suites per project, the user asked for a search bar inside a project ("inside the folder")
+to find suites, and what is in them.
+
+**Decision.** The project page (`#/projects/<id>`, the new layout only, like D-80) gets one search box above its
+cards. It narrows the page to the rows holding every word typed, in any order and case:
+
+- **Suites:** by name, and by what is in them. A suite whose own name does not match still shows when one of its
+  cases does, with those cases listed under it, each with Open. A suite's case titles come from
+  `GET /api/suites/:id/cases`, the existing route the suite page reads, fetched once per suite on the first search
+  and kept for that visit (a new visit to the Projects screen reads them again).
+- **Not in a suite:** by case title and feature.
+- **Recent runs:** by prompt.
+
+The Projects list (`#/projects`) gets the same box when it holds more than one project: a project card is found by its name, its address, or the name of a suite in it, and the query is kept apart from a project page's. A card whose every row is filtered out says so; a line beside the box counts the matching suites, cases and runs
+("Searching inside the suites…" while those titles load). Esc clears it. The query survives a redraw on the same
+project (a rename, a new suite), so the list does not jump back to everything.
+
+No route or server change (rule 1). Rows are narrowed with the HTML `hidden` attribute, not the `.hidden` class,
+and nothing switches a view (rules 3 and 4); theme.css restates `[hidden]` for those rows because `.hrow` sets
+its own display. The input reuses `.project-form-input`. Pinned by `tests/projectSearch.test.ts`.
+
+**Rejected.** A server-side search route: the cases of a project's suites are a handful of calls the page can
+make with routes that already exist, and a new route would be new backend on a branch whose backend is kept
+identical to main. Searching the case's steps: the case list carries titles and features, not steps; reading
+every case's steps would be one call per case.

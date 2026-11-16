@@ -8221,6 +8221,8 @@ async function renderProjectsView(projectId) {
   if (!body) return;
   const gen = ++pvGen;
   pvForm = null;
+  pvSuiteCases = new Map();   // D-82: a fresh visit reads each suite's cases again
+  if (pvSearch.projectId !== projectId) pvSearch = { projectId: null, q: "" };
   body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">Loading…</div>`;
   await loadProjects();
   // Navigated away (or to another project) while that was in flight: the newer render owns it.
@@ -8280,8 +8282,10 @@ function drawProjectList(body) {
       projectsUnavailable ? "" : pvPlural(suiteCount(p.id), "suite"),
       pvPlural(runs, projectsUnavailable ? "recent run" : "run"),
     ].filter(Boolean);
+    // D-82: a project is found by its name, its address, or the name of a suite in it.
+    const searchText = [p.name, p.baseUrl, ...suitesCache.filter((s) => s.projectId === p.id).map((s) => s.name)].filter(Boolean).join(" ");
     return `
-      <a data-dash="pcard" href="#/projects/${encodeURIComponent(p.id)}" title="${escapeHtml(p.name)}">
+      <a data-dash="pcard" data-pv-row="project" data-pv-text="${escapeHtml(searchText)}" href="#/projects/${encodeURIComponent(p.id)}" title="${escapeHtml(p.name)}">
         <h2>${escapeHtml(shortProjectName(p.name))}</h2>
         <div data-dash="mono">${escapeHtml(displayUrl(p.baseUrl || p.name) || "No base URL")}</div>
         <div data-dash="chips">${chips.map((c) => `<span class="case-badge badge-pending">${escapeHtml(c)}</span>`).join("")}</div>
@@ -8303,10 +8307,46 @@ function drawProjectList(body) {
     </div>
     ${projectsUnavailable ? `<div class="hrow-meta">This server has no database, so there are no saved projects. These are your recent runs grouped by address.</div>` : ""}
     ${pvForm && pvForm.mode === "project-new" ? pvProjectFormHtml() : ""}
+    ${projects.length > 1 ? `
+    <div data-dash="search">
+      <span data-dash="ico">${icon("search", { size: 15 })}</span>
+      <input type="search" class="project-form-input" data-pv-search autocomplete="off"
+             placeholder="Search projects by name, address or suite" aria-label="Search projects"
+             value="${escapeHtml(pvSearch.projectId === "" ? pvSearch.q : "")}" />
+      <span class="hrow-meta" data-pv-search-count aria-live="polite"></span>
+    </div>` : ""}
     ${projects.length
-      ? `<div data-dash="pgrid">${projects.map(card).join("")}</div>`
+      ? `<div data-dash="pgrid">${projects.map(card).join("")}</div>
+         <div data-pv-none hidden><div data-dash="card"><div class="tree-empty" style="padding:28px 16px;text-align:center">No project matches.</div></div></div>`
       : `<div data-dash="card"><div class="tree-empty" style="padding:28px 16px;text-align:center">${escapeHtml(emptyMsg)}</div></div>`}`;
   bindProjectsView(body, null);
+  bindProjectListSearch(body);
+}
+
+/** D-82: the Projects list's search box. Same matcher as a project's own search; the list page is
+ *  pvSearch.projectId "" so a query typed here never shows up inside a project, or the other way. */
+function bindProjectListSearch(body) {
+  const input = body.querySelector("[data-pv-search]");
+  if (!input) return;
+  const apply = () => {
+    const q = input.value.trim();
+    const match = pvMatcher(q);
+    let n = 0;
+    for (const card of body.querySelectorAll('[data-pv-row="project"]')) {
+      const show = !q || match(card.dataset.pvText);
+      card.hidden = !show;
+      if (show) n++;
+    }
+    const none = body.querySelector("[data-pv-none]");
+    if (none) none.hidden = !q || n > 0;
+    const countEl = body.querySelector("[data-pv-search-count]");
+    if (countEl) countEl.textContent = !q ? "" : n ? pvPlural(n, "project") : "Nothing matches";
+  };
+  input.addEventListener("input", () => { pvSearch = { projectId: "", q: input.value }; apply(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && input.value) { e.preventDefault(); input.value = ""; pvSearch = { projectId: "", q: "" }; apply(); }
+  });
+  if (input.value.trim()) apply();
 }
 
 function drawOneProject(body, projectId) {
@@ -8338,7 +8378,7 @@ function drawOneProject(body, projectId) {
            <button type="button" class="dl-btn-inline" data-pv-act="cancel">Cancel</button>
          </div>
        </div>${pvErr()}`
-    : `<div class="hrow">
+    : `<div class="hrow" data-pv-row="suite" data-id="${escapeHtml(s.id)}" data-pv-text="${escapeHtml(s.name || "")}">
          <div class="hrow-main">
            <div class="hrow-label">${escapeHtml(s.name || "(unnamed suite)")}</div>
            <div class="hrow-meta">${escapeHtml(pvPlural(Number(s.caseCount) || 0, "case"))}</div>
@@ -8348,7 +8388,7 @@ function drawOneProject(body, projectId) {
            ${canAuthor ? `<button type="button" class="dl-btn-inline" data-pv-act="suite-rename" data-id="${escapeHtml(s.id)}">Rename</button>` : ""}
            ${canDelete ? `<button type="button" class="dl-btn-inline hrow-del" data-pv-act="suite-delete" data-id="${escapeHtml(s.id)}">Delete</button>` : ""}
          </div>
-       </div>`);
+       </div><div data-pv-hits="${escapeHtml(s.id)}" hidden></div>`);
   const newSuiteRow = pvForm?.mode === "suite-new"
     ? `<div class="hrow">
          <input type="text" class="suite-new-input" data-pv="name" value="${escapeHtml(pvForm.name)}"
@@ -8365,18 +8405,20 @@ function drawOneProject(body, projectId) {
         ${canAuthor ? `<button type="button" class="dl-btn-inline" data-pv-act="suite-new">+ New suite</button>` : ""}</div>
       ${newSuiteRow}
       ${suites.length ? suites.map(suiteRow).join("") : (newSuiteRow ? "" : empty("No suites in this project yet."))}
+      ${suites.length ? `<div data-pv-none hidden>${empty("No suite or case in a suite matches.")}</div>` : ""}
     </div>`;
   const unfiledCard = projectsUnavailable ? "" : `
     <div data-dash="card">
       <div data-dash="card-head"><span data-dash="ico">${icon("list", { size: 15 })}</span><h2>Not in a suite</h2></div>
       ${unfiled.length ? unfiled.map((c) => `
-        <div class="hrow">
+        <div class="hrow" data-pv-row="case" data-pv-text="${escapeHtml(`${c.title || ""} ${c.feature || ""}`)}">
           <div class="hrow-main">
             <div class="hrow-label">${escapeHtml(c.title)}</div>
             <div class="hrow-meta">${escapeHtml(`${c.feature ? `${c.feature} · ` : ""}v${c.currentVersion}`)}</div>
           </div>
           <div class="hrow-actions"><a class="dl-btn-inline" href="${caseHash(p.id, c.id)}">Open</a></div>
         </div>`).join("") : empty("Every saved case here is in a suite.")}
+      ${unfiled.length ? `<div data-pv-none hidden>${empty("No case here matches.")}</div>` : ""}
     </div>`;
   const runsCard = `
     <div data-dash="card">
@@ -8384,12 +8426,13 @@ function drawOneProject(body, projectId) {
         <a class="dl-btn-inline" href="#/history">See all</a></div>
       <div class="hrow-meta" style="margin:-6px 0 6px">From your ${(allRunsCache || []).length} most recent runs, the same list as History.</div>
       ${runs.length ? runs.slice(0, 8).map((r) => `
-        <div class="hrow">
+        <div class="hrow" data-pv-row="run" data-pv-text="${escapeHtml(r.prompt || "")}">
           <span class="case-badge badge-${escapeHtml(statusKey(r.status))}">${escapeHtml(statusText(r.status))}</span>
           <div class="hrow-main"><div class="hrow-label">${escapeHtml(r.prompt || "(no prompt)")}</div>
             <div class="hrow-meta">${escapeHtml(r.startedAt ? new Date(r.startedAt).toLocaleString() : "")}</div></div>
           <div class="hrow-actions">${r.artifactsAvailable === false ? "" : `<a class="dl-btn-inline" href="#/run/${encodeURIComponent(r.runId)}">View</a>`}</div>
         </div>`).join("") : empty("No recent runs at this address.")}
+      ${runs.length ? `<div data-pv-none hidden>${empty("No recent run here matches.")}</div>` : ""}
     </div>`;
 
   const summary = projectsUnavailable
@@ -8411,9 +8454,116 @@ function drawOneProject(body, projectId) {
       </div>
     </div>
     ${pvForm?.mode === "project-edit" ? pvProjectFormHtml() : ""}
+    <div data-dash="search">
+      <span data-dash="ico">${icon("search", { size: 15 })}</span>
+      <input type="search" class="project-form-input" data-pv-search autocomplete="off"
+             placeholder="${projectsUnavailable ? "Search recent runs in this project" : "Search suites, cases and runs in this project"}"
+             aria-label="Search this project" value="${escapeHtml(pvSearch.projectId === p.id ? pvSearch.q : "")}" />
+      <span class="hrow-meta" data-pv-search-count aria-live="polite"></span>
+    </div>
     <div data-dash="row">${suitesCard}${unfiledCard}</div>
     ${runsCard}`;
   bindProjectsView(body, p);
+  bindProjectSearch(body, p, suites);
+}
+
+/**
+ * The project page's search box (D-82): narrows the page to the suites, cases and recent runs
+ * whose names hold every word typed, and looks INSIDE each suite: a suite whose own name does not
+ * match still shows when one of its cases does, with those cases listed under it. A suite's case
+ * titles come from GET /api/suites/:id/cases (the existing route the suite page reads), fetched
+ * once per suite on the first search and kept for this visit. Rows are narrowed with the HTML
+ * `hidden` attribute (a row, not a view: rule 4 is about showView), and the query survives a
+ * redraw (a rename, a new suite), so the list does not jump back to everything.
+ */
+let pvSearch = { projectId: null, q: "" };
+/** suiteId -> its cases (array), or a pending promise. Cleared when the Projects screen re-renders. */
+let pvSuiteCases = new Map();
+
+function pvMatcher(q) {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  return (text) => {
+    const t = String(text || "").toLowerCase();
+    return words.every((w) => t.includes(w));
+  };
+}
+
+function bindProjectSearch(body, p, suites) {
+  const input = body.querySelector("[data-pv-search]");
+  if (!input) return;
+  const apply = () => applyProjectSearch(body, p, suites, input.value);
+  input.addEventListener("input", () => {
+    pvSearch = { projectId: p.id, q: input.value };
+    apply();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && input.value) { e.preventDefault(); input.value = ""; pvSearch = { projectId: p.id, q: "" }; apply(); }
+  });
+  if (input.value.trim()) apply();
+}
+
+function applyProjectSearch(body, p, suites, raw) {
+  const q = raw.trim();
+  const match = pvMatcher(q);
+  const countEl = body.querySelector("[data-pv-search-count]");
+  // Every suite's cases, fetched once, then this filter runs again with them in hand.
+  let loading = false;
+  if (q && !projectsUnavailable) {
+    for (const s of suites) {
+      if (pvSuiteCases.has(s.id)) { if (!Array.isArray(pvSuiteCases.get(s.id))) loading = true; continue; }
+      loading = true;
+      const pending = fetch(`/api/suites/${encodeURIComponent(s.id)}/cases`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => (Array.isArray(d?.cases) ? d.cases : []))
+        .catch(() => []);
+      pvSuiteCases.set(s.id, pending);
+      pending.then((cases) => {
+        pvSuiteCases.set(s.id, cases);
+        // Still this project's page, still a query: run the filter again with the new titles.
+        const live = document.querySelector("#projectsViewBody [data-pv-search]");
+        if (live && currentView === "projects" && pvSearch.projectId === p.id) applyProjectSearch(body, p, suites, live.value);
+      });
+    }
+  }
+
+  let nSuites = 0, nCases = 0, nRuns = 0;
+  for (const row of body.querySelectorAll('[data-pv-row="suite"]')) {
+    const id = row.dataset.id;
+    const hits = body.querySelector(`[data-pv-hits="${CSS.escape(id)}"]`);
+    const cases = Array.isArray(pvSuiteCases.get(id)) ? pvSuiteCases.get(id) : [];
+    const caseHits = q ? cases.filter((c) => match(`${c.title || ""} ${c.feature || ""}`)) : [];
+    const show = !q || match(row.dataset.pvText) || caseHits.length > 0;
+    row.hidden = !show;
+    if (show && q) nSuites++;
+    nCases += caseHits.length;
+    if (hits) {
+      hits.hidden = caseHits.length === 0;
+      hits.innerHTML = caseHits.map((c) => `
+        <div class="hrow" data-pv-hit>
+          <div class="hrow-main">
+            <div class="hrow-label">${escapeHtml(c.title || "(untitled case)")}</div>
+            <div class="hrow-meta">${escapeHtml(c.feature ? `${c.feature} · in this suite` : "in this suite")}</div>
+          </div>
+          <div class="hrow-actions"><a class="dl-btn-inline" href="${caseHash(p.id, c.id)}">Open</a></div>
+        </div>`).join("");
+    }
+  }
+  for (const row of body.querySelectorAll('[data-pv-row="case"], [data-pv-row="run"]')) {
+    const show = !q || match(row.dataset.pvText);
+    row.hidden = !show;
+    if (show && q) { if (row.dataset.pvRow === "case") nCases++; else nRuns++; }
+  }
+  // A card whose every row is filtered out says so, instead of going blank.
+  for (const none of body.querySelectorAll("[data-pv-none]")) {
+    const card = none.closest('[data-dash="card"]');
+    none.hidden = !q || !!card?.querySelector("[data-pv-row]:not([hidden])") || (loading && !!card?.querySelector('[data-pv-row="suite"]'));
+  }
+  if (countEl) {
+    countEl.textContent = !q ? ""
+      : loading ? "Searching inside the suites…"
+      : (nSuites + nCases + nRuns) === 0 ? "Nothing matches"
+      : [projectsUnavailable ? "" : pvPlural(nSuites, "suite"), projectsUnavailable ? "" : pvPlural(nCases, "case"), pvPlural(nRuns, "run")].filter(Boolean).join(" · ");
+  }
 }
 
 /** Wire the Projects screen. Each handler is the sidebar tree's own call, in the same order. */
