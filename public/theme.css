@@ -735,3 +735,32 @@ html[data-auth-check="unreachable"] body::after {
 }
 @keyframes tb-auth-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { html[data-auth-check="pending"] body::after { animation: none; } }
+
+/* ── one logo everywhere: the landing page's (landing/landing.css .lp-logo) ──────────────────
+   Four dots in a square, the first blue: 7px dots with a 3px gap, 17px across. Drawn in CSS, as
+   the landing page draws it, so no image file. The blue is the landing's #1f7bff (= --accent); the
+   other three are --text, which is the landing's ink (#121418) in light mode and turns light in
+   dark mode, so the mark never disappears. Replaces the nav's blue tile, the old sidebar's
+   lightning bolt and the sign-in tile's light-blue/grey dots. */
+:root {
+  --tb-logo:
+    radial-gradient(circle closest-side, var(--accent) 96%, transparent 100%) 0 0 / 7px 7px no-repeat,
+    radial-gradient(circle closest-side, var(--text) 96%, transparent 100%) 10px 0 / 7px 7px no-repeat,
+    radial-gradient(circle closest-side, var(--text) 96%, transparent 100%) 0 10px / 7px 7px no-repeat,
+    radial-gradient(circle closest-side, var(--text) 96%, transparent 100%) 10px 10px / 7px 7px no-repeat;
+}
+/* the nav row's "Testbench" (top-nav layout) */
+body[data-shell="top"] .crumb-root::before {
+  width: 17px; height: 17px; border-radius: 0; margin-right: 2px; background: var(--tb-logo);
+}
+/* the sidebar's brand (old layout; app.js no longer puts a lightning bolt in it) */
+.brand-mark { width: 17px; height: 17px; border-radius: 0; background: var(--tb-logo); }
+/* the sign-in / sign-up page: the same four dots, larger, on its white tile (12px dots, 5px gap) */
+#view-login .page-head::before, #view-signup .page-head::before {
+  background:
+    radial-gradient(circle closest-side, var(--accent) 96%, transparent 100%) 15.5px 15.5px / 12px 12px no-repeat,
+    radial-gradient(circle closest-side, #121418 96%, transparent 100%) 32.5px 15.5px / 12px 12px no-repeat,
+    radial-gradient(circle closest-side, #121418 96%, transparent 100%) 15.5px 32.5px / 12px 12px no-repeat,
+    radial-gradient(circle closest-side, #121418 96%, transparent 100%) 32.5px 32.5px / 12px 12px no-repeat,
+    #fff;
+}
