@@ -772,3 +772,48 @@ body[data-shell="top"] .crumb-root::before {
 #orgPicker { height: 36px; max-width: 200px; margin-right: 4px; }
 #projectPickerWrap { margin: 0 0 10px; }
 #projectPickerWrap .team-select { width: 100%; max-width: 360px; }
+
+/* ── one look for the company-model controls (D-84) ─────────────────────────────────────────────
+   Purely visual. The Team "New user" form had 44px text boxes beside 28px dropdowns and button;
+   the Admin page's forms had no layout; the organisation picker used smaller text than the nav.
+   One control height (40px) and the inputs' own surface for every box, dropdown and button. */
+:is(#teamAddWrap, #view-admin) :is(input[type="text"], input[type="email"], input[type="password"]),
+:is(#teamAddWrap, #view-admin) .team-select,
+:is(#teamAddWrap, #view-admin) :is(.dl-btn, .dl-btn-inline, .run-btn) {
+  height: 40px; box-sizing: border-box; border-radius: 11px; font-size: .86rem;
+}
+:is(#teamAddWrap, #view-admin) .team-select { padding: 0 32px 0 12px; background-color: var(--surface-2); min-width: 120px; }
+:is(#teamAddWrap, #view-admin) :is(.dl-btn, .dl-btn-inline) { padding: 0 16px; display: inline-flex; align-items: center; font-weight: 500; }
+#view-admin [data-dash="form"] { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#view-admin [data-dash="form"] .project-form-input { flex: 1 1 220px; min-width: 0; }
+#view-admin [data-dash="form"] .run-btn { padding: 0 20px; }
+#teamAddWrap .team-add .field select { width: 100%; }
+#teamAddWrap .team-add-actions { height: 40px; }
+#teamAddWrap .team-add-actions label { white-space: nowrap; font-family: inherit; font-size: .8rem; color: var(--text-2); }
+/* an organisation's people on the Admin page: grouped in one inset panel, its two forms labelled plainly */
+#view-admin [data-adm-people] {
+  margin: 4px 0 12px !important; padding: 14px 16px; border-radius: 14px;
+  background: var(--surface-2); border: 1px solid var(--line-soft);
+}
+#view-admin [data-adm-people] .hrow { background: transparent; }
+#view-admin [data-adm-people] > .hrow-meta { font-family: inherit; font-size: .8rem; font-weight: 600; color: var(--text-2); letter-spacing: 0; text-transform: none; }
+#view-admin [data-adm-people] [data-dash="form"] .project-form-input { background: #fff; }
+#view-admin [data-adm-people] [data-dash="form"] .team-select { background-color: #fff; }
+/* the organisation picker: the nav's own text size and height */
+#orgPicker { height: 38px; font-size: .86rem; padding: 0 30px 0 12px; border-radius: 11px; background-color: var(--surface-2); max-width: 220px; }
+@media (max-width: 720px) { #orgPicker { max-width: 140px; font-size: .8rem; } }
+/* a phone: the picker gives the logo its room (the full name is in the list when opened) */
+@media (max-width: 480px) { #orgPicker { max-width: 104px; padding: 0 24px 0 8px; } }
+/* New test's Project choice: its own row, drawn like the website box below it */
+#runForm #projectPickerWrap {
+  flex: 1 1 100%; margin: 0; flex-direction: row; align-items: center; gap: 10px;
+  height: 46px; padding: 0 6px; border-radius: 13px; background: #fff; border: 1px solid var(--line);
+  box-shadow: 0 1px 2px rgba(17, 24, 39, .04);
+}
+#runForm #projectPickerWrap .field-label {
+  height: 32px; display: inline-flex; align-items: center; padding: 0 10px; border-radius: 9px;
+  background: var(--surface-3); color: var(--text-2); font-size: .74rem; font-weight: 500; flex: none;
+}
+#runForm #projectPickerWrap .team-select {
+  flex: 1; max-width: none; height: 34px; border: 0; background: transparent; font-size: .9rem; padding: 0 8px;
+}

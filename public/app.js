@@ -406,6 +406,8 @@ async function refreshIdentity() {
   await loadProjects();
   renderProjectPicker();
   fillProjectPicker();
+  // D-84: a reloaded Admin page is drawn again now that we know who this is.
+  if (currentView === "admin") applyRoute();
 }
 
 /** TD-190: the server refused this browser's session. Signed out locally (signOut's own path, so
@@ -5978,7 +5980,9 @@ function applyRoute() {
   // and a single project reach here. Off, both hashes fall through to home as they always did.
   // D-84: the Admin page, platform admins only (the server refuses everyone else regardless).
   if (head === "admin" && dashboardOn) {
-    if (!auth.platformAdmin) { navigate("#/dashboard"); return; }
+    // Only once who-you-are is known: on a reload the first route runs before /api/auth/me answers,
+    // and an admin was sent away from their own page. The server refuses anyone else regardless.
+    if (auth.role && !auth.platformAdmin) { navigate("#/dashboard"); return; }
     showView("admin"); setCrumbs(["Admin"]); renderAdminView(); return;
   }
   if (head === "projects" && dashboardOn) {
@@ -8870,6 +8874,8 @@ async function renderAdminChrome() {
     a.className = "topbar-btn";
     a.href = "#/admin";
     a.textContent = "Admin";
+    // Built exactly like the other nav links (renderDashboardLink): an <a> needs the box a button has.
+    a.style.cssText = "display:inline-flex;align-items:center;text-decoration:none";
     nav.appendChild(a);
   }
   if (document.getElementById("orgPicker")) return;
@@ -8973,6 +8979,10 @@ async function renderAdminPeople(body, orgId) {
       <div class="hrow">
         <div class="hrow-main"><div class="hrow-label">${escapeHtml(m.email || "(unknown address)")}</div></div>
         <span class="case-badge badge-pending">${escapeHtml(m.role === "admin" ? "owner" : m.role)}</span>
+        <div class="hrow-actions">
+          <button type="button" class="dl-btn-inline hrow-del" data-adm-remove="${escapeHtml(m.userId)}"
+            data-email="${escapeHtml(m.email || "this person")}">Remove</button>
+        </div>
       </div>`).join("") : `<div class="hrow-meta" style="padding:6px 0">Nobody here yet.</div>`}
     <div class="hrow-meta" style="margin:12px 0 4px">New user in this organisation</div>
     <div data-dash="form">
@@ -8996,6 +9006,16 @@ async function renderAdminPeople(body, orgId) {
     toast(ok(out));
     renderAdminView();
   };
+  // Remove someone from this organisation: the existing member route, which treats an Admin as the
+  // organisation's owner and still refuses to remove its last owner. Their account stays; it simply
+  // belongs to no organisation until an Admin moves it into one.
+  host.querySelectorAll("[data-adm-remove]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm(`Remove ${b.dataset.email} from this organisation? They will no longer see anything in it.`)) return;
+    const r = await fetch(`/api/organisations/${encodeURIComponent(orgId)}/members/${encodeURIComponent(b.dataset.admRemove)}`, { method: "DELETE" });
+    if (!r.ok) { const out = await r.json().catch(() => ({})); msg.textContent = out.error || "That didn't work."; return; }
+    toast(`${b.dataset.email} removed.`);
+    renderAdminView();
+  }));
   host.querySelector('[data-adm-act="u-create"]').addEventListener("click", () => {
     const email = host.querySelector('[data-adm="u-email"]').value.trim();
     const password = host.querySelector('[data-adm="u-pass"]').value;

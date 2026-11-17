@@ -214,6 +214,16 @@ describe("D-84: the Admin level", () => {
     expect(db.organisation_members.find((m) => m.user_id === res.body.userId)).toMatchObject({ organisation_id: ORG_B, role: "owner" });
   });
 
+  it("an admin removes a person from any organisation, but never its last owner", async () => {
+    const res = await request(app).delete(`/api/organisations/${ORG_A}/members/${TESTER_A}`).set(as(ADMIN));
+    expect(res.status).toBe(204);
+    expect(db.organisation_members.some((m) => m.organisation_id === ORG_A && m.user_id === TESTER_A)).toBe(false);
+    // Globex has one owner: removing them would leave a company nobody can manage.
+    expect((await request(app).delete(`/api/organisations/${ORG_B}/members/${OWNER_B}`).set(as(ADMIN))).status).toBe(409);
+    // an owner of another company cannot do this
+    expect((await request(app).delete(`/api/organisations/${ORG_A}/members/${VIEWER_A}`).set(as(OWNER_B))).status).toBe(403);
+  });
+
   it("an admin moves an existing account into an organisation (one organisation per person)", async () => {
     db.organisation_members.push({ organisation_id: "eeeeeeee-0000-4000-8000-00000000000e", user_id: ORPHAN, role: "owner" });
     const res = await request(app).post(`/api/admin/organisations/${ORG_A}/move-user`).set(as(ADMIN))
