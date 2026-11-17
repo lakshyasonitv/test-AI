@@ -2353,14 +2353,21 @@ function renderSingleTestResult(data, stage, error) {
   }
 
   const vid = data?.videoUrl;
+  // A <video> does NOT pick up new <source> children by itself: without load() it keeps the media
+  // it already chose. Opening one run after another in the same tab played the PREVIOUS run's
+  // video under the new run's result (checked 2026-11-17: source = run 07-52-12, currentSrc = run
+  // 08-17-02). The poster is reset too, or the last run's frame stays on a run that has none.
   if (vid) {
     resultVideoEl.innerHTML = `<source src="${escapeHtml(vid)}" type="video/webm" />`;
-    if (shot) resultVideoEl.poster = shot;
+    if (shot) resultVideoEl.poster = shot; else resultVideoEl.removeAttribute("poster");
+    resultVideoEl.load();
     videoFigureEl.classList.remove("hidden");
   } else {
     videoFigureEl.classList.add("hidden");
     resultVideoEl.removeAttribute("src");
+    resultVideoEl.removeAttribute("poster");
     resultVideoEl.innerHTML = "";
+    resultVideoEl.load();
   }
 
   // A missing video used to be indistinguishable from a run that simply passed (video is
@@ -2382,6 +2389,8 @@ function hideSingleTestResult() {
   testSummaryEl.classList.add("hidden");
   videoFigureEl.classList.add("hidden");
   resultVideoEl.innerHTML = "";
+  resultVideoEl.removeAttribute("poster");
+  resultVideoEl.load(); // drop the media it was holding, not just its <source> (see showSingleTestResult)
   diagnosisEl.textContent = "";
   screenshotFigureEl.classList.add("hidden");
   screenshotEl.removeAttribute("src");
@@ -2635,6 +2644,12 @@ let acceptedSoFarCount = 0;
 // Local mirrors of the gate's pool cap and regeneration budget, so the panel can render its
 // counters and notes without asking the backend for every number.
 const CASE_POOL_CAP = 5; // MAX_ACCUMULATED_CASES
+// The cap of the round on screen (the server's real one when the accepted-cases route answered).
+let gatePoolCap = CASE_POOL_CAP;
+/** How many more cases this round may tick: the pool's cap minus what earlier rounds accepted.
+ *  A tick past it used to be accepted by the panel and then silently dropped by the server as
+ *  "did not fit — pool was full" (caseAccumulator.ts); now the panel refuses it up front. */
+const gateRoomLeft = () => Math.max(0, gatePoolCap - acceptedSoFarCount);
 const CASE_REGEN_LIMIT = 3; // MAX_CASE_REGEN_ATTEMPTS — only a fallback; the event carries the real count
 const MAX_CASE_REGEN_ATTEMPTS_LOCAL = 3; // MAX_CASE_REGEN_ATTEMPTS
 
@@ -2992,6 +3007,7 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
   // refine to "finish". Five is MAX_ACCUMULATED_CASES — a ceiling on what the pool will hold,
   // not a number to reach. The wording now says what you can do rather than how far along you are.
   const poolCap = opts?.poolCap ?? CASE_POOL_CAP;
+  gatePoolCap = poolCap;
   casePoolCounterEl.textContent = acceptedSoFarCount === 0
     ? `Tick the cases you want to run. You can run as few as one — up to ${poolCap} in total.`
     : `${acceptedSoFarCount} case${acceptedSoFarCount === 1 ? "" : "s"} accepted — enough to run now. ` +
@@ -3070,6 +3086,12 @@ function getCheckedCaseIndexes() {
 // or checked in this one. The label doubles as a running count.
 function updateDoneButtonState() {
   const total = acceptedSoFarCount + getCheckedCaseIndexes().length;
+  // At the cap, the boxes still unticked are disabled: a sixth case cannot be picked at all.
+  const full = getCheckedCaseIndexes().length >= gateRoomLeft();
+  caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.disabled = full && !cb.checked;
+    cb.title = cb.disabled ? `A run holds at most ${gatePoolCap} cases — untick one to choose this one.` : "";
+  });
   caseDoneBtnEl.disabled = total === 0;
   caseDoneBtnEl.textContent = total === 0
     ? "Run selected tests"
@@ -3147,6 +3169,11 @@ function gateEditPayload() {
  *  unticked is not an error. */
 function gateValidationError(selectedIndexes) {
   const picked = new Set(selectedIndexes);
+  if (picked.size > gateRoomLeft()) {
+    return `A run holds at most ${gatePoolCap} cases` +
+      (acceptedSoFarCount ? ` and ${acceptedSoFarCount} are already accepted` : "") +
+      ` — untick ${picked.size - gateRoomLeft()} to continue.`;
+  }
   for (const entry of gateCases()) {
     if (!picked.has(entry.index)) continue;
     const c = entry.c;
@@ -3183,10 +3210,17 @@ async function postCaseSelectionDecision(runId, decision) {
 
 caseSelectAllBtnEl.addEventListener("click", () => {
   disarmRefine();
+  // "Select all" fills the room left and no further, in list order (the request's own case first).
+  let room = gateRoomLeft() - getCheckedCaseIndexes().length;
+  let skipped = 0;
   caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    if (cb.checked) return;
+    if (room <= 0) { skipped++; return; }
+    room--;
     cb.checked = true;
     gateDrafts.checked[Number(cb.dataset.index)] = true;
   });
+  if (skipped) showNotice(`Ticked the first ${gatePoolCap - acceptedSoFarCount} — a run holds at most ${gatePoolCap} cases.`);
   saveGateDrafts();
   updateDoneButtonState();
 });
@@ -3357,6 +3391,13 @@ caseNotSatisfiedBtnEl.addEventListener("click", () => {
 caseSelectionListEl.addEventListener("change", (e) => {
   if (!e.target.matches('input[type="checkbox"]')) return;
   disarmRefine();
+  // The cap, enforced at the tick: the box is put back and the reason said (updateDoneButtonState
+  // also disables the unticked boxes once the limit is reached, so this is the keyboard/edge path).
+  if (e.target.checked && getCheckedCaseIndexes().length > gateRoomLeft()) {
+    e.target.checked = false;
+    showNotice(`You can run at most ${gatePoolCap} cases in one run. Untick one to choose another.`);
+    return;
+  }
   setGateChecked(Number(e.target.dataset.index), e.target.checked);
   updateDoneButtonState();
 });

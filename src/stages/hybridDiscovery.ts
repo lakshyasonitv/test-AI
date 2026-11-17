@@ -625,11 +625,21 @@ export function orgCacheKey(instanceHost: string, url: string, fingerprint: stri
 }
 
 export const siteCacheKey = (url: string, creds?: Credentials) => {
-  if (!creds) return `site:${url}${strategySuffix()}`;
+  if (!creds) return `site:${url}${strategySuffix()}${pagesSuffix()}`;
   const id = crypto.createHash("sha1")
     .update(JSON.stringify([creds.username, creds.password])).digest("hex").slice(0, 12);
-  return `site:${url}#auth=${id}${strategySuffix()}`;
+  return `site:${url}#auth=${id}${strategySuffix()}${pagesSuffix()}`;
 };
+
+/**
+ * The crawl's page budget is an input to the model the key caches: a 5-page crawl and a 12-page
+ * crawl of one site are different models. Without it, raising MAX_DISCOVERY_PAGES served the cached
+ * smaller crawl for up to APPMODEL_CACHE_TTL_MS (TD-22, D-10 again; found 2026-11-17 on eventrix.tech,
+ * whose /events/create was the 6th link). Empty at the default 5, so every existing key is unchanged.
+ */
+function pagesSuffix(): string {
+  return MAX_DISCOVERY_PAGES === 5 ? "" : `#pages=${MAX_DISCOVERY_PAGES}`;
+}
 
 /**
  * The element strategy is an input to the model a key caches (D-43), and it can now differ BETWEEN
@@ -842,8 +852,27 @@ const AUTH_VERB_TEXT = /^\s*(sign\s*in|log\s*in|login|authenticate|submit|contin
  * Okta and Google ask only for the username, and the password box is not in the DOM until that is
  * submitted, so the password-only check reported `no-gate` and the crawl went in anonymously.
  */
+/**
+ * How many password boxes the page has, surviving a navigation that lands mid-count (TD-195).
+ *
+ * `locator.count()` throws "Execution context was destroyed" when the page navigates while it runs —
+ * the post-submit redirect of a sign-in is exactly that moment. On eventrix.tech
+ * (run 2026-11-17T07-52-12-423Z-75a6f008) it ended a sign-in that had worked minutes earlier, and the
+ * whole crawl went on anonymously. Wait for the new document and count again; anything else rethrows.
+ */
+export async function countPasswordBoxes(page: Page): Promise<number> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await page.locator(PASSWORD_INPUT).count();
+    } catch (err: any) {
+      if (attempt >= 3 || !/Execution context was destroyed|navigation/i.test(String(err?.message ?? err))) throw err;
+      await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
+    }
+  }
+}
+
 export async function hasLoginGate(page: Page): Promise<boolean> {
-  if (await page.locator(PASSWORD_INPUT).count() > 0) return true;
+  if (await countPasswordBoxes(page) > 0) return true;
   // A navigation mid-poll destroys the execution context and the evaluate throws. That moment has
   // no password box (the check above ran first), so "no gate" is the same answer this function
   // gave before identifier-first screens existed.
@@ -1015,7 +1044,7 @@ export async function loginOnPage(page: Page, creds: Credentials): Promise<AuthS
   // A page that already HAS a password box never enters this block, so a single-screen login
   // records and executes exactly the steps it always has.
   const firstScreen: AuthStep[] = [];
-  if (await page.locator(PASSWORD_INPUT).count() === 0) {
+  if (await countPasswordBoxes(page) === 0) {
     const first = await identifierFirstFields(page);
     if (!first) return null;
     firstScreen.push({ action: "fill", css: first.user, credential: "username" });

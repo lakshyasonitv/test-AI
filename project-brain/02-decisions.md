@@ -117,3 +117,9 @@ renumbered (2026-10-19: D-54 -> D-56, TD-130..132 -> TD-154..156; 2026-10-28: ou
   runs, and D-73's parallel cases make it more likely. Fixed structurally (scan only the spec's own folder), proved
   with a test that reproduces the race (fails without the fix), and shipped as its own PR (#20), not folded into a
   docs PR. One rerun is allowed to confirm a suspected flake; the second step is always finding why.
+
+## 2026-11-17 — Screen mode for every site, behind a flag (D-85)
+Reused Salesforce's screen mode for ordinary sites rather than a new mechanism, because the eventrix create wizard
+(6 screens, one URL, behind a link the crawl never reached) is the same shape. Off by default (platform rule 2);
+on locally. Fixing the page tracker alone was rejected: an unknown page falls back to every page's elements, which
+still holds /home's search box.

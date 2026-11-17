@@ -2617,3 +2617,26 @@ companies: that is a cross-tenant act, so it is the Admins'.
 
 **Not done.** Email invites (the owner passes the password on); an Admin button to add Admins (a row in the table
 for now); a per-project role.
+
+## D-85. Screen mode for every site, behind SCREEN_MODE_ALL_SITES
+
+**Context.** TD-194: on eventrix.tech a create-event wizard sits behind a sidebar link the 5-page crawl never
+reached, and has six screens on one URL. Ordinary runs follow links by href only and ground every step against the
+page they believe the flow is on; on a link to an unmodelled page that belief stayed on the page the link was on,
+so the form's steps grounded on that page's search box and filter chips. Salesforce runs already handle exactly
+this shape with screen mode (D-52): capture the screen the flow is on after each DOM-changing click, ground the
+steps after it against that capture only, keep a wizard's screens side by side.
+
+**Decision.** Reuse screen mode rather than build a second mechanism. `SCREEN_MODE_ALL_SITES=true` (default off):
+`screenMode` is true for every run; a link click counts as a screen boundary (its destination may be unmodelled);
+and `trackPages` marks the trail unknown after a link to a page the model lacks, so `screenAtStep`'s cursor check
+does not throw the capture away in favour of the old page. The IR cache key gains `screens-all:1` for non-Salesforce
+runs with the flag on (Salesforce keys unchanged: they were always in screen mode).
+
+**Rejected.** Fixing `trackPages` alone: an unknown trail falls back to every page's elements, which still holds
+`/home`'s search box — the step would ground on the same wrong control. Raising `MAX_DISCOVERY_PAGES` alone: it
+finds `/events/create` (the template picker) but not the six wizard screens behind the template click. A request-
+aware crawl order: useful, but it changes discovery for every run and does not reach the wizard either.
+
+**Cost.** One browser replay per screen boundary (budget `MAX_SCREEN_CAPTURES`, default 16), so a flow with many
+link clicks compiles slower. That is why it is a flag.

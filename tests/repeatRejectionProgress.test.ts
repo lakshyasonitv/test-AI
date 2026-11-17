@@ -111,6 +111,26 @@ describe("a repeated rejection stops only when it carries no new information (Sa
     expect(out.meta.truncated).toBe(true);
   }, 240_000);
 
+  it("D-85: with SCREEN_MODE_ALL_SITES, a LAST attempt that got further earns one more (it used to end there)", async () => {
+    // Attempts 1-3 stop after 1 grounded step (a different invented button each time, so TD-74's
+    // "same target twice" never ends it early). Attempt 4 reaches screen 2 (5 grounded steps). The old
+    // rule checked progress at the START of the last attempt only, so it never saw attempt 4's.
+    process.env.SCREEN_MODE_ALL_SITES = "true";
+    // The live walker, as every Salesforce run uses: the static extractor names this fixture's
+    // label-wrapped inputs after the heading above them ("Budget"), a separate defect (TD-196).
+    process.env.DISCOVERY_LIVE_DOM = "true";
+    try {
+      const stuck = (n: number) => ir([nav, { ...ghost("s2"), target: { role: "button", name: `Ghost ${n}` } }]);
+      const further = ir([nav, name, next, wait, min("s5"), { ...ghost("s6"), target: { role: "button", name: "Ghost 4" } }]);
+      const { out, attempts } = await compile([stuck(1), stuck(2), stuck(3), further, complete], false);
+      expect(attempts).toBe(5);
+      expect(out.meta.truncated ?? false).toBe(false);
+    } finally {
+      delete process.env.SCREEN_MODE_ALL_SITES;
+      delete process.env.DISCOVERY_LIVE_DOM;
+    }
+  }, 300_000);
+
   it("an ordinary (non-Salesforce) run keeps the old rule: the same target twice stops", async () => {
     // The same "got further" shape as the Salesforce case above (Next is grounded on an ordinary run).
     const { out, attempts } = await compile([ir([nav, ghost("s2")]), ir([nav, { ...next, id: "s2" }, ghost("s3")]), complete], false);
