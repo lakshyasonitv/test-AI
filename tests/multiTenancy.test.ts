@@ -370,6 +370,13 @@ const LISTING_ROUTES: {
  * "exempt" is where a real hole would hide.
  */
 const EXEMPT: Record<string, string> = {
+  "POST /api/recordings": "recorder.ts sessionFor(id, owner): a recording is bound at start to `${req.organisationId}:${user id}` and every other caller gets 404 (D-86, tests/recorder.test.ts); 404 for all of it unless RECORDER_ENABLED",
+  "GET /api/recordings/:id": "recorder.ts sessionFor(id, owner): a recording is bound at start to `${req.organisationId}:${user id}` and every other caller gets 404 (D-86, tests/recorder.test.ts); 404 for all of it unless RECORDER_ENABLED",
+  "GET /api/recordings/:id/frame": "recorder.ts sessionFor(id, owner): a recording is bound at start to `${req.organisationId}:${user id}` and every other caller gets 404 (D-86, tests/recorder.test.ts); 404 for all of it unless RECORDER_ENABLED",
+  "POST /api/recordings/:id/input": "recorder.ts sessionFor(id, owner): a recording is bound at start to `${req.organisationId}:${user id}` and every other caller gets 404 (D-86, tests/recorder.test.ts); 404 for all of it unless RECORDER_ENABLED",
+  "POST /api/recordings/:id/undo": "recorder.ts sessionFor(id, owner): a recording is bound at start to `${req.organisationId}:${user id}` and every other caller gets 404 (D-86, tests/recorder.test.ts); 404 for all of it unless RECORDER_ENABLED",
+  "POST /api/recordings/:id/stop": "recorder.ts sessionFor(id, owner): a recording is bound at start to `${req.organisationId}:${user id}` and every other caller gets 404 (D-86, tests/recorder.test.ts); 404 for all of it unless RECORDER_ENABLED",
+  "DELETE /api/recordings/:id": "recorder.ts sessionFor(id, owner): a recording is bound at start to `${req.organisationId}:${user id}` and every other caller gets 404 (D-86, tests/recorder.test.ts); 404 for all of it unless RECORDER_ENABLED",
   "GET /api/health": "public by necessity — reports only whether env vars are set, never a value",
   "GET /api/auth/config": "public by necessity — the UI must learn where to authenticate before it holds a token",
   "POST /api/auth/signup": "public by necessity — an account that does not exist cannot present a token",

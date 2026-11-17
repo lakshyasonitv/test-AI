@@ -2647,3 +2647,28 @@ additions behind the same flag: the recorded sign-in replaces the model's on eve
 attempt's grounded steps are kept by code while the model writes only the continuation. Rejected: asking the model
 in the prompt to "keep the earlier steps" without code enforcing it — a prompt rule is a preference, not a
 constraint (CLAUDE.md); the join is structural and the prompt only explains it.
+
+## D-86. Record a test: the person does the flow once, Testbench keeps it
+
+**Context.** 2026-11-17, eventrix.tech: a day of runs failed on one template card because discovery names
+elements from glued `textContent` cut at 80 characters, and the browser matches on its spaced accessible name
+(TD-198). Each fix moved the failure one layer down. The user: "for another website I won't do this by hand —
+this has to be a production feature: the user explores, Testbench stores the values and runs them", pointing
+at Katalon (record and playback, an object repository with backup locators, self-healing).
+
+**Decision.** A recorder inside Testbench, behind `RECORDER_ENABLED` (default off). A headless Chromium on the
+server, driven from the page through new routes (`/api/recordings`), seen as polled JPEG frames (the UI
+polls, it never streams). At each click or keystroke the element under it is read in the page and its
+identity stored as the step's target: the browser's OWN role + name (from `ariaSnapshot`), plus a unique
+`#id`, test id and placeholder as backups. A positional css path is kept only when there is no role + name,
+because the runner tries css first. Output is an ordinary IR, so the generator, executor and zero-LLM replay
+run it unchanged. Credentials: a password field's value is stored as `${env:TEST_PASSWORD}`, a sign-in
+identifier (an email/username box in a form with a password) as `${env:TEST_USERNAME}` (platform rule 5).
+"Add check" mode turns a click into a visible-assertion instead of a click.
+
+**Rejected.** A browser extension (Katalon Recorder's shape): an install on every machine, and a second
+codebase. A headed browser or desktop recorder: production has no display. Streaming the screen: the app
+polls by design. Recording css paths as the primary target: they break on the next list change.
+
+**Phases.** 1 backend + routes (this); 2 the page (Record a test, Add check, save to a project); 3 replay with
+self-healing across the stored backups, shown for a person to approve (D-27); 4 a live recording on eventrix.

@@ -136,6 +136,7 @@ import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabl
 import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
 import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
 import { landingUrl } from "./landingLink.js";
+import { RecorderError, recorderEnabled, recordingFrame, recordingState, recordInput, startRecording, stopRecording, undoLastStep, closeRecording, type RecorderInput } from "./recorder.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -532,6 +533,62 @@ app.post("/api/runs/:runId/credentials", requireRunRole("tester"), (req, res) =>
 // rejected when nothing was accumulated yet, so an accidental click can't end the round with
 // an empty pool. Like the credential prompt, the decision goes straight into the waiting
 // promise and lives only in the pipeline's memory.
+// ---------------------------------------------------------------------------
+// Record a test (D-86, RECORDER_ENABLED, default off). New routes only (platform rule 1). A recording
+// belongs to the person who started it, inside their organisation: every other caller gets 404.
+// ---------------------------------------------------------------------------
+const recorderOwner = (req: express.Request): string => `${req.organisationId ?? ""}:${(req as any).user?.id ?? "local"}`;
+const recorderGate: express.RequestHandler = (_req, res, next) => {
+  if (!recorderEnabled()) { res.status(404).json({ error: "Recording is turned off (RECORDER_ENABLED)" }); return; }
+  next();
+};
+const recorderFail = (res: express.Response, err: unknown): void => {
+  if (err instanceof RecorderError) { res.status(err.status).json({ error: err.message }); return; }
+  console.error("[recorder]", (err as Error)?.message ?? err);
+  res.status(500).json({ error: "recording failed: " + String((err as Error)?.message ?? err).split("\n")[0] });
+};
+
+app.post("/api/recordings", recorderGate, requireRole("tester"), express.json(), async (req, res) => {
+  try { res.status(201).json(await startRecording(recorderOwner(req), String(req.body?.url ?? ""))); }
+  catch (err) { recorderFail(res, err); }
+});
+
+app.get("/api/recordings/:id", recorderGate, requireRole("tester"), (req, res) => {
+  try { res.json(recordingState(req.params.id, recorderOwner(req))); }
+  catch (err) { recorderFail(res, err); }
+});
+
+app.get("/api/recordings/:id/frame", recorderGate, requireRole("tester"), async (req, res) => {
+  try {
+    const jpeg = await recordingFrame(req.params.id, recorderOwner(req));
+    res.setHeader("content-type", "image/jpeg");
+    res.setHeader("cache-control", "no-store");
+    res.end(jpeg);
+  } catch (err) { recorderFail(res, err); }
+});
+
+app.post("/api/recordings/:id/input", recorderGate, requireRole("tester"), express.json(), async (req, res) => {
+  try {
+    const step = await recordInput(req.params.id, recorderOwner(req), (req.body ?? {}) as RecorderInput);
+    res.json({ step, steps: recordingState(req.params.id, recorderOwner(req)).steps });
+  } catch (err) { recorderFail(res, err); }
+});
+
+app.post("/api/recordings/:id/undo", recorderGate, requireRole("tester"), (req, res) => {
+  try { res.json({ steps: undoLastStep(req.params.id, recorderOwner(req)) }); }
+  catch (err) { recorderFail(res, err); }
+});
+
+app.post("/api/recordings/:id/stop", recorderGate, requireRole("tester"), express.json(), async (req, res) => {
+  try { res.json({ ir: await stopRecording(req.params.id, recorderOwner(req), req.body?.title) }); }
+  catch (err) { recorderFail(res, err); }
+});
+
+app.delete("/api/recordings/:id", recorderGate, requireRole("tester"), async (req, res) => {
+  try { recordingState(req.params.id, recorderOwner(req)); await closeRecording(req.params.id); res.json({ ok: true }); }
+  catch (err) { recorderFail(res, err); }
+});
+
 app.post("/api/runs/:runId/case-selection", requireRunRole("tester"), express.json(), (req, res) => {
   const { runId } = req.params;
   if (!getPendingSelection(runId)) {
@@ -2668,6 +2725,7 @@ export const BOOLEAN_ENV_FLAGS = [
   "PRO_STORY_PROMPT",
   "SCREEN_MAP_ENABLED",
   "SCREEN_MODE_ALL_SITES",
+  "RECORDER_ENABLED",
   "NETWORK_SETTLE_ENABLED",
   "SCREEN_BEST_MATCH_ENABLED",
   "VOLATILE_ID_DETECTION_ENABLED",

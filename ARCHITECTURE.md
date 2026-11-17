@@ -393,6 +393,7 @@ Routes (`src/server/index.ts`, all new, all 404 when the flag is off): `GET /api
 | `pendingCredentials.ts` | Parks a paused run's credential prompt in memory; resolved by the UI's answer or `CREDENTIAL_WAIT_MS` timeout |
 | `pendingCaseSelection.ts` | Parks a paused run's case-review round in memory; resolved by the UI's decision or `CASE_SELECTION_WAIT_MS` timeout |
 | `caseAccumulator.ts` | File-backed pool of accepted cases across gate rounds, capped at `MAX_ACCUMULATED_CASES` |
+| `recorder.ts` | Record a test (`RECORDER_ENABLED`, D-86): a headless browser on the server driven by the person's clicks and typing (polled JPEG frames), each action stored as an IR step with the browser's own role + name and backups (`#id`, test id, placeholder); credentials stored as `${env:...}`; `stopRecording` returns a schema-valid IR |
 | `caseHistoryLedger.ts` | File-backed record of every case title ever shown and its outcome, so rejections never resurface |
 | `gateCaseEdits.ts` | Folds a reviewer's edits and hand-written cases into the batch before it is persisted, so the accumulator and ledger need no changes (`DECISIONS.md` D-28) |
 | `resolveCredentials.ts` | The one place the env-first/prompt-second credential policy lives (`DECISIONS.md` D-30): environment first, then the shared `askCredentials` waiter. Used by the case editor's re-ground walk and by replay, so the two cannot drift. Emits only the URL and which fields are wanted — never a value |
