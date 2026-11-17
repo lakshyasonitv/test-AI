@@ -352,6 +352,12 @@ export async function stopRecording(id: string, owner: string, title?: string): 
   return ir;
 }
 
+/** The recording's IR as it stands, without ending it — what Save writes (the session stays open until saved). */
+export function recordingIr(id: string, owner: string, title?: string): IR {
+  const s = sessionFor(id, owner);
+  return buildRecordedIr(s.startUrl, s.steps, title);
+}
+
 export function buildRecordedIr(startUrl: string, steps: Step[], title?: string): IR {
   const origin = new URL(startUrl).origin;
   return IR.parse({

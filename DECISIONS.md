@@ -2670,5 +2670,12 @@ identifier (an email/username box in a form with a password) as `${env:TEST_USER
 codebase. A headed browser or desktop recorder: production has no display. Streaming the screen: the app
 polls by design. Recording css paths as the primary target: they break on the next list change.
 
+**Phase 2 (done).** The page: a Record link in the top nav and a `#/record` view, both only when `/api/health` says
+`recorder: true` (an optional field, rule 1); the live picture polled ~1.4/s; clicks scaled to the recorded viewport;
+typing batched and sent in order (one queue, so a click and the typing after it never race); Act / Add check, Undo,
+Discard; Save to a project through `POST /api/recordings/:id/save`, which writes the SERVER's session through
+`library.saveRecordedCase` (same tables and version-1 row as a case saved from a run, `source_run_id` null) and
+ignores any steps in the body. Existing classes only (rule 3); switched only through `showView` (rule 4).
+
 **Phases.** 1 backend + routes (this); 2 the page (Record a test, Add check, save to a project); 3 replay with
 self-healing across the stored backups, shown for a person to approve (D-27); 4 a live recording on eventrix.

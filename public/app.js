@@ -103,6 +103,8 @@ const auth = {
 
 /** D-84: /api/health reports `platformAdmins: true` when the platform-admin model is on. */
 let platformModel = false;
+/** D-86: /api/health reports `recorder: true` when Record a test is on (RECORDER_ENABLED). Declared up here, before the first applyRoute(), which reads it. */
+let recorderOn = false;
 
 /** Role ladder, mirrored from src/server/authz.ts. Kept in sync by hand — it is only ever used
  *  to hide controls, so a drift shows up as a visible affordance the server then refuses. */
@@ -5842,7 +5844,7 @@ async function renderCompareView(caseId, fromV, toV) {
     navigate(caseHash(c.projectId, caseId)));
 }
 
-const VIEWS = ["admin", "home", "run", "suite", "case", "compare", "history", "login", "signup", "team", "dashboard", "projects", "settings"];
+const VIEWS = ["admin", "home", "run", "suite", "case", "compare", "history", "login", "signup", "team", "dashboard", "record", "projects", "settings"];
 let currentView = "home";
 // The dashboard screen (D-79). False until /api/health reports `dashboard: true`; while false,
 // applyRoute() never routes to it, so #/dashboard falls through to home like any unknown hash.
@@ -6025,6 +6027,10 @@ function applyRoute() {
     // and an admin was sent away from their own page. The server refuses anyone else regardless.
     if (auth.role && !auth.platformAdmin) { navigate("#/dashboard"); return; }
     showView("admin"); setCrumbs(["Admin"]); renderAdminView(); return;
+  }
+  // D-86: Record a test — only when the server says the recorder is on (it refuses otherwise anyway).
+  if (head === "record" && recorderOn) {
+    showView("record"); setCrumbs(["Record a test"]); renderRecordView(); return;
   }
   if (head === "projects" && dashboardOn) {
     showView("projects");
@@ -6661,6 +6667,7 @@ fetch("/api/health")
     if (h && h.projectDiscovery === true) renderProjectFreshBox();
     if (h && typeof h.landingUrl === "string") renderLandingLink(h.landingUrl);
     if (h && h.platformAdmins === true) { platformModel = true; renderProjectPicker(); }
+    if (h && h.recorder === true) { recorderOn = true; renderRecordLink(); if (/^#\/record/.test(location.hash)) applyRoute(); }
     if (!h || !h.defaults) return;
     Object.assign(optionDefaults, h.defaults);
     if (!("gateReview" in runOptions)) paintToggle(gateToggleEl, optionDefaults.gateReview);
@@ -9662,3 +9669,294 @@ urlSchemeEl.addEventListener("keydown", (e) => {
 });
 
 refreshComposerState();
+
+// -----------------------------------------------------------------------------
+// Record a test (D-86, RECORDER_ENABLED)
+//
+// A browser runs on the server; this page shows it as a picture refreshed a few times a second
+// (polled, never streamed — the app polls by design) and sends it the person's clicks, typing and
+// scrolling. Each action comes back as a step, listed in plain English through formatIrStep. Existing
+// classes only (platform rule 3); the view is switched only through showView (rule 4).
+//
+// What is typed passes through to the recorded page; a password or sign-in identifier is STORED as
+// ${env:...} by the server (recorder.ts), never as the typed value.
+// -----------------------------------------------------------------------------
+
+/** The recording on screen: { id, viewport, steps, mode: "act" | "check" } or null. */
+let recState = null;
+let recPollTimer = null;
+let recFrameUrl = null;
+/** Inputs go to the server one at a time, in order: a click and the typing after it must not race. */
+let recQueue = Promise.resolve();
+let recTypeBuffer = "";
+let recTypeTimer = null;
+
+/** The "Record" link in the top nav, built like the others (renderDashboardLink). */
+function renderRecordLink() {
+  const nav = document.getElementById("appNav");
+  if (!nav || document.getElementById("navRecord")) return;
+  const a = document.createElement("a");
+  a.id = "navRecord";
+  a.className = "topbar-btn";
+  a.href = "#/record";
+  a.textContent = "Record";
+  a.style.cssText = "display:inline-flex;align-items:center;text-decoration:none";
+  nav.appendChild(a);
+}
+
+async function recApi(method, path, body) {
+  const res = await fetch(`/api/recordings${path}`, {
+    method,
+    headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+function renderRecordView() {
+  const body = document.getElementById("recordViewBody");
+  if (!body) return;
+  if (!recState) { renderRecordStart(body); return; }
+  renderRecordSession(body);
+}
+
+function renderRecordStart(body) {
+  stopRecPolling();
+  body.innerHTML = `
+    <div data-dash="head">
+      <div>
+        <div class="eyebrow">RECORD A TEST</div>
+        <h1 class="page-head-title">Do it once — Testbench keeps it</h1>
+        <p class="tagline">Open your site, click and type through the flow as a user would, add checks for what should appear, and save it to a project. Passwords are stored only as references, never as what you type.</p>
+      </div>
+    </div>
+    <div data-dash="card">
+      <div data-dash="card-head"><h2>Start recording</h2></div>
+      <div data-dash="form">
+        <input type="text" class="project-form-input" data-rec="url" placeholder="https://your-site.com/login" aria-label="Address to start recording on" />
+        <button type="button" class="run-btn" data-rec-act="start">Start</button>
+      </div>
+      <div class="hrow-meta" data-rec="msg" aria-live="polite"></div>
+    </div>`;
+  const urlEl = body.querySelector('[data-rec="url"]');
+  const msg = body.querySelector('[data-rec="msg"]');
+  const start = async () => {
+    let url = urlEl.value.trim();
+    if (!url) { msg.textContent = "Enter the address to start on."; return; }
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    msg.textContent = "Opening a browser…";
+    try {
+      const r = await recApi("POST", "", { url });
+      recState = { id: r.id, viewport: r.viewport, steps: [], mode: "act" };
+      const st = await recApi("GET", `/${r.id}`);
+      recState.steps = st.steps || [];
+      renderRecordView();
+    } catch (err) { msg.textContent = err.message; }
+  };
+  body.querySelector('[data-rec-act="start"]').addEventListener("click", start);
+  urlEl.addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
+}
+
+function recStepsHtml(steps) {
+  if (!steps.length) return `<div class="tree-empty" style="padding:14px 4px">No steps yet.</div>`;
+  return steps.map((st, i) => `
+    <div class="hrow">
+      <div class="hrow-main">
+        <div class="hrow-label">${i + 1}. ${escapeHtml(formatIrStep(st))}</div>
+        ${st.action === "assert" ? `<div class="hrow-meta"><span class="case-badge badge-passed">check</span></div>` : ""}
+      </div>
+    </div>`).join("");
+}
+
+function renderRecordSession(body) {
+  const vp = recState.viewport || { width: 1280, height: 720 };
+  body.innerHTML = `
+    <div data-dash="head">
+      <div>
+        <div class="eyebrow">RECORDING</div>
+        <h1 class="page-head-title">Click and type in the picture below</h1>
+        <p class="tagline" data-rec="hint"></p>
+      </div>
+    </div>
+    <div data-dash="card">
+      <div data-dash="form">
+        <button type="button" class="dl-btn-inline" data-rec-act="mode"></button>
+        <button type="button" class="dl-btn-inline" data-rec-act="undo">Undo last step</button>
+        <button type="button" class="dl-btn-inline" data-rec-act="discard">Discard</button>
+      </div>
+      <div data-rec="stage" tabindex="0" aria-label="The recorded browser. Click to act; type to enter text."
+           style="position:relative;outline:none;margin-top:10px;border-radius:8px;overflow:hidden;line-height:0;cursor:crosshair;max-width:100%">
+        <img data-rec="frame" alt="The page being recorded" draggable="false"
+             style="width:100%;height:auto;display:block;user-select:none;aspect-ratio:${vp.width}/${vp.height}" />
+      </div>
+      <div class="hrow-meta" data-rec="msg" aria-live="polite"></div>
+    </div>
+    <div data-dash="card">
+      <div data-dash="card-head"><h2>Steps</h2></div>
+      <div data-rec="steps">${recStepsHtml(recState.steps)}</div>
+    </div>
+    <div data-dash="card">
+      <div data-dash="card-head"><h2>Save to a project</h2></div>
+      <div data-dash="form">
+        <select class="team-select" data-rec="project" aria-label="Project to save into"><option value="">Loading projects…</option></select>
+        <input type="text" class="project-form-input" data-rec="title" placeholder="Test name, e.g. Create a hybrid conference" aria-label="Test name" />
+        <button type="button" class="run-btn" data-rec-act="save">Save test</button>
+      </div>
+      <div class="hrow-meta" data-rec="save-msg" aria-live="polite"></div>
+    </div>`;
+
+  const stage = body.querySelector('[data-rec="stage"]');
+  const img = body.querySelector('[data-rec="frame"]');
+  const msg = body.querySelector('[data-rec="msg"]');
+  const modeBtn = body.querySelector('[data-rec-act="mode"]');
+  const paintMode = () => {
+    modeBtn.textContent = recState.mode === "check" ? "Mode: Add check (click to switch to Act)" : "Mode: Act (click to switch to Add check)";
+    body.querySelector('[data-rec="hint"]').textContent = recState.mode === "check"
+      ? "Add check: click any text or element that should be there — it becomes a check, nothing is clicked."
+      : "Act: your clicks, typing and scrolling happen in the recorded browser and become steps.";
+  };
+  paintMode();
+  modeBtn.addEventListener("click", () => { recState.mode = recState.mode === "check" ? "act" : "check"; paintMode(); stage.focus(); });
+
+  const paintSteps = (steps) => {
+    if (!recState) return;
+    recState.steps = steps;
+    const box = document.querySelector('[data-rec="steps"]');
+    if (box) box.innerHTML = recStepsHtml(steps);
+  };
+  const send = (input) => {
+    recQueue = recQueue.then(async () => {
+      if (!recState) return;
+      try {
+        const r = await recApi("POST", `/${recState.id}/input`, input);
+        paintSteps(r.steps || recState.steps);
+        msg.textContent = "";
+        refreshRecFrame();
+      } catch (err) { msg.textContent = err.message; }
+    });
+    return recQueue;
+  };
+  const flushTyping = () => {
+    clearTimeout(recTypeTimer);
+    if (!recTypeBuffer) return;
+    const text = recTypeBuffer;
+    recTypeBuffer = "";
+    send({ type: "type", text });
+  };
+
+  img.addEventListener("click", (e) => {
+    flushTyping();
+    const r = img.getBoundingClientRect();
+    const x = Math.round(((e.clientX - r.left) / r.width) * vp.width);
+    const y = Math.round(((e.clientY - r.top) / r.height) * vp.height);
+    send({ type: "click", x, y, mode: recState.mode });
+    stage.focus();
+  });
+  stage.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key.length === 1) {
+      e.preventDefault();
+      recTypeBuffer += e.key;
+      clearTimeout(recTypeTimer);
+      recTypeTimer = setTimeout(flushTyping, 250);
+      return;
+    }
+    if (["Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+      e.preventDefault();
+      flushTyping();
+      send({ type: "key", key: e.key });
+    }
+  });
+  stage.addEventListener("paste", (e) => {
+    const text = e.clipboardData?.getData("text") || "";
+    if (!text) return;
+    e.preventDefault();
+    recTypeBuffer += text;
+    flushTyping();
+  });
+  let wheelAt = 0;
+  stage.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const now = Date.now();
+    if (now - wheelAt < 150) return;
+    wheelAt = now;
+    send({ type: "scroll", dy: Math.round(e.deltaY) });
+  }, { passive: false });
+
+  body.querySelector('[data-rec-act="undo"]').addEventListener("click", async () => {
+    try { const r = await recApi("POST", `/${recState.id}/undo`); paintSteps(r.steps || []); }
+    catch (err) { msg.textContent = err.message; }
+  });
+  body.querySelector('[data-rec-act="discard"]').addEventListener("click", async () => {
+    if (!confirm("Discard this recording? Its steps will be lost.")) return;
+    const id = recState.id;
+    recState = null;
+    await recApi("DELETE", `/${id}`).catch(() => {});
+    renderRecordView();
+  });
+
+  // Save: the steps come from the server's own session — this sends only where to save.
+  const projSel = body.querySelector('[data-rec="project"]');
+  fetch("/api/projects").then((r) => (r.ok ? r.json() : null)).catch(() => null).then((res) => {
+    const projects = res && Array.isArray(res.projects) ? res.projects : [];
+    projSel.innerHTML = projects.length
+      ? projects.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")
+      : `<option value="">No projects you can save to</option>`;
+  });
+  body.querySelector('[data-rec-act="save"]').addEventListener("click", async () => {
+    const saveMsg = body.querySelector('[data-rec="save-msg"]');
+    flushTyping();
+    await recQueue;
+    const projectId = projSel.value;
+    if (!projectId) { saveMsg.textContent = "Pick a project to save into."; return; }
+    if ((recState?.steps || []).length < 2) { saveMsg.textContent = "Record at least one action first."; return; }
+    saveMsg.textContent = "Saving…";
+    try {
+      const saved = await recApi("POST", `/${recState.id}/save`, { projectId, title: body.querySelector('[data-rec="title"]').value.trim() || undefined });
+      recState = null;
+      stopRecPolling();
+      navigate(`#/projects/${encodeURIComponent(saved.projectId || projectId)}/cases/${encodeURIComponent(saved.id)}`);
+    } catch (err) { saveMsg.textContent = err.message; }
+  });
+
+  refreshRecFrame();
+  startRecPolling();
+  stage.focus();
+}
+
+async function refreshRecFrame() {
+  if (!recState || currentView !== "record") return;
+  const img = document.querySelector('[data-rec="frame"]');
+  if (!img) return;
+  try {
+    const res = await fetch(`/api/recordings/${recState.id}/frame`, { cache: "no-store" });
+    if (res.status === 404) {
+      // Closed on the server (idle timeout): say so instead of a frozen picture.
+      recState = null;
+      renderRecordView();
+      const m = document.querySelector('[data-rec="msg"]');
+      if (m) m.textContent = "That recording was closed after a period without activity. Start a new one.";
+      return;
+    }
+    if (!res.ok) return;
+    const url = URL.createObjectURL(await res.blob());
+    img.src = url;
+    if (recFrameUrl) URL.revokeObjectURL(recFrameUrl);
+    recFrameUrl = url;
+  } catch { /* the next tick tries again */ }
+}
+
+function startRecPolling() {
+  stopRecPolling();
+  recPollTimer = setInterval(() => {
+    if (!recState || currentView !== "record") { stopRecPolling(); return; }
+    refreshRecFrame();
+  }, 700);
+}
+
+function stopRecPolling() {
+  if (recPollTimer) clearInterval(recPollTimer);
+  recPollTimer = null;
+}

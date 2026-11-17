@@ -89,6 +89,7 @@ import {
   renameSuite,
   reorderSuite,
   saveCaseFromRun,
+  saveRecordedCase,
   scriptOverrideEnabled,
   setScriptOverride,
   updateCase,
@@ -136,7 +137,7 @@ import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabl
 import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
 import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
 import { landingUrl } from "./landingLink.js";
-import { RecorderError, recorderEnabled, recordingFrame, recordingState, recordInput, startRecording, stopRecording, undoLastStep, closeRecording, type RecorderInput } from "./recorder.js";
+import { RecorderError, recorderEnabled, recordingIr, recordingFrame, recordingState, recordInput, startRecording, stopRecording, undoLastStep, closeRecording, type RecorderInput } from "./recorder.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -584,6 +585,32 @@ app.post("/api/recordings/:id/stop", recorderGate, requireRole("tester"), expres
   catch (err) { recorderFail(res, err); }
 });
 
+/**
+ * Save the recording to a project as a library case, then end it. The steps come from the server's own
+ * session — the request names only where to save (projectId, optional suiteId and title). The case is
+ * written before the browser closes, so a refused save (a project the caller cannot see) keeps the
+ * recording open to save elsewhere.
+ */
+app.post("/api/recordings/:id/save", recorderGate, requireRole("tester"), express.json(), async (req, res) => {
+  const { projectId, title, suiteId } = req.body ?? {};
+  if (typeof projectId !== "string" || !projectId) return res.status(400).json({ error: "projectId is required" });
+  try {
+    const owner = recorderOwner(req);
+    const ir = recordingIr(req.params.id, owner, typeof title === "string" ? title : undefined);
+    const userId = (req as any).user?.id ?? LOCAL_USER_ID;
+    const role = await assertOrgAccess(userId, req.organisationId!, "tester");
+    const saved = await saveRecordedCase(userId, req.organisationId!, role, projectId, ir, {
+      title: typeof title === "string" ? title : undefined,
+      suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined,
+    });
+    await closeRecording(req.params.id);
+    res.status(201).json(saved);
+  } catch (err) {
+    if (err instanceof RecorderError) return recorderFail(res, err);
+    sendAccessError(res, err);
+  }
+});
+
 app.delete("/api/recordings/:id", recorderGate, requireRole("tester"), async (req, res) => {
   try { recordingState(req.params.id, recorderOwner(req)); await closeRecording(req.params.id); res.json({ ok: true }); }
   catch (err) { recorderFail(res, err); }
@@ -990,6 +1017,8 @@ app.get("/api/health", (_req, res) => {
     // ADDITIVE, only with PLATFORM_ADMIN_ENABLED (D-84): app.js then shows the New user form, the
     // company roles, and (for an admin) the Admin page and the organisation picker.
     ...(platformAdminEnabled() ? { platformAdmins: true } : {}),
+    // D-86: optional field, present only when on (platform rule 1) — the page builds Record a test from it.
+    ...(recorderEnabled() ? { recorder: true } : {}),
   });
 });
 

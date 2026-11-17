@@ -674,6 +674,48 @@ export async function saveCaseFromRun(
 }
 
 /**
+ * Save a RECORDED flow as a library case (D-86). Same tables and the same version-1 row as
+ * saveCaseFromRun; `source_run_id` is null because no run produced it — a person did. The IR comes from
+ * the server's own recording session (recorder.ts), never from the request body, and is re-checked by
+ * the schema here like every IR that enters the library.
+ */
+export async function saveRecordedCase(
+  userId: string, orgId: string, role: Role, projectId: string, irValue: unknown,
+  opts: { title?: string; suiteId?: string } = {},
+): Promise<CaseRow> {
+  await assertProjectVisible(userId, orgId, role, projectId);
+  const ir = parseIr(irValue, "the recording");
+  const title = (opts.title ?? ir.meta.title ?? "Recorded flow").trim() || "Recorded flow";
+  const client = requireClient();
+  const now = new Date().toISOString();
+  const { data, error } = await client
+    .from("test_cases")
+    .insert({
+      project_id: projectId,
+      title,
+      feature: ir.meta.feature ?? null,
+      ir,
+      current_version: 1,
+      source_run_id: null,
+      updated_at: now,
+      updated_by: userId,
+    })
+    .select("id, project_id, title, feature, current_version, source_run_id, last_run_status, last_run_at, updated_at")
+    .single();
+  if (error || !data) throw new AccessError(500, `could not save the recording: ${error?.message}`);
+  await client.from("test_case_versions").insert({
+    test_case_id: data.id,
+    version: 1,
+    ir,
+    spec: specForStorage(ir),
+    change_note: "Recorded in Testbench",
+    saved_by: userId,
+  });
+  if (opts.suiteId) await addCaseToSuite(userId, orgId, role, opts.suiteId, data.id);
+  return toCaseRow(data);
+}
+
+/**
  * Raised when a case moved on under an editor's feet. Carries the current server-side state so the
  * caller can show what changed instead of a bare refusal.
  */
