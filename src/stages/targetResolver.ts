@@ -492,9 +492,14 @@ async function resolveRoleWithFallback(page: LocatorRoot, role: string, name: st
   // Behind SCREEN_MODE_ALL_SITES (D-85): off, the replay resolves exactly as before. Same rung in
   // generator.ts's LOCATE_STEM_RUNG (TD-07: the two must not drift).
   if (screenModeAllSites() && name.replace(/\s+/g, "").length >= LONG_NAME_PREFIX && await original.count() === 0) {
-    const byStem = page.getByRole(role as any, { name: longNameStem(name) });
-    const n = await byStem.count();
-    if (n >= 1) return n === 1 ? byStem : byStem.first();
+    // Anchored first; then the same 40 characters anywhere in the name — a name cut from the MIDDLE of a
+    // card's text (run 2026-11-17T10-23-48-792Z-fff7cd57: "Technical ConferencesTracks…" inside the card
+    // "Conference Technical Conferences Tracks…") starts nowhere. Forty specific characters, not a word.
+    for (const anchored of [true, false]) {
+      const byStem = page.getByRole(role as any, { name: longNameStem(name, anchored) });
+      const n = await byStem.count();
+      if (n >= 1) return n === 1 ? byStem : byStem.first();
+    }
   }
   return original.first();
 }
@@ -504,9 +509,9 @@ async function resolveRoleWithFallback(page: LocatorRoot, role: string, name: st
 export const LONG_NAME_PREFIX = 40;
 
 /** The anchored, whitespace-blind stem of a long name (TD-198). Same expression as LOCATE_STEM_RUNG. */
-export function longNameStem(name: string): RegExp {
+export function longNameStem(name: string, anchored = true): RegExp {
   const chars = Array.from(name.replace(/\s+/g, "")).slice(0, LONG_NAME_PREFIX);
-  return new RegExp("^\\s*" + chars.map((c) => c.replace(/[.*+?^(){}$|[\]\\]/g, "\\$&")).join("\\s*"));
+  return new RegExp((anchored ? "^\\s*" : "") + chars.map((c) => c.replace(/[.*+?^(){}$|[\]\\]/g, "\\$&")).join("\\s*"));
 }
 
 /**

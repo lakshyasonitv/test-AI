@@ -699,10 +699,13 @@ const LOCATE_STEM_RUNG = String.raw`
   // when several. Only for 40+ characters (TD-32). Mirrors targetResolver.ts longNameStem.
   if (count === 0 && name.replace(/\s+/g, "").length >= 40) {
     const chars = Array.from(name.replace(/\s+/g, "")).slice(0, 40);
-    const stem = new RegExp("^\\s*" + chars.map((c) => c.replace(/[.*+?^(){}$|[\]\\]/g, "\\$&")).join("\\s*"));
-    const byStem = page.getByRole(role, { name: stem });
-    const n = await byStem.count();
-    if (n >= 1) return n === 1 ? byStem : byStem.first();
+    const body = chars.map((c) => c.replace(/[.*+?^(){}$|[\]\\]/g, "\\$&")).join("\\s*");
+    // Anchored first, then anywhere: a name cut from the middle of a card's text starts nowhere.
+    for (const head of ["^\\s*", ""]) {
+      const byStem = page.getByRole(role, { name: new RegExp(head + body) });
+      const n = await byStem.count();
+      if (n >= 1) return n === 1 ? byStem : byStem.first();
+    }
   }
 `;
 

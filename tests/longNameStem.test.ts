@@ -86,9 +86,18 @@ describe("discovery's glued card names reach the card (both resolvers, real Chro
     expect(await (await off(page, "button", WHOLE)).count()).toBe(0);
   });
 
-  it("the inner name (cut mid-card) — reported, not guessed", async () => {
-    // "Technical ConferencesTracks…" does not start the card's accessible name ("Conference Technical…"),
-    // so the anchored stem finds nothing. This is the name run 10-04-17 actually targeted; see TD-198.
-    expect(await (await withFlag(() => resolveLive(page, { role: "button", name: INNER } as any, "click"))).count()).toBe(0);
+  it("the inner name (cut mid-card, what run 10-23-48 targeted) reaches the card by matching anywhere", async () => {
+    // "Technical ConferencesTracks…" does not START the card's accessible name ("Conference Technical…"); its
+    // first 40 non-space characters appear inside it. Both resolvers try anchored, then anywhere.
+    expect(await (await withFlag(() => resolveLive(page, { role: "button", name: INNER } as any, "click"))).getAttribute("id")).toBe("card");
+    const locate = await emittedLocate();
+    expect(await (await locate(page, "button", INNER)).getAttribute("id")).toBe("card");
+  });
+
+  it("forty characters that appear in no name still match nothing", async () => {
+    const other = "Technical ConferencesWorkshops, speakers and sessions for the whole week";
+    expect(await (await withFlag(() => resolveLive(page, { role: "button", name: other } as any, "click"))).count()).toBe(0);
+    const locate = await emittedLocate();
+    expect(await (await locate(page, "button", other)).count()).toBe(0);
   });
 });

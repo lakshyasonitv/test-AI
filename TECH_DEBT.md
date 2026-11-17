@@ -6583,3 +6583,5 @@ cut from the MIDDLE of a card's text (the inner element run 10-04-17 targeted) o
 element whose accessible name starts there. The lasting fix is discovery recording the accessible name, not
 textContent (`domDiscovery.ts` around its `.slice(0, 80)`), which changes element names for every site.
 Also fixed: on a retry the swap ran again on the kept recorded login and duplicated `auth-4`.
+
+**Third step (run `2026-11-17T10-23-48-792Z-fff7cd57`):** the targeted name was cut from the MIDDLE of the card text, so no accessible name starts with it. Both resolvers now try the same 40 non-space characters anywhere in the name after the anchored try. Tested in Chromium with that exact name.
