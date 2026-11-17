@@ -1332,6 +1332,8 @@ function setupCaseCardListeners() {
     });
   });
 
+  addJiraBugButtons(); // D-85: only when /api/health said jiraBugs; otherwise it does nothing
+
   // Cards that rendered already-expanded (failed/blocked) never fire the click/keydown
   // handler above, so their detail fetch — including the diagnosis block — has to be kicked
   // off here instead. Loading them from the click listener alone would leave every
@@ -4224,6 +4226,7 @@ async function api(path, init) {
   if (!res.ok) {
     const err = new Error(body.error || `That didn't work (${res.status}).`);
     err.code = body.code;   // a machine-readable reason, when the server gives one
+    err.body = body;        // the whole reply, for callers that read more (D-85: fieldErrors, reconnect)
     throw err;
   }
   return body;
@@ -6591,6 +6594,7 @@ async function fetchJiraStory() {
     promptEl.dispatchEvent(new Event("input", { bubbles: true }));
     const link = /^https:\/\//.test(story.link || "")
       ? ` <a href="${escapeHtml(story.link)}" target="_blank" rel="noopener noreferrer">Open in Jira</a>` : "";
+    jira.lastStory = { key: story.key, promptText: story.promptText }; // D-85: the bug form offers to link it
     jira.note = `Prompt filled from ${escapeHtml(story.key)}${story.truncated ? " (long story — only the first part was used)" : ""}. Check it, add the URL, then Run.${link}`;
   } catch (err) {
     jira.notice = err.message;
@@ -6617,6 +6621,7 @@ fetch("/api/health")
     if (h && h.sfDiscoveryCache === true) renderFreshDiscovery();
     if (h && h.specIntake === true) renderProToggle();
     if (h && h.jira === true) renderJiraRow();
+    if (h && h.jiraBugs === true) enableJiraBugs();
     if (h && h.projectDiscovery === true) renderProjectFreshBox();
     if (h && typeof h.landingUrl === "string") renderLandingLink(h.landingUrl);
     if (h && h.platformAdmins === true) { platformModel = true; renderProjectPicker(); }
@@ -6626,6 +6631,356 @@ fetch("/api/health")
     if (!("selfHeal" in runOptions)) paintToggle(healToggleEl, optionDefaults.selfHeal);
   })
   .catch(() => { /* health is a diagnostic; the toggles still work without it */ });
+
+// -----------------------------------------------------------------------------
+// "Create Jira bug" (D-85): a button on every failed, blocked or cut-short case card. It opens an
+// inline panel (like "Save case" above it): choose the Jira project and issue type, then a form
+// built from that project's own fields, prefilled from the failed test. The person edits it, adds or
+// removes fields, and presses Create — nothing is ever filed without that click.
+//
+// Rule-keeping, as the Jira row above:
+//   - Nothing exists unless /api/health says `jiraBugs: true`. Flag off, no button is created.
+//   - No new style.css class (rule 3): .dl-btn, .case-save-panel, .field, .field-label,
+//     .team-select, .cd-line-input, .case-selection-link, .team-error, .team-ok and .hrow-meta are
+//     reused. The panel shows and hides with the `hidden` attribute, never the .hidden class, and
+//     never calls showView (rule 4): it is part of a card, not a view.
+//   - The form is a proposal. The server re-reads the fields from Jira and checks every value.
+// -----------------------------------------------------------------------------
+
+let jiraBugsOn = false;
+
+function enableJiraBugs() {
+  jiraBugsOn = true;
+  addJiraBugButtons(); // cards already on screen when /api/health answered
+}
+
+function addJiraBugButtons() {
+  if (!jiraBugsOn || !suiteCaseListEl) return;
+  // A viewer gets no button; the server refuses them anyway, which is the real guarantee.
+  if (auth.required && auth.role && !roleAtLeast(auth.role, "tester")) return;
+  suiteCaseListEl.querySelectorAll(".case-card").forEach((card) => {
+    if (card.dataset.status === "passed" || card.querySelector("[data-jira-bug]")) return;
+    const row = card.querySelector(".case-downloads");
+    if (!row) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "dl-btn";
+    btn.dataset.jiraBug = "open";
+    btn.innerHTML = `${icon("alert-triangle", { size: 13 })} Create Jira bug`;
+    row.appendChild(btn);
+    const panel = document.createElement("div");
+    panel.className = "case-save-panel";
+    panel.dataset.jiraBugPanel = "";
+    panel.hidden = true;
+    // After the "Save case" panel, so openSaveCasePanel's querySelector still finds its own first.
+    (card.querySelector(".case-save-panel") || row).insertAdjacentElement("afterend", panel);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!panel.hidden) { panel.hidden = true; return; }
+      panel.hidden = false;
+      openJiraBugPanel(panel, suiteResultsEl.dataset.runId, card.dataset.caseId);
+    });
+  });
+}
+
+const JIRA_BUG_KIND_INPUT = { number: "number", date: "date", datetime: "datetime-local" };
+
+async function openJiraBugPanel(panel, runId, caseId) {
+  const st = {
+    runId, caseId, step: "loading", notice: "", busy: false,
+    draft: null, bugs: [], another: false, created: null,
+    sites: [], siteId: "",
+    projects: [], projectQuery: "", projectId: "",
+    issueTypes: [], issueTypeId: "",
+    fields: [], shown: [], values: {}, fieldErrors: {},
+    attach: true, relatesTo: "",
+  };
+  const base = `/api/runs/${encodeURIComponent(runId)}/cases/${encodeURIComponent(caseId)}/jira-bug`;
+  const siteQ = () => (st.siteId ? `site=${encodeURIComponent(st.siteId)}` : "");
+  const paint = () => paintJiraBugPanel(panel, st);
+  const fail = (err) => {
+    st.busy = false;
+    st.notice = err.message;
+    if (err.body && err.body.signedOut) { st.step = "connect"; }
+    else if (err.body && err.body.reconnect) { st.step = "reconnect"; }
+    st.fieldErrors = (err.body && err.body.fieldErrors) || {};
+    paint();
+  };
+
+  async function loadStatus() {
+    const s = await api("/api/jira/status");
+    st.sites = (s.sites || []).filter((x) => x.canWrite);
+    if (!s.connected) { st.step = "connect"; return; }
+    if (!st.sites.length) { st.step = "reconnect"; return; }
+    if (!st.sites.some((x) => x.id === st.siteId)) st.siteId = st.sites[0].id;
+    st.step = "form";
+  }
+
+  async function loadProjects() {
+    st.busy = true; paint();
+    const q = [siteQ(), st.projectQuery ? `query=${encodeURIComponent(st.projectQuery)}` : ""].filter(Boolean).join("&");
+    const r = await api(`/api/jira/bug/projects${q ? `?${q}` : ""}`);
+    st.projects = r.projects || [];
+    st.busy = false;
+  }
+
+  async function chooseProject(id) {
+    st.projectId = id; st.issueTypes = []; st.issueTypeId = ""; st.fields = []; st.shown = []; st.fieldErrors = {};
+    if (!id) return paint();
+    st.busy = true; paint();
+    const r = await api(`/api/jira/bug/projects/${encodeURIComponent(id)}/issuetypes?${siteQ()}`);
+    st.issueTypes = r.issueTypes || [];
+    // "Bug" when the project has one — the user can still pick any other type.
+    const bug = st.issueTypes.find((t) => /^bug$/i.test(t.name));
+    st.busy = false;
+    if (bug) return chooseIssueType(bug.id);
+    paint();
+  }
+
+  async function chooseIssueType(id) {
+    st.issueTypeId = id; st.fields = []; st.shown = []; st.fieldErrors = {};
+    if (!id) return paint();
+    st.busy = true; paint();
+    const r = await api(`/api/jira/bug/projects/${encodeURIComponent(st.projectId)}/issuetypes/${encodeURIComponent(id)}/fields?${siteQ()}`);
+    st.fields = r.fields || [];
+    // Shown to start with: what Jira requires, plus summary and description. Everything else is one
+    // "+ Add field" away. Values typed so far survive a change of project or type.
+    st.shown = st.fields.filter((f) => f.required || f.id === "summary" || f.id === "description").map((f) => f.id);
+    if (st.values.summary === undefined) st.values.summary = st.draft.summary;
+    if (st.values.description === undefined) st.values.description = st.draft.description;
+    st.busy = false;
+    paint();
+  }
+
+  async function create() {
+    // The same check the server makes, first, so a missing field is named before a round trip.
+    st.fieldErrors = {};
+    for (const f of st.fields) {
+      if (!f.required || !st.shown.includes(f.id)) continue;
+      const v = st.values[f.id];
+      if (f.kind === "unsupported" || v === undefined || v === "" || (Array.isArray(v) && !v.length)) {
+        st.fieldErrors[f.id] = f.kind === "unsupported" ? f.note : `${f.name} is required`;
+      }
+    }
+    if (Object.keys(st.fieldErrors).length) { st.notice = "Fill in the fields marked below."; return paint(); }
+    const fields = {};
+    for (const id of st.shown) {
+      const f = st.fields.find((x) => x.id === id);
+      let v = st.values[id];
+      if (!f || f.kind === "unsupported" || v === undefined || v === "") continue;
+      if (f.kind === "datetime") v = new Date(v).toISOString();
+      fields[id] = v;
+    }
+    st.busy = true; st.notice = ""; paint();
+    try {
+      const r = await api(base, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          site: st.siteId, projectId: st.projectId, issueTypeId: st.issueTypeId, fields,
+          attachScreenshot: !!(st.draft.hasScreenshot && st.attach),
+          ...(st.relatesTo.trim() ? { relatesTo: st.relatesTo.trim() } : {}),
+        }),
+      });
+      st.created = r;
+      st.bugs.push({ key: r.key, link: r.link });
+      st.step = "done"; st.busy = false;
+      paint();
+    } catch (err) { fail(err); }
+  }
+
+  // Each open has its own state, so each open installs its own handlers; the listeners themselves
+  // are added once and always call the CURRENT handlers. (Wiring them to the first open's closure
+  // left a reopened panel acting on stale state — caught in the browser check.)
+  const on = {};
+  panel.jiraBugHandlers = on;
+  if (!panel.dataset.wired) {
+    panel.dataset.wired = "1";
+    for (const type of ["input", "keydown", "change", "click"]) {
+      panel.addEventListener(type, (e) => panel.jiraBugHandlers?.[type]?.(e));
+    }
+  }
+  {
+    on.input = (e) => {
+      const el = e.target;
+      if (el.dataset.field) {
+        st.values[el.dataset.field] = el.multiple ? [...el.selectedOptions].map((o) => o.value) : el.value;
+      } else if (el.dataset.jb === "relates") st.relatesTo = el.value;
+      else if (el.dataset.jb === "pquery") st.projectQuery = el.value;
+    };
+    on.keydown = (e) => {
+      if (e.key === "Enter" && e.target.dataset.jb === "pquery") { e.preventDefault(); panel.querySelector('[data-jb="psearch"]')?.click(); }
+    };
+    on.change = (e) => {
+      const el = e.target;
+      const what = el.dataset.jb;
+      if (el.dataset.field && el.tagName === "SELECT") {
+        st.values[el.dataset.field] = el.multiple ? [...el.selectedOptions].map((o) => o.value) : el.value;
+      } else if (what === "site") { st.siteId = el.value; st.projectId = ""; st.issueTypes = []; st.fields = []; st.shown = []; loadProjects().then(paint, fail); }
+      else if (what === "project") chooseProject(el.value).catch(fail);
+      else if (what === "itype") chooseIssueType(el.value).catch(fail);
+      else if (what === "attach") st.attach = el.checked;
+      else if (what === "add" && el.value) { st.shown.push(el.value); paint(); }
+    };
+    on.click = (e) => {
+      const b = e.target.closest("[data-jb]");
+      if (!b || b.tagName === "SELECT" || b.tagName === "INPUT" || b.tagName === "TEXTAREA") return;
+      const what = b.dataset.jb;
+      if (what === "connect" || what === "reconnect") {
+        // connectJira (the Jira row's) opens Atlassian's window and polls; a write scope comes with
+        // a fresh consent, so "Reconnect" is the same call. Wait for a writable sign-in, then go on.
+        connectJira();
+        st.notice = ""; st.step = "waiting"; paint();
+        const started = Date.now();
+        const poll = setInterval(async () => {
+          let ok = false;
+          try { await loadStatus(); ok = st.step === "form"; } catch { /* keep waiting */ }
+          if (ok || Date.now() - started > 10 * 60_000) {
+            clearInterval(poll);
+            if (!ok) { st.step = "connect"; st.notice = "The Jira sign-in wasn't finished. Try again."; return paint(); }
+            loadProjects().then(paint, fail);
+          }
+        }, 2000);
+      } else if (what === "psearch") loadProjects().then(paint, fail);
+      else if (what === "remove") { st.shown = st.shown.filter((id) => id !== b.dataset.id); delete st.fieldErrors[b.dataset.id]; paint(); }
+      else if (what === "another") { st.another = true; paint(); }
+      else if (what === "create") create();
+      else if (what === "new") { st.step = "form"; st.created = null; st.another = true; paint(); }
+    };
+  }
+
+  paint();
+  try {
+    // The draft first: without it there is no form to show, whatever the Jira sign-in says.
+    const d = await api(base);
+    st.draft = d.draft;
+    st.bugs = d.bugs || [];
+    await loadStatus();
+    // Offer to link the story this run came from, when the run's prompt is the story Jira filled in.
+    const last = jira.lastStory;
+    if (last && typeof currentRunPrompt === "string" && currentRunPrompt.trim() === String(last.promptText).trim()) st.relatesTo = last.key;
+    if (st.step === "form") await loadProjects();
+    paint();
+  } catch (err) {
+    if (!st.draft) st.step = "error";
+    fail(err);
+    if (!st.draft) { st.step = "error"; paint(); } // a sign-in prompt is no use without a draft
+  }
+}
+
+function jiraBugFieldInput(f, value) {
+  const v = value === undefined || value === null ? "" : value;
+  const attrs = `data-field="${escapeHtml(f.id)}" aria-label="${escapeHtml(f.name)}"`;
+  if (f.kind === "richtext") {
+    return `<textarea ${attrs} rows="${f.id === "description" ? 12 : 4}" style="width:100%">${escapeHtml(String(v))}</textarea>`;
+  }
+  if (f.kind === "select" || f.kind === "multiselect") {
+    const multi = f.kind === "multiselect";
+    const chosen = new Set(Array.isArray(v) ? v : [v]);
+    return `<select class="team-select" ${attrs}${multi ? ` multiple size="${Math.min(6, (f.options || []).length)}"` : ""}>
+      ${multi ? "" : `<option value="">Choose…</option>`}
+      ${(f.options || []).map((o) => `<option value="${escapeHtml(o.id)}"${chosen.has(o.id) ? " selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}
+    </select>`;
+  }
+  if (f.kind === "unsupported") return `<p class="hrow-meta">${escapeHtml(f.note || "Set this in Jira after creating.")}</p>`;
+  const type = JIRA_BUG_KIND_INPUT[f.kind] || "text";
+  const ph = f.kind === "labels" ? ` placeholder="words separated by spaces"` : "";
+  return `<input type="${type}" class="cd-line-input" style="flex:none" ${attrs}${ph}${f.kind === "text" ? ` maxlength="255"` : ""} value="${escapeHtml(String(v))}" />`;
+}
+
+function paintJiraBugPanel(panel, st) {
+  const notice = st.notice ? `<p class="team-error" role="alert">${escapeHtml(st.notice)}</p>` : "";
+  const dis = st.busy ? " disabled" : "";
+  const link = (b) => /^https:\/\//.test(b.link || "")
+    ? `<a href="${escapeHtml(b.link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(b.key)}</a>` : escapeHtml(b.key);
+
+  if (st.step === "loading") { panel.innerHTML = `<p class="hrow-meta">Loading…</p>`; return; }
+  if (st.step === "error") { panel.innerHTML = notice; return; }
+  if (st.step === "waiting") { panel.innerHTML = `<p class="hrow-meta">Finish in the Jira window…</p>`; return; }
+  if (st.step === "connect") {
+    panel.innerHTML = `${notice}<p class="field-label">Connect Jira to create an issue from this test.</p>
+      <button type="button" class="dl-btn" data-jb="connect">Connect Jira</button>`;
+    return;
+  }
+  if (st.step === "reconnect") {
+    panel.innerHTML = `${notice}<p class="field-label">Your Jira sign-in can only read. Reconnect and allow Testbench to create issues.</p>
+      <button type="button" class="dl-btn" data-jb="reconnect">Reconnect Jira</button>`;
+    return;
+  }
+  if (st.step === "done") {
+    const r = st.created;
+    panel.innerHTML = `<p class="team-ok">Created ${link(r)} in Jira.${r.attached ? " Screenshot attached." : ""}${r.linked ? " Linked to the story." : ""}</p>
+      ${(r.warnings || []).map((w) => `<p class="team-error">${escapeHtml(w)}</p>`).join("")}
+      <button type="button" class="case-selection-link" data-jb="new">Create another issue</button>`;
+    return;
+  }
+  if (st.bugs.length && !st.another) {
+    panel.innerHTML = `<p class="field-label">Already reported as ${st.bugs.map(link).join(", ")}.</p>
+      <button type="button" class="case-selection-link" data-jb="another">Create another anyway</button>`;
+    return;
+  }
+
+  const sitePick = st.sites.length > 1 ? `
+    <label class="field"><span class="field-label">Jira site</span>
+      <select class="team-select" data-jb="site"${dis}>${st.sites.map((x) =>
+        `<option value="${escapeHtml(x.id)}"${x.id === st.siteId ? " selected" : ""}>${escapeHtml(x.name || x.url)}</option>`).join("")}</select>
+    </label>` : "";
+  const projectPick = `
+    <div class="field"><span class="field-label">Project</span>
+      <div style="display:flex;gap:var(--sp-2);flex-wrap:wrap">
+        <input type="text" class="cd-line-input" data-jb="pquery" placeholder="Search projects" value="${escapeHtml(st.projectQuery)}" style="flex:none;max-width:220px" />
+        <button type="button" class="dl-btn" data-jb="psearch"${dis}>Search</button>
+        <select class="team-select" data-jb="project"${dis}>
+          <option value="">${st.projects.length ? "Choose a project…" : "No projects you can create issues in"}</option>
+          ${st.projects.map((p) => `<option value="${escapeHtml(p.id)}"${p.id === st.projectId ? " selected" : ""}>${escapeHtml(p.name)} (${escapeHtml(p.key)})</option>`).join("")}
+        </select>
+      </div>
+    </div>`;
+  const typePick = st.projectId ? `
+    <label class="field"><span class="field-label">Issue type</span>
+      <select class="team-select" data-jb="itype"${dis}>
+        <option value="">Choose a type…</option>
+        ${st.issueTypes.map((t) => `<option value="${escapeHtml(t.id)}"${t.id === st.issueTypeId ? " selected" : ""}>${escapeHtml(t.name)}</option>`).join("")}
+      </select>
+    </label>` : "";
+
+  let form = "";
+  if (st.issueTypeId && st.fields.length) {
+    const rows = st.shown.map((id) => st.fields.find((f) => f.id === id)).filter(Boolean).map((f) => {
+      const fixed = f.required || f.id === "summary";
+      const err = st.fieldErrors[f.id];
+      return `<div class="field">
+        <span class="field-label" style="display:flex;justify-content:space-between;gap:var(--sp-2)">
+          <span>${escapeHtml(f.name)}${f.required ? " *" : ""}</span>
+          ${fixed ? "" : `<button type="button" class="case-selection-link" data-jb="remove" data-id="${escapeHtml(f.id)}" aria-label="Remove ${escapeHtml(f.name)}">✕ Remove</button>`}
+        </span>
+        ${jiraBugFieldInput(f, st.values[f.id])}
+        ${err ? `<p class="team-error">${escapeHtml(err)}</p>` : ""}
+      </div>`;
+    }).join("");
+    const addable = st.fields.filter((f) => !st.shown.includes(f.id));
+    const add = addable.length ? `
+      <label class="field"><span class="field-label">Add a field</span>
+        <select class="team-select" data-jb="add">
+          <option value="">+ Add field…</option>
+          ${addable.map((f) => `<option value="${escapeHtml(f.id)}"${f.kind === "unsupported" ? " disabled" : ""}>${escapeHtml(f.name)}${f.kind === "unsupported" ? " (set in Jira)" : ""}</option>`).join("")}
+        </select>
+      </label>` : "";
+    const blocked = st.fields.some((f) => f.required && f.kind === "unsupported");
+    form = `${rows}${add}
+      ${st.draft.hasScreenshot ? `<label class="field-label" style="display:flex;align-items:center;justify-content:flex-start;gap:8px;cursor:pointer">
+        <input type="checkbox" data-jb="attach" style="width:auto;height:auto;flex:none;margin:0"${st.attach ? " checked" : ""} /> Attach the screenshot</label>` : ""}
+      <label class="field"><span class="field-label">Link to a story (optional)</span>
+        <input type="text" class="cd-line-input" data-jb="relates" placeholder="e.g. TBS-1" value="${escapeHtml(st.relatesTo)}" style="flex:none;max-width:220px" />
+      </label>
+      ${blocked ? `<p class="team-error">This issue type needs a field Testbench can't fill yet. Choose another type, or create it in Jira.</p>` : ""}
+      <div><button type="button" class="dl-btn" data-jb="create"${st.busy || blocked ? " disabled" : ""}>${st.busy ? "Creating…" : "Create"}</button></div>
+      <p class="hrow-meta">Nothing is sent to Jira until you press Create.</p>`;
+  }
+
+  panel.innerHTML = `${notice}
+    <div style="display:flex;flex-direction:column;gap:var(--sp-3)">${sitePick}${projectPick}${typePick}${form}</div>`;
+}
 
 // -----------------------------------------------------------------------------
 // Link back to the landing page (LANDING_URL, D-76)

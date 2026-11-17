@@ -344,6 +344,9 @@ const RESOURCE_ROUTES: { name: string; method: Method; path: string; body?: unkn
   { name: "rewrite org A's gate case", method: "post", path: `/api/runs/${RUN_A}/case-selection/rewrite`, body: { title: "t", steps: ["s"], instruction: "i" }, mounted: "POST /api/runs/:runId/case-selection/rewrite" },
   { name: "delete org A's run", method: "delete", path: `/api/runs/${RUN_A}`, mounted: "DELETE /api/runs/:runId" },
   { name: "save org A's run case into a library", method: "post", path: `/api/runs/${RUN_A}/cases/case-0/save`, body: { projectId: PROJ_B1 }, mounted: "POST /api/runs/:runId/cases/:caseId/save" },
+  // D-85: the draft carries org A's steps, errors and screenshot; the create would file them in Jira.
+  { name: "read org A's case as a Jira bug draft", method: "get", path: `/api/runs/${RUN_A}/cases/case-0/jira-bug`, mounted: "GET /api/runs/:runId/cases/:caseId/jira-bug" },
+  { name: "file org A's case as a Jira bug", method: "post", path: `/api/runs/${RUN_A}/cases/case-0/jira-bug`, body: { projectId: "10000", issueTypeId: "10004", fields: {} }, mounted: "POST /api/runs/:runId/cases/:caseId/jira-bug" },
   { name: "replay org A's case", method: "post", path: "/api/replay", body: { caseIds: [CASE_A] }, mounted: "POST /api/replay" },
 ];
 
@@ -397,6 +400,9 @@ const EXEMPT: Record<string, string> = {
   "GET /api/jira/callback": "D-71: public by necessity (a redirect from Atlassian carries no token); identified only by a single-use state bound to the user who asked",
   "GET /api/jira/issue/:issueKey": "D-71: reads Jira with the caller's OWN token (req.user.id); nothing stored here, no row",
   "POST /api/jira/disconnect": "D-71: drops the caller's own in-memory token only",
+  "GET /api/jira/bug/projects": "D-85: reads Jira with the caller's OWN token (req.user.id); names no stored resource, reads no row",
+  "GET /api/jira/bug/projects/:jiraProjectId/issuetypes": "D-85: as above — a Jira project id, checked by Jira against the caller's own Jira permissions",
+  "GET /api/jira/bug/projects/:jiraProjectId/issuetypes/:issueTypeId/fields": "D-85: as above",
   "GET /api/cases/:caseId/steps/jobs/:jobId/events": "editing sessions are scoped by userId, not org — getJob 404s for anyone else",
   "GET /api/cases/:caseId/steps/jobs/:jobId/state": "as above",
   "POST /api/cases/:caseId/steps/jobs/:jobId/cancel": "as above",

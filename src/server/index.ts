@@ -132,7 +132,9 @@ import {
 } from "../stages/specIntake.js";
 import { SpecModel } from "../schema/spec.js";
 import { proStoryPromptEnabled, storyPromptText } from "../stages/storyPrompt.js";
-import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabled, JiraError, parseIssueKey } from "../jira/client.js";
+import { authorizeUrl, connect as connectJira, fetchStory, jiraBugsEnabled, jiraConfig, jiraEnabled, JiraError, parseIssueKey } from "../jira/client.js";
+import { attachFile, buildIssueFields, createIssue, getCreateFields, JiraBugError, linkRelates, listCreatableProjects, listIssueTypes } from "../jira/bugs.js";
+import { bugScreenshotFile, buildBugDraft, filedBugs, recordFiledBug } from "./jiraBugDraft.js";
 import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
 import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
 import { landingUrl } from "./landingLink.js";
@@ -903,6 +905,7 @@ app.get("/api/health", (_req, res) => {
     // ADDITIVE, appended, and present ONLY when JIRA_ENABLED=true (D-71). app.js shows the
     // "Connect Jira" row only when this is true; with the flag off the body is unchanged.
     ...(jiraEnabled() ? { jira: true } : {}),
+    ...(jiraBugsEnabled() ? { jiraBugs: true } : {}),
     // ADDITIVE, appended, and present ONLY when SPEC_INTAKE_ENABLED=true — the same shape as
     // `targetApps` above and for the same reason: the home screen renders the Pro toggle only when
     // this is true, and with the flag off the body is byte-identical to before.
@@ -1136,7 +1139,8 @@ app.get("/api/jira/status", requireRole("tester"), (req, res) => {
     configured: "config" in cfg,
     ...("missing" in cfg ? { missing: cfg.missing } : {}),
     connected: !!conn,
-    sites: conn ? conn.sites : [],
+    // D-85: `canWrite` only while "Create Jira bug" is on, so the flag-off reply is exactly as before.
+    sites: conn ? conn.sites.map((x) => ({ id: x.id, name: x.name, url: x.url, ...(jiraBugsEnabled() ? { canWrite: !!x.canWrite } : {}) })) : [],
   });
 });
 
@@ -1210,6 +1214,140 @@ app.post("/api/jira/disconnect", requireRole("tester"), (req, res) => {
   if (!jiraEnabled()) return res.status(404).json(JIRA_OFF);
   dropConnection(req.user!.id);
   res.status(204).end();
+});
+
+// --------------------------------------------------------------------------
+// "Create Jira bug" (D-85), behind JIRA_BUGS_ENABLED (and JIRA_ENABLED). Off, every route below is
+// 404 and nothing else in the app changes. A person always presses Create: nothing here files an
+// issue on its own. The browser's form is a proposal — the create route re-reads the field list
+// from Jira and checks every value against it (src/jira/bugs.ts, buildIssueFields).
+// --------------------------------------------------------------------------
+
+const JIRA_BUGS_OFF = { error: "Creating Jira issues is not enabled on this server (JIRA_BUGS_ENABLED is off)." };
+/** Jira project and issue type ids are numbers; nothing else is ever put into their URLs. */
+const JIRA_NUMERIC_ID = /^\d{1,18}$/;
+
+/** This user's Jira connection and the site they picked, or the reply that says why not. */
+function jiraSiteFor(req: express.Request, res: express.Response, siteParam: unknown, needWrite = false) {
+  const conn = getConnection(req.user!.id);
+  if (!conn) {
+    res.status(401).json({ error: "Jira isn't connected. Click \"Connect Jira\" first.", signedOut: true });
+    return null;
+  }
+  const site = typeof siteParam === "string" && siteParam ? conn.sites.find((x) => x.id === siteParam) : conn.sites[0];
+  if (!site) {
+    res.status(400).json({ error: "That Jira site isn't one this sign-in can reach." });
+    return null;
+  }
+  if (needWrite && !site.canWrite) {
+    res.status(403).json({ error: "This Jira sign-in can only read. Click \"Reconnect Jira\" and allow Testbench to create issues.", reconnect: true });
+    return null;
+  }
+  return { conn, site };
+}
+
+function sendJiraBugError(req: express.Request, res: express.Response, err: unknown): void {
+  if (err instanceof JiraError && err.signedOut) dropConnection(req.user!.id);
+  if (err instanceof JiraBugError && Object.keys(err.fieldErrors).length) {
+    res.status(err.status).json({ error: err.message, fieldErrors: err.fieldErrors });
+    return;
+  }
+  sendJiraError(res, err);
+}
+
+/** Projects this user may create issues in. `?site&query&startAt`. */
+app.get("/api/jira/bug/projects", requireRole("tester"), async (req, res) => {
+  if (!jiraBugsEnabled()) return res.status(404).json(JIRA_BUGS_OFF);
+  const ctx = jiraSiteFor(req, res, req.query.site);
+  if (!ctx) return;
+  try {
+    res.json(await listCreatableProjects(ctx.conn, ctx.site, {
+      query: typeof req.query.query === "string" ? req.query.query : undefined,
+      startAt: Number(req.query.startAt) || 0,
+    }));
+  } catch (err) { sendJiraBugError(req, res, err); }
+});
+
+/** The issue types the user may create in one project. */
+app.get("/api/jira/bug/projects/:jiraProjectId/issuetypes", requireRole("tester"), async (req, res) => {
+  if (!jiraBugsEnabled()) return res.status(404).json(JIRA_BUGS_OFF);
+  if (!JIRA_NUMERIC_ID.test(req.params.jiraProjectId)) return res.status(400).json({ error: "invalid Jira project id" });
+  const ctx = jiraSiteFor(req, res, req.query.site);
+  if (!ctx) return;
+  try {
+    res.json({ issueTypes: await listIssueTypes(ctx.conn, ctx.site, req.params.jiraProjectId) });
+  } catch (err) { sendJiraBugError(req, res, err); }
+});
+
+/** The create form's fields for one project and issue type: what is required, and Jira's choices. */
+app.get("/api/jira/bug/projects/:jiraProjectId/issuetypes/:issueTypeId/fields", requireRole("tester"), async (req, res) => {
+  if (!jiraBugsEnabled()) return res.status(404).json(JIRA_BUGS_OFF);
+  if (!JIRA_NUMERIC_ID.test(req.params.jiraProjectId) || !JIRA_NUMERIC_ID.test(req.params.issueTypeId)) {
+    return res.status(400).json({ error: "invalid Jira project or issue type id" });
+  }
+  const ctx = jiraSiteFor(req, res, req.query.site);
+  if (!ctx) return;
+  try {
+    res.json({ fields: await getCreateFields(ctx.conn, ctx.site, req.params.jiraProjectId, req.params.issueTypeId) });
+  } catch (err) { sendJiraBugError(req, res, err); }
+});
+
+/** The prefilled bug for a run's case, and the issues already created from it. */
+app.get("/api/runs/:runId/cases/:caseId/jira-bug", requireRunRole("tester"), (req, res) => {
+  if (!jiraBugsEnabled()) return res.status(404).json(JIRA_BUGS_OFF);
+  if (!RUN_CASE_ID.test(req.params.caseId)) return res.status(400).json({ error: "invalid caseId" });
+  const draft = buildBugDraft(req.params.runId, req.params.caseId);
+  if (!draft) return res.status(404).json({ error: "This run has no result for that test." });
+  if (draft === "passed") return res.status(409).json({ error: "This test passed, so there is nothing to report." });
+  res.json({ draft, bugs: filedBugs(req.params.runId, req.params.caseId) });
+});
+
+/**
+ * Create the issue: the person pressed Create. Body: { site?, projectId, issueTypeId, fields,
+ * attachScreenshot?, relatesTo? }. The issue is created first; the screenshot and the story link
+ * are extras — if either fails, the issue still exists, and the reply says what did not happen.
+ */
+app.post("/api/runs/:runId/cases/:caseId/jira-bug", requireRunRole("tester"), async (req, res) => {
+  if (!jiraBugsEnabled()) return res.status(404).json(JIRA_BUGS_OFF);
+  const { runId, caseId } = req.params;
+  if (!RUN_CASE_ID.test(caseId)) return res.status(400).json({ error: "invalid caseId" });
+  const { site: siteParam, projectId, issueTypeId, fields, attachScreenshot, relatesTo } = req.body ?? {};
+  if (typeof projectId !== "string" || !JIRA_NUMERIC_ID.test(projectId)) return res.status(400).json({ error: "Choose a Jira project." });
+  if (typeof issueTypeId !== "string" || !JIRA_NUMERIC_ID.test(issueTypeId)) return res.status(400).json({ error: "Choose an issue type." });
+  const relatesKey = relatesTo === undefined || relatesTo === null || relatesTo === "" ? null : parseIssueKey(relatesTo);
+  if (relatesTo && !relatesKey) return res.status(400).json({ error: "The story to link isn't a Jira key. Use the form TBS-1." });
+  const draft = buildBugDraft(runId, caseId);
+  if (!draft) return res.status(404).json({ error: "This run has no result for that test." });
+  if (draft === "passed") return res.status(409).json({ error: "This test passed, so there is nothing to report." });
+
+  const ctx = jiraSiteFor(req, res, siteParam, true);
+  if (!ctx) return;
+  try {
+    // The field list is read again HERE, from Jira, never taken from the browser.
+    const meta = await getCreateFields(ctx.conn, ctx.site, projectId, issueTypeId);
+    const built = buildIssueFields(meta, fields, projectId, issueTypeId);
+    if (!built.ok) return res.status(400).json({ error: built.error, fieldErrors: built.fieldErrors });
+    const nameOf = (id: string) => meta.find((f) => f.id === id)?.name ?? id;
+    const issue = await createIssue(ctx.conn, ctx.site, built.fields, nameOf);
+    recordFiledBug(runId, caseId, { key: issue.key, link: issue.link, siteName: ctx.site.name, createdAt: new Date().toISOString() });
+
+    const warnings: string[] = [];
+    let attached = false;
+    if (attachScreenshot === true) {
+      const shot = bugScreenshotFile(runId, caseId);
+      if (!shot) warnings.push("This test has no screenshot, so none was attached.");
+      else {
+        try { await attachFile(ctx.conn, ctx.site, issue.key, shot); attached = true; }
+        catch (err) { warnings.push(`The screenshot wasn't attached: ${(err as Error).message}`); }
+      }
+    }
+    let linked = false;
+    if (relatesKey) {
+      try { await linkRelates(ctx.conn, ctx.site, issue.key, relatesKey); linked = true; }
+      catch (err) { warnings.push(`It wasn't linked to ${relatesKey}: ${(err as Error).message}`); }
+    }
+    res.status(201).json({ key: issue.key, link: issue.link, attached, linked, warnings });
+  } catch (err) { sendJiraBugError(req, res, err); }
 });
 
 /**
@@ -2683,6 +2821,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // D-71: Jira Phase 1 — "Connect Jira" and read a story into the prompt box. Off: no Jira row on
   // the home view, and every /api/jira/* route answers 404.
   "JIRA_ENABLED",
+  // D-85: "Create Jira bug" on failed cases (needs JIRA_ENABLED). Off: no button, the sign-in asks
+  // for read only, and every /api/jira/bug/* and .../jira-bug route answers 404.
+  "JIRA_BUGS_ENABLED",
   // D-72: a project's discovery is saved for 7 days and shared by every run of that project with the
   // same URL and login; one discovery at a time per project. Off: the global 30-minute cache as before.
   "PROJECT_DISCOVERY_SHARING",

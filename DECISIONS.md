@@ -2617,3 +2617,55 @@ companies: that is a cross-tenant act, so it is the Admins'.
 
 **Not done.** Email invites (the owner passes the password on); an Admin button to add Admins (a row in the table
 for now); a per-project role.
+
+## D-85. "Create Jira bug": a person files a failed case as a Jira issue, from a form built from that project's own fields
+
+**Context.** The user wants a failed test to become a Jira issue: the user picks the issue type and any project, only the
+screenshot is attached, a person always presses Create, and the form lets them add or remove fields. Every Atlassian
+fact used was read from the REST v3 OpenAPI spec (`swagger-v3.v3.json`, fetched 2026-11-17), not recalled: the
+`action=create` filter on `GET /project/search`, the two createmeta endpoints and their field metadata (`required`,
+`hasDefaultValue`, `schema`, `allowedValues`), `POST /issue` and its `ErrorCollection`, the attachment upload (part
+`file`, header `X-Atlassian-Token: no-check`), `GET /issueLinkType` and `POST /issueLink`, the `write:jira-work` scope
+on the three writes, and the rule that `description`, `environment` and `textarea` custom fields take ADF.
+
+**Decision.** Behind `JIRA_BUGS_ENABLED` (needs `JIRA_ENABLED`; default off — no button, the sign-in asks for read
+only, every new route 404s, `/api/health` and `/api/jira/status` unchanged):
+- **Write scope only while the flag is on.** `jiraScopes()` adds `write:jira-work`; Atlassian requires a fresh
+  consent for a scope change, so a sign-in made before is read-only. `accessible-resources` says per site which
+  scopes the sign-in carries; a site without write gets `canWrite` false and the form says "Reconnect Jira".
+- **The form is built from Jira, per project and issue type** (`src/jira/bugs.ts`, `normalizeFields`): required
+  fields shown and not removable, everything else one "+ Add field" away. Kinds: single-line text, rich text (sent as
+  ADF), number, date, date-time, a choice or several (Jira's own `allowedValues`, sent by id), labels. A field Jira
+  fills by default (reporter, often priority) does not block. Person and other unusual fields are "set in Jira after
+  creating"; if one is REQUIRED, the form says so and Create stays off. Sub-task types are left out (they need a parent).
+- **The browser proposes; the server checks** (the project's central rule). `POST .../jira-bug` re-reads the field
+  list from Jira and `buildIssueFields` checks every value against it — the field is on this create screen, the
+  value is the right kind, a choice is one of Jira's ids, every required field is present — before anything is
+  sent. A field the browser invented is refused, not passed through.
+- **Prefilled from the run's own, already-scrubbed files** (`src/server/jiraBugDraft.ts`): summary "Test failed:
+  <title>"; description with the URL, what the test checks, expected, where it stopped and the error (terminal colour
+  codes removed), the steps as sentences (`formatIrStep`, so credentials stay `${env:...}`), and the AI diagnosis
+  labelled as AI-written. The prompt (`00-input.json`) is never copied — it is the one input a password may be typed
+  into. The screenshot path from the summary must be a `.png` inside this run's directory.
+- **The issue first, then the extras.** Create, then attach the screenshot, then link the story with Jira's
+  "Relates" type (looked up by name; a renamed or deleted type is reported, never guessed). If an extra fails the
+  issue still exists and the reply says what did not happen.
+- **Remembered per case** in `runs/<id>/cases/<case>/jira-bugs.json`; reopening says "Already reported as KEY", with
+  "Create another anyway".
+- **Routes**, all new: `GET /api/jira/bug/projects`, `GET /api/jira/bug/projects/:jiraProjectId/issuetypes`,
+  `GET .../issuetypes/:issueTypeId/fields`, `GET` and `POST /api/runs/:runId/cases/:caseId/jira-bug` (tester, through
+  the same run-access check as every run route; both in the isolation tables). `/api/jira/status` sites gain
+  `canWrite` and `/api/health` gains `jiraBugs: true`, only while the flag is on.
+- **Browser:** a "Create Jira bug" button on failed, blocked and cut-short cards, opening an inline panel like
+  "Save case" (no new CSS class; the `hidden` attribute, not `.hidden`). If the run's prompt is the story "Fetch
+  story" filled in, the story key is offered for the link.
+
+**Rejected.** *Filing automatically on failure* — the user's rule, and a broken test would fill Jira with junk.
+*A fixed form (summary, description, priority)* — every Jira project requires different fields, so it would fail on
+most real projects. *Trusting the browser's field list* — the form is a proposal. *Attaching video and the report* —
+user's choice; screenshots are small. *A person picker* — searching users needs another scope (`read:jira-user`).
+
+**Not verified yet.** Never run against a real Atlassian site — Atlassian was faked in tests and in the browser check
+(a real server, Atlassian stubbed in-process, Chromium clicking through connect, project, type, add/remove fields, a
+refused Create, create, and "already reported"). The Atlassian app in the console must also have `write:jira-work`
+added before anyone can consent to it. See TECH_DEBT.md TD-194.

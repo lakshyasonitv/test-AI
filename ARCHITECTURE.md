@@ -368,12 +368,20 @@ Full walkthrough of the editing flow, saved cases and gate cases both:
 |---|---|---|
 | `client.ts` | No | Atlassian calls: `authorizeUrl`, `connect` (code -> token at `auth.atlassian.com/oauth/token`, then Jira sites from `accessible-resources`), `fetchStory` (`/ex/jira/{cloudId}/rest/api/3/issue/{key}?fields=summary,description` -> prompt text, capped at `JIRA_MAX_PROMPT_CHARS`), `parseIssueKey`, `JiraError` (user-facing sentence + status). Read-only scope `read:jira-work` |
 | `session.ts` | No | In-memory only: one-time sign-in `state` (32 random bytes, bound to the user, single use, 10 min) and each user's token + sites. Lost on restart by design — never on disk, in the DB or in logs |
-| `adf.ts` | No | Atlassian Document Format -> plain text (paragraphs, lists, tables, mentions; media skipped; unknown nodes walked for their text) |
+| `adf.ts` | No | Atlassian Document Format -> plain text (paragraphs, lists, tables, mentions; media skipped; unknown nodes walked for their text), and `textToAdf` back (paragraphs and line breaks only) for writing descriptions (D-85) |
+| `bugs.ts` | No | "Create Jira bug" (D-85, `JIRA_BUGS_ENABLED`): creatable projects, issue types, create-screen fields (`normalizeFields` -> form field kinds), `buildIssueFields` (checks the form against the field list re-read from Jira), `createIssue`, `attachFile`, `linkRelates` |
 
 Routes (`src/server/index.ts`, all new, all 404 when the flag is off): `GET /api/jira/status`,
 `POST /api/jira/connect`, `GET /api/jira/callback` (public — identified by `state`, see D-71),
 `GET /api/jira/issue/:issueKey[?site=<cloudId>]`, `POST /api/jira/disconnect`. `/api/health` gains
 `jira: true` only when on. The browser (`app.js`, "Jira, Phase 1" block) only fills `#prompt`.
+
+"Create Jira bug" (D-85, behind `JIRA_BUGS_ENABLED`): `src/server/jiraBugDraft.ts` builds the prefilled bug from
+a run's scrubbed files (`07-suite-summary.json`, the case IR, `06-diagnosis.json`; never the prompt), resolves the
+screenshot inside the run's directory, and keeps `runs/<id>/cases/<case>/jira-bugs.json`. Routes:
+`GET /api/jira/bug/projects`, `GET /api/jira/bug/projects/:jiraProjectId/issuetypes[/:issueTypeId/fields]`,
+`GET|POST /api/runs/:runId/cases/:caseId/jira-bug`. The browser block ("Create Jira bug" in `app.js`) adds the
+button and inline panel to failed case cards.
 
 ### `src/kb/` — Knowledge Base
 

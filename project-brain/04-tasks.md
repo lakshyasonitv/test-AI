@@ -1,6 +1,14 @@
 # Open tasks
 
-*Last updated: 2026-11-06.*
+*Last updated: 2026-11-17.*
+
+## "Create Jira bug" (D-85, 2026-11-17)
+
+- [x] Built and tested on `pro/salesforce-org-context` (uncommitted).
+- [ ] USER: say "commit" / "push" (branch `pro/salesforce-org-context`).
+- [ ] USER: in the Atlassian console add `write:jira-work` to the app; then set `JIRA_BUGS_ENABLED=true`.
+- [ ] One real check against a real Jira project (Phase 1 sign-in has never been run live either).
+- [ ] Later (TD-194): person fields (needs `read:jira-user`), keep the filed-bug record in the database.
 
 ## Landing page on Hostinger (D-76, 2026-11-06)
 

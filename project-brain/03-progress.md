@@ -1,5 +1,7 @@
 # Progress — where we are
 
+*Last updated: 2026-11-17. Branch `pro/salesforce-org-context` = origin/main 80fe0ea (fast-forwarded locally, not pushed) + "Create Jira bug" (D-85, JIRA_BUGS_ENABLED, off by default), UNCOMMITTED — the user asked to be asked before commit/push. tsc clean; suite here 2868 passed / 42 failed (same 52 files as untouched branch, container browser setup). Not yet run against real Jira (TD-194). See journal/2026-11-17.md.*
+
 *Last updated: 2026-11-16, latest. D-84 company model (Admins > owner > tester > viewer) built behind PLATFORM_ADMIN_ENABLED, uncommitted; migration platform_admins NOT applied to Supabase yet (needs the user's go). TD-192 fix included. See journal/2026-11-16.md.*
 
 *Last updated: 2026-11-16, latest. ui/dashboard MERGED INTO MAIN at the user's go (production deploy). The new interface (D-79..D-82) plus D-83: the dashboard has no setting (DASHBOARD_ENABLED gone) and a sign-in lands on it. Server vs pre-merge main: only GET /dashboard (7 lines). Rollback = revert the merge commit on main. Open: TD-151 (a first run on a new multi-screen form, e.g. TB Customer Onboarding Wizard, stops after screen 1 — main's pipeline); lower roles' view of the new pages not checked live. See journal/2026-11-16.md.*

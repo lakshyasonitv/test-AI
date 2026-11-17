@@ -6464,3 +6464,14 @@ Only an explicit `projectId` in the body is checked (`assertProjectVisible`). No
 **Fix:** below admin, refuse a run whose resolved project is not one of theirs (403 "you have not been added to
 this project"), and do not create a new project from a run — "ask an admin to add a project for this site". A
 tester with no projects then cannot start runs, which is the stated rule.
+
+---
+
+### TD-194. "Create Jira bug" leaves some fields to Jira and keeps its record in runs/ — Low / Deliberate — **Open**
+
+D-85, version one. (1) Person fields (assignee, a user picker) and unusual field types cannot be filled from the
+form; a project that REQUIRES one cannot be filed from Testbench at all (the form says so). (2) The "already
+reported" record lives in `runs/<id>/cases/<case>/jira-bugs.json`, so it is lost wherever `runs/` is not on
+permanent storage (the Azure note of 2026-11-03), and a second issue can then be filed for the same case. (3) Never
+run against a real Atlassian site. Remediation when it bites: add `read:jira-user` and a user search for person
+fields; keep the record in the database; one live check on a real Jira project before clients use it.

@@ -16,6 +16,8 @@ export const JIRA_RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessi
 export const JIRA_API_BASE = "https://api.atlassian.com/ex/jira";
 /** Phase 1 only reads. Classic scope: Atlassian recommends classic; granular is still Beta in the spec. */
 export const JIRA_SCOPES = ["read:jira-work"] as const;
+/** Creating an issue, attaching to it and linking it (POST /issue, /attachments, /issueLink). */
+export const JIRA_WRITE_SCOPE = "write:jira-work";
 /** Default cap on the text put into the prompt box — a longer prompt costs more on the AI step. */
 export const DEFAULT_JIRA_MAX_PROMPT_CHARS = 4000;
 
@@ -25,6 +27,19 @@ const EXPIRY_MARGIN_MS = 60_000;
 
 export function jiraEnabled(): boolean {
   return process.env.JIRA_ENABLED === "true";
+}
+
+/**
+ * "Create Jira bug" (D-85). Needs Jira itself on; off by default. Off, the sign-in asks for exactly
+ * the read-only scope it always did, so nobody is asked to consent to writing.
+ */
+export function jiraBugsEnabled(): boolean {
+  return jiraEnabled() && process.env.JIRA_BUGS_ENABLED === "true";
+}
+
+/** The scopes the sign-in asks for: read-only, plus write only while "Create Jira bug" is on. */
+export function jiraScopes(): string[] {
+  return jiraBugsEnabled() ? [...JIRA_SCOPES, JIRA_WRITE_SCOPE] : [...JIRA_SCOPES];
 }
 
 export interface JiraConfig {
@@ -68,7 +83,7 @@ export function authorizeUrl(config: JiraConfig, state: string): string {
   const q = new URLSearchParams({
     audience: "api.atlassian.com",
     client_id: config.clientId,
-    scope: JIRA_SCOPES.join(" "),
+    scope: jiraScopes().join(" "),
     redirect_uri: config.redirectUrl,
     state,
     response_type: "code",
@@ -77,7 +92,7 @@ export function authorizeUrl(config: JiraConfig, state: string): string {
   return `${JIRA_AUTHORIZE_URL}?${q.toString()}`;
 }
 
-async function call(url: string, init: RequestInit): Promise<Response> {
+export async function call(url: string, init: RequestInit): Promise<Response> {
   try {
     return await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
   } catch {
@@ -131,7 +146,12 @@ async function readableSites(token: string): Promise<JiraSite[]> {
   if (!Array.isArray(list)) return [];
   return list
     .filter((r) => r && typeof r.id === "string" && Array.isArray(r.scopes) && r.scopes.includes("read:jira-work"))
-    .map((r) => ({ id: r.id as string, name: String(r.name ?? ""), url: String(r.url ?? "") }));
+    .map((r) => ({
+      id: r.id as string, name: String(r.name ?? ""), url: String(r.url ?? ""),
+      // Whether this sign-in may create issues here (D-85). A sign-in made before write was asked
+      // for does not carry it, and the bug form then asks the user to reconnect.
+      ...(r.scopes.includes(JIRA_WRITE_SCOPE) ? { canWrite: true } : {}),
+    }));
 }
 
 /** A Jira issue key from what the user typed: `tbs-1`, `TBS-1`, or a pasted `…/browse/TBS-1` link. */

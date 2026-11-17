@@ -108,3 +108,27 @@ export function adfToText(doc: unknown): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+
+/**
+ * Plain text -> ADF, for writing a description into Jira ("Create Jira bug", D-85).
+ *
+ * The other direction of the function above, kept as simple: REST v3 only takes ADF for
+ * `description`, `environment` and multi-line custom fields (Atlassian's create-issue page). A blank
+ * line starts a new paragraph and a single line break stays a line break (`hardBreak`). No other
+ * formatting is invented — what the user typed is what Jira shows.
+ */
+export function textToAdf(text: string): { version: 1; type: "doc"; content: unknown[] } {
+  const paragraphs = text.replace(/\r\n?/g, "\n").split(/\n{2,}/).map((p) => p.replace(/^\n+|\n+$/g, ""))
+    .filter((p) => p.trim() !== "");
+  return {
+    version: 1,
+    type: "doc",
+    content: paragraphs.map((p) => ({
+      type: "paragraph",
+      content: p.split("\n").flatMap((line, i) => [
+        ...(i > 0 ? [{ type: "hardBreak" }] : []),
+        ...(line ? [{ type: "text", text: line }] : []),
+      ]),
+    })),
+  };
+}
