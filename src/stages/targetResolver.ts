@@ -482,24 +482,32 @@ async function resolveRoleWithFallback(page: LocatorRoot, role: string, name: st
   for (const c of candidates) {
     if (await c.count() === 1) return c;
   }
-  // TD-198: a LONG name (a whole card's text) can change after discovery — eventrix.tech's template card
-  // reads "…+1Configure Template" in one capture and "…+1Configure TemplateUse" in another, so an exact
-  // match finds nothing and the click waits out its timeout. Only when nothing matched exactly, and only
-  // for a name of LONG_NAME_PREFIX+ characters: its first LONG_NAME_PREFIX characters, anchored at the
-  // start, when that is unique. Anchored and long, so TD-32's short-substring collisions cannot recur.
-  // Same rung, same constant, in generator.ts's LOCATE_HELPER (TD-07: the two must not drift).
-  // Behind SCREEN_MODE_ALL_SITES (D-85): off, the replay resolves exactly as before.
-  if (screenModeAllSites() && name.length >= LONG_NAME_PREFIX && await original.count() === 0) {
-    const stem = new RegExp("^" + name.slice(0, LONG_NAME_PREFIX).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const byStem = page.getByRole(role as any, { name: stem });
-    if (await byStem.count() === 1) return byStem;
+  // TD-198: a LONG name (a whole card's text) recorded by discovery is not the browser's accessible name.
+  // Discovery reads textContent, which glues blocks together ("Technical ConferencesTracks, keynote…") and
+  // is cut at 80 characters; the accessible name puts spaces between blocks ("Technical Conferences
+  // Tracks, keynote…"). Checked in Chromium: the glued name matched 0 buttons, the spaced one 1. So, only
+  // when nothing matched exactly and the name has LONG_NAME_PREFIX+ non-space characters: those first
+  // characters, anchored at the start, whitespace between them ignored — the first match when several (a
+  // sure miss is never better). Anchored and long, so TD-32's short-substring collisions cannot recur.
+  // Behind SCREEN_MODE_ALL_SITES (D-85): off, the replay resolves exactly as before. Same rung in
+  // generator.ts's LOCATE_STEM_RUNG (TD-07: the two must not drift).
+  if (screenModeAllSites() && name.replace(/\s+/g, "").length >= LONG_NAME_PREFIX && await original.count() === 0) {
+    const byStem = page.getByRole(role as any, { name: longNameStem(name) });
+    const n = await byStem.count();
+    if (n >= 1) return n === 1 ? byStem : byStem.first();
   }
   return original.first();
 }
 
-/** TD-198: characters of a long accessible name that must match, from the start, when the whole name
- *  no longer does. Mirrored in generator.ts's LOCATE_HELPER. */
+/** TD-198: non-space characters of a long name that must match, from the start, when the whole name
+ *  does not. Mirrored in generator.ts's LOCATE_STEM_RUNG. */
 export const LONG_NAME_PREFIX = 40;
+
+/** The anchored, whitespace-blind stem of a long name (TD-198). Same expression as LOCATE_STEM_RUNG. */
+export function longNameStem(name: string): RegExp {
+  const chars = Array.from(name.replace(/\s+/g, "")).slice(0, LONG_NAME_PREFIX);
+  return new RegExp("^\\s*" + chars.map((c) => c.replace(/[.*+?^(){}$|[\]\\]/g, "\\$&")).join("\\s*"));
+}
 
 /**
  * Live counterpart of the generated spec's field() helper. Tries the ways a field can be

@@ -6570,3 +6570,16 @@ again on another route is used as written. IR cache part bumped to `screens-all:
 second. Now, only when nothing matches exactly and the name is 40+ characters, both the replay
 (`resolveRoleWithFallback`) and the emitted `locate()` try the first 40 characters anchored at the start, if unique.
 Short names never fall back (TD-32 kept). `tests/longNameStem.test.ts` runs both in Chromium (4).
+
+**TD-198, second correction (live run `2026-11-17T10-04-17-522Z-2da13778`).** The recorded sign-in and "keep what
+worked" both held (the log shows the swap and "kept the 7 verified step(s)"); the run stopped at the template card
+again. Root cause, checked in Chromium: discovery names elements by **textContent**, which glues a card's blocks
+together and is cut at 80 characters ("Technical ConferencesTracks, keynote…"), while the browser's **accessible
+name** puts spaces between blocks ("Conference Technical Conferences Tracks, keynote…"). The glued name matched 0
+buttons; the spaced one 1. The fallback is now whitespace-blind (first 40 non-space characters, anchored,
+`\s*` between them; the first match when several) in `resolveRoleWithFallback` (`longNameStem`) and the emitted
+`LOCATE_STEM_RUNG` (written with `String.raw`, run in Chromium by `tests/longNameStem.test.ts`). Still open: a name
+cut from the MIDDLE of a card's text (the inner element run 10-04-17 targeted) only resolves if the page has an
+element whose accessible name starts there. The lasting fix is discovery recording the accessible name, not
+textContent (`domDiscovery.ts` around its `.slice(0, 80)`), which changes element names for every site.
+Also fixed: on a retry the swap ran again on the kept recorded login and duplicated `auth-4`.

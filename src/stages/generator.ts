@@ -690,14 +690,19 @@ async function shot(page, path, now) {
 // Self-healing locator helper — ARIA role → CSS fallback chain
 // -----------------------------------------------------------------------------
 
-const LOCATE_STEM_RUNG = `
-  // TD-198: a long name (a whole card's text) that changed since discovery ("…Configure Template" vs
-  // "…Configure TemplateUse"): its first 40 characters, anchored at the start, when unique. Only with
-  // nothing matching exactly, and only for 40+ characters (TD-32). Mirrors targetResolver.ts.
-  if (count === 0 && name.length >= 40) {
-    const stem = new RegExp("^" + name.slice(0, 40).replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&"));
+// String.raw: the emitted code is written here exactly as it runs (no template escapes to get wrong).
+// It contains no backtick and no dollar-brace pair, so nothing in it is interpolated.
+const LOCATE_STEM_RUNG = String.raw`
+  // TD-198: discovery names a card by its glued textContent ("Technical ConferencesTracks, ..."), the browser
+  // by its spaced accessible name ("Technical Conferences Tracks, ..."). With nothing matching exactly and a
+  // long name: its first 40 non-space characters, anchored, whitespace between them ignored; the first match
+  // when several. Only for 40+ characters (TD-32). Mirrors targetResolver.ts longNameStem.
+  if (count === 0 && name.replace(/\s+/g, "").length >= 40) {
+    const chars = Array.from(name.replace(/\s+/g, "")).slice(0, 40);
+    const stem = new RegExp("^\\s*" + chars.map((c) => c.replace(/[.*+?^(){}$|[\]\\]/g, "\\$&")).join("\\s*"));
     const byStem = page.getByRole(role, { name: stem });
-    if (await byStem.count() === 1) return byStem;
+    const n = await byStem.count();
+    if (n >= 1) return n === 1 ? byStem : byStem.first();
   }
 `;
 

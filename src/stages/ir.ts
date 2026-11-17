@@ -3156,7 +3156,10 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       // credentials, its login becomes the recorded one, which already handles a two-screen login.
       // TD-197 (SCREEN_MODE_ALL_SITES): the same on every site — the model re-wrote the sign-in on
       // every attempt and mostly got it wrong, while discovery held the exact steps that worked.
-      const swapped = swapInRecordedLogin(parsed.data.steps, currentModel.auth, credentialFieldMap(currentModel));
+      // Already the recorded login (D-85 "keep what worked" kept it from an earlier attempt): swapping
+      // again duplicated its closing check (run 2026-11-17T10-04-17-522Z-2da13778: two "auth-4" steps).
+      const alreadyRecorded = parsed.data.steps.some((st) => /^auth-\d+$/.test(st.id));
+      const swapped = alreadyRecorded ? null : swapInRecordedLogin(parsed.data.steps, currentModel.auth, credentialFieldMap(currentModel));
       if (swapped) {
         parsed.data.steps = swapped;
         if (fixedLoginRun()) parsed.data.meta.fixedLogin = "salesforce";
