@@ -6556,3 +6556,18 @@ page the source named `07-52-12` while `currentSrc` was `08-17-02`, the run open
 finishing in the tab that showed an older one. **Fix:** `load()` after setting or clearing the source, and the
 poster reset; `hideSingleTestResult` unloads too. Verified live across three runs; `tests/resultVideoReload.test.ts`.
 Suite result cards were not affected (each card renders a new `<video>`).
+
+### TD-200. A prompt that describes the login form was read as credentials, and the login box never appeared — High / Accidental — **Fixed**
+
+**Found 2026-11-17 (LearnVibes demo prep, runs `16-50-55-609Z-091dc3fe` and `16-56-09-186Z-a6a279b5`).** The user
+noticed the run never asked for the login. `extractCredentialsFromPrompt` takes the word after "email"/"password"
+even with only a SPACE between them, so `Click "Sign In" with Email and Password empty` gave username **"and"** and
+password **"empty"** (checked by calling it on the run's own prompt). With credentials "found", discovery skipped the
+credential prompt, signed in with them, failed (`login-failed`), crawled only the login page, and every signed-in
+case was impossible. The same shape on "Email is required and Password is required" gave "required"/"required".
+
+**Fix:** an unquoted value that is an ordinary word of such a sentence (`PROSE_WORDS`) never counts, and a value with
+no separator at all counts only when it is shaped like a credential (`@`, a digit, `_ . -`). A rejected value leaves
+the run without prompt credentials, so it asks — the safe failure. Plain real usage still works ("username
+standard_user and password secret_sauce", "email a@b.co password Pa55word", every existing case).
+`tests/credentials.test.ts` (+2). Same family as TD-01: a regex over prose is not deterministic.

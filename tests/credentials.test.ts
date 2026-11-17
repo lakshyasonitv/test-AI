@@ -121,6 +121,23 @@ describe("extractCredentialsFromPrompt", () => {
     });
   });
 
+  // TD-200: prompts that DESCRIBE the login form. Each one used to manufacture credentials, skip the
+  // credential prompt and sign in with them (run 2026-11-17T16-50-55-609Z-091dc3fe: "and" / "empty").
+  it("never reads a sentence about the login form as credentials", () => {
+    expect(extractCredentialsFromPrompt(`3. Click "Sign In" with Email and Password empty. Check it does not sign in.`)).toBeUndefined();
+    expect(extractCredentialsFromPrompt(`Click "Sign In" with the Email and Password fields empty.`)).toBeUndefined();
+    expect(extractCredentialsFromPrompt("Check Email is required and Password is required.")).toBeUndefined();
+    expect(extractCredentialsFromPrompt("Log in with the given email and a wrong password.")).toBeUndefined();
+    expect(extractCredentialsFromPrompt("check the email field and password field are masked")).toBeUndefined();
+  });
+
+  it("still reads real credentials written plainly", () => {
+    expect(extractCredentialsFromPrompt("login with username standard_user and password secret_sauce"))
+      .toEqual({ username: "standard_user", password: "secret_sauce", secret: true });
+    expect(extractCredentialsFromPrompt("email a@b.co password Pa55word"))
+      .toEqual({ username: "a@b.co", password: "Pa55word", secret: true });
+  });
+
   // Same false-positive shapes promptCarriesCredentials already guards against — a prompt that
   // merely mentions the word "password" must never manufacture a fake credential out of it.
   it("returns undefined for a prompt that only mentions password/email in passing", () => {
