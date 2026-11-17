@@ -6571,3 +6571,14 @@ no separator at all counts only when it is shaped like a credential (`@`, a digi
 the run without prompt credentials, so it asks — the safe failure. Plain real usage still works ("username
 standard_user and password secret_sauce", "email a@b.co password Pa55word", every existing case).
 `tests/credentials.test.ts` (+2). Same family as TD-01: a regex over prose is not deterministic.
+
+### TD-201. A generated case typed an INVENTED login instead of the stored one — High / Accidental — **Open**
+
+**Found 2026-11-17, LearnVibes run `2026-11-17T17-20-59-112Z-a46d1785` case-1 ("Navigation menu links open their
+pages").** The run had real credentials, yet the case's own login filled `learner@example.com` and an invented
+password as LITERAL values (no `${env:...}` reference), and LearnVibes answered "Invalid login credentials". The other
+cases of the same run used the references correctly. `applyCredentials` / the recorded-login swap did not recognise
+this case's login fills (`credentialKindForTarget` on the placeholder-named boxes "you@thinkvibes.com" /
+"*********" is the likely gap). Worked around by hand (the saved case now uses the references). Fix direction: a fill
+into the box discovery recorded as the login identifier/password always gets the reference, whatever value the model
+wrote — the same structural rule as the login prefix.
