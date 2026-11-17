@@ -585,6 +585,13 @@ export async function resolveField(page: LocatorRoot, hint: string, action?: str
       scope.getByRole("combobox", { name: hint, exact: true }),
       scope.getByRole("checkbox", { name: hint, exact: true }),
     ];
+  // D-85 (SCREEN_MODE_ALL_SITES): firstUnique counts instantly. A form that renders after the click that
+  // opened it was not there yet, every rung missed, and the last (positional) one waited 30 s for text
+  // that is a placeholder, not text (run 2026-11-17T12-21-17-964Z-1fca244d: the title box by its
+  // placeholder, while the generated spec filled the same box fine). Wait up to 5 s for any rung first.
+  if (screenModeAllSites()) {
+    await semantic.reduce((a, b) => a.or(b)).first().waitFor({ state: "attached", timeout: 5000 }).catch(() => {});
+  }
   const bySemantics = await firstUnique(semantic);
   if (bySemantics) return bySemantics;
 

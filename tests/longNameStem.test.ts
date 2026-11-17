@@ -105,6 +105,17 @@ describe("discovery's glued card names reach the card (both resolvers, real Chro
     } finally { await late.close(); }
   });
 
+  it("a form field that renders AFTER the click is still found by its placeholder (run 12-21-17)", async () => {
+    const late = await browser.newPage();
+    try {
+      await late.setContent(`<!doctype html><body><div id="form"></div><script>
+        setTimeout(() => { document.getElementById("form").innerHTML = '<label>EVENT TITLE *</label><div><input id="title" placeholder="e.g. Global AI & Cloud Architecture Summit 2026"></div>'; }, 1200);
+      </script></body>`);
+      const loc = await withFlag(() => resolveLive(late, { role: "textbox", name: "e.g. Global AI & Cloud Architecture Summit 2026" } as any, "fill"));
+      expect(await loc.getAttribute("id")).toBe("title");
+    } finally { await late.close(); }
+  });
+
   it("forty characters that appear in no name still match nothing", async () => {
     const other = "Technical ConferencesWorkshops, speakers and sessions for the whole week";
     expect(await (await withFlag(() => resolveLive(page, { role: "button", name: other } as any, "click"))).count()).toBe(0);
