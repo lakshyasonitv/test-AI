@@ -16,7 +16,7 @@ import { Semaphore } from "./concurrency.js";
 import { askCredentials, settle } from "./pendingCredentials.js";
 import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
 import { resolveCaseSelection, getPendingSelection } from "./pendingCaseSelection.js";
-import { getAllAcceptedCases, remainingCapacity } from "./caseAccumulator.js";
+import { getAllAcceptedCases, remainingCapacity, MAX_ACCUMULATED_CASES } from "./caseAccumulator.js";
 import { startRetentionJob } from "./retention.js";
 import { requireAuth, resolveUser, isAuthEnabled, LOCAL_USER_ID } from "./auth.js";
 import {
@@ -540,6 +540,16 @@ app.post("/api/runs/:runId/case-selection", requireRunRole("tester"), express.js
   const parsed = CaseSelectionDecisionSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
+  }
+  // The pool's cap, enforced where the pick arrives: picks past it used to be accepted here and then
+  // dropped silently by appendAcceptedCases as "did not fit — pool was full". Same 400 + { error }
+  // shape this route already returns for an empty pick.
+  const picked = new Set(parsed.data.selectedIndexes).size;
+  const room = MAX_ACCUMULATED_CASES - getAllAcceptedCases(runId).length;
+  if (picked > room) {
+    return res.status(400).json({
+      error: `A run holds at most ${MAX_ACCUMULATED_CASES} cases; ${picked} picked with room for ${Math.max(0, room)}. Untick ${picked - Math.max(0, room)}.`,
+    });
   }
   if (parsed.data.action === "done") {
     const willHaveAny =
@@ -2657,6 +2667,7 @@ export const BOOLEAN_ENV_FLAGS = [
   // /api/spec/confirm returns { spec } only, and the planner never sees the story.
   "PRO_STORY_PROMPT",
   "SCREEN_MAP_ENABLED",
+  "SCREEN_MODE_ALL_SITES",
   "NETWORK_SETTLE_ENABLED",
   "SCREEN_BEST_MATCH_ENABLED",
   "VOLATILE_ID_DETECTION_ENABLED",

@@ -6464,3 +6464,95 @@ Only an explicit `projectId` in the body is checked (`assertProjectVisible`). No
 **Fix:** below admin, refuse a run whose resolved project is not one of theirs (403 "you have not been added to
 this project"), and do not create a new project from a run — "ask an admin to add a project for this site". A
 tester with no projects then cannot start runs, which is the stated rule.
+
+### TD-194. A link to a page the crawl never reached left the page trail on the page it left; the steps after it grounded on that page's chrome — High / Accidental — **Fixed behind SCREEN_MODE_ALL_SITES (D-85)**
+
+**Found 2026-11-17, run `2026-11-17T07-29-08-639Z-b4c58d1e` (eventrix.tech, "create a technical conference
+event and publish it").** The test signed in, clicked "Create Event" and reached the right form
+(`/events/create/new?template=Technical%20Conferences`, step 1 of 6), then failed: it typed the title into
+"Filter by title, topic, or city..." — the search box of `/home`, a page it had already left. Three causes, each
+confirmed against the run's own artifacts:
+
+1. **The crawl never saw the form.** `MAX_DISCOVERY_PAGES` defaults to 5 and `/events/create` was the 6th link
+   from `/home` (it is in the home page's `internalUrls`). Fixed by configuration (12 locally).
+2. **`trackPages` kept the flow on the old page.** A link whose href resolves to a page NOT in the model did
+   `currentPage = findPageByUrl(...) ?? currentPage` — parked on `/home`, not marked unknown — so the template
+   click grounded on `/home`'s "Conference" filter chip and the title on its search box. The post-click reveal
+   check meant to catch "collides with page chrome" (`postClickRevealIndex`) runs only on a fully grounded IR;
+   this one was truncated at the date step and shipped as the best partial, so it never ran.
+3. **The live replay that should have captured the form failed silently.** `extendAppModel` threw and only
+   `[ir] calling extendAppModel...` reached the log; `lastErr` was never printed.
+
+**Fix:** D-85. `SCREEN_MODE_ALL_SITES=true` (default off) puts every run in screen mode: a link to an unmodelled
+page leaves the trail unknown, a link click is a screen boundary, and each screen (including the 6 screens of a
+same-URL wizard) is captured live before its steps are grounded. The live-extend failure is now logged (always).
+The site cache key gains the page budget when it is not 5, so raising `MAX_DISCOVERY_PAGES` takes effect at once.
+`tests/screenModeAllSites.test.ts` (8) pins both modes, including the flag-off bug.
+
+**Found on the rerun (`2026-11-17T07-52-12-423Z-75a6f008`), also fixed behind the flag:** the screen-mode extra
+attempt (TD-150) checks progress at the START of the last attempt, so it credited the attempt before it and never
+the last one; and the last attempt returned its partial before the loop condition ran. That run's 4th attempt went
+5 -> 9 grounded steps, reached the create form and was told the title box's real name — with no attempt left. Now a
+last attempt that got further earns one more (same `SCREEN_EXTRA_ATTEMPTS` bound). Test in
+`tests/repeatRejectionProgress.test.ts` (real browser, LLM scripted).
+
+**Still open:** with the flag off the trail bug stands for every non-Salesforce site. Screen mode was built and
+tuned on Salesforce (D-52); its first live run on an ordinary site is the eventrix rerun of 2026-11-17 — see the
+journal for the result. A worked prompt for this site: `docs/guides/prompts/eventrix-create-event.md`.
+
+### TD-195. A navigation landing mid-`count()` ended a working sign-in, and the crawl went on anonymously — Medium / Accidental — **Fixed**
+
+**Found 2026-11-17, run `2026-11-17T07-52-12-423Z-75a6f008` (eventrix.tech).** The same account had signed in
+twice that morning. This time discovery logged `login attempt failed: locator.count: Execution context was
+destroyed, most likely because of a navigation — crawling anonymously`: Playwright's `locator.count()` throws when
+the page navigates while it runs, and the post-submit redirect is exactly that moment. `hasLoginGate` already
+guarded its `evaluate` against this; the `count()` before it, and the one at the top of `loginOnPage`, did not. The
+crawl went on signed out, so the IR compile had no recorded login steps and spent three of its four attempts
+getting past sign-in.
+
+**Fix:** `countPasswordBoxes` waits for the new document and counts again (at most 3 times) on that error only;
+every other error rethrows. Both call sites use it. Not flagged: it fixes the existing sign-in, it adds nothing.
+`tests/loginNavigationRace.test.ts` (4); the real-browser sign-in suites (authCrawl, loginGatePolling,
+twoScreenLogin, salesforceOrgLogin: 56) pass.
+
+### TD-196. The static extractor names a label-wrapped input after the heading above it — Medium / Accidental — **Open**
+
+**Found 2026-11-17 while testing D-85.** With `DISCOVERY_LIVE_DOM` off (the default for every non-Salesforce run),
+`<h2>Budget</h2><label>Min Budget <input></label>` is extracted as `textbox "Budget"`, and screen 1's
+`<label>Full Name <input></label>` as `textbox "Your details"` — the preceding heading, not the label that wraps the
+input. Checked directly with `extractDomModelFromPage` on that fixture. Salesforce runs always use the live walker
+(D-51), which names them correctly, so this never showed there. Likely cause: the element pass (`domExtract.ts`
+around the `nearby` / `proximityLabel` call) reaches proximity before the wrapping `<label>`; `extractForms` checks
+`closest("label")` first. Not fixed here — it changes element names for every ordinary site, so it needs its own
+change and its own cache-key part.
+
+### TD-197. Each IR attempt rewrites the sign-in from scratch, and most attempts get it wrong — High / Accidental — **Open**
+
+**Found 2026-11-17, run `2026-11-17T08-17-02-506Z-54df562f` (eventrix.tech; the new `[ir] steps:` log line).**
+Discovery signed in and recorded the exact steps (`auth.loginSteps`), yet every one of six attempts wrote its own:
+`navigate /` then fill "Email Address" on the landing page (no such field there), click button "Sign In" (the page's
+is "Sign In to Dashboard"), then `assert button "Sign In" hidden` — a check against a screen the flow has already
+left. Five of six attempts died in the first six steps; the best reached step 8. This is also why run
+`08-07-06` "replayed sign-in onto /": its attempts started with `navigate /`.
+
+**Direction:** when discovery recorded a working sign-in, compile it in deterministically (the recorded steps as
+the IR's first steps) and let the model write only what follows — the D-27 / central-rule pattern: the model
+proposes, code fixes what code already knows.
+
+### TD-198. The grounding replay clicks by the exact full accessible name; the generated spec does not — Medium / Accidental — **Open**
+
+**Same run, attempt 3.** The screen capture after the template click failed: `locator.click: Timeout 30000ms` on
+`getByRole('button', { name: 'ConferenceTechnical ConferencesTracks, keynote speakers, … Configure TemplateUse',
+exact: true })`. The generated spec clicked the same card without trouble in runs `07-52-12` and `08-17-02`. A card
+whose accessible name is all of its text (badges, counts like "+1") is brittle under `exact: true`. Another face of
+TD-07 (the replay and the spec resolve targets differently).
+
+### TD-199. A run's result showed the PREVIOUS run's video — Medium / Accidental — **Fixed**
+
+**Reported 2026-11-17 by the user ("when a new run [starts] the older video is also shown").** The single-result
+`<video id="resultVideo">` is reused across runs; `showSingleTestResult` swapped its `<source>` children but never
+called `load()`, and a media element does not re-select its source on its own. Checked live: on run `07-52-12`'s
+page the source named `07-52-12` while `currentSrc` was `08-17-02`, the run opened before it. Same on a new run
+finishing in the tab that showed an older one. **Fix:** `load()` after setting or clearing the source, and the
+poster reset; `hideSingleTestResult` unloads too. Verified live across three runs; `tests/resultVideoReload.test.ts`.
+Suite result cards were not affected (each card renders a new `<video>`).

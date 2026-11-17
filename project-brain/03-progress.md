@@ -1,5 +1,7 @@
 # Progress — where we are
 
+*Last updated: 2026-11-17. eventrix.tech create-event: D-85 (SCREEN_MODE_ALL_SITES, screen mode for every site, flag off by default) + TD-195 sign-in race fix + extra-attempt fix, all UNCOMMITTED on ui/dashboard; TD-196 open. Best live result so far: reaches the Technical Conferences form and captures it; no event published yet; why attempts 2-4 of run 08-07-06 replayed sign-in onto "/" is unknown (new "[ir] steps:" log line added to find out). Local .env: MAX_DISCOVERY_PAGES=12, SCREEN_MODE_ALL_SITES=true, MAX_IR_ATTEMPTS=6. See journal/2026-11-17.md.*
+
 *Last updated: 2026-11-16, latest. D-84 company model (Admins > owner > tester > viewer) built behind PLATFORM_ADMIN_ENABLED, uncommitted; migration platform_admins NOT applied to Supabase yet (needs the user's go). TD-192 fix included. See journal/2026-11-16.md.*
 
 *Last updated: 2026-11-16, latest. ui/dashboard MERGED INTO MAIN at the user's go (production deploy). The new interface (D-79..D-82) plus D-83: the dashboard has no setting (DASHBOARD_ENABLED gone) and a sign-in lands on it. Server vs pre-merge main: only GET /dashboard (7 lines). Rollback = revert the merge commit on main. Open: TD-151 (a first run on a new multi-screen form, e.g. TB Customer Onboarding Wizard, stops after screen 1 — main's pipeline); lower roles' view of the new pages not checked live. See journal/2026-11-16.md.*
