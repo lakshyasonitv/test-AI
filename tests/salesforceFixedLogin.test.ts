@@ -133,8 +133,10 @@ describe("the gate — off means today's behaviour", () => {
     const calls = src.split("\n").filter((l) => l.includes("swapInRecordedLogin(") && !l.includes("export function"));
     expect(calls).toHaveLength(1);
     const at = src.indexOf(calls[0]);
-    const before = src.slice(Math.max(0, at - 400), at);
-    expect(before).toMatch(/\} else if \(fixedLoginRun\(\) && credPolicy === "full"\) \{/);
+    const before = src.slice(Math.max(0, at - 900), at); // 900: the D-85 comment in that branch (2026-11-17)
+    // D-85 / TD-197 (2026-11-17): SCREEN_MODE_ALL_SITES is the one other way in — the recorded login on
+    // every site — and it, too, needs the full credential policy. Nothing else reaches the swap.
+    expect(before).toMatch(/\} else if \(\(fixedLoginRun\(\) \|\| screenModeAllSites\(\)\) && credPolicy === "full"\) \{/);
   });
 
   it("the IR cache key gains a part only when the fixed login is on", () => {

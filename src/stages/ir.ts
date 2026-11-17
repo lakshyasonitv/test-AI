@@ -13,6 +13,7 @@ import { findScreen, screenElements, sameScreen, fingerprintOf } from "./screens
 import { networkSettleEnabled } from "./networkSettle.js";
 import { screenMapEnabled, loadScreenMap, recordIntoScreenMap, writeRunScreenMap, screenFromPage, edgeForCapture, routeToControl, type ScreenMapControl, type ScreenMapScreen, type ScreenMapEdge } from "./screenMap.js";
 import { currentRunTargetApp } from "../runTarget.js";
+import { screenModeAllSites } from "../screenMode.js";
 import { requestValues, stepsMissingValues } from "./requestValues.js";
 import { hollowPassGuardsEnabled, isPositiveCase, describeMarkers } from "./hollowPassGuards.js";
 import { applyTestData, dateTimeFills, datedFieldChecks, testDataEnabled } from "./testData.js";
@@ -235,9 +236,7 @@ export interface PageTrail {
  * on /home's "Filter by title, topic, or city..." search box — the test filled the wrong control on a
  * page it had already left, and the 6-screen create wizard was never captured.
  */
-export function screenModeAllSites(): boolean {
-  return process.env.SCREEN_MODE_ALL_SITES === "true";
-}
+export { screenModeAllSites };
 
 /**
  * Where a navigate step goes, for the page trail. D-63: the frontdoor login carries an env reference
@@ -757,6 +756,60 @@ export function swapInRecordedLogin(
   const prefix = buildLoginPrefix(auth);
   if (!prefix.length) return null;
   return [...prefix, ...steps.slice(submit + 1)];
+}
+
+/** What a step does to what, without the grounded identity (css/testId/nth) a model never repeats. */
+const stepKey = (s: Step): string => JSON.stringify([
+  s.action, s.target?.role ?? null, s.target?.name ?? null, s.target?.text ?? null, s.target?.url ?? null,
+]);
+
+/**
+ * D-85 "keep what worked": the steps an earlier attempt already grounded against the live site stay,
+ * and the model's new attempt supplies only what comes after them. Returns the joined steps, or null
+ * to use the new attempt as written.
+ *
+ * Why: every retry used to rewrite the WHOLE test, so the part that had worked broke again — run
+ * 2026-11-17T08-17-02-506Z-54df562f (eventrix.tech): five of six attempts re-wrote the sign-in and died
+ * in their first six steps; the one that got past it reached step 8. A model proposes, code keeps
+ * what is already verified (D-27, CLAUDE.md's central rule).
+ *
+ * Structure only: steps are compared by action + role/name/text/url.
+ * - The new steps repeat the verified ones (all or part): keep everything after the last repeat.
+ * - They start a flow afresh (a navigate first, or the same first step) without repeating the last
+ *   verified step: the model chose a different route — use them as written, as before.
+ * - Otherwise they are a continuation: appended as they are.
+ * Continuation ids are renumbered after the verified ones, so no id repeats.
+ */
+export function joinVerifiedPrefix(verified: Step[], proposed: Step[]): Step[] | null {
+  if (!verified.length || !proposed.length) return null;
+  const lastKey = stepKey(verified[verified.length - 1]);
+  let lastRepeat = -1;
+  proposed.forEach((s, i) => { if (stepKey(s) === lastKey) lastRepeat = i; });
+  let rest: Step[];
+  if (lastRepeat >= 0) rest = proposed.slice(lastRepeat + 1);
+  else if (proposed[0].action === "navigate" || stepKey(proposed[0]) === stepKey(verified[0])) return null;
+  else rest = proposed;
+  let n = verified.reduce((m, s) => Math.max(m, Number(/^s(\d+)$/.exec(s.id)?.[1] ?? 0)), 0);
+  const ids = new Set(verified.map((s) => s.id));
+  const renumbered = rest.map((s) => {
+    let id = `s${++n}`;
+    while (ids.has(id)) id = `s${++n}`;
+    ids.add(id);
+    return { ...s, id };
+  });
+  return [...verified.map((s) => ({ ...s, target: s.target ? { ...s.target } : s.target })), ...renumbered];
+}
+
+/** The verified steps, as the retry prompt states them: what to continue from, and nothing to rewrite. */
+export function verifiedPrefixHint(verified: Step[]): string {
+  const lines = verified.map((s) => {
+    const t = s.target;
+    const what = t?.url ?? (t?.name ? `${t.role ?? ""} "${t.name}"` : t?.text ?? t?.css ?? "");
+    return `  ${s.id} ${s.action} ${what}${s.value && !/^\$\{env:/.test(s.value) ? ` = "${s.value}"` : ""}`.trimEnd();
+  });
+  return `\nVERIFIED STEPS — these already ran against the live site and are KEPT by the system:\n${lines.join("\n")}\n` +
+    `Return in "steps" ONLY the steps that come AFTER them, continuing from the screen the last one leaves the ` +
+    `flow on. Do not repeat or rewrite them, and do not start again from the first page.\n`;
 }
 
 /**
@@ -2431,7 +2484,7 @@ Example — handling duplicate selectors with nth:
     // D-85: screen mode grounds differently (and every screen-mode run may take one more attempt when
     // its last attempt got further), so an IR compiled without the flag must not be served with it on.
     // Flag off, every key is unchanged.
-    ...(screenModeAllSites() ? ["screens-all:1"] : []),
+    ...(screenModeAllSites() ? ["screens-all:2"] : []),
     // Session 103: a Salesforce case ending on the Save button alone gains the outcome assertion.
     // 4: back to a record the case created, and field value checks on the record page (Phase A).
     // 5: the Details click on a record page captured without tabs; a Dynamic Forms rule's own field.
@@ -2942,6 +2995,9 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       correction = message;
       budget?.recordRetry({ stage: "ir", caseTitle: testCase.title, attempt: attempt + 1, kind, reason: message });
     };
+    // D-85 "keep what worked": on a retry, the best attempt's grounded steps are kept by code and the
+    // model writes only what follows them (joinVerifiedPrefix). SCREEN_MODE_ALL_SITES only.
+    const verified = screenModeAllSites() && correction && bestPartial?.steps.length ? bestPartial.steps : undefined;
     let parsed;
     try {
       // temperature: 0.2, not Gemini's provider default — matches the value this call ran at
@@ -2950,7 +3006,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       // whatever Gemini's own default is. model: GEMINI_MODEL (the full model, not LITE) —
       // IR is the hardest structured-output task in the pipeline (DOM + test case combined
       // into strict JSON), the same reason it needed a bigger context window under Groq.
-      const { content, usage } = await llm(buildUser(currentModel, correction), {
+      const { content, usage } = await llm(buildUser(currentModel, verified ? correction + verifiedPrefixHint(verified) : correction), {
         systemInstruction: system, json: true, temperature: 0.2,
         role: "main", stage: "ir",
       });
@@ -3006,6 +3062,15 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
     parsed.data.meta.baseUrl = origin;
     // D-65: only this function decides whether the spec runs the fixed Salesforce login.
     delete parsed.data.meta.fixedLogin;
+    if (verified) {
+      const joined = joinVerifiedPrefix(verified, parsed.data.steps);
+      if (joined) {
+        console.log(`[ir] kept the ${verified.length} verified step(s); the model's attempt continues from step ${joined[verified.length]?.id ?? "(none)"}`);
+        parsed.data.steps = joined;
+      } else {
+        console.log("[ir] the model started the flow again on a different route — its attempt is used as written");
+      }
+    }
     // A field the form does not have and the request does not name (see where leaveOut is filled).
     if (leaveOut.size) parsed.data.steps = parsed.data.steps.filter((st) => {
       const out = (st.action === "fill" || st.action === "select") && leaveOut.has(lineKey(st.target?.name ?? ""));
@@ -3086,14 +3151,29 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
         const moved = redirectPostLoginNavigate(parsed.data.steps, prefix.length, currentModel.auth, origin);
         if (moved) console.log(`[ir] step ${moved}: navigate to the login page after signing in -> the page the login lands on`);
       }
-    } else if (fixedLoginRun() && credPolicy === "full") {
+    } else if ((fixedLoginRun() || screenModeAllSites()) && credPolicy === "full") {
       // D-65 stage 1: no prefix was added because the case logs in itself. With the real
       // credentials, its login becomes the recorded one, which already handles a two-screen login.
+      // TD-197 (SCREEN_MODE_ALL_SITES): the same on every site — the model re-wrote the sign-in on
+      // every attempt and mostly got it wrong, while discovery held the exact steps that worked.
       const swapped = swapInRecordedLogin(parsed.data.steps, currentModel.auth, credentialFieldMap(currentModel));
       if (swapped) {
         parsed.data.steps = swapped;
-        parsed.data.meta.fixedLogin = "salesforce";
+        if (fixedLoginRun()) parsed.data.meta.fixedLogin = "salesforce";
         console.log(`[ir] login case: its own login steps replaced by the recorded login (D-65)`);
+        if (!fixedLoginRun()) {
+          // The model's own "did the sign-in work" checks right after its login (run 08-17-02:
+          // `assert button "Sign In" hidden`) — the recorded login already ends on that check, and
+          // the model's version names a button of a screen the flow has left.
+          const at = swapped.findIndex((st) => !/^auth-\d+$/.test(st.id));
+          let dropped = 0;
+          while (at >= 0 && at < parsed.data.steps.length
+            && (parsed.data.steps[at].action === "assert" || parsed.data.steps[at].action === "wait")) {
+            parsed.data.steps.splice(at, 1);
+            dropped++;
+          }
+          if (dropped) console.log(`[ir] dropped ${dropped} sign-in check(s) the model added after its own login (the recorded login checks it)`);
+        }
         // D-70: the same "go to the login page right after logging in" correction the prefix path
         // makes — a login case's own next step is just as likely to be a navigate back to "/".
         const loginLength = swapped.findIndex((st) => !/^auth-\d+$/.test(st.id));

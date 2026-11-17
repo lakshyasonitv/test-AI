@@ -1,6 +1,7 @@
 import type { Page, Locator, FrameLocator } from "playwright";
 import type { Target } from "../schema/ir.js";
 import { hasRunToken } from "../text.js";
+import { screenModeAllSites } from "../screenMode.js";
 
 const q = (s: string) => JSON.stringify(s);
 /** A target's TEXT as spec code: a run token in it ("Zq Kim {{uid}}") resolves with the spec's run
@@ -481,8 +482,24 @@ async function resolveRoleWithFallback(page: LocatorRoot, role: string, name: st
   for (const c of candidates) {
     if (await c.count() === 1) return c;
   }
+  // TD-198: a LONG name (a whole card's text) can change after discovery — eventrix.tech's template card
+  // reads "…+1Configure Template" in one capture and "…+1Configure TemplateUse" in another, so an exact
+  // match finds nothing and the click waits out its timeout. Only when nothing matched exactly, and only
+  // for a name of LONG_NAME_PREFIX+ characters: its first LONG_NAME_PREFIX characters, anchored at the
+  // start, when that is unique. Anchored and long, so TD-32's short-substring collisions cannot recur.
+  // Same rung, same constant, in generator.ts's LOCATE_HELPER (TD-07: the two must not drift).
+  // Behind SCREEN_MODE_ALL_SITES (D-85): off, the replay resolves exactly as before.
+  if (screenModeAllSites() && name.length >= LONG_NAME_PREFIX && await original.count() === 0) {
+    const stem = new RegExp("^" + name.slice(0, LONG_NAME_PREFIX).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const byStem = page.getByRole(role as any, { name: stem });
+    if (await byStem.count() === 1) return byStem;
+  }
   return original.first();
 }
+
+/** TD-198: characters of a long accessible name that must match, from the start, when the whole name
+ *  no longer does. Mirrored in generator.ts's LOCATE_HELPER. */
+export const LONG_NAME_PREFIX = 40;
 
 /**
  * Live counterpart of the generated spec's field() helper. Tries the ways a field can be

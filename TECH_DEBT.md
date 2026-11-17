@@ -6526,7 +6526,7 @@ around the `nearby` / `proximityLabel` call) reaches proximity before the wrappi
 `closest("label")` first. Not fixed here — it changes element names for every ordinary site, so it needs its own
 change and its own cache-key part.
 
-### TD-197. Each IR attempt rewrites the sign-in from scratch, and most attempts get it wrong — High / Accidental — **Open**
+### TD-197. Each IR attempt rewrites the sign-in from scratch, and most attempts get it wrong — High / Accidental — **Fixed behind SCREEN_MODE_ALL_SITES (D-85)**
 
 **Found 2026-11-17, run `2026-11-17T08-17-02-506Z-54df562f` (eventrix.tech; the new `[ir] steps:` log line).**
 Discovery signed in and recorded the exact steps (`auth.loginSteps`), yet every one of six attempts wrote its own:
@@ -6539,7 +6539,7 @@ left. Five of six attempts died in the first six steps; the best reached step 8.
 the IR's first steps) and let the model write only what follows — the D-27 / central-rule pattern: the model
 proposes, code fixes what code already knows.
 
-### TD-198. The grounding replay clicks by the exact full accessible name; the generated spec does not — Medium / Accidental — **Open**
+### TD-198. A long accessible name that changed after discovery could not be found by exact match — Medium / Accidental — **Fixed**
 
 **Same run, attempt 3.** The screen capture after the template click failed: `locator.click: Timeout 30000ms` on
 `getByRole('button', { name: 'ConferenceTechnical ConferencesTracks, keynote speakers, … Configure TemplateUse',
@@ -6556,3 +6556,17 @@ page the source named `07-52-12` while `currentSrc` was `08-17-02`, the run open
 finishing in the tab that showed an older one. **Fix:** `load()` after setting or clearing the source, and the
 poster reset; `hideSingleTestResult` unloads too. Verified live across three runs; `tests/resultVideoReload.test.ts`.
 Suite result cards were not affected (each card renders a new `<video>`).
+
+**TD-197 fix (branch `fix/multiscreen-forms`):** with `SCREEN_MODE_ALL_SITES` on, a case that signs in itself with
+the real credentials gets the RECORDED login (`swapInRecordedLogin`, until now Salesforce + `SALESFORCE_FIXED_LOGIN`
+only), and the model's own "sign-in worked" asserts/waits right after it are dropped (the recorded login ends on
+that check). Plus **keep what worked** (D-85): on a retry, the best attempt's grounded steps are kept by code and the
+model is asked only for what follows (`joinVerifiedPrefix`, `verifiedPrefixHint`); an attempt that starts the flow
+again on another route is used as written. IR cache part bumped to `screens-all:2`. `tests/keepWhatWorked.test.ts`
+(6, one an artifact replay of run 08-17-02: its attempt-3 sign-in becomes the recorded one).
+
+**TD-198, corrected cause and fix:** both resolvers already match exactly; the card's NAME changed — discovery read
+"…+1Configure Template", a later capture "…+1Configure TemplateUse" (a label that appears late), and the step named the
+second. Now, only when nothing matches exactly and the name is 40+ characters, both the replay
+(`resolveRoleWithFallback`) and the emitted `locate()` try the first 40 characters anchored at the start, if unique.
+Short names never fall back (TD-32 kept). `tests/longNameStem.test.ts` runs both in Chromium (4).

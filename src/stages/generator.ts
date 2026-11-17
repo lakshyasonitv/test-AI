@@ -6,6 +6,7 @@ import {
 } from "./targetResolver.js";
 import { isAuthTriggeringStep } from "./authSettle.js";
 import { isEnvValueRef } from "./credentials.js";
+import { screenModeAllSites } from "../screenMode.js";
 import { FRONTDOOR_ENV, SECOND_USER_ENV, isFrontdoorRef, isSecondUserRef, recordRefIndex, recordRefObject, SF_DUPLICATE_CLOSE, SF_DUPLICATE_WARNING, SF_RECORD_PAGES_JS } from "./salesforceFrontdoor.js";
 import { hasRunToken, isNamedToggle, RESOLVE_RUN_TOKENS_JS, SHOWN_NUMBER_JS } from "../text.js";
 
@@ -688,6 +689,24 @@ async function shot(page, path, now) {
 // -----------------------------------------------------------------------------
 // Self-healing locator helper — ARIA role → CSS fallback chain
 // -----------------------------------------------------------------------------
+
+const LOCATE_STEM_RUNG = `
+  // TD-198: a long name (a whole card's text) that changed since discovery ("…Configure Template" vs
+  // "…Configure TemplateUse"): its first 40 characters, anchored at the start, when unique. Only with
+  // nothing matching exactly, and only for 40+ characters (TD-32). Mirrors targetResolver.ts.
+  if (count === 0 && name.length >= 40) {
+    const stem = new RegExp("^" + name.slice(0, 40).replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&"));
+    const byStem = page.getByRole(role, { name: stem });
+    if (await byStem.count() === 1) return byStem;
+  }
+`;
+
+/** LOCATE_HELPER with the TD-198 rung after the exact-text one: emitted only with SCREEN_MODE_ALL_SITES on, so
+ *  with it off every generated spec is byte-identical to before (tests/salesforceFixedLoginSpec.test.ts). */
+const locateHelper = (): string => (screenModeAllSites()
+  ? LOCATE_HELPER.replace(LOCATE_STEM_ANCHOR, () => LOCATE_STEM_ANCHOR + LOCATE_STEM_RUNG) // a function: the rung contains "$&", which a replacement STRING would expand
+  : LOCATE_HELPER);
+const LOCATE_STEM_ANCHOR = "  if (await text.count() === 1) return text;\n";
 
 const LOCATE_HELPER = `
 async function locate(page, role, name, nth) {
@@ -1609,7 +1628,7 @@ export function generateSpec(ir: IR, screenshotDir = "artifacts"): string {
     // only ever be true — and if the splice order ever shifted it could compute false and emit
     // a spec that calls an undefined function. Always-on cannot fail that way.
     SHOT_HELPER,
-    needsLocate ? LOCATE_HELPER : "",
+    needsLocate ? locateHelper() : "",
     needsScope ? SCOPE_HELPER : "",
     needsField ? FIELD_HELPER : "",
     needsChoose ? CHOOSE_HELPER : "",

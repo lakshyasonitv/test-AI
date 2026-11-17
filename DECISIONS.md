@@ -2640,3 +2640,10 @@ aware crawl order: useful, but it changes discovery for every run and does not r
 
 **Cost.** One browser replay per screen boundary (budget `MAX_SCREEN_CAPTURES`, default 16), so a flow with many
 link clicks compiles slower. That is why it is a flag.
+
+**D-85, addendum (2026-11-17, branch `fix/multiscreen-forms`).** Run 4 showed the remaining cost: every retry
+rewrote the WHOLE test, so the part that had worked broke again (five of six attempts died in the sign-in). Two
+additions behind the same flag: the recorded sign-in replaces the model's on every site (TD-197), and the best
+attempt's grounded steps are kept by code while the model writes only the continuation. Rejected: asking the model
+in the prompt to "keep the earlier steps" without code enforcing it — a prompt rule is a preference, not a
+constraint (CLAUDE.md); the join is structural and the prompt only explains it.
