@@ -475,6 +475,15 @@ async function resolveRoleWithFallback(page: LocatorRoot, role: string, name: st
   // already flags that these two implementations can drift; this is one of the places they
   // must not.
   const original = page.getByRole(role as any, { name, exact: true });
+  // TD-198 (SCREEN_MODE_ALL_SITES): every check below is an instant count(). On a page that renders its
+  // cards after the click that opened it, they all ran before the cards existed, the long-name rung found
+  // nothing, and the click then waited 30 s for an exact name that never appears (run
+  // 2026-11-17T10-37-57-397Z-6b8c6791 — the generated spec, which waits for the page first, clicked the
+  // same card fine). So for a long name: wait up to 5 s for the exact name or its stem to be attached.
+  if (screenModeAllSites() && name.replace(/\s+/g, "").length >= LONG_NAME_PREFIX) {
+    await original.or(page.getByRole(role as any, { name: longNameStem(name, false) })).first()
+      .waitFor({ state: "attached", timeout: 5000 }).catch(() => {});
+  }
   const candidates: Locator[] = [original];
   const alt = ROLE_SWAP[role.toLowerCase()];
   if (alt) candidates.push(page.getByRole(alt as any, { name, exact: true }));

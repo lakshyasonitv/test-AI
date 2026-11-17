@@ -6585,3 +6585,5 @@ textContent (`domDiscovery.ts` around its `.slice(0, 80)`), which changes elemen
 Also fixed: on a retry the swap ran again on the kept recorded login and duplicated `auth-4`.
 
 **Third step (run `2026-11-17T10-23-48-792Z-fff7cd57`):** the targeted name was cut from the MIDDLE of the card text, so no accessible name starts with it. Both resolvers now try the same 40 non-space characters anywhere in the name after the anchored try. Tested in Chromium with that exact name.
+
+**Fourth step (run `2026-11-17T10-37-57-397Z-6b8c6791`):** the generated spec now clicks the card and the form's "Continue" (8 steps passed). The grounding replay still timed out: `resolveRoleWithFallback` counts instantly, before the cards render after the Create Event click. With the flag on and a long name it now waits up to 5 s for the exact name or the stem first. `tests/longNameStem.test.ts`: a card rendered 1.2 s late.

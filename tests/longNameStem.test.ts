@@ -94,6 +94,17 @@ describe("discovery's glued card names reach the card (both resolvers, real Chro
     expect(await (await locate(page, "button", INNER)).getAttribute("id")).toBe("card");
   });
 
+  it("a card that renders AFTER the click is still found: the replay waits for it (run 10-37-57)", async () => {
+    const late = await browser.newPage();
+    try {
+      await late.setContent(`<!doctype html><body><div id="grid"></div><script>
+        setTimeout(() => { document.getElementById("grid").innerHTML = '<button id="card"><span style="display:block">Conference</span><h3>Technical Conferences</h3><p>Tracks, keynote speakers, sponsor tiers, and multi-session agendas.</p></button>'; }, 1200);
+      </script></body>`);
+      const loc = await withFlag(() => resolveLive(late, { role: "button", name: WHOLE + "Use" } as any, "click"));
+      expect(await loc.getAttribute("id")).toBe("card");
+    } finally { await late.close(); }
+  });
+
   it("forty characters that appear in no name still match nothing", async () => {
     const other = "Technical ConferencesWorkshops, speakers and sessions for the whole week";
     expect(await (await withFlag(() => resolveLive(page, { role: "button", name: other } as any, "click"))).count()).toBe(0);
