@@ -80,7 +80,7 @@ const colName = (i: number): string => {
 };
 
 /** Style indexes into styles.xml's cellXfs below. */
-const S = { body: 1, header: 2, passed: 3, failed: 4, incomplete: 5, title: 6, label: 7, num: 8, link: 9, linkFailed: 10, todo: 11, actualFailed: 12 } as const;
+const S = { body: 1, header: 2, passed: 3, failed: 4, incomplete: 5, title: 6, label: 7, num: 8, link: 9, linkFailed: 10, todo: 11, actualFailed: 12, mono: 13, monoFail: 14 } as const;
 
 /** `f`: a formula (used for HYPERLINK); `v` is then its cached text, shown before Excel recalculates. */
 type Cell = { v: string | number; s?: number; f?: string };
@@ -105,43 +105,55 @@ function sheetXml(rows: Cell[][], widths: number[], opts: { freezeHeader?: boole
 </worksheet>`;
 }
 
+/**
+ * A light, table-like look (white rows, light-grey bold header, soft grey borders; ids and statuses
+ * in a monospace face), modelled on the QA test-case table the user shared on 2026-11-18.
+ * Indexes in cellXfs are the S constants above — keep the two in step.
+ */
 const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<fonts count="6">
-<font><sz val="11"/><name val="Calibri"/></font>
-<font><b/><sz val="11"/><name val="Calibri"/></font>
-<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
-<font><b/><sz val="14"/><name val="Calibri"/></font>
+<fonts count="10">
+<font><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/></font>
+<font><b/><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/></font>
+<font><b/><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/></font>
+<font><b/><sz val="14"/><color rgb="FF1F2937"/><name val="Calibri"/></font>
 <font><u/><sz val="11"/><color rgb="FF0563C1"/><name val="Calibri"/></font>
 <font><b/><u/><sz val="11"/><color rgb="FF9C0006"/><name val="Calibri"/></font>
+<font><sz val="10"/><color rgb="FF1F2937"/><name val="Consolas"/></font>
+<font><b/><sz val="10"/><color rgb="FF1E6B35"/><name val="Consolas"/></font>
+<font><b/><sz val="10"/><color rgb="FF9C0006"/><name val="Consolas"/></font>
+<font><b/><sz val="10"/><color rgb="FF7A5C00"/><name val="Consolas"/></font>
 </fonts>
-<fills count="6">
+<fills count="7">
 <fill><patternFill patternType="none"/></fill>
 <fill><patternFill patternType="gray125"/></fill>
-<fill><patternFill patternType="solid"><fgColor rgb="FF1F4E79"/><bgColor indexed="64"/></patternFill></fill>
-<fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill>
-<fill><patternFill patternType="solid"><fgColor rgb="FFFFC7CE"/><bgColor indexed="64"/></patternFill></fill>
-<fill><patternFill patternType="solid"><fgColor rgb="FFFFEB9C"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFF3F4F6"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFE8F5EC"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFFDECEC"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFFFF6DB"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFF9FAFB"/><bgColor indexed="64"/></patternFill></fill>
 </fills>
 <borders count="2">
 <border><left/><right/><top/><bottom/><diagonal/></border>
-<border><left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right><top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom><diagonal/></border>
+<border><left style="thin"><color rgb="FFE5E7EB"/></left><right style="thin"><color rgb="FFE5E7EB"/></right><top style="thin"><color rgb="FFE5E7EB"/></top><bottom style="thin"><color rgb="FFE5E7EB"/></bottom><diagonal/></border>
 </borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="13">
+<cellXfs count="15">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
-<xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
-<xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top"/></xf>
-<xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top"/></xf>
-<xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top"/></xf>
+<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="7" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top"/></xf>
+<xf numFmtId="0" fontId="8" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top"/></xf>
+<xf numFmtId="0" fontId="9" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top"/></xf>
 <xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>
-<xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top"/></xf>
+<xf numFmtId="0" fontId="1" fillId="6" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top"/></xf>
 <xf numFmtId="0" fontId="4" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="5" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="6" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top"/></xf>
+<xf numFmtId="0" fontId="8" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top"/></xf>
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>`;
@@ -226,15 +238,15 @@ export function buildRunReportXlsx(
     return r.summary;
   };
 
-  const header = ["S.No", "Test Case ID", "Test Scenario / Title", "Preconditions", "Test Steps", "Expected Result",
+  // The QA layout's own column order; Testbench Link and Duration follow as extras.
+  const header = ["Test Case ID", "Test Scenario / Title", "Preconditions", "Test Steps", "Expected Result",
     "Actual Result", "Status", "Linked Bug ID", "Testbench Link", "Duration (s)"];
   const cases: Cell[][] = [
     header.map((h) => ({ v: h, s: S.header })),
     ...rows.map((r, i) => {
       const w = qa(r);
       return [
-        { v: i + 1, s: S.num },
-        { v: tcId(r, i), s: w === "FAIL" ? S.label : S.body },
+        { v: tcId(r, i), s: w === "FAIL" ? S.monoFail : S.mono },
         { v: r.title, s: S.body },
         { v: preconditions(r), s: S.body },
         { v: r.actions.map((a, k) => `${k + 1}. ${a}`).join("\n"), s: S.body },
@@ -250,7 +262,7 @@ export function buildRunReportXlsx(
   ];
 
   const ws1 = sheetXml(summary, [22, 80]);
-  const ws2 = sheetXml(cases, [7, 18, 38, 34, 55, 45, 50, 14, 16, 38, 12], { freezeHeader: true, filter: true });
+  const ws2 = sheetXml(cases, [18, 38, 34, 55, 45, 50, 15, 16, 38, 12], { freezeHeader: true, filter: true });
 
   return zipFiles([
     { name: "[Content_Types].xml", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -269,7 +281,7 @@ export function buildRunReportXlsx(
     { name: "xl/workbook.xml", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheets><sheet name="Summary" sheetId="1" r:id="rId1"/><sheet name="Test Cases" sheetId="2" r:id="rId2"/></sheets>
-${rows.length ? `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="1" hidden="1">'Test Cases'!$A$1:$K$${rows.length + 1}</definedName></definedNames>` : ""}
+${rows.length ? `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="1" hidden="1">'Test Cases'!$A$1:$J$${rows.length + 1}</definedName></definedNames>` : ""}
 </workbook>` },
     { name: "xl/_rels/workbook.xml.rels", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
