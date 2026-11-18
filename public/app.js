@@ -5594,22 +5594,39 @@ async function renderCaseView(caseId, routeProjectId) {
         </div>
       </div>`;
 
+    // Which version of this case a run executed. Runs do not record it, but it is determined by
+    // the history: the newest version saved at or before the moment the run started.
+    const versionAt = (ranAt) => {
+      const t = ranAt ? Date.parse(ranAt) : NaN;
+      if (!Number.isFinite(t)) return null;
+      let best = null;
+      for (const v of c.versions) {
+        const s = v.savedAt ? Date.parse(v.savedAt) : NaN;
+        if (Number.isFinite(s) && s <= t && (!best || v.version > best)) best = v.version;
+      }
+      return best;
+    };
+
     const rowsEl = document.getElementById("cdRunRows");
     rowsEl.innerHTML = runsError
       ? `<div class="tree-empty" style="padding:24px 16px;text-align:center">${escapeHtml(runsError)}</div>`
       : runs.length
-      ? runs.map((r, i) => `
+      ? runs.map((r, i) => {
+          const v = versionAt(r.ranAt);
+          return `
           <div class="hrow">
             <span class="case-badge ${caseBadgeClass(r.status)}">${escapeHtml(caseStatusLabel(r.status))}</span>
             <div class="hrow-main">
-              <div class="hrow-label">${escapeHtml(r.ranAt ? formatWhen(r.ranAt) : r.runId)}</div>
+              <div class="hrow-label">${escapeHtml(r.ranAt ? formatWhen(r.ranAt) : r.runId)}${v ? ` · v${v}` : ""}</div>
               <div class="hrow-meta">${escapeHtml(r.runId)} · ${escapeHtml(r.resultPath)}</div>
               <div data-run-shot="${i}"></div>
             </div>
             <div class="hrow-actions">
               <button type="button" class="dl-btn-inline" data-run="${escapeHtml(r.runId)}">Open run</button>
+              <span data-run-report="${i}"></span>
             </div>
-          </div>`).join("")
+          </div>`;
+        }).join("")
       : `<div class="tree-empty" style="padding:28px 16px;text-align:center">
            No runs recorded for this case yet. Run history is indexed from the first replay after the
            case library shipped, so older runs will not appear here.
@@ -5621,6 +5638,17 @@ async function renderCaseView(caseId, routeProjectId) {
     // Each run's final screenshot, filled in as it arrives so the list never waits on it. A run
     // whose files were deleted simply shows no image.
     runs.forEach(async (r, i) => {
+      // That run's PDF report (the existing /report.pdf route), offered only while the run's
+      // files still exist — the report is built from them, so a deleted run would only 404.
+      const repSlot = rowsEl.querySelector(`[data-run-report="${i}"]`);
+      const runBase = `/runs/${encodeURIComponent(r.runId)}`;
+      const exists = await fetch(`${runBase}/${r.resultPath}/05-result.json`, { method: "HEAD" })
+        .then((x) => x.ok).catch(() => false);
+      if (exists && repSlot && repSlot.isConnected) {
+        const v = versionAt(r.ranAt);
+        repSlot.innerHTML = `<a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.pdf"
+          download="test-report-${escapeHtml(r.runId)}${v ? `-v${v}` : ""}.pdf">Report (PDF)</a>`;
+      }
       const slot = rowsEl.querySelector(`[data-run-shot="${i}"]`);
       if (!slot) return;
       let shot = "";

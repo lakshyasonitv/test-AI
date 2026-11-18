@@ -6601,3 +6601,7 @@ under its row (click for full size). Same lookup as "Latest result" (`finalShotF
 is stored, and a run whose files were deleted just shows no image.
 The suite page does the same: each case row shows the final screenshot of that case's latest run
 (`/api/cases/:id/runs?limit=1` + `finalShotForRun`, now top-level in `app.js` and shared by both pages).
+Runs & versions also offers each run's **Report (PDF)** (the existing `/api/runs/:id/report.pdf`) and labels the run
+with the case version it executed. Runs do not record the version, so it is derived: the newest version whose
+`savedAt` is at or before the run's start. The link appears only while the run's files exist (HEAD on its
+`05-result.json`). For a suite run the PDF is the whole run's report, not this case alone.
