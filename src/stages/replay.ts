@@ -158,10 +158,15 @@ export async function runReplay(
     /** Shown as the run's prompt line — "Replayed 4 cases from Smoke", etc. */
     label: string;
     creds?: Credentials;
+    /**
+     * The saved suite this replay was started from, when it was. Written to 00-input.json only,
+     * so a suite page can list its own runs; nothing else reads it. Absent for a hand-picked set.
+     */
+    suiteId?: string;
   },
   onEvent: OnEvent = () => { },
 ): Promise<ReplayOutcome> {
-  const { runId, cases, label, creds } = opts;
+  const { runId, cases, label, creds, suiteId } = opts;
   const runDir = path.join("runs", runId);
   mkdirSync(runDir, { recursive: true });
 
@@ -177,7 +182,7 @@ export async function runReplay(
   const entryUrl = cases[0]?.ir.meta.baseUrl ?? "";
 
   try {
-    save("00-input.json", { prompt: label, url: entryUrl, replay: true, caseCount: cases.length });
+    save("00-input.json", { prompt: label, url: entryUrl, replay: true, caseCount: cases.length, ...(suiteId ? { suiteId } : {}) });
     emit("input", "completed", { prompt: label, url: entryUrl, replay: true });
 
     // The two stages a replay genuinely does not perform. Emitted completed-with-a-reason rather

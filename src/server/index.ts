@@ -2587,7 +2587,7 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
       // scrubbed; the target app and the session, so the executor mints the sign-in for
       // `${env:SF_FRONTDOOR_URL}`. Null on an ordinary replay.
       return withRunId(runId, () => withTargetApp(sfReplay.session ? "salesforce" : null, () =>
-        withFrontdoor(sfReplay.session, () => runReplay({ runId, cases, label: runLabel, creds }, onEvent))));
+        withFrontdoor(sfReplay.session, () => runReplay({ runId, cases, label: runLabel, creds, suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined }, onEvent))));
     })
       .then((outcome) => {
         // Surface each case's latest verdict on the library row, so the Suite screen can show a

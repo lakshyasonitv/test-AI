@@ -4321,6 +4321,72 @@ async function finalShotForRun(run) {
   return row?.screenshotUrl || "";
 }
 
+/**
+ * A saved suite's previous runs, newest first, each with its PDF report.
+ *
+ * Built from what already exists: every case's run history (`/api/cases/:id/runs`) gives the runs
+ * these cases took part in, and each run's own `00-input.json` says how many cases it ran. A run
+ * started from this suite records `suiteId` there (replay.ts); an older run has none, so it counts
+ * only when it ran exactly this suite's current cases (every one of them, nothing else, at least
+ * two) — a hand-picked batch of some of them is not a run of the suite. Older full runs from
+ * before the suite grew are therefore not listed. A run whose files were deleted is left out:
+ * there is no report to give.
+ */
+async function paintSuiteRuns(suiteId, cases) {
+  const el = document.getElementById("suiteRunRows");
+  if (!el) return;
+  const empty = (msg) => { el.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">${escapeHtml(msg)}</div>`; };
+  if (!cases.length) return empty("No runs yet.");
+
+  const byRun = new Map();
+  await Promise.all(cases.map(async (c) => {
+    let runs = [];
+    try { runs = (await api(`/api/cases/${encodeURIComponent(c.id)}/runs?limit=50`)).runs ?? []; } catch { /* skip */ }
+    for (const r of runs) {
+      const e = byRun.get(r.runId) ?? { runId: r.runId, ranAt: r.ranAt, results: [] };
+      if (r.ranAt && (!e.ranAt || r.ranAt < e.ranAt)) e.ranAt = r.ranAt;
+      e.results.push(r.status);
+      byRun.set(r.runId, e);
+    }
+  }));
+
+  const candidates = [...byRun.values()].sort((a, b) => String(b.ranAt).localeCompare(String(a.ranAt)));
+  const rows = [];
+  for (const e of candidates) {
+    if (rows.length >= 15) break;
+    const input = await fetch(`/runs/${encodeURIComponent(e.runId)}/00-input.json`)
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (!input) continue;
+    const total = Number(input.caseCount) || e.results.length;
+    const mine = input.suiteId
+      ? input.suiteId === suiteId
+      : e.results.length === total && total === cases.length && total >= 2;
+    if (!mine) continue;
+    rows.push({ ...e, total, passed: e.results.filter((s) => s === "passed").length });
+  }
+  if (!el.isConnected) return;
+  if (!rows.length) return empty("No runs of this suite yet. Use ▸ Run all, then its report appears here.");
+
+  el.innerHTML = rows.map((r) => {
+    const ok = r.passed === r.total;
+    return `
+      <div class="hrow">
+        <span class="case-badge ${caseBadgeClass(ok ? "passed" : "failed")}">${escapeHtml(caseStatusLabel(ok ? "passed" : "failed"))}</span>
+        <div class="hrow-main">
+          <div class="hrow-label">${escapeHtml(r.ranAt ? formatWhen(r.ranAt) : r.runId)}</div>
+          <div class="hrow-meta">${r.passed}/${r.total} passed · ${escapeHtml(r.runId)}</div>
+        </div>
+        <div class="hrow-actions">
+          <button type="button" class="dl-btn-inline" data-suite-run="${escapeHtml(r.runId)}">Open run</button>
+          <a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.pdf"
+             download="test-report-${escapeHtml(r.runId)}.pdf">Report (PDF)</a>
+        </div>
+      </div>`;
+  }).join("");
+  el.querySelectorAll("[data-suite-run]").forEach((b) =>
+    b.addEventListener("click", () => navigate("#/run/" + encodeURIComponent(b.dataset.suiteRun))));
+}
+
 async function renderSuiteView(suiteId) {
   const body = document.getElementById("suiteViewBody");
   body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
@@ -4362,7 +4428,11 @@ async function renderSuiteView(suiteId) {
     </div>
     <div id="suiteFeedback"></div>
     <div id="suiteAddPanel"></div>
-    <div class="panel"><div id="suiteRows"></div></div>`;
+    <div class="panel"><div id="suiteRows"></div></div>
+    <div class="panel" style="padding:0;overflow:hidden;margin-top:16px">
+      <div class="cd-script-head"><span class="cd-card-head" style="margin:0">Previous runs</span></div>
+      <div id="suiteRunRows"><div class="tree-empty" style="padding:24px 16px;text-align:center">Loading…</div></div>
+    </div>`;
 
   const rows = document.getElementById("suiteRows");
   if (!cases.length) {
@@ -4416,6 +4486,8 @@ async function renderSuiteView(suiteId) {
       });
     });
   }
+
+  void paintSuiteRuns(suiteId, cases);
 
   const feedback = (msg, isError) => {
     document.getElementById("suiteFeedback").innerHTML =

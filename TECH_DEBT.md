@@ -6605,3 +6605,7 @@ Runs & versions also offers each run's **Report (PDF)** (the existing `/api/runs
 with the case version it executed. Runs do not record the version, so it is derived: the newest version whose
 `savedAt` is at or before the run's start. The link appears only while the run's files exist (HEAD on its
 `05-result.json`). For a suite run the PDF is the whole run's report, not this case alone.
+The suite page has a **Previous runs** list with each run's **Report (PDF)**. A replay started from a suite now writes
+`suiteId` into its own `00-input.json` (optional field, nothing else reads it). Runs from before that have no
+`suiteId`, so they are listed only when they ran exactly the suite's current cases; full runs from before the suite
+grew, and hand-picked batches, are not listed.
