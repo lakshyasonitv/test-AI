@@ -6582,3 +6582,15 @@ this case's login fills (`credentialKindForTarget` on the placeholder-named boxe
 "*********" is the likely gap). Worked around by hand (the saved case now uses the references). Fix direction: a fill
 into the box discovery recorded as the login identifier/password always gets the reference, whatever value the model
 wrote — the same structural rule as the login prefix.
+
+### TD-202. A saved case's "Latest result" never showed a screenshot after a replay — Medium / Accidental — **Fixed 2026-11-18**
+
+**Found 2026-11-18 on LearnVibes saved cases.** Two independent causes. (1) `paintLatestResult` (`public/app.js`) read
+`screenshotUrl` from the case's `cases/case-N/05-result.json`, but in a replay that file is the executor's raw result
+and never carries it — `suiteRunner.ts` resolves the screenshot into the run's `07-suite-summary.json`. So every
+replayed case showed "no screenshot yet" even with a PNG on disk. Fixed: fall back to the summary row whose `caseId`
+is `case-<caseIndex>`. (2) Local-only: with `DB_ENABLED=false` no `runs` / `run_cases` rows are written, so
+`/api/cases/:id/runs` is empty and there is no run to read from at all. That is configuration, not code — a local
+server that should show case history needs `DB_ENABLED=true` (and then writes its runs into the shared database,
+whose artifacts exist only on that machine). Verified by a real replay on a temporary local server: history row
+written, the image renders.

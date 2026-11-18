@@ -5424,9 +5424,20 @@ async function renderCaseView(caseId, routeProjectId) {
         `${last.ranAt ? formatWhen(last.ranAt) : ""} · v${caseEditor.currentVersion} · ${last.runId}`;
     }
     try {
-      const result = await fetch(`/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/05-result.json`)
+      const runBase = `/runs/${encodeURIComponent(last.runId)}`;
+      const result = await fetch(`${runBase}/${last.resultPath}/05-result.json`)
         .then((r) => (r.ok ? r.json() : null));
-      const shot = result?.screenshotUrl;
+      let shot = result?.screenshotUrl;
+      // A replay's per-case 05-result.json is the executor's raw result and never carries
+      // screenshotUrl — the suite runner resolves it into the run's 07-suite-summary.json
+      // instead. Reading only the former left every replayed case with "no screenshot yet"
+      // (TD-202). Fall back to the summary row for this case's index.
+      if (!shot) {
+        const summary = await fetch(`${runBase}/07-suite-summary.json`)
+          .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+        const row = summary?.cases?.find?.((x) => x.caseId === `case-${last.caseIndex}`);
+        shot = row?.screenshotUrl;
+      }
       if (!shot) return;
       el.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="case ${last.caseIndex} · final screenshot" />`;
       el.querySelector("img").addEventListener("click", () =>
