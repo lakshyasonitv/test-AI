@@ -5,6 +5,7 @@ import type { IR, Step } from "../schema/ir.js";
 import { extractFailureDetail } from "./executor.js";
 import { resolveRunTokens, type RunTokenContext } from "../text.js";
 import { chromiumLaunchOptions } from "../browserLaunch.js";
+import { formatIrStep } from "./stepText.js";
 
 /**
  * The test report for a WHOLE RUN, one file, as HTML or PDF (renderReportPdf prints the same page).
@@ -503,12 +504,41 @@ export interface ReportRow {
   savedCaseId?: string;
   title: string;
   status: "Passed" | "Failed" | "Incomplete";
-  steps: string[];
+  /** The suite summary's own word: passed | failed | blocked | truncated | ... */
+  rawStatus: string;
+  /** IR meta.feature, when the case has one. */
+  feature?: string;
+  /** Every planned action (not checks, not waits), in plain words, including ones never reached. */
+  actions: string[];
+  /** Every planned check, in plain words. */
+  expected: string[];
   checks: { sentence: string; state: "held" | "failed" | "not-reached" }[];
+  /** The address the test starts on, and whether it signs in with a stored login. */
+  startUrl?: string;
+  usesLogin: boolean;
   failedAt: string;
   error: string;
   summary: string;
   durationMs: number;
+}
+
+/** A credential, or anything typed into a password box, never appears in a report row. */
+const PASSWORD_BOX = /pass|\*{3,}/i;
+const intoPasswordBox = (s: Step | undefined): boolean =>
+  s?.action === "fill" && PASSWORD_BOX.test(String(s.target?.name ?? s.target?.label ?? s.target?.placeholder ?? ""));
+
+/**
+ * `loginId`: this fill is the sign-in identifier (the last fill before a password fill). A case
+ * saved with a literal login keeps the email in its steps; the report never repeats it.
+ */
+function stepForReport(s: Step, loginId = false): string {
+  const literal = !/\$\{env:/.test(String(s.value ?? ""));
+  const hidden: Step = intoPasswordBox(s) ? { ...s, value: "(password hidden)" }
+    : loginId && literal ? { ...s, value: "(login email hidden)" } : s;
+  return formatIrStep(hidden)
+    .replace(/\$\{env:[A-Z0-9_]*USERNAME[A-Z0-9_]*\}/g, "(saved username)")
+    .replace(/\$\{env:[A-Z0-9_]*PASSWORD[A-Z0-9_]*\}/g, "(saved password)")
+    .replace(/\$\{env:[A-Z0-9_]+\}/g, "(saved value)");
 }
 
 /** The report's facts per test, without HTML — read by xlsxReport.ts. */
@@ -517,12 +547,32 @@ export function reportRows(input: RunReportInput): ReportRow[] {
     const f = caseFacts(c);
     const at = f.outcome === "failed" && f.failedIdx >= 0 ? f.rows[f.failedIdx] : undefined;
     const rawError = f.outcome === "failed" ? (f.detail as any)?.error ?? (f.detail as any)?.message ?? "" : "";
+    const irSteps: Step[] = (c.ir?.steps ?? []) as Step[];
+    const usesLogin = irSteps.some((s) => s.action === "fill" && (
+      /\$\{env:[A-Z0-9_]*(USERNAME|PASSWORD)/.test(String(s.value ?? ""))
+      || PASSWORD_BOX.test(String(s.target?.name ?? s.target?.label ?? s.target?.placeholder ?? ""))));
+    const nav = irSteps.find((s) => s.action === "navigate" && s.target?.url);
+    let startUrl: string | undefined;
+    if (nav) {
+      const u = String(nav.target!.url);
+      try { startUrl = new URL(u, (c.ir?.meta as any)?.baseUrl || input.baseUrl || undefined).toString(); } catch { startUrl = u; }
+    }
     return {
       savedCaseId: c.savedCaseId,
       title: c.title,
       status: OUTCOME_WORD[f.outcome] as ReportRow["status"],
-      steps: f.rows.filter((r) => !r.isWait).map((r) => `${r.i + 1}. ${r.title}`),
+      rawStatus: String(c.status ?? ""),
+      feature: (c.ir?.meta as any)?.feature,
+      actions: irSteps.map((s, i) => {
+        // The sign-in identifier: the last fill before a password fill, with nothing filled between.
+        const next = irSteps.slice(i + 1).find((x) => x.action === "fill");
+        return { s, loginId: s.action === "fill" && !intoPasswordBox(s) && intoPasswordBox(next) };
+      }).filter(({ s }) => s.action !== "assert" && s.action !== "wait")
+        .map(({ s, loginId }) => stepForReport(s, loginId)),
+      expected: irSteps.map((s) => checkSentence(s, f.ctx)).filter((x): x is string => !!x),
       checks: f.checks.map((x) => ({ sentence: x.sentence as string, state: x.state as ReportRow["checks"][number]["state"] })),
+      startUrl,
+      usesLogin,
       failedAt: at ? `Step ${at.i + 1}: ${at.title}` : "",
       error: rawError ? cleanError(rawError, f.ctx) : "",
       summary: oneLine(c, f),

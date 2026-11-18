@@ -80,7 +80,7 @@ const colName = (i: number): string => {
 };
 
 /** Style indexes into styles.xml's cellXfs below. */
-const S = { body: 1, header: 2, passed: 3, failed: 4, incomplete: 5, title: 6, label: 7, num: 8, link: 9, linkFailed: 10 } as const;
+const S = { body: 1, header: 2, passed: 3, failed: 4, incomplete: 5, title: 6, label: 7, num: 8, link: 9, linkFailed: 10, todo: 11, actualFailed: 12 } as const;
 
 /** `f`: a formula (used for HYPERLINK); `v` is then its cached text, shown before Excel recalculates. */
 type Cell = { v: string | number; s?: number; f?: string };
@@ -128,7 +128,7 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <border><left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right><top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom><diagonal/></border>
 </borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="11">
+<cellXfs count="13">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
@@ -140,13 +140,14 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top"/></xf>
 <xf numFmtId="0" fontId="4" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="5" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>`;
 
 // ---------------------------------------------------------------------------------- workbook
 
-const MARK = { held: "✓", failed: "✗", "not-reached": "–" } as const;
 
 /** The run's report as .xlsx bytes. */
 export function buildRunReportXlsx(
@@ -155,13 +156,17 @@ export function buildRunReportXlsx(
   opts: { caseLink?: (savedCaseId: string) => string } = {},
 ): Buffer {
   const rows = reportRows(input);
-  const passed = rows.filter((r) => r.status === "Passed").length;
-  const failed = rows.filter((r) => r.status === "Failed").length;
-  const incomplete = rows.length - passed - failed;
+  // QA status words. "blocked" = the site stopped the test (captcha, gate); anything else that
+  // did not finish (truncated, no assertion reached) never got to test the app.
+  const qa = (r: (typeof rows)[number]): "PASS" | "FAIL" | "BLOCKED" | "NOT EXECUTED" =>
+    r.status === "Passed" ? "PASS" : r.status === "Failed" ? "FAIL"
+      : r.rawStatus.toLowerCase() === "blocked" ? "BLOCKED" : "NOT EXECUTED";
+  const count = (w: string) => rows.filter((r) => qa(r) === w).length;
+  const passed = count("PASS");
   const when = input.startedAt && Number.isFinite(input.startedAt)
     ? new Date(input.startedAt).toISOString().replace("T", " ").slice(0, 19) + " UTC"
     : "";
-  const statusStyle = (s: string) => (s === "Passed" ? S.passed : s === "Failed" ? S.failed : S.incomplete);
+  const statusStyle = (w: string) => (w === "PASS" ? S.passed : w === "FAIL" ? S.failed : S.incomplete);
 
   const summary: Cell[][] = [
     [{ v: "Test Execution Report", s: S.title }],
@@ -172,17 +177,29 @@ export function buildRunReportXlsx(
     [{ v: "Executed on", s: S.label }, { v: when, s: S.body }],
     [],
     [{ v: "Total test cases", s: S.label }, { v: rows.length, s: S.num }],
-    [{ v: "Passed", s: S.passed }, { v: passed, s: S.num }],
-    [{ v: "Failed", s: S.failed }, { v: failed, s: S.num }],
-    [{ v: "Incomplete", s: S.incomplete }, { v: incomplete, s: S.num }],
+    [{ v: "PASS", s: S.passed }, { v: passed, s: S.num }],
+    [{ v: "FAIL", s: S.failed }, { v: count("FAIL"), s: S.num }],
+    [{ v: "BLOCKED", s: S.incomplete }, { v: count("BLOCKED"), s: S.num }],
+    [{ v: "NOT EXECUTED", s: S.incomplete }, { v: count("NOT EXECUTED"), s: S.num }],
     [{ v: "Pass rate", s: S.label }, { v: rows.length ? `${Math.round((passed / rows.length) * 100)}%` : "0%", s: S.num }],
     [],
-    [{ v: "Passed: every check held. Failed: a check did not hold, or a step could not be done. Incomplete: the test could not finish, so it says nothing about the app." }],
+    [{ v: "PASS: every expected result held. FAIL: a check did not hold, or a step could not be done. BLOCKED: the site stopped the test (e.g. a captcha). NOT EXECUTED: the test could not finish, so it says nothing about the app." }],
   ];
 
-  const idCell = (r: (typeof rows)[number]): Cell => {
+  // TC_<AREA>_<NNN>: AREA from the title's own prefix ("Admin: ...", "Login: ...") or else the
+  // case's feature; NNN is its position in this run. Readable, but positional — the Testbench
+  // Link column is the id that never changes.
+  const area = (r: (typeof rows)[number]): string => {
+    const prefix = /^\s*([A-Za-z][A-Za-z0-9 ]{0,20}):/.exec(r.title)?.[1] ?? r.feature ?? "";
+    const word = prefix.trim().split(/\s+/)[0] ?? "";
+    const up = word.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    return up === "AUTHENTICATION" ? "AUTH" : up.slice(0, 10) || "TEST";
+  };
+  const tcId = (r: (typeof rows)[number], i: number) => `TC_${area(r)}_${String(i + 1).padStart(3, "0")}`;
+
+  const linkCell = (r: (typeof rows)[number]): Cell => {
     if (!r.savedCaseId) return { v: "", s: S.body };
-    const failedRow = r.status === "Failed";
+    const failedRow = qa(r) === "FAIL";
     const url = opts.caseLink?.(r.savedCaseId);
     // A failed test's id stands out (red fill) — it is the one a developer is sent to open.
     return url
@@ -190,25 +207,50 @@ export function buildRunReportXlsx(
       : { v: r.savedCaseId, s: failedRow ? S.failed : S.body };
   };
 
-  const header = ["S.No", "Test Case ID", "Test Case", "Test Steps", "What was checked", "Status", "Failed at", "Error / Actual result", "Result in one line", "Duration (s)"];
+  const preconditions = (r: (typeof rows)[number]): string => [
+    r.startUrl ? `Application reachable at ${r.startUrl}` : input.baseUrl ? `Application reachable at ${input.baseUrl}` : "",
+    r.usesLogin ? "A valid user account exists (signed in with the saved login)" : "No sign-in needed",
+  ].filter(Boolean).join("\n");
+
+  const actual = (r: (typeof rows)[number]): string => {
+    const w = qa(r);
+    if (w === "PASS") {
+      const n = r.checks.filter((c) => c.state === "held").length;
+      return n ? `As expected: all ${n} expected result${n === 1 ? "" : "s"} held` : "All steps completed (this test makes no check of the result)";
+    }
+    if (w === "FAIL") {
+      const failedCheck = r.checks.find((c) => c.state === "failed")?.sentence;
+      const what = failedCheck ? `Not as expected: ${failedCheck}` : r.failedAt ? `Could not do ${r.failedAt.replace(/^Step \d+: /, "")}` : "The test failed";
+      return [what, r.failedAt ? `(${r.failedAt})` : "", r.error ? `Error: ${r.error}` : ""].filter(Boolean).join("\n");
+    }
+    return r.summary;
+  };
+
+  const header = ["S.No", "Test Case ID", "Test Scenario / Title", "Preconditions", "Test Steps", "Expected Result",
+    "Actual Result", "Status", "Linked Bug ID", "Testbench Link", "Duration (s)"];
   const cases: Cell[][] = [
     header.map((h) => ({ v: h, s: S.header })),
-    ...rows.map((r, i) => [
-      { v: i + 1, s: S.num },
-      idCell(r),
-      { v: r.title, s: S.body },
-      { v: r.steps.join("\n"), s: S.body },
-      { v: r.checks.map((c) => `${MARK[c.state]} ${c.sentence}`).join("\n") || "No check of the result", s: S.body },
-      { v: r.status, s: statusStyle(r.status) },
-      { v: r.failedAt, s: S.body },
-      { v: r.error, s: S.body },
-      { v: r.summary, s: S.body },
-      { v: r.durationMs ? Math.round(r.durationMs / 100) / 10 : "", s: S.num },
-    ]),
+    ...rows.map((r, i) => {
+      const w = qa(r);
+      return [
+        { v: i + 1, s: S.num },
+        { v: tcId(r, i), s: w === "FAIL" ? S.label : S.body },
+        { v: r.title, s: S.body },
+        { v: preconditions(r), s: S.body },
+        { v: r.actions.map((a, k) => `${k + 1}. ${a}`).join("\n"), s: S.body },
+        { v: r.expected.join("\n") || "Every step completes without error", s: S.body },
+        { v: actual(r), s: w === "FAIL" ? S.actualFailed : S.body },
+        { v: w, s: statusStyle(w) },
+        // Left for QA/dev to fill once a defect is logged; a FAIL row's cell is marked as a to-do.
+        { v: "", s: w === "FAIL" ? S.todo : S.body },
+        linkCell(r),
+        { v: r.durationMs ? Math.round(r.durationMs / 100) / 10 : "", s: S.num },
+      ];
+    }),
   ];
 
   const ws1 = sheetXml(summary, [22, 80]);
-  const ws2 = sheetXml(cases, [7, 38, 40, 60, 55, 12, 40, 55, 45, 12], { freezeHeader: true, filter: true });
+  const ws2 = sheetXml(cases, [7, 18, 38, 34, 55, 45, 50, 14, 16, 38, 12], { freezeHeader: true, filter: true });
 
   return zipFiles([
     { name: "[Content_Types].xml", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -227,7 +269,7 @@ export function buildRunReportXlsx(
     { name: "xl/workbook.xml", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheets><sheet name="Summary" sheetId="1" r:id="rId1"/><sheet name="Test Cases" sheetId="2" r:id="rId2"/></sheets>
-${rows.length ? `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="1" hidden="1">'Test Cases'!$A$1:$J$${rows.length + 1}</definedName></definedNames>` : ""}
+${rows.length ? `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="1" hidden="1">'Test Cases'!$A$1:$K$${rows.length + 1}</definedName></definedNames>` : ""}
 </workbook>` },
     { name: "xl/_rels/workbook.xml.rels", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">

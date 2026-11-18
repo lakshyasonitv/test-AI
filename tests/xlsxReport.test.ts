@@ -50,11 +50,43 @@ describe("Excel report", () => {
     const cases = parts.get("xl/worksheets/sheet2.xml")!;
     expect(cases).toContain("Login works");
     expect(cases).toContain("Cart &lt;total&gt; &amp; tax");
-    expect(cases).toContain(">Passed<");
-    expect(cases).toContain(">Failed<");
+    expect(cases).toContain(">PASS<");
+    expect(cases).toContain(">FAIL<");
+    // QA columns, and a readable id from the title / position.
+    for (const h of ["Test Case ID", "Test Scenario / Title", "Preconditions", "Test Steps", "Expected Result",
+      "Actual Result", "Status", "Linked Bug ID", "Testbench Link"]) expect(cases).toContain(`>${h}<`);
+    expect(cases).toContain(">TC_TEST_001<");
     // The failed test's saved id, as a link that opens it in Testbench.
-    expect(cases).toContain(">Test Case ID<");
     expect(cases).toContain(
       'HYPERLINK(&quot;https://tb.example/#/case/11111111-2222-3333-4444-555555555555&quot;,&quot;11111111-2222-3333-4444-555555555555&quot;)');
+  });
+
+  it("never writes a password into Test Steps, even one stored as a literal", () => {
+    const ir = {
+      meta: { title: "Login: works", baseUrl: "https://example.test" },
+      steps: [
+        { id: "s1", action: "navigate", target: { url: "/login" } },
+        { id: "s2", action: "fill", target: { role: "textbox", name: "Email" }, value: "${env:TEST_USERNAME}" },
+        { id: "s3", action: "fill", target: { role: "textbox", name: "*********" }, value: "hunter2-literal" },
+        { id: "s3b", action: "fill", target: { role: "textbox", name: "Login" }, value: "someone@company.example" },
+        { id: "s3c", action: "fill", target: { role: "textbox", name: "Password" }, value: "another-literal" },
+        { id: "s3d", action: "fill", target: { role: "textbox", name: "Full Name" }, value: "Visible Name" },
+        { id: "s4", action: "assert", target: { role: "heading", name: "Dashboard" }, assertion: "visible" },
+      ],
+    };
+    const parts = unzip(buildRunReportXlsx({ runId: "r", cases: [
+      { caseId: "case-0", title: "Login: works", status: "passed", saved: {}, ir: ir as any },
+    ] }));
+    const cases = parts.get("xl/worksheets/sheet2.xml")!;
+    expect(cases).not.toContain("hunter2-literal");
+    expect(cases).not.toContain("another-literal");
+    expect(cases).not.toContain("someone@company.example");
+    expect(cases).toContain("(login email hidden)");
+    expect(cases).toContain("Visible Name");
+    expect(cases).toContain("(password hidden)");
+    expect(cases).toContain("(saved username)");
+    expect(cases).toContain(">TC_LOGIN_001<");
+    expect(cases).toContain("A valid user account exists");
+    expect(cases).toContain("&quot;Dashboard&quot; is shown");
   });
 });

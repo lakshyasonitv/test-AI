@@ -6617,3 +6617,9 @@ Report (PDF) on the suite page's Previous runs and the case page's Runs & versio
 Excel "Test Case ID" column: each row's saved-case id, as a HYPERLINK to `<origin>/#/case/<id>` (origin from the
 request, `x-forwarded-proto` aware); a failed test's id is filled red. A replay now writes `caseIds` (run order) into its
 00-input.json; older runs fall back to their `run_cases` rows (DB, when enabled). No id known → the cell is empty.
+Excel "Test Cases" sheet is now in QA format: Test Case ID (TC_<AREA>_<NNN>, AREA from the title prefix or feature —
+positional, so it can change if cases are reordered), Test Scenario / Title, Preconditions, Test Steps (actions only, from
+`formatIrStep`), Expected Result (the checks), Actual Result, Status (PASS/FAIL/BLOCKED/NOT EXECUTED), Linked Bug ID
+(blank, FAIL rows marked), Testbench Link (permanent id), Duration. Steps never show a password or a literal login:
+a fill into a password box reads "(password hidden)", the identifier fill before it "(login email hidden)", and
+`${env:...}` references "(saved username/password/value)".
