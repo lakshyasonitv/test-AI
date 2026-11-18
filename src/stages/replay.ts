@@ -182,7 +182,9 @@ export async function runReplay(
   const entryUrl = cases[0]?.ir.meta.baseUrl ?? "";
 
   try {
-    save("00-input.json", { prompt: label, url: entryUrl, replay: true, caseCount: cases.length, ...(suiteId ? { suiteId } : {}) });
+    // caseIds: the saved (library) id of each case, in run order (case-0, case-1, ...), so a report
+    // can name the exact test a developer should open. Additive; nothing else reads it.
+    save("00-input.json", { prompt: label, url: entryUrl, replay: true, caseCount: cases.length, ...(suiteId ? { suiteId } : {}), caseIds: cases.map((c) => c.id) });
     emit("input", "completed", { prompt: label, url: entryUrl, replay: true });
 
     // The two stages a replay genuinely does not perform. Emitted completed-with-a-reason rather

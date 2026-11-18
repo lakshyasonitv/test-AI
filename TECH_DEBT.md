@@ -6614,3 +6614,6 @@ resource); `report.pdf?view=1` (optional) answers `inline` so Report (PDF) opens
 unchanged. New `GET /api/runs/:runId/report.xlsx` (`src/stages/xlsxReport.ts`): Summary + Test Cases sheets from the
 same `reportRows()` the PDF wording uses; written as a zip by hand (no new dependency). Shown as Report (Excel) next to
 Report (PDF) on the suite page's Previous runs and the case page's Runs & versions only. Not behind a flag (read-only).
+Excel "Test Case ID" column: each row's saved-case id, as a HYPERLINK to `<origin>/#/case/<id>` (origin from the
+request, `x-forwarded-proto` aware); a failed test's id is filled red. A replay now writes `caseIds` (run order) into its
+00-input.json; older runs fall back to their `run_cases` rows (DB, when enabled). No id known → the cell is empty.

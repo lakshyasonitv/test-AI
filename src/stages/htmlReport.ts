@@ -45,6 +45,8 @@ export interface ApiCheckRow { object: string; field: string; expected: string; 
 
 export interface ReportCase {
   caseId: string;
+  /** The saved case's library id (test_cases.id), when the run was a replay that recorded it. */
+  savedCaseId?: string;
   title: string;
   /** From the suite summary: passed | failed | blocked | truncated | truncated_no_assertion. */
   status: string;
@@ -116,8 +118,11 @@ export function loadRunReport(runId: string, runsRoot = "runs"): RunReportInput 
     let artifactFiles: string[] = [];
     const artifactsDir = path.join(dir, "artifacts");
     try { artifactFiles = readdirSync(artifactsDir); } catch { /* cleared or never written */ }
+    const idx = /^case-(\d+)$/.exec(String(e.caseId))?.[1];
+    const savedCaseId = Array.isArray(input?.caseIds) && idx !== undefined ? input.caseIds[Number(idx)] : undefined;
     return {
-      caseId: e.caseId, title: e.title ?? e.caseId, status: e.status ?? "failed",
+      caseId: e.caseId, ...(typeof savedCaseId === "string" ? { savedCaseId } : {}),
+      title: e.title ?? e.caseId, status: e.status ?? "failed",
       whyItMatters: e.whyItMatters, expected: e.expected, blockedBy: e.blockedBy,
       saved: rd("05-result.json") ?? {}, ir: irRaw?.ir ?? irRaw ?? null, diagnosis: rd("06-diagnosis.json"),
       apiChecks: apiByCase.get(e.caseId), artifactsDir, artifactFiles,
@@ -494,6 +499,8 @@ export function buildRunReportHtml(input: RunReportInput, opts: { everyStepScree
 
 /** One test as plain values, for the Excel report. Same wording as the PDF (same helpers). */
 export interface ReportRow {
+  /** The saved case's library id, when known. */
+  savedCaseId?: string;
   title: string;
   status: "Passed" | "Failed" | "Incomplete";
   steps: string[];
@@ -511,6 +518,7 @@ export function reportRows(input: RunReportInput): ReportRow[] {
     const at = f.outcome === "failed" && f.failedIdx >= 0 ? f.rows[f.failedIdx] : undefined;
     const rawError = f.outcome === "failed" ? (f.detail as any)?.error ?? (f.detail as any)?.message ?? "" : "";
     return {
+      savedCaseId: c.savedCaseId,
       title: c.title,
       status: OUTCOME_WORD[f.outcome] as ReportRow["status"],
       steps: f.rows.filter((r) => !r.isWait).map((r) => `${r.i + 1}. ${r.title}`),

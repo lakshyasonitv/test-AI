@@ -36,9 +36,9 @@ describe("Excel report", () => {
       startedAt: Date.parse("2026-11-18T02:30:24.478Z"),
       cases: [
         { caseId: "case-0", title: "Login works", status: "passed", saved: {} },
-        { caseId: "case-1", title: "Cart <total> & tax", status: "failed", saved: {} },
+        { caseId: "case-1", savedCaseId: "11111111-2222-3333-4444-555555555555", title: "Cart <total> & tax", status: "failed", saved: {} },
       ],
-    });
+    }, { caseLink: (id) => `https://tb.example/#/case/${id}` });
     const parts = unzip(buf);
     expect([...parts.keys()]).toEqual(expect.arrayContaining([
       "[Content_Types].xml", "xl/workbook.xml", "xl/styles.xml", "xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml",
@@ -52,5 +52,9 @@ describe("Excel report", () => {
     expect(cases).toContain("Cart &lt;total&gt; &amp; tax");
     expect(cases).toContain(">Passed<");
     expect(cases).toContain(">Failed<");
+    // The failed test's saved id, as a link that opens it in Testbench.
+    expect(cases).toContain(">Test Case ID<");
+    expect(cases).toContain(
+      'HYPERLINK(&quot;https://tb.example/#/case/11111111-2222-3333-4444-555555555555&quot;,&quot;11111111-2222-3333-4444-555555555555&quot;)');
   });
 });

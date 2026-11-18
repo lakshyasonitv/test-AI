@@ -80,15 +80,17 @@ const colName = (i: number): string => {
 };
 
 /** Style indexes into styles.xml's cellXfs below. */
-const S = { body: 1, header: 2, passed: 3, failed: 4, incomplete: 5, title: 6, label: 7, num: 8 } as const;
+const S = { body: 1, header: 2, passed: 3, failed: 4, incomplete: 5, title: 6, label: 7, num: 8, link: 9, linkFailed: 10 } as const;
 
-type Cell = { v: string | number; s?: number };
+/** `f`: a formula (used for HYPERLINK); `v` is then its cached text, shown before Excel recalculates. */
+type Cell = { v: string | number; s?: number; f?: string };
 
 function sheetXml(rows: Cell[][], widths: number[], opts: { freezeHeader?: boolean; filter?: boolean } = {}): string {
   const lastCol = colName(Math.max(0, widths.length - 1));
   const body = rows.map((r, ri) => `<row r="${ri + 1}">${r.map((c, ci) => {
     const ref = `${colName(ci)}${ri + 1}`;
     const st = c.s ? ` s="${c.s}"` : "";
+    if (c.f) return `<c r="${ref}"${st} t="str"><f>${x(c.f)}</f><v>${x(c.v)}</v></c>`;
     return typeof c.v === "number"
       ? `<c r="${ref}"${st}><v>${c.v}</v></c>`
       : `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${x(c.v)}</t></is></c>`;
@@ -105,11 +107,13 @@ function sheetXml(rows: Cell[][], widths: number[], opts: { freezeHeader?: boole
 
 const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<fonts count="4">
+<fonts count="6">
 <font><sz val="11"/><name val="Calibri"/></font>
 <font><b/><sz val="11"/><name val="Calibri"/></font>
 <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
 <font><b/><sz val="14"/><name val="Calibri"/></font>
+<font><u/><sz val="11"/><color rgb="FF0563C1"/><name val="Calibri"/></font>
+<font><b/><u/><sz val="11"/><color rgb="FF9C0006"/><name val="Calibri"/></font>
 </fonts>
 <fills count="6">
 <fill><patternFill patternType="none"/></fill>
@@ -124,7 +128,7 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <border><left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right><top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom><diagonal/></border>
 </borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="9">
+<cellXfs count="11">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
@@ -134,6 +138,8 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>
 <xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top"/></xf>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="top"/></xf>
+<xf numFmtId="0" fontId="4" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="5" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>`;
@@ -143,7 +149,11 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 const MARK = { held: "✓", failed: "✗", "not-reached": "–" } as const;
 
 /** The run's report as .xlsx bytes. */
-export function buildRunReportXlsx(input: RunReportInput): Buffer {
+export function buildRunReportXlsx(
+  input: RunReportInput,
+  /** Turns a saved case id into a link that opens it in Testbench; without it the id is plain text. */
+  opts: { caseLink?: (savedCaseId: string) => string } = {},
+): Buffer {
   const rows = reportRows(input);
   const passed = rows.filter((r) => r.status === "Passed").length;
   const failed = rows.filter((r) => r.status === "Failed").length;
@@ -170,11 +180,22 @@ export function buildRunReportXlsx(input: RunReportInput): Buffer {
     [{ v: "Passed: every check held. Failed: a check did not hold, or a step could not be done. Incomplete: the test could not finish, so it says nothing about the app." }],
   ];
 
-  const header = ["S.No", "Test Case", "Test Steps", "What was checked", "Status", "Failed at", "Error / Actual result", "Result in one line", "Duration (s)"];
+  const idCell = (r: (typeof rows)[number]): Cell => {
+    if (!r.savedCaseId) return { v: "", s: S.body };
+    const failedRow = r.status === "Failed";
+    const url = opts.caseLink?.(r.savedCaseId);
+    // A failed test's id stands out (red fill) — it is the one a developer is sent to open.
+    return url
+      ? { v: r.savedCaseId, f: `HYPERLINK("${url.replace(/"/g, '""')}","${r.savedCaseId}")`, s: failedRow ? S.linkFailed : S.link }
+      : { v: r.savedCaseId, s: failedRow ? S.failed : S.body };
+  };
+
+  const header = ["S.No", "Test Case ID", "Test Case", "Test Steps", "What was checked", "Status", "Failed at", "Error / Actual result", "Result in one line", "Duration (s)"];
   const cases: Cell[][] = [
     header.map((h) => ({ v: h, s: S.header })),
     ...rows.map((r, i) => [
       { v: i + 1, s: S.num },
+      idCell(r),
       { v: r.title, s: S.body },
       { v: r.steps.join("\n"), s: S.body },
       { v: r.checks.map((c) => `${MARK[c.state]} ${c.sentence}`).join("\n") || "No check of the result", s: S.body },
@@ -187,7 +208,7 @@ export function buildRunReportXlsx(input: RunReportInput): Buffer {
   ];
 
   const ws1 = sheetXml(summary, [22, 80]);
-  const ws2 = sheetXml(cases, [7, 40, 60, 55, 12, 40, 55, 45, 12], { freezeHeader: true, filter: true });
+  const ws2 = sheetXml(cases, [7, 38, 40, 60, 55, 12, 40, 55, 45, 12], { freezeHeader: true, filter: true });
 
   return zipFiles([
     { name: "[Content_Types].xml", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -206,7 +227,7 @@ export function buildRunReportXlsx(input: RunReportInput): Buffer {
     { name: "xl/workbook.xml", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheets><sheet name="Summary" sheetId="1" r:id="rId1"/><sheet name="Test Cases" sheetId="2" r:id="rId2"/></sheets>
-${rows.length ? `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="1" hidden="1">'Test Cases'!$A$1:$I$${rows.length + 1}</definedName></definedNames>` : ""}
+${rows.length ? `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="1" hidden="1">'Test Cases'!$A$1:$J$${rows.length + 1}</definedName></definedNames>` : ""}
 </workbook>` },
     { name: "xl/_rels/workbook.xml.rels", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">

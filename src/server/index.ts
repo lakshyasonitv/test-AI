@@ -118,7 +118,7 @@ import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsE
 import {
   cancelJob, createJob, emitJobEvent, getJob, isCancelled, jobEvents, subscribeJob,
 } from "./regroundJobs.js";
-import { deleteRunRow, fetchRunsFromDb, isDbEnabled, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
+import { deleteRunRow, fetchRunsFromDb, getServiceClient, isDbEnabled, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl, orgDiscoveryCacheEnabled, savedDiscoveriesFor } from "../stages/hybridDiscovery.js";
@@ -688,11 +688,28 @@ app.get("/api/runs/:runId/report.pdf", requireRunRole("viewer"), async (req, res
 });
 
 /** The same report as an Excel workbook: a Summary sheet and one row per test case. */
-app.get("/api/runs/:runId/report.xlsx", requireRunRole("viewer"), (req, res) => {
+app.get("/api/runs/:runId/report.xlsx", requireRunRole("viewer"), async (req, res) => {
   const report = runReport(req.params.runId);
   if (!report) return res.status(404).send("no cases recorded for this run");
   try {
-    const xlsx = buildRunReportXlsx(report);
+    // Each test's saved-case id, so a developer can open the exact case. A replay records them in
+    // its 00-input.json; an older run did not, so fall back to run_cases (this run's own rows —
+    // requireRunRole has already authorised the run). Best effort: no id is not an error.
+    if (report.cases.some((c) => !c.savedCaseId) && isDbEnabled()) {
+      try {
+        const { data } = await getServiceClient()!
+          .from("run_cases").select("test_case_id, case_index").eq("run_id", req.params.runId);
+        const byIndex = new Map((data ?? []).map((r: any) => [Number(r.case_index), String(r.test_case_id)]));
+        for (const c of report.cases) {
+          const idx = /^case-(\d+)$/.exec(c.caseId)?.[1];
+          if (!c.savedCaseId && idx !== undefined && byIndex.has(Number(idx))) c.savedCaseId = byIndex.get(Number(idx));
+        }
+      } catch { /* ids are a convenience */ }
+    }
+    // The link opens the case in this same Testbench (`#/case/<id>` resolves its project).
+    const proto = String(req.headers["x-forwarded-proto"] ?? req.protocol).split(",")[0].trim();
+    const origin = `${proto}://${req.get("host")}`;
+    const xlsx = buildRunReportXlsx(report, { caseLink: (id) => `${origin}/#/case/${encodeURIComponent(id)}` });
     res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
       .setHeader("Content-Disposition", `attachment; filename="test-report-${req.params.runId}.xlsx"`);
     res.send(xlsx);
