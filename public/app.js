@@ -4301,6 +4301,26 @@ async function startReplay(selection, label) {
 
 // ---------------------------------------------------------------- Suite view
 
+/**
+ * One run's final screenshot URL for this case, or "" when the run's files are gone.
+ *
+ * A replay's per-case 05-result.json is the executor's raw result and never carries
+ * screenshotUrl — the suite runner resolves it into the run's 07-suite-summary.json instead.
+ * Reading only the former left every replayed case with "no screenshot yet" (TD-202), so the
+ * summary row for this case's index is the fallback. Read from artifacts the run already wrote:
+ * nothing new is stored.
+ */
+async function finalShotForRun(run) {
+  const runBase = `/runs/${encodeURIComponent(run.runId)}`;
+  const result = await fetch(`${runBase}/${run.resultPath}/05-result.json`)
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (result?.screenshotUrl) return result.screenshotUrl;
+  const summary = await fetch(`${runBase}/07-suite-summary.json`)
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const row = summary?.cases?.find?.((x) => x.caseId === `case-${run.caseIndex}`);
+  return row?.screenshotUrl || "";
+}
+
 async function renderSuiteView(suiteId) {
   const body = document.getElementById("suiteViewBody");
   body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
@@ -4360,6 +4380,7 @@ async function renderSuiteView(suiteId) {
         <div class="hrow-main">
           <div class="hrow-label">${escapeHtml(c.title)}</div>
           <div class="hrow-meta">v${c.currentVersion}${c.feature ? ` · ${escapeHtml(c.feature)}` : ""}${c.lastRunAt ? ` · last run ${formatWhen(c.lastRunAt)}` : ""}</div>
+          <div data-case-shot="${i}"></div>
         </div>
         <div class="hrow-actions">
           ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="up" title="Move up" ${i === 0 ? "disabled" : ""}>↑</button>` : ""}
@@ -4369,6 +4390,31 @@ async function renderSuiteView(suiteId) {
           ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="remove">Remove</button>` : ""}
         </div>
       </div>`).join("");
+
+    // Each case's final screenshot from its latest run, filled in as it arrives so the list never
+    // waits on it. Same lookup as the case page (finalShotForRun); a case never run, or whose last
+    // run's files are gone, simply shows no image.
+    cases.forEach(async (c, i) => {
+      const slot = rows.querySelector(`[data-case-shot="${i}"]`);
+      if (!slot) return;
+      let shot = "";
+      let when = "";
+      try {
+        const last = ((await api(`/api/cases/${encodeURIComponent(c.id)}/runs?limit=1`)).runs ?? [])[0];
+        if (last) {
+          shot = await finalShotForRun(last);
+          when = last.ranAt ? formatWhen(last.ranAt) : last.runId;
+        }
+      } catch { /* no image */ }
+      if (!shot || !slot.isConnected) return;
+      const label = `${c.title} · ${when} · final screenshot`;
+      slot.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="${escapeHtml(label)}"
+        loading="lazy" style="max-width:200px;margin-top:8px;cursor:zoom-in" />`;
+      slot.querySelector("img").addEventListener("click", (e) => {
+        e.stopPropagation();
+        openScreenshotModal(shot, label);
+      });
+    });
   }
 
   const feedback = (msg, isError) => {
@@ -5407,26 +5453,6 @@ async function renderCaseView(caseId, routeProjectId) {
           <button type="button" class="dl-btn-inline" data-prop="discard">Discard</button>
         </div>
       </div>`;
-  }
-
-  /**
-   * One run's final screenshot URL for this case, or "" when the run's files are gone.
-   *
-   * A replay's per-case 05-result.json is the executor's raw result and never carries
-   * screenshotUrl — the suite runner resolves it into the run's 07-suite-summary.json instead.
-   * Reading only the former left every replayed case with "no screenshot yet" (TD-202), so the
-   * summary row for this case's index is the fallback. Read from artifacts the run already wrote:
-   * nothing new is stored.
-   */
-  async function finalShotForRun(run) {
-    const runBase = `/runs/${encodeURIComponent(run.runId)}`;
-    const result = await fetch(`${runBase}/${run.resultPath}/05-result.json`)
-      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-    if (result?.screenshotUrl) return result.screenshotUrl;
-    const summary = await fetch(`${runBase}/07-suite-summary.json`)
-      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-    const row = summary?.cases?.find?.((x) => x.caseId === `case-${run.caseIndex}`);
-    return row?.screenshotUrl || "";
   }
 
   /** The last run's final screenshot, read from the artifact the run already wrote. */

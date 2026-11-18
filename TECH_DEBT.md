@@ -6599,3 +6599,5 @@ written, the image renders.
 under its row (click for full size). Same lookup as "Latest result" (`finalShotForRun` in `app.js`: case
 `05-result.json`, then the run's `07-suite-summary.json`). Read from artifacts the run already wrote; nothing new
 is stored, and a run whose files were deleted just shows no image.
+The suite page does the same: each case row shows the final screenshot of that case's latest run
+(`/api/cases/:id/runs?limit=1` + `finalShotForRun`, now top-level in `app.js` and shared by both pages).
