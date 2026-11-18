@@ -5409,6 +5409,26 @@ async function renderCaseView(caseId, routeProjectId) {
       </div>`;
   }
 
+  /**
+   * One run's final screenshot URL for this case, or "" when the run's files are gone.
+   *
+   * A replay's per-case 05-result.json is the executor's raw result and never carries
+   * screenshotUrl — the suite runner resolves it into the run's 07-suite-summary.json instead.
+   * Reading only the former left every replayed case with "no screenshot yet" (TD-202), so the
+   * summary row for this case's index is the fallback. Read from artifacts the run already wrote:
+   * nothing new is stored.
+   */
+  async function finalShotForRun(run) {
+    const runBase = `/runs/${encodeURIComponent(run.runId)}`;
+    const result = await fetch(`${runBase}/${run.resultPath}/05-result.json`)
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (result?.screenshotUrl) return result.screenshotUrl;
+    const summary = await fetch(`${runBase}/07-suite-summary.json`)
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    const row = summary?.cases?.find?.((x) => x.caseId === `case-${run.caseIndex}`);
+    return row?.screenshotUrl || "";
+  }
+
   /** The last run's final screenshot, read from the artifact the run already wrote. */
   async function paintLatestResult() {
     const el = document.getElementById("cdShot");
@@ -5424,20 +5444,7 @@ async function renderCaseView(caseId, routeProjectId) {
         `${last.ranAt ? formatWhen(last.ranAt) : ""} · v${caseEditor.currentVersion} · ${last.runId}`;
     }
     try {
-      const runBase = `/runs/${encodeURIComponent(last.runId)}`;
-      const result = await fetch(`${runBase}/${last.resultPath}/05-result.json`)
-        .then((r) => (r.ok ? r.json() : null));
-      let shot = result?.screenshotUrl;
-      // A replay's per-case 05-result.json is the executor's raw result and never carries
-      // screenshotUrl — the suite runner resolves it into the run's 07-suite-summary.json
-      // instead. Reading only the former left every replayed case with "no screenshot yet"
-      // (TD-202). Fall back to the summary row for this case's index.
-      if (!shot) {
-        const summary = await fetch(`${runBase}/07-suite-summary.json`)
-          .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-        const row = summary?.cases?.find?.((x) => x.caseId === `case-${last.caseIndex}`);
-        shot = row?.screenshotUrl;
-      }
+      const shot = await finalShotForRun(last);
       if (!shot) return;
       el.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="case ${last.caseIndex} · final screenshot" />`;
       el.querySelector("img").addEventListener("click", () =>
@@ -5565,12 +5572,13 @@ async function renderCaseView(caseId, routeProjectId) {
     rowsEl.innerHTML = runsError
       ? `<div class="tree-empty" style="padding:24px 16px;text-align:center">${escapeHtml(runsError)}</div>`
       : runs.length
-      ? runs.map((r) => `
+      ? runs.map((r, i) => `
           <div class="hrow">
             <span class="case-badge ${caseBadgeClass(r.status)}">${escapeHtml(caseStatusLabel(r.status))}</span>
             <div class="hrow-main">
               <div class="hrow-label">${escapeHtml(r.ranAt ? formatWhen(r.ranAt) : r.runId)}</div>
               <div class="hrow-meta">${escapeHtml(r.runId)} · ${escapeHtml(r.resultPath)}</div>
+              <div data-run-shot="${i}"></div>
             </div>
             <div class="hrow-actions">
               <button type="button" class="dl-btn-inline" data-run="${escapeHtml(r.runId)}">Open run</button>
@@ -5583,6 +5591,20 @@ async function renderCaseView(caseId, routeProjectId) {
 
     rowsEl.querySelectorAll("[data-run]").forEach((b) =>
       b.addEventListener("click", () => navigate("#/run/" + encodeURIComponent(b.dataset.run))));
+
+    // Each run's final screenshot, filled in as it arrives so the list never waits on it. A run
+    // whose files were deleted simply shows no image.
+    runs.forEach(async (r, i) => {
+      const slot = rowsEl.querySelector(`[data-run-shot="${i}"]`);
+      if (!slot) return;
+      let shot = "";
+      try { shot = await finalShotForRun(r); } catch { /* no image */ }
+      if (!shot || !slot.isConnected) return;
+      const label = `${r.ranAt ? formatWhen(r.ranAt) : r.runId} · final screenshot`;
+      slot.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="${escapeHtml(label)}"
+        loading="lazy" style="max-width:240px;margin-top:8px;cursor:zoom-in" />`;
+      slot.querySelector("img").addEventListener("click", () => openScreenshotModal(shot, label));
+    });
 
     const vEl = document.getElementById("cdVersionRows");
     vEl.innerHTML = c.versions.length

@@ -6594,3 +6594,8 @@ is `case-<caseIndex>`. (2) Local-only: with `DB_ENABLED=false` no `runs` / `run_
 server that should show case history needs `DB_ENABLED=true` (and then writes its runs into the shared database,
 whose artifacts exist only on that machine). Verified by a real replay on a temporary local server: history row
 written, the image renders.
+
+**TD-202 follow-up (2026-11-18):** the case page's "Runs & versions" tab now shows each run's final screenshot
+under its row (click for full size). Same lookup as "Latest result" (`finalShotForRun` in `app.js`: case
+`05-result.json`, then the run's `07-suite-summary.json`). Read from artifacts the run already wrote; nothing new
+is stored, and a run whose files were deleted just shows no image.
