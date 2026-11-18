@@ -1276,9 +1276,9 @@ function renderCaseCard(c, runId, index) {
             ${c.intent ? `<h4>QA reasoning</h4><pre>${escapeHtml(c.intent)}</pre>` : ""}
             ${c.llmCalls ? `<h4>Cost</h4><pre>${c.llmCalls} AI call(s), ${c.llmTokens ?? 0} tokens</pre>` : ""}
             <h4>Step-by-step test plan (JSON) <a href="${escapeHtml(irUrl)}" download="ir.json" class="dl-btn dl-btn-inline">${icon("download", { size: 12 })} download</a></h4>
-            <pre class="case-ir">Loading…</pre>
+            <pre class="case-ir">${loadingHtml()}</pre>
             <h4>Full test code <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn dl-btn-inline">${icon("download", { size: 12 })} download</a></h4>
-            <pre class="case-spec">Loading…</pre>
+            <pre class="case-spec">${loadingHtml()}</pre>
             <h4>All files (screenshots, trace, video) <a href="${escapeHtml(traceUrl)}" class="dl-btn dl-btn-inline" target="_blank">${icon("external-link", { size: 12 })} open</a></h4>
           </div>
         </details>
@@ -1488,7 +1488,7 @@ async function openSaveCasePanel(card, source) {
   if (!panel.classList.contains("hidden")) { panel.classList.add("hidden"); return; }
 
   panel.classList.remove("hidden");
-  panel.innerHTML = `<p class="hrow-meta">Loading projects…</p>`;
+  panel.innerHTML = `<p class="hrow-meta">${loadingHtml("Loading projects…")}</p>`;
 
   let projects = [], suites = [];
   try {
@@ -4391,7 +4391,7 @@ async function paintSuiteRuns(suiteId, cases) {
 
 async function renderSuiteView(suiteId) {
   const body = document.getElementById("suiteViewBody");
-  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${loadingHtml()}</div>`;
 
   let suite, cases;
   try {
@@ -4433,7 +4433,7 @@ async function renderSuiteView(suiteId) {
     <div class="panel"><div id="suiteRows"></div></div>
     <div class="panel" style="padding:0;overflow:hidden;margin-top:16px">
       <div class="cd-script-head"><span class="cd-card-head" style="margin:0">Previous runs</span></div>
-      <div id="suiteRunRows"><div class="tree-empty" style="padding:24px 16px;text-align:center">Loading…</div></div>
+      <div id="suiteRunRows"><div class="tree-empty" style="padding:24px 16px;text-align:center">${loadingHtml()}</div></div>
     </div>`;
 
   const rows = document.getElementById("suiteRows");
@@ -4506,7 +4506,7 @@ async function renderSuiteView(suiteId) {
    */
   const openAddPanel = async () => {
     const panel = document.getElementById("suiteAddPanel");
-    panel.innerHTML = `<div class="case-save-panel"><p class="hrow-meta">Loading cases…</p></div>`;
+    panel.innerHTML = `<div class="case-save-panel"><p class="hrow-meta">${loadingHtml("Loading cases…")}</p></div>`;
     let pool;
     try {
       const all = (await api(`/api/cases?projectId=${encodeURIComponent(suite.projectId)}`)).cases ?? [];
@@ -4716,6 +4716,15 @@ const caseLinesPayload = () => caseEditor.lines.map((l) => l.text);
 
 function caseEditorDirty() {
   return !!caseEditor && JSON.stringify(caseLinesPayload()) !== caseEditor.original;
+}
+
+/**
+ * A loading placeholder with a spinner: the same rotating "loader" icon and existing classes the AI
+ * buttons use (`.ai-busy` lays it out, `.ai-spin` turns it; reduced-motion stops it). A function
+ * declaration, so it is usable from any render code regardless of where it sits in this file.
+ */
+function loadingHtml(text = "Loading…") {
+  return `<span class="ai-busy" role="status">${icon("loader", { size: 14, cls: "ai-spin" })}<span>${escapeHtml(text)}</span></span>`;
 }
 
 /** The inline spinner shown inside a button waiting on an AI proposal. One definition so the
@@ -5144,7 +5153,7 @@ async function renderCaseView(caseId, routeProjectId) {
   if (caseEditor && caseEditor.caseId !== caseId) { stopFollowingCaseJob(); caseEditor = null; }
 
   const body = document.getElementById("caseViewBody");
-  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${loadingHtml()}</div>`;
 
   let c, stepsDoc;
   try {
@@ -5581,7 +5590,7 @@ async function renderCaseView(caseId, routeProjectId) {
   }
 
   async function paintScriptTab(el) {
-    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">Loading…</div></div>`;
+    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">${loadingHtml()}</div></div>`;
 
     // The script belongs to the CASE, not to a run's artifact folder. `GET /api/cases/:id/script`
     // returns the spec stored with this version, or regenerates it from the same IR with the same
@@ -5646,7 +5655,7 @@ async function renderCaseView(caseId, routeProjectId) {
   // ----------------------------------------------------------- runs & versions
 
   async function paintRunsTab(el) {
-    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">Loading…</div></div>`;
+    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">${loadingHtml()}</div></div>`;
     let runs = [];
     let runsError = "";
     try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; }
@@ -5952,7 +5961,7 @@ function diffSteps(a, b) {
 
 async function renderCompareView(caseId, fromV, toV) {
   const body = document.getElementById("compareViewBody");
-  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${loadingHtml()}</div>`;
 
   let c, A, B;
   try {
@@ -7684,7 +7693,7 @@ function renderProjectsTree(runs) {
   }
 
   if (projectsCache === null && !projectsUnavailable) {
-    sidebarTreeEl.innerHTML = `<div class="tree-empty">Loading projects…</div>`;
+    sidebarTreeEl.innerHTML = `<div class="tree-empty">${loadingHtml("Loading projects…")}</div>`;
     return;
   }
 
@@ -8309,7 +8318,7 @@ async function renderDashboardView() {
         <p class="tagline">Your recent runs and saved suites at a glance.</p>
       </div>
     </div>`;
-  body.innerHTML = `${head}<div class="tree-empty" style="padding:24px 4px">Loading…</div>`;
+  body.innerHTML = `${head}<div class="tree-empty" style="padding:24px 4px">${loadingHtml()}</div>`;
 
   const asList = (raw, key) =>
     Array.isArray(raw) ? raw : raw && Array.isArray(raw[key]) ? raw[key] : [];
@@ -8518,7 +8527,7 @@ async function renderProjectsView(projectId) {
   pvForm = null;
   pvSuiteCases = new Map();   // D-82: a fresh visit reads each suite's cases again
   if (pvSearch.projectId !== projectId) pvSearch = { projectId: null, q: "" };
-  body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">Loading…</div>`;
+  body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">${loadingHtml()}</div>`;
   await loadProjects();
   // Navigated away (or to another project) while that was in flight: the newer render owns it.
   if (gen !== pvGen || currentView !== "projects") return;
@@ -8734,7 +8743,7 @@ function drawOneProject(body, projectId) {
   const membersCard = platformModel && !projectsUnavailable && canManageProjects() ? `
     <div data-dash="card">
       <div data-dash="card-head"><span data-dash="ico">${icon("list", { size: 15 })}</span><h2>Who can see this project</h2></div>
-      <div data-pv-members><div class="tree-empty" style="padding:12px 4px">Loading…</div></div>
+      <div data-pv-members><div class="tree-empty" style="padding:12px 4px">${loadingHtml()}</div></div>
     </div>` : "";
   const summary = projectsUnavailable
     ? pvPlural(runCount, "recent run")
@@ -9110,7 +9119,7 @@ let adminOpenOrg = null;
 async function renderAdminView() {
   const body = document.getElementById("adminViewBody");
   if (!body) return;
-  body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">Loading…</div>`;
+  body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">${loadingHtml()}</div>`;
   const res = await fetch("/api/admin/organisations").then((r) => (r.ok ? r.json() : null)).catch(() => null);
   if (currentView !== "admin") return;
   const orgs = res && Array.isArray(res.organisations) ? res.organisations : [];
@@ -9125,7 +9134,7 @@ async function renderAdminView() {
         <button type="button" class="dl-btn-inline" data-adm-act="open" data-id="${escapeHtml(o.id)}">Work in this</button>
       </div>
     </div>
-    ${adminOpenOrg === o.id ? `<div data-adm-people="${escapeHtml(o.id)}" style="margin:0 0 10px 14px"><div class="tree-empty" style="padding:12px 4px">Loading…</div></div>` : ""}`;
+    ${adminOpenOrg === o.id ? `<div data-adm-people="${escapeHtml(o.id)}" style="margin:0 0 10px 14px"><div class="tree-empty" style="padding:12px 4px">${loadingHtml()}</div></div>` : ""}`;
   body.innerHTML = `
     <div data-dash="head">
       <div>
@@ -9464,7 +9473,7 @@ async function renderTeamView() {
 
   if (isAdmin) void renderLlmConfigPanel(orgId);
 
-  rows.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">Loading…</div>`;
+  rows.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">${loadingHtml()}</div>`;
 
   const res = await fetch(`/api/organisations/${encodeURIComponent(orgId)}/members`)
     .then((r) => r.json())
