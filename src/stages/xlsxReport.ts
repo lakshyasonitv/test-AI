@@ -262,7 +262,17 @@ export function buildRunReportXlsx(
   ];
 
   const ws1 = sheetXml(summary, [22, 80]);
-  const ws2 = sheetXml(cases, [18, 38, 34, 55, 45, 50, 15, 16, 38, 12], { freezeHeader: true, filter: true });
+  // "Test Cases": one two-column block per test — field name on the left, its value on the right —
+  // the layout of the QA table the user shared. Same cells as the table, turned on their side.
+  const cards: Cell[][] = [];
+  for (const row of cases.slice(1)) {
+    cards.push([{ v: "Column Name", s: S.header }, { v: "Details", s: S.header }]);
+    header.forEach((h, k) => cards.push([{ v: h, s: S.label }, row[k] ?? { v: "", s: S.body }]));
+    cards.push([]);
+  }
+  const ws2 = sheetXml(cards, [26, 95]);
+  // "All Tests (table)": the same facts one row per test, for sorting and filtering by Status.
+  const ws3 = sheetXml(cases, [18, 38, 34, 55, 45, 50, 15, 16, 38, 12], { freezeHeader: true, filter: true });
 
   return zipFiles([
     { name: "[Content_Types].xml", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -272,6 +282,7 @@ export function buildRunReportXlsx(
 <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
 <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>` },
     { name: "_rels/.rels", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -280,17 +291,19 @@ export function buildRunReportXlsx(
 </Relationships>` },
     { name: "xl/workbook.xml", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<sheets><sheet name="Summary" sheetId="1" r:id="rId1"/><sheet name="Test Cases" sheetId="2" r:id="rId2"/></sheets>
-${rows.length ? `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="1" hidden="1">'Test Cases'!$A$1:$J$${rows.length + 1}</definedName></definedNames>` : ""}
+<sheets><sheet name="Summary" sheetId="1" r:id="rId1"/><sheet name="Test Cases" sheetId="2" r:id="rId2"/><sheet name="All Tests (table)" sheetId="3" r:id="rId4"/></sheets>
+${rows.length ? `<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="2" hidden="1">'All Tests (table)'!$A$1:$J$${rows.length + 1}</definedName></definedNames>` : ""}
 </workbook>` },
     { name: "xl/_rels/workbook.xml.rels", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
 <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
 <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>
 </Relationships>` },
     { name: "xl/styles.xml", data: STYLES },
     { name: "xl/worksheets/sheet1.xml", data: ws1 },
     { name: "xl/worksheets/sheet2.xml", data: ws2 },
+    { name: "xl/worksheets/sheet3.xml", data: ws3 },
   ]);
 }
