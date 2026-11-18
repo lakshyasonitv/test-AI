@@ -321,6 +321,7 @@ not been configured for a capability never advertises it.
 | `AUTH_ENABLED` | `false` | Real Supabase sign-in. Off substitutes a synthetic local owner |
 | `AUTH_TOKEN_REFRESH` | `false` | Renew the sign-in token so a session survives past one hour and idle/sleep. Off = a signed-in tab stops working after an hour (`TECH_DEBT.md` TD-108) |
 | `DB_ENABLED` | `false` | Server-side database reads. Requires `SUPABASE_SERVICE_ROLE_KEY` |
+| `ARTIFACTS_TO_SUPABASE` | on when `DB_ENABLED` | Copies run screenshots and report files to a private Supabase Storage bucket (`ARTIFACTS_BUCKET`, default `run-artifacts`) and restores them when the container lost them. `false` turns it off |
 | `SUPABASE_URL` | — | Browser-safe project URL |
 | `SUPABASE_PUBLISHABLE_KEY` | — | Browser-safe key. Every table is RLS deny-all to it, by design |
 | `SUPABASE_SERVICE_ROLE_KEY` | — | **Secret.** Server-side only. Never sent to a browser |

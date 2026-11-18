@@ -3,6 +3,7 @@ import path from "node:path";
 import { rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { buildRunReportHtml, loadRunReport, renderReportPdf } from "../stages/htmlReport.js";
 import { buildRunReportXlsx } from "../stages/xlsxReport.js";
+import { ensureRunLocal, uploadRunArtifactsSoon } from "../artifactStore.js";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
@@ -230,6 +231,8 @@ app.get("/runs/:runId/*", async (req, res) => {
   // Path traversal guard: the resolved path must stay inside RUNS_DIR.
   if (!abs.startsWith(RUNS_DIR + path.sep)) return res.sendStatus(403);
   if (!(await canAccessRun(req, req.params.runId))) return res.sendStatus(403); // no-op today
+  // Not on disk (a restarted container): bring the run back from storage first. After the guard.
+  if (!existsSync(abs)) await ensureRunLocal(req.params.runId, rel);
   res.sendFile(abs, (err) => {
     // sendFile already sent a response (or started one) on success; only translate a real miss
     // (nonexistent file, or a directory — sendFile can't serve those either) into a 404, matching
@@ -450,6 +453,8 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
       } catch (err) {
         console.error(`[db] could not derive final status for ${runId}:`, (err as Error)?.message ?? err);
       }
+      // Keep the run's screenshots and report files past a container restart (artifactStore.ts).
+      uploadRunArtifactsSoon(runId);
     }
   };
 
@@ -665,7 +670,8 @@ function runReport(runId: string) {
   return w ? { ...report, orgWarning: w.message } : report;
 }
 
-app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => {
+app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), async (req, res) => {
+  await ensureRunLocal(req.params.runId);
   const report = runReport(req.params.runId);
   if (!report) return res.status(404).send("no cases recorded for this run");
   res.type("html").send(buildRunReportHtml(report, { everyStepScreenshot: true }));
@@ -673,6 +679,7 @@ app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => 
 
 /** The same report as a PDF, for sending to managers and clients and for keeping on file. */
 app.get("/api/runs/:runId/report.pdf", requireRunRole("viewer"), async (req, res) => {
+  await ensureRunLocal(req.params.runId);
   const report = runReport(req.params.runId);
   if (!report) return res.status(404).send("no cases recorded for this run");
   try {
@@ -689,6 +696,7 @@ app.get("/api/runs/:runId/report.pdf", requireRunRole("viewer"), async (req, res
 
 /** The same report as an Excel workbook: a Summary sheet and one row per test case. */
 app.get("/api/runs/:runId/report.xlsx", requireRunRole("viewer"), async (req, res) => {
+  await ensureRunLocal(req.params.runId);
   const report = runReport(req.params.runId);
   if (!report) return res.status(404).send("no cases recorded for this run");
   try {
@@ -779,7 +787,8 @@ app.get("/api/runs/:runId/spec-warnings", requireRunRole("viewer"), (req, res) =
 
 // Full event log as one JSON snapshot. Polling this can't be buffered by a proxy the way
 // a stream can — the RunStore already persists every event, so this is just a read.
-app.get("/api/runs/:runId/state", requireRunRole("viewer"), (req, res) => {
+app.get("/api/runs/:runId/state", requireRunRole("viewer"), async (req, res) => {
+  await ensureRunLocal(req.params.runId);
   res.json(getEvents(req.params.runId));
 });
 
@@ -2565,6 +2574,7 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
         } catch (err) {
           console.error(`[db] could not derive final status for ${runId}:`, (err as Error)?.message ?? err);
         }
+        uploadRunArtifactsSoon(runId);
       }
     };
 

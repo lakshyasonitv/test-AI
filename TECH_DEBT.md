@@ -6623,3 +6623,17 @@ positional, so it can change if cases are reordered), Test Scenario / Title, Pre
 (blank, FAIL rows marked), Testbench Link (permanent id), Duration. Steps never show a password or a literal login:
 a fill into a password box reads "(password hidden)", the identifier fill before it "(login email hidden)", and
 `${env:...}` references "(saved username/password/value)".
+
+### TD-203. Production lost every run's screenshots on each deploy and scale-to-zero — High / Infrastructure — **Mitigated 2026-11-18**
+
+The Azure container app has no volume at `/app/runs` (project-brain 04-tasks, open since 2026-11-03), so a new
+revision or an idle shutdown deleted all run files: screenshots, and the PDF/Excel reports built from them. Seen on
+2026-11-18 right after a push. **Mitigation:** `src/artifactStore.ts` uploads each finished run's screenshots and
+small report inputs (stage JSON, events.ndjson, generated spec; not video.webm or trace.zip) to a private Supabase
+Storage bucket, and `ensureRunLocal` downloads a run back into `runs/<id>/` when the /runs file route, the run state
+route or a report route needs a file that is not on disk — always after that route's own access check. Runs from
+before this shipped were never uploaded and stay lost. **Deviation:** on by default where `DB_ENABLED` is on
+(`ARTIFACTS_TO_SUPABASE=false` disables) — the user chose this over the flag-default-off rule so production keeps
+its screenshots without an Azure setting change. **Still open:** videos and traces are not kept; storage grows
+with every run (no retention yet; free plan is 1 GB); mounting Azure Files at /app/runs remains the full fix.
+The History list still marks a run "artifacts no longer available" until one of its files is opened.
