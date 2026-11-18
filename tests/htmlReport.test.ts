@@ -92,7 +92,9 @@ describe("buildRunReportHtml", () => {
     const withShot = buildRunReportHtml({ runId: "r", cases: [aCase({ ir: zqIr,
       saved: { passed: true, raw: raw(zqSteps.slice(0, 5), [], [tokens]) } })] });
     expect(shots(withShot)).toBe(1);             // the last step run (step 4), not every step
-    expect(withShot.match(/(?:src|href)="(?!data:)/g) ?? []).toHaveLength(0);
+    // Nothing loaded from outside: inline data, or an in-page "#case-N" jump (the summary's links).
+    expect(withShot.match(/(?:src|href)="(?!data:|#)/g) ?? []).toHaveLength(0);
+    expect(withShot).toContain('href="#case-0"');
     expect(withShot).not.toMatch(/<script\b/i);
   });
 

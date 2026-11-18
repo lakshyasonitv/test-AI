@@ -4378,8 +4378,10 @@ async function paintSuiteRuns(suiteId, cases) {
         </div>
         <div class="hrow-actions">
           <button type="button" class="dl-btn-inline" data-suite-run="${escapeHtml(r.runId)}">Open run</button>
-          <a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.pdf"
-             download="test-report-${escapeHtml(r.runId)}.pdf">Report (PDF)</a>
+          <a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.pdf?view=1"
+             target="_blank" rel="noopener">Report (PDF)</a>
+          <a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.xlsx"
+             download="test-report-${escapeHtml(r.runId)}.xlsx">Report (Excel)</a>
         </div>
       </div>`;
   }).join("");
@@ -5718,8 +5720,10 @@ async function renderCaseView(caseId, routeProjectId) {
         .then((x) => x.ok).catch(() => false);
       if (exists && repSlot && repSlot.isConnected) {
         const v = versionAt(r.ranAt);
-        repSlot.innerHTML = `<a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.pdf"
-          download="test-report-${escapeHtml(r.runId)}${v ? `-v${v}` : ""}.pdf">Report (PDF)</a>`;
+        repSlot.innerHTML = `<a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.pdf?view=1"
+          target="_blank" rel="noopener">Report (PDF)</a>
+          <a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.xlsx"
+          download="test-report-${escapeHtml(r.runId)}${v ? `-v${v}` : ""}.xlsx">Report (Excel)</a>`;
       }
       const slot = rowsEl.querySelector(`[data-run-shot="${i}"]`);
       if (!slot) return;

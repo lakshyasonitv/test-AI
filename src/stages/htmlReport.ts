@@ -451,7 +451,9 @@ export function buildRunReportHtml(input: RunReportInput, opts: { everyStepScree
     : total === 1 ? "The test passed." : `All ${total} tests passed.`;
 
   const summary = total ? `<table class="sum"><thead><tr><th>Test</th><th>Result</th><th>In one line</th></tr></thead><tbody>${
-    input.cases.map((c, i) => `<tr><td>${esc(c.title)}</td><td><span class="pill o-${facts[i].outcome}">${OUTCOME_WORD[facts[i].outcome]}</span></td><td>${esc(oneLine(c, facts[i]))}</td></tr>`).join("")
+    // The title links to the test's own section below (`id` = caseId), so the PDF's summary is a
+    // clickable table of contents; colour and size stay the table's own.
+    input.cases.map((c, i) => `<tr><td><a href="#${esc(c.caseId)}" style="color:inherit">${esc(c.title)}</a></td><td><span class="pill o-${facts[i].outcome}">${OUTCOME_WORD[facts[i].outcome]}</span></td><td>${esc(oneLine(c, facts[i]))}</td></tr>`).join("")
   }</tbody></table>` : `<p class="note">This run recorded no cases.</p>`;
 
   return `<!doctype html>
@@ -488,6 +490,37 @@ export function buildRunReportHtml(input: RunReportInput, opts: { everyStepScree
   </div>
   <footer>Built from this run's own records, without AI. Screenshots are embedded, so this file can be sent as it is.</footer>
 </div></body></html>`;
+}
+
+/** One test as plain values, for the Excel report. Same wording as the PDF (same helpers). */
+export interface ReportRow {
+  title: string;
+  status: "Passed" | "Failed" | "Incomplete";
+  steps: string[];
+  checks: { sentence: string; state: "held" | "failed" | "not-reached" }[];
+  failedAt: string;
+  error: string;
+  summary: string;
+  durationMs: number;
+}
+
+/** The report's facts per test, without HTML — read by xlsxReport.ts. */
+export function reportRows(input: RunReportInput): ReportRow[] {
+  return input.cases.map((c) => {
+    const f = caseFacts(c);
+    const at = f.outcome === "failed" && f.failedIdx >= 0 ? f.rows[f.failedIdx] : undefined;
+    const rawError = f.outcome === "failed" ? (f.detail as any)?.error ?? (f.detail as any)?.message ?? "" : "";
+    return {
+      title: c.title,
+      status: OUTCOME_WORD[f.outcome] as ReportRow["status"],
+      steps: f.rows.filter((r) => !r.isWait).map((r) => `${r.i + 1}. ${r.title}`),
+      checks: f.checks.map((x) => ({ sentence: x.sentence as string, state: x.state as ReportRow["checks"][number]["state"] })),
+      failedAt: at ? `Step ${at.i + 1}: ${at.title}` : "",
+      error: rawError ? cleanError(rawError, f.ctx) : "",
+      summary: oneLine(c, f),
+      durationMs: f.durationMs,
+    };
+  });
 }
 
 /** The same report as a PDF: the page printed by the Chromium Testbench already runs its tests in. */

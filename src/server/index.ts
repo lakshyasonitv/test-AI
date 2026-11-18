@@ -2,6 +2,7 @@ import express from "express";
 import path from "node:path";
 import { rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { buildRunReportHtml, loadRunReport, renderReportPdf } from "../stages/htmlReport.js";
+import { buildRunReportXlsx } from "../stages/xlsxReport.js";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
@@ -676,10 +677,27 @@ app.get("/api/runs/:runId/report.pdf", requireRunRole("viewer"), async (req, res
   if (!report) return res.status(404).send("no cases recorded for this run");
   try {
     const pdf = await renderReportPdf(buildRunReportHtml(report));
-    res.type("pdf").setHeader("Content-Disposition", `attachment; filename="test-report-${req.params.runId}.pdf"`);
+    // `?view=1` (optional) shows the PDF in the browser tab instead of saving it; without it the
+    // response is exactly what it always was.
+    const disposition = req.query.view === "1" ? "inline" : "attachment";
+    res.type("pdf").setHeader("Content-Disposition", `${disposition}; filename="test-report-${req.params.runId}.pdf"`);
     res.send(pdf);
   } catch (err) {
     res.status(500).send(`the PDF could not be made: ${(err as Error)?.message ?? err}`);
+  }
+});
+
+/** The same report as an Excel workbook: a Summary sheet and one row per test case. */
+app.get("/api/runs/:runId/report.xlsx", requireRunRole("viewer"), (req, res) => {
+  const report = runReport(req.params.runId);
+  if (!report) return res.status(404).send("no cases recorded for this run");
+  try {
+    const xlsx = buildRunReportXlsx(report);
+    res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+      .setHeader("Content-Disposition", `attachment; filename="test-report-${req.params.runId}.xlsx"`);
+    res.send(xlsx);
+  } catch (err) {
+    res.status(500).send(`the Excel report could not be made: ${(err as Error)?.message ?? err}`);
   }
 });
 

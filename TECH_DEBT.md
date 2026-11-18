@@ -6609,3 +6609,8 @@ The suite page has a **Previous runs** list with each run's **Report (PDF)**. A 
 `suiteId` into its own `00-input.json` (optional field, nothing else reads it). Runs from before that have no
 `suiteId`, so they are listed only when they ran exactly the suite's current cases; full runs from before the suite
 grew, and hand-picked batches, are not listed.
+Reports, 2026-11-18: the PDF summary's test names link to each test's section (in-page `#case-N`, still no outside
+resource); `report.pdf?view=1` (optional) answers `inline` so Report (PDF) opens in a tab — without it the response is
+unchanged. New `GET /api/runs/:runId/report.xlsx` (`src/stages/xlsxReport.ts`): Summary + Test Cases sheets from the
+same `reportRows()` the PDF wording uses; written as a zip by hand (no new dependency). Shown as Report (Excel) next to
+Report (PDF) on the suite page's Previous runs and the case page's Runs & versions only. Not behind a flag (read-only).
