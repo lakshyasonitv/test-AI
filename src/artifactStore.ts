@@ -23,7 +23,7 @@
  * screenshots without an Azure setting change. Every failure is logged and swallowed: losing an
  * upload costs a screenshot after a restart, never a run.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { getServiceClient, isDbEnabled } from "./db.js";
 
@@ -35,6 +35,14 @@ const CONCURRENCY = 6;
 
 export function artifactBucket(): string {
   return process.env.ARTIFACTS_BUCKET || "run-artifacts";
+}
+
+/**
+ * The earliest run id that can be in storage, in the run-id format (`2026-11-18T08-16-00`). Uploads
+ * shipped on 2026-11-18 around 08:16 UTC; anything older was never uploaded. ARTIFACTS_SINCE overrides.
+ */
+export function artifactsSince(): string {
+  return process.env.ARTIFACTS_SINCE || "2026-11-18T08-16-00";
 }
 
 export function artifactStoreEnabled(): boolean {
@@ -119,6 +127,12 @@ export function uploadRunArtifacts(runId: string): Promise<void> {
           if (error) failed++;
         } catch { failed++; }
       });
+      // The run's file list, so a restore reads one small object instead of walking every folder.
+      try {
+        await bucket.upload(`${runId}/${MANIFEST}`, Buffer.from(JSON.stringify({ files }), "utf8"),
+          { contentType: "application/json", upsert: true });
+        manifests.set(runId, files);
+      } catch { /* a missing manifest only costs a listing later */ }
       console.log(`[artifacts] ${runId}: uploaded ${files.length - failed}/${files.length} file(s) to storage`);
     } catch (err) {
       console.error(`[artifacts] upload of ${runId} failed:`, (err as Error)?.message ?? err);
@@ -137,6 +151,13 @@ export function uploadRunArtifactsSoon(runId: string, delayMs = 3000): void {
 
 const restoring = new Map<string, Promise<boolean>>();
 const missUntil = new Map<string, number>();
+/** The stored file list of a run (`<runId>/_manifest.json`), cached once read. */
+const MANIFEST = "_manifest.json";
+/** Marker in runs/<runId>/ meaning "small files restored, screenshots not yet". */
+const SMALL_ONLY = ".restored-without-images";
+const manifests = new Map<string, string[]>();
+const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg"]);
+const isImage = (rel: string): boolean => IMAGE_EXT.has(path.extname(rel).toLowerCase());
 
 /** Every object under `<runId>/` in the bucket, as relative paths (the storage list is per folder). */
 async function listRemote(runId: string): Promise<string[]> {
@@ -159,48 +180,116 @@ async function listRemote(runId: string): Promise<string[]> {
   return out;
 }
 
+/** Download one stored file into runs/<runId>/<rel>. True when it is on disk afterwards. */
+async function downloadOne(runId: string, rel: string): Promise<boolean> {
+  const runDir = path.join(RUNS_DIR, runId);
+  const dest = path.join(runDir, ...rel.split("/"));
+  // Containment: a stored name can never write outside this run's folder.
+  if (!path.resolve(dest).startsWith(path.resolve(runDir) + path.sep)) return false;
+  if (existsSync(dest)) return true;
+  const { data, error } = await getServiceClient()!.storage.from(artifactBucket()).download(`${runId}/${rel}`);
+  if (error || !data) return false;
+  mkdirSync(path.dirname(dest), { recursive: true });
+  writeFileSync(dest, Buffer.from(await data.arrayBuffer()));
+  return true;
+}
+
 /**
- * Make sure `runs/<runId>/` is on disk, downloading it from storage when it is not.
- * `wantRel`, when given, is the one file the caller needs: if it is already on disk nothing is fetched.
- * Call only AFTER the caller's own access check. Never throws; false = nothing restored.
+ * The run's stored file list: its manifest when there is one (one small download), else a walk of
+ * its folders, after which the manifest is written so the walk happens once per run, ever.
  */
-export async function ensureRunLocal(runId: string, wantRel?: string): Promise<boolean> {
+async function remoteFiles(runId: string): Promise<string[]> {
+  const cached = manifests.get(runId);
+  if (cached) return cached;
+  const bucket = getServiceClient()!.storage.from(artifactBucket());
+  let files: string[] = [];
+  try {
+    const { data } = await bucket.download(`${runId}/${MANIFEST}`);
+    if (data) files = (JSON.parse(await data.text())?.files ?? []).filter((f: unknown) => typeof f === "string");
+  } catch { /* no manifest yet */ }
+  if (!files.length) {
+    files = (await listRemote(runId)).filter((f) => f !== MANIFEST);
+    if (files.length) {
+      void bucket.upload(`${runId}/${MANIFEST}`, Buffer.from(JSON.stringify({ files }), "utf8"),
+        { contentType: "application/json", upsert: true }).catch(() => {});
+    }
+  }
+  if (files.length) manifests.set(runId, files);
+  return files;
+}
+
+const fileMiss = new Map<string, number>();
+
+/**
+ * Make sure a run's files are on disk, downloading only what is needed, AFTER the caller's own
+ * access check. Never throws; false = nothing could be had.
+ *
+ * - `wantRel` given: that ONE file (a screenshot the page is showing, a JSON a route reads). One
+ *   download, ~0.3 s, instead of the whole run (~15 s for a large run, measured 2026-11-18).
+ * - otherwise: the run's small files (stage JSON, event log, spec) for the run page and reports,
+ *   and with `images: true` its screenshots too (the PDF/HTML report embeds them).
+ */
+export async function ensureRunLocal(runId: string, wantRel?: string, opts: { images?: boolean } = {}): Promise<boolean> {
   if (!artifactStoreEnabled()) return false;
   const runDir = path.join(RUNS_DIR, runId);
-  if (wantRel ? existsSync(path.join(runDir, wantRel)) : existsSync(path.join(runDir, "00-input.json"))) return true;
-  if ((missUntil.get(runId) ?? 0) > Date.now()) return false;
-  const inflight = restoring.get(runId);
+  // A run started before uploads existed was never uploaded: answer at once instead of asking
+  // storage (~1.4 s per request, measured 2026-11-18). Run ids are sortable ISO stamps.
+  const preUpload = runId < artifactsSince();
+
+  if (wantRel) {
+    if (existsSync(path.join(runDir, wantRel))) return true;
+    if (preUpload) return false;
+    const key = `${runId}/${wantRel}`;
+    if ((fileMiss.get(key) ?? 0) > Date.now()) return false;
+    try {
+      if (!(await ensureBucket())) return false;
+      if (await downloadOne(runId, wantRel)) return true;
+    } catch { /* treated as missing */ }
+    fileMiss.set(key, Date.now() + 30 * 60_000);
+    return false;
+  }
+
+  // On disk already: a run made on this machine, or one whose small files were restored. Only a
+  // run restored WITHOUT images (marked SMALL_ONLY) needs a trip to storage, and only for images.
+  const onDisk = existsSync(path.join(runDir, "00-input.json"));
+  const smallOnly = existsSync(path.join(runDir, SMALL_ONLY));
+  if (onDisk && (!opts.images || !smallOnly)) return true;
+  if (preUpload) return onDisk;
+  const flag = opts.images ? "all" : "small";
+  const jobKey = `${runId}:${flag}`;
+  if ((missUntil.get(runId) ?? 0) > Date.now() && !existsSync(path.join(runDir, "00-input.json"))) return false;
+  const inflight = restoring.get(jobKey);
   if (inflight) return inflight;
 
   const job = (async () => {
     try {
       if (!(await ensureBucket())) return false;
-      const files = await listRemote(runId);
-      if (!files.length) { missUntil.set(runId, Date.now() + 60_000); return false; }
-      const bucket = getServiceClient()!.storage.from(artifactBucket());
+      const all = await remoteFiles(runId);
+      if (!all.length) {
+        missUntil.set(runId, Date.now() + 30 * 60_000);
+        return existsSync(path.join(runDir, "00-input.json"));
+      }
+      const wanted = all.filter((rel) => (opts.images || !isImage(rel)) && !existsSync(path.join(runDir, ...rel.split("/"))));
+      if (!wanted.length) return true;
       let got = 0;
-      await pool(files, CONCURRENCY, async (rel) => {
-        const dest = path.join(runDir, ...rel.split("/"));
-        // Containment: a stored name can never write outside this run's folder.
-        if (!path.resolve(dest).startsWith(path.resolve(runDir) + path.sep)) return;
-        if (existsSync(dest)) { got++; return; }
-        const { data, error } = await bucket.download(`${runId}/${rel}`);
-        if (error || !data) return;
-        mkdirSync(path.dirname(dest), { recursive: true });
-        writeFileSync(dest, Buffer.from(await data.arrayBuffer()));
-        got++;
+      await pool(wanted, CONCURRENCY, async (rel) => {
+        try { if (await downloadOne(runId, rel)) got++; } catch { /* skip */ }
       });
-      console.log(`[artifacts] ${runId}: restored ${got}/${files.length} file(s) from storage`);
-      // A file that is still missing now does not exist in storage either; don't list again for it.
-      missUntil.set(runId, Date.now() + 60_000);
-      return got > 0;
+      // Remember whether the images are still to come, so a later report asks for them and the
+      // run page does not ask storage again.
+      try {
+        if (flag === "small") writeFileSync(path.join(runDir, SMALL_ONLY), "");
+        else rmSync(path.join(runDir, SMALL_ONLY), { force: true });
+      } catch { /* marker is an optimisation */ }
+      console.log(`[artifacts] ${runId}: restored ${got}/${wanted.length} ${flag === "all" ? "" : "small "}file(s) from storage`);
+      return got > 0 || existsSync(path.join(runDir, "00-input.json"));
     } catch (err) {
       console.error(`[artifacts] restore of ${runId} failed:`, (err as Error)?.message ?? err);
       return false;
     } finally {
-      restoring.delete(runId);
+      restoring.delete(jobKey);
     }
   })();
-  restoring.set(runId, job);
+  restoring.set(jobKey, job);
   return job;
 }

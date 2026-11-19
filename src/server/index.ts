@@ -81,6 +81,7 @@ import {
   getCaseScript,
   getCaseVersion,
   listCaseRuns,
+  suiteRunHistory,
   listCases,
   listSuiteCases,
   listSuites,
@@ -671,7 +672,7 @@ function runReport(runId: string) {
 }
 
 app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), async (req, res) => {
-  await ensureRunLocal(req.params.runId);
+  await ensureRunLocal(req.params.runId, undefined, { images: true }); // the report embeds screenshots
   const report = runReport(req.params.runId);
   if (!report) return res.status(404).send("no cases recorded for this run");
   res.type("html").send(buildRunReportHtml(report, { everyStepScreenshot: true }));
@@ -679,7 +680,7 @@ app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), async (req, re
 
 /** The same report as a PDF, for sending to managers and clients and for keeping on file. */
 app.get("/api/runs/:runId/report.pdf", requireRunRole("viewer"), async (req, res) => {
-  await ensureRunLocal(req.params.runId);
+  await ensureRunLocal(req.params.runId, undefined, { images: true }); // the report embeds screenshots
   const report = runReport(req.params.runId);
   if (!report) return res.status(404).send("no cases recorded for this run");
   try {
@@ -1817,6 +1818,75 @@ app.delete("/api/suites/:suiteId", requireRole("admin"), async (req, res) => {
 app.get("/api/suites/:suiteId/cases", requireRole("viewer"), async (req, res) => {
   try {
     res.json({ cases: await listSuiteCases(...libraryCtx(req), req.params.suiteId) });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * Everything the suite page shows beyond the case list, in one call (it used to make ~100):
+ * each case's latest run with its final screenshot, and the suite's previous runs.
+ *
+ * NEW route, read-only (rule 1). Screenshot and run facts are read from the run files on disk, the
+ * same files the page used to fetch one by one; a run not on disk is restored from storage first
+ * (artifactStore), except runs from before uploads existed, which are skipped at once.
+ * Previous runs follow the page's own rule: a run that recorded this suite's id, or an older run
+ * that ran exactly this suite's current cases.
+ */
+app.get("/api/suites/:suiteId/overview", requireRole("viewer"), async (req, res) => {
+  try {
+    const suiteId = req.params.suiteId;
+    const { cases, runs } = await suiteRunHistory(...libraryCtx(req), suiteId);
+    const readRunJson = (runId: string, ...seg: string[]): any | null => {
+      try { return JSON.parse(readFileSync(path.join(RUNS_DIR, runId, ...seg), "utf8")); } catch { return null; }
+    };
+    const shotFor = async (runId: string, caseIndex: number): Promise<string> => {
+      await ensureRunLocal(runId);
+      const direct = readRunJson(runId, "cases", `case-${caseIndex}`, "05-result.json")?.screenshotUrl;
+      if (direct) return String(direct);
+      const row = readRunJson(runId, "07-suite-summary.json")?.cases?.find?.((x: any) => x?.caseId === `case-${caseIndex}`);
+      return row?.screenshotUrl ? String(row.screenshotUrl) : "";
+    };
+
+    // Each case's newest run that still has a screenshot (runs arrive newest first). A run whose files
+    // are gone (production before uploads existed) is skipped for an older one, up to 5 deep, so the
+    // card shows the latest picture that exists, dated by its own run.
+    const perCase = new Map<string, (typeof runs)[number][]>();
+    for (const r of runs) {
+      const list = perCase.get(r.caseId) ?? [];
+      if (list.length < 5) list.push(r);
+      perCase.set(r.caseId, list);
+    }
+    const caseOut = await Promise.all(cases.map(async (c) => {
+      const list = perCase.get(c.id) ?? [];
+      if (!list.length) return { caseId: c.id, lastRun: null };
+      for (const r of list) {
+        let screenshotUrl = "";
+        try { screenshotUrl = await shotFor(r.runId, r.caseIndex); } catch { /* no image */ }
+        if (screenshotUrl) return { caseId: c.id, lastRun: { runId: r.runId, ranAt: r.ranAt, status: r.status, screenshotUrl } };
+      }
+      const r = list[0];
+      return { caseId: c.id, lastRun: { runId: r.runId, ranAt: r.ranAt, status: r.status, screenshotUrl: "" } };
+    }));
+
+    // The suite's previous runs.
+    const byRun = new Map<string, { runId: string; ranAt: string | null; results: (string | null)[] }>();
+    for (const r of runs) {
+      const e = byRun.get(r.runId) ?? { runId: r.runId, ranAt: r.ranAt, results: [] };
+      if (r.ranAt && (!e.ranAt || r.ranAt < e.ranAt)) e.ranAt = r.ranAt;
+      e.results.push(r.status);
+      byRun.set(r.runId, e);
+    }
+    const candidates = [...byRun.values()].sort((a, b) => String(b.ranAt).localeCompare(String(a.ranAt))).slice(0, 60);
+    const judged = await Promise.all(candidates.map(async (e) => {
+      await ensureRunLocal(e.runId);
+      const input = readRunJson(e.runId, "00-input.json");
+      if (!input) return null;
+      const total = Number(input.caseCount) || e.results.length;
+      const mine = input.suiteId
+        ? input.suiteId === suiteId
+        : e.results.length === total && total === cases.length && total >= 2;
+      return mine ? { runId: e.runId, ranAt: e.ranAt, total, passed: e.results.filter((s) => s === "passed").length } : null;
+    }));
+    res.json({ cases: caseOut, runs: judged.filter(Boolean).slice(0, 15) });
   } catch (err) { sendAccessError(res, err); }
 });
 

@@ -4350,22 +4350,28 @@ async function paintSuiteRuns(suiteId, cases) {
     }
   }));
 
-  const candidates = [...byRun.values()].sort((a, b) => String(b.ranAt).localeCompare(String(a.ranAt)));
-  const rows = [];
-  for (const e of candidates) {
-    if (rows.length >= 15) break;
+  const candidates = [...byRun.values()].sort((a, b) => String(b.ranAt).localeCompare(String(a.ranAt))).slice(0, 60);
+  // All at once, not one after another (each could wait on a storage restore).
+  const judged = await Promise.all(candidates.map(async (e) => {
     const input = await fetch(`/runs/${encodeURIComponent(e.runId)}/00-input.json`)
       .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-    if (!input) continue;
+    if (!input) return null;
     const total = Number(input.caseCount) || e.results.length;
     const mine = input.suiteId
       ? input.suiteId === suiteId
       : e.results.length === total && total === cases.length && total >= 2;
-    if (!mine) continue;
-    rows.push({ ...e, total, passed: e.results.filter((s) => s === "passed").length });
+    return mine ? { ...e, total, passed: e.results.filter((s) => s === "passed").length } : null;
+  }));
+  renderSuiteRunRows(el, judged.filter(Boolean).slice(0, 15));
+}
+
+/** The "Previous runs" rows: each run with Open run, Report (PDF) and Report (Excel). */
+function renderSuiteRunRows(el, rows) {
+  if (!el || !el.isConnected) return;
+  if (!rows.length) {
+    el.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">${escapeHtml("No runs of this suite yet. Use ▸ Run all, then its report appears here.")}</div>`;
+    return;
   }
-  if (!el.isConnected) return;
-  if (!rows.length) return empty("No runs of this suite yet. Use ▸ Run all, then its report appears here.");
 
   el.innerHTML = rows.map((r) => {
     const ok = r.passed === r.total;
@@ -4463,33 +4469,45 @@ async function renderSuiteView(suiteId) {
         </div>
       </div>`).join("");
 
-    // Each case's final screenshot from its latest run, filled in as it arrives so the list never
-    // waits on it. Same lookup as the case page (finalShotForRun); a case never run, or whose last
-    // run's files are gone, simply shows no image.
-    cases.forEach(async (c, i) => {
-      const slot = rows.querySelector(`[data-case-shot="${i}"]`);
-      if (!slot) return;
-      let shot = "";
-      let when = "";
-      try {
-        const last = ((await api(`/api/cases/${encodeURIComponent(c.id)}/runs?limit=1`)).runs ?? [])[0];
-        if (last) {
-          shot = await finalShotForRun(last);
-          when = last.ranAt ? formatWhen(last.ranAt) : last.runId;
-        }
-      } catch { /* no image */ }
-      if (!shot || !slot.isConnected) return;
-      const label = `${c.title} · ${when} · final screenshot`;
-      slot.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="${escapeHtml(label)}"
-        loading="lazy" style="max-width:200px;margin-top:8px;cursor:zoom-in" />`;
-      slot.querySelector("img").addEventListener("click", (e) => {
-        e.stopPropagation();
-        openScreenshotModal(shot, label);
-      });
-    });
   }
 
-  void paintSuiteRuns(suiteId, cases);
+  // Each case's final screenshot and the suite's previous runs. One call to
+  // /api/suites/:id/overview gives both; if it fails (an older server, a network blip) the page
+  // falls back to asking per case, exactly as before. A case never run, or whose last run's files
+  // are gone, simply shows no image.
+  const putShot = (i, c, shot, when) => {
+    const slot = rows.querySelector(`[data-case-shot="${i}"]`);
+    if (!shot || !slot || !slot.isConnected) return;
+    const label = `${c.title} · ${when} · final screenshot`;
+    slot.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="${escapeHtml(label)}"
+      loading="lazy" style="max-width:200px;margin-top:8px;cursor:zoom-in" />`;
+    slot.querySelector("img").addEventListener("click", (e) => {
+      e.stopPropagation();
+      openScreenshotModal(shot, label);
+    });
+  };
+  const runsEl = document.getElementById("suiteRunRows");
+  void (async () => {
+    if (!cases.length) { renderSuiteRunRows(runsEl, []); return; }
+    let overview = null;
+    try { overview = await api(`/api/suites/${encodeURIComponent(suiteId)}/overview`); } catch { /* fall back */ }
+    if (overview && Array.isArray(overview.cases)) {
+      const byId = new Map(overview.cases.map((x) => [x.caseId, x.lastRun]));
+      cases.forEach((c, i) => {
+        const last = byId.get(c.id);
+        if (last) putShot(i, c, last.screenshotUrl, last.ranAt ? formatWhen(last.ranAt) : last.runId);
+      });
+      renderSuiteRunRows(runsEl, overview.runs ?? []);
+      return;
+    }
+    cases.forEach(async (c, i) => {
+      try {
+        const last = ((await api(`/api/cases/${encodeURIComponent(c.id)}/runs?limit=1`)).runs ?? [])[0];
+        if (last) putShot(i, c, await finalShotForRun(last), last.ranAt ? formatWhen(last.ranAt) : last.runId);
+      } catch { /* no image */ }
+    });
+    void paintSuiteRuns(suiteId, cases);
+  })();
 
   const feedback = (msg, isError) => {
     document.getElementById("suiteFeedback").innerHTML =
@@ -5552,13 +5570,28 @@ async function renderCaseView(caseId, routeProjectId) {
       metaEl.textContent =
         `${last.ranAt ? formatWhen(last.ranAt) : ""} · v${caseEditor.currentVersion} · ${last.runId}`;
     }
-    try {
-      const shot = await finalShotForRun(last);
-      if (!shot) return;
-      el.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="case ${last.caseIndex} · final screenshot" />`;
-      el.querySelector("img").addEventListener("click", () =>
-        openScreenshotModal(shot, `case ${last.caseIndex} · final screenshot`));
-    } catch { /* the hatched placeholder is already correct */ }
+    // The newest run whose screenshot still exists, up to 5 back: a run whose files were lost (a
+    // production run from before screenshots were kept in storage) falls back to an older picture,
+    // labelled with that older run so it is never mistaken for the latest.
+    let shot = "";
+    let shown = null;
+    for (const r of runs.slice(0, 5)) {
+      try { shot = await finalShotForRun(r); } catch { shot = ""; }
+      if (shot) { shown = r; break; }
+    }
+    if (!el.isConnected) return;
+    if (!shot || !shown) {
+      el.innerHTML = `<div class="cd-shot"><span class="cd-shot-label">${escapeHtml(
+        "No screenshot kept for this run (it ran before screenshots were stored). Run the case again to get one.")}</span></div>`;
+      return;
+    }
+    const label = shown === last
+      ? `case ${shown.caseIndex} · final screenshot`
+      : `from an earlier run, ${shown.ranAt ? formatWhen(shown.ranAt) : shown.runId} · final screenshot`;
+    el.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="${escapeHtml(label)}" />` +
+      (shown === last ? "" : `<p class="hrow-meta" style="margin:6px 0 0">${escapeHtml(
+        `The latest run's screenshot was not kept; this one is from ${shown.ranAt ? formatWhen(shown.ranAt) : shown.runId}.`)}</p>`);
+    el.querySelector("img").addEventListener("click", () => openScreenshotModal(shot, label));
   }
 
   // --------------------------------------------------------------- script tab

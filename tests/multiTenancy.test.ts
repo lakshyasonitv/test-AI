@@ -306,6 +306,7 @@ const RESOURCE_ROUTES: { name: string; method: Method; path: string; body?: unkn
   { name: "rename org A's suite", method: "patch", path: `/api/suites/${SUITE_A}`, body: { name: "hijacked" }, mounted: "PATCH /api/suites/:suiteId" },
   { name: "delete org A's suite", method: "delete", path: `/api/suites/${SUITE_A}`, mounted: "DELETE /api/suites/:suiteId" },
   { name: "read org A's suite cases", method: "get", path: `/api/suites/${SUITE_A}/cases`, mounted: "GET /api/suites/:suiteId/cases" },
+  { name: "read org A's suite overview", method: "get", path: `/api/suites/${SUITE_A}/overview`, mounted: "GET /api/suites/:suiteId/overview" },
   { name: "add a case to org A's suite", method: "post", path: `/api/suites/${SUITE_A}/cases`, body: { caseId: CASE_B }, mounted: "POST /api/suites/:suiteId/cases" },
   { name: "remove a case from org A's suite", method: "delete", path: `/api/suites/${SUITE_A}/cases/${CASE_A}`, mounted: "DELETE /api/suites/:suiteId/cases/:caseId" },
   { name: "reorder org A's suite", method: "patch", path: `/api/suites/${SUITE_A}/order`, body: { caseIds: [CASE_A] }, mounted: "PATCH /api/suites/:suiteId/order" },

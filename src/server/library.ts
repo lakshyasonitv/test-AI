@@ -920,6 +920,36 @@ export async function listCaseRuns(
   }));
 }
 
+/**
+ * A suite's cases plus the recent run history of all of them, in ONE database round-trip for the
+ * history (the suite page used to ask once per case). Access is proven by listSuiteCases.
+ */
+export async function suiteRunHistory(
+  userId: string, orgId: string, role: Role, suiteId: string, limit = 500,
+): Promise<{ cases: CaseRow[]; runs: (CaseRunRow & { caseId: string })[] }> {
+  const cases = await listSuiteCases(userId, orgId, role, suiteId);
+  if (!cases.length) return { cases, runs: [] };
+  const client = requireClient();
+  const { data, error } = await client
+    .from("run_cases")
+    .select("run_id, test_case_id, case_index, status, created_at")
+    .in("test_case_id", cases.map((c) => c.id))
+    .order("created_at", { ascending: false })
+    .limit(Math.min(Math.max(limit, 1), 2000));
+  if (error) throw new AccessError(500, `could not read run history: ${error.message}`);
+  return {
+    cases,
+    runs: ((data ?? []) as any[]).map((r) => ({
+      caseId: r.test_case_id,
+      runId: r.run_id,
+      caseIndex: r.case_index,
+      status: r.status ?? null,
+      ranAt: r.created_at ?? null,
+      resultPath: `cases/case-${r.case_index}`,
+    })),
+  };
+}
+
 export async function deleteCase(
   userId: string, orgId: string, role: Role, caseId: string,
 ): Promise<void> {
