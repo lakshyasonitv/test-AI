@@ -38,7 +38,7 @@ export type RecorderInput =
   | { type: "back" }
   | { type: "select"; value: string };
 
-interface Typing { handle: ElementHandle; target: Target; secret: boolean }
+interface Typing { handle: ElementHandle; target: Target; secret: boolean; value: string | null }
 
 interface Session {
   id: string;
@@ -260,6 +260,8 @@ const DESCRIBE = new Function("el", `
     text: text.length <= 80 ? text : "",
     options: options,
     checked: !!el.checked,
+    id: (el.getAttribute && el.getAttribute("id")) || "",
+    nameAttr: (el.getAttribute && el.getAttribute("name")) || "",
     isFrame: tag === "iframe" || tag === "frame",
     editable: tag === "textarea" || (tag === "input" && ["button","submit","reset","checkbox","radio","file","image","hidden"].indexOf(type) < 0) || el.isContentEditable === true
   };
@@ -267,8 +269,13 @@ const DESCRIBE = new Function("el", `
 
 interface ElementInfo {
   tag: string; type: string; testId: string; label: string; placeholder: string; text: string;
-  options: { value: string; label: string }[]; checked: boolean; isFrame: boolean; editable: boolean;
+  options: { value: string; label: string }[]; checked: boolean; id: string; nameAttr: string;
+  isFrame: boolean; editable: boolean;
 }
+
+/** An id that looks generated per render (React useId ":r1:", long digit runs) is not kept. */
+const STABLE_ID = /^[A-Za-z][\w-]{0,60}$/;
+const looksGenerated = (id: string) => /\d{4,}|^:|^(radix|headlessui|mui|react)-/i.test(id);
 
 /** The clickable element under a point: through shadow roots, then up to the nearest control. */
 const elementAtExpr = (x: number, y: number) => `(() => {
@@ -352,6 +359,15 @@ export async function resolveTarget(s: Session, handle: ElementHandle, info: Ele
     const r = await indexIn(page.getByText(info.text, { exact: true }), handle);
     if (r.index === 0 && r.count === 1) return { text: info.text };
   }
+  // Last: a box with no accessible name at all, by its id or name attribute — observed on the live
+  // page and checked unique here, never guessed (the generator resolves `css` as written).
+  const css: string[] = [];
+  if (info.id && STABLE_ID.test(info.id) && !looksGenerated(info.id)) css.push(`#${info.id}`);
+  if (info.nameAttr && /^[\w.\-[\]]{1,80}$/.test(info.nameAttr)) css.push(`${info.tag}[name="${info.nameAttr}"]`);
+  for (const sel of css) {
+    const r = await indexIn(page.locator(sel), handle);
+    if (r.index === 0 && r.count === 1) return { css: sel };
+  }
   return null;
 }
 
@@ -361,19 +377,41 @@ export async function resolveTarget(s: Session, handle: ElementHandle, info: Ele
 
 function record(s: Session, action: RecordedAction): void { s.steps = appendAction(s.steps, action); }
 
+/**
+ * Write the box's current value into the steps. Called straight after EVERY keystroke batch, not
+ * only when the person moves on: a framework that re-renders the box (a React modal does) detaches
+ * the handle we hold, and a value read only "later" was then lost — the step vanished, or landed
+ * after the next click. Consecutive fills of one box merge (appendAction), so this costs no steps.
+ * When the handle is gone, the box that has focus now is read instead.
+ */
+async function captureTyped(s: Session): Promise<void> {
+  const t = s.typing;
+  if (!t) return;
+  if (t.secret) { record(s, { kind: "fill", target: t.target, value: "", secret: true }); return; }
+  // A box the page has removed still answers with its OLD value, so a detached one reads as null.
+  const read = (h: ElementHandle) => h.evaluate((el) => {
+    const e = el as HTMLInputElement;
+    if (!e.isConnected) return null;
+    return typeof e.value === "string" ? e.value : (e.textContent ?? "");
+  });
+  let value = await read(t.handle).catch(() => null);
+  if (value === null) {
+    const active = (await s.page.evaluateHandle(ACTIVE_EXPR).catch(() => null))?.asElement() as ElementHandle | null;
+    if (active) {
+      value = await read(active).catch(() => null);
+      await t.handle.dispose().catch(() => {});
+      t.handle = active;
+    }
+  }
+  if (value !== null) t.value = value;
+  if (t.value !== null) record(s, { kind: "fill", target: t.target, value: t.value, secret: false });
+}
+
 /** Record what has been typed so far. `end` also forgets the box (the person moved on). */
 async function flushTyping(s: Session, end: boolean): Promise<void> {
   const t = s.typing;
   if (!t) return;
-  if (t.secret) {
-    record(s, { kind: "fill", target: t.target, value: "", secret: true });
-  } else {
-    const value = await t.handle.evaluate((el) => {
-      const e = el as HTMLInputElement;
-      return typeof e.value === "string" ? e.value : (e.textContent ?? "");
-    }).catch(() => null);
-    if (value !== null) record(s, { kind: "fill", target: t.target, value, secret: false });
-  }
+  await captureTyped(s);
   if (end) { await t.handle.dispose().catch(() => {}); s.typing = null; }
 }
 
@@ -393,7 +431,7 @@ async function beginTyping(s: Session): Promise<boolean> {
     await active.dispose().catch(() => {});
     return false;
   }
-  s.typing = { handle: active, target, secret: info.type === "password" };
+  s.typing = { handle: active, target, secret: info.type === "password", value: null };
   return true;
 }
 
@@ -455,15 +493,20 @@ export function handleInput(s: Session, events: RecorderInput[]): Promise<void> 
           if (!ev.text) break;
           await beginTyping(s);
           await s.page.keyboard.insertText(ev.text);
+          await captureTyped(s);
           break;
         case "key": {
           if (RECORDED_KEYS.has(ev.key)) {
             await flushTyping(s, true);
             await s.page.keyboard.press(ev.key);
             record(s, { kind: "press", key: ev.key });
-          } else {
-            if (ev.key === "Tab" || ev.key === "Shift+Tab") await flushTyping(s, true);
+          } else if (ev.key === "Tab" || ev.key === "Shift+Tab") {
+            await flushTyping(s, true);
             await s.page.keyboard.press(ev.key);
+          } else {
+            // Backspace, Delete, arrows, Ctrl+A …: they change the box, so its value is read again.
+            await s.page.keyboard.press(ev.key);
+            await captureTyped(s);
           }
           break;
         }

@@ -25,12 +25,35 @@ const PAGE = `<!doctype html><html><head><title>Shop</title></head><body>
 });</script>
 </body></html>`;
 
+/**
+ * A box that is REPLACED by a new element on every keystroke (what a re-rendering modal does), a box
+ * with no accessible name at all (only `name=`), and a Save button. The bug this pins: the typed
+ * value was read only when the person moved on, from a handle the re-render had detached — so the
+ * step was lost, or landed after the next click.
+ */
+const REMOUNT = `<!doctype html><html><head><title>New module</title></head><body>
+<div role="dialog" aria-label="New module">
+  <div id="slot"><input placeholder="Module title"></div>
+  <input name="code" style="display:block">
+  <button>Save</button>
+</div>
+<script>
+  document.getElementById("slot").addEventListener("input", function (e) {
+    var old = e.target, fresh = document.createElement("input");
+    fresh.placeholder = "Module title"; fresh.value = old.value;
+    old.replaceWith(fresh); fresh.focus(); fresh.setSelectionRange(fresh.value.length, fresh.value.length);
+  });
+</script></body></html>`;
+
 let server: Server;
 let base = "";
 const prevAllow = process.env.RECORDER_ALLOW_PRIVATE_NETWORK;
 
 beforeAll(async () => {
-  server = createServer((_req, res) => { res.setHeader("content-type", "text/html"); res.end(PAGE); });
+  server = createServer((req, res) => {
+    res.setHeader("content-type", "text/html");
+    res.end(req.url?.startsWith("/remount") ? REMOUNT : PAGE);
+  });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
 });
@@ -77,6 +100,28 @@ describe("recorder session in a real browser", () => {
       ]);
       // … but never into a step (CLAUDE.md rule 5).
       expect(JSON.stringify(await finalSteps(s))).not.toContain("s3cret!");
+    } finally {
+      await closeRecording(s);
+    }
+  }, 90_000);
+
+  it("keeps typed text when the box is re-rendered on every key, and records it before the next click", async () => {
+    process.env.RECORDER_ALLOW_PRIVATE_NETWORK = "true";
+    const id = await startRecording({ userId: "u1", orgId: "o1", projectId: "p1", url: `${base}remount` });
+    const s = getRecording(id, "u1", "o1");
+    try {
+      await handleInput(s, [{ type: "click", ...(await at(s, "#slot input")) }]);
+      // One letter per request, as a person types: every letter remounts the box.
+      for (const ch of "Intro") await handleInput(s, [{ type: "text", text: ch }]);
+      await handleInput(s, [{ type: "key", key: "Backspace" }]);
+      await handleInput(s, [{ type: "click", ...(await at(s, "input[name=code]")) }, { type: "text", text: "M-01" }]);
+      await handleInput(s, [{ type: "click", ...(await at(s, "button")) }]);
+      expect(stepsAsText(await finalSteps(s)).map((x) => x.text)).toEqual([
+        `Go to ${base}remount`,
+        'Type "Intr" into textbox "Module title"',
+        'Type "M-01" into input[name="code"]',
+        'Click on button "Save"',
+      ]);
     } finally {
       await closeRecording(s);
     }
