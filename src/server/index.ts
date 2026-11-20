@@ -169,6 +169,15 @@ const runLimit = new Semaphore(Number(process.env.MAX_CONCURRENT_RUNS ?? 3));
 const app = express();
 app.use(express.json());
 app.use(express.static("public"));
+// The React UI (web/, built with `npm run web:build`), served next to the classic UI at /app/.
+// Same origin, so it shares the classic UI's session. Absent until built: /app/ then 404s and
+// nothing else changes.
+const WEB_DIST = path.resolve("web", "dist");
+app.use("/app", express.static(WEB_DIST));
+app.get(["/app", "/app/*"], (_req, res) => {
+  const index = path.join(WEB_DIST, "index.html");
+  if (existsSync(index)) res.sendFile(index); else res.status(404).send("The React UI is not built. Run: npm run web:build");
+});
 
 // Identity for every /api/* route (implentationplan.md Step 2.1). With AUTH_ENABLED off this is a
 // pass-through that just attaches the synthetic LOCAL_USER, so behavior is unchanged — see

@@ -1,0 +1,28 @@
+/* Only the React shell's own layout. Page content reuses the classic UI's classes from
+   /style.css and /theme.css (hrow, case-badge, dl-btn-inline, panel, …), so it looks the same.
+   Every class here starts with rx- so it can never collide with a classic class (CLAUDE.md rule 3). */
+.rx-app { min-height: 100vh; }
+.rx-top {
+  position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+  padding: 12px max(16px, env(safe-area-inset-right, 0px)) 12px max(16px, env(safe-area-inset-left, 0px));
+  background: rgba(255, 255, 255, .86); backdrop-filter: blur(8px); border-bottom: 1px solid rgba(18, 20, 24, .08);
+}
+.rx-brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; color: inherit; text-decoration: none; }
+.rx-dots { width: 14px; height: 14px; border-radius: 3px; background:
+  radial-gradient(circle at 25% 25%, #1f7bff 3px, transparent 3.5px), radial-gradient(circle at 75% 25%, #121418 3px, transparent 3.5px),
+  radial-gradient(circle at 25% 75%, #121418 3px, transparent 3.5px), radial-gradient(circle at 75% 75%, #121418 3px, transparent 3.5px); }
+.rx-tag { font: 600 10px/1 "JetBrains Mono", monospace; padding: 3px 6px; border-radius: 999px; background: #e8f0ff; color: #1f5fd1; }
+.rx-nav { display: flex; gap: 4px; flex-wrap: wrap; }
+.rx-nav a { padding: 7px 12px; border-radius: 9px; color: inherit; text-decoration: none; font-weight: 500; }
+.rx-nav a:hover, .rx-nav a.on { background: #e8f0ff; color: #1f5fd1; }
+.rx-classic { margin-left: auto; font-size: 13px; color: #5b6577; }
+.rx-main { padding: 24px max(16px, env(safe-area-inset-right, 0px)) 64px max(16px, env(safe-area-inset-left, 0px)); }
+.rx-main .wide { max-width: 1180px; margin: 0 auto; }
+.rx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-top: 16px; }
+.rx-card { display: block; padding: 16px 18px; color: inherit; text-decoration: none; }
+.rx-card:hover { outline: 2px solid #c9dafc; }
+.rx-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin-top: 16px; align-items: start; }
+.rx-cols > * { min-width: 0; }
+.rx-steps { margin: 8px 0 0; padding-left: 22px; line-height: 1.7; }
+.rx-steps li { padding: 2px 0; }
+.dl-btn-inline.active { background: #e8f0ff; color: #1f5fd1; }
