@@ -33,7 +33,7 @@ export type RecorderInput =
   | { type: "click"; x: number; y: number }
   | { type: "text"; text: string }
   | { type: "key"; key: string }
-  | { type: "scroll"; dx?: number; dy: number }
+  | { type: "scroll"; dx?: number; dy: number; x?: number; y?: number }
   | { type: "navigate"; url: string }
   | { type: "back" }
   | { type: "select"; value: string };
@@ -511,6 +511,11 @@ export function handleInput(s: Session, events: RecorderInput[]): Promise<void> 
           break;
         }
         case "scroll":
+          // The wheel scrolls whatever is under the pointer (a list, a modal, the page), so the
+          // pointer goes where the person's mouse is first.
+          if (typeof ev.x === "number" && typeof ev.y === "number") {
+            await s.page.mouse.move(clamp(ev.x * VIEWPORT.width, VIEWPORT.width), clamp(ev.y * VIEWPORT.height, VIEWPORT.height));
+          }
           await s.page.mouse.wheel(ev.dx ?? 0, ev.dy);
           break;
         case "navigate":
@@ -569,6 +574,13 @@ export function undoLastStep(s: Session): Promise<void> {
     if (s.steps.length > 1) s.steps = s.steps.slice(0, -1); // the first navigate stays
   });
 }
+
+/** The steps so far without ending the typing in progress (for a live preview). */
+export function currentSteps(s: Session): Promise<Step[]> {
+  return serial(s, async () => { await flushTyping(s, false); return s.steps.map((x) => ({ ...x })); });
+}
+
+export function recordingStartUrl(s: Session): string { return s.startUrl; }
 
 /** The recorded steps as they stand (typing in progress included). */
 export function finalSteps(s: Session): Promise<Step[]> {

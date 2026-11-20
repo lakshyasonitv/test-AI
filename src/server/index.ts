@@ -141,10 +141,12 @@ import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnectio
 import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
 import { landingUrl } from "./landingLink.js";
 import {
-  closeRecording, finalSteps, getRecording, handleInput, latestFrame, recordingState,
-  setCheckMode, startRecording, undoLastStep, type RecorderInput,
+  closeRecording, currentSteps, finalSteps, getRecording, handleInput, latestFrame, recordingStartUrl,
+  recordingState, setCheckMode, startRecording, undoLastStep, type RecorderInput,
 } from "./recorderSessions.js";
-import { defaultRecordingTitle, normaliseStartUrl, withCredentialRefs } from "../stages/recorder.js";
+import { normaliseStartUrl, recordingIr } from "../stages/recorder.js";
+import { generateSpec } from "../stages/generator.js";
+import { IR as IRSchema } from "../schema/ir.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -2600,7 +2602,12 @@ function cleanRecorderInput(raw: unknown): RecorderInput[] | null {
     if (e.type === "click" && frac(e.x) && frac(e.y)) out.push({ type: "click", x: e.x as number, y: e.y as number });
     else if (e.type === "text" && typeof e.text === "string" && e.text.length <= 2000) out.push({ type: "text", text: e.text });
     else if (e.type === "key" && typeof e.key === "string" && /^[A-Za-z0-9+]{1,40}$/.test(e.key)) out.push({ type: "key", key: e.key });
-    else if (e.type === "scroll" && typeof e.dy === "number" && Math.abs(e.dy) <= 5000) out.push({ type: "scroll", dy: e.dy, dx: typeof e.dx === "number" && Math.abs(e.dx) <= 5000 ? e.dx : 0 });
+    else if (e.type === "scroll" && typeof e.dy === "number" && Math.abs(e.dy) <= 5000) {
+      out.push({
+        type: "scroll", dy: e.dy, dx: typeof e.dx === "number" && Math.abs(e.dx) <= 5000 ? e.dx : 0,
+        ...(frac(e.x) && frac(e.y) ? { x: e.x as number, y: e.y as number } : {}),
+      });
+    }
     else if (e.type === "navigate") {
       const url = normaliseStartUrl(e.url);
       if (!url) return null;
@@ -2691,25 +2698,33 @@ app.post("/api/recordings/:id/save", requireRole("tester"), async (req, res) => 
       if (!parsed.ok) return res.status(400).json({ error: `step ${parsed.index + 1}: ${parsed.error}`, index: parsed.index });
       steps = parsed.result.steps;
     }
-    steps = withCredentialRefs(steps);
-    const first = steps.find((x) => x.action === "navigate")?.target?.url ?? s.startUrl;
-    let baseUrl = s.startUrl;
-    try { baseUrl = new URL(first).origin; } catch { /* keep the start address */ }
-    const caseTitle = typeof title === "string" && title.trim() ? title.trim().slice(0, 200) : defaultRecordingTitle(steps);
-    const ir = {
-      meta: { feature: "Recorded flow", title: caseTitle, priority: "medium", sourcePrompt: `Recorded in the browser on ${first}`, baseUrl },
-      steps,
-    };
+    const ir = recordingIr(steps, recordingStartUrl(s), typeof title === "string" ? title : undefined);
     const userId = req.user?.id ?? LOCAL_USER_ID;
     const role = await assertOrgAccess(userId, req.organisationId!, "tester");
     const saved = await saveCaseFromIr(userId, req.organisationId!, role, s.projectId, ir, {
-      title: caseTitle,
+      title: ir.meta.title,
       suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined,
       changeNote: "Recorded in the browser",
     });
     await closeRecording(s);
     res.status(201).json(saved);
   } catch (err) { sendAccessError(res, err); }
+});
+
+/**
+ * The Playwright script the recording would save as, right now — the same pure generator a saved
+ * case uses (DECISIONS.md D-06, no LLM). Login values appear only as process.env references.
+ */
+app.get("/api/recordings/:id/script", requireRole("tester"), async (req, res) => {
+  const s = recordingFor(req, res);
+  if (!s) return;
+  try {
+    const ir = IRSchema.parse(recordingIr(await currentSteps(s), recordingStartUrl(s),
+      typeof req.query.title === "string" ? req.query.title : undefined));
+    res.json({ spec: generateSpec(ir, "artifacts") });
+  } catch (err) {
+    res.status(500).json({ error: `could not build the script: ${(err as Error)?.message?.split("\n")[0]}` });
+  }
 });
 
 app.delete("/api/recordings/:id", requireRole("tester"), async (req, res) => {

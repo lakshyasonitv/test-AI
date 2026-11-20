@@ -43,7 +43,7 @@ export function parseRoute(hash: string): Route {
   if (head === "settings") return { name: "settings" };
   if (head === "team") return { name: "team" };
   if (head === "admin") return { name: "admin" };
-  if (head === "record" && id) return { name: "record", projectId: id };
+  if (head === "record") return { name: "record", projectId: id ?? "" };
   return { name: "notBuilt", hash: "#/" + raw };
 }
 

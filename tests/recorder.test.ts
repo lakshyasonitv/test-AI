@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { Step } from "../src/schema/ir.js";
+import { IR, type Step } from "../src/schema/ir.js";
+import { generateSpec } from "../src/stages/generator.js";
 import {
   appendAction, defaultRecordingTitle, isAllowedScheme, isBlockedAddress, normaliseStartUrl,
-  PASSWORD_REF, stepsAsText, USERNAME_REF, withCredentialRefs, type RecordedAction,
+  PASSWORD_REF, recordingIr, stepsAsText, USERNAME_REF, withCredentialRefs, type RecordedAction,
 } from "../src/stages/recorder.js";
 
 const run = (actions: RecordedAction[]): Step[] => actions.reduce<Step[]>((s, a) => appendAction(s, a), []);
@@ -80,6 +81,25 @@ describe("recorder: actions -> steps", () => {
   it("names a recording after its first page", () => {
     expect(defaultRecordingTitle(run([{ kind: "navigate", url: "https://learn.example.com/x" }]))).toBe("Recorded flow on learn.example.com");
     expect(defaultRecordingTitle([])).toBe("Recorded flow");
+  });
+});
+
+describe("recorder: the script it previews", () => {
+  it("builds a valid IR and a Playwright spec with the login only as env references", () => {
+    const steps = run([
+      { kind: "navigate", url: "https://shop.test/login" },
+      { kind: "fill", target: email, value: "me@corp.com", secret: false },
+      { kind: "fill", target: pass, value: "hunter2", secret: true },
+      { kind: "click", target: { role: "button", name: "Sign In" } },
+    ]);
+    const ir = IR.parse(recordingIr(steps, "https://shop.test/login", "Login works"));
+    expect(ir.meta.baseUrl).toBe("https://shop.test");
+    expect(ir.meta.title).toBe("Login works");
+    const spec = generateSpec(ir, "artifacts");
+    expect(spec).toContain("process.env");
+    expect(spec).toContain("Sign In");
+    expect(spec).not.toContain("me@corp.com");
+    expect(spec).not.toContain("hunter2");
   });
 });
 

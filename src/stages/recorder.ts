@@ -110,6 +110,22 @@ export function stepsAsText(steps: Step[]): { id: string; text: string }[] {
   return steps.map((s) => ({ id: s.id, text: formatIrStep(s) }));
 }
 
+/**
+ * The IR a recording saves as (and previews its script from): the steps with the login turned into
+ * `${env:...}` references, a meta block, and the base URL taken from the first page.
+ */
+export function recordingIr(steps: Step[], startUrl: string, title?: string) {
+  const withRefs = withCredentialRefs(steps);
+  const first = withRefs.find((x) => x.action === "navigate")?.target?.url ?? startUrl;
+  let baseUrl = startUrl;
+  try { baseUrl = new URL(first).origin; } catch { /* keep the start address */ }
+  const caseTitle = title && title.trim() ? title.trim().slice(0, 200) : defaultRecordingTitle(withRefs);
+  return {
+    meta: { feature: "Recorded flow", title: caseTitle, priority: "medium" as const, sourcePrompt: `Recorded in the browser on ${first}`, baseUrl },
+    steps: withRefs,
+  };
+}
+
 /** A short title for a recording that was not given one: "Recorded flow on example.com". */
 export function defaultRecordingTitle(steps: Step[]): string {
   const nav = steps.find((s) => s.action === "navigate")?.target?.url;

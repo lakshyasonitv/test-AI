@@ -3,19 +3,24 @@ import { api, type Project, type Suite } from "../../lib/api";
 import { ErrorNote } from "../../components/ui";
 import { LiveScreen } from "./components/LiveScreen";
 import { StepsPanel } from "./components/StepsPanel";
+import { ScriptPanel } from "./components/ScriptPanel";
 import {
   getState, saveRecording, sendInput, setCheckMode, startRecording, stopRecording, undoStep, type RecState,
 } from "./recorderApi";
 import "./record.css";
 
 /**
- * Record a flow (#/record/<projectId>, RECORDER_ENABLED): a live browser on the server, shown here.
- * The person uses the site; each action is recorded as a step naming the element that was actually
- * used. Save turns the steps into a new case (v1) in this project. No AI is involved anywhere.
+ * Record a flow (#/record, or #/record/<projectId> from a project; RECORDER_ENABLED): a live browser
+ * on the server, shown here. The person uses any site; each action is recorded as a step naming the
+ * element that was actually used, the Playwright script is shown as it grows, and Save turns the
+ * steps into a new case (v1) in the chosen project. No AI is involved anywhere.
  */
-export function RecordPage({ projectId }: { projectId: string }) {
+export function RecordPage({ projectId: fromRoute }: { projectId: string }) {
+  const [projectId, setProjectId] = useState(fromRoute);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [project, setProject] = useState<Project | null>(null);
   const [suites, setSuites] = useState<Suite[]>([]);
+  const [tab, setTab] = useState<"steps" | "script">("steps");
   const [startUrl, setStartUrl] = useState("");
   const [id, setId] = useState<string | null>(null);
   const [state, setState] = useState<RecState | null>(null);
@@ -30,14 +35,18 @@ export function RecordPage({ projectId }: { projectId: string }) {
   const saved = useRef(false);
 
   useEffect(() => {
-    api<{ projects?: Project[] }>("/api/projects").then((d) => {
-      const p = d.projects?.find((x) => x.id === projectId) ?? null;
-      setProject(p);
-      if (p?.baseUrl) setStartUrl(p.baseUrl);
-    }).catch(() => {});
+    api<{ projects?: Project[] }>("/api/projects").then((d) => setProjects(d.projects ?? [])).catch(() => {});
+  }, []);
+  useEffect(() => {
+    const p = projects.find((x) => x.id === projectId) ?? null;
+    setProject(p);
+    if (p?.baseUrl) setStartUrl(p.baseUrl);
+    setSuites([]);
+    setSuiteId("");
+    if (!projectId) return;
     api<{ suites?: Suite[] }>(`/api/suites?projectId=${encodeURIComponent(projectId)}`)
       .then((d) => setSuites((d.suites ?? []).filter((s) => s.projectId === projectId))).catch(() => {});
-  }, [projectId]);
+  }, [projectId, projects]);
 
   const take = (s: RecState) => {
     setState(s);
@@ -91,12 +100,15 @@ export function RecordPage({ projectId }: { projectId: string }) {
   const cancel = async () => {
     if (id) await stopRecording(id);
     saved.current = true;
-    location.hash = `#/projects/${encodeURIComponent(projectId)}`;
+    if (fromRoute) { location.hash = `#/projects/${encodeURIComponent(fromRoute)}`; return; }
+    // The standalone page: back to the start form, ready for another recording.
+    setId(null); setState(null); setEdits({}); setRemoved(new Set()); setNotes([]); setTitle(""); setTab("steps");
+    saved.current = false;
   };
 
   const head = (
     <div>
-      <a className="dl-btn-inline" href={`#/projects/${encodeURIComponent(projectId)}`}>← {project?.name ?? "Project"}</a>
+      {project && <a className="dl-btn-inline" href={`#/projects/${encodeURIComponent(project.id)}`}>← {project.name}</a>}
       <div className="eyebrow" style={{ marginTop: 12 }}>RECORD A FLOW</div>
       <h1 className="page-head-title">Show it once, save it as a test</h1>
       <p className="tagline">Use the site below the way a person would. Every click and every box you type into becomes a step. No AI is used.</p>
@@ -108,15 +120,22 @@ export function RecordPage({ projectId }: { projectId: string }) {
       <div className="wide">
         {head}
         <div className="panel" style={{ padding: 16, marginTop: 12 }}>
+          <label className="field" style={{ display: "block", marginBottom: 10 }}>
+            <span className="field-label">Save the test in project</span>
+            <select className="team-select" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              <option value="">Choose a project…</option>
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
           <label className="field" style={{ display: "block" }}>
-            <span className="field-label">Start at</span>
+            <span className="field-label">Start at (any website)</span>
             <input className="project-form-input" style={{ width: "100%" }} value={startUrl} placeholder="https://example.com/login"
               onChange={(e) => setStartUrl(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void start(); }} />
           </label>
           <p className="tagline" style={{ margin: "10px 0" }}>
             A browser opens on the server. Passwords you type are never stored: a password box is saved as <code>{"${env:TEST_PASSWORD}"}</code>.
           </p>
-          <button type="button" className="run-btn" disabled={busy || !startUrl.trim()} onClick={() => void start()}>
+          <button type="button" className="run-btn" disabled={busy || !startUrl.trim() || !projectId} onClick={() => void start()}>
             {busy ? "Opening…" : "● Start recording"}
           </button>
           {error && <ErrorNote error={error} />}
@@ -165,12 +184,19 @@ export function RecordPage({ projectId }: { projectId: string }) {
 
           <div className="panel" style={{ padding: 14 }}>
             <div className="rx-rec-row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
-              <h2 style={{ margin: 0, fontSize: 16 }}>Steps</h2>
-              <button type="button" className="dl-btn-inline" onClick={() => void act(() => undoStep(id))}>Undo last</button>
+              <div className="rx-rec-tabs">
+                <button type="button" className={`dl-btn-inline${tab === "steps" ? " active" : ""}`} onClick={() => setTab("steps")}>Steps ({state?.steps.length ?? 0})</button>
+                <button type="button" className={`dl-btn-inline${tab === "script" ? " active" : ""}`} onClick={() => setTab("script")}>Script</button>
+              </div>
+              {tab === "steps" && <button type="button" className="dl-btn-inline" onClick={() => void act(() => undoStep(id))}>Undo last</button>}
             </div>
-            <StepsPanel steps={state?.steps ?? []} edits={edits} removed={removed}
-              onEdit={(sid, text) => setEdits((e) => ({ ...e, [sid]: text }))}
-              onRemove={(sid) => setRemoved((r) => new Set(r).add(sid))} />
+            {tab === "steps" ? (
+              <StepsPanel steps={state?.steps ?? []} edits={edits} removed={removed}
+                onEdit={(sid, text) => setEdits((e) => ({ ...e, [sid]: text }))}
+                onRemove={(sid) => setRemoved((r) => new Set(r).add(sid))} />
+            ) : (
+              <ScriptPanel id={id} title={title} stepsKey={(state?.steps ?? []).map((s) => s.text).join("\n")} />
+            )}
             {notes.length > 0 && <ul className="rx-rec-notes" style={{ marginTop: 10 }}>{notes.map((n, i) => <li key={i}>{n}</li>)}</ul>}
           </div>
 

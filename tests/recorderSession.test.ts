@@ -45,6 +45,14 @@ const REMOUNT = `<!doctype html><html><head><title>New module</title></head><bod
   });
 </script></body></html>`;
 
+/** A scrollable list inside a tall page: the wheel must scroll the one under the pointer. */
+const TALL = `<!doctype html><html><body style="margin:0">
+<div id="list" style="width:300px;height:200px;overflow:auto;border:1px solid #000">
+  <div style="height:2000px">items</div>
+</div>
+<div style="height:5000px">long page</div>
+</body></html>`;
+
 let server: Server;
 let base = "";
 const prevAllow = process.env.RECORDER_ALLOW_PRIVATE_NETWORK;
@@ -52,7 +60,7 @@ const prevAllow = process.env.RECORDER_ALLOW_PRIVATE_NETWORK;
 beforeAll(async () => {
   server = createServer((req, res) => {
     res.setHeader("content-type", "text/html");
-    res.end(req.url?.startsWith("/remount") ? REMOUNT : PAGE);
+    res.end(req.url?.startsWith("/remount") ? REMOUNT : req.url?.startsWith("/tall") ? TALL : PAGE);
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
@@ -126,6 +134,22 @@ describe("recorder session in a real browser", () => {
       await closeRecording(s);
     }
   }, 90_000);
+
+  it("scrolls what is under the pointer: an inner list, then the page", async () => {
+    process.env.RECORDER_ALLOW_PRIVATE_NETWORK = "true";
+    const id = await startRecording({ userId: "u1", orgId: "o1", projectId: "p1", url: `${base}tall` });
+    const s = getRecording(id, "u1", "o1");
+    try {
+      const list = await at(s, "#list");
+      await handleInput(s, [{ type: "scroll", dy: 300, x: list.x, y: list.y }]);
+      await expect.poll(() => s.page.evaluate(() => document.getElementById("list")!.scrollTop)).toBeGreaterThan(0);
+      expect(await s.page.evaluate(() => window.scrollY)).toBe(0);
+      await handleInput(s, [{ type: "scroll", dy: 500, x: 0.9, y: 0.9 }]);
+      await expect.poll(() => s.page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    } finally {
+      await closeRecording(s);
+    }
+  }, 60_000);
 
   it("only the user and organisation that started a recording can reach it", async () => {
     process.env.RECORDER_ALLOW_PRIVATE_NETWORK = "true";

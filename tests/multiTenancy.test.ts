@@ -405,6 +405,7 @@ const EXEMPT: Record<string, string> = {
   "POST /api/recordings/:id/input": "as above",
   "POST /api/recordings/:id/check-mode": "as above",
   "POST /api/recordings/:id/undo": "as above",
+  "GET /api/recordings/:id/script": "as above; builds the script from that recording's own steps only",
   "POST /api/recordings/:id/save": "as above; the case is saved into the project the recording was started for, through saveCaseFromIr's assertProjectVisible",
   "DELETE /api/recordings/:id": "as above",
   "GET /api/cases/:caseId/steps/jobs/:jobId/events": "editing sessions are scoped by userId, not org — getJob 404s for anyone else",

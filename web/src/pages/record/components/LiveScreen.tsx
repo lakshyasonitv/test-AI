@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type WheelEvent, type ClipboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ClipboardEvent } from "react";
 import { fetchFrame, sendInput, type RecInput, type RecState } from "../recorderApi";
 
 /**
@@ -12,7 +12,7 @@ export function LiveScreen({ id, checkMode, onState }: { id: string; checkMode: 
   const queue = useRef<RecInput[]>([]);
   const sending = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wheel = useRef(0);
+  const wheel = useRef({ dx: 0, dy: 0, x: 0.5, y: 0.5 });
 
   // Frames: keep asking for anything newer than the last one shown.
   useEffect(() => {
@@ -96,16 +96,42 @@ export function LiveScreen({ id, checkMode, onState }: { id: string; checkMode: 
     if (text) push({ type: "text", text: text.slice(0, 2000) });
   };
 
-  const onWheel = (e: WheelEvent<HTMLDivElement>) => {
-    wheel.current += e.deltaY;
-    if (Math.abs(wheel.current) < 40) return;
-    push({ type: "scroll", dy: Math.max(-2000, Math.min(2000, Math.round(wheel.current))) });
-    wheel.current = 0;
-  };
+  // Wheel: a NATIVE non-passive listener, because React's onWheel is passive and cannot stop the
+  // page around the screen from scrolling too. Deltas are summed and sent every ~60 ms with the
+  // pointer's position, so the remote wheel scrolls whatever is under the mouse (a list, a modal).
+  const screen = useRef<HTMLDivElement>(null);
+  const pushRef = useRef(push);
+  pushRef.current = push;
+  useEffect(() => {
+    const el = screen.current;
+    if (!el) return;
+    let wheelTimer: ReturnType<typeof setTimeout> | null = null;
+    const onWheel = (e: WheelEvent) => {
+      const img = el.querySelector("img");
+      if (!img) return;
+      e.preventDefault();
+      const r = img.getBoundingClientRect();
+      const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1; // lines / pages -> px
+      wheel.current.dx += e.deltaX * scale;
+      wheel.current.dy += e.deltaY * scale;
+      wheel.current.x = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      wheel.current.y = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+      if (wheelTimer) return;
+      wheelTimer = setTimeout(() => {
+        wheelTimer = null;
+        const w = wheel.current;
+        const clampPx = (v: number) => Math.max(-4000, Math.min(4000, Math.round(v)));
+        if (w.dx || w.dy) pushRef.current({ type: "scroll", dx: clampPx(w.dx), dy: clampPx(w.dy), x: w.x, y: w.y }, true);
+        wheel.current = { dx: 0, dy: 0, x: w.x, y: w.y };
+      }, 60);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => { el.removeEventListener("wheel", onWheel); if (wheelTimer) clearTimeout(wheelTimer); };
+  }, [id]);
 
   return (
-    <div className={`rx-rec-screen${focused ? " rx-rec-focus" : ""}${checkMode ? " rx-rec-check" : ""}`}
-      onClick={onClick} onWheel={onWheel}>
+    <div ref={screen} className={`rx-rec-screen${focused ? " rx-rec-focus" : ""}${checkMode ? " rx-rec-check" : ""}`}
+      onClick={onClick}>
       <textarea ref={keys} className="rx-rec-keys" aria-label="Live browser. Click the picture to interact; type while it is focused."
         autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
         onKeyDown={onKeyDown} onInput={onInput} onPaste={onPaste}

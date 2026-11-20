@@ -15,4 +15,6 @@
 .rx-rec-steps input { flex: 1; min-width: 0; font-size: 13px; }
 .rx-rec-notes { margin: 0; padding-left: 18px; font-size: 13px; color: #8a5a00; }
 .rx-rec-select { display: flex; flex-wrap: wrap; gap: 6px; }
+.rx-rec-script { margin: 0; max-height: 46vh; overflow: auto; padding: 10px; border-radius: 8px; background: #0f1115; color: #e6e9ef; font: 12px/1.5 "JetBrains Mono", ui-monospace, monospace; white-space: pre; }
+.rx-rec-tabs { display: flex; gap: 6px; }
 .rx-rec-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

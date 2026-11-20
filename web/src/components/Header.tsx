@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { classic } from "../lib/api";
-import { signOut, type Identity } from "../lib/identity";
+import { loadHealth, signOut, type Identity } from "../lib/identity";
 import type { Route } from "../lib/router";
 import { currentToken } from "../lib/session";
 import { OrgPicker } from "./OrgPicker";
@@ -9,8 +10,10 @@ import { SettingsPopover } from "./SettingsPopover";
 export function Header({ route, me }: { route: Route; me: Identity | null }) {
   // Classic: Team shows when auth is on, you are signed in and your role is known.
   const showTeam = !!me?.authRequired && !!currentToken() && !!me?.role;
-  const inLibrary = ["projects", "project", "suite", "case", "compare", "record"].includes(route.name);
+  const inLibrary = ["projects", "project", "suite", "case", "compare"].includes(route.name);
   const on = (yes: boolean) => (yes ? "on" : "");
+  const [recorder, setRecorder] = useState(false);
+  useEffect(() => { loadHealth().then((h) => setRecorder(h.recorder)).catch(() => {}); }, []);
 
   return (
     <header className="rx-top">
@@ -20,6 +23,7 @@ export function Header({ route, me }: { route: Route; me: Identity | null }) {
         <a href="#/" className={on(route.name === "newtest")}>New test</a>
         <a href="#/projects" className={on(inLibrary)}>Projects</a>
         <a href="#/history" className={on(route.name === "history" || route.name === "run")}>History</a>
+        {recorder && <a href="#/record" className={on(route.name === "record")}>● Record</a>}
         {showTeam && <a href="#/team" className={on(route.name === "team")}>Team</a>}
         {me?.platformAdmin && <a href="#/admin" className={on(route.name === "admin")}>Admin</a>}
       </nav>

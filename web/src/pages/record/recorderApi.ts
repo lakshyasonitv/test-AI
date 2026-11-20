@@ -18,7 +18,7 @@ export type RecInput =
   | { type: "click"; x: number; y: number }
   | { type: "text"; text: string }
   | { type: "key"; key: string }
-  | { type: "scroll"; dy: number; dx?: number }
+  | { type: "scroll"; dy: number; dx?: number; x?: number; y?: number }
   | { type: "navigate"; url: string }
   | { type: "back" }
   | { type: "select"; value: string };
@@ -33,6 +33,8 @@ export const setCheckMode = (id: string, on: boolean) => acctJson<RecState>(`${b
 export const undoStep = (id: string) => acctJson<RecState>(`${base(id)}/undo`, jsonBody("POST", {}));
 export const saveRecording = (id: string, body: { title: string; suiteId?: string; steps: string[] }) =>
   acctJson<{ id: string; projectId: string }>(`${base(id)}/save`, jsonBody("POST", body));
+export const getScript = (id: string, title: string) =>
+  acctJson<{ spec: string }>(`${base(id)}/script${title ? `?title=${encodeURIComponent(title)}` : ""}`);
 export const stopRecording = (id: string) =>
   acctFetch(base(id), { method: "DELETE", keepalive: true }).catch(() => null);
 
