@@ -1,42 +1,50 @@
-import { useEffect, useState } from "react";
-import { classic } from "./api";
-import { useRoute, type Route } from "./router";
-import { AdminPage, OrgPicker } from "./pages/Admin";
-import { CasePage } from "./pages/Case";
-import { CompareView } from "./pages/Compare";
-import { DashboardPage } from "./pages/Dashboard";
-import { HistoryPage } from "./pages/History";
-import { LoginPage, signOut } from "./pages/Login";
-import { NewTestPage } from "./pages/NewTest";
-import { ProjectPage } from "./pages/Project";
-import { ProjectsPage } from "./pages/Projects";
-import { RunPage } from "./pages/Run";
-import { SettingsPage, SettingsPopover } from "./pages/Settings";
-import { SuitePage } from "./pages/Suite";
-import { TeamPage } from "./pages/Team";
-import { currentToken, ensureAuth, SIGNED_OUT_EVENT } from "./pages/account/session";
-import { loadIdentity, type Identity } from "./pages/account/identity";
-import { Empty, Loading } from "./ui";
+import { lazy, Suspense, useEffect, useState, type ComponentType } from "react";
+import { Header } from "./components/Header";
+import { Empty, Loading } from "./components/ui";
+import { classic } from "./lib/api";
+import { loadIdentity, type Identity } from "./lib/identity";
+import { useRoute, type Route } from "./lib/router";
+import { currentToken, ensureAuth, SIGNED_OUT_EVENT } from "./lib/session";
 
 /**
  * The React UI (served at /app/). Same session, same routes and same API as the classic UI at /.
+ *
+ * Every page is lazy: its code is a separate file the browser downloads only when that page is
+ * first opened (then it is cached). The first load carries just this shell, the header and lib/.
  *
  * Auth follows the classic initAuth: GET /api/auth/config (via ensureAuth, which also starts token
  * refresh when the server enables it); with auth on and no session, the sign-in screen; signing
  * out anywhere (SIGNED_OUT_EVENT) returns to it.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const page = <K extends string>(load: () => Promise<Record<K, ComponentType<any>>>, name: K) =>
+  lazy(() => load().then((m) => ({ default: m[name] })));
+
+const DashboardPage = page(() => import("./pages/dashboard/DashboardPage"), "DashboardPage");
+const NewTestPage = page(() => import("./pages/newtest/NewTestPage"), "NewTestPage");
+const RunPage = page(() => import("./pages/run/RunPage"), "RunPage");
+const ProjectsPage = page(() => import("./pages/projects/ProjectsPage"), "ProjectsPage");
+const ProjectPage = page(() => import("./pages/projects/ProjectPage"), "ProjectPage");
+const SuitePage = page(() => import("./pages/suite/SuitePage"), "SuitePage");
+const CasePage = page(() => import("./pages/case/CasePage"), "CasePage");
+const CompareView = page(() => import("./pages/compare/ComparePage"), "CompareView");
+const HistoryPage = page(() => import("./pages/history/HistoryPage"), "HistoryPage");
+const SettingsPage = page(() => import("./pages/settings/SettingsPage"), "SettingsPage");
+const TeamPage = page(() => import("./pages/team/TeamPage"), "TeamPage");
+const AdminPage = page(() => import("./pages/admin/AdminPage"), "AdminPage");
+const LoginPage = page(() => import("./pages/login/LoginPage"), "LoginPage");
+
 export function App() {
   const route = useRoute();
   const [auth, setAuth] = useState<"checking" | "ok" | "signin">("checking");
   const [screen, setScreen] = useState<"login" | "signup">("login");
   const [me, setMe] = useState<Identity | null>(null);
 
-  const decide = () => {
+  useEffect(() => {
     ensureAuth()
       .then((cfg) => setAuth(cfg.authEnabled && !currentToken() ? "signin" : "ok"))
       .catch(() => setAuth("ok"));
-  };
-  useEffect(decide, []);
+  }, []);
   useEffect(() => {
     const out = () => { setMe(null); setScreen("login"); setAuth("signin"); };
     window.addEventListener(SIGNED_OUT_EVENT, out);
@@ -48,39 +56,22 @@ export function App() {
   }, [auth]);
 
   if (auth === "signin") {
-    return <LoginPage mode={screen} onSignedIn={() => { setAuth("ok"); loadIdentity(true).then(setMe).catch(() => {}); }} />;
+    return (
+      <Suspense fallback={<Loading />}>
+        <LoginPage mode={screen} onSignedIn={() => { setAuth("ok"); loadIdentity(true).then(setMe).catch(() => {}); }} />
+      </Suspense>
+    );
   }
-
-  // Classic: Team shows when auth is on, you are signed in and your role is known.
-  const showTeam = !!me?.authRequired && !!currentToken() && !!me?.role;
-  const inLibrary = ["projects", "project", "suite", "case", "compare"].includes(route.name);
 
   return (
     <div className="rx-app">
-      <header className="rx-top">
-        <a className="rx-brand" href="#/dashboard"><span className="rx-dots" aria-hidden="true" />Testbench <span className="rx-tag">React</span></a>
-        <nav className="rx-nav" aria-label="Main">
-          <a href="#/dashboard" className={route.name === "dashboard" ? "on" : ""}>Dashboard</a>
-          <a href="#/" className={route.name === "newtest" ? "on" : ""}>New test</a>
-          <a href="#/projects" className={inLibrary ? "on" : ""}>Projects</a>
-          <a href="#/history" className={route.name === "history" || route.name === "run" ? "on" : ""}>History</a>
-          {showTeam && <a href="#/team" className={route.name === "team" ? "on" : ""}>Team</a>}
-          {me?.platformAdmin && <a href="#/admin" className={route.name === "admin" ? "on" : ""}>Admin</a>}
-        </nav>
-        <div className="rx-right">
-          {me?.platformAdmin && <OrgPicker />}
-          <SettingsPopover />
-          {me?.authRequired && currentToken() && (
-            <>
-              <span className="rx-who" title={me.organisationName ?? ""}>{me.email}{me.role ? ` · ${me.role}` : ""}</span>
-              <button type="button" className="dl-btn-inline" onClick={() => { void signOut(); }}>Sign out</button>
-            </>
-          )}
-          <a className="rx-classic" href={classic(location.hash || "#/")}>Classic UI</a>
-        </div>
-      </header>
+      <Header route={route} me={me} />
       <main className="rx-main">
-        {auth === "checking" ? <Loading /> : <Page route={route} />}
+        {auth === "checking" ? <Loading /> : (
+          <Suspense fallback={<Loading />}>
+            <Page route={route} />
+          </Suspense>
+        )}
       </main>
     </div>
   );

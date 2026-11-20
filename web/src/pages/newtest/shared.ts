@@ -2,7 +2,7 @@
  * Pure helpers for the New test page, ported one-for-one from public/app.js so both UIs accept,
  * reject and assemble the same URL. Nothing here talks to the server except `call`.
  */
-import { api } from "../../api";
+import { api } from "../../lib/api";
 
 // ------------------------------------------------------------------ server calls
 

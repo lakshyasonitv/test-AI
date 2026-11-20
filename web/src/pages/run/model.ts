@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { session } from "../../api";
+import { session } from "../../lib/api";
 import { agoText } from "./text";
-import { STATUS_ICON } from "./icons";
+import { STATUS_ICON } from "./components/Icon";
 
 /**
  * The Run page's event fold — public/app.js's applyEvent / setPhaseFromStage / summarize, ported

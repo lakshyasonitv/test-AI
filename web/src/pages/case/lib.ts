@@ -1,4 +1,4 @@
-import { api, session } from "../../api";
+import { api, session } from "../../lib/api";
 
 /**
  * Helpers for the Case page's editor. Nothing here parses a step sentence: the server owns both
