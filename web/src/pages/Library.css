@@ -1,0 +1,10 @@
+/* Classes the React Suite / Project / Projects pages need beyond the classic ones they reuse
+   (hrow, lib-*, suite-add-row, case-save-panel, data-dash cards under #view-projects in theme.css).
+   Every class here starts with rx-lib- so it can never collide with a classic class (CLAUDE.md rule 3). */
+
+/* The Projects pages sit inside <section id="view-projects"> so theme.css's #view-projects
+   [data-dash=…] rules style them exactly like the classic screen; give the section block layout
+   and the vertical rhythm the classic view's own container has. */
+.rx-lib-view { display: block; }
+.rx-lib-view > .wide { display: flex; flex-direction: column; gap: 16px; }
+.rx-lib-view a.run-btn { text-decoration: none; display: inline-flex; align-items: center; }

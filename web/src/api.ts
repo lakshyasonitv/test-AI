@@ -7,6 +7,8 @@
  * UI) signs in both. Nothing here changes a route's request or response.
  */
 
+import { adminOrgId, refreshSession } from "./pages/account/session";
+
 const SESSION_KEY = "testbench.session";
 
 interface StoredSession { token?: string; email?: string }
@@ -20,10 +22,19 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  const { token } = session();
-  if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(path, { ...init, headers });
+  // Same as the classic fetch wrapper: the session's Bearer token, and for a platform admin the
+  // organisation they picked (sessionStorage "tb-admin-org"; the server ignores it for others).
+  const send = () => {
+    const headers = new Headers(init.headers);
+    const { token } = session();
+    if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
+    const org = adminOrgId();
+    if (org && !headers.has("x-organisation-id")) headers.set("x-organisation-id", org);
+    return fetch(path, { ...init, headers });
+  };
+  let res = await send();
+  // An expired access token: renew once (only when the server turned token refresh on) and retry.
+  if (res.status === 401 && session().token && (await refreshSession().catch(() => false))) res = await send();
   if (res.status === 204) return null as T;
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(body.error || `That didn't work (${res.status}).`, res.status, body.code);

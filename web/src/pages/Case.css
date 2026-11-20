@@ -1,0 +1,14 @@
+/* The React Case page. Layout comes from the classic cd-* / case-suite* / seg classes in
+   public/style.css; these rx-case-* rules only space the pieces React arranges differently. */
+.rx-case-top { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.rx-case .cd-head { margin-bottom: 12px; }
+.rx-case .case-suites { margin: 10px 0; }
+.rx-case-tabs { margin: 14px 0; max-width: max-content; }
+.rx-case .cd-cols { margin-top: 4px; }
+.rx-case .case-suite-chip { text-decoration: none; color: inherit; }
+.rx-case-override { margin-top: 14px; }
+.rx-case-override-text { min-height: 260px; font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.rx-case-override-ack { display: flex; gap: 6px; align-items: center; margin: 8px 0; }
+@media (max-width: 640px) {
+  .rx-case-tabs { max-width: none; }
+}
