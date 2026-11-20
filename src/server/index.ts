@@ -92,6 +92,7 @@ import {
   renameSuite,
   reorderSuite,
   saveCaseFromRun,
+  saveCaseFromIr,
   scriptOverrideEnabled,
   setScriptOverride,
   updateCase,
@@ -139,6 +140,11 @@ import { authorizeUrl, connect as connectJira, fetchStory, jiraConfig, jiraEnabl
 import { beginSignIn, dropConnection, finishSignIn, getConnection, saveConnection } from "../jira/session.js";
 import { projectDiscoveryEnabled } from "../kb/projectDiscovery.js";
 import { landingUrl } from "./landingLink.js";
+import {
+  closeRecording, finalSteps, getRecording, handleInput, latestFrame, recordingState,
+  setCheckMode, startRecording, undoLastStep, type RecorderInput,
+} from "./recorderSessions.js";
+import { defaultRecordingTitle, normaliseStartUrl, withCredentialRefs } from "../stages/recorder.js";
 
 /** runId shape from makeRunId(). No "/", "." or ".." so it can never escape runs/. */
 const RUN_ID = /^[\dT-]+Z-[0-9a-f]{8}$/;
@@ -987,6 +993,9 @@ app.get("/api/health", (_req, res) => {
     // ADDITIVE, only with PLATFORM_ADMIN_ENABLED (D-84): app.js then shows the New user form, the
     // company roles, and (for an admin) the Admin page and the organisation picker.
     ...(platformAdminEnabled() ? { platformAdmins: true } : {}),
+    // ADDITIVE, only with RECORDER_ENABLED (docs/phases/PLAN_RECORD_ONCE.md): the React app then
+    // offers "Record a flow" on a project. Off: the body is unchanged.
+    ...(recorderEnabled() ? { recorder: true } : {}),
   });
 });
 
@@ -2561,6 +2570,155 @@ app.post("/api/runs/:runId/cases/:caseId/save", requireRunRole("tester"), async 
   } catch (err) { sendAccessError(res, err); }
 });
 
+// ---------------------------------------------------------------------------------------------
+// Record a flow in a live browser (docs/phases/PLAN_RECORD_ONCE.md option C, RECORDER_ENABLED,
+// default off). All NEW routes; nothing above changes shape (rule 1). A session belongs to the user
+// and organisation that started it — every route re-checks both (recorderSessions.getRecording).
+// ---------------------------------------------------------------------------------------------
+
+function recorderEnabled(): boolean {
+  return process.env.RECORDER_ENABLED === "true";
+}
+const RECORDING_ID = /^[0-9a-f]{32}$/;
+
+/** The caller's own recording, or null after the response was already sent. */
+function recordingFor(req: express.Request, res: express.Response) {
+  if (!recorderEnabled()) { res.status(404).json({ error: "recording is turned off on this server" }); return null; }
+  if (!RECORDING_ID.test(req.params.id)) { res.status(404).json({ error: "no such recording" }); return null; }
+  try {
+    return getRecording(req.params.id, req.user?.id ?? LOCAL_USER_ID, req.organisationId!);
+  } catch (err) { sendAccessError(res, err); return null; }
+}
+
+/** Only well-formed input reaches the browser: known types, fractions in 0..1, bounded text. */
+function cleanRecorderInput(raw: unknown): RecorderInput[] | null {
+  if (!Array.isArray(raw) || raw.length > 100) return null;
+  const out: RecorderInput[] = [];
+  const frac = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+  for (const e of raw as Record<string, unknown>[]) {
+    if (!e || typeof e !== "object") return null;
+    if (e.type === "click" && frac(e.x) && frac(e.y)) out.push({ type: "click", x: e.x as number, y: e.y as number });
+    else if (e.type === "text" && typeof e.text === "string" && e.text.length <= 2000) out.push({ type: "text", text: e.text });
+    else if (e.type === "key" && typeof e.key === "string" && /^[A-Za-z0-9+]{1,40}$/.test(e.key)) out.push({ type: "key", key: e.key });
+    else if (e.type === "scroll" && typeof e.dy === "number" && Math.abs(e.dy) <= 5000) out.push({ type: "scroll", dy: e.dy, dx: typeof e.dx === "number" && Math.abs(e.dx) <= 5000 ? e.dx : 0 });
+    else if (e.type === "navigate") {
+      const url = normaliseStartUrl(e.url);
+      if (!url) return null;
+      out.push({ type: "navigate", url });
+    }
+    else if (e.type === "back") out.push({ type: "back" });
+    else if (e.type === "select" && typeof e.value === "string" && e.value.length <= 500) out.push({ type: "select", value: e.value });
+    else return null;
+  }
+  return out;
+}
+
+app.post("/api/recordings", requireRole("tester"), async (req, res) => {
+  if (!recorderEnabled()) return res.status(404).json({ error: "recording is turned off on this server" });
+  const { projectId, url } = req.body ?? {};
+  if (typeof projectId !== "string" || !projectId) return res.status(400).json({ error: "projectId is required" });
+  const start = normaliseStartUrl(url);
+  if (!start) return res.status(400).json({ error: "send the address to start on as `url` (http or https)" });
+  try {
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    const role = await assertOrgAccess(userId, req.organisationId!, "tester");
+    await assertProjectVisible(userId, req.organisationId!, role, projectId);
+    const recordingId = await startRecording({ userId, orgId: req.organisationId!, projectId, url: start });
+    res.status(201).json({ recordingId });
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.get("/api/recordings/:id", requireRole("tester"), async (req, res) => {
+  const s = recordingFor(req, res);
+  if (!s) return;
+  res.json(await recordingState(s));
+});
+
+/** The latest screen as a JPEG; 204 when nothing newer than `?after=<seq>` has arrived. */
+app.get("/api/recordings/:id/frame", requireRole("tester"), async (req, res) => {
+  const s = recordingFor(req, res);
+  if (!s) return;
+  const after = Number(req.query.after ?? -1);
+  const f = await latestFrame(s, Number.isFinite(after) ? after : -1);
+  res.set("Cache-Control", "no-store");
+  if (!f) return res.status(204).end();
+  res.set("X-Frame-Seq", String(f.seq)).type("image/jpeg").send(f.jpeg);
+});
+
+app.post("/api/recordings/:id/input", requireRole("tester"), async (req, res) => {
+  const s = recordingFor(req, res);
+  if (!s) return;
+  const events = cleanRecorderInput(req.body?.events);
+  if (!events) return res.status(400).json({ error: "send `events`: a list of click / text / key / scroll / navigate / back / select" });
+  try {
+    await handleInput(s, events);
+    res.json(await recordingState(s));
+  } catch (err) {
+    // Never echo the input back: it may be a password being typed.
+    res.status(500).json({ error: `the browser could not do that: ${(err as Error)?.message?.split("\n")[0] ?? "unknown error"}` });
+  }
+});
+
+app.post("/api/recordings/:id/check-mode", requireRole("tester"), async (req, res) => {
+  const s = recordingFor(req, res);
+  if (!s) return;
+  setCheckMode(s, req.body?.on === true);
+  res.json(await recordingState(s));
+});
+
+app.post("/api/recordings/:id/undo", requireRole("tester"), async (req, res) => {
+  const s = recordingFor(req, res);
+  if (!s) return;
+  await undoLastStep(s);
+  res.json(await recordingState(s));
+});
+
+/**
+ * Save the recording as a new case. `steps` (optional) is the step list as the person edited it;
+ * it is read back with the real parser onto what was recorded (`parseIrSteps`, the editor's own
+ * contract), so an untouched line keeps the target the recorder resolved on the live page.
+ */
+app.post("/api/recordings/:id/save", requireRole("tester"), async (req, res) => {
+  const s = recordingFor(req, res);
+  if (!s) return;
+  const { title, suiteId, steps: texts } = req.body ?? {};
+  try {
+    const recorded = await finalSteps(s);
+    let steps = recorded;
+    if (Array.isArray(texts)) {
+      if (!texts.every((t) => typeof t === "string")) return res.status(400).json({ error: "`steps` must be a list of sentences" });
+      const parsed = parseIrSteps(texts as string[], recorded);
+      if (!parsed.ok) return res.status(400).json({ error: `step ${parsed.index + 1}: ${parsed.error}`, index: parsed.index });
+      steps = parsed.result.steps;
+    }
+    steps = withCredentialRefs(steps);
+    const first = steps.find((x) => x.action === "navigate")?.target?.url ?? s.startUrl;
+    let baseUrl = s.startUrl;
+    try { baseUrl = new URL(first).origin; } catch { /* keep the start address */ }
+    const caseTitle = typeof title === "string" && title.trim() ? title.trim().slice(0, 200) : defaultRecordingTitle(steps);
+    const ir = {
+      meta: { feature: "Recorded flow", title: caseTitle, priority: "medium", sourcePrompt: `Recorded in the browser on ${first}`, baseUrl },
+      steps,
+    };
+    const userId = req.user?.id ?? LOCAL_USER_ID;
+    const role = await assertOrgAccess(userId, req.organisationId!, "tester");
+    const saved = await saveCaseFromIr(userId, req.organisationId!, role, s.projectId, ir, {
+      title: caseTitle,
+      suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined,
+      changeNote: "Recorded in the browser",
+    });
+    await closeRecording(s);
+    res.status(201).json(saved);
+  } catch (err) { sendAccessError(res, err); }
+});
+
+app.delete("/api/recordings/:id", requireRole("tester"), async (req, res) => {
+  const s = recordingFor(req, res);
+  if (!s) return;
+  await closeRecording(s);
+  res.status(204).end();
+});
+
 /**
  * Replay saved cases — Step 5.3, and the reason the library exists.
  *
@@ -2823,6 +2981,11 @@ export const BOOLEAN_ENV_FLAGS = [
   // D-72: a project's discovery is saved for 7 days and shared by every run of that project with the
   // same URL and login; one discovery at a time per project. Off: the global 30-minute cache as before.
   "PROJECT_DISCOVERY_SHARING",
+  // docs/phases/PLAN_RECORD_ONCE.md: record a flow in a live browser inside the app. Off: every
+  // /api/recordings route answers 404 and /api/health has no `recorder` field.
+  "RECORDER_ENABLED",
+  // Local development only: let the recording browser reach private/loopback addresses.
+  "RECORDER_ALLOW_PRIVATE_NETWORK",
 ] as const;
 
 /** One malformed flag: the variable, and the value actually found (quoted, so empty is visible). */

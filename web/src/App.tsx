@@ -33,6 +33,7 @@ const SettingsPage = page(() => import("./pages/settings/SettingsPage"), "Settin
 const TeamPage = page(() => import("./pages/team/TeamPage"), "TeamPage");
 const AdminPage = page(() => import("./pages/admin/AdminPage"), "AdminPage");
 const LoginPage = page(() => import("./pages/login/LoginPage"), "LoginPage");
+const RecordPage = page(() => import("./pages/record/RecordPage"), "RecordPage");
 
 export function App() {
   const route = useRoute();
@@ -91,6 +92,7 @@ function Page({ route }: { route: Route }) {
     case "settings": return <SettingsPage />;
     case "team": return <TeamPage />;
     case "admin": return <AdminPage />;
+    case "record": return <RecordPage key={route.projectId} projectId={route.projectId} />;
     case "notBuilt":
       return (
         <div className="wide">

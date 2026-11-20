@@ -674,6 +674,47 @@ export async function saveCaseFromRun(
 }
 
 /**
+ * Save a case whose IR did not come from a run — a recording (RECORDER_ENABLED). Same insert,
+ * same version-1 row and same suite filing as `saveCaseFromRun`; the IR is validated through the
+ * one `IR` schema like every other write here.
+ */
+export async function saveCaseFromIr(
+  userId: string, orgId: string, role: Role,
+  projectId: string, rawIr: unknown,
+  opts: { title?: string; suiteId?: string; changeNote: string },
+): Promise<CaseRow> {
+  await assertProjectVisible(userId, orgId, role, projectId);
+  const ir = parseIr(rawIr, "the recorded steps");
+  const title = (opts.title ?? ir.meta.title ?? "Untitled case").trim() || "Untitled case";
+  const client = requireClient();
+  const { data, error } = await client
+    .from("test_cases")
+    .insert({
+      project_id: projectId,
+      title,
+      feature: ir.meta.feature ?? null,
+      ir,
+      current_version: 1,
+      source_run_id: null,
+      updated_at: new Date().toISOString(),
+      updated_by: userId,
+    })
+    .select("id, project_id, title, feature, current_version, source_run_id, last_run_status, last_run_at, updated_at")
+    .single();
+  if (error || !data) throw new AccessError(500, `could not save case: ${error?.message}`);
+  await client.from("test_case_versions").insert({
+    test_case_id: data.id,
+    version: 1,
+    ir,
+    spec: specForStorage(ir),
+    change_note: opts.changeNote,
+    saved_by: userId,
+  });
+  if (opts.suiteId) await addCaseToSuite(userId, orgId, role, opts.suiteId, data.id);
+  return toCaseRow(data);
+}
+
+/**
  * Raised when a case moved on under an editor's feet. Carries the current server-side state so the
  * caller can show what changed instead of a bare refusal.
  */

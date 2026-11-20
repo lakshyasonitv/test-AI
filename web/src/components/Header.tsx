@@ -9,7 +9,7 @@ import { SettingsPopover } from "./SettingsPopover";
 export function Header({ route, me }: { route: Route; me: Identity | null }) {
   // Classic: Team shows when auth is on, you are signed in and your role is known.
   const showTeam = !!me?.authRequired && !!currentToken() && !!me?.role;
-  const inLibrary = ["projects", "project", "suite", "case", "compare"].includes(route.name);
+  const inLibrary = ["projects", "project", "suite", "case", "compare", "record"].includes(route.name);
   const on = (yes: boolean) => (yes ? "on" : "");
 
   return (

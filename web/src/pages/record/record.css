@@ -1,0 +1,18 @@
+/* Record a flow — rx-* only, so nothing can collide with the classic style.css (CLAUDE.md rule 3). */
+.rx-rec { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; margin-top: 12px; }
+@media (max-width: 1000px) { .rx-rec { grid-template-columns: 1fr; } }
+.rx-rec-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.rx-rec-bar input { flex: 1; min-width: 0; }
+.rx-rec-screen { position: relative; border: 1px solid rgba(18, 20, 24, .14); border-radius: 10px; overflow: hidden; background: #0f1115; outline: none; cursor: crosshair; aspect-ratio: 16 / 9; }
+.rx-rec-screen img { display: block; width: 100%; height: auto; user-select: none; }
+.rx-rec-keys { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; resize: none; pointer-events: none; }
+.rx-rec-focus { box-shadow: 0 0 0 3px #c9dafc; }
+.rx-rec-check { box-shadow: 0 0 0 3px #f2b84b; cursor: help; }
+.rx-rec-wait { color: #c9ced8; padding: 40px; text-align: center; }
+.rx-rec-side { display: flex; flex-direction: column; gap: 12px; }
+.rx-rec-steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow: auto; }
+.rx-rec-steps li { display: flex; gap: 6px; align-items: center; }
+.rx-rec-steps input { flex: 1; min-width: 0; font-size: 13px; }
+.rx-rec-notes { margin: 0; padding-left: 18px; font-size: 13px; color: #8a5a00; }
+.rx-rec-select { display: flex; flex-wrap: wrap; gap: 6px; }
+.rx-rec-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

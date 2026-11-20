@@ -18,6 +18,8 @@ export interface Identity {
 export interface Health {
   platformAdmins: boolean;
   defaults: { gateReview: boolean; selfHeal: boolean };
+  /** RECORDER_ENABLED on the server: "Record a flow" is offered on a project. */
+  recorder: boolean;
 }
 
 /** Role ladder mirrored from src/server/authz.ts (app.js ROLE_RANK). */
@@ -36,8 +38,9 @@ export function loadHealth(): Promise<Health> {
       .then((h) => ({
         platformAdmins: h?.platformAdmins === true,
         defaults: { gateReview: h?.defaults?.gateReview === true, selfHeal: h?.defaults?.selfHeal === true },
+        recorder: h?.recorder === true,
       }))
-      .catch(() => ({ platformAdmins: false, defaults: { gateReview: false, selfHeal: false } }));
+      .catch(() => ({ platformAdmins: false, defaults: { gateReview: false, selfHeal: false }, recorder: false }));
   }
   return healthPromise;
 }

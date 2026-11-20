@@ -3,6 +3,7 @@ import { api, classic, type CaseRow, type Suite } from "../../lib/api";
 import { ErrorNote, Loading, useLoad } from "../../components/ui";
 import { caseHash, confirmProjectDelete, JSON_HEADERS, loadLibrary, matcher, plural, runsFor, runStatusKey, runStatusText, shortProjectName } from "../../lib/library";
 import { canAuthorSuites, canDeleteSuites, canManageProjects, useMe } from "../../lib/useMe";
+import { loadHealth } from "../../lib/identity";
 import { Wrap } from "./components/Wrap";
 import { MembersCard } from "./components/MembersCard";
 import { errText } from "./helpers";
@@ -34,6 +35,8 @@ export function ProjectPage({ projectId }: { projectId: string }) {
   const [suiteCases, setSuiteCases] = useState<Map<string, CaseRow[] | "loading">>(new Map());
 
   useEffect(() => { setForm(null); setQ(""); setSuiteCases(new Map()); setNote(null); }, [projectId]);
+  const [recorder, setRecorder] = useState(false);
+  useEffect(() => { loadHealth().then((h) => setRecorder(h.recorder)).catch(() => {}); }, []);
 
   const suites = data ? data.suites.filter((s) => s.projectId === projectId) : [];
   const query = q.trim();
@@ -194,6 +197,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
             onClick={() => setForm({ mode: "project-edit", name: p.name || "", url: p.baseUrl || "", error: "" })}>Edit</button>}
           {canManage && <button type="button" className="dl-btn hrow-del" disabled={busy} onClick={deleteProject}>Delete</button>}
           {/* The composer (New test) is not in this app yet: the classic one, unprefilled. */}
+          {recorder && canAuthor && <a className="dl-btn-inline" href={`#/record/${encodeURIComponent(projectId)}`}>● Record a flow</a>}
           <a className="run-btn" href={classic("#/")}>+ New test here</a>
         </div>
       </div>
