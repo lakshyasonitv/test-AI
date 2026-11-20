@@ -1,6 +1,8 @@
 # Progress — where we are
 
-*Last updated: 2026-11-17. Branch `pro/salesforce-org-context` = origin/main 80fe0ea (fast-forwarded locally, not pushed) + "Create Jira bug" (D-85, JIRA_BUGS_ENABLED, off by default), UNCOMMITTED — the user asked to be asked before commit/push. tsc clean; suite here 2868 passed / 42 failed (same 52 files as untouched branch, container browser setup). Not yet run against real Jira (TD-194). See journal/2026-11-17.md.*
+*Last updated: 2026-11-17. eventrix.tech create-event: D-85 (SCREEN_MODE_ALL_SITES, screen mode for every site, flag off by default) + TD-195 sign-in race fix + extra-attempt fix, all UNCOMMITTED on ui/dashboard; TD-196 open. Best live result so far: reaches the Technical Conferences form and captures it; no event published yet; why attempts 2-4 of run 08-07-06 replayed sign-in onto "/" is unknown (new "[ir] steps:" log line added to find out). Local .env: MAX_DISCOVERY_PAGES=12, SCREEN_MODE_ALL_SITES=true, MAX_IR_ATTEMPTS=6. See journal/2026-11-17.md.*
+
+*Last updated: 2026-11-17. Branch `pro/salesforce-org-context` = origin/main 80fe0ea (fast-forwarded locally, not pushed) + "Create Jira bug" (D-86, JIRA_BUGS_ENABLED, off by default), UNCOMMITTED — the user asked to be asked before commit/push. tsc clean; suite here 2868 passed / 42 failed (same 52 files as untouched branch, container browser setup). Not yet run against real Jira (TD-204). See journal/2026-11-17.md.*
 
 *Last updated: 2026-11-16, latest. D-84 company model (Admins > owner > tester > viewer) built behind PLATFORM_ADMIN_ENABLED, uncommitted; migration platform_admins NOT applied to Supabase yet (needs the user's go). TD-192 fix included. See journal/2026-11-16.md.*
 

@@ -1276,9 +1276,9 @@ function renderCaseCard(c, runId, index) {
             ${c.intent ? `<h4>QA reasoning</h4><pre>${escapeHtml(c.intent)}</pre>` : ""}
             ${c.llmCalls ? `<h4>Cost</h4><pre>${c.llmCalls} AI call(s), ${c.llmTokens ?? 0} tokens</pre>` : ""}
             <h4>Step-by-step test plan (JSON) <a href="${escapeHtml(irUrl)}" download="ir.json" class="dl-btn dl-btn-inline">${icon("download", { size: 12 })} download</a></h4>
-            <pre class="case-ir">Loading…</pre>
+            <pre class="case-ir">${loadingHtml()}</pre>
             <h4>Full test code <a href="${escapeHtml(specUrl)}" download="${escapeHtml(c.title || 'test')}.spec.ts" class="dl-btn dl-btn-inline">${icon("download", { size: 12 })} download</a></h4>
-            <pre class="case-spec">Loading…</pre>
+            <pre class="case-spec">${loadingHtml()}</pre>
             <h4>All files (screenshots, trace, video) <a href="${escapeHtml(traceUrl)}" class="dl-btn dl-btn-inline" target="_blank">${icon("external-link", { size: 12 })} open</a></h4>
           </div>
         </details>
@@ -1332,7 +1332,7 @@ function setupCaseCardListeners() {
     });
   });
 
-  addJiraBugButtons(); // D-85: only when /api/health said jiraBugs; otherwise it does nothing
+  addJiraBugButtons(); // D-86: only when /api/health said jiraBugs; otherwise it does nothing
 
   // Cards that rendered already-expanded (failed/blocked) never fire the click/keydown
   // handler above, so their detail fetch — including the diagnosis block — has to be kicked
@@ -1490,7 +1490,7 @@ async function openSaveCasePanel(card, source) {
   if (!panel.classList.contains("hidden")) { panel.classList.add("hidden"); return; }
 
   panel.classList.remove("hidden");
-  panel.innerHTML = `<p class="hrow-meta">Loading projects…</p>`;
+  panel.innerHTML = `<p class="hrow-meta">${loadingHtml("Loading projects…")}</p>`;
 
   let projects = [], suites = [];
   try {
@@ -2355,14 +2355,21 @@ function renderSingleTestResult(data, stage, error) {
   }
 
   const vid = data?.videoUrl;
+  // A <video> does NOT pick up new <source> children by itself: without load() it keeps the media
+  // it already chose. Opening one run after another in the same tab played the PREVIOUS run's
+  // video under the new run's result (checked 2026-11-17: source = run 07-52-12, currentSrc = run
+  // 08-17-02). The poster is reset too, or the last run's frame stays on a run that has none.
   if (vid) {
     resultVideoEl.innerHTML = `<source src="${escapeHtml(vid)}" type="video/webm" />`;
-    if (shot) resultVideoEl.poster = shot;
+    if (shot) resultVideoEl.poster = shot; else resultVideoEl.removeAttribute("poster");
+    resultVideoEl.load();
     videoFigureEl.classList.remove("hidden");
   } else {
     videoFigureEl.classList.add("hidden");
     resultVideoEl.removeAttribute("src");
+    resultVideoEl.removeAttribute("poster");
     resultVideoEl.innerHTML = "";
+    resultVideoEl.load();
   }
 
   // A missing video used to be indistinguishable from a run that simply passed (video is
@@ -2384,6 +2391,8 @@ function hideSingleTestResult() {
   testSummaryEl.classList.add("hidden");
   videoFigureEl.classList.add("hidden");
   resultVideoEl.innerHTML = "";
+  resultVideoEl.removeAttribute("poster");
+  resultVideoEl.load(); // drop the media it was holding, not just its <source> (see showSingleTestResult)
   diagnosisEl.textContent = "";
   screenshotFigureEl.classList.add("hidden");
   screenshotEl.removeAttribute("src");
@@ -2637,6 +2646,12 @@ let acceptedSoFarCount = 0;
 // Local mirrors of the gate's pool cap and regeneration budget, so the panel can render its
 // counters and notes without asking the backend for every number.
 const CASE_POOL_CAP = 5; // MAX_ACCUMULATED_CASES
+// The cap of the round on screen (the server's real one when the accepted-cases route answered).
+let gatePoolCap = CASE_POOL_CAP;
+/** How many more cases this round may tick: the pool's cap minus what earlier rounds accepted.
+ *  A tick past it used to be accepted by the panel and then silently dropped by the server as
+ *  "did not fit — pool was full" (caseAccumulator.ts); now the panel refuses it up front. */
+const gateRoomLeft = () => Math.max(0, gatePoolCap - acceptedSoFarCount);
 const CASE_REGEN_LIMIT = 3; // MAX_CASE_REGEN_ATTEMPTS — only a fallback; the event carries the real count
 const MAX_CASE_REGEN_ATTEMPTS_LOCAL = 3; // MAX_CASE_REGEN_ATTEMPTS
 
@@ -2994,6 +3009,7 @@ function renderCaseSelectionPanel(batch, attempt, acceptedCount, opts) {
   // refine to "finish". Five is MAX_ACCUMULATED_CASES — a ceiling on what the pool will hold,
   // not a number to reach. The wording now says what you can do rather than how far along you are.
   const poolCap = opts?.poolCap ?? CASE_POOL_CAP;
+  gatePoolCap = poolCap;
   casePoolCounterEl.textContent = acceptedSoFarCount === 0
     ? `Tick the cases you want to run. You can run as few as one — up to ${poolCap} in total.`
     : `${acceptedSoFarCount} case${acceptedSoFarCount === 1 ? "" : "s"} accepted — enough to run now. ` +
@@ -3072,6 +3088,12 @@ function getCheckedCaseIndexes() {
 // or checked in this one. The label doubles as a running count.
 function updateDoneButtonState() {
   const total = acceptedSoFarCount + getCheckedCaseIndexes().length;
+  // At the cap, the boxes still unticked are disabled: a sixth case cannot be picked at all.
+  const full = getCheckedCaseIndexes().length >= gateRoomLeft();
+  caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.disabled = full && !cb.checked;
+    cb.title = cb.disabled ? `A run holds at most ${gatePoolCap} cases — untick one to choose this one.` : "";
+  });
   caseDoneBtnEl.disabled = total === 0;
   caseDoneBtnEl.textContent = total === 0
     ? "Run selected tests"
@@ -3149,6 +3171,11 @@ function gateEditPayload() {
  *  unticked is not an error. */
 function gateValidationError(selectedIndexes) {
   const picked = new Set(selectedIndexes);
+  if (picked.size > gateRoomLeft()) {
+    return `A run holds at most ${gatePoolCap} cases` +
+      (acceptedSoFarCount ? ` and ${acceptedSoFarCount} are already accepted` : "") +
+      ` — untick ${picked.size - gateRoomLeft()} to continue.`;
+  }
   for (const entry of gateCases()) {
     if (!picked.has(entry.index)) continue;
     const c = entry.c;
@@ -3185,10 +3212,17 @@ async function postCaseSelectionDecision(runId, decision) {
 
 caseSelectAllBtnEl.addEventListener("click", () => {
   disarmRefine();
+  // "Select all" fills the room left and no further, in list order (the request's own case first).
+  let room = gateRoomLeft() - getCheckedCaseIndexes().length;
+  let skipped = 0;
   caseSelectionListEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    if (cb.checked) return;
+    if (room <= 0) { skipped++; return; }
+    room--;
     cb.checked = true;
     gateDrafts.checked[Number(cb.dataset.index)] = true;
   });
+  if (skipped) showNotice(`Ticked the first ${gatePoolCap - acceptedSoFarCount} — a run holds at most ${gatePoolCap} cases.`);
   saveGateDrafts();
   updateDoneButtonState();
 });
@@ -3359,6 +3393,13 @@ caseNotSatisfiedBtnEl.addEventListener("click", () => {
 caseSelectionListEl.addEventListener("change", (e) => {
   if (!e.target.matches('input[type="checkbox"]')) return;
   disarmRefine();
+  // The cap, enforced at the tick: the box is put back and the reason said (updateDoneButtonState
+  // also disables the unticked boxes once the limit is reached, so this is the keyboard/edge path).
+  if (e.target.checked && getCheckedCaseIndexes().length > gateRoomLeft()) {
+    e.target.checked = false;
+    showNotice(`You can run at most ${gatePoolCap} cases in one run. Untick one to choose another.`);
+    return;
+  }
   setGateChecked(Number(e.target.dataset.index), e.target.checked);
   updateDoneButtonState();
 });
@@ -4226,7 +4267,7 @@ async function api(path, init) {
   if (!res.ok) {
     const err = new Error(body.error || `That didn't work (${res.status}).`);
     err.code = body.code;   // a machine-readable reason, when the server gives one
-    err.body = body;        // the whole reply, for callers that read more (D-85: fieldErrors, reconnect)
+    err.body = body;        // the whole reply, for callers that read more (D-86: fieldErrors, reconnect)
     throw err;
   }
   return body;
@@ -4263,9 +4304,97 @@ async function startReplay(selection, label) {
 
 // ---------------------------------------------------------------- Suite view
 
+/**
+ * One run's final screenshot URL for this case, or "" when the run's files are gone.
+ *
+ * A replay's per-case 05-result.json is the executor's raw result and never carries
+ * screenshotUrl — the suite runner resolves it into the run's 07-suite-summary.json instead.
+ * Reading only the former left every replayed case with "no screenshot yet" (TD-202), so the
+ * summary row for this case's index is the fallback. Read from artifacts the run already wrote:
+ * nothing new is stored.
+ */
+async function finalShotForRun(run) {
+  const runBase = `/runs/${encodeURIComponent(run.runId)}`;
+  const result = await fetch(`${runBase}/${run.resultPath}/05-result.json`)
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (result?.screenshotUrl) return result.screenshotUrl;
+  const summary = await fetch(`${runBase}/07-suite-summary.json`)
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const row = summary?.cases?.find?.((x) => x.caseId === `case-${run.caseIndex}`);
+  return row?.screenshotUrl || "";
+}
+
+/**
+ * A saved suite's previous runs, newest first, each with its PDF report.
+ *
+ * Built from what already exists: every case's run history (`/api/cases/:id/runs`) gives the runs
+ * these cases took part in, and each run's own `00-input.json` says how many cases it ran. A run
+ * started from this suite records `suiteId` there (replay.ts); an older run has none, so it counts
+ * only when it ran exactly this suite's current cases (every one of them, nothing else, at least
+ * two) — a hand-picked batch of some of them is not a run of the suite. Older full runs from
+ * before the suite grew are therefore not listed. A run whose files were deleted is left out:
+ * there is no report to give.
+ */
+async function paintSuiteRuns(suiteId, cases) {
+  const el = document.getElementById("suiteRunRows");
+  if (!el) return;
+  const empty = (msg) => { el.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">${escapeHtml(msg)}</div>`; };
+  if (!cases.length) return empty("No runs yet.");
+
+  const byRun = new Map();
+  await Promise.all(cases.map(async (c) => {
+    let runs = [];
+    try { runs = (await api(`/api/cases/${encodeURIComponent(c.id)}/runs?limit=50`)).runs ?? []; } catch { /* skip */ }
+    for (const r of runs) {
+      const e = byRun.get(r.runId) ?? { runId: r.runId, ranAt: r.ranAt, results: [] };
+      if (r.ranAt && (!e.ranAt || r.ranAt < e.ranAt)) e.ranAt = r.ranAt;
+      e.results.push(r.status);
+      byRun.set(r.runId, e);
+    }
+  }));
+
+  const candidates = [...byRun.values()].sort((a, b) => String(b.ranAt).localeCompare(String(a.ranAt)));
+  const rows = [];
+  for (const e of candidates) {
+    if (rows.length >= 15) break;
+    const input = await fetch(`/runs/${encodeURIComponent(e.runId)}/00-input.json`)
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (!input) continue;
+    const total = Number(input.caseCount) || e.results.length;
+    const mine = input.suiteId
+      ? input.suiteId === suiteId
+      : e.results.length === total && total === cases.length && total >= 2;
+    if (!mine) continue;
+    rows.push({ ...e, total, passed: e.results.filter((s) => s === "passed").length });
+  }
+  if (!el.isConnected) return;
+  if (!rows.length) return empty("No runs of this suite yet. Use ▸ Run all, then its report appears here.");
+
+  el.innerHTML = rows.map((r) => {
+    const ok = r.passed === r.total;
+    return `
+      <div class="hrow">
+        <span class="case-badge ${caseBadgeClass(ok ? "passed" : "failed")}">${escapeHtml(caseStatusLabel(ok ? "passed" : "failed"))}</span>
+        <div class="hrow-main">
+          <div class="hrow-label">${escapeHtml(r.ranAt ? formatWhen(r.ranAt) : r.runId)}</div>
+          <div class="hrow-meta">${r.passed}/${r.total} passed · ${escapeHtml(r.runId)}</div>
+        </div>
+        <div class="hrow-actions">
+          <button type="button" class="dl-btn-inline" data-suite-run="${escapeHtml(r.runId)}">Open run</button>
+          <a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.pdf?view=1"
+             target="_blank" rel="noopener">Report (PDF)</a>
+          <a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.xlsx"
+             download="test-report-${escapeHtml(r.runId)}.xlsx">Report (Excel)</a>
+        </div>
+      </div>`;
+  }).join("");
+  el.querySelectorAll("[data-suite-run]").forEach((b) =>
+    b.addEventListener("click", () => navigate("#/run/" + encodeURIComponent(b.dataset.suiteRun))));
+}
+
 async function renderSuiteView(suiteId) {
   const body = document.getElementById("suiteViewBody");
-  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${loadingHtml()}</div>`;
 
   let suite, cases;
   try {
@@ -4304,7 +4433,11 @@ async function renderSuiteView(suiteId) {
     </div>
     <div id="suiteFeedback"></div>
     <div id="suiteAddPanel"></div>
-    <div class="panel"><div id="suiteRows"></div></div>`;
+    <div class="panel"><div id="suiteRows"></div></div>
+    <div class="panel" style="padding:0;overflow:hidden;margin-top:16px">
+      <div class="cd-script-head"><span class="cd-card-head" style="margin:0">Previous runs</span></div>
+      <div id="suiteRunRows"><div class="tree-empty" style="padding:24px 16px;text-align:center">${loadingHtml()}</div></div>
+    </div>`;
 
   const rows = document.getElementById("suiteRows");
   if (!cases.length) {
@@ -4322,6 +4455,7 @@ async function renderSuiteView(suiteId) {
         <div class="hrow-main">
           <div class="hrow-label">${escapeHtml(c.title)}</div>
           <div class="hrow-meta">v${c.currentVersion}${c.feature ? ` · ${escapeHtml(c.feature)}` : ""}${c.lastRunAt ? ` · last run ${formatWhen(c.lastRunAt)}` : ""}</div>
+          <div data-case-shot="${i}"></div>
         </div>
         <div class="hrow-actions">
           ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="up" title="Move up" ${i === 0 ? "disabled" : ""}>↑</button>` : ""}
@@ -4331,7 +4465,34 @@ async function renderSuiteView(suiteId) {
           ${canAuthor ? `<button type="button" class="dl-btn-inline" data-act="remove">Remove</button>` : ""}
         </div>
       </div>`).join("");
+
+    // Each case's final screenshot from its latest run, filled in as it arrives so the list never
+    // waits on it. Same lookup as the case page (finalShotForRun); a case never run, or whose last
+    // run's files are gone, simply shows no image.
+    cases.forEach(async (c, i) => {
+      const slot = rows.querySelector(`[data-case-shot="${i}"]`);
+      if (!slot) return;
+      let shot = "";
+      let when = "";
+      try {
+        const last = ((await api(`/api/cases/${encodeURIComponent(c.id)}/runs?limit=1`)).runs ?? [])[0];
+        if (last) {
+          shot = await finalShotForRun(last);
+          when = last.ranAt ? formatWhen(last.ranAt) : last.runId;
+        }
+      } catch { /* no image */ }
+      if (!shot || !slot.isConnected) return;
+      const label = `${c.title} · ${when} · final screenshot`;
+      slot.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="${escapeHtml(label)}"
+        loading="lazy" style="max-width:200px;margin-top:8px;cursor:zoom-in" />`;
+      slot.querySelector("img").addEventListener("click", (e) => {
+        e.stopPropagation();
+        openScreenshotModal(shot, label);
+      });
+    });
   }
+
+  void paintSuiteRuns(suiteId, cases);
 
   const feedback = (msg, isError) => {
     document.getElementById("suiteFeedback").innerHTML =
@@ -4348,7 +4509,7 @@ async function renderSuiteView(suiteId) {
    */
   const openAddPanel = async () => {
     const panel = document.getElementById("suiteAddPanel");
-    panel.innerHTML = `<div class="case-save-panel"><p class="hrow-meta">Loading cases…</p></div>`;
+    panel.innerHTML = `<div class="case-save-panel"><p class="hrow-meta">${loadingHtml("Loading cases…")}</p></div>`;
     let pool;
     try {
       const all = (await api(`/api/cases?projectId=${encodeURIComponent(suite.projectId)}`)).cases ?? [];
@@ -4558,6 +4719,15 @@ const caseLinesPayload = () => caseEditor.lines.map((l) => l.text);
 
 function caseEditorDirty() {
   return !!caseEditor && JSON.stringify(caseLinesPayload()) !== caseEditor.original;
+}
+
+/**
+ * A loading placeholder with a spinner: the same rotating "loader" icon and existing classes the AI
+ * buttons use (`.ai-busy` lays it out, `.ai-spin` turns it; reduced-motion stops it). A function
+ * declaration, so it is usable from any render code regardless of where it sits in this file.
+ */
+function loadingHtml(text = "Loading…") {
+  return `<span class="ai-busy" role="status">${icon("loader", { size: 14, cls: "ai-spin" })}<span>${escapeHtml(text)}</span></span>`;
 }
 
 /** The inline spinner shown inside a button waiting on an AI proposal. One definition so the
@@ -4986,7 +5156,7 @@ async function renderCaseView(caseId, routeProjectId) {
   if (caseEditor && caseEditor.caseId !== caseId) { stopFollowingCaseJob(); caseEditor = null; }
 
   const body = document.getElementById("caseViewBody");
-  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${loadingHtml()}</div>`;
 
   let c, stepsDoc;
   try {
@@ -5386,9 +5556,7 @@ async function renderCaseView(caseId, routeProjectId) {
         `${last.ranAt ? formatWhen(last.ranAt) : ""} · v${caseEditor.currentVersion} · ${last.runId}`;
     }
     try {
-      const result = await fetch(`/runs/${encodeURIComponent(last.runId)}/${last.resultPath}/05-result.json`)
-        .then((r) => (r.ok ? r.json() : null));
-      const shot = result?.screenshotUrl;
+      const shot = await finalShotForRun(last);
       if (!shot) return;
       el.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="case ${last.caseIndex} · final screenshot" />`;
       el.querySelector("img").addEventListener("click", () =>
@@ -5425,7 +5593,7 @@ async function renderCaseView(caseId, routeProjectId) {
   }
 
   async function paintScriptTab(el) {
-    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">Loading…</div></div>`;
+    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">${loadingHtml()}</div></div>`;
 
     // The script belongs to the CASE, not to a run's artifact folder. `GET /api/cases/:id/script`
     // returns the spec stored with this version, or regenerates it from the same IR with the same
@@ -5490,7 +5658,7 @@ async function renderCaseView(caseId, routeProjectId) {
   // ----------------------------------------------------------- runs & versions
 
   async function paintRunsTab(el) {
-    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">Loading…</div></div>`;
+    el.innerHTML = `<div class="panel"><div class="tree-empty" style="padding:28px 16px;text-align:center">${loadingHtml()}</div></div>`;
     let runs = [];
     let runsError = "";
     try { runs = (await api(`/api/cases/${encodeURIComponent(caseId)}/runs`)).runs ?? []; }
@@ -5512,21 +5680,39 @@ async function renderCaseView(caseId, routeProjectId) {
         </div>
       </div>`;
 
+    // Which version of this case a run executed. Runs do not record it, but it is determined by
+    // the history: the newest version saved at or before the moment the run started.
+    const versionAt = (ranAt) => {
+      const t = ranAt ? Date.parse(ranAt) : NaN;
+      if (!Number.isFinite(t)) return null;
+      let best = null;
+      for (const v of c.versions) {
+        const s = v.savedAt ? Date.parse(v.savedAt) : NaN;
+        if (Number.isFinite(s) && s <= t && (!best || v.version > best)) best = v.version;
+      }
+      return best;
+    };
+
     const rowsEl = document.getElementById("cdRunRows");
     rowsEl.innerHTML = runsError
       ? `<div class="tree-empty" style="padding:24px 16px;text-align:center">${escapeHtml(runsError)}</div>`
       : runs.length
-      ? runs.map((r) => `
+      ? runs.map((r, i) => {
+          const v = versionAt(r.ranAt);
+          return `
           <div class="hrow">
             <span class="case-badge ${caseBadgeClass(r.status)}">${escapeHtml(caseStatusLabel(r.status))}</span>
             <div class="hrow-main">
-              <div class="hrow-label">${escapeHtml(r.ranAt ? formatWhen(r.ranAt) : r.runId)}</div>
+              <div class="hrow-label">${escapeHtml(r.ranAt ? formatWhen(r.ranAt) : r.runId)}${v ? ` · v${v}` : ""}</div>
               <div class="hrow-meta">${escapeHtml(r.runId)} · ${escapeHtml(r.resultPath)}</div>
+              <div data-run-shot="${i}"></div>
             </div>
             <div class="hrow-actions">
               <button type="button" class="dl-btn-inline" data-run="${escapeHtml(r.runId)}">Open run</button>
+              <span data-run-report="${i}"></span>
             </div>
-          </div>`).join("")
+          </div>`;
+        }).join("")
       : `<div class="tree-empty" style="padding:28px 16px;text-align:center">
            No runs recorded for this case yet. Run history is indexed from the first replay after the
            case library shipped, so older runs will not appear here.
@@ -5534,6 +5720,33 @@ async function renderCaseView(caseId, routeProjectId) {
 
     rowsEl.querySelectorAll("[data-run]").forEach((b) =>
       b.addEventListener("click", () => navigate("#/run/" + encodeURIComponent(b.dataset.run))));
+
+    // Each run's final screenshot, filled in as it arrives so the list never waits on it. A run
+    // whose files were deleted simply shows no image.
+    runs.forEach(async (r, i) => {
+      // That run's PDF report (the existing /report.pdf route), offered only while the run's
+      // files still exist — the report is built from them, so a deleted run would only 404.
+      const repSlot = rowsEl.querySelector(`[data-run-report="${i}"]`);
+      const runBase = `/runs/${encodeURIComponent(r.runId)}`;
+      const exists = await fetch(`${runBase}/${r.resultPath}/05-result.json`, { method: "HEAD" })
+        .then((x) => x.ok).catch(() => false);
+      if (exists && repSlot && repSlot.isConnected) {
+        const v = versionAt(r.ranAt);
+        repSlot.innerHTML = `<a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.pdf?view=1"
+          target="_blank" rel="noopener">Report (PDF)</a>
+          <a class="dl-btn-inline" href="/api/runs/${encodeURIComponent(r.runId)}/report.xlsx"
+          download="test-report-${escapeHtml(r.runId)}${v ? `-v${v}` : ""}.xlsx">Report (Excel)</a>`;
+      }
+      const slot = rowsEl.querySelector(`[data-run-shot="${i}"]`);
+      if (!slot) return;
+      let shot = "";
+      try { shot = await finalShotForRun(r); } catch { /* no image */ }
+      if (!shot || !slot.isConnected) return;
+      const label = `${r.ranAt ? formatWhen(r.ranAt) : r.runId} · final screenshot`;
+      slot.innerHTML = `<img class="cd-shot-img" src="${escapeHtml(shot)}" alt="${escapeHtml(label)}"
+        loading="lazy" style="max-width:240px;margin-top:8px;cursor:zoom-in" />`;
+      slot.querySelector("img").addEventListener("click", () => openScreenshotModal(shot, label));
+    });
 
     const vEl = document.getElementById("cdVersionRows");
     vEl.innerHTML = c.versions.length
@@ -5751,7 +5964,7 @@ function diffSteps(a, b) {
 
 async function renderCompareView(caseId, fromV, toV) {
   const body = document.getElementById("compareViewBody");
-  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">Loading…</div>`;
+  body.innerHTML = `<div class="tree-empty" style="padding:36px 16px;text-align:center">${loadingHtml()}</div>`;
 
   let c, A, B;
   try {
@@ -6594,7 +6807,7 @@ async function fetchJiraStory() {
     promptEl.dispatchEvent(new Event("input", { bubbles: true }));
     const link = /^https:\/\//.test(story.link || "")
       ? ` <a href="${escapeHtml(story.link)}" target="_blank" rel="noopener noreferrer">Open in Jira</a>` : "";
-    jira.lastStory = { key: story.key, promptText: story.promptText }; // D-85: the bug form offers to link it
+    jira.lastStory = { key: story.key, promptText: story.promptText }; // D-86: the bug form offers to link it
     jira.note = `Prompt filled from ${escapeHtml(story.key)}${story.truncated ? " (long story — only the first part was used)" : ""}. Check it, add the URL, then Run.${link}`;
   } catch (err) {
     jira.notice = err.message;
@@ -6633,7 +6846,7 @@ fetch("/api/health")
   .catch(() => { /* health is a diagnostic; the toggles still work without it */ });
 
 // -----------------------------------------------------------------------------
-// "Create Jira bug" (D-85): a button on every failed, blocked or cut-short case card. It opens an
+// "Create Jira bug" (D-86): a button on every failed, blocked or cut-short case card. It opens an
 // inline panel (like "Save case" above it): choose the Jira project and issue type, then a form
 // built from that project's own fields, prefilled from the failed test. The person edits it, adds or
 // removes fields, and presses Create — nothing is ever filed without that click.
@@ -7835,7 +8048,7 @@ function renderProjectsTree(runs) {
   }
 
   if (projectsCache === null && !projectsUnavailable) {
-    sidebarTreeEl.innerHTML = `<div class="tree-empty">Loading projects…</div>`;
+    sidebarTreeEl.innerHTML = `<div class="tree-empty">${loadingHtml("Loading projects…")}</div>`;
     return;
   }
 
@@ -8460,7 +8673,7 @@ async function renderDashboardView() {
         <p class="tagline">Your recent runs and saved suites at a glance.</p>
       </div>
     </div>`;
-  body.innerHTML = `${head}<div class="tree-empty" style="padding:24px 4px">Loading…</div>`;
+  body.innerHTML = `${head}<div class="tree-empty" style="padding:24px 4px">${loadingHtml()}</div>`;
 
   const asList = (raw, key) =>
     Array.isArray(raw) ? raw : raw && Array.isArray(raw[key]) ? raw[key] : [];
@@ -8669,7 +8882,7 @@ async function renderProjectsView(projectId) {
   pvForm = null;
   pvSuiteCases = new Map();   // D-82: a fresh visit reads each suite's cases again
   if (pvSearch.projectId !== projectId) pvSearch = { projectId: null, q: "" };
-  body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">Loading…</div>`;
+  body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">${loadingHtml()}</div>`;
   await loadProjects();
   // Navigated away (or to another project) while that was in flight: the newer render owns it.
   if (gen !== pvGen || currentView !== "projects") return;
@@ -8885,7 +9098,7 @@ function drawOneProject(body, projectId) {
   const membersCard = platformModel && !projectsUnavailable && canManageProjects() ? `
     <div data-dash="card">
       <div data-dash="card-head"><span data-dash="ico">${icon("list", { size: 15 })}</span><h2>Who can see this project</h2></div>
-      <div data-pv-members><div class="tree-empty" style="padding:12px 4px">Loading…</div></div>
+      <div data-pv-members><div class="tree-empty" style="padding:12px 4px">${loadingHtml()}</div></div>
     </div>` : "";
   const summary = projectsUnavailable
     ? pvPlural(runCount, "recent run")
@@ -9261,7 +9474,7 @@ let adminOpenOrg = null;
 async function renderAdminView() {
   const body = document.getElementById("adminViewBody");
   if (!body) return;
-  body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">Loading…</div>`;
+  body.innerHTML = `<div class="tree-empty" style="padding:24px 4px">${loadingHtml()}</div>`;
   const res = await fetch("/api/admin/organisations").then((r) => (r.ok ? r.json() : null)).catch(() => null);
   if (currentView !== "admin") return;
   const orgs = res && Array.isArray(res.organisations) ? res.organisations : [];
@@ -9276,7 +9489,7 @@ async function renderAdminView() {
         <button type="button" class="dl-btn-inline" data-adm-act="open" data-id="${escapeHtml(o.id)}">Work in this</button>
       </div>
     </div>
-    ${adminOpenOrg === o.id ? `<div data-adm-people="${escapeHtml(o.id)}" style="margin:0 0 10px 14px"><div class="tree-empty" style="padding:12px 4px">Loading…</div></div>` : ""}`;
+    ${adminOpenOrg === o.id ? `<div data-adm-people="${escapeHtml(o.id)}" style="margin:0 0 10px 14px"><div class="tree-empty" style="padding:12px 4px">${loadingHtml()}</div></div>` : ""}`;
   body.innerHTML = `
     <div data-dash="head">
       <div>
@@ -9615,7 +9828,7 @@ async function renderTeamView() {
 
   if (isAdmin) void renderLlmConfigPanel(orgId);
 
-  rows.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">Loading…</div>`;
+  rows.innerHTML = `<div class="tree-empty" style="padding:24px 16px;text-align:center">${loadingHtml()}</div>`;
 
   const res = await fetch(`/api/organisations/${encodeURIComponent(orgId)}/members`)
     .then((r) => r.json())

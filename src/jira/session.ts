@@ -30,7 +30,7 @@ export interface JiraSite {
   id: string;
   name: string;
   url: string;
-  /** True when this sign-in carries `write:jira-work` for the site ("Create Jira bug", D-85). */
+  /** True when this sign-in carries `write:jira-work` for the site ("Create Jira bug", D-86). */
   canWrite?: boolean;
 }
 

@@ -2,14 +2,14 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 
 /**
- * D-85 — the "Create Jira bug" panel in public/app.js keeps the platform's UI rules (CLAUDE.md rules
+ * D-86 — the "Create Jira bug" panel in public/app.js keeps the platform's UI rules (CLAUDE.md rules
  * 3 and 4), the same guard appJsJira.test.ts keeps for the Jira row.
  */
 
 const APP = readFileSync("public/app.js", "utf8");
 const CSS = readFileSync("public/style.css", "utf8");
 
-const START = '// "Create Jira bug" (D-85)';
+const START = '// "Create Jira bug" (D-86)';
 const END = "function paintJiraBugPanel";
 const s = APP.indexOf(START);
 const e = APP.indexOf("\n}\n", APP.indexOf(END)); // to the end of the painter

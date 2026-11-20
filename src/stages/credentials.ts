@@ -270,6 +270,14 @@ const KEY_VALUE_SEP = String.raw`\s*[:=]\s*|\s+is\s+|\s+[-–—]\s+`;
  * prose almost never carries either marker. First occurrence wins ties, so behaviour is
  * unchanged whenever only one candidate exists.
  */
+/** Words a sentence about a login form puts right after "email"/"password" — never a credential (TD-200). */
+const PROSE_WORDS = new Set([
+  "and", "or", "the", "a", "an", "with", "without", "is", "are", "to", "in", "on", "of", "for", "as",
+  "empty", "blank", "missing", "required", "invalid", "incorrect", "wrong", "valid", "correct",
+  "field", "fields", "box", "boxes", "input", "inputs", "masked", "hidden", "visible", "shown",
+  "error", "errors", "reset", "recovery", "should", "must", "will", "then", "check", "page",
+]);
+
 function extractValueAfter(prompt: string, keyPattern: string): string | undefined {
   const re = new RegExp(
     `${keyPattern}(?:(${KEY_VALUE_SEP})|\\s+)(?:["'\`]([^"'\`]+)["'\`]|(\\S+))`,
@@ -282,6 +290,16 @@ function extractValueAfter(prompt: string, keyPattern: string): string | undefin
     const [, sep, quoted, bare] = m;
     const val = (quoted ?? bare)?.trim()?.replace(/[,.;:]+$/, "");
     if (!val) continue;
+    // TD-200: a sentence ABOUT the login form is not a credential. "Click Sign In with Email and
+    // Password empty" gave username "and" / password "empty" (run 2026-11-17T16-50-55-609Z-091dc3fe):
+    // the run skipped the credential prompt, signed in with them, and every case after the login
+    // failed. An unquoted value that is an ordinary word of such a sentence never counts; one with
+    // NO separator (just a space) counts only when it is shaped like a credential (@, a digit, _ . -).
+    // A rejected value leaves the prompt without credentials, so the run ASKS — the safe failure.
+    if (quoted === undefined) {
+      if (PROSE_WORDS.has(val.toLowerCase())) continue;
+      if (sep === undefined && !/[@\d_.\-]/.test(val)) continue;
+    }
     const score = (quoted !== undefined ? 2 : 0) + (sep !== undefined ? 1 : 0);
     if (score > bestScore) { best = val; bestScore = score; }
   }

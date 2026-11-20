@@ -149,7 +149,8 @@ describe("the two callers keep their distinct event shapes", () => {
 
   it("the replay actually passes creds through to runReplay", () => {
     // The whole bug was that it did not.
-    expect(SRC).toMatch(/runReplay\(\{ runId, cases, label: runLabel, creds \}/);
+    // `creds` must be in the call; later optional fields (suiteId) may follow it.
+    expect(SRC).toMatch(/runReplay\(\{ runId, cases, label: runLabel, creds[ ,}]/);
   });
 });
 

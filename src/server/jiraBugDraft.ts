@@ -4,7 +4,7 @@ import { formatIrStep } from "../stages/stepText.js";
 import { irFileForRunCase } from "./library.js";
 
 /**
- * "Create Jira bug" (D-85): the prefilled form for one case of one run, and the record of the
+ * "Create Jira bug" (D-86): the prefilled form for one case of one run, and the record of the
  * issues created from it.
  *
  * READ FROM THE RUN'S OWN FILES, AFTER THEY WERE SCRUBBED. Every file read here was written by the

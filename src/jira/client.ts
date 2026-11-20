@@ -30,7 +30,7 @@ export function jiraEnabled(): boolean {
 }
 
 /**
- * "Create Jira bug" (D-85). Needs Jira itself on; off by default. Off, the sign-in asks for exactly
+ * "Create Jira bug" (D-86). Needs Jira itself on; off by default. Off, the sign-in asks for exactly
  * the read-only scope it always did, so nobody is asked to consent to writing.
  */
 export function jiraBugsEnabled(): boolean {
@@ -148,7 +148,7 @@ async function readableSites(token: string): Promise<JiraSite[]> {
     .filter((r) => r && typeof r.id === "string" && Array.isArray(r.scopes) && r.scopes.includes("read:jira-work"))
     .map((r) => ({
       id: r.id as string, name: String(r.name ?? ""), url: String(r.url ?? ""),
-      // Whether this sign-in may create issues here (D-85). A sign-in made before write was asked
+      // Whether this sign-in may create issues here (D-86). A sign-in made before write was asked
       // for does not carry it, and the bug form then asks the user to reconnect.
       ...(r.scopes.includes(JIRA_WRITE_SCOPE) ? { canWrite: true } : {}),
     }));

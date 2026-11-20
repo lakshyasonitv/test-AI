@@ -12,7 +12,7 @@ import { buildBugDraft, bugScreenshotFile, filedBugs, recordFiledBug } from "../
 import { _resetJiraSessions } from "../src/jira/session.js";
 
 /**
- * D-85 — "Create Jira bug". Atlassian is faked by stubbing global fetch: no network, no cost. The
+ * D-86 — "Create Jira bug". Atlassian is faked by stubbing global fetch: no network, no cost. The
  * URLs, bodies and reply shapes asserted here are the ones in the REST v3 OpenAPI spec.
  */
 

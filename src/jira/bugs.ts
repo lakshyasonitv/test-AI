@@ -5,7 +5,7 @@ import { call, JIRA_API_BASE, JiraError } from "./client.js";
 import type { JiraConnection, JiraSite } from "./session.js";
 
 /**
- * "Create Jira bug" (D-85): from a failed case, a person fills a form and Testbench creates the
+ * "Create Jira bug" (D-86): from a failed case, a person fills a form and Testbench creates the
  * issue in the Jira project and issue type they chose, attaches the screenshot, and links the story.
  *
  * Every Atlassian URL, body and field rule here was read from the REST v3 OpenAPI spec

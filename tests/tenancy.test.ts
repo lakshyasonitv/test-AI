@@ -189,12 +189,13 @@ const RUN_SCOPED_ROUTES: { name: string; method: "get" | "post" | "delete"; path
   // Generated on demand from another run's artifacts, so it is as run-scoped as the artifacts are.
   { name: "GET  run report.html",       method: "get",    path: `/api/runs/${RUN_A}/report.html` },
   { name: "GET  run report.pdf",        method: "get",    path: `/api/runs/${RUN_A}/report.pdf` },
+  { name: "GET  run report.xlsx",       method: "get",    path: `/api/runs/${RUN_A}/report.xlsx` },
   { name: "DEL  run",                   method: "delete", path: `/api/runs/${RUN_A}` },
   // Step 5.2's bridge from a run into the library. Doubly scoped — the SOURCE run must be
   // reachable and the DESTINATION project must be too — so it belongs in this table like any
   // other run-scoped route.
   { name: "POST save case",             method: "post",   path: `/api/runs/${RUN_A}/cases/case-0/save`, body: { projectId: PROJ_A1 } },
-  // D-85: the bug draft is built from the run's artifacts, and the create files an issue from them.
+  // D-86: the bug draft is built from the run's artifacts, and the create files an issue from them.
   { name: "GET  jira bug draft",        method: "get",    path: `/api/runs/${RUN_A}/cases/case-0/jira-bug` },
   { name: "POST create jira bug",       method: "post",   path: `/api/runs/${RUN_A}/cases/case-0/jira-bug`, body: { projectId: "10000", issueTypeId: "10004", fields: {} } },
   { name: "GET  artifact",              method: "get",    path: `/runs/${RUN_A}/00-input.json` },

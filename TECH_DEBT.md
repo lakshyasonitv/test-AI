@@ -6465,11 +6465,184 @@ Only an explicit `projectId` in the body is checked (`assertProjectVisible`). No
 this project"), and do not create a new project from a run — "ask an admin to add a project for this site". A
 tester with no projects then cannot start runs, which is the stated rule.
 
+### TD-194. A link to a page the crawl never reached left the page trail on the page it left; the steps after it grounded on that page's chrome — High / Accidental — **Fixed behind SCREEN_MODE_ALL_SITES (D-85)**
+
+**Found 2026-11-17, run `2026-11-17T07-29-08-639Z-b4c58d1e` (eventrix.tech, "create a technical conference
+event and publish it").** The test signed in, clicked "Create Event" and reached the right form
+(`/events/create/new?template=Technical%20Conferences`, step 1 of 6), then failed: it typed the title into
+"Filter by title, topic, or city..." — the search box of `/home`, a page it had already left. Three causes, each
+confirmed against the run's own artifacts:
+
+1. **The crawl never saw the form.** `MAX_DISCOVERY_PAGES` defaults to 5 and `/events/create` was the 6th link
+   from `/home` (it is in the home page's `internalUrls`). Fixed by configuration (12 locally).
+2. **`trackPages` kept the flow on the old page.** A link whose href resolves to a page NOT in the model did
+   `currentPage = findPageByUrl(...) ?? currentPage` — parked on `/home`, not marked unknown — so the template
+   click grounded on `/home`'s "Conference" filter chip and the title on its search box. The post-click reveal
+   check meant to catch "collides with page chrome" (`postClickRevealIndex`) runs only on a fully grounded IR;
+   this one was truncated at the date step and shipped as the best partial, so it never ran.
+3. **The live replay that should have captured the form failed silently.** `extendAppModel` threw and only
+   `[ir] calling extendAppModel...` reached the log; `lastErr` was never printed.
+
+**Fix:** D-85. `SCREEN_MODE_ALL_SITES=true` (default off) puts every run in screen mode: a link to an unmodelled
+page leaves the trail unknown, a link click is a screen boundary, and each screen (including the 6 screens of a
+same-URL wizard) is captured live before its steps are grounded. The live-extend failure is now logged (always).
+The site cache key gains the page budget when it is not 5, so raising `MAX_DISCOVERY_PAGES` takes effect at once.
+`tests/screenModeAllSites.test.ts` (8) pins both modes, including the flag-off bug.
+
+**Found on the rerun (`2026-11-17T07-52-12-423Z-75a6f008`), also fixed behind the flag:** the screen-mode extra
+attempt (TD-150) checks progress at the START of the last attempt, so it credited the attempt before it and never
+the last one; and the last attempt returned its partial before the loop condition ran. That run's 4th attempt went
+5 -> 9 grounded steps, reached the create form and was told the title box's real name — with no attempt left. Now a
+last attempt that got further earns one more (same `SCREEN_EXTRA_ATTEMPTS` bound). Test in
+`tests/repeatRejectionProgress.test.ts` (real browser, LLM scripted).
+
+**Still open:** with the flag off the trail bug stands for every non-Salesforce site. Screen mode was built and
+tuned on Salesforce (D-52); its first live run on an ordinary site is the eventrix rerun of 2026-11-17 — see the
+journal for the result. A worked prompt for this site: `docs/guides/prompts/eventrix-create-event.md`.
+
+### TD-195. A navigation landing mid-`count()` ended a working sign-in, and the crawl went on anonymously — Medium / Accidental — **Fixed**
+
+**Found 2026-11-17, run `2026-11-17T07-52-12-423Z-75a6f008` (eventrix.tech).** The same account had signed in
+twice that morning. This time discovery logged `login attempt failed: locator.count: Execution context was
+destroyed, most likely because of a navigation — crawling anonymously`: Playwright's `locator.count()` throws when
+the page navigates while it runs, and the post-submit redirect is exactly that moment. `hasLoginGate` already
+guarded its `evaluate` against this; the `count()` before it, and the one at the top of `loginOnPage`, did not. The
+crawl went on signed out, so the IR compile had no recorded login steps and spent three of its four attempts
+getting past sign-in.
+
+**Fix:** `countPasswordBoxes` waits for the new document and counts again (at most 3 times) on that error only;
+every other error rethrows. Both call sites use it. Not flagged: it fixes the existing sign-in, it adds nothing.
+`tests/loginNavigationRace.test.ts` (4); the real-browser sign-in suites (authCrawl, loginGatePolling,
+twoScreenLogin, salesforceOrgLogin: 56) pass.
+
+### TD-196. The static extractor names a label-wrapped input after the heading above it — Medium / Accidental — **Open**
+
+**Found 2026-11-17 while testing D-85.** With `DISCOVERY_LIVE_DOM` off (the default for every non-Salesforce run),
+`<h2>Budget</h2><label>Min Budget <input></label>` is extracted as `textbox "Budget"`, and screen 1's
+`<label>Full Name <input></label>` as `textbox "Your details"` — the preceding heading, not the label that wraps the
+input. Checked directly with `extractDomModelFromPage` on that fixture. Salesforce runs always use the live walker
+(D-51), which names them correctly, so this never showed there. Likely cause: the element pass (`domExtract.ts`
+around the `nearby` / `proximityLabel` call) reaches proximity before the wrapping `<label>`; `extractForms` checks
+`closest("label")` first. Not fixed here — it changes element names for every ordinary site, so it needs its own
+change and its own cache-key part.
+
+### TD-197. Each IR attempt rewrites the sign-in from scratch, and most attempts get it wrong — High / Accidental — **Open**
+
+**Found 2026-11-17, run `2026-11-17T08-17-02-506Z-54df562f` (eventrix.tech; the new `[ir] steps:` log line).**
+Discovery signed in and recorded the exact steps (`auth.loginSteps`), yet every one of six attempts wrote its own:
+`navigate /` then fill "Email Address" on the landing page (no such field there), click button "Sign In" (the page's
+is "Sign In to Dashboard"), then `assert button "Sign In" hidden` — a check against a screen the flow has already
+left. Five of six attempts died in the first six steps; the best reached step 8. This is also why run
+`08-07-06` "replayed sign-in onto /": its attempts started with `navigate /`.
+
+**Direction:** when discovery recorded a working sign-in, compile it in deterministically (the recorded steps as
+the IR's first steps) and let the model write only what follows — the D-27 / central-rule pattern: the model
+proposes, code fixes what code already knows.
+
+### TD-198. The grounding replay clicks by the exact full accessible name; the generated spec does not — Medium / Accidental — **Open**
+
+**Same run, attempt 3.** The screen capture after the template click failed: `locator.click: Timeout 30000ms` on
+`getByRole('button', { name: 'ConferenceTechnical ConferencesTracks, keynote speakers, … Configure TemplateUse',
+exact: true })`. The generated spec clicked the same card without trouble in runs `07-52-12` and `08-17-02`. A card
+whose accessible name is all of its text (badges, counts like "+1") is brittle under `exact: true`. Another face of
+TD-07 (the replay and the spec resolve targets differently).
+
+### TD-199. A run's result showed the PREVIOUS run's video — Medium / Accidental — **Fixed**
+
+**Reported 2026-11-17 by the user ("when a new run [starts] the older video is also shown").** The single-result
+`<video id="resultVideo">` is reused across runs; `showSingleTestResult` swapped its `<source>` children but never
+called `load()`, and a media element does not re-select its source on its own. Checked live: on run `07-52-12`'s
+page the source named `07-52-12` while `currentSrc` was `08-17-02`, the run opened before it. Same on a new run
+finishing in the tab that showed an older one. **Fix:** `load()` after setting or clearing the source, and the
+poster reset; `hideSingleTestResult` unloads too. Verified live across three runs; `tests/resultVideoReload.test.ts`.
+Suite result cards were not affected (each card renders a new `<video>`).
+
+### TD-200. A prompt that describes the login form was read as credentials, and the login box never appeared — High / Accidental — **Fixed**
+
+**Found 2026-11-17 (LearnVibes demo prep, runs `16-50-55-609Z-091dc3fe` and `16-56-09-186Z-a6a279b5`).** The user
+noticed the run never asked for the login. `extractCredentialsFromPrompt` takes the word after "email"/"password"
+even with only a SPACE between them, so `Click "Sign In" with Email and Password empty` gave username **"and"** and
+password **"empty"** (checked by calling it on the run's own prompt). With credentials "found", discovery skipped the
+credential prompt, signed in with them, failed (`login-failed`), crawled only the login page, and every signed-in
+case was impossible. The same shape on "Email is required and Password is required" gave "required"/"required".
+
+**Fix:** an unquoted value that is an ordinary word of such a sentence (`PROSE_WORDS`) never counts, and a value with
+no separator at all counts only when it is shaped like a credential (`@`, a digit, `_ . -`). A rejected value leaves
+the run without prompt credentials, so it asks — the safe failure. Plain real usage still works ("username
+standard_user and password secret_sauce", "email a@b.co password Pa55word", every existing case).
+`tests/credentials.test.ts` (+2). Same family as TD-01: a regex over prose is not deterministic.
+
+### TD-201. A generated case typed an INVENTED login instead of the stored one — High / Accidental — **Open**
+
+**Found 2026-11-17, LearnVibes run `2026-11-17T17-20-59-112Z-a46d1785` case-1 ("Navigation menu links open their
+pages").** The run had real credentials, yet the case's own login filled `learner@example.com` and an invented
+password as LITERAL values (no `${env:...}` reference), and LearnVibes answered "Invalid login credentials". The other
+cases of the same run used the references correctly. `applyCredentials` / the recorded-login swap did not recognise
+this case's login fills (`credentialKindForTarget` on the placeholder-named boxes "you@thinkvibes.com" /
+"*********" is the likely gap). Worked around by hand (the saved case now uses the references). Fix direction: a fill
+into the box discovery recorded as the login identifier/password always gets the reference, whatever value the model
+wrote — the same structural rule as the login prefix.
+
+### TD-202. A saved case's "Latest result" never showed a screenshot after a replay — Medium / Accidental — **Fixed 2026-11-18**
+
+**Found 2026-11-18 on LearnVibes saved cases.** Two independent causes. (1) `paintLatestResult` (`public/app.js`) read
+`screenshotUrl` from the case's `cases/case-N/05-result.json`, but in a replay that file is the executor's raw result
+and never carries it — `suiteRunner.ts` resolves the screenshot into the run's `07-suite-summary.json`. So every
+replayed case showed "no screenshot yet" even with a PNG on disk. Fixed: fall back to the summary row whose `caseId`
+is `case-<caseIndex>`. (2) Local-only: with `DB_ENABLED=false` no `runs` / `run_cases` rows are written, so
+`/api/cases/:id/runs` is empty and there is no run to read from at all. That is configuration, not code — a local
+server that should show case history needs `DB_ENABLED=true` (and then writes its runs into the shared database,
+whose artifacts exist only on that machine). Verified by a real replay on a temporary local server: history row
+written, the image renders.
+
+**TD-202 follow-up (2026-11-18):** the case page's "Runs & versions" tab now shows each run's final screenshot
+under its row (click for full size). Same lookup as "Latest result" (`finalShotForRun` in `app.js`: case
+`05-result.json`, then the run's `07-suite-summary.json`). Read from artifacts the run already wrote; nothing new
+is stored, and a run whose files were deleted just shows no image.
+The suite page does the same: each case row shows the final screenshot of that case's latest run
+(`/api/cases/:id/runs?limit=1` + `finalShotForRun`, now top-level in `app.js` and shared by both pages).
+Runs & versions also offers each run's **Report (PDF)** (the existing `/api/runs/:id/report.pdf`) and labels the run
+with the case version it executed. Runs do not record the version, so it is derived: the newest version whose
+`savedAt` is at or before the run's start. The link appears only while the run's files exist (HEAD on its
+`05-result.json`). For a suite run the PDF is the whole run's report, not this case alone.
+The suite page has a **Previous runs** list with each run's **Report (PDF)**. A replay started from a suite now writes
+`suiteId` into its own `00-input.json` (optional field, nothing else reads it). Runs from before that have no
+`suiteId`, so they are listed only when they ran exactly the suite's current cases; full runs from before the suite
+grew, and hand-picked batches, are not listed.
+Reports, 2026-11-18: the PDF summary's test names link to each test's section (in-page `#case-N`, still no outside
+resource); `report.pdf?view=1` (optional) answers `inline` so Report (PDF) opens in a tab — without it the response is
+unchanged. New `GET /api/runs/:runId/report.xlsx` (`src/stages/xlsxReport.ts`): Summary + Test Cases sheets from the
+same `reportRows()` the PDF wording uses; written as a zip by hand (no new dependency). Shown as Report (Excel) next to
+Report (PDF) on the suite page's Previous runs and the case page's Runs & versions only. Not behind a flag (read-only).
+Excel "Test Case ID" column: each row's saved-case id, as a HYPERLINK to `<origin>/#/case/<id>` (origin from the
+request, `x-forwarded-proto` aware); a failed test's id is filled red. A replay now writes `caseIds` (run order) into its
+00-input.json; older runs fall back to their `run_cases` rows (DB, when enabled). No id known → the cell is empty.
+Excel "Test Cases" sheet is now in QA format: Test Case ID (TC_<AREA>_<NNN>, AREA from the title prefix or feature —
+positional, so it can change if cases are reordered), Test Scenario / Title, Preconditions, Test Steps (actions only, from
+`formatIrStep`), Expected Result (the checks), Actual Result, Status (PASS/FAIL/BLOCKED/NOT EXECUTED), Linked Bug ID
+(blank, FAIL rows marked), Testbench Link (permanent id), Duration. Steps never show a password or a literal login:
+a fill into a password box reads "(password hidden)", the identifier fill before it "(login email hidden)", and
+`${env:...}` references "(saved username/password/value)".
+
+### TD-203. Production lost every run's screenshots on each deploy and scale-to-zero — High / Infrastructure — **Mitigated 2026-11-18**
+
+The Azure container app has no volume at `/app/runs` (project-brain 04-tasks, open since 2026-11-03), so a new
+revision or an idle shutdown deleted all run files: screenshots, and the PDF/Excel reports built from them. Seen on
+2026-11-18 right after a push. **Mitigation:** `src/artifactStore.ts` uploads each finished run's screenshots and
+small report inputs (stage JSON, events.ndjson, generated spec; not video.webm or trace.zip) to a private Supabase
+Storage bucket, and `ensureRunLocal` downloads a run back into `runs/<id>/` when the /runs file route, the run state
+route or a report route needs a file that is not on disk — always after that route's own access check. Runs from
+before this shipped were never uploaded and stay lost. **Deviation:** on by default where `DB_ENABLED` is on
+(`ARTIFACTS_TO_SUPABASE=false` disables) — the user chose this over the flag-default-off rule so production keeps
+its screenshots without an Azure setting change. **Still open:** videos and traces are not kept; storage grows
+with every run (no retention yet; free plan is 1 GB); mounting Azure Files at /app/runs remains the full fix.
+The History list still marks a run "artifacts no longer available" until one of its files is opened.
+
 ---
 
-### TD-194. "Create Jira bug" leaves some fields to Jira and keeps its record in runs/ — Low / Deliberate — **Open**
+### TD-204. "Create Jira bug" leaves some fields to Jira and keeps its record in runs/ — Low / Deliberate — **Open**
 
-D-85, version one. (1) Person fields (assignee, a user picker) and unusual field types cannot be filled from the
+D-86, version one. (1) Person fields (assignee, a user picker) and unusual field types cannot be filled from the
 form; a project that REQUIRES one cannot be filed from Testbench at all (the form says so). (2) The "already
 reported" record lives in `runs/<id>/cases/<case>/jira-bugs.json`, so it is lost wherever `runs/` is not on
 permanent storage (the Azure note of 2026-11-03), and a second issue can then be filed for the same case. (3) Never

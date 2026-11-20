@@ -110,7 +110,7 @@ export function adfToText(doc: unknown): string {
 }
 
 /**
- * Plain text -> ADF, for writing a description into Jira ("Create Jira bug", D-85).
+ * Plain text -> ADF, for writing a description into Jira ("Create Jira bug", D-86).
  *
  * The other direction of the function above, kept as simple: REST v3 only takes ADF for
  * `description`, `environment` and multi-line custom fields (Atlassian's create-issue page). A blank

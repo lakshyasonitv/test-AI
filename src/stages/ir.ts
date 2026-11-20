@@ -223,6 +223,23 @@ export interface PageTrail {
  * "not present in the application model" while sitting in the model.
  */
 /**
+ * SCREEN_MODE_ALL_SITES (D-85, default off): screen mode (D-52) for every run, not only Salesforce.
+ * On, a click on a link to a page discovery never modelled leaves the page trail UNKNOWN instead of
+ * parked on the page the link was on, and a link click is a screen boundary like a button click, so
+ * the screen it opens is captured live before the steps after it are grounded. Off, every non-
+ * Salesforce run takes exactly the path it took before.
+ *
+ * Why (run 2026-11-17T07-29-08-639Z-b4c58d1e, eventrix.tech): the sidebar link "Create Event" goes to
+ * /events/create, which the 5-page crawl never reached. The trail stayed on /home, so "choose the
+ * Technical Conference template" grounded on /home's "Conference" filter chip and "type the title"
+ * on /home's "Filter by title, topic, or city..." search box — the test filled the wrong control on a
+ * page it had already left, and the 6-screen create wizard was never captured.
+ */
+export function screenModeAllSites(): boolean {
+  return process.env.SCREEN_MODE_ALL_SITES === "true";
+}
+
+/**
  * Where a navigate step goes, for the page trail. D-63: the frontdoor login carries an env reference
  * (`${env:SF_FRONTDOOR_URL}`), not a URL; it lands where discovery's own frontdoor sign-in landed
  * (`auth.url`). Every other URL is returned unchanged.
@@ -268,8 +285,15 @@ export function trackPages(ir: IR, appModel: AppModel): PageTrail {
         const resolved = resolveHref(currentPage.url, href);
         if (resolved) {
           lastLinkHref = resolved;
-          currentPage = findPageByUrl(appModel, resolved) ?? currentPage;
-          stale = false;
+          const dest = findPageByUrl(appModel, resolved);
+          if (!dest && screenModeAllSites() && pageKey(resolved) !== pageKey(currentPage.url)) {
+            // D-85: the link leaves for a page the model has never seen. The flow is NOT on the old
+            // page any more; saying so stops a step after it grounding on the old page's chrome.
+            stale = true;
+          } else {
+            currentPage = dest ?? currentPage;
+            stale = false;
+          }
         }
       } else {
         // ponytail: anything else clickable might have navigated. Say "unknown" rather than
@@ -884,7 +908,9 @@ export function screenBoundaries(ir: IR): number[] {
   for (let i = 1; i < ir.steps.length; i++) {
     const prev = ir.steps[i - 1];
     if (prev.action !== "click" && prev.action !== "press") continue;
-    if (norm(prev.target?.role ?? "") === "link") continue;
+    // D-85: with SCREEN_MODE_ALL_SITES a link click is a boundary too — its destination may be a
+    // page discovery never reached (a 5-page crawl), and only a capture shows what is there.
+    if (norm(prev.target?.role ?? "") === "link" && !screenModeAllSites()) continue;
     let j = i;
     while (j < ir.steps.length && ir.steps[j].action === "wait") j++;
     const next = ir.steps[j];
@@ -2402,6 +2428,10 @@ Example — handling duplicate selectors with nth:
     ...(currentRunTargetApp() === "salesforce" ? ["ir-values:1", `sf-micro:${SALESFORCE_MICRO_ELEMENTS}`] : []),
     // TD-162: an IR cached without the guard can end on the page's own error. Only guarded cases' keys change.
     ...(refuseErrors ? ["hollow-guards:1"] : []),
+    // D-85: screen mode grounds differently (and every screen-mode run may take one more attempt when
+    // its last attempt got further), so an IR compiled without the flag must not be served with it on.
+    // Flag off, every key is unchanged.
+    ...(screenModeAllSites() ? ["screens-all:1"] : []),
     // Session 103: a Salesforce case ending on the Save button alone gains the outcome assertion.
     // 4: back to a record the case created, and field value checks on the record page (Phase A).
     // 5: the Details click on a record page captured without tabs; a Dynamic Forms rule's own field.
@@ -2706,7 +2736,7 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   // took before. A Lightning form changes the DOM without changing the URL, so each screen the
   // flow reaches is captured and each step grounded against its own screen. Separate budget: one
   // capture per screen boundary is the expected cost, not a sign of a flow failing to converge.
-  const screenMode = currentRunTargetApp() === "salesforce";
+  const screenMode = currentRunTargetApp() === "salesforce" || screenModeAllSites();
   const MAX_SCREEN_CAPTURES = Number(process.env.MAX_SCREEN_CAPTURES ?? 16);
   let screenCaptures = 0;
   /** Phase 2: what this compile's captures add to the screen map (also `runs/<id>/09-screen-map.json`). */
@@ -2866,7 +2896,26 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
   const SCREEN_EXTRA_ATTEMPTS = 3;
   let attemptCap = MAX_ATTEMPTS;
   const reachAt: number[] = [];
-  for (let attempt = 0; attempt < attemptCap; attempt++) {
+  /**
+   * D-85 (SCREEN_MODE_ALL_SITES only): the check below runs at the START of the last attempt, so it
+   * credits the attempt before it — never the last attempt itself. When the LAST attempt is the one
+   * that got further, the loop simply ended. Run 2026-11-17T07-52-12-423Z-75a6f008 (eventrix.tech):
+   * attempt 4 went 5 -> 9 grounded steps, reached the create form and was told the title box's real
+   * name, and there was no attempt left to use it. Called by the loop condition once the cap is
+   * reached; same bound (SCREEN_EXTRA_ATTEMPTS), same "only while it gets further" rule.
+   */
+  /** True while `attempt` is the last one allowed and got further than every attempt before it. */
+  const lastAttemptEarnsAnother = (attempt: number): boolean =>
+    screenMode && screenModeAllSites() && attempt > 0 && attempt + 1 === attemptCap
+    && attemptCap < MAX_ATTEMPTS + SCREEN_EXTRA_ATTEMPTS && (!budget || budget.hasBudget)
+    && (bestPartial?.steps.length ?? 0) > (reachAt[attempt] ?? 0);
+  const extendAfterLastAttempt = (attempt: number): boolean => {
+    if (attempt === 0 || !lastAttemptEarnsAnother(attempt - 1)) return false;
+    attemptCap++;
+    console.log(`[ir] the last attempt got further (${reachAt[attempt - 1] ?? 0} -> ${bestPartial?.steps.length ?? 0} grounded steps): one more attempt (${attemptCap})`);
+    return true;
+  };
+  for (let attempt = 0; attempt < attemptCap || extendAfterLastAttempt(attempt); attempt++) {
     reachAt[attempt] = bestPartial?.steps.length ?? 0;
     if (screenMode && attempt === attemptCap - 1 && attemptCap < MAX_ATTEMPTS + SCREEN_EXTRA_ATTEMPTS
       && attempt > 0 && reachAt[attempt] > reachAt[attempt - 1]) {
@@ -2909,6 +2958,14 @@ Return IR JSON: { "meta": {feature,title,priority,sourcePrompt,baseUrl}, "steps"
       console.log("[ir] gemini returned, length:", content.length);
       parsed = IR.safeParse(normalizeIR(parseJson(content)));
       console.log("[ir] parsed:", parsed.success ? "valid" : "INVALID");
+      // The attempt's steps, one line, action + target only (credentials are ${env:...} references,
+      // values are not printed). Without it a log shows WHERE an attempt failed but never WHAT it
+      // tried — run 2026-11-17T08-07-06-463Z-c41cebba: attempts 2-4 landed on "/" instead of "/home"
+      // after sign-in and the log could not say which steps differed from attempt 1's.
+      if (parsed.success) {
+        const tgt = (s: Step) => s.target?.url ?? (s.target?.name ? `${s.target.role ?? ""} "${s.target.name.slice(0, 40)}"` : s.target?.text ?? s.value ?? "");
+        console.log("[ir] steps:", parsed.data.steps.map((s) => `${s.id} ${s.action} ${tgt(s)}`.trim()).join(" | "));
+      }
     } catch (err: any) {
       budget?.record("ir", undefined, providerFor("main"));
       lastErr = err?.message ?? String(err);
@@ -3220,6 +3277,9 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
           }
         } else {
           lastErr = `could not reach the state needed for step ${parsed.data.steps[ungrounded.index]?.id}: ${err?.message ?? err}`;
+          // Logged: this failure used to leave only "calling extendAppModel..." in the server log,
+          // with no reason anywhere (run 2026-11-17T07-29-08-639Z-b4c58d1e).
+          console.log("[ir] live-extend failed:", lastErr.split("\n")[0]);
           break;
         }
       }
@@ -3542,7 +3602,9 @@ ${testCase.expected ?? ""}`)) console.log(`[ir] ${r}`);
       }
     }
 
-    if (prefix.length && attempt < attemptCap - 1 && !repeated) {
+    // D-85: on the last attempt, `continue` too when that attempt got further — the loop condition
+    // (extendAfterLastAttempt) then grants one more instead of this attempt shipping its partial.
+    if (prefix.length && (attempt < attemptCap - 1 || lastAttemptEarnsAnother(attempt)) && !repeated) {
       console.log(`[ir] grounding rejected step ("${ungrounded.message}") — retrying with feedback (attempt ${attempt + 1}/${attemptCap})`);
       continue;
     }

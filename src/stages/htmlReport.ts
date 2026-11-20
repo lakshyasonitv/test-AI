@@ -5,6 +5,7 @@ import type { IR, Step } from "../schema/ir.js";
 import { extractFailureDetail } from "./executor.js";
 import { resolveRunTokens, type RunTokenContext } from "../text.js";
 import { chromiumLaunchOptions } from "../browserLaunch.js";
+import { formatIrStep } from "./stepText.js";
 
 /**
  * The test report for a WHOLE RUN, one file, as HTML or PDF (renderReportPdf prints the same page).
@@ -45,6 +46,8 @@ export interface ApiCheckRow { object: string; field: string; expected: string; 
 
 export interface ReportCase {
   caseId: string;
+  /** The saved case's library id (test_cases.id), when the run was a replay that recorded it. */
+  savedCaseId?: string;
   title: string;
   /** From the suite summary: passed | failed | blocked | truncated | truncated_no_assertion. */
   status: string;
@@ -116,8 +119,11 @@ export function loadRunReport(runId: string, runsRoot = "runs"): RunReportInput 
     let artifactFiles: string[] = [];
     const artifactsDir = path.join(dir, "artifacts");
     try { artifactFiles = readdirSync(artifactsDir); } catch { /* cleared or never written */ }
+    const idx = /^case-(\d+)$/.exec(String(e.caseId))?.[1];
+    const savedCaseId = Array.isArray(input?.caseIds) && idx !== undefined ? input.caseIds[Number(idx)] : undefined;
     return {
-      caseId: e.caseId, title: e.title ?? e.caseId, status: e.status ?? "failed",
+      caseId: e.caseId, ...(typeof savedCaseId === "string" ? { savedCaseId } : {}),
+      title: e.title ?? e.caseId, status: e.status ?? "failed",
       whyItMatters: e.whyItMatters, expected: e.expected, blockedBy: e.blockedBy,
       saved: rd("05-result.json") ?? {}, ir: irRaw?.ir ?? irRaw ?? null, diagnosis: rd("06-diagnosis.json"),
       apiChecks: apiByCase.get(e.caseId), artifactsDir, artifactFiles,
@@ -451,7 +457,9 @@ export function buildRunReportHtml(input: RunReportInput, opts: { everyStepScree
     : total === 1 ? "The test passed." : `All ${total} tests passed.`;
 
   const summary = total ? `<table class="sum"><thead><tr><th>Test</th><th>Result</th><th>In one line</th></tr></thead><tbody>${
-    input.cases.map((c, i) => `<tr><td>${esc(c.title)}</td><td><span class="pill o-${facts[i].outcome}">${OUTCOME_WORD[facts[i].outcome]}</span></td><td>${esc(oneLine(c, facts[i]))}</td></tr>`).join("")
+    // The title links to the test's own section below (`id` = caseId), so the PDF's summary is a
+    // clickable table of contents; colour and size stay the table's own.
+    input.cases.map((c, i) => `<tr><td><a href="#${esc(c.caseId)}" style="color:inherit">${esc(c.title)}</a></td><td><span class="pill o-${facts[i].outcome}">${OUTCOME_WORD[facts[i].outcome]}</span></td><td>${esc(oneLine(c, facts[i]))}</td></tr>`).join("")
   }</tbody></table>` : `<p class="note">This run recorded no cases.</p>`;
 
   return `<!doctype html>
@@ -488,6 +496,89 @@ export function buildRunReportHtml(input: RunReportInput, opts: { everyStepScree
   </div>
   <footer>Built from this run's own records, without AI. Screenshots are embedded, so this file can be sent as it is.</footer>
 </div></body></html>`;
+}
+
+/** One test as plain values, for the Excel report. Same wording as the PDF (same helpers). */
+export interface ReportRow {
+  /** The saved case's library id, when known. */
+  savedCaseId?: string;
+  title: string;
+  status: "Passed" | "Failed" | "Incomplete";
+  /** The suite summary's own word: passed | failed | blocked | truncated | ... */
+  rawStatus: string;
+  /** IR meta.feature, when the case has one. */
+  feature?: string;
+  /** Every planned action (not checks, not waits), in plain words, including ones never reached. */
+  actions: string[];
+  /** Every planned check, in plain words. */
+  expected: string[];
+  checks: { sentence: string; state: "held" | "failed" | "not-reached" }[];
+  /** The address the test starts on, and whether it signs in with a stored login. */
+  startUrl?: string;
+  usesLogin: boolean;
+  failedAt: string;
+  error: string;
+  summary: string;
+  durationMs: number;
+}
+
+/** A credential, or anything typed into a password box, never appears in a report row. */
+const PASSWORD_BOX = /pass|\*{3,}/i;
+const intoPasswordBox = (s: Step | undefined): boolean =>
+  s?.action === "fill" && PASSWORD_BOX.test(String(s.target?.name ?? s.target?.label ?? s.target?.placeholder ?? ""));
+
+/**
+ * `loginId`: this fill is the sign-in identifier (the last fill before a password fill). A case
+ * saved with a literal login keeps the email in its steps; the report never repeats it.
+ */
+function stepForReport(s: Step, loginId = false): string {
+  const literal = !/\$\{env:/.test(String(s.value ?? ""));
+  const hidden: Step = intoPasswordBox(s) ? { ...s, value: "(password hidden)" }
+    : loginId && literal ? { ...s, value: "(login email hidden)" } : s;
+  return formatIrStep(hidden)
+    .replace(/\$\{env:[A-Z0-9_]*USERNAME[A-Z0-9_]*\}/g, "(saved username)")
+    .replace(/\$\{env:[A-Z0-9_]*PASSWORD[A-Z0-9_]*\}/g, "(saved password)")
+    .replace(/\$\{env:[A-Z0-9_]+\}/g, "(saved value)");
+}
+
+/** The report's facts per test, without HTML — read by xlsxReport.ts. */
+export function reportRows(input: RunReportInput): ReportRow[] {
+  return input.cases.map((c) => {
+    const f = caseFacts(c);
+    const at = f.outcome === "failed" && f.failedIdx >= 0 ? f.rows[f.failedIdx] : undefined;
+    const rawError = f.outcome === "failed" ? (f.detail as any)?.error ?? (f.detail as any)?.message ?? "" : "";
+    const irSteps: Step[] = (c.ir?.steps ?? []) as Step[];
+    const usesLogin = irSteps.some((s) => s.action === "fill" && (
+      /\$\{env:[A-Z0-9_]*(USERNAME|PASSWORD)/.test(String(s.value ?? ""))
+      || PASSWORD_BOX.test(String(s.target?.name ?? s.target?.label ?? s.target?.placeholder ?? ""))));
+    const nav = irSteps.find((s) => s.action === "navigate" && s.target?.url);
+    let startUrl: string | undefined;
+    if (nav) {
+      const u = String(nav.target!.url);
+      try { startUrl = new URL(u, (c.ir?.meta as any)?.baseUrl || input.baseUrl || undefined).toString(); } catch { startUrl = u; }
+    }
+    return {
+      savedCaseId: c.savedCaseId,
+      title: c.title,
+      status: OUTCOME_WORD[f.outcome] as ReportRow["status"],
+      rawStatus: String(c.status ?? ""),
+      feature: (c.ir?.meta as any)?.feature,
+      actions: irSteps.map((s, i) => {
+        // The sign-in identifier: the last fill before a password fill, with nothing filled between.
+        const next = irSteps.slice(i + 1).find((x) => x.action === "fill");
+        return { s, loginId: s.action === "fill" && !intoPasswordBox(s) && intoPasswordBox(next) };
+      }).filter(({ s }) => s.action !== "assert" && s.action !== "wait")
+        .map(({ s, loginId }) => stepForReport(s, loginId)),
+      expected: irSteps.map((s) => checkSentence(s, f.ctx)).filter((x): x is string => !!x),
+      checks: f.checks.map((x) => ({ sentence: x.sentence as string, state: x.state as ReportRow["checks"][number]["state"] })),
+      startUrl,
+      usesLogin,
+      failedAt: at ? `Step ${at.i + 1}: ${at.title}` : "",
+      error: rawError ? cleanError(rawError, f.ctx) : "",
+      summary: oneLine(c, f),
+      durationMs: f.durationMs,
+    };
+  });
 }
 
 /** The same report as a PDF: the page printed by the Chromium Testbench already runs its tests in. */

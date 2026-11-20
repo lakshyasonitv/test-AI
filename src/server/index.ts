@@ -2,6 +2,8 @@ import express from "express";
 import path from "node:path";
 import { rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { buildRunReportHtml, loadRunReport, renderReportPdf } from "../stages/htmlReport.js";
+import { buildRunReportXlsx } from "../stages/xlsxReport.js";
+import { ensureRunLocal, uploadRunArtifactsSoon } from "../artifactStore.js";
 import { fileURLToPath } from "node:url";
 import { runPipeline, makeRunId } from "../orchestrator.js";
 import { record, subscribe, getEvents } from "./runRegistry.js";
@@ -16,7 +18,7 @@ import { Semaphore } from "./concurrency.js";
 import { askCredentials, settle } from "./pendingCredentials.js";
 import { CaseSelectionDecisionSchema } from "../schema/caseSelection.js";
 import { resolveCaseSelection, getPendingSelection } from "./pendingCaseSelection.js";
-import { getAllAcceptedCases, remainingCapacity } from "./caseAccumulator.js";
+import { getAllAcceptedCases, remainingCapacity, MAX_ACCUMULATED_CASES } from "./caseAccumulator.js";
 import { startRetentionJob } from "./retention.js";
 import { requireAuth, resolveUser, isAuthEnabled, LOCAL_USER_ID } from "./auth.js";
 import {
@@ -117,7 +119,7 @@ import { proposeRewrite, proposeStepTranslation, consumeRewriteAttempt, nlStepsE
 import {
   cancelJob, createJob, emitJobEvent, getJob, isCancelled, jobEvents, subscribeJob,
 } from "./regroundJobs.js";
-import { deleteRunRow, fetchRunsFromDb, isDbEnabled, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
+import { deleteRunRow, fetchRunsFromDb, getServiceClient, isDbEnabled, recordRunCases, recordRunProject, recordRunStarted, recordRunStatus } from "../db.js";
 import { summariseRun } from "../runStore.js";
 
 import { isAllowedEntryUrl, orgDiscoveryCacheEnabled, savedDiscoveriesFor } from "../stages/hybridDiscovery.js";
@@ -231,6 +233,8 @@ app.get("/runs/:runId/*", async (req, res) => {
   // Path traversal guard: the resolved path must stay inside RUNS_DIR.
   if (!abs.startsWith(RUNS_DIR + path.sep)) return res.sendStatus(403);
   if (!(await canAccessRun(req, req.params.runId))) return res.sendStatus(403); // no-op today
+  // Not on disk (a restarted container): bring the run back from storage first. After the guard.
+  if (!existsSync(abs)) await ensureRunLocal(req.params.runId, rel);
   res.sendFile(abs, (err) => {
     // sendFile already sent a response (or started one) on success; only translate a real miss
     // (nonexistent file, or a directory — sendFile can't serve those either) into a 404, matching
@@ -451,6 +455,8 @@ app.post("/api/runs", requireRole("tester"), async (req, res) => {
       } catch (err) {
         console.error(`[db] could not derive final status for ${runId}:`, (err as Error)?.message ?? err);
       }
+      // Keep the run's screenshots and report files past a container restart (artifactStore.ts).
+      uploadRunArtifactsSoon(runId);
     }
   };
 
@@ -542,6 +548,16 @@ app.post("/api/runs/:runId/case-selection", requireRunRole("tester"), express.js
   const parsed = CaseSelectionDecisionSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
+  }
+  // The pool's cap, enforced where the pick arrives: picks past it used to be accepted here and then
+  // dropped silently by appendAcceptedCases as "did not fit — pool was full". Same 400 + { error }
+  // shape this route already returns for an empty pick.
+  const picked = new Set(parsed.data.selectedIndexes).size;
+  const room = MAX_ACCUMULATED_CASES - getAllAcceptedCases(runId).length;
+  if (picked > room) {
+    return res.status(400).json({
+      error: `A run holds at most ${MAX_ACCUMULATED_CASES} cases; ${picked} picked with room for ${Math.max(0, room)}. Untick ${picked - Math.max(0, room)}.`,
+    });
   }
   if (parsed.data.action === "done") {
     const willHaveAny =
@@ -656,7 +672,8 @@ function runReport(runId: string) {
   return w ? { ...report, orgWarning: w.message } : report;
 }
 
-app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => {
+app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), async (req, res) => {
+  await ensureRunLocal(req.params.runId);
   const report = runReport(req.params.runId);
   if (!report) return res.status(404).send("no cases recorded for this run");
   res.type("html").send(buildRunReportHtml(report, { everyStepScreenshot: true }));
@@ -664,14 +681,50 @@ app.get("/api/runs/:runId/report.html", requireRunRole("viewer"), (req, res) => 
 
 /** The same report as a PDF, for sending to managers and clients and for keeping on file. */
 app.get("/api/runs/:runId/report.pdf", requireRunRole("viewer"), async (req, res) => {
+  await ensureRunLocal(req.params.runId);
   const report = runReport(req.params.runId);
   if (!report) return res.status(404).send("no cases recorded for this run");
   try {
     const pdf = await renderReportPdf(buildRunReportHtml(report));
-    res.type("pdf").setHeader("Content-Disposition", `attachment; filename="test-report-${req.params.runId}.pdf"`);
+    // `?view=1` (optional) shows the PDF in the browser tab instead of saving it; without it the
+    // response is exactly what it always was.
+    const disposition = req.query.view === "1" ? "inline" : "attachment";
+    res.type("pdf").setHeader("Content-Disposition", `${disposition}; filename="test-report-${req.params.runId}.pdf"`);
     res.send(pdf);
   } catch (err) {
     res.status(500).send(`the PDF could not be made: ${(err as Error)?.message ?? err}`);
+  }
+});
+
+/** The same report as an Excel workbook: a Summary sheet and one row per test case. */
+app.get("/api/runs/:runId/report.xlsx", requireRunRole("viewer"), async (req, res) => {
+  await ensureRunLocal(req.params.runId);
+  const report = runReport(req.params.runId);
+  if (!report) return res.status(404).send("no cases recorded for this run");
+  try {
+    // Each test's saved-case id, so a developer can open the exact case. A replay records them in
+    // its 00-input.json; an older run did not, so fall back to run_cases (this run's own rows —
+    // requireRunRole has already authorised the run). Best effort: no id is not an error.
+    if (report.cases.some((c) => !c.savedCaseId) && isDbEnabled()) {
+      try {
+        const { data } = await getServiceClient()!
+          .from("run_cases").select("test_case_id, case_index").eq("run_id", req.params.runId);
+        const byIndex = new Map((data ?? []).map((r: any) => [Number(r.case_index), String(r.test_case_id)]));
+        for (const c of report.cases) {
+          const idx = /^case-(\d+)$/.exec(c.caseId)?.[1];
+          if (!c.savedCaseId && idx !== undefined && byIndex.has(Number(idx))) c.savedCaseId = byIndex.get(Number(idx));
+        }
+      } catch { /* ids are a convenience */ }
+    }
+    // The link opens the case in this same Testbench (`#/case/<id>` resolves its project).
+    const proto = String(req.headers["x-forwarded-proto"] ?? req.protocol).split(",")[0].trim();
+    const origin = `${proto}://${req.get("host")}`;
+    const xlsx = buildRunReportXlsx(report, { caseLink: (id) => `${origin}/#/case/${encodeURIComponent(id)}` });
+    res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+      .setHeader("Content-Disposition", `attachment; filename="test-report-${req.params.runId}.xlsx"`);
+    res.send(xlsx);
+  } catch (err) {
+    res.status(500).send(`the Excel report could not be made: ${(err as Error)?.message ?? err}`);
   }
 });
 
@@ -736,7 +789,8 @@ app.get("/api/runs/:runId/spec-warnings", requireRunRole("viewer"), (req, res) =
 
 // Full event log as one JSON snapshot. Polling this can't be buffered by a proxy the way
 // a stream can — the RunStore already persists every event, so this is just a read.
-app.get("/api/runs/:runId/state", requireRunRole("viewer"), (req, res) => {
+app.get("/api/runs/:runId/state", requireRunRole("viewer"), async (req, res) => {
+  await ensureRunLocal(req.params.runId);
   res.json(getEvents(req.params.runId));
 });
 
@@ -1139,7 +1193,7 @@ app.get("/api/jira/status", requireRole("tester"), (req, res) => {
     configured: "config" in cfg,
     ...("missing" in cfg ? { missing: cfg.missing } : {}),
     connected: !!conn,
-    // D-85: `canWrite` only while "Create Jira bug" is on, so the flag-off reply is exactly as before.
+    // D-86: `canWrite` only while "Create Jira bug" is on, so the flag-off reply is exactly as before.
     sites: conn ? conn.sites.map((x) => ({ id: x.id, name: x.name, url: x.url, ...(jiraBugsEnabled() ? { canWrite: !!x.canWrite } : {}) })) : [],
   });
 });
@@ -1217,7 +1271,7 @@ app.post("/api/jira/disconnect", requireRole("tester"), (req, res) => {
 });
 
 // --------------------------------------------------------------------------
-// "Create Jira bug" (D-85), behind JIRA_BUGS_ENABLED (and JIRA_ENABLED). Off, every route below is
+// "Create Jira bug" (D-86), behind JIRA_BUGS_ENABLED (and JIRA_ENABLED). Off, every route below is
 // 404 and nothing else in the app changes. A person always presses Create: nothing here files an
 // issue on its own. The browser's form is a proposal — the create route re-reads the field list
 // from Jira and checks every value against it (src/jira/bugs.ts, buildIssueFields).
@@ -2658,6 +2712,7 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
         } catch (err) {
           console.error(`[db] could not derive final status for ${runId}:`, (err as Error)?.message ?? err);
         }
+        uploadRunArtifactsSoon(runId);
       }
     };
 
@@ -2715,7 +2770,7 @@ app.post("/api/replay", requireRole("tester"), async (req, res) => {
       // scrubbed; the target app and the session, so the executor mints the sign-in for
       // `${env:SF_FRONTDOOR_URL}`. Null on an ordinary replay.
       return withRunId(runId, () => withTargetApp(sfReplay.session ? "salesforce" : null, () =>
-        withFrontdoor(sfReplay.session, () => runReplay({ runId, cases, label: runLabel, creds }, onEvent))));
+        withFrontdoor(sfReplay.session, () => runReplay({ runId, cases, label: runLabel, creds, suiteId: typeof suiteId === "string" && suiteId ? suiteId : undefined }, onEvent))));
     })
       .then((outcome) => {
         // Surface each case's latest verdict on the library row, so the Suite screen can show a
@@ -2795,6 +2850,9 @@ export const BOOLEAN_ENV_FLAGS = [
   // /api/spec/confirm returns { spec } only, and the planner never sees the story.
   "PRO_STORY_PROMPT",
   "SCREEN_MAP_ENABLED",
+  "SCREEN_MODE_ALL_SITES",
+  // TD-203: on by default where DB_ENABLED is on; only "false" turns it off.
+  "ARTIFACTS_TO_SUPABASE",
   "NETWORK_SETTLE_ENABLED",
   "SCREEN_BEST_MATCH_ENABLED",
   "VOLATILE_ID_DETECTION_ENABLED",
@@ -2821,7 +2879,7 @@ export const BOOLEAN_ENV_FLAGS = [
   // D-71: Jira Phase 1 — "Connect Jira" and read a story into the prompt box. Off: no Jira row on
   // the home view, and every /api/jira/* route answers 404.
   "JIRA_ENABLED",
-  // D-85: "Create Jira bug" on failed cases (needs JIRA_ENABLED). Off: no button, the sign-in asks
+  // D-86: "Create Jira bug" on failed cases (needs JIRA_ENABLED). Off: no button, the sign-in asks
   // for read only, and every /api/jira/bug/* and .../jira-bug route answers 404.
   "JIRA_BUGS_ENABLED",
   // D-72: a project's discovery is saved for 7 days and shared by every run of that project with the
